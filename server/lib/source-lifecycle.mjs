@@ -134,19 +134,28 @@ export function classifyThreeWay({ base, current, incoming, binary = false }) {
   }
 }
 
-// A rebase is available when every path is settled: either merged cleanly, or
-// carried whole because only one side moved it. The second kind arrives as a
-// hash rather than bytes — canonicalSnapshot takes `{path, sha256}` as a
-// reference into the blob store — so a project's untouched files cost nothing
-// to carry across a rebase.
+// A rebase is available when every path is settled: merged cleanly, carried
+// whole because only one side moved it, or REMOVED because one side deleted it
+// and nobody else touched it. The carried kind arrives as a hash rather than
+// bytes — canonicalSnapshot takes `{path, sha256}` as a reference into the blob
+// store — so a project's untouched files cost nothing to carry across a rebase.
+//
+// **A settled deletion is expressed by being absent from the result**, which is
+// the same rule as everywhere else now: the tree is the manifest, so a path
+// leaves the paper by not being named. Before complete-tree it could be treated
+// as unclassifiable and refused, because deletion was a separate list; now a
+// push that removes a file is an ORDINARY push, and refusing to rebase it would
+// mean every deletion loses every race it enters.
 function cleanRebaseFiles(classifications) {
   if (!classifications.length) return null
   const settled = item => item.status === 'clean-rebase-candidate'
-    && (typeof item.merged === 'string' || typeof item.sha256 === 'string')
+    && (item.removed === true || typeof item.merged === 'string' || typeof item.sha256 === 'string')
   if (!classifications.every(settled)) return null
-  return classifications.map(item => (item.sha256
-    ? { path: item.path, sha256: item.sha256 }
-    : { path: item.path, content: item.merged, encoding: 'base64' }))
+  return classifications
+    .filter(item => item.removed !== true)
+    .map(item => (item.sha256
+      ? { path: item.path, sha256: item.sha256 }
+      : { path: item.path, content: item.merged, encoding: 'base64' }))
 }
 
 /**
@@ -696,6 +705,43 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
   // copy of each at a time. Reading all three revisions whole is what this
   // avoids: on a large book that is three full projects resident to classify a
   // handful of edited files.
+  /**
+   * Rebase a refused proposal onto the head that beat it, on the SERVER.
+   *
+   * Returns the new revision id, or null when a path needs a judgement — which
+   * is the only case that reaches the author as a refusal.
+   *
+   * **It is deliberately the same three-way `submit()` uses.** One rule with one
+   * implementation: the alternative is a second rebase that drifts from the
+   * first, and this file already has an entry in the naming errata for what
+   * that costs.
+   *
+   * The base is asked of git rather than taken as the proposal's parent. A
+   * daemon that already rebased once, or a bundle carrying several commits, has
+   * moved off the commit it was written on.
+   *
+   * The rebased tree is the COMPLETE member set the merge settled on, so the
+   * manifest is the paths it carries. A path a settled deletion removed is
+   * absent from both, which is what a deletion now is.
+   */
+  async function rebaseOntoHead({ base, head, incoming }) {
+    const [baseRevision, headRevision, incomingRevision] = await Promise.all([
+      base ? revision(base) : null,
+      revision(head),
+      revision(incoming),
+    ])
+    // No shared history is a real state -- two projects adopted separately --
+    // and it is not a thing to three-way merge. It is a judgement.
+    if (!baseRevision || !headRevision || !incomingRevision) return null
+    const classifications = await deriveClassifications(baseRevision, headRevision, incomingRevision)
+    const files = cleanRebaseFiles(classifications)
+    if (!files) return null
+    const snapshot = await canonicalSnapshot(files, files.map(file => file.path), context)
+    const rebased = await persistSnapshot(snapshot, incomingRevision.dependencyPins || [], head)
+    await advanceSourceHead(rebased.id, head)
+    return rebased.id
+  }
+
   async function deriveClassifications(base, current, incoming) {
     const snapshots = [base, current, incoming]
     const paths = [...new Set(snapshots.flatMap(snapshot => (snapshot?.files || []).map(file => file.path)))].sort()
@@ -728,6 +774,25 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       // Only this push moved. Its version stands; nobody else touched it.
       if (baseHash != null && baseHash === currentHash && entries[2]) return settled(entries[2])
 
+      // **A one-sided deletion is settled, not unclassifiable.** One side
+      // removed the path and the other left it exactly as the base had it, so
+      // there is nothing to decide -- the same "only one side moved" rule the
+      // three tests above apply to content, applied to absence.
+      //
+      // It has to be tested here rather than above, because those tests all
+      // require the surviving entry to exist, and in a deletion the side that
+      // "wins" is the one with no entry at all.
+      //
+      // Before complete-tree this fell through to unavailable and the whole
+      // push refused. Deletion was a separate list then, so that was rare;
+      // absence IS removal now, which makes every push that drops a file
+      // unrebaseable and therefore a loser of every race it enters.
+      if (incomingHash == null && baseHash != null && baseHash === currentHash) {
+        return { path, status: 'clean-rebase-candidate', removed: true }
+      }
+      if (currentHash == null && baseHash != null && baseHash === incomingHash) {
+        return { path, status: 'clean-rebase-candidate', removed: true }
+      }
       if (entries.some(entry => entry == null)) return { path, status: 'classification-unavailable' }
       const contents = await Promise.all(entries.map(entry => entryContent(entry)))
       if (contents.some(value => value == null)) return { path, status: 'classification-unavailable' }
@@ -907,10 +972,33 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       const store = await sourceGit()
       const proposed = await store.ingestBundle(project, bundlePath)
       if (!proposed) return { ok: false, status: 'empty-bundle' }
-      const result = await store.fastForward(project, proposed)
+      let result = await store.fastForward(project, proposed)
       if (!result.ok) {
-        await store.markRefused(project, proposed, await store.refused(project))
-        return { ...result, refusedRevision: proposed }
+        // **The server rebases; it refuses only when a person has to decide.**
+        //
+        // Skip specified this and the design says it in his words -- "we cancel
+        // all the other builds. Try to rebase. And start again", and
+        // "rebase when it is mechanical; refuse when it is a judgement". This
+        // path shipped as fast-forward-or-refuse, which is half of that rule,
+        // and it was a REGRESSION rather than a simplification: `submit()`
+        // below has done the server-side rebase all along, so the JSON carrier
+        // rebased while the bundle carrier -- the one his daemon uses -- did
+        // not.
+        //
+        // What refuse-only costs is not tidiness. With several people or agents
+        // editing, a client that can only retry is beaten again while it
+        // retries: there is no queue, no ordering, and no bound on how many
+        // times it loses. A build queue cannot be built on that, because losers
+        // are never rebased and requeued, they are only told no.
+        const head = result.revision
+        const base = await store.mergeBase(head, proposed)
+        const rebased = await rebaseOntoHead({ base, head, incoming: proposed })
+        if (rebased) {
+          result = { ok: true, status: 'accepted-clean-rebase', revision: rebased, previous: head, rebasedFrom: proposed }
+        } else {
+          await store.markRefused(project, proposed, await store.refused(project))
+          return { ...result, refusedRevision: proposed }
+        }
       }
       const record = await revision(result.revision)
       const stored = readJson(statePath) || {}

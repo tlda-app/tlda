@@ -130,8 +130,36 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
    * property — this function cannot check it — and it is the whole of why the
    * old invariant could be retired without reinstating the phantom class.
    */
+  /**
+   * The commit to propose on top of.
+   *
+   * **`local` is not automatically the newer one, and assuming it was is a real
+   * defect the SERVER-SIDE REBASE creates.** Before the server rebased, a
+   * refusal came back to the daemon and the daemon rebased itself, so its local
+   * ref always led. Now the server can accept a rebased version of our proposal
+   * — our work lands under a commit we never made — and our local ref is left
+   * pointing at the superseded one.
+   *
+   * Proposing on it anyway is not merely stale. Every subsequent proposal
+   * parents on that dead branch, so the merge base with the head walks further
+   * back on each push, and paths nobody is contending start coming back as
+   * three-way conflicts against an ancient base. Measured here: a figure two
+   * people had agreed on for two revisions classified as `conflict` because the
+   * base had regressed to the project's first commit.
+   *
+   * So: `held` — what the mirror says we last took — wins unless `local`
+   * actually descends from it, which is the only case where local carries work
+   * the server has not seen.
+   */
+  async function parentForProposal(onto) {
+    if (onto) return onto
+    const [local, held] = await Promise.all([readRef(LOCAL_REF), readRef(HELD_REF)])
+    if (local && held) return (await isAncestor(held, local)) ? local : held
+    return local || held
+  }
+
   async function proposeCommit({ members = [], message = 'source revision', onto = null }) {
-    const parent = onto || (await readRef(LOCAL_REF)) || (await readRef(HELD_REF))
+    const parent = await parentForProposal(onto)
     const files = []
     for (const rel of members) {
       // Read failures throw rather than being skipped. A file we cannot read is

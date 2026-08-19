@@ -449,11 +449,33 @@ export function createSourceGitStore({ gitDir }) {
     }
   }
 
+  /**
+   * The commit two revisions actually diverged at.
+   *
+   * **The base of a rebase, and it is asked rather than assumed.** The proposed
+   * commit's first parent is the base it was *written* on, which is usually the
+   * same answer and is not always: a daemon that already rebased once, or a
+   * bundle carrying several commits, has moved. Git knows which commit they
+   * share; nothing else here does.
+   *
+   * Null when they share no history at all, which is a real state — two
+   * projects adopted separately — and one a three-way merge cannot be run over.
+   */
+  async function mergeBase(a, b) {
+    if (!a || !b) return null
+    try {
+      return (await git(['merge-base', a, b])).trim() || null
+    } catch {
+      return null
+    }
+  }
+
   return {
     acceptRevision,
     readManifest,
     readRevisionFile,
     isAncestor,
+    mergeBase,
     ingestBundle,
     fastForward,
     diffRevisions,
