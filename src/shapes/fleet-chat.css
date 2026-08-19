@@ -1635,16 +1635,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .semantic-operation-collapse:hover { opacity: var(--ui-tone-full); }
 /* The collapse control exists only while there's something open to collapse --
    that is the only state where it does anything. Skip: "your collapse button
-   should be invisible when the card is collapsed." This held for thread cards
-   already; search cards were missing the equivalent rule, so the button showed
-   on a card still in its short/default preview -- Skip: "they shouldn't say
-   Collapse unless you expand them." */
-.fleet-chat-shape .thread-shell > .semantic-operation-collapse,
-.fleet-chat-shape .semantic-search-operation:not(.semantic-operation-expanded) > .semantic-operation-body .semantic-operation-collapse {
+   should be invisible when the card is collapsed."
+   A thread card is the only card left with one: the search card's expand and
+   collapse were both deleted with the clipped preview they toggled, so it has
+   no collapsed state to hide from and no `.semantic-operation-expanded` to
+   check. */
+.fleet-chat-shape .thread-shell > .semantic-operation-collapse {
   display: none;
 }
-.fleet-chat-shape .thread-shell.thread-middle-open > .semantic-operation-collapse,
-.fleet-chat-shape .semantic-search-operation.semantic-operation-expanded .semantic-operation-collapse {
+.fleet-chat-shape .thread-shell.thread-middle-open > .semantic-operation-collapse {
   display: block;
 }
 .fleet-chat-shape .semantic-operation-view {
