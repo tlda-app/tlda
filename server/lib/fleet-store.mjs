@@ -466,25 +466,6 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_delegate_operation_id
         ON events(json_extract(metadata, '$.client_operation_id'), id)
         WHERE type = 'delegate';
-      -- pendingEditActivities() had no index it could use, so it scanned the
-      -- whole events table -- the largest table here -- evaluating json_extract
-      -- twice per row, with no LIMIT, and it runs on EVERY accepted source
-      -- mutation. That wedged the single store worker for two minutes at a
-      -- time while the main thread stayed healthy, so every store call behind
-      -- it (login, fleet-search, chat) timed out and every aggregate measure
-      -- said the server was fine. Observed at depth 61 with this method at the
-      -- head of the queue and its elapsed time still climbing past 118s.
-      --
-      -- The WHERE here is the query's WHERE, so the index holds only the rows
-      -- still pending and a row leaves it as soon as canonical_source is set.
-      -- Cost becomes the number of pending activities rather than the number of
-      -- events that have ever happened. Leading on $.project so the project
-      -- filter in the query is served by the index too.
-      CREATE INDEX IF NOT EXISTS idx_events_pending_edit_activity
-        ON events(json_extract(metadata, '$.project'), id)
-        WHERE type = 'activity'
-          AND json_extract(metadata, '$.input.edit_operation.operation_id') IS NOT NULL
-          AND json_extract(metadata, '$.input.canonical_source') IS NULL;
       CREATE TABLE IF NOT EXISTS transport_operations (
         operation_id TEXT PRIMARY KEY,
         operation_type TEXT NOT NULL,
@@ -5307,14 +5288,6 @@ export class FleetStore {
 
   updateEventMetadata(eventId, patch) {
     this._updateEventMetadata.run(JSON.stringify(patch), eventId);
-  }
-
-  pendingEditActivities(project = null) {
-    const rows = this.db.prepare(`SELECT id,type,timestamp,from_id,text,metadata FROM events
-      WHERE type='activity' AND json_extract(metadata,'$.input.edit_operation.operation_id') IS NOT NULL
-        AND json_extract(metadata,'$.input.canonical_source') IS NULL
-        AND (? IS NULL OR json_extract(metadata,'$.project')=?) ORDER BY id`).all(project, project)
-    return rows.map(row => ({ id:row.id, type:row.type, timestamp:row.timestamp, from:row.from_id, text:row.text, metadata:JSON.parse(row.metadata||'{}') }))
   }
 
   // Who last touched this source file, and when. One row, index-served.
