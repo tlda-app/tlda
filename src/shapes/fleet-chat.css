@@ -1597,12 +1597,19 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   grid-column: 2;
   min-width: 0;
 }
+/* Absolute, not sticky, and its `top` is written by useFloatingCollapse. The
+   chat log is an anchored list: every row lays out at the slice origin and is
+   painted where it belongs by a transform, and sticky reads its constraint
+   rectangle from the layout box, which knows nothing about those transforms.
+   So inside this log sticky pins the control to the card and it scrolls away.
+   See the note on useFloatingCollapse in FleetChatShape.tsx. */
 .fleet-chat-shape .semantic-operation-collapse {
   grid-column: 1;
   grid-row: 1;
-  position: sticky;
-  top: 50vh;
-  align-self: start;
+  position: absolute;
+  /* Only the value before useFloatingCollapse's first placement, and the
+     resting value if the card is ever mounted outside a chat log. */
+  top: 50%;
   justify-self: center;
   border: 0;
   background: transparent;
