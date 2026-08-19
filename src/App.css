@@ -1110,6 +1110,26 @@ body.tlda-pan-mode * {
   margin: 0.5em 0;
 }
 
+/* A fraction bar must never be thin enough to round away.
+   KaTeX draws every horizontal rule as `border-bottom-width: 0.04em`. Measured
+   on Skip's display: 0.4545 CSS px against devicePixelRatio 2.2, which is
+   exactly 1.0 device pixels. A one-device-pixel border sitting at a fractional
+   offset rounds to 1 or to 0 depending on where it lands, so the bar is drawn
+   or not drawn according to scroll position -- stable while the view is still,
+   flipping when it moves. He read `\frac{\pi_i^2}{1-\pi_i}` as a stacked array
+   because the bar was not there, and concluded his own paper assumed something
+   it does not.
+   A floor of 1 CSS px is above the rounding threshold at every device ratio, so
+   the bar always has at least one whole pixel to occupy. It is the same set of
+   elements KaTeX itself gives `min-height: 1px` -- that floors the box and not
+   the border, which is why it did not help. */
+.katex .frac-line,
+.katex .overline .overline-line,
+.katex .underline .underline-line,
+.katex .rule {
+  border-bottom-width: max(0.04em, 1px);
+}
+
 /* Error screen */
 .ErrorScreen {
   display: flex;
