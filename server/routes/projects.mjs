@@ -10,8 +10,6 @@
  *   DELETE /:name               Remove project
  *   GET    /:name/files         List source files
  *   GET    /:name/source/:file  Read source file content
- *   PUT    /:name/source/:file  Write source file content and trigger build
- *   POST   /:name/push          Push files + trigger build
  *   POST   /:name/build         Trigger rebuild
  *   GET    /:name/build/status  Build status + log
  */
@@ -808,22 +806,6 @@ router.get('/:name/source/:file', requireRead, async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
-})
-
-// Write a specific source file's content and trigger the normal project push path
-router.put('/:name/source/:file', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
-  const content = typeof req.body?.content === 'string' ? req.body.content : null
-  if (content === null) return res.status(400).json({ error: 'Required: content string' })
-  const result = await processProjectPush(req.params.name, {
-    files: [{ path: req.params.file, content }],
-    sourceManifest: req.body?.sourceManifest,
-    editedBy: req.body?.editedBy,
-    expectedRevision: req.body?.expectedRevision,
-  })
-  const { status, lifecycleStatus, ...payload } = result
-  res.status(status).json({ ...payload, ...(lifecycleStatus ? { status: lifecycleStatus } : {}) })
 })
 
 // Synctex path-based lookup: trace highlight path through synctex records
@@ -2293,13 +2275,6 @@ async function sourcePushWouldChange(name, { files, deletedFiles }) {
   }
   return false
 }
-
-// Push files + trigger build
-router.post('/:name/push', requireRw, async (req, res) => {
-  const result = await processProjectPush(req.params.name, req.body)
-  const { status, lifecycleStatus, ...payload } = result
-  res.status(status).json({ ...payload, ...(lifecycleStatus ? { status: lifecycleStatus } : {}) })
-})
 
 // Trigger rebuild (no file changes)
 router.post('/:name/build', requireRw, async (req, res) => {

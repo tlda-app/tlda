@@ -38,7 +38,7 @@
 //     the enumerated-list-kept-twice failure this repo has already shipped
 //     once. See its former definition (left in place, emptied) for the full
 //     reasoning.
-//   - assertPutRequiresCallerManifest / assertMcpCallersCarryManifest /
+//   - assertEditorWriteCarriesItsBuffersRevision / assertMcpCallersCarryManifest /
 //     assertMcpPushOrchestrationBehavior still grep caller source for the OLD
 //     wire shape, but fail loudly (assert.ok on route/text found) rather than
 //     silently -- they do not have assertPushSuppliersCarryManifest's
@@ -363,26 +363,28 @@ async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
   }
 }
 
-function assertPutRequiresCallerManifest() {
-  const routeSource = fs.readFileSync(path.join(process.cwd(), 'server/routes/projects.mjs'), 'utf8')
-  const routeStart = routeSource.indexOf("router.put('/:name/source/:file'")
-  const routeEnd = routeSource.indexOf("router.post('/:name/synctex-path'", routeStart)
-  assert.ok(routeStart >= 0 && routeEnd > routeStart, 'source PUT route not found')
-  const putRoute = routeSource.slice(routeStart, routeEnd)
-  assert.match(putRoute, /sourceManifest:\s*req\.body\?\.sourceManifest/, 'source PUT route must use caller-supplied manifest')
-  assert.doesNotMatch(putRoute, /readClientSourceManifest|\.\.\.new Set/, 'source PUT route must not synthesize ownership from server state')
-
+// The route half of this check is gone with `PUT /:name/source/:file`. What it
+// asserted -- that the manifest comes from the caller and is never synthesized
+// from server state -- is now the accept carrier's own contract and is checked
+// where that carrier is.
+//
+// The client half below is NOT about the manifest mechanism and does not die
+// with it. It is the guard on the editor's write: send the revision the buffer
+// was loaded at, and do not re-read authority immediately before overwriting a
+// loaded buffer. Three passages of Skip's paper were deleted by exactly that,
+// per the note above at `assertRetryClaimsHeldRevision`.
+function assertEditorWriteCarriesItsBuffersRevision() {
   const callerSource = fs.readFileSync(path.join(process.cwd(), 'src/shapes/FleetSourceEditorShape.tsx'), 'utf8')
   const writeStart = callerSource.indexOf('const writeSourceFile = async')
   const writeEnd = callerSource.indexOf('const trackedAnchorStatusText', writeStart)
   assert.ok(writeStart >= 0 && writeEnd > writeStart, 'fleet source editor writeSourceFile not found')
   const writeSource = callerSource.slice(writeStart, writeEnd)
-  assert.match(writeSource, /sourceManifest/, 'fleet source editor PUT caller must send sourceManifest')
-  assert.match(writeSource, /expectedRevision/, 'fleet source editor PUT caller must send expectedRevision')
+  assert.match(writeSource, /sourceManifest/, 'fleet source editor write must send sourceManifest')
+  assert.match(writeSource, /expectedRevision/, 'fleet source editor write must send expectedRevision')
   assert.doesNotMatch(writeSource, /\/source-authority/, 'fleet source editor must not refresh authority immediately before overwriting a loaded buffer')
-  assert.match(writeSource, /loadSourceFiles\(\)/, 'fleet source editor PUT caller must base manifest on current client inventory')
+  assert.match(writeSource, /loadSourceFiles\(\)/, 'fleet source editor write must base manifest on current client inventory')
   assert.match(callerSource, /X-TLDA-Source-Revision/, 'fleet source editor load must retain the revision served with its source bytes')
-  assert.match(writeSource, /expectedRevision,\s*\n/, 'fleet source editor PUT must send the caller buffer revision')
+  assert.match(writeSource, /expectedRevision,\s*\n/, 'fleet source editor write must send the caller buffer revision')
 }
 
 function assertMcpCallersCarryManifest() {
@@ -496,7 +498,7 @@ async function main() {
     assert.equal(isSourceFilePath('main.fdb_latexmk', { mainFile: 'main.tex' }), false)
     // assertPushSuppliersCarryManifest() retired -- see its former definition above.
     await assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root)
-    assertPutRequiresCallerManifest()
+    assertEditorWriteCarriesItsBuffersRevision()
     assertMcpCallersCarryManifest()
     await assertMcpPushOrchestrationBehavior()
     assertInitCreatesOnlyRequestedMainFile()
