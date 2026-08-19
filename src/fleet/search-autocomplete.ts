@@ -33,7 +33,10 @@ export type SearchAutocompleteContext = {
   currentProject?: string
 }
 
-const FIELD_KEYS = ['from', 'to', 'agent', 'type', 'since', 'before', 'after', 'role']
+// `id:` has no value list on purpose: the value is a number the reader already
+// has in front of them — inbox() and the chips print it — so there is nothing to
+// suggest and completing the key is the whole affordance.
+const FIELD_KEYS = ['from', 'to', 'agent', 'type', 'since', 'before', 'after', 'role', 'id']
 const AGENT_KEYS = new Set(['from', 'to', 'agent'])
 const TIME_KEYS = new Set(['since', 'before', 'after'])
 const EVENT_TYPES = ['chat', 'delegate', 'task_done', 'report', 'lifecycle']

@@ -7061,6 +7061,10 @@ async function dispatchFleetWsMessage(ws, msg) {
           case 'since': return !row.timestamp || row.timestamp >= node.v
           case 'before': return !row.timestamp || row.timestamp < node.v
           case 'type': return row.type === node.v || row.role === node.v
+          // The id we hand out is the event id. A session row carries an id of
+          // its own that nothing prints and nobody can reference, so `id:` is
+          // false against one rather than matching a different numbering.
+          case 'id': return row.source === 'fleet' && Number(row.id) === node.v
           case 'and': return await matchesMessageNode(node.l, row) && await matchesMessageNode(node.r, row)
           case 'or': return await matchesMessageNode(node.l, row) || await matchesMessageNode(node.r, row)
           case 'not': return !await matchesMessageNode(node.x, row)
