@@ -2969,14 +2969,15 @@ export class FleetStore {
     if (!agent?.id) return agent;
     const route = this.getAgentDaemonRoute(agent.id);
     if (!route) return withoutProtectedAgentFields(agent);
-    const separator = route.daemon_key.indexOf(':');
+    // The route IS the daemon key. It used to be split into `machine_id` and
+    // `env_name` here as well, and four of the seven readers called
+    // `daemonAddress()` to put it straight back together. The three columns
+    // those names came from were dropped from `agents` on 2026-07-28
+    // (4cdbb55b8), so the split was reconstructing a shape nothing stored.
     return {
       ...agent,
       route_present: true,
       route_daemon_key: route.daemon_key,
-      daemon_key: route.daemon_key,
-      machine_id: separator > 0 ? route.daemon_key.slice(0, separator) : null,
-      env_name: separator > 0 ? route.daemon_key.slice(separator + 1) || null : null,
     };
   }
 
