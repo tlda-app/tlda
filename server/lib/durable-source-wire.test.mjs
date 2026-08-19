@@ -150,6 +150,7 @@ test('processed source change without terminal operation is permanently retired 
     outbox = new DaemonOutbox(outboxPath)
     delivery = new DaemonDeliveryRuntime({
     inflightDeadlineMs: 120_000,
+    flushByteBudget: 1_048_576,
       outbox,
       send(message) { ws.send(JSON.stringify(message)); return true },
       isConnected: () => true,
@@ -177,6 +178,7 @@ test('processed source change without terminal operation is permanently retired 
     let deadLetters = 0
     delivery = new DaemonDeliveryRuntime({
     inflightDeadlineMs: 120_000,
+    flushByteBudget: 1_048_576,
       outbox,
       send(message) { ws.send(JSON.stringify(message)); return true },
       isConnected: () => true,
@@ -209,6 +211,7 @@ test('processed source change without terminal operation is permanently retired 
     let repeatedSends = 0
     delivery = new DaemonDeliveryRuntime({
     inflightDeadlineMs: 120_000,
+    flushByteBudget: 1_048_576,
       outbox,
       send() { repeatedSends++; return true },
       isConnected: () => true,

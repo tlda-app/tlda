@@ -105,6 +105,21 @@ export class MintStore {
     `)
     const cols = this.db.prepare('PRAGMA table_info(daemon_mints)').all().map(col => col.name)
     if (!cols.includes('env_name')) this.db.exec('ALTER TABLE daemon_mints ADD COLUMN env_name TEXT')
+    // Recover the environment of every mint that recorded it in `metadata` and
+    // not in the column. `getByFriendlyName` filters on the column, so those
+    // rows were unfindable by name — `tlda agent wake <name>` answered "no local
+    // mint recorded" for beings that were joined, had a fleet id, and were
+    // sitting in this table. They are agents, so leaving them stranded to avoid
+    // a backfill is not a trade worth making; the fact is already in the row and
+    // this only moves it where the lookup reads.
+    this.db.exec(`
+      UPDATE daemon_mints
+      SET env_name = json_extract(metadata, '$.envName')
+      WHERE env_name IS NULL
+        AND metadata IS NOT NULL
+        AND json_valid(metadata)
+        AND json_extract(metadata, '$.envName') IS NOT NULL
+    `)
   }
 
   ensure(mintId, now = new Date().toISOString()) {
@@ -174,6 +189,27 @@ export class MintStore {
       SET process_state = ?, updated_at = ?
       WHERE mint_id = ?
     `).run(incoming, now, mintId)
+    if (result.changes !== 1) throw new Error(`no daemon mint facts for ${mintId}`)
+    return this.get(mintId)
+  }
+
+  // A restart is a new process under the same identity, so its session is new.
+  // `setFact` would call the previous session a conflict, which is what it is for
+  // an identity fact and wrong for a per-launch one. Same reasoning as
+  // updateProcessState directly above, which exists because the process changes
+  // for exactly the same reason.
+  updateSessionFacts(mintId, { sessionId = null, sessionPath = null } = {}, now = new Date().toISOString()) {
+    if (!mintId) throw new Error('mint_id is required')
+    if (sessionId == null && sessionPath == null) return this.get(mintId)
+    const sets = []
+    const values = []
+    if (sessionId != null) { sets.push('session_id = ?'); values.push(sessionId) }
+    if (sessionPath != null) { sets.push('session_path = ?'); values.push(sessionPath) }
+    const result = this.db.prepare(`
+      UPDATE daemon_mints
+      SET ${sets.join(', ')}, updated_at = ?
+      WHERE mint_id = ?
+    `).run(...values, now, mintId)
     if (result.changes !== 1) throw new Error(`no daemon mint facts for ${mintId}`)
     return this.get(mintId)
   }

@@ -107,6 +107,31 @@ test('a bot with no live process is started', async () => {
   }
 })
 
+// One bot of a model, for its whole life. The row seeded here holds a DIFFERENT
+// name from the one bots.yaml declares, which is the whole point: a rename is how
+// a bot is stopped, and a launcher that reads a rename as a vacancy refills it
+// within one poll — so stopping a bot would cause its replacement. The check is
+// on the model, and `bot:<env>:<model>` is the ledger's key for one.
+test('a bot already in the ledger under another name is woken, not minted', async () => {
+  const { dir, home, configDir } = configure()
+  const { MintStore } = await import('../daemon/mint-store.mjs')
+  const store = new MintStore(path.join(configDir, 'daemon-mints.sqlite'), { defaultEnvName: 'test' })
+  store.ensure('bot:test:probe')
+  store.setFact('bot:test:probe', 'fleet_id', 'fleet:probe-already-exists')
+  store.setFact('bot:test:probe', 'env_name', 'test')
+  store.updateFriendlyName('bot:test:probe', 'quiet-probe')
+  store.close()
+  const manager = startManager({ home, configDir })
+  try {
+    await waitFor(manager.read, /probe:test: already in the ledger — waking bot:test:probe/, 10_000)
+    assert.doesNotMatch(manager.read(), /mint did not get the name/,
+      'the mint must not be attempted at all when the ledger already has this model')
+  } finally {
+    manager.child.kill('SIGKILL')
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('a stale pidfile does not count as a live bot', async () => {
   const { dir, home, configDir } = configure()
   const dead = spawn('/bin/sh', ['-c', 'exit 0'])

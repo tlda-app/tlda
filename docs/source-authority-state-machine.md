@@ -96,6 +96,23 @@ sitting in a rejection payload on a server where the one person who can fix it
 cannot see it. **It is a pointer, not an application**: the refusal stands and
 HEAD is untouched.
 
+**Diff it against the manifest, not against the whole branch.** The refused
+commit carries the project's source set; the author's `HEAD` carries their
+repository, which is usually much larger. On a real paper on 2026-08-18 the
+bare form read `1270 files changed, 26 insertions, 185,925 deletions` — the
+actual disagreement buried under deletions for screenshots, outlines and backup
+files that were never in the push, and it was one message away from being
+reported as a mass deletion.
+
+```sh
+git diff HEAD refs/tlda/refused/HEAD -- <the paths in the revision>   # e.g. main.tex
+```
+
+**The noise is not a flaw in the ref.** It is the gap between the paper and the
+repository it lives in, and it is why membership is `tracked in git` rather than
+an extension test — a checkout that carries only the paper produces a readable
+diff from the bare form.
+
 It is mirrored **on the refusal**, not on the next accept. A stalemate is a run
 of refusals with no accept between them, so a refused revision waiting for an
 accept to carry it would wait exactly as long as the author was stuck.

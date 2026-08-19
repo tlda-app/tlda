@@ -1969,7 +1969,8 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         owner: conflictOwner,
         source: 'source-authority',
       })))
-    } else if (e.lifecycleResult?.status === 'stale-base') {
+    }
+    if (e.lifecycleResult?.status === 'stale-base') {
       // A refusal that produced no markers used to record nothing at all, so a
       // person stuck outside the paper left no trace: the pusher learned from
       // their HTTP status and nobody else learned ever. Measured on a real
@@ -1979,11 +1980,13 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       // can act on into a 500 it cannot. An instrument must not be able to
       // change the answer it is recording.
       try {
-        await recordSourceSyncRefusal(name, {
-          owner: conflictOwner,
-          reason: e.lifecycleResult.status,
-          files: (changedPushFiles || []).map(file => file.path),
-        })
+        if (lifecycleConflictFiles.length === 0) {
+          await recordSourceSyncRefusal(name, {
+            owner: conflictOwner,
+            reason: e.lifecycleResult.status,
+            files: (changedPushFiles || []).map(file => file.path),
+          })
+        }
       } catch (recordError) {
         // Swallowed on purpose: this is a best-effort record of a refusal that
         // has already happened, and the caller is owed the 409 that explains it.
@@ -1998,6 +2001,17 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       // accept between them, so a refused revision waiting for an accept to
       // carry it would wait forever. Mirroring on the refusal is what makes a
       // stuck author's own work visible to them while they are stuck.
+      //
+      // **This used to sit in the `else` of the conflict branch**, so it ran
+      // only for a refusal that produced NO markers -- and a refusal WITH
+      // markers is the ordinary case, the one a person is actually stuck in,
+      // and the one this feature exists for. Measured on a real paper on
+      // 2026-08-18: the ref carried an old refused push and none of the sixteen
+      // stranded lines, because every refusal that stranded them had markers
+      // and took the other branch.
+      //
+      // Populated-but-stale is worse than absent: it looks current, and someone
+      // reading it resolves the wrong merge.
       const refused = e.lifecycleResult.refusedRevision
       if (refused) {
         void mirrorAcceptedRevision(name, lifecycle, (await lifecycle.readAuthority()).currentRevision, null)
@@ -2067,16 +2081,38 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       sourceRevision: acceptedSourceMutation?.sourceRevision || buildAuthority.currentRevision || null,
       acceptSeq: buildAuthority.acceptSeq ?? null,
     }).then(async () => {
-      if (projectPartsChanged) broadcastProjectPartsChanged(name, changedPartFiles)
-      const updated = await readProject(name)
-      const completedStatus = projectRevisionStatus(lifecycle.listRevisionLifecycles(name))
-      if (completedStatus.status === 'success') {
-        emitGlobalEvent('doc-arrived', {
-          name, title: updated.title || name,
-          format: updated.format, pages: updated.pages || 0,
-        })
+      // Announcing a build is not building it. This used to share a `.catch`
+      // with the dispatch above, so anything throwing HERE — a parts broadcast,
+      // a project read, the event — stamped `buildStatus: 'error'` on a project
+      // whose document had already been built and whose page count was right.
+      //
+      // 160 projects were in that state on 2026-08-18, 157 of them Markdown.
+      // Six sampled at random fetched 200 with 33-37 KB of rendered content
+      // while their stored status said the build had failed. A status a build
+      // earned must not be overwritable by a step that did not do the build.
+      //
+      // Two-argument `.then` is what separates them: the rejection handler sees
+      // the dispatch's failure and nothing this function does.
+      try {
+        if (projectPartsChanged) broadcastProjectPartsChanged(name, changedPartFiles)
+        const updated = await readProject(name)
+        const completedStatus = projectRevisionStatus(lifecycle.listRevisionLifecycles(name))
+        if (completedStatus.status === 'success') {
+          emitGlobalEvent('doc-arrived', {
+            name, title: updated.title || name,
+            format: updated.format, pages: updated.pages || 0,
+          })
+        }
+      } catch (announceError) {
+        // Swallowed on purpose, and this is the fix rather than an oversight:
+        // rethrowing sends it to the rejection handler below, which is exactly
+        // the path that stamped `error` on 160 built, serving documents. The
+        // build is done and the document exists; a broadcast or an event that
+        // failed is a notification defect and belongs in the log, not in the
+        // project's build status. Nothing downstream waits on this promise.
+        console.error(`[${project.format}] ${name} built, but announcing it failed: ${announceError.message}`)
       }
-    }).catch(async e => {
+    }, async e => {
       console.error(`[${project.format}] Build failed for ${name}: ${e.message}`)
       try {
         await updateProject(name, { buildStatus: 'error' })

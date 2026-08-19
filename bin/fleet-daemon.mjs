@@ -67,7 +67,7 @@ import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
   getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
-  getOutboxInflightDeadlineMs,
+  getOutboxInflightDeadlineMs, getOutboxFlushByteBudget,
   getFleetServerUrl, getServerUrl, getActiveEnvName,
 } from '../shared/config.mjs'
 import { terminalInputAllowedFromConfig } from '../shared/terminal-input-policy.mjs'
@@ -116,13 +116,14 @@ import { createAgentLiveness, livenessAgentsFromProcessBindings } from '../daemo
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
+import { createSourceChangeAckGate } from '../daemon/source-change-ack-gate.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
-import { sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { markAgentDead, wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
 import { compilePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
@@ -442,19 +443,38 @@ function bufferActivity(agentId, evts) {
   return sendActivityEvents(agentId, stampedEvents, sendMsg)
 }
 
-function registerHostedAgentRoutes() {
+// This daemon's whole routing picture, in one message, once per process start.
+//
+// It replaces registerHostedAgentRoutes(), which sent one `agent-route` per
+// agent and was called from reconcileRoster().onChanged -- every roster change --
+// and from the welcome handler -- every connect and reconnect. So one agent
+// appearing republished every agent: 8,532 messages in 5h40m against the ~200/day
+// of real mints. Per-mint publication is untouched and still carries a new agent.
+//
+// Not on reconnect: a reconnect is not a restart and the agent set has not
+// changed. Skip, on the shape: "demon route says / here i am and these ate my
+// agents / 1 message".
+let _daemonRosterSent = false
+function sendDaemonRoster(reason) {
+  if (_daemonRosterSent) return
   const daemonKey = `${MACHINE_ID}:${ACTIVE_ENV}`
+  const agentIds = []
   for (const row of permissionLedger.listProcessBindings()) {
     if (!row?.id || row.daemonKey !== daemonKey) continue
-    try {
-      sendMsg({
-        type: 'agent-route',
-        agent_id: row.id,
-        daemon_key: daemonKey,
-      })
-    } catch (e) {
-      log.warn(`agent route registration failed for ${row.id}: ${e.message}`)
-    }
+    agentIds.push(row.id)
+  }
+  try {
+    sendMsg({ type: 'daemon-roster', daemon_key: daemonKey, agent_ids: agentIds })
+    _daemonRosterSent = true
+    log.info(`daemon roster sent (${reason}): ${agentIds.length} agent(s) for ${daemonKey}`)
+  } catch (e) {
+    // Recovered rather than swallowed: the sent flag stays false, so the next
+    // welcome sends the roster again. Rethrowing here would abort the rest of
+    // the welcome handler -- JSONL resume, liveness, prompt sweeps -- for a
+    // message the very next reconnect retries. Every route this daemon owns
+    // going unpublished is the failure to avoid, and leaving the flag down is
+    // what avoids it.
+    log.warn(`daemon roster send failed for ${daemonKey}, will retry on next welcome: ${e.message}`)
   }
 }
 
@@ -895,6 +915,15 @@ async function mintProcessAlive(facts) {
   return (await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET })).runtime
 }
 
+// The same probe, but reporting whether it managed to look. `mintProcessAlive`
+// folds "no runtime" and "could not tell" into one `false`, which is right for a
+// caller that will retry and wrong for one that is about to retire an identity.
+async function mintProcessConfirmedDead(facts) {
+  const tmuxSession = facts?.processState?.tmux_session
+  if (!tmuxSession) return true
+  return sessionConfirmedDead(await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET }))
+}
+
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
   envName: ACTIVE_ENV,
@@ -1149,6 +1178,12 @@ async function rpcMint(params = {}) {
         botPidFile: params.botPidFile || params.bot_pid_file || null,
         botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
         botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
+        // The bot's declared `env:`. Both ends of this were already built --
+        // agent-launch/index.mjs threads `botEnv` through and the bot harness
+        // emits it -- and this object, the transport between them, simply did not
+        // list the field. It sits in the launch recipe, so a wake replays the
+        // same settings rather than starting the bot unconfigured.
+        botEnv: params.botEnv || params.bot_env || null,
         cwd,
         effort: params.effort,
         mode: params.mode,
@@ -1177,7 +1212,14 @@ async function rpcMint(params = {}) {
   // Only when nothing is running under it. An un-joined mint whose process is
   // alive is an agent that has not bound yet, and it can still bind through the
   // login marker; marking its seat dead would retire a live agent's identity.
-  if (!joined && !(await mintProcessAlive(facts))) {
+  //
+  // Confirmed dead, not merely not-confirmed-alive. The probe answers `runtime:
+  // false` both when the session is empty and when it could not look -- a missing
+  // tmux socket, or `ps` exceeding its 5s timeout, which is likeliest exactly when
+  // the box is loaded and mints are already failing. Read as a plain boolean it
+  // retires the identity of a live agent on a slow `ps`, which is the outcome the
+  // paragraph above exists to prevent. Not looking is not evidence of absence.
+  if (!joined && await mintProcessConfirmedDead(facts)) {
     await cleanupPreReservedBotSeat(facts.registrationError || 'launched but never joined the fleet')
   }
   return {
@@ -1373,14 +1415,10 @@ const daemonDelivery = new DaemonDeliveryRuntime({
   isReady: () => _serverReady === true,
   log,
   inflightDeadlineMs: getOutboxInflightDeadlineMs(),
+  flushByteBudget: getOutboxFlushByteBudget(),
   activityDeliveryCounters: daemonActivityDeliveryCounters,
   beforeSend: message => { if (message?.type === 'source-change') sourceSync.restoreDurableSourceChange(message) },
-  ackGate: payload => {
-    const disposition = editOperationStore.disposition(payload?.__daemon_outbox_id)
-    if (!disposition) return !(payload?.editOperations?.length || payload?.editOperation)
-    if (disposition.kind === 'retry_pending') return disposition.retry_enqueued === 1 && !!daemonOutbox.get(disposition.retry_outbox_id)
-    return disposition.operationIds.every(id => editOperationStore.state(id)?.state !== 'pending')
-  },
+  ackGate: createSourceChangeAckGate({ editOperationStore, outbox: daemonOutbox }),
   onDeadLetter: (payload, outboxId) => {
     if (payload?.type !== 'source-change') return
     const ids = (payload.editOperations || (payload.editOperation ? [{ operation: payload.editOperation }] : [])).map(record => record.operation?.operation_id).filter(Boolean)
@@ -1627,7 +1665,9 @@ function reconcileRoster(reason) {
     syncIdentityNames: roster => jsonlIngestor.syncIdentityNames(roster),
     syncIfRosterChanged: options => jsonlIngestor.syncIfRosterChanged(options),
     onChanged: () => {
-      registerHostedAgentRoutes()
+      // The roster is no longer republished here. A roster change means one
+      // agent arrived or left; a new agent publishes its own route at mint, and
+      // this callback used to re-announce every other agent to carry that one.
       void agentLiveness.reportHostedSessions(reason)
     },
   })
@@ -1659,6 +1699,22 @@ async function handleServerMessage(msg, wsAttemptId) {
   if (machineRpc.handleReply(msg)) return
   if (msg.type === 'source-change-result') {
     sourceSync.handleSourceChangeResult(msg)
+    // A refusal is an answer, so it settles the delivery — and it settles by
+    // deliveryId, NOT by requestId, because that is the only identifier both
+    // sides still agree on after a reconnect. handleSourceChangeResult above
+    // returns early for a requestId it has no pending entry for, and `pending`
+    // is cleared wholesale on every reconnect, so keying this on the request
+    // would make it inert on exactly the long-lived rows it exists for.
+    //
+    // Without it a refused row is re-offered on every inflight deadline and
+    // refused again: bregman at 13:39Z had 35 pending source-change rows,
+    // ~105 attempts each, `last_error: null` on all of them.
+    //
+    // Only refusals. An accepted push settles through handleAck, where the
+    // ackGate is doing its real job of not dropping an unresolved edit.
+    if (msg.ok === false && msg.deliveryId) {
+      daemonDelivery.settleRefused(msg.deliveryId, msg.error || msg.status || 'refused')
+    }
     return
   }
   if (msg.type === 'project-metadata-changed') {
@@ -1702,7 +1758,7 @@ async function handleServerMessage(msg, wsAttemptId) {
     sendActivityDeliveryMetrics('daemon-welcome')
     sourceSync.flushPending()
     await reconcileJsonlProcessBindings('daemon-welcome')
-    registerHostedAgentRoutes()
+    sendDaemonRoster('daemon-welcome')
     jsonlIngestor.resumeAfterServerReady()
     jsonlIngestor.retryPendingNativeSubagents()
     gooseSupervisor.startActivityPolling()

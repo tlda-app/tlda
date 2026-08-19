@@ -167,6 +167,29 @@ tmux capture-pane -p -S -40 -t <session>     # fleet-<bot>, or fleet-bot-<bot>_<
 the launcher only. Every liveness signal available — live process, ticking heartbeat, live tmux
 session, `ESTABLISHED` socket, satisfied supervisor — was green for all three of the above.
 
+## `activity-health` — `daemon/delivery-policy.mjs`
+
+**It is a heartbeat. It shares nothing with `activity-event` but a prefix.**
+
+`activity-event` carries **activity** — Skip's definition: *"tool calls. status changes (idle
+etc)."* Those are his activity cards, they are durable, and a lost one is data loss:
+*"mostly ignorable but if its the wrong event not good."*
+
+`activity-health` carries **liveness** — a periodic claim that an agent is still there. Skip:
+*"a heartbeat is not activity."* The server assigns it to a single overwritten field
+(`metadata.activityHealth`), so every one but the newest per agent is superseded before
+anything reads it. It is `DELIVERY_LATEST_WINS`.
+
+**The name cost two corrections in twenty minutes on 2026-08-18**, because *"don't drop
+activity"* and *"drop the health beats"* sound contradictory when they are about different
+things. A classification built from the names put `activity-health` and `activity-event` in
+the same tier three times.
+
+**Read `activity-` as a prefix that means nothing.** The tier is decided by what consumes the
+message and whether it keeps it — storage, an index, a query path, or anything that changes
+behaviour means durable; a component that repaints means disposable. `jsonl-index` looks like
+plumbing and feeds *search*, so it is durable for the same reason.
+
 ## `sha256` in a source manifest — `server/lib/source-git-store.mjs:241`
 
 **It is a git blob id, which is a SHA-1.** `readManifest` returns

@@ -21,6 +21,7 @@ export { convertChatEvent } from './convert-chat-event.mjs'
 export { oldestBufferedEventTimestamp } from './fleet-data.ts'
 import { matchesFleetFilter, resolveFleetFilter } from '../../shared/filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
+import { shouldForceReconnectForSilence } from './ws-liveness.mjs'
 import { bumpIdentityEpoch } from './identity-epoch.mjs'
 import {
   removeFleetEvent,
@@ -670,6 +671,26 @@ let _heartbeatInterval = null
 // ~329ms, so this ceiling is generous by an order of magnitude: it catches
 // never-opened, not slow.
 const WS_CONNECT_TIMEOUT_MS = 5_000
+// The same failure one step later: a socket that OPENED and then went quiet
+// because the server it was talking to is gone. A deploy replaces the machine
+// without a clean close, the browser's socket stays in readyState 1 forever,
+// no close and no error ever fire, and the reconnect path is never entered —
+// so the composer keeps working and no message ever arrives again.
+//
+// Measured on Skip's own session before this existed: 440 telemetry samples
+// with `connected: true` and no message for over 60s, 295 over two minutes,
+// 93 over five, the worst 10m25s. He has been reporting this as the app being
+// broken; there was nothing to see, because nothing errored.
+//
+// 45s is chosen against his own numbers rather than picked: healthy idle on
+// that session runs under ~20s between messages, so this is roughly 2.5x the
+// observed healthy maximum. That margin is what answers the objection in
+// _startHeartbeat — an overloaded server may delay replies while the socket is
+// still good, and a threshold well above normal jitter distinguishes slow from
+// gone without a second mechanism. tldraw's own sync client resets after
+// 2x its 5s ping (TLSyncClient.js); ours pings at 10s, so 45s is the same idea
+// with a wider margin, not a copied constant.
+const WS_SILENCE_TIMEOUT_MS = 45_000
 let _connectAttemptTimer = null
 let _lastWsOpenAt = 0
 let _lastWsCloseAt = 0
@@ -820,11 +841,36 @@ function _startHeartbeat() {
   if (_heartbeatInterval) clearInterval(_heartbeatInterval)
   _heartbeatInterval = setInterval(() => {
     if (_humanId && _ws && _ws.readyState === 1) {
-      // Fire-and-forget application heartbeat. The server reply is useful
-      // activity telemetry, but silence here is not evidence that the socket is
-      // dead: an overloaded server can delay replies while the browser socket is
-      // still valid. Destructive recovery is left to real close/error paths.
+      // Fire-and-forget application heartbeat. Its reply is not awaited: an
+      // overloaded server can delay one while the socket is still good, so a
+      // missing reply is not by itself evidence of death. What IS evidence is
+      // total inbound silence for far longer than any reply delay, which the
+      // check below measures.
       browserFleetTransport.ephemeral('heartbeat', { agent: _humanId }).catch(() => {})
+    }
+    // Liveness check, deliberately separate from the ping above and measured on
+    // INBOUND traffic — _lastWsActivityAt is set on open and on every frame we
+    // receive, so it is "time since the server last said anything", the same
+    // signal tldraw's sync client resets on.
+    //
+    // This is the recovery the old comment here left to "real close/error
+    // paths". When the server is replaced without a clean close those paths
+    // never run, and the socket sits open and silent until the tab is reloaded.
+    if (shouldForceReconnectForSilence({
+      readyState: _ws?.readyState ?? null,
+      lastActivityAt: _lastWsActivityAt,
+      now: Date.now(),
+      thresholdMs: WS_SILENCE_TIMEOUT_MS,
+    })) {
+      log.metric('fleet-data', 'liveness watchdog: socket open but silent — forcing reconnect', {
+        silentMs: Date.now() - _lastWsActivityAt,
+        thresholdMs: WS_SILENCE_TIMEOUT_MS,
+        lastEventId: _lastEventId || null,
+      })
+      // close() drives the existing onclose path, which nulls _ws, schedules
+      // the backoff retry and resubscribes on reopen. No second reconnect
+      // route, exactly as the never-opened watchdog does above.
+      try { _ws.close() } catch { /* onclose still fires the reconnect path */ }
     }
   }, 10_000)
 }
@@ -987,6 +1033,11 @@ export function connect() {
   _ws.onopen = () => {
     _clearConnectTimeout()
     _lastWsOpenAt = Date.now()
+    // Ends this outage. Without it, `_disconnectedAt = _disconnectedAt ||
+    // Date.now()` in onclose only ever takes a value the FIRST time the socket
+    // closes, so disconnectedFor() measures from the first disconnect this page
+    // ever had rather than from the current one — see the comment there.
+    _disconnectedAt = 0
     markWsActivity()
     _wsReconnectBuffer.resolveConnected()
     _reconnectDelay = 1000
@@ -1065,6 +1116,10 @@ export function connect() {
     resetWsRequestIdleTimers(_wsCallbacks)
     _ws = null
     _connected = false
+    // `||` so a burst of closes does not restart the clock mid-outage. It is
+    // only correct because onopen clears this back to 0 — without that, this
+    // line silently means "the first disconnect ever" and disconnectedFor()
+    // reports a number that is plausible whenever anyone can see it.
     _disconnectedAt = _disconnectedAt || Date.now()
     if (_heartbeatInterval) { clearInterval(_heartbeatInterval); _heartbeatInterval = null }
     notify('connection', { type: 'connection', connected: false })

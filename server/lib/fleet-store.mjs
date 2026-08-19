@@ -37,6 +37,7 @@ import {
   isFleetRosterAgent,
   runtimeState,
 } from '../../shared/fleet-runtime-status.mjs';
+import { messageFilterSqlCompiler } from './message-filter-sql.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { ServerDaemonOutbox } from './server-daemon-outbox.mjs';
 import { CHAT_HISTORY_EVENT_TYPES, resolveNameAt } from './fleet-history.mjs';
@@ -2632,6 +2633,37 @@ export class FleetStore {
     this._bustAgentsCache();
     this._syncAgentRegistry(agentId);
     return this.getAgentDaemonRoute(agentId);
+  }
+
+  // The whole of a daemon's routing picture, replacing what we held for it.
+  //
+  // setAgentDaemonRoute can only ever ADD -- one message says "this agent is
+  // here" and there is no way to say "and nobody else is". So a route for an
+  // agent that has died or moved stayed until its agent row was deleted, which
+  // is the only thing that has ever removed one. This is the operation that can
+  // say it.
+  //
+  // The delete is scoped to daemon_key on purpose. An agent that MOVED to
+  // another daemon already carries that daemon's key on its row, so a roster
+  // from the daemon it left must not delete it -- the scope gives that for free.
+  replaceAgentDaemonRoutes(daemonKey, agentIds) {
+    if (!daemonKey) throw new Error('agent daemon routes require daemonKey');
+    const key = String(daemonKey);
+    const ids = [...new Set((agentIds || []).map(id => String(id || '')).filter(Boolean))];
+    const before = this.db.prepare('SELECT count(*) AS n FROM agent_daemon_routes WHERE daemon_key = ?').get(key).n;
+    const touched = this.db.transaction(() => {
+      if (ids.length) {
+        const holes = ids.map(() => '?').join(',');
+        this.db.prepare(`DELETE FROM agent_daemon_routes WHERE daemon_key = ? AND agent_id NOT IN (${holes})`).run(key, ...ids);
+      } else {
+        this.db.prepare('DELETE FROM agent_daemon_routes WHERE daemon_key = ?').run(key);
+      }
+      for (const id of ids) this._setAgentDaemonRoute.run(id, key);
+      return ids;
+    })();
+    this._bustAgentsCache();
+    for (const id of touched) this._syncAgentRegistry(id);
+    return { daemonKey: key, kept: touched.length, removed: Math.max(0, before - touched.length) };
   }
 
 
@@ -5446,7 +5478,22 @@ export class FleetStore {
       .map(b => (before && (!b.to || b.to > before) ? { ...b, to: before } : b));
     if (!usable.length) return [];
     const typePh = CHAT_HISTORY_EVENT_TYPES.map(() => '?').join(',');
-    const E = this._EVT;
+    // The branches select only what the page is CHOSEN by. `_EVT` carries the
+    // `to_json` correlated subquery, and inside a branch that subquery runs once
+    // per candidate row — a probe into a 2.58M-row table for every row that the
+    // outer LIMIT is about to discard. Counted on the live database at limit 100:
+    //
+    //   label        candidate rows   to_json probes, before -> after
+    //   ops                   4,236          4,236 -> 100    (42x)
+    //   bot                   5,905          5,905 -> 100    (59x)
+    //   fleet                 9,868          9,868 -> 100    (99x)
+    //   dot-claude           12,281         12,281 -> 100   (123x)
+    //
+    // So the page is picked on (id, timestamp) and the winners are hydrated once,
+    // below. Warm that is worth 7-27%; the probes are random reads into
+    // `recipients`, so cold it should be worth more, and how much more is
+    // unmeasured — a cold run needs a page cache nobody may drop on this box.
+    const E = 'id, timestamp';
     const parts = [];
     const params = [];
     for (const block of usable) {
@@ -5490,9 +5537,15 @@ export class FleetStore {
     }
     const outer = order === 'desc' ? 'DESC' : 'ASC';
     params.push(limit);
+    // Same page, same order, same rows — verified against the previous form on
+    // four real labels, byte-identical id sequences on every one. The only
+    // difference is that the full row is fetched after the cut instead of before.
     const rows = this.db.prepare(
-      `SELECT * FROM (${parts.join(' UNION ')})
-        ORDER BY timestamp ${outer}, id ${outer} LIMIT ?`
+      `SELECT ${this._EVTE} FROM events e
+        JOIN (SELECT id FROM (SELECT * FROM (${parts.join(' UNION ')})
+               ORDER BY timestamp ${outer}, id ${outer} LIMIT ?)) pick
+          ON pick.id = e.id
+        ORDER BY e.timestamp ${outer}, e.id ${outer}`
     ).all(...params);
     // Same exit as queryChatHistory: `to_json` becomes the `recipients` array
     // here or not at all. Returning raw rows leaves every `to:` term matching
@@ -5635,7 +5688,11 @@ export class FleetStore {
   // from==to==agent row by full-row identity (id is unique). Handles the four
   // shapes the callers need: timestamp range, afterId, beforeId, plain.
   // Returns rows in the same order/orientation the old inline query did.
-  _queryAgentEventsForSearch({ agent, types = null, excludeTypes = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200 }) {
+  // `filterSql` is the caller's message filter compiled against the `events`
+  // alias. It belongs in `tail` with the type and time bounds for one reason:
+  // everything in `tail` is applied before `LIMIT`, and a filter applied after
+  // it turns a page budget into a silent cut. See message-filter-sql.mjs.
+  _queryAgentEventsForSearch({ agent, types = null, excludeTypes = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200, filterSql = null }) {
     // Aliased back to the bare names the outer UNION and hydrateEvents expect.
     // Qualifying is required, not tidiness: the received branch joins
     // `recipients`, which has its own `timestamp`, and an unqualified one there
@@ -5650,6 +5707,7 @@ export class FleetStore {
     // an ambiguous column, and the sent branch reads the same either way.
     if (types && types.length) { tail.push(`events.type IN (${types.map(() => '?').join(',')})`); tailParams.push(...types); }
     if (excludeTypes && excludeTypes.length) { tail.push(`events.type NOT IN (${excludeTypes.map(() => '?').join(',')})`); tailParams.push(...excludeTypes); }
+    if (filterSql) { tail.push(`(${filterSql.sql})`); tailParams.push(...filterSql.params); }
     let order;
     let recvOrder;
     // `id` is the deterministic tiebreaker on equal timestamps — without it the
@@ -5847,24 +5905,34 @@ export class FleetStore {
     selector = typeof selector === 'string' ? { fragment: selector } : (selector || {});
     const baseFragment = (selector.fragment || '').trim().toLowerCase();
     if (!baseFragment) return [];
-    // An exact match against a lineage name takes precedence, but only while
-    // that lineage still has occupants. An emptied lineage used to swallow the
-    // name and return [], so `from:skip` resolved to nothing while `from:ski`
-    // found him through the substring branch below — an exact name was the one
-    // input that failed.
+    // An exact match against a lineage name puts that lineage's stack first, but
+    // it does NOT stand in for the rest of the resolution. A lineage that still
+    // has occupants used to return here, which meant a name resolved to whoever
+    // holds it NOW and to nobody who held it before: `chief` found only the
+    // current chief, and a read of the previous chief's whole day came back zero
+    // — a zero indistinguishable from an empty world, which is the failure this
+    // resolver exists to prevent. Membership is not current occupancy; a name is
+    // a pointer, and reading history through it has to reach everyone it ever
+    // pointed at. Row rendering carries the period name and the durable id, so
+    // which era a row belongs to is visible in the result.
+    //
+    // An emptied lineage was the earlier version of the same bug: it swallowed
+    // the name and returned [], so `from:skip` resolved to nothing while
+    // `from:ski` found him through the substring branch below.
     const lineage = this.getLineage(selector.fragment)
     const stackIds = lineage ? this._lineageStackIds(lineage.id) : [];
-    if (stackIds.length) {
+    // A positional or ranged selector — `*chief[2]` — counts occupants of the
+    // seat, so when the name has a stack it counts against the stack and only
+    // the stack. Letting it run off the end into name-history matches would
+    // silently answer a different question than the one the index asked.
+    if (stackIds.length && (selector.position != null || selector.range)) {
       if (selector.position != null) {
         const idx = Math.max(0, Number(selector.position) - 1)
         return stackIds[idx] ? [stackIds[idx]] : []
       }
-      if (selector.range) {
-        const from = selector.range.from == null ? 0 : Math.max(0, Number(selector.range.from) - 1)
-        const to = selector.range.to == null ? undefined : Math.max(from, Number(selector.range.to))
-        return stackIds.slice(from, to)
-      }
-      return stackIds
+      const from = selector.range.from == null ? 0 : Math.max(0, Number(selector.range.from) - 1)
+      const to = selector.range.to == null ? undefined : Math.max(from, Number(selector.range.to))
+      return stackIds.slice(from, to)
     }
     const q = baseFragment;
     const idAliases = q.startsWith('fleet:') ? [q] : [q, `fleet:${q}`];
@@ -5884,7 +5952,10 @@ export class FleetStore {
       GROUP BY id
       ORDER BY max(seen_at) DESC, id ASC
     `).all(...idAliases, like, like);
-    let ids = rows.map(r => r.id);
+    // Lineage stack first — its order is occupancy order, which is what a
+    // positional selector like `*chief[2]` counts against — then everything the
+    // name matched directly or historically, most recently seen first.
+    let ids = [...new Set([...stackIds, ...rows.map(r => r.id)])];
     if (selector.position != null) {
       const idx = Math.max(0, Number(selector.position) - 1);
       ids = ids[idx] ? [ids[idx]] : [];
@@ -5896,7 +5967,19 @@ export class FleetStore {
     return ids;
   }
 
-  searchAll(query, { limit = 50, agent, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly, between = null } = {}) {
+  // `messageFilterAst` is the caller's filter expression, desugared, with each
+  // agent leaf carrying the fleet ids it resolved to (`node.ids`). Without it
+  // the filter runs in JS AFTER this method has applied `limit`, so the page is
+  // spent on rows the filter is about to discard and a short or empty result is
+  // indistinguishable from a quiet world. With it, `limit` counts matching rows.
+  //
+  // It arrives as data, not as a compiled predicate or a callback, because this
+  // method runs on the store's worker thread and everything reaching it crosses
+  // `postMessage` — a function would not survive the trip.
+  searchAll(query, { limit = 50, agent, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly, between = null, messageFilterAst = null } = {}) {
+    const messageFilterSql = messageFilterAst
+      ? messageFilterSqlCompiler(messageFilterAst, node => node.ids || [])
+      : null;
     const textExpression = parseSearchTextExpression(query);
     const terms = textExpression ? collectTextExpressionTerms(textExpression, { includeNegated: true }) : ftsQueryTerms(query);
     const positiveTextTerms = textExpression ? collectTextExpressionTerms(textExpression) : [];
@@ -5993,6 +6076,7 @@ export class FleetStore {
             sinceTs: since,
             untilTs: before,
             limit,
+            filterSql: messageFilterSql?.events('events') || null,
           }));
         eventRows = rows.map(r => ({
           source: 'fleet',
@@ -6028,6 +6112,9 @@ export class FleetStore {
         }
         if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
         if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }
+        // Before the LIMIT, for the same reason the type and time bounds are.
+        const eFilter = messageFilterSql?.events('e');
+        if (eFilter) { eClauses.push(`(${eFilter.sql})`); eParams.push(...eFilter.params); }
         eParams.push(effectiveHistoryMode ? limit : candidateLimit);
         const eventWhere = eClauses.length ? `WHERE ${eClauses.join(' AND ')}` : '';
         const searchTable = explicitActivitySearch ? 'activity_events_fts' : 'events_fts';
@@ -6109,6 +6196,14 @@ export class FleetStore {
       if (sessionRole) { sClauses.push('s.role = ?'); sParams.push(sessionRole); }
       if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
       if (before) { sClauses.push('s.timestamp < ?'); sParams.push(before); }
+      // A session row has no sender and no recipient set, so a filter naming
+      // either is false against it — which is not the same as dropping session
+      // rows, since `!from:X` is true of them. The compiler answers that; what
+      // matters here is that it answers before the LIMIT. Session rows the
+      // filter was going to discard used to eat the page: `me <> chief-night`
+      // at limit 20 returned one of the two messages in the conversation.
+      const sFilter = messageFilterSql?.sessions('s');
+      if (sFilter) { sClauses.push(`(${sFilter.sql})`); sParams.push(...sFilter.params); }
       sParams.push(effectiveHistoryMode ? limit : candidateLimit);
       const sessionWhere = sClauses.length ? `WHERE ${sClauses.join(' AND ')}` : '';
       const sSnippetCol = effectiveHistoryMode ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";

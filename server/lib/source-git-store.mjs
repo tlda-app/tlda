@@ -191,8 +191,22 @@ export function createSourceGitStore({ gitDir }) {
 
     const args = ['commit-tree', tree, '-m', message]
     if (parent) args.push('-p', parent)
+    // `author.date` sets both dates on the commit object. A caller reconstructing
+    // a history — a migration, an import — needs the commit to carry when the
+    // work happened rather than when it was written here, or anything sorting by
+    // date gets the migration's order instead of the paper's.
+    //
+    // It is a parameter rather than something the caller sets on `process.env`
+    // around the call, because that window is shared: anything else committing
+    // concurrently inherits the date, and this store is called from a request
+    // path where that is not hypothetical.
     const env = author
-      ? { ...process.env, GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email }
+      ? {
+        ...process.env,
+        ...(author.name ? { GIT_AUTHOR_NAME: author.name } : {}),
+        ...(author.email ? { GIT_AUTHOR_EMAIL: author.email } : {}),
+        ...(author.date ? { GIT_AUTHOR_DATE: author.date, GIT_COMMITTER_DATE: author.date } : {}),
+      }
       : process.env
     return (await run('git', ['--git-dir', gitDir, ...args], { env })).toString('utf8').trim()
   }

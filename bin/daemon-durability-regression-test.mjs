@@ -277,7 +277,13 @@ test('daemon welcome carries no roster and restores local-binding liveness plus 
   assert.match(welcomeHandler, /agentLiveness\.start\(\)/)
   assert.doesNotMatch(welcomeHandler, /jsonlIngestor\.startOwnerHarvester\(\)/)
   assert.match(welcomeHandler, /reconcileJsonlProcessBindings\('daemon-welcome'\)/)
-  assert.match(welcomeHandler, /registerHostedAgentRoutes\(\)/)
+  // Was registerHostedAgentRoutes() -- one agent-route per agent, re-sent on
+  // every welcome AND every roster change, so one agent appearing republished
+  // every agent. The guard's intent is unchanged: the welcome must re-establish
+  // this daemon's routing picture. It now does that in one authoritative
+  // message, which is also the only thing that can remove a stale route.
+  assert.match(welcomeHandler, /sendDaemonRoster\('daemon-welcome'\)/)
+  assert.doesNotMatch(daemonSource, /onChanged: \(\) => \{\s*registerHostedAgentRoutes\(\)/)
   assert.match(welcomeHandler, /jsonlIngestor\.resumeAfterServerReady\(\)/)
   assert.doesNotMatch(welcomePayload, /agents|agent_status/)
   assert.match(daemonSource, /getAgents: \(\) => livenessAgentsFromProcessBindings\(permissionLedger\.listProcessBindings\(\)/)

@@ -56,6 +56,7 @@ import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY, MINT_SLOTS } from '../shared/subscriptions.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
+import { agentNodesInMessageFilter } from './lib/message-filter-sql.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
@@ -7070,7 +7071,24 @@ async function dispatchFleetWsMessage(ws, msg) {
       // Support lineage search: agents[] (array of fleet IDs to union)
       let searchAgent = msg.agents?.length ? msg.agents : msg.agent;
       const messageFilter = msg.filterExpression ? parseMessageFilter(msg.filterExpression) : null
+      // Resolve every agent leaf ONCE, onto the tree, and send the tree to the
+      // store so the filter is in the WHERE clause rather than applied to
+      // whatever the LIMIT happened to return. `matchesMessageNode` below stays
+      // the authority and still runs; this is what makes `limit` mean "limit
+      // matching rows". See server/lib/message-filter-sql.mjs.
       if (messageFilter) {
+        for (const node of agentNodesInMessageFilter(messageFilter)) {
+          node.ids = [...await resolveAgentNode(node)]
+        }
+      }
+      if (messageFilter) {
+        // KNOWN GAP, deliberate: this id union is a superset of the answer only
+        // while every mention of a name is positive. `from:a | !from:b` matches
+        // rows naming neither, and narrowing to {a} drops them. Left as it is
+        // because removing the narrowing turns a filter that matches little
+        // into a scan of the whole window on a 2.7 GB events table, and a
+        // negated agent term is rare where a slow read on Skip's box is not.
+        // The compiled predicate above bounds everything else.
         const ids = [...await collectPrefilterIds(messageFilter)]
         if (ids.length) searchAgent = ids
       }
@@ -7109,6 +7127,7 @@ async function dispatchFleetWsMessage(ws, msg) {
         eventOnly: msg.eventOnly,
         fromOnly: msg.fromOnly,
         between: betweenPair,
+        messageFilterAst: messageFilter,
       })
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
@@ -9476,6 +9495,43 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  // A daemon's whole routing picture in one message, sent once when it starts.
+  //
+  // This replaces a republish of every agent on every roster change and every
+  // reconnect -- 8,532 messages in 5h40m against ~200/day of genuine mints. It
+  // is not only cheaper: a per-agent route can only add, so a route for an agent
+  // that died or moved had nothing that could remove it. A roster is
+  // authoritative, so this is the first thing that can correct the picture
+  // rather than only append to it.
+  //
+  // Replace, not merge. The merge would leave exactly the stale entries the
+  // per-agent scheme already cannot remove, which would make this a volume fix
+  // and nothing else.
+  if (type === 'daemon-roster') {
+    if (!fleetStore) return
+    const rosterDaemonKey = ws._daemonKey || msg.daemon_key
+    if (!rosterDaemonKey) return
+    if (!Array.isArray(msg.agent_ids)) return
+    try {
+      const result = await fleetStore.replaceAgentDaemonRoutes(rosterDaemonKey, msg.agent_ids)
+      // Removals are the part nobody could see before, so say them out loud
+      // rather than leaving the count to be inferred from a roster that changed.
+      if (result?.removed) {
+        console.log(`[daemon-roster] ${rosterDaemonKey}: kept ${result.kept}, removed ${result.removed} stale route(s)`)
+      }
+      recordServerPerfEvent('daemon-roster', {
+        daemon_key: rosterDaemonKey,
+        kept: result?.kept ?? 0,
+        removed: result?.removed ?? 0,
+      })
+      if (msg.agent_ids.length) broadcastState(msg.agent_ids)
+    } catch (e) {
+      await reportDaemonEventFailure(msg, 'daemon-roster-write', e)
+      throw e
+    }
+    return
+  }
+
   if (type === 'spawn-startup-failed') {
     if (!fleetStore) return
     const { agent_id, agent_name, harness, model, respawn, code, reason, snippet } = msg
@@ -9708,6 +9764,14 @@ async function handleDaemonWsMessage(ws, msg) {
           type: 'source-change-result',
           project,
           ...replay,
+          // The row this answers, echoed back so the daemon can settle its
+          // delivery without consulting correlation state. It cannot: this
+          // branch answers with the STORED operation's requestId, and the
+          // daemon clears `pending` on every reconnect, so a replayed result
+          // routinely names a requestId the daemon no longer holds and is
+          // dropped. The deliveryId is the outbox row's own identity and
+          // survives both.
+          deliveryId,
           requestId: replay.requestId || requestId,
           httpStatus: replay.httpStatus || 200,
           status: replay.lifecycleStatus || replay.status || (replay.ok ? 'accepted' : 'error'),
@@ -9754,7 +9818,10 @@ async function handleDaemonWsMessage(ws, msg) {
       }, transactionTest)
       const { status: httpStatus, lifecycleStatus, ...payload } = result
       const durablePayload = result.sourceOperationResult || payload
-      const reply = { type: 'source-change-result', requestId, project, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (result.ok ? 'accepted' : 'error') }
+      // deliveryId travels on every reply for the same reason it does on the
+      // replay above: it is the only identifier in this exchange that both
+      // sides still agree on after a reconnect.
+      const reply = { type: 'source-change-result', requestId, project, deliveryId, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (result.ok ? 'accepted' : 'error') }
       ws.send(JSON.stringify(reply))
       replied = true
       if (!result.ok) {

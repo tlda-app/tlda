@@ -28,6 +28,7 @@ import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selec
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
+import { rotateBeforeOpen } from '../shared/rotating-log.mjs'
 import {
   bootstrapLaunchdJob,
   launchdDomain,
@@ -240,7 +241,7 @@ const SPAWN_NON_MODEL_OPTION_FLAGS = new Set([
   'kind', 'list-models', 'machine', 'mode', 'model', 'name', 'permissions',
   'policy', 'refresh', 'server', 'session', 'bot-script', 'bot-name',
   'bot-pid-file', 'bot-heartbeat-file', 'bot-wait-channel', 'fail-if-not-fresh',
-  'mint-id',
+  'mint-id', 'bot-env',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -1580,6 +1581,24 @@ function botMachineId(bot) {
   return bot.machine_id || localMachineId()
 }
 
+// The declared `env:` arrives as one JSON argument. Malformed is an error rather
+// than an empty object: silently launching a bot without the settings its config
+// declares is the failure this whole path is being fixed for, and a second, quieter
+// version of it is not an improvement.
+function parseBotEnvFlag(raw) {
+  if (!raw) return undefined
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (e) {
+    throw new Error(`--bot-env must be a JSON object: ${e.message}`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('--bot-env must be a JSON object of NAME=value pairs')
+  }
+  return parsed
+}
+
 function botEnvironmentEntries(bot, paths) {
   const entries = [
     ['PATH', daemonPathEnv()],
@@ -2047,18 +2066,85 @@ export function botMintId(envName, botName) {
   return `bot:${envName}:${botName}`
 }
 
+// Is there already a bot of this model in the daemon ledger? `bot:<env>:<model>`
+// is that ledger's key for one: the declaration key in bots.yaml IS the bot's
+// model — `todd`, `dev`, `grammar` — and renaming a bot changes the name its
+// fleet row holds, never which model it is. So this lookup is name-independent
+// by construction, which is the whole point.
+//
+// Skip, 2026-08-18 14:27 EDT: "if we have no bot of this model in the ledger [we
+// mint]. Otherwise, we wake them. That's name-independent, right? It's
+// model-specific."
+//
+// Why not key it on the name. Renaming a bot is the sanctioned way to stop one,
+// and a name-keyed check reads a rename as a vacancy — which a KeepAlive
+// launcher fills within seconds, so stopping a bot causes its replacement and
+// you "can basically never have" a stopped bot. Keyed on the model there is no
+// vacancy to fill and the duplicate is impossible rather than prevented.
+async function recordedBotOfModel(unit) {
+  const { MintStore } = await import('../daemon/mint-store.mjs')
+  const store = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: unit.envName })
+  try {
+    const row = store.get(botMintId(unit.envName, unit.bot.name))
+    return row?.fleetId ? row : null
+  } finally {
+    store.close()
+  }
+}
+
+// One bot of a model, for its whole life.
+//
+// Skip, 2026-08-18 14:21 EDT: "what it's supposed to do is call mint with a
+// special argument that says instead of, like, rotating, fail if I don't get the
+// name I'm asking for. AND IF YOU FAIL, WAKE"
+//
+// A name collision hands a mint an alternate name rather than rejecting it, and
+// that is the design — for two different beings wanting one name. A bot starting
+// again is not a different being, so it must not take the substitute: it comes
+// up, sees it is not under its canonical name, and goes inert. That is how the
+// `dev` bot spent 2026-08-18 running as `quiet-dev` sweeping nothing while the
+// box reached 120 MB free.
 async function startBot(unit) {
-  await runBotCliCommand([
+  const mintId = botMintId(unit.envName, unit.bot.name)
+  const wake = async why => {
+    botManagerLog(`${unit.label}: ${why} — waking ${mintId}`)
+    const code = await runBotCliCommand(['agent', 'wake', mintId], unit)
+    if (code !== 0) botManagerLog(`${unit.label}: wake exited ${code}`)
+    return code
+  }
+  if (await recordedBotOfModel(unit)) return await wake('already in the ledger')
+
+  // `bots.yaml`'s `env:` travels as an argument, not as ambient environment. It
+  // is configuration the operator wrote for this bot, so it is data; the
+  // environment this process happens to hold is a different thing, and the
+  // harness allowlist exists to keep that from leaking into a launched bot.
+  // Putting the declared values into our own environment and hoping they carry
+  // meant they met that allowlist and were dropped — the config file has been
+  // describing settings the bot never received.
+  const declaredEnv = Object.fromEntries(
+    Object.entries(unit.bot.env || {}).map(([key, value]) => [key, String(value)]),
+  )
+  const code = await runBotCliCommand([
     'agent', 'mint', unit.bot.name,
-    '--mint-id', botMintId(unit.envName, unit.bot.name),
+    '--mint-id', mintId,
     '--model', 'bot',
     '--kind', 'bot',
+    // Fail rather than rotate. Without this the launcher accepts whatever name
+    // it is handed and the bot discovers at runtime that it is not itself.
+    '--fail-if-not-fresh',
     '--cwd', FLEET_DAEMON_MAIN_ROOT,
     '--bot-script', resolveBotScriptForCli(unit.bot.script),
     '--bot-name', unit.bot.name,
     '--bot-pid-file', unit.paths.pidFile,
     '--bot-heartbeat-file', unit.paths.heartbeatFile,
+    ...(Object.keys(declaredEnv).length ? ['--bot-env', JSON.stringify(declaredEnv)] : []),
   ], unit)
+  if (code === 0) return code
+  // "AND IF YOU FAIL, WAKE". If the ledger has this model under some other name
+  // the wake starts it; if it has nothing, `wake` says so, and that is the honest
+  // end of it — the name belongs to something that is not this bot and there is
+  // nobody to wake. Launching anyway would only add a second inert process.
+  return await wake(`mint did not get the name "${unit.bot.name}"`)
 }
 
 async function runBotManager() {
@@ -2464,6 +2550,17 @@ async function cmdFleetWatch(sub) {
       console.error(dim('  Configuration is not applied; routine restart does not bootstrap launchd jobs.'))
       process.exit(1)
     }
+    // Rotate BEFORE the kickstart, which is the only safe point for this log.
+    // launchd owns the descriptor through `StandardOutPath`, so renaming the
+    // file under a running daemon does not redirect it — it keeps filling the
+    // renamed inode while the file at the original path stays empty, which
+    // looks like successful rotation and leaves the current log blank. The
+    // restart is where launchd opens the path again.
+    //
+    // Nothing had ever rotated it: 342 MB on 2026-08-18, on the machine Skip
+    // works on, on a volume that hit 100%.
+    const rotatedDaemonLog = rotateBeforeOpen(join(CONFIG_DIR, `fleet-daemon${daemonConfigSuffix(DAEMON_WORLD_NAME)}.log`))
+    if (rotatedDaemonLog) console.log(dim('  rotated the daemon log before restart'))
     await runLaunchctl(['kickstart', '-k', daemonLaunchdTarget()])
     const pid = await waitForTargetFleetDaemonCompletion({ previousPid })
     console.log(green(`Fleet daemon restarted through launchd`) + dim(` (pid ${pid})`))
@@ -3773,6 +3870,7 @@ export async function runFleetSpawn(spawnArgs, {
       botPidFile: flagFromRaw(spawnArgs, 'bot-pid-file') || undefined,
       botHeartbeatFile: flagFromRaw(spawnArgs, 'bot-heartbeat-file') || undefined,
       botWaitChannel: flagFromRaw(spawnArgs, 'bot-wait-channel') || undefined,
+      botEnv: parseBotEnvFlag(flagFromRaw(spawnArgs, 'bot-env')),
     }, { onEvent: printMintLifecycleEvent })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `mint failed for ${name}`)
     printLocalDaemonOutcome(result)
@@ -5685,6 +5783,10 @@ async function cmdDoctorYolo() {
   })
   const { localAgentId, fleetId, tmuxSession, harness: harnessKind, model } = launched
   const reportedName = launched.name || name
+  if (launched.reused) {
+    console.log(yellow(`${reportedName} is already running here; nothing was launched.`))
+    console.log(dim('  Its mint record was re-recorded, so wake and routing resolve against it.'))
+  }
 
   // Interactive terminal → drop the operator straight into the agent's session, the
   // way spawn used to. You watch it log in live, so there is no false "launched" — a
@@ -5696,7 +5798,7 @@ async function cmdDoctorYolo() {
     return
   }
 
-  console.log(green(bold('Break-glass agent launched locally.')))
+  console.log(green(bold(launched.reused ? 'Break-glass agent already running locally.' : 'Break-glass agent launched locally.')))
   if (fleetId) console.log(`  fleet_id: ${fleetId}`)
   console.log(`  local_agent_id: ${localAgentId}`)
   console.log(`  name: ${reportedName}`)
