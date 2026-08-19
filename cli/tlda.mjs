@@ -11,7 +11,7 @@ import { resolve, relative, basename, dirname, join, delimiter } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
-import { randomBytes, randomUUID } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, readForUpload, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
@@ -2032,6 +2032,89 @@ function botManagerLog(message) {
   console.log(`${new Date().toISOString()} bot-manager: ${message}`)
 }
 
+// A bot's code is the tree its declared script lives in, minus `node_modules`
+// and `.git`. Skip, 2026-08-19 03:01 EDT: "the fucking bot manager should
+// restart on fucking code change too."
+//
+// Why the tree and not the entry file's mtime: a bot is more than one file, and
+// an entry-mtime check silently misses a change to a module the bot imports from
+// its own repo — which is the class of change most likely to be made and least
+// likely to be noticed.
+//
+// Why `node_modules` is excluded, and what that costs: `@tlda/bot` is a symlink
+// inside `node_modules` pointing into this repository, so a tree walk that
+// followed it would restart every bot on the box on every commit here. The
+// exclusion is what makes the boundary fall out instead of needing a special
+// case. The price is real and is stated rather than hidden: **a change to
+// `@tlda/bot` does not restart bots.** The alternative is worse.
+//
+// Mtime and size rather than content hashing. The question is only "is this the
+// tree I started", not "what changed", and this walks a bot repo in a few ms.
+function botCodeFingerprint(unit) {
+  const root = dirname(resolveBotScriptForCli(unit.bot.script))
+  const parts = []
+  const walk = dir => {
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue
+      const full = join(dir, entry.name)
+      // Never follow a symlink: `isDirectory()` is false for one, so a link into
+      // another tree contributes its own entry and nothing beneath it.
+      if (entry.isDirectory()) walk(full)
+      else if (entry.isFile()) {
+        try {
+          const st = statSync(full)
+          parts.push(`${full}:${st.mtimeMs}:${st.size}`)
+        } catch { /* vanished mid-walk; the next pass sees the settled tree */ }
+      }
+    }
+  }
+  walk(root)
+  return `${parts.length}|${createHash('sha1').update(parts.join('\n')).digest('hex')}`
+}
+
+// label -> { running, pending }
+const botCodeState = new Map()
+
+function rememberBotCode(unit) {
+  botCodeState.set(unit.label, { running: botCodeFingerprint(unit), pending: null })
+}
+
+// True once, when the tree has changed AND has held still for a full pass.
+//
+// The settle is not optional. Working copies here are edited in place, not only
+// pushed to: `npm install` in a bot's directory rewrites many files over several
+// seconds, and a change observed mid-write would restart the bot repeatedly while
+// the write continued — the relaunch storm this supervision model exists to end,
+// arriving through a new door.
+//
+// A bot seen for the first time records its tree and does NOT restart. Otherwise
+// every manager start would bounce every healthy bot on the box.
+function botCodeChanged(unit) {
+  const current = botCodeFingerprint(unit)
+  const prior = botCodeState.get(unit.label)
+  if (!prior) {
+    botCodeState.set(unit.label, { running: current, pending: null })
+    return false
+  }
+  if (current === prior.running) {
+    prior.pending = null
+    return false
+  }
+  if (prior.pending !== current) {
+    prior.pending = current
+    return false
+  }
+  prior.running = current
+  prior.pending = null
+  return true
+}
+
 function runBotCliCommand(args, unit) {
   const env = { ...process.env, ...Object.fromEntries(botEnvironmentEntries(unit.bot, unit.paths)) }
   const logFd = openSync(unit.paths.logFile, 'a')
@@ -2169,9 +2252,27 @@ async function runBotManager() {
       announced = declaration
     }
     for (const unit of units) {
-      if (liveBotPid(unit.paths)) continue
+      const pid = liveBotPid(unit.paths)
+      if (pid) {
+        // A code change stops the bot and does nothing else. The next pass finds
+        // no live pid and goes through the ordinary start path below — so the
+        // ledger check and the canonical-name guard are not merely still applied,
+        // they are the same code. There is no second start path to keep in sync,
+        // and in particular a renamed bot cannot come back under its old name
+        // through this door.
+        if (botCodeChanged(unit)) {
+          botManagerLog(`${unit.label}: code changed — stopping pid ${pid}; the next pass starts it`)
+          try {
+            process.kill(pid, 'SIGTERM')
+          } catch (error) {
+            if (error?.code !== 'ESRCH') botManagerLog(`${unit.label}: could not stop pid ${pid}: ${error.message}`)
+          }
+        }
+        continue
+      }
       botManagerLog(`${unit.label}: no live process — starting`)
       await startBot(unit)
+      rememberBotCode(unit)
     }
     await wait()
   }
