@@ -228,3 +228,27 @@ behaviour change. Read it as `daemon_key`.
 **Its two siblings are gone.** `daemon_address` and `env_name` were on the same result object
 and nothing read either — `grep -rn '\.daemon_address'` returned zero across the tree, with
 `.machine_id` returning many as the positive control.
+
+## `sha256` in a source manifest — `server/lib/source-git-store.mjs:241`
+
+**It is a git blob id, which is a SHA-1.** `readManifest` returns
+`{path, sha256, size}` and the value comes from `git ls-tree -l`, so it is the
+object id git computes as `sha1("blob <length>\0" + bytes)` — the number
+`git hash-object` prints. `shared/git-blob-id.mjs` computes the same value and
+says so in one line: `createHash('sha1')`.
+
+**The field is load-bearing in three places at once** — server manifests carry
+it, the daemon compares files on disk against it, and the replica payload keys
+its bytes by it. `acceptRevision` also takes it as `file.sha` to name an
+unchanged file without sending its bytes, so the same number appears under two
+names in one call.
+
+**The hazard is not the hash choice, it is somebody reconciling the name.** A
+reader who takes the field at its word writes `createHash('sha256')` somewhere,
+and then every untouched file reads as changed on both sides — which is a
+whole-project push, which is how passages get deleted. That is the failure
+`shared/git-blob-id.mjs` exists to prevent, and its own comment points here.
+
+**Not renamed because the string is stored in existing manifests and payloads**
+rather than only passed between functions. A rename is a data migration; the
+entry costs nothing and stops the next person inheriting it.

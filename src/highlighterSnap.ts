@@ -806,50 +806,6 @@ function showSourceContextCard(
     header.appendChild(editBtn)
   }
 
-  // "Extract to scratch" button
-  if (first.line && last.line && projectName) {
-    const extractBtn = document.createElement('button')
-    extractBtn.textContent = '↗'
-    extractBtn.title = 'Extract to scratch note'
-    Object.assign(extractBtn.style, {
-      background: 'none', border: 'none', cursor: 'pointer',
-      fontSize: '14px', opacity: '0.5', padding: '0 2px',
-    })
-    extractBtn.addEventListener('pointerenter', () => { extractBtn.style.opacity = '1' })
-    extractBtn.addEventListener('pointerleave', () => { extractBtn.style.opacity = '0.5' })
-    extractBtn.addEventListener('click', async (e) => {
-      e.stopPropagation()
-      extractBtn.textContent = '⏳'
-      try {
-        const resp = await fetch(`/api/projects/${projectName}/extract`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            startLine: first.line,
-            endLine: last.line,
-            file: file || undefined,
-            x: bounds.maxX,
-            y: bounds.minY,
-          }),
-        })
-        if (resp.ok) {
-          extractBtn.textContent = '✓'
-          setTimeout(() => { extractBtn.textContent = '↗' }, 2000)
-        } else {
-          const err = await resp.json().catch(() => ({}))
-          console.warn('Extract failed:', err)
-          extractBtn.textContent = '✗'
-          setTimeout(() => { extractBtn.textContent = '↗' }, 2000)
-        }
-      } catch (err) {
-        console.warn('Extract error:', err)
-        extractBtn.textContent = '✗'
-        setTimeout(() => { extractBtn.textContent = '↗' }, 2000)
-      }
-    })
-    header.appendChild(extractBtn)
-  }
-
   card.appendChild(header)
 
   // Render as continuous flowing text, not line-by-line

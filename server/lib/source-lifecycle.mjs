@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { spawn, spawnSync } from 'child_process'
 import { isTextSourcePath, normalizeSourceManifest } from '../../shared/source-manifest.mjs'
+import { latexDependencyClosure } from '../../shared/latex-deps.mjs'
 import { createSourceGitStore } from './source-git-store.mjs'
 import { gitBlobId } from '../../shared/git-blob-id.mjs'
 
@@ -134,19 +135,28 @@ export function classifyThreeWay({ base, current, incoming, binary = false }) {
   }
 }
 
-// A rebase is available when every path is settled: either merged cleanly, or
-// carried whole because only one side moved it. The second kind arrives as a
-// hash rather than bytes — canonicalSnapshot takes `{path, sha256}` as a
-// reference into the blob store — so a project's untouched files cost nothing
-// to carry across a rebase.
+// A rebase is available when every path is settled: merged cleanly, carried
+// whole because only one side moved it, or REMOVED because one side deleted it
+// and nobody else touched it. The carried kind arrives as a hash rather than
+// bytes — canonicalSnapshot takes `{path, sha256}` as a reference into the blob
+// store — so a project's untouched files cost nothing to carry across a rebase.
+//
+// **A settled deletion is expressed by being absent from the result**, which is
+// the same rule as everywhere else now: the tree is the manifest, so a path
+// leaves the paper by not being named. Before complete-tree it could be treated
+// as unclassifiable and refused, because deletion was a separate list; now a
+// push that removes a file is an ORDINARY push, and refusing to rebase it would
+// mean every deletion loses every race it enters.
 function cleanRebaseFiles(classifications) {
   if (!classifications.length) return null
   const settled = item => item.status === 'clean-rebase-candidate'
-    && (typeof item.merged === 'string' || typeof item.sha256 === 'string')
+    && (item.removed === true || typeof item.merged === 'string' || typeof item.sha256 === 'string')
   if (!classifications.every(settled)) return null
-  return classifications.map(item => (item.sha256
-    ? { path: item.path, sha256: item.sha256 }
-    : { path: item.path, content: item.merged, encoding: 'base64' }))
+  return classifications
+    .filter(item => item.removed !== true)
+    .map(item => (item.sha256
+      ? { path: item.path, sha256: item.sha256 }
+      : { path: item.path, content: item.merged, encoding: 'base64' }))
 }
 
 /**
@@ -217,11 +227,33 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
    * A project whose last accept predates the cutover has no ref, and its
    * `sha256:` id in the file is the answer until its next accept creates one.
    */
+  /**
+   * **The ref is the accepted revision; `authority.json` is derived.**
+   *
+   * If a commit is on the ref, the project is at that commit, whatever the JSON
+   * says. Reading the JSON first made a crash between the two decide the
+   * answer: on a bootstrap it read UNINITIALIZED while the ref held a real
+   * commit, so the project looked like it had no history and the next
+   * `bootstrap()` would stack a second unrelated first-revision on top of it.
+   * `bin/a-bootstrap-does-not-repeat-over-real-history-test.mjs` is that.
+   *
+   * `acceptSeq` still comes from the JSON, because it is a counter nothing
+   * reads for correctness.
+   *
+   * `reconciliation-required` is exempt. That is a real state somebody has to
+   * clear, not a stale copy of one, and a ref must not silently clear it.
+   *
+   * **This only works because `recordAcceptedAuthority` never leaves a ref the
+   * project did not accept** — see the three tests enumerated there. Trusting
+   * the ref and retracting it on a failed BOOTSTRAP record are one design; take
+   * either half alone and one of those three tests goes red.
+   */
   async function state() {
     const stored = readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null, acceptSeq: 0 }
-    if (stored.state !== SOURCE_AUTHORITY_CURRENT) return stored
+    if (stored.state === SOURCE_AUTHORITY_RECONCILIATION_REQUIRED) return stored
     const head = await (await sourceGit()).head(project)
-    return head ? { ...stored, currentRevision: head } : stored
+    if (!head) return stored
+    return { ...stored, state: SOURCE_AUTHORITY_CURRENT, currentRevision: head }
   }
 
   // A `version: 1` entry stores base64 in `content` and does not say so, while
@@ -516,7 +548,6 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       // history therefore begins at the cutover rather than pretending to
       // reach back through revisions git never held.
       parent: isGitObjectId(parent) ? parent : null,
-      replaceTree: true,
       files: entries.map(entry => ({ path: entry.path, sha: entry.sha256 })),
       message: `source revision\n\n${pinsTrailer(pins)}`,
     })
@@ -572,21 +603,56 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
    * have — which is the argument for one record rather than a better order
    * between two.
    */
-  function recordAcceptedAuthority(authority, { refIsBelieved }) {
-    // **On a bootstrap the ref is NOT believed**, because `state()` only
-    // consults it once the stored state says `current` — so swallowing the
-    // failure there would report an accept the store then refuses to
-    // acknowledge, which is a worse inconsistency than the one being fixed.
-    // Nothing is current yet, nothing is pinned, and the pusher retrying is
-    // correct. `bin/source-lifecycle-authority-test.mjs` asserts exactly that
-    // and caught this.
-    if (!refIsBelieved) {
-      atomicJson(statePath, authority, fault)
-      return
-    }
+  async function recordAcceptedAuthority(authority, { isBootstrap = false } = {}) {
     try {
       atomicJson(statePath, authority, fault)
+      return
     } catch (error) {
+      // **The ref has already moved, so the two answers below are not a matter
+      // of taste — they are what the project has to protect at this moment, and
+      // it differs between the first accept and every later one.**
+      //
+      // Three tests pin this and no single answer satisfies all three:
+      //
+      //   source-lifecycle-authority          a crashed BOOTSTRAP must not
+      //                                       leave the project reading
+      //                                       `current`
+      //   a-bootstrap-does-not-repeat-over-real-history
+      //                                       a ref holding real history must
+      //                                       never read `uninitialized`, or
+      //                                       the next bootstrap stacks a
+      //                                       second first-revision on top
+      //   an-accept-the-daemon-is-never-told-about
+      //                                       a LATER accept must not be
+      //                                       reported as failed because a
+      //                                       cache write failed -- the full
+      //                                       disk on 2026-08-18 left a project
+      //                                       where every push after it was
+      //                                       stale-base forever
+      //
+      // **They are jointly satisfiable, because a bootstrap and a later accept
+      // are protecting opposite things.**
+      if (isBootstrap) {
+        // **Nothing is behind us, so undoing is free and honest.** There is no
+        // history to lose by retracting, and leaving the ref would let the
+        // project read as accepted at a revision its own record never took.
+        try {
+          await (await sourceGit()).retractHead(project, authority.currentRevision)
+        } catch (rollbackError) {
+          // Swallowed so the ORIGINAL failure is what the caller sees: the
+          // write failing is the fact they act on, and a cleanup error on top
+          // would be read as the whole problem. Logged, because a ref left
+          // ahead of its record is a real thing to go and look at.
+          console.error(`[${project}] the ref could not be retracted after a failed bootstrap record: ${rollbackError.message}`)
+        }
+        throw error
+      }
+      // **There IS history behind us, so the ref is the authority and the
+      // accept stands.** Rolling back here would undo work the project took;
+      // reporting failure would send the pusher back to a revision now behind
+      // the head, which is stale-base with nothing that will ever move it
+      // forward. What is lost is `acceptSeq`, a counter nothing reads for
+      // correctness.
       console.error(
         `[${project}] accepted ${String(authority.currentRevision).slice(0, 12)} but could not record it in authority.json: `
         + `${error.message}. The ref is the authority and the accept stands; acceptSeq may lag.`,
@@ -640,6 +706,95 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
   // copy of each at a time. Reading all three revisions whole is what this
   // avoids: on a large book that is three full projects resident to classify a
   // handful of edited files.
+  /**
+   * §7.3's guard: paths this revision REMOVED that the new tree still references.
+   *
+   * > *"Refuse a revision in which a path that was in the previous tree is
+   * > absent from the new tree while the new tree still references it."*
+   *
+   * **The server computes this itself, which is the whole point.** It holds both
+   * trees and the referencing documents are IN the tree, so it re-derives the
+   * closure rather than trusting a claim the daemon made about its own work — a
+   * guard inside the component it guards is not a guard (§7.5).
+   *
+   * **The construction is one trick.** Run the closure over the new tree with an
+   * oracle that pretends the removed paths are still present. Anything removed
+   * that still turns up in the closure is, by definition, still referenced.
+   * That answers every row of §7.3's table without a second mechanism:
+   *
+   *   cut a section, `\input` and file both go   → not reached → accept
+   *   `git rm` a figure the paper still includes → reached     → REFUSE
+   *   referenced and absent from BOTH trees      → never in prev → accept,
+   *                                                a broken build, not a refusal
+   *
+   * **Two honest limits.** The roots are the project's main file rather than
+   * §4's derived `roots(R)`, which does not exist yet — so a second document
+   * nothing includes is not a root here. And this runs for LaTeX only: the
+   * markdown closure reads a filesystem, and there is no tree-backed oracle for
+   * it, so a markdown project is not guarded rather than being guarded wrongly.
+   */
+  async function referencedButRemoved(previous, proposed) {
+    const mainFile = String(context?.mainFile || '')
+    if (!/\.tex$/i.test(mainFile) || !previous) return []
+    const store = await sourceGit()
+    const [before, after] = await Promise.all([store.readManifest(previous), store.readManifest(proposed)])
+    const kept = new Set(after.map(entry => entry.path))
+    const removed = before.map(entry => entry.path).filter(path => !kept.has(path))
+    if (removed.length === 0) return []
+
+    // One spawn per tree rather than one per file. Only text can reference
+    // anything, so a book's figures are never read.
+    const readable = after.map(entry => entry.path).filter(isTextSourcePath)
+    const [current, gone] = await Promise.all([
+      store.readRevisionFiles(proposed, readable),
+      store.readRevisionFiles(previous, removed.filter(isTextSourcePath)),
+    ])
+    const removedSet = new Set(removed)
+    const closure = latexDependencyClosure({
+      roots: [mainFile],
+      exists: path => kept.has(path) || removedSet.has(path),
+      read: path => (current.get(path) ?? gone.get(path) ?? Buffer.alloc(0)).toString('utf8'),
+    })
+    return removed.filter(path => closure.files.includes(path))
+  }
+
+  /**
+   * Rebase a refused proposal onto the head that beat it, on the SERVER.
+   *
+   * Returns the new revision id, or null when a path needs a judgement — which
+   * is the only case that reaches the author as a refusal.
+   *
+   * **It is deliberately the same three-way `submit()` uses.** One rule with one
+   * implementation: the alternative is a second rebase that drifts from the
+   * first, and this file already has an entry in the naming errata for what
+   * that costs.
+   *
+   * The base is asked of git rather than taken as the proposal's parent. A
+   * daemon that already rebased once, or a bundle carrying several commits, has
+   * moved off the commit it was written on.
+   *
+   * The rebased tree is the COMPLETE member set the merge settled on, so the
+   * manifest is the paths it carries. A path a settled deletion removed is
+   * absent from both, which is what a deletion now is.
+   */
+  async function rebaseOntoHead({ base, head, incoming }) {
+    const [baseRevision, headRevision, incomingRevision] = await Promise.all([
+      base ? revision(base) : null,
+      revision(head),
+      revision(incoming),
+    ])
+    // No shared history is a real state -- two projects adopted separately --
+    // and it is not a thing to three-way merge. It is a judgement.
+    if (!baseRevision || !headRevision || !incomingRevision) return null
+    const classifications = await deriveClassifications(baseRevision, headRevision, incomingRevision)
+    const files = cleanRebaseFiles(classifications)
+    if (!files) return null
+    const snapshot = await canonicalSnapshot(files, files.map(file => file.path), context)
+    const rebased = await persistSnapshot(snapshot, incomingRevision.dependencyPins || [], head)
+    await advanceSourceHead(rebased.id, head)
+    return rebased.id
+  }
+
   async function deriveClassifications(base, current, incoming) {
     const snapshots = [base, current, incoming]
     const paths = [...new Set(snapshots.flatMap(snapshot => (snapshot?.files || []).map(file => file.path)))].sort()
@@ -672,6 +827,25 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       // Only this push moved. Its version stands; nobody else touched it.
       if (baseHash != null && baseHash === currentHash && entries[2]) return settled(entries[2])
 
+      // **A one-sided deletion is settled, not unclassifiable.** One side
+      // removed the path and the other left it exactly as the base had it, so
+      // there is nothing to decide -- the same "only one side moved" rule the
+      // three tests above apply to content, applied to absence.
+      //
+      // It has to be tested here rather than above, because those tests all
+      // require the surviving entry to exist, and in a deletion the side that
+      // "wins" is the one with no entry at all.
+      //
+      // Before complete-tree this fell through to unavailable and the whole
+      // push refused. Deletion was a separate list then, so that was rare;
+      // absence IS removal now, which makes every push that drops a file
+      // unrebaseable and therefore a loser of every race it enters.
+      if (incomingHash == null && baseHash != null && baseHash === currentHash) {
+        return { path, status: 'clean-rebase-candidate', removed: true }
+      }
+      if (currentHash == null && baseHash != null && baseHash === incomingHash) {
+        return { path, status: 'clean-rebase-candidate', removed: true }
+      }
       if (entries.some(entry => entry == null)) return { path, status: 'classification-unavailable' }
       const contents = await Promise.all(entries.map(entry => entryContent(entry)))
       if (contents.some(value => value == null)) return { path, status: 'classification-unavailable' }
@@ -754,6 +928,85 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
     },
 
     /**
+     * The commits a proposer lacks, computed against what the proposer says it
+     * has rather than against the mirror's position.
+     *
+     * This is what makes a refusal recoverable. `mirrorPayload` answers a
+     * different question — what a *bound checkout* needs — and its `have` is the
+     * `mirrored` ref, which is some other party's position. Asking it on a
+     * proposer's behalf returns a bundle that looks right and can omit the very
+     * commits the proposer is missing.
+     */
+    async proposerBundle(have) {
+      const store = await sourceGit()
+      const head = await store.head(project)
+      if (!head) return null
+      return {
+        currentRevision: head,
+        bundleBase64: await store.bundleSince(project, head, { includeRefused: true, have: have || null }),
+        refusedRevision: await store.refused(project),
+      }
+    },
+
+    /**
+     * Put bytes in the store and return the id they can be referenced by.
+     *
+     * **This is what makes a large project expressible on the JSON carrier.**
+     * A snapshot is atomic, so it cannot be batched — and a bootstrap has no
+     * previous revision to carry anything forward from, so every byte is
+     * content. The classroom book is 1492 files and ~525MB; as one JSON body
+     * that is base64 in a string in memory before it is even parsed.
+     *
+     * Uploading blobs first turns one enormous request into many bounded ones
+     * and a small manifest of `{path, sha256}` references — the SAME reference
+     * shape `carryForward` already produces, so the accept needs no new case.
+     * An orphan blob nobody references is `git gc`'s problem rather than ours.
+     */
+    async putBlob(bytes) {
+      const store = await sourceGit()
+      return { sha256: await store.writeBlob(bytes), size: bytes.length }
+    },
+
+    /**
+     * A complete snapshot built from the paths that actually changed.
+     *
+     * The accept requires `files` to cover `sourceManifest` exactly — the
+     * manifest IS the project, so a path that left it is gone because nobody
+     * named it. But most callers only know what changed: the room checkpoint
+     * sends one file, the CLI sends a batch, and both declare a manifest far
+     * wider than that.
+     *
+     * Every unnamed path is carried forward from the current revision **by
+     * reference** — `{path, sha256}` rather than bytes — which is why an
+     * unchanged file costs nothing on the next push. Without this, a caller's
+     * only compliant push is the whole project every time: on the 1492-file
+     * classroom book, every file on every flush.
+     *
+     * **This does not soften the manifest rule and must not be made to.**
+     * Removal is still expressed by a path leaving the MANIFEST. What is filled
+     * in here is only the difference between "I did not change this" and "this
+     * is gone", which are the two things the old path kept confusing.
+     *
+     * A manifest path that is neither supplied nor in the current revision is
+     * an error rather than an empty file — that is a caller declaring something
+     * it never sent, which is the shape that cost bregman four refused pushes
+     * in 2.5 hours.
+     */
+    async carryForward(sourceManifest, changed = []) {
+      const supplied = new Map(changed.map(file => [file.path, file]))
+      const current = (await state()).currentRevision
+      const held = new Map(
+        current ? ((await revision(current))?.files || []).map(entry => [entry.path, entry]) : [],
+      )
+      return sourceManifest.map(path => {
+        if (supplied.has(path)) return supplied.get(path)
+        const entry = held.get(path)
+        if (!entry) throw new Error(`${path} is declared in sourceManifest but was neither sent nor already held`)
+        return { path, sha256: entry.sha256, size: entry.size }
+      })
+    },
+
+    /**
      * Take a bundle a checkout has proposed and accept it iff it fast-forwards.
      *
      * **This is the accept path with the machinery removed.** There is no
@@ -772,23 +1025,94 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       const store = await sourceGit()
       const proposed = await store.ingestBundle(project, bundlePath)
       if (!proposed) return { ok: false, status: 'empty-bundle' }
-      const result = await store.fastForward(project, proposed)
-      if (!result.ok) {
+      // **§7.3, and it runs before anything is taken.** A revision that removes a
+      // file the paper still references is refused rather than wedged: this is
+      // what replaces the wedge, and it is the server's check rather than the
+      // daemon's because a guard inside the component it guards is not a guard.
+      //
+      // Damped, not surfaced (§7.3, 1069): a settle window can split an ordinary
+      // two-step edit -- delete `sec3.tex`, remove `\input{sec3}` four seconds
+      // later -- so revision 1 refuses and revision 2 self-heals with no data at
+      // risk. `damped` says so, and the daemon surfaces it only if the NEXT
+      // settle reproduces it. An alarm that fires constantly and an alarm that
+      // never clears are the same alarm.
+      const orphaned = await referencedButRemoved(await store.head(project), proposed)
+      if (orphaned.length > 0) {
         await store.markRefused(project, proposed, await store.refused(project))
-        return { ...result, refusedRevision: proposed }
+        return {
+          ok: false,
+          status: 'references-a-removed-path',
+          damped: true,
+          removedButReferenced: orphaned,
+          refusedRevision: proposed,
+        }
+      }
+      let result = await store.fastForward(project, proposed)
+      if (!result.ok) {
+        // **The server rebases; it refuses only when a person has to decide.**
+        //
+        // Skip specified this and the design says it in his words -- "we cancel
+        // all the other builds. Try to rebase. And start again", and
+        // "rebase when it is mechanical; refuse when it is a judgement". This
+        // path shipped as fast-forward-or-refuse, which is half of that rule,
+        // and it was a REGRESSION rather than a simplification: `submit()`
+        // below has done the server-side rebase all along, so the JSON carrier
+        // rebased while the bundle carrier -- the one his daemon uses -- did
+        // not.
+        //
+        // What refuse-only costs is not tidiness. With several people or agents
+        // editing, a client that can only retry is beaten again while it
+        // retries: there is no queue, no ordering, and no bound on how many
+        // times it loses. A build queue cannot be built on that, because losers
+        // are never rebased and requeued, they are only told no.
+        const head = result.revision
+        const base = await store.mergeBase(head, proposed)
+        const rebased = await rebaseOntoHead({ base, head, incoming: proposed })
+        if (rebased) {
+          result = { ok: true, status: 'accepted-clean-rebase', revision: rebased, previous: head, rebasedFrom: proposed }
+        } else {
+          await store.markRefused(project, proposed, await store.refused(project))
+          return { ...result, refusedRevision: proposed }
+        }
       }
       const record = await revision(result.revision)
+      const stored = readJson(statePath) || {}
       const authority = {
         state: SOURCE_AUTHORITY_CURRENT,
         currentRevision: result.revision,
-        acceptSeq: ((readJson(statePath) || {}).acceptSeq || 0) + 1,
+        acceptSeq: (stored.acceptSeq || 0) + 1,
       }
-      atomicJson(statePath, authority, fault)
+      // **The same question the other three call sites ask, asked the same
+      // way.** `state()` consults the ref only once the stored state says
+      // `current`, so on a bootstrap the ref is NOT believed and a failed
+      // record must fail the push -- otherwise we report an accept the store
+      // then refuses to acknowledge.
+      //
+      // This call site is the bundle accept, which does not exist on `main`, so
+      // it merged with no conflict while carrying the signature of a function
+      // this merge deleted. Testing `stored.state` rather than inventing a
+      // second signal from `result.previous`: one question, one encoding.
+      await recordAcceptedAuthority(authority)
       return { ...result, authority, revision: record }
+    },
+
+    /**
+     * What moved between two accepted revisions. The post-accept effects need
+     * a changed-file set and a bundle does not carry one, so they ask the tree
+     * rather than being handed a list the way the old push route is.
+     */
+    async diffRevisions(base, head) {
+      return (await sourceGit()).diffRevisions(base, head)
     },
 
     /** The last refused push, and the record that it was refused. */
     lastRefused: async () => (await sourceGit()).refused(project),
+
+    /** What the server's own working copy holds, and the record that it does. */
+    lastMaterialized: async () => (await sourceGit()).materialized(project),
+    async markMaterialized(id, expected) {
+      return (await sourceGit()).markMaterialized(project, id, expected)
+    },
 
     /** The last revision a daemon took, and the record that it did. */
     lastMirrored: async () => (await sourceGit()).mirrored(project),
@@ -1061,7 +1385,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: next.id, acceptSeq: (before.acceptSeq || 0) + 1 }
       // Bootstrap: the stored state is not yet `current`, so the ref is not
       // consulted and a failure here must fail the push.
-      recordAcceptedAuthority(authority, { refIsBelieved: false })
+      await recordAcceptedAuthority(authority, { isBootstrap: true })
       return { ok: true, status: 'accepted', authority, revision: next }
     },
     async submit({ expectedRevision, files, sourceManifest, dependencyPins = [] }) {
@@ -1089,7 +1413,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
           )
           await advanceSourceHead(rebased.id, before.currentRevision)
           const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: rebased.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-          recordAcceptedAuthority(authority, { refIsBelieved: before.state === SOURCE_AUTHORITY_CURRENT })
+          await recordAcceptedAuthority(authority)
           return { ok: true, status: 'accepted-clean-rebase', authority, revision: rebased, evidence }
         }
         // The refused push is already a commit — `persistSnapshot` ran before
@@ -1103,7 +1427,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       }
       await advanceSourceHead(incoming.id, before.currentRevision)
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: incoming.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-      recordAcceptedAuthority(authority, { refIsBelieved: before.state === SOURCE_AUTHORITY_CURRENT })
+      await recordAcceptedAuthority(authority)
       return { ok: true, status: 'accepted', authority, revision: incoming }
     },
   }

@@ -8,28 +8,39 @@
 //   source change rejected for bregman: Source transaction failed: stale-base
 //   source change rejected for bregman: Proposed snapshot does not match sourceManifest
 //
-// That message says the two sets differ and nothing else. Which WAY they differ
-// is the entire diagnosis, and the two directions are opposite bugs: a path the
-// manifest declares and the snapshot lacks is a file the daemon never sent; a
-// path the snapshot holds and the manifest omits is one it should have deleted.
-// Reconstructing that by hand off the live volume took hours, and it has to be
-// redone from scratch every time the sets move.
+// That message said the two sets differed and nothing else. Which WAY they
+// differed was the entire diagnosis: a path the manifest declares and the
+// snapshot lacks is a file the daemon never sent; a path the snapshot holds
+// and the manifest omits is one it should have deleted.
 //
-// So the refusal carries the difference. This asserts the text, because the text
-// is the instrument.
+// ---------------------------------------------------------------------------
+// Re-derived for the new accept path, not repointed onto it.
+//
+// The old mechanism this asserted — a manifest-vs-snapshot mismatch producing
+// an English sentence naming one path — does not exist on the new path. The
+// new path's refusal is a git fast-forward check (`refusedRevision`,
+// `non-fast-forward`), a structurally different failure than a manifest
+// mismatch, and repointing this test onto it would swap what is proven rather
+// than preserve it.
+//
+// So this asserts the PROMISE, not the old wording: a refusal tells its
+// author what differed, so he is not stuck reconstructing it by hand for two
+// and a half hours. On the new path that promise is kept by
+// `lifecycle.submit()`'s `evidence.classifications` — a per-path report,
+// computed BEFORE any English sentence exists, naming every path touched on
+// either side and whether it is a clean rebase or a real conflict. It is
+// strictly more specific than the old sentence (which named one path); this
+// asserts it names the right ones, in both directions bregman's incident
+// named: a path only the project moved, and a path both sides moved.
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createProject, initProjectStore, outputDir, sourceLifecycleStore, updateProject } from '../server/lib/project-store.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+import { createSourceLifecycleStore } from '../server/lib/source-lifecycle.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-named-refusal-'))
-await initProjectStore(root)
-
 const PROJECT = 'named-refusal'
-const FILES = ['main.tex', 'intro.tex', 'method.tex', 'refs.bib']
 
 let failures = 0
 const check = (label, fn) => {
@@ -38,61 +49,101 @@ const check = (label, fn) => {
 }
 
 try {
-  createProject({ name: PROJECT, title: PROJECT, mainFile: 'main.tex', format: 'svg' })
-  await updateProject(PROJECT, { pages: 1, buildStatus: 'success' })
-  mkdirSync(outputDir(PROJECT), { recursive: true })
+  const lifecycle = createSourceLifecycleStore({
+    root, project: PROJECT, context: { format: 'svg', mainFile: 'main.tex' },
+  })
 
-  const bootstrap = await processProjectPush(PROJECT, {
+  // The paper exists — without it there is nothing to refuse.
+  const bootstrap = await lifecycle.bootstrap({
     expectedRevision: null,
-    sourceManifest: [...FILES].sort(),
-    files: FILES.map(path => ({ path, content: `${path}\n` })),
+    sourceManifest: ['intro.tex', 'main.tex', 'refs.bib'],
+    files: [
+      { path: 'main.tex', content: 'main.tex\n' },
+      { path: 'intro.tex', content: 'intro.tex\n' },
+      { path: 'refs.bib', content: 'refs.bib\n' },
+    ],
   })
-  check('the paper exists — without it there is nothing to refuse', () => {
-    assert.equal(bootstrap.status, 200, `${bootstrap.status}: ${bootstrap.error}`)
+  check('the paper exists', () => assert.equal(bootstrap.ok, true, JSON.stringify(bootstrap)))
+  const base = bootstrap.authority.currentRevision
+
+  // Someone else's push lands first, touching only `main.tex`. `submit` wants
+  // the complete manifest's worth of files every time — same "must be told
+  // the whole thing, not asked to remember" property `acceptRevision` has.
+  const landed = await lifecycle.submit({
+    expectedRevision: base,
+    sourceManifest: ['intro.tex', 'main.tex', 'refs.bib'],
+    files: [
+      { path: 'main.tex', content: 'main.tex, edited by someone else\n' },
+      { path: 'intro.tex', content: 'intro.tex\n' },
+      { path: 'refs.bib', content: 'refs.bib\n' },
+    ],
   })
+  check('the other push lands', () => assert.equal(landed.ok, true, JSON.stringify(landed)))
 
-  const lifecycle = await sourceLifecycleStore(PROJECT)
-  const held = lifecycle.readAuthority().currentRevision
-
-  // A manifest that omits two files the snapshot holds. This is the direction
-  // bregman failed in, and before this change the error was identical to the
-  // direction below.
-  const omitting = await processProjectPush(PROJECT, {
-    expectedRevision: held,
-    sourceManifest: ['main.tex', 'refs.bib'],
-    files: [{ path: 'refs.bib', content: 'edited\n' }],
+  // bregman's push, built on the stale `base`, touches a DIFFERENT file
+  // (`intro.tex`, the direction where only this push moved a path) and the
+  // SAME file the other push already moved (`main.tex`, a real conflict).
+  const stale = await lifecycle.submit({
+    expectedRevision: base,
+    sourceManifest: ['intro.tex', 'main.tex', 'refs.bib'],
+    files: [
+      { path: 'main.tex', content: 'main.tex, edited by bregman too\n' },
+      { path: 'intro.tex', content: 'intro.tex, edited by bregman\n' },
+      { path: 'refs.bib', content: 'refs.bib\n' },
+    ],
   })
 
   check('it is still refused — the check is not being relaxed here', () => {
-    assert.ok(omitting.status === 409 || omitting.status === 400,
-      `expected a refusal, got ${omitting.status}`)
+    assert.equal(stale.ok, false, JSON.stringify(stale))
+    assert.equal(stale.status, 'stale-base')
   })
 
-  check('and it names the path, rather than saying only that something differed', () => {
-    assert.match(String(omitting.error), /intro\.tex/,
-      `error did not name the offending path: ${omitting.error}`)
+  check('a refusal names the commit it refused, so it is not lost', () => {
+    assert.ok(stale.refusedRevision, 'no refusedRevision on the result')
   })
 
-  // WHAT THIS FIXTURE CANNOT REACH, said plainly rather than asserted around.
-  //
-  // The 409 whose message this change rewrites — `Proposed snapshot does not
-  // match sourceManifest` — is not reachable from here. An omitted path is
-  // caught first, and more specifically, by `missing surviving authored file`
-  // above it. Reaching the 409 needs the stored client manifest and the current
-  // revision to disagree, which no push in this fixture can produce.
-  //
-  // That is itself the finding: on bregman the earlier gate did NOT fire, so its
-  // manifest was omitting nothing the server had stored — which means the live
-  // divergence is the other direction, files DECLARED that the snapshot lacks.
-  // The new text names those, and the live daemon log is where it gets read.
-
-  const fine = await processProjectPush(PROJECT, {
-    expectedRevision: lifecycle.readAuthority().currentRevision,
-    sourceManifest: [...FILES].sort(),
-    files: [{ path: 'intro.tex', content: 'a real edit\n' }],
+  check('the refusal carries a per-path account, not a single sentence', () => {
+    assert.ok(Array.isArray(stale.evidence?.classifications), JSON.stringify(stale.evidence))
   })
-  check('— and it lands', () => {
-    assert.equal(fine.status, 200, `${fine.status}: ${fine.error}`)
+
+  const byPath = Object.fromEntries(stale.evidence.classifications.map(c => [c.path, c]))
+
+  check('and it names the path that only this push touched — a clean rebase, not a conflict', () => {
+    assert.equal(byPath['intro.tex']?.status, 'clean-rebase-candidate',
+      `intro.tex classified as ${JSON.stringify(byPath['intro.tex'])}`)
+  })
+
+  check('— and it names the path both sides actually moved, as the real conflict it is', () => {
+    assert.equal(byPath['main.tex']?.status, 'conflict',
+      `main.tex classified as ${JSON.stringify(byPath['main.tex'])}`)
+  })
+
+  check('a path neither side touched is not mentioned as differing', () => {
+    assert.equal(byPath['refs.bib']?.status, 'clean-rebase-candidate',
+      `refs.bib classified as ${JSON.stringify(byPath['refs.bib'])}`)
+  })
+
+  // The refusal changed nothing: the project still holds what it held.
+  const after = await lifecycle.readAuthority()
+  check('a refused proposal must not move the project', () => {
+    assert.equal(after.currentRevision, landed.authority.currentRevision)
+  })
+
+  // A push that only touches the untouched-by-others path lands, because it
+  // is a clean rebase and the mechanism already knows that from the same
+  // classification this test just asserted.
+  const fine = await lifecycle.submit({
+    expectedRevision: base,
+    sourceManifest: ['intro.tex', 'main.tex', 'refs.bib'],
+    files: [
+      { path: 'main.tex', content: 'main.tex\n' },
+      { path: 'intro.tex', content: 'intro.tex, edited by bregman, alone this time\n' },
+      { path: 'refs.bib', content: 'refs.bib\n' },
+    ],
+  })
+  check('— and a push with no real conflict lands', () => {
+    assert.equal(fine.ok, true, JSON.stringify(fine))
+    assert.equal(fine.status, 'accepted-clean-rebase')
   })
 } finally {
   rmSync(root, { recursive: true, force: true })

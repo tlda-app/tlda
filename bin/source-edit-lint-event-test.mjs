@@ -75,8 +75,19 @@ assert.deepEqual(changedTextRegions('same', 'same'), [])
 
 const projectsSource = readFileSync(new URL('../server/routes/projects.mjs', import.meta.url), 'utf8')
 const unifiedSource = readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
-assert.match(projectsSource, /export async function processProjectPush[\s\S]*emitSourceEditEvent\(/)
-assert.match(unifiedSource, /processProjectPush\(project, \{[\s\S]*files,[\s\S]*editedBy,[\s\S]*requestId,[\s\S]*sourceDaemonKey:/)
+// The accept no longer emits the edit event itself. `applyAcceptedSourceEffects`
+// does, and the accept calls it -- so the promise takes two assertions where it
+// used to take one, and each names the thing that actually owns it. Asserting
+// only that the symbol appears somewhere in the file would pass even if the
+// effects function had been orphaned.
+assert.match(projectsSource, /export async function acceptSourceSnapshot[\s\S]*applyAcceptedSourceEffects\(/)
+assert.match(projectsSource, /export async function applyAcceptedSourceEffects[\s\S]*emitSourceEditEvent\(/)
+// The WS handler must keep carrying these fields. This is a source-text guard
+// and it is the one that matters most here: the accept's own destructure names
+// only what it uses itself, so a handler trimmed to that list would drop
+// `editOperation`, `editOperations`, `deliveryId`, `sourceMachineId` and
+// `sourceEnvName` silently while every grep for them still succeeded.
+assert.match(unifiedSource, /acceptSourceSnapshot\(project, \{[\s\S]*files,[\s\S]*editedBy,[\s\S]*requestId,[\s\S]*sourceDaemonKey:/)
 assert.match(unifiedSource, /event\?\.type === 'source-edit'[\s\S]*pushFilteredEvent\(event\)/)
 assert.doesNotMatch(unifiedSource, /createSourceEditEvent/)
 

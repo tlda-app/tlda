@@ -6,7 +6,32 @@ import test from 'node:test'
 
 import { createDaemonWsControlPlane } from './daemon-ws-control-plane.mjs'
 import { closeProjectStore, createProject, initProjectStore, readSourceFile, sourceLifecycleStore, updateProject } from './project-store.mjs'
-import { processProjectPush, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from '../routes/projects.mjs'
+import { acceptSourceSnapshot, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from '../routes/projects.mjs'
+
+// Repointed from `processProjectPush` onto the new accept. The guarantee is
+// unchanged — a crash at either boundary loses no work and the retry is
+// answerable — but the mechanism is not, and three things will bite whoever
+// edits this next:
+//
+//   1. **`crashAt` is the THIRD ARGUMENT, not a request field.** Passing it in
+//      the body silently does nothing, and the failure looks like the boundary
+//      not firing — which sends you to debug the accept rather than your call.
+//      It is an argument on purpose: a test hook reachable over the wire is the
+//      sort of thing that ships.
+//   2. **The boundaries are named for what is durable at each**, not for a
+//      transaction that no longer exists. `after-accept` = the revision is
+//      durable and the journal is not; `after-terminal-result` = the journal is
+//      durable and the effects have not run.
+//   3. **`deepEqual`, never `JSON.stringify`.** The replay's result is rebuilt
+//      from the journal, so its key order differs and a serialized comparison
+//      reports a difference that is not there.
+//
+// One deliberate semantic change from the old path, asserted below rather than
+// described: the revision is durable at the ref move, so a retry after a crash
+// re-accepts as a CLEAN REBASE onto the revision it created — a second commit
+// with identical content. No work lost, history one entry longer. Do not
+// "fix" that by rolling the ref back; un-moving a durable ref is the defect
+// that produced five separate reproductions.
 
 async function createTestProject(root, name) {
   createProject({ name, mainFile: 'main.tex', format: 'svg' })
@@ -24,7 +49,7 @@ function request(name, suffix) {
   }
 }
 
-for (const boundary of ['simulateCrashAfterSourceMutation', 'simulateCrashAfterTerminalResult']) {
+for (const boundary of ['after-accept', 'after-terminal-result']) {
   test(`real source handler recovers ${boundary} and replays the canonical D/R result`, async () => {
     const root = mkdtempSync(join(tmpdir(), 'tlda-source-handler-crash-'))
     const name = `paper-${boundary}`
@@ -33,13 +58,14 @@ for (const boundary of ['simulateCrashAfterSourceMutation', 'simulateCrashAfterT
       await initProjectStore(root)
       await createTestProject(root, name)
       setAcceptedSourceMutationHandler(async () => {})
-      const crashed = await processProjectPush(name, input, { [boundary]: true })
-      assert.equal(crashed.simulatedCrash, true)
+      const crashed = await acceptSourceSnapshot(name, input, { crashAt: boundary })
+      assert.equal(crashed.body.simulatedCrash, true)
+      assert.equal(crashed.body.crashedAt, boundary, 'and the response names which boundary stopped it')
       await closeProjectStore()
 
       await initProjectStore(root)
-      const accepted = await processProjectPush(name, input)
-      assert.equal(accepted.ok, true, JSON.stringify(accepted))
+      const accepted = await acceptSourceSnapshot(name, input)
+      assert.equal(accepted.status, 200, JSON.stringify(accepted.body))
       assert.equal(readSourceFile(name, 'main.tex'), `content-${boundary}\n`)
       const lifecycle = await sourceLifecycleStore(name)
       const byRequest = lifecycle.readOperationByRequestId(name, input.requestId)
@@ -48,9 +74,10 @@ for (const boundary of ['simulateCrashAfterSourceMutation', 'simulateCrashAfterT
       assert.deepEqual(byRequest.terminalResult.operationIds, [`O-${boundary}`])
       assert.deepEqual(byRequest.orderedEffects[0].editOperations.map(record => record.operation.operation_id), [`O-${boundary}`])
 
-      const replay = await processProjectPush(name, input)
-      assert.equal(replay.operationReplay, true)
-      assert.deepEqual(replay.sourceOperationResult, accepted.sourceOperationResult)
+      const replay = await acceptSourceSnapshot(name, input)
+      assert.equal(replay.body.operationReplay, true)
+      // deepEqual — see note 3 above.
+      assert.deepEqual(replay.body.sourceOperationResult, accepted.body.sourceOperationResult)
     } finally {
       setAcceptedSourceMutationHandler(null)
       await closeProjectStore()
@@ -85,20 +112,20 @@ test('accepted replica commands survive a crash before dispatch and same-id repl
     setSourceBindingTargetProvider(() => [{ bindingId: 'binding-target', daemonKey: 'target:test' }])
     setAcceptedSourceMutationHandler(null)
 
-    const accepted = await processProjectPush(name, input)
-    assert.equal(accepted.ok, true)
+    const accepted = await acceptSourceSnapshot(name, input)
+    assert.equal(accepted.status, 200, JSON.stringify(accepted.body))
     const lifecycle = await sourceLifecycleStore(name)
-    const revision = lifecycle.readRevisionLifecycle(name, accepted.sourceRevision)
+    const revision = lifecycle.readRevisionLifecycle(name, accepted.body.sourceRevision)
     assert.equal(revision.replicas['binding-target'].state, 'pending')
-    assert.equal(revision.replicas['binding-target'].operationId, `materialize:binding-target:${accepted.sourceRevision}`)
+    assert.equal(revision.replicas['binding-target'].operationId, `materialize:binding-target:${accepted.body.sourceRevision}`)
     assert.equal(revision.replicas['binding-target'].command.bindingId, 'binding-target')
 
     await closeProjectStore()
     await initProjectStore(root)
     const resumed = new Promise(resolve => setPendingSourceReplicaHandler(resolve))
-    const replay = await processProjectPush(name, input)
-    assert.equal(replay.operationReplay, true)
-    assert.deepEqual(await resumed, { project: name, sourceRevision: accepted.sourceRevision, resumeOnly: true })
+    const replay = await acceptSourceSnapshot(name, input)
+    assert.equal(replay.body.operationReplay, true)
+    assert.deepEqual(await resumed, { project: name, sourceRevision: accepted.body.sourceRevision, resumeOnly: true })
   } finally {
     setAcceptedSourceMutationHandler(null)
     setPendingSourceReplicaHandler(null)
