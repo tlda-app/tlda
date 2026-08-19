@@ -266,6 +266,21 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }).then(result => {
       if (result.ok) {
         log.info(`${payload.project}: proposed ${changed.length} changed, ${deleted.length} deleted -> ${String(result.sourceRevision || '').slice(0, 7)}`)
+        // **Lower the alarm this carrier is able to raise.**
+        //
+        // `deferBlockedProject` below raises a CRITICAL per-document alarm and
+        // starts the self-heal cadence, and it is reached from this path. The
+        // only thing that lowered it was `handleSourceChangeResult` -- the
+        // SOCKET carrier's result handler -- which an HTTP proposal never
+        // reaches. So a project could raise the pill here, recover here, and
+        // keep the pill forever: `_blockedStatusRaised` stays true, which also
+        // means the alarm never re-raises for a real later block.
+        //
+        // That is a state nobody can clear from the outside, which is the one
+        // thing this system is not allowed to have. It is the same severed-wire
+        // shape as the loop-back header: raised on one carrier, cleared on the
+        // other, and every grep for the symbol healthy.
+        if (sourceWatchers.get(payload.project)?._blockedStatusRaised) recoverBlockedProject(payload.project)
         return
       }
       // Refused twice means somebody else landed twice while we were writing.
