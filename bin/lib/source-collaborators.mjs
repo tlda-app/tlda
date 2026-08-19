@@ -4,7 +4,7 @@
 // files at it. That is the contract every client of the source push route
 // keeps — the per-machine daemon in daemon/source-sync.mjs, the browser's
 // source editor, and `tlda watch` — so what these stories assert is the
-// server's half, which all of them reach through processProjectPush.
+// server's half, which all of them reach through acceptSourceSnapshot.
 //
 // What this deliberately does NOT model is any client's receive side, and it
 // must not be read as evidence that clients lack one. daemon/source-sync.mjs
@@ -16,57 +16,54 @@
 //
 // The count of participants is a loop bound, not a mechanism. Two daemons and
 // five daemons run the same code.
-// `bootstrap`/`submit` already ARE the accept -- `canonicalSnapshot`, the
-// staleness test, `deriveClassifications`, stored evidence, clean-rebase
-// acceptance, `markRefused` -- so this calls them directly rather than
-// reimplementing a second copy, the same way the real
-// `POST /:name/source-snapshot` route does. See commit 62e046981.
-import { runSerializedProjectSourceOperation, applyAcceptedSourceEffects } from '../../server/routes/projects.mjs'
+// This CALLS the accept rather than reproducing it. It used to mirror the route
+// body branch for branch, with a header promising the two stayed identical --
+// and on 2026-08-18 they stopped being identical: `ff1472048` added refusal
+// recording to the route and this copy did not get it, so a repoint onto this
+// helper would have left `a-refusal-that-left-no-trace` red and read as "the fix
+// did not work". A second copy of an enumerated thing does not stay one thing.
+// `acceptSourceSnapshot` is exported for exactly this, so the only thing left
+// here is the shape its callers read.
+import { acceptSourceSnapshot } from '../../server/routes/projects.mjs'
 import { sourceLifecycleStore } from '../../server/lib/project-store.mjs'
-import { SOURCE_AUTHORITY_UNINITIALIZED } from '../../server/lib/source-lifecycle.mjs'
 
 /**
- * The in-process equivalent of `POST /:name/source-snapshot` -- same
- * bootstrap/submit routing on authority state, same refusal shape
- * (`evidence.classifications[]`), same post-accept effects. Not a second
- * implementation: every branch below mirrors the route body verbatim.
+ * The in-process equivalent of `POST /:name/source-snapshot`: it is that
+ * function, with `{status, body}` flattened into the shape these stories read.
+ * No accept logic lives here.
  */
-export async function pushSourceSnapshot(project, { expectedRevision, sourceManifest, files, editedBy = null }) {
-  const lifecycle = await sourceLifecycleStore(project)
-  const previousRevision = (await lifecycle.readAuthority()).currentRevision || null
-  const result = await runSerializedProjectSourceOperation(project, async () => {
-    const before = await lifecycle.readAuthority()
-    const input = { expectedRevision, files, sourceManifest, dependencyPins: [] }
-    return before.state === SOURCE_AUTHORITY_UNINITIALIZED
-      ? lifecycle.bootstrap(input)
-      : lifecycle.submit(input)
+export async function pushSourceSnapshot(project, { expectedRevision, sourceManifest, files, editedBy = null, machineId = null }) {
+  const { status, body } = await acceptSourceSnapshot(project, {
+    expectedRevision,
+    sourceManifest,
+    files,
+    editedBy,
+    // The route hands the whole payload to `sourceConflictOwner`, which reads
+    // `sourceMachineId || machineId` -- so a participant's machine reaches the
+    // refusal ledger by being in the payload, the same way a real client's
+    // does. Passing it is modelling a client, not decorating a test: without
+    // it the ledger says somebody is stuck and not whose machine to look at.
+    machineId,
   })
-  if (!result.ok) {
+  if (status === 200) {
+    return { status, sourceRevision: body.sourceRevision, acceptSeq: body.acceptSeq }
+  }
+  if (status === 409) {
     return {
-      status: 409,
-      // The HTTP body's own field is named `status` (the lifecycle status
-      // string, e.g. `stale-base`), which collides with the HTTP status code
-      // above. The route's callers on the client side read it as `status`
-      // too; this helper's callers read it as `lifecycleStatus` so both the
-      // HTTP-status and the lifecycle-status stay distinguishable in one
-      // object rather than one shadowing the other.
-      lifecycleStatus: result.status,
-      currentRevision: result.authority?.currentRevision ?? result.revision ?? null,
-      refusedRevision: result.refusedRevision ?? null,
-      evidence: result.evidence ?? null,
+      status,
+      // The body's own field is named `status` (the lifecycle status string,
+      // e.g. `stale-base`), which collides with the HTTP status code above.
+      // Callers here read it as `lifecycleStatus` so both stay distinguishable
+      // in one object rather than one shadowing the other.
+      lifecycleStatus: body.status,
+      currentRevision: body.currentRevision ?? null,
+      refusedRevision: body.refusedRevision ?? null,
+      evidence: body.evidence ?? null,
     }
   }
-  const sourceRevision = result.revision?.id ?? result.revision ?? null
-  const acceptSeq = result.authority?.acceptSeq ?? null
-  await applyAcceptedSourceEffects(project, lifecycle, {
-    sourceRevision,
-    acceptSeq,
-    previousRevision: result.previous ?? previousRevision,
-    editedBy,
-    sourceBindingId: null,
-    requestId: `test-${Math.random().toString(36).slice(2)}`,
-  })
-  return { status: 200, sourceRevision, acceptSeq }
+  // 400 and anything else. `error` is read into these stories' failure
+  // messages, so it has to arrive rather than be flattened away.
+  return { status, error: body?.error ?? null }
 }
 
 /**
@@ -141,6 +138,7 @@ export function daemonOn(who, where, project, manifest) {
         expectedRevision: heldRevision,
         sourceManifest: manifest,
         editedBy: machineId,
+        machineId,
         files,
       })
       if (result.status === 200) {
