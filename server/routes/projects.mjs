@@ -1386,6 +1386,30 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
     ran.push(`build-skipped:${decision.reason}`)
   }
 
+  // **The mirror: server -> every bound checkout. This is the return direction,
+  // and it had NO CALLER AT ALL.**
+  //
+  // Both of its call sites lived inside `processProjectPush` and died with it in
+  // `a51b2505e`. The build tail's copy was deleted separately, correctly, on the
+  // reasoning that the accept drives the mirror -- and the accept did not. So
+  // between those two commits the return direction was off for every project on
+  // the box: pushes landed, nothing came back, and every grep for
+  // `mirrorAcceptedRevision` found three healthy-looking occurrences that were
+  // its definition, its delegation, and a test calling it directly.
+  //
+  // The accept IS the right place and the build-tail deletion was right.
+  // `build-runner.mjs:1693` says why: a paper that fails to build is still a
+  // paper worth mirroring, so making the mirror wait on a build means a broken
+  // document stops reaching the machines that could fix it.
+  //
+  // Fire-and-forget, like the build and the replica dispatch: a sleeping laptop
+  // is not a reason to tell an author their writing did not land.
+  if (sourceRevision) {
+    void mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq)
+      .catch(error => console.error(`[${name}] mirroring accepted revision ${String(sourceRevision).slice(0, 7)} failed: ${error.message}`))
+    ran.push('mirror')
+  }
+
   // Whoever's work reached the paper is no longer stuck, whichever files it was.
   try {
     const clearFor = owner || sourceConflictOwner({ editedBy, sourceDaemonKey, sourceBindingId })
