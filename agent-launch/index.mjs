@@ -1,5 +1,6 @@
 import { SpawnLibrarian } from '../shared/spawn-librarian.ts'
-import { activeEnvName, newLocalAgentId, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { activeEnvName, newLocalAgentId, repoRoot, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { botLaunchFromDeclaration } from '../shared/bot-declaration.mjs'
 import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { MintStore, resolveMintFacts } from '../daemon/mint-store.mjs'
@@ -898,6 +899,20 @@ async function spawnRespawn(params) {
   }
   const resumeId = adapter.resumeId?.(handle)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
+  // An explicit caller still wins — the bot manager passes these on a fresh
+  // mint, before any declaration lookup is needed. Otherwise a bot mint id
+  // resolves them from `bots.yaml`, and a non-bot resolves to null and passes
+  // nothing, exactly as before.
+  const botLaunch = (params.botScript || params.bot_script)
+    ? {
+      botScript: params.botScript || params.bot_script,
+      botName: params.botName || params.bot_name || null,
+      botPidFile: params.botPidFile || params.bot_pid_file || null,
+      botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
+      botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
+      botEnv: params.botEnv || params.bot_env || null,
+    }
+    : botLaunchFromDeclaration(facts.mintId, { repoRoot: repoRoot() })
   const launchPolicy = resolveLaunchPolicy({
     permissionGrant: params.permissionGrant || meta.permissionGrant,
     permissionSet: params.permissionSet || meta.permissionSet,
@@ -932,12 +947,13 @@ async function spawnRespawn(params) {
     harnessOptions: launchPolicy.harnessOptions,
     config,
     env: spawnEnv(params),
-    botScript: params.botScript || params.bot_script || facts.launchRecipe?.botScript || facts.launchRecipe?.bot_script || facts.launchRecipe?.script || null,
-    botName: params.botName || params.bot_name || facts.launchRecipe?.botName || facts.launchRecipe?.bot_name || null,
-    botPidFile: params.botPidFile || params.bot_pid_file || facts.launchRecipe?.botPidFile || facts.launchRecipe?.bot_pid_file || null,
-    botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || facts.launchRecipe?.botHeartbeatFile || facts.launchRecipe?.bot_heartbeat_file || null,
-    botWaitChannel: params.botWaitChannel || params.bot_wait_channel || facts.launchRecipe?.botWaitChannel || facts.launchRecipe?.bot_wait_channel || null,
-    botEnv: params.botEnv || params.bot_env || facts.launchRecipe?.botEnv || facts.launchRecipe?.bot_env || null,
+    // From `bots.yaml`, not from the mint's stored recipe. These six were the
+    // bot recipe: a copy of the declaration taken at mint time and replayed on
+    // every wake afterwards, free to drift the moment the file was edited.
+    // Reading the declaration means a bot is woken as what it is declared to be
+    // now. The mint id carries both halves of the lookup — `bot:<env>:<model>`
+    // — so nothing had to be threaded through to get here.
+    ...(botLaunch || {}),
   })
   const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) {

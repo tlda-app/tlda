@@ -53,21 +53,6 @@ test('death keeps only the daemon owner address needed for reanimate', () => {
   }
 })
 
-test('explicit deletion removes the daemon owner address', () => {
-  const { dir, store } = createStore()
-  try {
-    insertAgent(store)
-
-    store.removeAgent('fleet:agent')
-
-    assert.equal(store.getAgent('fleet:agent'), null)
-    assert.equal(store.getAgentDaemonRoute('fleet:agent'), null)
-  } finally {
-    store.close()
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
 test('conditional pending-shell retirement closes tasks and releases the name only when it wins', async () => {
   const { dir, store } = createStore()
   try {

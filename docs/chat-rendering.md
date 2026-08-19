@@ -554,6 +554,46 @@ Measurements below are `chat-flick-live`'s, with the query behind each one in
 `325dc382`, iPhone iOS 18.7, viewport 375×762, `isTouch: true`, panel
 `shape:fleet-chat-0-skip-efba6f45`.
 
+### `position: sticky` cannot work anywhere inside the chat log
+
+**This is a property of the container, not a bug in any control that tries it.**
+`f34e43f77` replaced the scroller this document describes with the anchored list,
+so everything above about Virtuoso is about a scroller that is gone — `Virtuoso`
+no longer appears in `FleetChatShape.tsx` at all.
+
+In the anchored list, **every `.chat-row-wrap` lays out at the same place** — it
+is `position: absolute` with no `top` inside `.fleet-chat-anchored-slice`, and it
+is painted where it belongs by `transform: translateY(y)`. The slice is itself
+absolute and translated by however far you have scrolled, inside a
+`.fleet-chat-scroll-sensor` whose height is a fixed `ANCHORED_SENSOR_HEIGHT`
+rather than the content's.
+
+**Sticky takes its constraint rectangle from the containing block's layout box,
+which knows nothing about ancestor transforms.** So a sticky element inside a
+chat row is evaluated against a box nowhere near the scroll position, gets pinned
+at that box's edge, and rides the row off screen — which looks exactly like
+sticky having been forgotten. Measured read-only in Skip's own session on
+2026-08-19 at deployed `f94c5b957`: the first eight rows report `offsetTop` `0`
+while their painted `getBoundingClientRect().top` values span `-1102` to `-279`,
+the slice carries `transform: matrix(1,0,0,1,0,9960550)`, and the scroller reports
+`scrollTop 10000000` against `scrollHeight 15252014` for a `clientHeight` of
+`462`.
+
+This cost the thread card its floating collapse control from `f34e43f77` until
+2026-08-19. Skip: *"the collapse button doesn't move with you as you scroll
+through the fucking thread card"*, and *"that's a regression it used to."*
+Nothing had touched the control; the CSS still said `position: sticky` and read
+as correct.
+
+**So anything that has to hold still against the scroll in here is positioned by
+hand, from the scroll handler, in painted coordinates** —
+`useFloatingCollapse` in `FleetChatShape.tsx` is the one that exists.
+`getBoundingClientRect()` is why it works where sticky cannot. It writes only
+`top`, on an element that is `position: absolute` and therefore out of flow, so
+it cannot change a row's height and cannot re-enter the machinery in
+§"The re-entrancy map". **A hand-positioned control that affects layout would be
+a participant in that map rather than a passenger, and would need its own guard.**
+
 ### The `ResizeObserver` cannot attribute a resize
 
 The observer at `:4250` watches `[data-testid="virtuoso-item-list"]` — Virtuoso's

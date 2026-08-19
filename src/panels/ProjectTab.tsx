@@ -5,10 +5,10 @@ import { ProjectContext } from '../PanelContext'
 import { recordPlaceDeparture } from '../placeStack'
 import {
   SPATIAL_MAP_ZOOM,
-  activateSpatialDocument,
   clearSavedSpatialMapView,
   currentSpatialDocument,
   getSavedSpatialMapView,
+  openSpatialDocument,
   saveSpatialMapView,
   spatialWorldBounds,
   spatialWorldDocuments,
@@ -22,6 +22,7 @@ import {
   subscribeSpatialWorldUi,
 } from '../spatialDocumentWorldUi'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
+import { readingPositionStore } from '../readingPositionStore'
 import { isProjectMapShape } from './project-map-shape-predicate'
 
 export function ProjectTab({ query = '' }: { query?: string }) {
@@ -65,8 +66,14 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     selectSpatialWorldNode(node.id)
     clearSavedSpatialMapView(editor)
     suppressFleetHudCameraTracking()
-    activateSpatialDocument(editor, source, node, saved?.camera ?? editor.getCamera())
-  }, [editor, nodes])
+    openSpatialDocument(
+      editor,
+      source,
+      node,
+      saved?.camera ?? editor.getCamera(),
+      readingPositionStore(project?.projectName ?? 'document'),
+    )
+  }, [editor, nodes, project?.projectName])
 
   return (
     <div className="doc-panel-content project-tab">

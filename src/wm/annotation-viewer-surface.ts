@@ -103,6 +103,7 @@ export function createAnnotationViewerSurfaceRequest({
 		hitPolicy: pinned ? 'chrome-catches-content-pans' : 'preview-readonly',
 		cleanup: {
 			onClose: 'hide-surface',
+			onReplace: 'replace-existing-surface',
 			onOwnerChange: 'remove-surface',
 		},
 		replacementGroup: ANNOTATION_VIEWER_SURFACE_PREFIX,

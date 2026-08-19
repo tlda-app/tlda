@@ -2071,6 +2071,76 @@ function rememberThreadHtml(key: string, html: string) {
   }
 }
 
+// Floats the card's collapse control at mid-scroller, clamped to its own card.
+//
+// It used to be `position: sticky`, and that stopped working when f34e43f77
+// replaced the chat scroller with the anchored list. In that list every
+// `.chat-row-wrap` lays out at the slice origin -- `offsetTop` is 0 for all of
+// them -- and is painted where it belongs by `transform: translateY(y)`, with
+// the slice itself translated by however far you have scrolled. Sticky takes
+// its constraint rectangle from the containing block's LAYOUT box, which knows
+// nothing about ancestor transforms, so it evaluates the card against a box
+// nowhere near the scroll position, pins the button at the card's edge, and the
+// button rides the card off screen. Skip: "the collapse button doesn't move
+// with you as you scroll through the fucking thread card."
+//
+// So it floats the way everything else in this log is positioned: by hand, from
+// the scroll handler, in painted coordinates, which transforms do not lie
+// about. `getBoundingClientRect()` is the whole reason this works where sticky
+// cannot.
+//
+// This is a new write on the scroll path, which docs/chat-rendering.md exists
+// because of, so: it writes nothing but `top` on an element that is
+// `position: absolute` and therefore out of flow. It cannot change the row's
+// height, so it cannot wake the item-list ResizeObserver or reach
+// reconcileViewportGeometry, and it never touches `scrollTop`. Keep it that
+// way -- the moment this control affects layout it becomes a participant in
+// the re-entrancy map rather than a passenger.
+function useFloatingCollapse(host: HTMLElement) {
+  const ref = useRef<HTMLButtonElement>(null)
+  useLayoutEffect(() => {
+    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
+    if (!scroller) return
+    let frame = 0
+    const place = () => {
+      frame = 0
+      const btn = ref.current
+      // Hidden while the middle is closed, and there is nothing to float then.
+      if (!btn || btn.offsetParent === null) return
+      const shell = btn.closest('.semantic-operation-expanded-shell') as HTMLElement | null
+      if (!shell) return
+      const shellRect = shell.getBoundingClientRect()
+      const scrollerRect = scroller.getBoundingClientRect()
+      // The control is rotated, so its painted height is its layout WIDTH. Use
+      // the painted box to keep it inside the card and the layout box to place
+      // it, since `top` is written in untransformed coordinates and the
+      // rotation is about the box's own centre.
+      const painted = btn.getBoundingClientRect().height
+      const middle = scrollerRect.top + scroller.clientHeight / 2
+      const lo = painted / 2
+      const hi = Math.max(shellRect.height - painted / 2, lo)
+      const centre = Math.min(Math.max(middle - shellRect.top, lo), hi)
+      btn.style.top = `${Math.round(centre - btn.offsetHeight / 2)}px`
+    }
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(place) }
+    place()
+    scroller.addEventListener('scroll', schedule, { passive: true })
+    // The card grows when the thread body arrives and when the middle opens,
+    // and neither of those is a scroll. Opening the middle is a class toggle
+    // written straight to the DOM, so there is no render to hang this off.
+    const observer = new ResizeObserver(schedule)
+    observer.observe(scroller)
+    const shell = ref.current?.closest('.semantic-operation-expanded-shell')
+    if (shell) observer.observe(shell)
+    return () => {
+      scroller.removeEventListener('scroll', schedule)
+      observer.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [host])
+  return ref
+}
+
 // A thread renders open, drawn by the same visualization the transcript used to
 // feed. The messages come out of the database instead, so the gap marker in the
 // middle expands to the actual messages rather than to another ellipsis.
@@ -2094,7 +2164,7 @@ function ThreadChatOperationView({
   const [html, setHtml] = useState(cached ?? '')
   const [loading, setLoading] = useState(cached == null)
   const [error, setError] = useState('')
-  const [collapseTop, setCollapseTop] = useState('50%')
+  const collapseRef = useFloatingCollapse(host)
   const viewRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async (force = false) => {
@@ -2144,16 +2214,6 @@ function ThreadChatOperationView({
     if (viewRef.current && html) restoreExpansions(viewRef.current)
   }, [html, restoreExpansions])
 
-  useLayoutEffect(() => {
-    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
-    if (!scroller) return
-    const update = () => setCollapseTop(`${Math.max(8, Math.round(scroller.clientHeight / 2))}px`)
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(scroller)
-    return () => observer.disconnect()
-  }, [host])
-
   // Two controls, which is what "1 expand and one collapsed" meant: the gap
   // marker in the middle expands, and this floats at the left edge to collapse.
   // It floats because the thing it undoes is what pushes it off screen -- Skip:
@@ -2185,7 +2245,7 @@ function ThreadChatOperationView({
 
   return (
     <div className="semantic-operation-expanded-shell thread-shell">
-      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapseToRange}>Collapse</button>
+      <button ref={collapseRef} type="button" className="semantic-operation-collapse" onPointerUp={collapseToRange}>Collapse</button>
       <div className="semantic-operation-view">
         {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
         {!error && !loading && !html ? <div className="semantic-operation-status">no results</div> : null}
@@ -2200,14 +2260,12 @@ function SemanticChatOperationView({
   descriptor,
   renderCtx,
   currentProject,
-  host,
   hostShapeId,
   pageSize,
 }: {
   descriptor: any
   renderCtx: any
   currentProject?: string
-  host: HTMLElement
   hostShapeId: TLShapeId
   pageSize: number
 }) {
@@ -2219,7 +2277,6 @@ function SemanticChatOperationView({
   const [searched, setSearched] = useState(false)
   const [hasMore, setHasMore] = useState(true)
   const [expandedSearchGroups, setExpandedSearchGroups] = useState<Record<string, boolean>>({})
-  const [collapseTop, setCollapseTop] = useState('50%')
   const loadedRef = useRef(false)
   const searchVisibleLimitRef = useRef(pageSize)
 
@@ -2260,33 +2317,15 @@ function SemanticChatOperationView({
     searchVisibleLimitRef.current = pageSize
   }, [descriptor?.semanticKey, currentProject, pageSize])
 
+  // Loads on mount, unconditionally. It used to also wait on a
+  // `semantic-operation-expand` event for the case where the body was hidden
+  // behind the expand control — nothing hides a search body and nothing
+  // dispatches that event now that the control is gone.
   useEffect(() => {
-    const load = () => {
-      if (loadedRef.current) return
-      loadedRef.current = true
-      void loadSearch(true)
-    }
-    host.addEventListener('semantic-operation-expand', load)
-    if (host.style.display !== 'none') load()
-    return () => host.removeEventListener('semantic-operation-expand', load)
-  }, [host, loadSearch])
-
-  useLayoutEffect(() => {
-    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
-    if (!scroller) return
-    const update = () => setCollapseTop(`${Math.max(8, Math.round(scroller.clientHeight / 2))}px`)
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(scroller)
-    return () => observer.disconnect()
-  }, [host])
-
-  const collapse = useCallback((event: any) => {
-    stopEventPropagation(event)
-    const op = host.closest('.semantic-chat-operation') as HTMLElement | null
-    const btn = op?.querySelector('.pretty-expand-btn') as HTMLElement | null
-    btn?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-  }, [host])
+    if (loadedRef.current) return
+    loadedRef.current = true
+    void loadSearch(true)
+  }, [loadSearch])
 
   const openChatForResult = useCallback(async (result: any) => {
     const agents = renderCtx.getAgents?.() || []
@@ -2303,8 +2342,12 @@ function SemanticChatOperationView({
   }, [editor, hostShapeId, renderCtx])
 
   return (
+    // No collapse control either, and it is a SECOND control with its own
+    // condition rather than the same one twice: it appeared only while
+    // `semantic-operation-expanded` was set, which only the expand button ever
+    // set. With nothing to expand from, there is nothing to collapse to. The
+    // gutter column stays -- the card's appearance is not in scope here.
     <div className="semantic-operation-expanded-shell">
-      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapse}>Collapse</button>
       <div className="semantic-operation-view">
         <FleetSearchResultsView
           results={results}
@@ -2711,7 +2754,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   postProcess,
   itemKey,
   expandedRowsRef,
-  collapsedRowsRef,
   semanticRenderCtx,
   currentProject,
   hostShapeId,
@@ -2722,7 +2764,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   postProcess: (html: string) => string
   itemKey: string
   expandedRowsRef: React.RefObject<Set<string>>
-  collapsedRowsRef: React.RefObject<Set<string>>
   semanticRenderCtx: any
   currentProject?: string
   hostShapeId: TLShapeId
@@ -2762,7 +2803,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
       }
     })
     const expanded = expandedRowsRef.current
-    const collapsed = collapsedRowsRef.current
     // A thread's rows arrive after its read resolves, so the same restore runs
     // again once the view has drawn them.
     const restorePrettyExpansions = (root: HTMLElement) => {
@@ -2781,23 +2821,10 @@ const ChatMessageRow = memo(function ChatMessageRow({
       })
     }
     restorePrettyExpansions(el)
-    el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach((body, i) => {
-      const op = body.closest('.semantic-chat-operation')
-      const key = `${itemKey}:semantic:${op?.getAttribute('data-semantic-key') || i}`
-      // A thread renders open, so it is expanded unless this row was explicitly
-      // collapsed. Restoring only remembered keys would close every thread the
-      // moment its row re-rendered.
-      const startsOpen = op?.classList.contains('semantic-chat-operation-open')
-      if (expanded.has(key) || (startsOpen && !collapsed.has(key) && body.style.display !== 'none')) {
-        body.style.display = ''
-        body.closest('.semantic-chat-operation')?.classList.add('semantic-operation-expanded')
-        const btn = body.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
-        if (btn) {
-          if (!btn.dataset.semanticCollapsedLabel) btn.dataset.semanticCollapsedLabel = btn.textContent || 'Expand'
-          btn.textContent = 'collapse'
-        }
-      }
-    })
+    // No `:semantic:` expansion state to restore: the only control that wrote
+    // those keys was the search card's expand button, and it is gone along with
+    // the clipped preview it toggled. (`semantic-chat-operation-open`, the other
+    // half of this restore, has not been emitted by anything since f7c2ec866.)
     const semanticRoots: any[] = []
     el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach(body => {
       const descriptor = decodeSemanticOperation(body)
@@ -2827,7 +2854,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
               descriptor={descriptor}
               renderCtx={semanticRenderCtx}
               currentProject={currentProject}
-              host={body}
               hostShapeId={hostShapeId}
               pageSize={semanticOperationPageSize}
             />
@@ -2851,14 +2877,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
     return () => {
       for (const root of semanticRoots) root.unmount()
     }
-  }, [processed, itemKey, expandedRowsRef, collapsedRowsRef, semanticRenderCtx, currentProject, hostShapeId, semanticOperationPageSize, editor])
+  }, [processed, itemKey, expandedRowsRef, semanticRenderCtx, currentProject, hostShapeId, semanticOperationPageSize, editor])
 
   return (
     <>
       <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
     </>
   )
-}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.expandedRowsRef === next.expandedRowsRef && prev.collapsedRowsRef === next.collapsedRowsRef && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx && prev.hostShapeId === next.hostShapeId && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.editor === next.editor)
+}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.expandedRowsRef === next.expandedRowsRef && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx && prev.hostShapeId === next.hostShapeId && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.editor === next.editor)
 
 function FleetChatInner({ shape }: { shape: any }) {
   const { addToast } = useToasts()
@@ -3188,8 +3214,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       sourcePath: source?.path,
       sourceSection: source?.section,
       logPrefix: 'fleet-chat',
+      showError: (message) => addToast({ title: message, severity: 'error' }),
     })
-  }, [editor, shape.id])
+  }, [addToast, editor, shape.id])
 
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
@@ -3844,8 +3871,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [editor])
 
   const openMarkdownChipFromTarget = useCallback((target: HTMLElement, stopPropagation: () => void): boolean => {
-    return openMarkdownChipFromTargetElement({ target, stopPropagation, openMarkdownColumn })
-  }, [openMarkdownColumn])
+    return openMarkdownChipFromTargetElement({
+      target,
+      stopPropagation,
+      openMarkdownColumn,
+      showError: (message) => addToast({ title: message, severity: 'error' }),
+    })
+  }, [addToast, openMarkdownColumn])
 
   // Handle clicks on doc-link spans
   const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
@@ -4585,7 +4617,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
-  const collapsedRowsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     setFleetEventsLiveTailPinned(shape.id, !userScrolledUpRef.current, chatEventBufferKey)
     return () => clearFleetEventsLiveTailPinned(shape.id, chatEventBufferKey)
@@ -4983,41 +5014,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
-        // A gap marker owns the rows next to it. Check that first: inside a
-        // thread card the marker sits within the semantic operation, and
-        // treating it as the card's own toggle would close the thread instead
-        // of revealing its middle.
-        const ownRows = expandBtn.nextElementSibling?.classList.contains('pretty-more-rows')
-          ? expandBtn.nextElementSibling as HTMLElement
-          : null
-        const semanticOp = ownRows ? null : expandBtn.closest('.semantic-chat-operation') as HTMLElement | null
-        const semanticBody = semanticOp?.querySelector('.semantic-operation-body') as HTMLElement | null
-        if (semanticOp && semanticBody) {
-          const isSearchOperation = semanticOp.classList.contains('semantic-search-operation')
-          const wasExpanded = isSearchOperation
-            ? semanticOp.classList.contains('semantic-operation-expanded')
-            : semanticBody.style.display !== 'none'
-          if (!expandBtn.dataset.semanticCollapsedLabel) {
-            expandBtn.dataset.semanticCollapsedLabel = expandBtn.textContent || 'Expand'
-          }
-          if (!isSearchOperation) semanticBody.style.display = wasExpanded ? 'none' : ''
-          semanticOp.classList.toggle('semantic-operation-expanded', !wasExpanded)
-          if (!wasExpanded) semanticBody.dispatchEvent(new Event('semantic-operation-expand'))
-          expandBtn.textContent = wasExpanded ? (expandBtn.dataset.semanticCollapsedLabel || 'Expand') : 'collapse'
-          const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
-          const semanticKey = semanticOp.getAttribute('data-semantic-key') || '0'
-          if (itemKey) {
-            const key = `${itemKey}:semantic:${semanticKey}`
-            if (wasExpanded) {
-              expandedRowsRef.current.delete(key)
-              collapsedRowsRef.current.add(key)
-            } else {
-              expandedRowsRef.current.add(key)
-              collapsedRowsRef.current.delete(key)
-            }
-          }
-          return
-        }
+        // Only the thread card's gap marker reaches here now. The search card's
+        // expand/collapse pair was deleted along with the clipped preview it
+        // toggled, so `.semantic-chat-operation` -- emitted only by that card --
+        // no longer contains a `.pretty-expand-btn`, and the ownership check
+        // that used to disambiguate the two went with it.
         const moreRows = expandBtn.parentElement?.querySelector('.pretty-more-rows') as HTMLElement
         if (moreRows) {
           const wasExpanded = moreRows.style.display !== 'none'
@@ -6886,7 +6887,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                     postProcess={postProcess}
                     itemKey={String(item.key)}
                     expandedRowsRef={expandedRowsRef}
-                    collapsedRowsRef={collapsedRowsRef}
                     semanticRenderCtx={ctx}
                     currentProject={doc?.projectName}
                     hostShapeId={shape.id}

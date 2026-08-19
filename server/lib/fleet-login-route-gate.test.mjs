@@ -145,9 +145,9 @@ test('agent login writes the daemon route projection from the login proof', asyn
 
     assert.equal(result.ok, true)
     assert.equal(result.agent.id, 'fleet:recipient')
-    assert.equal(result.agent.daemon_key, 'mini:testing')
-    assert.equal(result.agent.machine_id, 'mini')
-    assert.equal(result.agent.env_name, 'testing')
+    // The login request still carries machine_id/env_name on the wire; the
+    // projected reply carries the joined key, which is what routing uses.
+    assert.equal(result.agent.route_daemon_key, 'mini:testing')
     assert.equal(result.agent.metadata.shell, undefined)
   } finally {
     ws?.close()

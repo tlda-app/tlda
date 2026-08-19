@@ -28,6 +28,13 @@ const DEFAULTS = {
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'known-devices': {} as Record<string, { lastSeen: string }>,
   'device-names': {} as Record<string, string>,
+  // Where you were reading in each document, as a distance in page units from
+  // the document's top edge. Per person, because a reading position is one
+  // reader's place and not a property of the document. Here rather than in its
+  // own table because opening a document must not wait on a round trip: prefs
+  // are already in memory by then, and a camera that arrives and then corrects
+  // itself is two jumps. See src/readingPosition.ts.
+  'reading-positions': {} as Record<string, number>,
   // Default OFF (Skip, 2026-06-21): voice is opt-in, so a fresh/anonymous client
   // (incl. automated/Playwright tabs) never opens the paid Deepgram path on
   // defaults — that default was the source of the Deepgram cost. The user selects

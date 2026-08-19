@@ -153,7 +153,7 @@ export function arm(projectName) {
 
 /**
  * Release a doc's room listeners once its last persisted subscription is gone.
- * Call after the durable row is deleted.
+ * Call after the durable row is marked ended.
  * @param {string} projectName
  * @returns {{ ok: true }}
  */

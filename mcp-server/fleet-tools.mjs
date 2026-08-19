@@ -1653,7 +1653,7 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Literal text terms plus event filters: from:, to:, involving:, agent:, type:, role:, since:, before:. Agent filters use the fleet expression grammar — |, &, !, parens, names/ids/labels, and me — and A <> B reads messages BETWEEN two parties in both directions. A bare token is an agent name, so an unrecognised key like cwd: or sinse: is read as a name and reported as matching no agent rather than silently matching nothing. cwd: and project: are NOT query filters — project is a separate parameter. since:/before: here take m as MINUTES, the same as the since/before parameters, and additionally accept 1w, 3mo, today, and yesterday, which the parameters do not.' },
+          query: { type: 'string', description: 'Literal text terms plus event filters: from:, to:, involving:, agent:, type:, role:, since:, before:, id:. id: takes the number the system already gave you — inbox() prints `id:2923649` beside a message, so that string IS the query, and its canonical form id:chat#2923649 works too. A row named by id renders whole rather than as a snippet. Agent filters use the fleet expression grammar — |, &, !, parens, names/ids/labels, and me — and A <> B reads messages BETWEEN two parties in both directions. A bare token is an agent name, so an unrecognised key like cwd: or sinse: is read as a name and reported as matching no agent rather than silently matching nothing. cwd: and project: are NOT query filters — project is a separate parameter. since:/before: here take m as MINUTES, the same as the since/before parameters, and additionally accept 1w, 3mo, today, and yesterday, which the parameters do not.' },
           project: { type: 'string', description: 'List agents who worked in a project/working directory by chronological recency. Accepts a full cwd path or project basename.' },
           agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
@@ -4334,8 +4334,20 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return lines.join('\n');
     };
 
+    // The ids this query named outright, with `id:`. Those rows render WHOLE.
+    // An id is a reference and dereferencing one to a 40-token excerpt is not a
+    // dereference — you asked for that message, not for the part of it a
+    // snippetter chose. The full text is already on the wire (`r.text`); every
+    // other row still snippets, because a text query is a search and its result
+    // is where the words matched. Measured 2026-08-19: the browser's search
+    // already renders `r.text ?? r.snippet`, so this is the surface that was
+    // dropping it.
+    const namedMessageIds = new Set(parsedSearch.filters.messageIds || []);
     const formatted = results.map(r => {
-      const snippet = (r.snippet || '').replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
+      const whole = r.source === 'fleet' && namedMessageIds.has(Number(r.id));
+      const snippet = whole
+        ? (r.text || r.snippet || '')
+        : (r.snippet || '').replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
 
       if (r.source === 'fleet') {
         if (r.type === 'project_agent') {

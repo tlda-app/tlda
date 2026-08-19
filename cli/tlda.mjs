@@ -11,7 +11,7 @@ import { resolve, relative, basename, dirname, join, delimiter } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
-import { randomBytes, randomUUID } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, readForUpload, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
@@ -27,6 +27,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
+import { botServicePaths as declaredBotServicePaths, parseBotMintId, resolveBotScript } from '../shared/bot-declaration.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import { rotateBeforeOpen } from '../shared/rotating-log.mjs'
 import {
@@ -1537,42 +1538,19 @@ function printSupervisedJobRefusal(verb, { label, restartCommand }) {
   console.error(dim(`  Restart: ${restartCommand}`))
 }
 
-function botServiceName(name) {
-  return String(name || '').trim()
-}
-
-function botServiceSuffix(name) {
-  const suffix = botServiceName(name).replace(/[^A-Za-z0-9_.-]/g, '-')
-  if (!suffix) throw new Error('bot name is required')
-  return suffix
-}
-
-function botEnvironmentSuffix(configName = null) {
-  if (!configName) return ''
-  return `.${String(configName).replace(/[^A-Za-z0-9_.-]/g, '-')}`
-}
-
 // A bot's files, and nothing about a terminal. There is no per-bot launchd label
 // any more — one bot manager supervises every bot on this machine — and no tmux
 // session name, which is the string that made the old per-bot supervisor restart
 // a healthy bot forever.
+// Both of these live in shared/bot-declaration.mjs now, because wake resolves a
+// bot's files from the declaration too and two encodings of where a bot's pidfile
+// is would be the same defect this change removes.
 function botServicePaths(name, { configName = null } = {}) {
-  if (!configName) {
-    const configured = getManagedBots().find(bot => bot.name === name)
-    configName = configured?.environment || getActiveEnvName()
-  }
-  const suffix = `${botServiceSuffix(name)}${botEnvironmentSuffix(configName)}`
-  return {
-    logFile: join(CONFIG_DIR, `${suffix}.log`),
-    pidFile: join(CONFIG_DIR, `${suffix}.pid`),
-    heartbeatFile: join(CONFIG_DIR, `${suffix}.heartbeat`),
-  }
+  return declaredBotServicePaths(name, { configName })
 }
 
 function resolveBotScriptForCli(script) {
-  if (!script) throw new Error('bot script is required')
-  if (script.startsWith('/')) return script
-  return join(FLEET_DAEMON_MAIN_ROOT, script)
+  return resolveBotScript(script, FLEET_DAEMON_MAIN_ROOT)
 }
 
 function configuredBots() {
@@ -2042,6 +2020,89 @@ function botManagerLog(message) {
   console.log(`${new Date().toISOString()} bot-manager: ${message}`)
 }
 
+// A bot's code is the tree its declared script lives in, minus `node_modules`
+// and `.git`. Skip, 2026-08-19 03:01 EDT: "the fucking bot manager should
+// restart on fucking code change too."
+//
+// Why the tree and not the entry file's mtime: a bot is more than one file, and
+// an entry-mtime check silently misses a change to a module the bot imports from
+// its own repo — which is the class of change most likely to be made and least
+// likely to be noticed.
+//
+// Why `node_modules` is excluded, and what that costs: `@tlda/bot` is a symlink
+// inside `node_modules` pointing into this repository, so a tree walk that
+// followed it would restart every bot on the box on every commit here. The
+// exclusion is what makes the boundary fall out instead of needing a special
+// case. The price is real and is stated rather than hidden: **a change to
+// `@tlda/bot` does not restart bots.** The alternative is worse.
+//
+// Mtime and size rather than content hashing. The question is only "is this the
+// tree I started", not "what changed", and this walks a bot repo in a few ms.
+function botCodeFingerprint(unit) {
+  const root = dirname(resolveBotScriptForCli(unit.bot.script))
+  const parts = []
+  const walk = dir => {
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue
+      const full = join(dir, entry.name)
+      // Never follow a symlink: `isDirectory()` is false for one, so a link into
+      // another tree contributes its own entry and nothing beneath it.
+      if (entry.isDirectory()) walk(full)
+      else if (entry.isFile()) {
+        try {
+          const st = statSync(full)
+          parts.push(`${full}:${st.mtimeMs}:${st.size}`)
+        } catch { /* vanished mid-walk; the next pass sees the settled tree */ }
+      }
+    }
+  }
+  walk(root)
+  return `${parts.length}|${createHash('sha1').update(parts.join('\n')).digest('hex')}`
+}
+
+// label -> { running, pending }
+const botCodeState = new Map()
+
+function rememberBotCode(unit) {
+  botCodeState.set(unit.label, { running: botCodeFingerprint(unit), pending: null })
+}
+
+// True once, when the tree has changed AND has held still for a full pass.
+//
+// The settle is not optional. Working copies here are edited in place, not only
+// pushed to: `npm install` in a bot's directory rewrites many files over several
+// seconds, and a change observed mid-write would restart the bot repeatedly while
+// the write continued — the relaunch storm this supervision model exists to end,
+// arriving through a new door.
+//
+// A bot seen for the first time records its tree and does NOT restart. Otherwise
+// every manager start would bounce every healthy bot on the box.
+function botCodeChanged(unit) {
+  const current = botCodeFingerprint(unit)
+  const prior = botCodeState.get(unit.label)
+  if (!prior) {
+    botCodeState.set(unit.label, { running: current, pending: null })
+    return false
+  }
+  if (current === prior.running) {
+    prior.pending = null
+    return false
+  }
+  if (prior.pending !== current) {
+    prior.pending = current
+    return false
+  }
+  prior.running = current
+  prior.pending = null
+  return true
+}
+
 function runBotCliCommand(args, unit) {
   const env = { ...process.env, ...Object.fromEntries(botEnvironmentEntries(unit.bot, unit.paths)) }
   const logFd = openSync(unit.paths.logFile, 'a')
@@ -2179,9 +2240,27 @@ async function runBotManager() {
       announced = declaration
     }
     for (const unit of units) {
-      if (liveBotPid(unit.paths)) continue
+      const pid = liveBotPid(unit.paths)
+      if (pid) {
+        // A code change stops the bot and does nothing else. The next pass finds
+        // no live pid and goes through the ordinary start path below — so the
+        // ledger check and the canonical-name guard are not merely still applied,
+        // they are the same code. There is no second start path to keep in sync,
+        // and in particular a renamed bot cannot come back under its old name
+        // through this door.
+        if (botCodeChanged(unit)) {
+          botManagerLog(`${unit.label}: code changed — stopping pid ${pid}; the next pass starts it`)
+          try {
+            process.kill(pid, 'SIGTERM')
+          } catch (error) {
+            if (error?.code !== 'ESRCH') botManagerLog(`${unit.label}: could not stop pid ${pid}: ${error.message}`)
+          }
+        }
+        continue
+      }
       botManagerLog(`${unit.label}: no live process — starting`)
       await startBot(unit)
+      rememberBotCode(unit)
     }
     await wait()
   }
@@ -3912,7 +3991,7 @@ export async function runFleetSpawn(spawnArgs, {
     } finally {
       mintStore.close()
     }
-    assertWakeModelMatchesRecipe({ name, requestedModel: explicitModelArg, recipeModel: restored.model })
+    assertWakeModelMatches({ name, mintId: restored.identifier, requestedModel: explicitModelArg, recipeModel: restored.model })
     // The daemon has taken `permissionGrant` on wake since wake-permission-profile
     // existed; this call is the wire that was never connected, so `--permissions`
     // on wake resolved to nothing at all. The daemon writes the ledger from what
@@ -4031,7 +4110,7 @@ export async function runFleetSpawn(spawnArgs, {
       result = await spawn(params)
     } catch (e) {
       if (preallocatedAgentId) {
-        await ledger.delete(preallocatedAgentId).catch(cleanupError => {
+        await ledger.markDead(preallocatedAgentId).catch(cleanupError => {
           console.error(`warning: failed to clean preallocated grant for ${preallocatedAgentId}: ${cleanupError.message}`)
         })
       }
@@ -4119,7 +4198,7 @@ export function resolveWakeRecipeFields({
   if (!stored.serverAgentId || !stored.serverAgentId.startsWith('fleet:')) {
     throw new Error(`wake refused: local durable recipe for "${label}" has no fleet_id binding`)
   }
-  assertWakeModelMatchesRecipe({ name: label, requestedModel: explicitModelArg, recipeModel: stored.launchRecipe?.model || null })
+  assertWakeModelMatches({ name: label, mintId: stored.mintId, requestedModel: explicitModelArg, recipeModel: stored.launchRecipe?.model || null })
   const permissionArg = explicitPermissionArg || stored.process.permissionGrant || undefined
   return {
     cwd: resolve(stored.process.cwd),
@@ -4130,9 +4209,31 @@ export function resolveWakeRecipeFields({
   }
 }
 
-function assertWakeModelMatchesRecipe({ name, requestedModel, recipeModel } = {}) {
+// Checked against whatever actually decides the model, which is not the same
+// source for a bot as for anyone else.
+//
+// A bot's model is declared in `bots.yaml` and carried in its mint id —
+// `bot:<env>:<model>`. It used to be checked against the stored recipe, where
+// every bot's model was the literal string `bot`, so the check compared a
+// requested `todd` against a recorded `bot` and the recorded value described the
+// harness rather than the model. Reading the declaration is the fix; renaming
+// the function around the old source would not have been.
+//
+// For every other agent the recipe's model is the only record of what was
+// launched, so it stays the source there.
+function assertWakeModelMatches({ name, mintId, requestedModel, recipeModel } = {}) {
   if (!requestedModel) return
   const label = name || '(unknown)'
+  const bot = parseBotMintId(mintId)
+  if (bot) {
+    if (!getManagedBots().some(declared => declared.name === bot.model)) {
+      throw new Error(`wake refused: bots.yaml does not declare a bot named "${bot.model}" for "${label}"`)
+    }
+    if (String(bot.model) !== String(requestedModel)) {
+      throw new Error(`wake refused: --model ${requestedModel} does not match the declared bot model ${bot.model} for "${label}"`)
+    }
+    return
+  }
   if (!recipeModel) {
     throw new Error(`wake refused: local durable recipe for "${label}" has no model; cannot assert --model ${requestedModel}`)
   }
@@ -4281,7 +4382,7 @@ export async function bindDoctorYoloDurableSeat(launched, {
     }
     if (seededGrant) {
       try {
-        await permissionLedger.delete(launched.fleetId)
+        await permissionLedger.markDead(launched.fleetId)
       } catch (e) {
         cleanupError ||= e
       }

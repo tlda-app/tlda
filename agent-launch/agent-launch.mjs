@@ -435,7 +435,7 @@ export function createAgentLauncher({
           onLifecycleEvent,
         })
       } catch (e) {
-        if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+        if (shouldWriteLedgerRow) await permissionLedger.markDead(preallocatedAgentId).catch(() => {})
         throw e
       }
       trace(launched.alreadyAlive ? 'already-alive' : 'launched', {
@@ -485,7 +485,7 @@ export function createAgentLauncher({
         const terminated = spawnMode === 'respawn'
           ? false
           : await terminateExactLaunch(launched.tmuxSession)
-        if (terminated && shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+        if (terminated && shouldWriteLedgerRow) await permissionLedger.markDead(preallocatedAgentId).catch(() => {})
         const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
         return {
           ok: false,
@@ -539,7 +539,7 @@ export function createAgentLauncher({
         let ledgerCleanupError = null
         if (shouldWriteLedgerRow && preallocatedAgentId) {
           try {
-            await permissionLedger.delete(preallocatedAgentId)
+            await permissionLedger.markDead(preallocatedAgentId)
           } catch (e) {
             // Local runtime ownership is retained; later server reconciliation creates the real binding.
             ledgerCleanupError = `could not remove unbound server ledger row for local-only mint ${agentName}: ${e.message}`

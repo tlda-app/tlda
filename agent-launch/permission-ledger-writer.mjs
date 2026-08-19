@@ -31,7 +31,7 @@ const upsert = db.prepare(`
     updated_at = excluded.updated_at,
     source = excluded.source
 `)
-const remove = db.prepare('DELETE FROM permission_grants WHERE id = ?')
+const markDead = db.prepare('UPDATE permission_grants SET dead = 1, died_at = ? WHERE id = ? AND dead = 0')
 
 parentPort.on('message', (message) => {
   const { requestId, op } = message || {}
@@ -42,8 +42,8 @@ parentPort.on('message', (message) => {
       parentPort.postMessage({ requestId, ok: true })
       return
     }
-    if (op === 'delete') {
-      remove.run(message.id)
+    if (op === 'mark-dead') {
+      markDead.run(message.at, message.id)
       parentPort.postMessage({ requestId, ok: true })
       return
     }
