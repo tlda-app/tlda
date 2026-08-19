@@ -4093,6 +4093,133 @@ export async function attachToAgent(name, {
   return { ok: status === 0, status, agent, tmuxSession }
 }
 
+/**
+ * Put one message into one local agent's terminal, without touching the server.
+ *
+ * **The point is the resolution, not the delivery.** `chat()` resolves a name or a
+ * label through the server's roster, so when that host is sick the fleet goes mute
+ * exactly when it has an outage to report. Measured on 2026-08-19 at 06:38Z, while
+ * `testing` was unreachable:
+ *
+ *   chat(to: "chief-night")    -> NOT sent, "couldn't fetch the agent roster"
+ *   chat(to: "fleet:8a7763d5") -> queued
+ *
+ * A name needed the roster; an id did not. This resolves out of the daemon's own
+ * ledger — the same `MintStore` lookup `attach` uses — so it keeps working with the
+ * server gone. **If this ever makes a server call to resolve a name, it has failed
+ * at the one thing it exists for.**
+ *
+ * Break-glass and deliberately small: this machine, one agent, one message. No
+ * labels, no filters, no broadcast — every one of those needs the roster, which is
+ * the thing being routed around. Wanting a filter here means rebuilding `chat()` on
+ * the wrong side of the boundary.
+ */
+export async function messageLocalAgent(name, text, {
+  spawnSyncImpl = null,
+  log = console,
+  exitImpl = code => process.exit(code),
+  openLedger = () => new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() }),
+} = {}) {
+  if (!name || !text) {
+    log.error('Usage: tlda agent message <agent> <text>')
+    exitImpl(1)
+    return { ok: false, error: 'missing-argument' }
+  }
+  const ledger = openLedger()
+  let agent = null
+  try {
+    agent = ledger.resolve(name)
+  } finally {
+    ledger.close()
+  }
+  if (!agent) {
+    log.error(`No local agent found for "${name}". This reads the daemon ledger on this machine only.`)
+    exitImpl(1)
+    return { ok: false, error: 'agent-not-found' }
+  }
+  const tmuxSession = agent.processState?.tmux_session || null
+  if (!tmuxSession) {
+    log.error(`Cannot message ${agent.friendlyName || agent.fleetId || agent.mintId}: local mint has no terminal process.`)
+    exitImpl(1)
+    return { ok: false, error: 'process-missing', agent }
+  }
+  const spawnSync = spawnSyncImpl || (await import('child_process')).spawnSync
+  // Resolve the pane rather than reusing `attach`'s target. `exactTmuxTarget`
+  // yields `=session`, which is exact-match SESSION syntax: `attach-session`
+  // accepts it and `send-keys` answers `can't find pane: =fleet-chief-night`.
+  // Caught by running it against a live agent, not by reading it.
+  const paneLookup = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-t', tmuxSession, '-F', '#{pane_id}'])
+  const target = String(paneLookup.stdout || '').split('\n').map(s => s.trim()).filter(Boolean)[0]
+  if (!target) {
+    log.error(`No tmux pane for ${tmuxSession}: ${paneLookup.stderr?.toString().trim() || 'session has no panes'}`)
+    exitImpl(1)
+    return { ok: false, error: 'pane-missing', agent, tmuxSession }
+  }
+  // The marker is the whole point of delivering into a terminal: this arrives on
+  // the same channel Skip types into, so without it the receiving agent cannot
+  // tell an injected message from something he said. `systemMessage` is the one
+  // place that vocabulary lives — do not write the glyph here, or there are two.
+  const { chatMessage } = await import('../shared/terminal-system-markers.mjs')
+  const marked = chatMessage(text)
+  // `-l` sends the text literally, so a message containing `Enter`, `C-c` or a
+  // semicolon is typed rather than interpreted as tmux key names. The newline is a
+  // separate call for the same reason: it is the one keystroke we do mean.
+  const typed = spawnSync('tmux', [...tmuxBase(), 'send-keys', '-t', target, '-l', marked])
+  if ((typed.status ?? 0) !== 0) {
+    log.error(`tmux send-keys failed for ${tmuxSession}: ${typed.stderr?.toString().trim() || `status ${typed.status}`}`)
+    exitImpl(typed.status || 1)
+    return { ok: false, error: 'send-failed', agent, tmuxSession }
+  }
+  const submitted = spawnSync('tmux', [...tmuxBase(), 'send-keys', '-t', target, 'Enter'])
+  const status = submitted.status ?? 0
+  if (status !== 0) {
+    log.error(`tmux send-keys Enter failed for ${tmuxSession}: ${submitted.stderr?.toString().trim() || `status ${status}`}`)
+    exitImpl(status || 1)
+    return { ok: false, error: 'submit-failed', agent, tmuxSession }
+  }
+  // Delivery is the transport; the event is the record. It is an ordinary `chat`
+  // row — same type, same shape as `fleet-data.mjs` sends — queued in the daemon's
+  // own outbox so it lands in the store whenever the server is reachable again.
+  // That is the point: the terminal already has the message, and history should
+  // not be missing it just because the server was down when it was sent.
+  //
+  // `sentAt` is carried in the payload rather than left to the server's receive
+  // time. A message sent during an outage that lands in history stamped with the
+  // moment the outage ENDED silently rewrites the record he reads to reconstruct
+  // what happened — worse than a message that is simply absent. Whether the
+  // server honours this field on ingest is NOT established; if it stamps at
+  // receive, this is where the fix belongs.
+  let queued = null
+  try {
+    const { DaemonOutbox, defaultOutboxPath } = await import('../daemon/outbox.mjs')
+    const { daemonStateSuffix } = await import('../shared/daemon-socket-path.mjs')
+    const outbox = new DaemonOutbox(defaultOutboxPath(CONFIG_DIR, daemonStateSuffix(localDaemonEnvName())))
+    try {
+      queued = outbox.enqueue({
+        type: 'chat',
+        message: text,
+        to: agent.fleetId || agent.mintId,
+        from: process.env.FLEET_ID || null,
+        sentAt: new Date().toISOString(),
+      })
+    } finally {
+      outbox.close()
+    }
+  } catch (error) {
+    // The terminal already has it. A failed queue costs the history row, not the
+    // message, so it is reported and does not fail the command — the caller is
+    // usually mid-incident and the delivery is the urgent half.
+    log.error(`Delivered, but not queued for history: ${error.message}`)
+  }
+  // Says "not in history" every time, not only when the queue write fails. The
+  // event is queued and nothing consumes it, so a bare "Delivered" would be a
+  // success line for work that half happened — the shape this whole verb exists
+  // because of. Delete this clause in the commit that gives the event a receiver.
+  log.log(`Delivered to ${agent.friendlyName || agent.fleetId || agent.mintId} in ${tmuxSession} — terminal only, not in history.`)
+  exitImpl(0)
+  return { ok: true, agent, tmuxSession, queued }
+}
+
 async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = null, onEvent = null } = {}) {
   return callLocalDaemonRpc(op, params, { socketPath, timeoutMs, onEvent })
 }
@@ -5115,6 +5242,7 @@ Usage:
   tlda agent list [--limit N]
   tlda agent mint <name> [--model model] [--cwd path] [--permissions <profile>]
   tlda agent enlist --kind <codex|claude> <session-id> [name] [--permissions <profile>]
+  tlda agent message <agent> <text>    break-glass; this machine only, see below
   tlda agent wake <agent> [--model model] [--permissions <profile>]
   tlda agent reanimate <agent>
   tlda agent move <agent> [name@][box:]env
@@ -5130,6 +5258,18 @@ ${daemonProfileHelpBlock()}
 mint starts a FRESH agent; enlist adopts an already-running external session (kind
 required); wake brings back an existing hibernating agent. All are local-operator gated
 by machine access, and write the child grant to the daemon ledger.
+
+message is BREAK-GLASS and does two things, one of which does not work yet:
+  It DOES reach an agent on this machine when the server is unreachable, because it
+  resolves from the daemon's ledger rather than the server's roster — which is why
+  it exists. chat() resolves names through the server, so the fleet goes mute
+  exactly when there is an outage to report.
+  It does NOT appear in history. The chat event is queued but nothing on the daemon
+  path consumes it, so thread(), search() and the dashboard will not show it. Use it
+  to reach someone during an outage, then say what you did through chat() once the
+  server is back, or the only record is in their scrollback.
+  This machine only. One agent, one message. No labels or filters — those need the
+  roster, which is the thing being routed around.
 --permissions names one of the profiles above; without it, fresh uses the configured default and wake restores the durable grant.
 Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 only as a mint/wake-time emergency override to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
@@ -5684,6 +5824,7 @@ async function cmdAgent() {
     case 'move':      await finishCliOperation('agent move', cmdAgentMove); break
     case 'set-mint-machine': await finishCliOperation('agent set-mint-machine', cmdAgentSetSpawnMachine); break
     case 'attach':    await attachToAgent(getPositional(1)); break
+    case 'message':   await messageLocalAgent(getPositional(1), process.argv.slice(5).join(' ')); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
     case 'dismiss':   await finishCliOperation('agent dismiss', () => dismissAgent(getPositional(1))); break
     case 'permissions': await finishCliOperation('agent permissions', cmdAgentPermissions); break

@@ -19,7 +19,17 @@
 export const SYSTEM_MARKER = '💻'
 export const NOTIFICATION_MARKER = '📬'
 
-const MARKERS = [SYSTEM_MARKER, NOTIFICATION_MARKER]
+// A chat event delivered into a terminal — `tlda agent message`, which exists
+// because `chat()` resolves names through the server and so goes mute exactly when
+// there is an outage to report. Skip chose the glyph, 8/19: the balloon, because
+// this is chat rather than the app speaking about the session. Tagging it 💻 would
+// classify a person's message as system text, which is the confusion this file
+// exists to prevent.
+//
+// Single code point, like the other two, so it holds a predictable terminal width.
+export const CHAT_MARKER = '💬'
+
+const MARKERS = [SYSTEM_MARKER, NOTIFICATION_MARKER, CHAT_MARKER]
 
 // Leading whitespace and C0 control characters. A line injected into a terminal
 // can arrive with the prompt-clear (Ctrl-U, U+0015) or a carriage return still on
@@ -37,10 +47,21 @@ export function isMarkedLine(line) {
 // several system messages rather than one message containing line breaks, which
 // is what keeps every line independently strippable.
 export function systemMessage(text) {
+  return markedMessage(text, SYSTEM_MARKER)
+}
+
+// The same shaping for a chat delivered into a terminal. Kept as one function
+// taking the marker rather than two near-copies, because the pair would drift and
+// the first symptom is two types sharing a glyph.
+export function chatMessage(text) {
+  return markedMessage(text, CHAT_MARKER)
+}
+
+function markedMessage(text, marker) {
   return String(text ?? '')
     .split('\n')
     .filter(line => line.trim())
-    .map(line => (isMarkedLine(line) ? line : `${SYSTEM_MARKER} ${line}`))
+    .map(line => (isMarkedLine(line) ? line : `${marker} ${line}`))
     .join('\n')
 }
 
