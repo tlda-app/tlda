@@ -16,6 +16,7 @@ type MarkdownColumnOptions = {
   sourcePath?: string
   sourceSection?: string
   logPrefix: string
+  showError?: (message: string) => void
 }
 
 type ChipSource = {
@@ -27,6 +28,7 @@ type OpenMarkdownChipOptions = {
   target: HTMLElement
   stopPropagation: () => void
   openMarkdownColumn: (title: string, markdown: string, sourceEl: HTMLElement, source?: ChipSource) => void | Promise<void>
+  showError?: (message: string) => void
 }
 
 // Opening a chip is a fetch and then a materialize POST before anything appears
@@ -36,6 +38,19 @@ type OpenMarkdownChipOptions = {
 // request — one intent, N objects. One open per chip at a time, and the chip
 // says so for as long as it runs.
 const openingChips = new Set<string>()
+
+// Every way a chip open can fail says the same sentence, because they are the
+// same event to the person who clicked: the thing did not open. Which of the
+// four it was -- the file would not load, the project part would not write, the
+// viewer would not take the surface -- is in the log line beside it, and that
+// is where it belongs. A message naming the stage would ask him to care about a
+// distinction he cannot act on.
+//
+// It exists at all because the second annotation viewer of a page load threw
+// into a swallowed warning for eleven days. The chip glowed, the file joined
+// the projects tab, nothing opened, and the only instrument that reported it
+// was Skip. A failure nobody can see is a failure only he can find.
+export const CHIP_OPEN_FAILED = 'That file didn’t open. Nothing was lost — try it again.'
 
 function chipOpenKey(url: string, path: string, section?: string) {
   return `${url} | ${path} | ${section || ''}`
@@ -86,7 +101,7 @@ export async function fetchMarkdownChipText(chipUrl: string, chipPath: string): 
 }
 
 export function openChatMarkdownColumn(options: MarkdownColumnOptions): Promise<void> {
-  const { editor, sourceShapeId, title, markdown, sourceEl, placementEl, sourcePath, sourceSection, logPrefix } = options
+  const { editor, sourceShapeId, title, markdown, sourceEl, placementEl, sourcePath, sourceSection, logPrefix, showError } = options
   const sourceRect = sourceEl.getBoundingClientRect()
   const left = Math.max(12, sourceRect.left)
   const top = Math.max(12, sourceRect.bottom + 8)
@@ -99,7 +114,11 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions): Promise<
   // settles, so the chip stays marked for exactly as long as the work runs.
   return materializeMarkdownChip({ markdown, title, sourcePath, sourceSection }).then((materialized) => {
     if (!materialized.ok || !materialized.outputFile || !projectName) {
-      console.warn(`[${logPrefix}] markdown materialize failed:`, materialized.error)
+      log.error(logPrefix, 'markdown materialize failed; opening no document', {
+        title, sourcePath, sourceSection, project: projectName,
+        error: materialized.error || (projectName ? 'no output file' : 'no open document'),
+      })
+      showError?.(CHIP_OPEN_FAILED)
       return
     }
     const url = `/docs/${projectName}/${materialized.outputFile}?t=${Date.now()}`
@@ -133,12 +152,16 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions): Promise<
       centerOnAnchor: true,
     })
   }).catch((err) => {
-    console.warn(`[${logPrefix}] markdown annotation viewer create failed:`, err?.message || err)
+    log.error(logPrefix, 'markdown annotation viewer create failed; nothing opened', {
+      title, sourcePath, sourceSection,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    showError?.(CHIP_OPEN_FAILED)
   })
 }
 
 export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): boolean {
-  const { target, stopPropagation, openMarkdownColumn } = options
+  const { target, stopPropagation, openMarkdownColumn, showError } = options
   const mdChip = target.closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
   if (!mdChip) return false
 
@@ -161,10 +184,13 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
       // A load failure opens NO document. It used to open a markdown column whose
       // body was "# Failed to load", which reads to the user as a real but broken
       // document rather than as a failure. The failure goes to the error surface.
-      .catch(err => log.error('chat-chip', 'source chip failed to load; opening no document', {
-        title, path: chipPath, url: chipUrl, section: chipSection,
-        error: err instanceof Error ? err.message : String(err),
-      }))
+      .catch(err => {
+        log.error('chat-chip', 'source chip failed to load; opening no document', {
+          title, path: chipPath, url: chipUrl, section: chipSection,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        showError?.(CHIP_OPEN_FAILED)
+      })
       .finally(() => endChipOpen(mdChip, openKey))
     return true
   }
@@ -190,10 +216,13 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
     // path only exists on the sending agent's machine cannot resolve from the
     // server, and fabricating a "Failed to load" document out of that made a
     // delivery failure look like a broken file.
-    .catch(err => log.error('chat-chip', 'file chip failed to load; opening no document', {
-      title, path: chipPath, url: chipUrl,
-      error: err instanceof Error ? err.message : String(err),
-    }))
+    .catch(err => {
+      log.error('chat-chip', 'file chip failed to load; opening no document', {
+        title, path: chipPath, url: chipUrl,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      showError?.(CHIP_OPEN_FAILED)
+    })
     .finally(() => endChipOpen(mdChip, openKey))
   return true
 }
