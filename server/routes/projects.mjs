@@ -1258,19 +1258,36 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
     const targetRevision = await lifecycle.readRevision(sourceRevision)
     const baseRevision = previousRevision ? await lifecycle.readRevision(previousRevision) : null
     const blobs = {}
+    // **The files carry their CONTENT, not just their paths.**
+    //
+    // Two consumers read this payload and only one reads `blobs`. The daemon's
+    // materializer looks bytes up by blob id; the source ROOM reads
+    // `file.content` directly -- `bufferFromBase64(file.content)`. Send
+    // `{path}` alone and the room finds the entry, gets `undefined`, and merges
+    // an EMPTY STRING against its own text: somebody's accepted paragraph
+    // arrives as nothing.
+    //
+    // Nothing surfaces it. The merge succeeds -- it merges emptiness -- so the
+    // fan-out reports applied and the accept reports accepted while the room
+    // holds the wrong text. Both ends contain `files`, so every grep is
+    // healthy: the reconstruction hazard with the payload itself as the field
+    // that vanished.
+    const changedFiles = []
     for (const path of changed) {
       const bytes = await lifecycle.readRevisionFile(sourceRevision, path)
+      if (!bytes) continue
       // Keyed by git's blob id, because that is what the manifest entries name
       // and what `source-materializer.mjs` looks the bytes up by -- its `hash`
       // is `gitBlobId`. Keyed by sha256 the lookup misses and the apply throws
       // `Missing blob`, on the far side, after the accept has been reported.
-      if (bytes) blobs[gitBlobId(bytes)] = bytes.toString('base64')
+      blobs[gitBlobId(bytes)] = bytes.toString('base64')
+      changedFiles.push({ path, content: bytes.toString('base64'), encoding: 'base64' })
     }
     lifecycle.recordReplicaTargets(name, sourceRevision, targets, {
       project: name,
       sourceRevision,
       previousRevision,
-      files: changed.map(path => ({ path })),
+      files: changedFiles,
       deletedFiles: deleted,
       sourceBindingId: sourceBindingId || null,
       requestId: requestId || null,
@@ -1301,7 +1318,7 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
         project: name,
         sourceRevision,
         previousRevision,
-        files: changed.map(path => ({ path })),
+        files: changedFiles,
         deletedFiles: deleted,
         sourceManifest: targetRevision?.files?.map(entry => entry.path) || [],
         sourceDaemonKey: sourceDaemonKey || null,
@@ -2629,7 +2646,15 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null 
           await recordSourceSyncRefusal(name, {
             owner: refusalOwner,
             reason: result.status,
-            files: [...(files || []).map(file => file?.path).filter(Boolean)],
+            // **What he was CARRYING, not what he declared.** The carrier
+            // requires every manifest path on every push, so `files` is
+            // routinely the whole project — and a refusal row naming three
+            // files when he edited one is not answerable, only alarming.
+            //
+            // The discriminator is already in the payload: an entry with
+            // `content` is a change, an entry with only `sha256` is a carried
+            // reference.
+            files: (files || []).filter(file => file?.content !== undefined).map(file => file.path),
           })
         }
       } catch (error) {
