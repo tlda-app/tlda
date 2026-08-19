@@ -485,20 +485,6 @@ export class FleetStore {
         WHERE type = 'activity'
           AND json_extract(metadata, '$.input.edit_operation.operation_id') IS NOT NULL
           AND json_extract(metadata, '$.input.canonical_source') IS NULL;
-      -- Serves lastSourceFileChange(). Leading on project then sourceFile so
-      -- both filters are index-served, with id last so ORDER BY id DESC LIMIT 1
-      -- is a single step to the end of a range rather than a sort.
-      --
-      -- This replaces an unbounded JSONL read: BuildProgressPill polls
-      -- /source-activity every 1000ms per open file, and that route used to
-      -- answer it with readEditEvents(name, { limit: Infinity }) -- the entire
-      -- attribution history, re-read and re-parsed on the main thread once a
-      -- second. The server's lag profiler measured 809ms stalls there, which is
-      -- enough to blow capture-pane and agent-wake deadlines.
-      CREATE INDEX IF NOT EXISTS idx_events_source_file_activity
-        ON events(json_extract(metadata, '$.project'), json_extract(metadata, '$.sourceFile'), id)
-        WHERE type = 'activity'
-          AND json_extract(metadata, '$.sourceFile') IS NOT NULL;
       CREATE TABLE IF NOT EXISTS transport_operations (
         operation_id TEXT PRIMARY KEY,
         operation_type TEXT NOT NULL,
@@ -5283,17 +5269,6 @@ export class FleetStore {
   // ingester already pushed here. The attribution log this replaces derived a
   // second copy of them into its own JSONL -- storing `fleet_activity_event_id`,
   // the primary key of the row it was duplicating, beside the duplicate. Skip,
-  // 2026-08-17: "they're in the fucking db ... i mean query or subscribe, like
-  // chat". This is the query.
-  lastSourceFileChange(project, file) {
-    if (!project || !file) return null
-    const row = this.db.prepare(`SELECT from_id, timestamp FROM events
-      WHERE type='activity'
-        AND json_extract(metadata,'$.project')=?
-        AND json_extract(metadata,'$.sourceFile')=?
-      ORDER BY id DESC LIMIT 1`).get(project, file)
-    return row ? { agentId: row.from_id, timestamp: row.timestamp } : null
-  }
 
   // Overwrite metadata wholesale. NOT updateEventMetadata with a different
   // name: that one merges with json_patch, so a key the caller deliberately
