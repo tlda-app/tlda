@@ -2071,6 +2071,76 @@ function rememberThreadHtml(key: string, html: string) {
   }
 }
 
+// Floats the card's collapse control at mid-scroller, clamped to its own card.
+//
+// It used to be `position: sticky`, and that stopped working when f34e43f77
+// replaced the chat scroller with the anchored list. In that list every
+// `.chat-row-wrap` lays out at the slice origin -- `offsetTop` is 0 for all of
+// them -- and is painted where it belongs by `transform: translateY(y)`, with
+// the slice itself translated by however far you have scrolled. Sticky takes
+// its constraint rectangle from the containing block's LAYOUT box, which knows
+// nothing about ancestor transforms, so it evaluates the card against a box
+// nowhere near the scroll position, pins the button at the card's edge, and the
+// button rides the card off screen. Skip: "the collapse button doesn't move
+// with you as you scroll through the fucking thread card."
+//
+// So it floats the way everything else in this log is positioned: by hand, from
+// the scroll handler, in painted coordinates, which transforms do not lie
+// about. `getBoundingClientRect()` is the whole reason this works where sticky
+// cannot.
+//
+// This is a new write on the scroll path, which docs/chat-rendering.md exists
+// because of, so: it writes nothing but `top` on an element that is
+// `position: absolute` and therefore out of flow. It cannot change the row's
+// height, so it cannot wake the item-list ResizeObserver or reach
+// reconcileViewportGeometry, and it never touches `scrollTop`. Keep it that
+// way -- the moment this control affects layout it becomes a participant in
+// the re-entrancy map rather than a passenger.
+function useFloatingCollapse(host: HTMLElement) {
+  const ref = useRef<HTMLButtonElement>(null)
+  useLayoutEffect(() => {
+    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
+    if (!scroller) return
+    let frame = 0
+    const place = () => {
+      frame = 0
+      const btn = ref.current
+      // Hidden while the middle is closed, and there is nothing to float then.
+      if (!btn || btn.offsetParent === null) return
+      const shell = btn.closest('.semantic-operation-expanded-shell') as HTMLElement | null
+      if (!shell) return
+      const shellRect = shell.getBoundingClientRect()
+      const scrollerRect = scroller.getBoundingClientRect()
+      // The control is rotated, so its painted height is its layout WIDTH. Use
+      // the painted box to keep it inside the card and the layout box to place
+      // it, since `top` is written in untransformed coordinates and the
+      // rotation is about the box's own centre.
+      const painted = btn.getBoundingClientRect().height
+      const middle = scrollerRect.top + scroller.clientHeight / 2
+      const lo = painted / 2
+      const hi = Math.max(shellRect.height - painted / 2, lo)
+      const centre = Math.min(Math.max(middle - shellRect.top, lo), hi)
+      btn.style.top = `${Math.round(centre - btn.offsetHeight / 2)}px`
+    }
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(place) }
+    place()
+    scroller.addEventListener('scroll', schedule, { passive: true })
+    // The card grows when the thread body arrives and when the middle opens,
+    // and neither of those is a scroll. Opening the middle is a class toggle
+    // written straight to the DOM, so there is no render to hang this off.
+    const observer = new ResizeObserver(schedule)
+    observer.observe(scroller)
+    const shell = ref.current?.closest('.semantic-operation-expanded-shell')
+    if (shell) observer.observe(shell)
+    return () => {
+      scroller.removeEventListener('scroll', schedule)
+      observer.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [host])
+  return ref
+}
+
 // A thread renders open, drawn by the same visualization the transcript used to
 // feed. The messages come out of the database instead, so the gap marker in the
 // middle expands to the actual messages rather than to another ellipsis.
@@ -2094,7 +2164,7 @@ function ThreadChatOperationView({
   const [html, setHtml] = useState(cached ?? '')
   const [loading, setLoading] = useState(cached == null)
   const [error, setError] = useState('')
-  const [collapseTop, setCollapseTop] = useState('50%')
+  const collapseRef = useFloatingCollapse(host)
   const viewRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async (force = false) => {
@@ -2144,16 +2214,6 @@ function ThreadChatOperationView({
     if (viewRef.current && html) restoreExpansions(viewRef.current)
   }, [html, restoreExpansions])
 
-  useLayoutEffect(() => {
-    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
-    if (!scroller) return
-    const update = () => setCollapseTop(`${Math.max(8, Math.round(scroller.clientHeight / 2))}px`)
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(scroller)
-    return () => observer.disconnect()
-  }, [host])
-
   // Two controls, which is what "1 expand and one collapsed" meant: the gap
   // marker in the middle expands, and this floats at the left edge to collapse.
   // It floats because the thing it undoes is what pushes it off screen -- Skip:
@@ -2185,7 +2245,7 @@ function ThreadChatOperationView({
 
   return (
     <div className="semantic-operation-expanded-shell thread-shell">
-      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapseToRange}>Collapse</button>
+      <button ref={collapseRef} type="button" className="semantic-operation-collapse" onPointerUp={collapseToRange}>Collapse</button>
       <div className="semantic-operation-view">
         {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
         {!error && !loading && !html ? <div className="semantic-operation-status">no results</div> : null}
@@ -2219,7 +2279,7 @@ function SemanticChatOperationView({
   const [searched, setSearched] = useState(false)
   const [hasMore, setHasMore] = useState(true)
   const [expandedSearchGroups, setExpandedSearchGroups] = useState<Record<string, boolean>>({})
-  const [collapseTop, setCollapseTop] = useState('50%')
+  const collapseRef = useFloatingCollapse(host)
   const loadedRef = useRef(false)
   const searchVisibleLimitRef = useRef(pageSize)
 
@@ -2271,16 +2331,6 @@ function SemanticChatOperationView({
     return () => host.removeEventListener('semantic-operation-expand', load)
   }, [host, loadSearch])
 
-  useLayoutEffect(() => {
-    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
-    if (!scroller) return
-    const update = () => setCollapseTop(`${Math.max(8, Math.round(scroller.clientHeight / 2))}px`)
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(scroller)
-    return () => observer.disconnect()
-  }, [host])
-
   const collapse = useCallback((event: any) => {
     stopEventPropagation(event)
     const op = host.closest('.semantic-chat-operation') as HTMLElement | null
@@ -2304,7 +2354,7 @@ function SemanticChatOperationView({
 
   return (
     <div className="semantic-operation-expanded-shell">
-      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapse}>Collapse</button>
+      <button ref={collapseRef} type="button" className="semantic-operation-collapse" onPointerUp={collapse}>Collapse</button>
       <div className="semantic-operation-view">
         <FleetSearchResultsView
           results={results}
