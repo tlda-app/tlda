@@ -113,6 +113,21 @@ export function createSourceLifecycleStore({ root, project = 'project' }) {
         .filter(lifecycle => lifecycle?.project === name)
         .sort((a, b) => (a.acceptSeq ?? 0) - (b.acceptSeq ?? 0))
     },
+    recordRevisionAdmission(name, sourceRevision, acceptSeq) {
+      const value = journal()
+      const existing = value.revisionLifecycle[sourceRevision]
+      if (existing) return existing
+      const updatedAt = new Date().toISOString()
+      value.revisionLifecycle[sourceRevision] = {
+        project: name,
+        sourceRevision,
+        acceptSeq,
+        build: { state: 'pending', result: null, updatedAt },
+        updatedAt,
+      }
+      atomicJson(operationsPath, value)
+      return value.revisionLifecycle[sourceRevision]
+    },
     recordRevisionPhase(name, sourceRevision, phase, state, result = null) {
       if (!['build', 'version', 'mirror'].includes(phase)) throw new Error(`Invalid source revision phase: ${phase}`)
       const value = journal()

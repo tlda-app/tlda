@@ -27,6 +27,7 @@ export function createBuildQueue({
 
   const jobFromRow = row => ({
     id: row.id,
+    acceptSeq: row.id,
     name: row.project,
     kind: row.kind,
     sourceRevision: row.revision,

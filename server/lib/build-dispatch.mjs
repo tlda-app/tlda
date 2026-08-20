@@ -72,7 +72,7 @@ function restoreAside(live, held) {
   renameSync(held, live)
 }
 
-export async function publishBuildInstance(name, sourceRevision, _acceptSeq, instanceProject, reports = [], reportSinks = SINKS) {
+export async function publishBuildInstance(name, sourceRevision, acceptSeq, instanceProject, reports = [], reportSinks = SINKS) {
   return serializedPublication(name, async () => {
     const lifecycle = await sourceLifecycleStore(name)
     const git = await lifecycle.gitRepository()
@@ -87,6 +87,7 @@ export async function publishBuildInstance(name, sourceRevision, _acceptSeq, ins
     const stagedCache = join(transaction, 'new-build-cache')
     mkdirSync(transaction, { recursive: true })
     cpSync(join(instanceProject, 'output'), stagedOutput, { recursive: true })
+    cpSync(join(instanceProject, 'source'), join(transaction, 'new-source'), { recursive: true })
     if (existsSync(join(instanceProject, 'build-cache'))) cpSync(join(instanceProject, 'build-cache'), stagedCache, { recursive: true })
     for (const file of ['build.log', 'latex.log']) {
       if (existsSync(join(instanceProject, file))) cpSync(join(instanceProject, file), join(transaction, `new-${file}`))
@@ -102,7 +103,7 @@ export async function publishBuildInstance(name, sourceRevision, _acceptSeq, ins
       if (currentHead !== expectedHead || (currentHead && !await git.isAncestor(currentHead, sourceRevision))) {
         return { published: false, stale: true, sourceRevision, currentHead }
       }
-      for (const item of ['output', 'build-cache', 'build.log', 'latex.log']) {
+      for (const item of ['source', 'output', 'build-cache', 'build.log', 'latex.log']) {
         old[item] = moveAside(join(liveProject, item), transaction, item)
         const staged = join(transaction, `new-${item}`)
         if (existsSync(staged)) renameSync(staged, join(liveProject, item))
@@ -115,14 +116,16 @@ export async function publishBuildInstance(name, sourceRevision, _acceptSeq, ins
       // the shared head. Old source-lifecycle/mirror reports are not a second
       // queue or source authority and are deliberately not replayed.
       for (const report of reports) {
-        if (['publishBuildInstance', 'recordBuildResult', 'recordRevisionPhase', 'mirrorShadow'].includes(report.method)) continue
+        if (['publishBuildInstance', 'recordBuildResult', 'mirrorShadow'].includes(report.method)) continue
         const sink = reportSinks[report.method]
         if (sink) await sink(...(report.args || []))
       }
+      lifecycle.recordRevisionAdmission(name, sourceRevision, acceptSeq)
+      lifecycle.recordRevisionPhase(name, sourceRevision, 'build', 'built', { ok: true })
       return { published: true, sourceRevision, previousHead: expectedHead }
     } catch (error) {
       if (!headMoved) {
-        for (const item of ['output', 'build-cache', 'build.log', 'latex.log']) {
+        for (const item of ['source', 'output', 'build-cache', 'build.log', 'latex.log']) {
           restoreAside(join(liveProject, item), old[item])
         }
       }
@@ -147,7 +150,7 @@ export async function recoverBuildPublications() {
       const git = await (await sourceLifecycleStore(project.name)).gitRepository()
       const head = await git.head(project.name)
       if (head !== marker.sourceRevision) {
-        for (const item of ['output', 'build-cache', 'build.log', 'latex.log']) {
+        for (const item of ['source', 'output', 'build-cache', 'build.log', 'latex.log']) {
           restoreAside(join(liveProject, item), join(transaction, `old-${item}`))
         }
       }
@@ -174,7 +177,12 @@ export function createDispatcherWithOptions(transport, options = {}) {
     async relayMessage(name, message, job) {
       if (message?.t === 'report') return null
       if (message?.t !== 'rpc') return null
-      if (message.m === 'recordBuildResult' || message.m === 'recordRevisionPhase') return null
+      if (message.m === 'recordRevisionPhase') return null
+      if (message.m === 'recordBuildResult') {
+        const [name, sourceRevision, _acceptSeq, state, result] = message.a || []
+        const lifecycle = await sourceLifecycleStore(name)
+        return lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
+      }
       if (message.m === 'publishBuildInstance') {
         const result = await publishBuildInstance(...(message.a || []), sinks)
         if (!result.published) throw new Error(`stale build ${job.sourceRevision} cannot publish over ${result.currentHead || 'no head'}`)
@@ -215,7 +223,15 @@ export function initBuildDispatcher() {
 
 function dispatcher() { return activeDispatcher || initBuildDispatcher() }
 
-export const admitProposal = submission => dispatcher().admitBuild(submission.project, submission)
+async function recordAdmission(project, row) {
+  return (await sourceLifecycleStore(project)).recordRevisionAdmission(project, row.revision, row.id)
+}
+
+export async function admitProposal(submission) {
+  const row = await dispatcher().admitBuild(submission.project, submission)
+  await recordAdmission(submission.project, row)
+  return row
+}
 export const killBuild = name => dispatcher().killBuild(name)
 export const killAllDispatchedBuilds = () => dispatcher().killAllDispatchedBuilds()
 export const isBuilding = name => dispatcher().isBuilding(name)
@@ -226,7 +242,8 @@ export async function recoverProposalBuilds() {
   for (const project of await listProjects()) {
     const git = await (await sourceLifecycleStore(project.name)).gitRepository()
     for (const proposal of await listProposalRefs(git.gitDir)) {
-      await queue.admitBuild(project.name, proposal)
+      const row = await queue.admitBuild(project.name, proposal)
+      await recordAdmission(project.name, row)
     }
   }
   await queue.recover()

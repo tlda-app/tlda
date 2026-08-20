@@ -41,4 +41,5 @@ test('build queue carries immutable proposal revision, daemon, and branch to wor
   assert.equal(started[0].sourceRevision, 'b'.repeat(40))
   assert.equal(started[0].daemonId, 'mini:testing')
   assert.equal(started[0].branch, 'paper-edits')
+  assert.equal(started[0].acceptSeq, 1)
 })
