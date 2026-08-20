@@ -926,6 +926,7 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
     permissionGrant: processFact.permission_grant,
     source: createdSource,
   })
+  if (!facts.sessionId) return
   permissionLedger.setSessionSync(facts.fleetId, {
     sessionId: facts.sessionId,
     sessionKind: processFact.harness,
@@ -971,9 +972,14 @@ daemonMintCore = createDaemonMintCore({
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
     })
-    if (processFact.session_id) return stripCompiledPermissionSet(processFact)
-    if (processFact.harness !== 'codex') return stripCompiledPermissionSet(processFact)
-    const live = await resolveLiveCodexSessionIdentity({
+    const recorded = stripCompiledPermissionSet(processFact)
+    if (processFact.session_id || processFact.harness !== 'codex') return recorded
+    // A fresh Codex process can be alive before it opens its rollout. Persist
+    // the process and grant now; transcript discovery completes the join later.
+    // In particular, do not put the global session-tree fallback on the mint's
+    // commit path: under machine load that synchronous walk held process_state
+    // and the permission grant unwritten for minutes after the agent logged in.
+    void resolveLiveCodexSessionIdentity({
       agent: {
         id: processFact.fleet_id || params.fleet_id || null,
         friendly_name: processFact.name || params.name || null,
@@ -983,11 +989,17 @@ daemonMintCore = createDaemonMintCore({
       tmuxSession: processFact.tmux_session,
       tmuxArgs: TMUX_ARGS,
       tmuxSocket: TMUX_SOCKET,
+      processOwnedOnly: true,
+    }).then(async live => {
+      if (!live?.sessionId) return
+      await daemonMintCore.recordSession(params.mint_id, {
+        session_id: live.sessionId,
+        session_path: live.jsonlPath || null,
+      })
+    }).catch(error => {
+      log.warn(`mint ${processFact.name || params.name || params.mint_id}: deferred Codex session discovery failed: ${error.message}`)
     })
-    const recorded = live?.sessionId
-      ? { ...processFact, session_id: live.sessionId, session_path: live.jsonlPath || null, model: live.model || processFact.model }
-      : processFact
-    return stripCompiledPermissionSet(recorded)
+    return recorded
   },
   requestSeat: ({ mint_id, name, metadata, launch, fail_if_not_fresh }) => wsMintShell({
     localAgentId: mint_id,
@@ -1233,6 +1245,7 @@ async function rpcMint(params = {}) {
     throw new Error(facts.registrationError)
   }
   const joined = !!facts.joinedAt
+  const launchedPendingIdentity = !joined && !!facts.fleetId && !!facts.processState
   // A mint that gives up returns; it does not throw. Every cleanup here was
   // written as a `catch`, so the pre-reserved bot shell survived a failure
   // expressed as a return value. That branch was unreachable while both mint
@@ -1254,7 +1267,8 @@ async function rpcMint(params = {}) {
     await cleanupPreReservedBotSeat(facts.registrationError || 'launched but never joined the fleet')
   }
   return {
-    ok: joined,
+    ok: joined || launchedPendingIdentity,
+    pending: launchedPendingIdentity || undefined,
     mint_id: facts.mintId,
     fleet_id: facts.fleetId,
     agent_id: facts.fleetId,
@@ -1270,7 +1284,7 @@ async function rpcMint(params = {}) {
     tmux_session: facts.processState?.tmux_session || null,
     session_id: facts.sessionId,
     joined,
-    ...(!joined ? {
+    ...(!joined && !launchedPendingIdentity ? {
       reason: facts.registrationError ? 'registration-deferred' : 'join-failed',
       error: facts.registrationError || `mint ${facts.mintId} launched but never joined the fleet`,
     } : {}),

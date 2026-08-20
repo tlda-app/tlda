@@ -74,13 +74,17 @@ export function createDaemonMintCore({
 
   async function join(mintIdValue) {
     const facts = store.get(mintIdValue)
-    if (!facts?.fleetId || !facts?.sessionId || !facts?.processState || facts.joinedAt) return facts
+    if (!facts?.fleetId || !facts?.processState || facts.joinedAt) return facts
     if (joins.has(mintIdValue)) return joins.get(mintIdValue)
     const joining = Promise.resolve()
       .then(async () => {
         const current = store.get(mintIdValue)
-        if (!current?.fleetId || !current?.sessionId || !current?.processState || current.joinedAt) return current
+        if (!current?.fleetId || !current?.processState || current.joinedAt) return current
         await bindSeat(current)
+        // The durable permission grant belongs to the launched seat, not to the
+        // later transcript discovery. bindSeat records that grant immediately;
+        // only the completed runtime identity marks the mint joined.
+        if (!current.sessionId) return store.get(mintIdValue)
         return store.markJoined(mintIdValue)
       })
       .finally(() => joins.delete(mintIdValue))
@@ -318,6 +322,24 @@ export function createDaemonMintCore({
             local_agent_id: id,
             fleet_id: facts.fleetId || suppliedFleetId || null,
             name: facts.friendlyName || name || null,
+          })
+          return facts
+        }
+        // A fresh Codex runtime has no resume/session id until its rollout is
+        // opened and observed. The process, seat, and grant are already
+        // durable at this point; session discovery calls recordSession() and
+        // completes the join asynchronously. Do not hold the mint RPC open (or
+        // turn a healthy logged-in process into a launch failure) while waiting
+        // for that later identity fact.
+        if (facts?.fleetId && facts?.processState && !facts?.sessionId) {
+          emitLifecycle(lifecycle, 'server-binding-deferred', {
+            local_agent_id: id,
+            fleet_id: facts.fleetId,
+            name: facts.friendlyName || name || null,
+            tmux_session: facts.processState?.tmux_session || null,
+            reason: 'runtime identity pending',
+            attempt,
+            retry_in_ms: null,
           })
           return facts
         }

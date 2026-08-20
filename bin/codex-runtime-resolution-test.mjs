@@ -114,8 +114,19 @@ try {
   })
   assert.equal(resolved, topLevel, 'a nearby top-level rollout owned by another seat must not bind')
   assert.equal(resolverCalls.length, 1, 'the launched runtime JSONL is read without an open-file ownership gate')
-  assert.equal('processOwnedOnly' in resolverCalls[0], false)
+  assert.equal(resolverCalls[0].processOwnedOnly, false)
   assert.ok(resolverCalls.every(call => typeof call.acceptTranscript === 'function'))
+
+  const ownedOnlyCalls = []
+  await resolveOwnedCodexTranscript({
+    runtimePids: ['native-codex'],
+    agent: { id: 'fleet:expected' },
+    launchTs: Date.now(),
+    processOwnedOnly: true,
+    resolveTranscriptImpl: async options => { ownedOnlyCalls.push(options); return null },
+  })
+  assert.equal(ownedOnlyCalls.length, 1)
+  assert.ok(ownedOnlyCalls.every(call => call.processOwnedOnly === true), 'mint-time lookup must not scan the global rollout tree')
 } finally {
   fs.rmSync(fixtureDir, { recursive: true, force: true })
 }

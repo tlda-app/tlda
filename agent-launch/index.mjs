@@ -216,7 +216,11 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
   let cmd
   let sendKeys = false
   if (requestedKind === 'codex') {
-    codex.ensureProjectTrusted(cwd)
+    // Codex reads trust from the HOME of the process we are about to launch.
+    // The daemon can deliberately launch with an isolated HOME, so writing the
+    // daemon user's config here leaves the child at an interactive trust prompt
+    // before MCP starts and login can ever happen.
+    codex.ensureProjectTrusted(cwd, path.join(env.HOME || os.homedir(), '.codex', 'config.toml'))
     // Permissions come from the daemon config, not from computed harness logic:
     // codex launches with its own sandbox off and the fence (from the grant)
     // does the containment. The code just passes args + harness config + fence.

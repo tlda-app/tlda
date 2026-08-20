@@ -151,6 +151,27 @@ test('a delegate row still gets its [DELEGATE] shaping through the shared path',
   assert.match(result.content[0].text, /\[DELEGATE\] go and do the thing/)
 })
 
+test('a persisted mint delegation renders its full payload and criteria', async () => {
+  installTransport({
+    event: {
+      ...EVENT,
+      type: 'delegate',
+      text: 'Finish survival review response',
+      metadata: JSON.stringify({
+        message: 'Recover and finish the survival-paper review-response project.',
+        criteria: ['Every referee comment is dispositioned.', 'The paper builds cleanly.'],
+      }),
+    },
+  })
+
+  const result = await handleFleetTool('thread', { message_id: 2923649 })
+
+  assert.equal(result.isError, undefined, result.content?.[0]?.text)
+  assert.match(result.content[0].text, /Recover and finish the survival-paper review-response project\./)
+  assert.match(result.content[0].text, /1\. Every referee comment is dispositioned\./)
+  assert.match(result.content[0].text, /2\. The paper builds cleanly\./)
+})
+
 test('thread with no selector at all names message_id among the options', async () => {
   installTransport()
 

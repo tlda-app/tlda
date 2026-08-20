@@ -258,6 +258,27 @@ const serverCore = createDaemonMintCore({
 await serverCore.mint({ mint_id: 'mint:server', fleet_id: 'fleet:server', name: 'server' })
 assert.deepEqual(serverEvents, ['launch:fleet:server', 'bind:fleet:server:session:server'])
 
+// A live runtime is durable before its transcript identity exists. The seat's
+// permission grant must be written at that boundary rather than waiting behind
+// session discovery.
+const partialEvents = []
+const partialCore = createDaemonMintCore({
+  store,
+  launchProcess: async () => ({ tmux_session: 'fleet-partial', permission_grant: 'app-dev' }),
+  requestSeat: async () => { throw new Error('server mint must not request a second seat') },
+  bindSeat: async facts => partialEvents.push(`bind:${facts.fleetId}:${facts.sessionId || 'pending'}`),
+  sleep: async () => { throw new Error('a launched runtime must not block waiting for its transcript') },
+  retryDelay: () => 1,
+})
+const partialFacts = await partialCore.mint({ mint_id: 'mint:partial', fleet_id: 'fleet:partial', name: 'partial' })
+assert.equal(store.get('mint:partial').processState.tmux_session, 'fleet-partial')
+assert.ok(partialEvents.length >= 1)
+assert.ok(partialEvents.every(event => event === 'bind:fleet:partial:pending'))
+await partialCore.recordSession('mint:partial', { session_id: 'session:partial' })
+assert.equal(partialFacts.sessionId, null)
+assert.equal(store.get('mint:partial').sessionId, 'session:partial')
+assert.equal(store.get('mint:partial').joinedAt != null, true)
+
 const envCore = createDaemonMintCore({
   store,
   envName: 'testing',

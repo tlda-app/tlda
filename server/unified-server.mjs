@@ -622,17 +622,21 @@ function markAgentNotAlive(agentId, detail = {}) {
   const evidence = detail.unknown
     ? runtimeStatusStore.markUnknown(agentId, detail.source || 'runtime-unknown', detail)
     : runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
-  if (evidence?.liveness === 'alive') return
-  if (!detail.unknown) {
-    fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: detail.status || RUNTIME_STATUS.HIBERNATING }, evidence.liveness_at)
-      .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
-  }
+  if (evidence?.liveness === 'alive') return Promise.resolve(false)
+  if (detail.unknown) return Promise.resolve(false)
+  const durableWrite = fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: detail.status || RUNTIME_STATUS.HIBERNATING }, evidence.liveness_at)
+  // Most observation callers are fire-and-forget; lifecycle callers await the
+  // original promise below so a failed durable transition cannot acknowledge
+  // success. This side catch keeps ignored observation writes from becoming
+  // unhandled rejections without weakening the awaited result.
+  durableWrite.catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
   _aliveAgents.delete(agentId)
   _aliveSince.delete(agentId)
   clearSourceEditsForAgent(agentId)
   clearEphemeralState(agentId)
   // Fire-and-forget for the reason given where onChange does the same.
   if (wasAlive) fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
+  return durableWrite
 }
 
 // `getAliveAgents` crosses the store worker, so it hands back a Promise. Passing
@@ -8249,7 +8253,7 @@ async function dispatchFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-      markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session', status: RUNTIME_STATUS.DEAD })
+      await markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session', status: RUNTIME_STATUS.DEAD })
       await fleetStore.markDead(agent.id)
       await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-kill-session', reason: 'native parent session killed' })
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
@@ -8269,7 +8273,7 @@ async function dispatchFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-      markAgentNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'operator hibernated session' })
+      await markAgentNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'operator hibernated session' })
       await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'native parent session hibernated' })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
@@ -8304,7 +8308,7 @@ async function dispatchFleetWsMessage(ws, msg) {
     }
     try {
       await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-      markAgentNotAlive(agent.id, { source: 'ws-restart-agent-mcp', reason: 'operator restarted MCP' })
+      await markAgentNotAlive(agent.id, { source: 'ws-restart-agent-mcp', reason: 'operator restarted MCP' })
       await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-restart-agent-mcp', reason: 'native parent MCP restarted' })
       const result = await runWakeRouteLifecycle({
         agentId: agent.id,

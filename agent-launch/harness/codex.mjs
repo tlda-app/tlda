@@ -20,7 +20,7 @@ import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 const CODEX_CONFIG_FILE = path.join(os.homedir(), '.codex', 'config.toml')
 const execFileP = promisify(execFile)
 
-export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, diagnose = false } = {}) {
+export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, diagnose = false, processOwnedOnly = false } = {}) {
   const unresolved = (failureStage) => diagnose ? { sessionId: null, jsonlPath: null, model: null, failureStage } : null
   if (!tmuxSession) return unresolved('pane')
   const tmuxPrefix = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
@@ -51,7 +51,7 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   const runtimePids = codexRuntimeCandidates({ panePids, children, runtimes })
   if (!runtimePids.length) return unresolved('pid')
   const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
-  const jsonlPath = await resolveOwnedCodexTranscript({ runtimePids, agent, launchTs })
+  const jsonlPath = await resolveOwnedCodexTranscript({ runtimePids, agent, launchTs, processOwnedOnly })
   if (!jsonlPath) return unresolved('runtime-rollout')
   const sessionId = ledgerSessionId({ harness_kind: 'codex', jsonl_path: jsonlPath })
   if (!sessionId) return diagnose ? { sessionId: null, jsonlPath, model: null, failureStage: 'session-id' } : null
@@ -74,6 +74,7 @@ export async function resolveOwnedCodexTranscript({
   runtimePids = [],
   agent,
   launchTs,
+  processOwnedOnly = false,
   resolveTranscriptImpl = resolveTranscript,
 } = {}) {
   const acceptTranscript = path =>
@@ -85,16 +86,19 @@ export async function resolveOwnedCodexTranscript({
       kind: 'codex',
       agent,
       launchTs,
+      processOwnedOnly,
       acceptTranscript,
     })
     if (owned) return owned
   }
   if (!runtimePids.length) return null
+  if (processOwnedOnly) return null
   return await resolveTranscriptImpl({
     pid: runtimePids[0],
     kind: 'codex',
     agent,
     launchTs,
+    processOwnedOnly,
     acceptTranscript,
   })
 }

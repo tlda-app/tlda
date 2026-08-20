@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { spawn as spawnProcess, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { WebSocket } from 'ws'
+import Database from 'better-sqlite3'
+import { MintStore } from '../daemon/mint-store.mjs'
+import { createPermissionLedger } from '../agent-launch/permission-ledger.mjs'
 
 const PORT = Number(process.env.PORT || (6607 + (process.pid % 1000)))
 const DB = `/tmp/server-originated-claude-mint-${process.pid}.db`
@@ -17,6 +20,14 @@ const REQUESTER_ID = 'fleet:real-claude-mint-requester'
 const REQUESTER_NAME = 'real-claude-mint-requester'
 const MINT_NAME = `real-claude-mint-gate-${process.pid}`
 const PHRASE = `real-claude-mint-proof-${process.pid}`
+const MINT_MODEL = process.env.TLDA_REAL_MINT_MODEL || 'sonnet'
+const LOGIN_TIMEOUT_MS = Number(process.env.TLDA_REAL_MINT_LOGIN_TIMEOUT_MS || 180_000)
+const OVERALL_TIMEOUT_MS = Number(process.env.TLDA_REAL_MINT_OVERALL_TIMEOUT_MS || 360_000)
+const DURABLE_SEND_DEADLINE_MS = Number(process.env.TLDA_REAL_MINT_DURABLE_SEND_DEADLINE_MS || 15_000)
+const EXPECT_TIMEOUT_RETRY = DURABLE_SEND_DEADLINE_MS < 15_000
+const OPERATION_ID = `real-mint-gate:${process.pid}`
+const TASK_MESSAGE = `Reply to ${REQUESTER_NAME} with exactly ${PHRASE}, then stop.`
+const TASK_CRITERIA = ['Receive the complete delegated message', 'Reply through fleet chat']
 const useTls = existsSync(`${process.env.HOME}/.config/tlda/localhost+2.pem`)
 if (useTls) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 const proto = useTls ? 'https' : 'http'
@@ -202,6 +213,38 @@ async function capturePane(agentId) {
   }
 }
 
+async function waitForOutboxRetry(timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const file = readdirSync(CONFIG_DIR).find(name => name.startsWith('mcp-fleet-transport-') && name.endsWith('.sqlite'))
+    if (file) {
+      const db = new Database(`${CONFIG_DIR}/${file}`, { readonly: true })
+      const row = db.prepare('SELECT attempts, status, result_json FROM mcp_fleet_outbox WHERE operation_id = ?').get(OPERATION_ID)
+      db.close()
+      if (row?.attempts >= 2 && row.status === 'accepted') return row
+    }
+    await sleep(100)
+  }
+  return null
+}
+
+async function waitForDurableBinding(agentId, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const mintStore = new MintStore(`${CONFIG_DIR}/daemon-mints.sqlite`, { defaultEnvName: ENV_NAME })
+    const mintRow = mintStore.getByFleetId(agentId)
+    mintStore.close()
+    const permissionLedger = createPermissionLedger(`${CONFIG_DIR}/fleet-daemon.db`)
+    const grant = permissionLedger.get(agentId)
+    await permissionLedger.close()
+    if (mintRow?.processState && mintRow?.sessionId && mintRow?.joinedAt && grant?.permissionGrant === 'ops' && grant?.sessionId) {
+      return { mintRow, grant }
+    }
+    await sleep(100)
+  }
+  return null
+}
+
 function captureMintTmuxPane() {
   const result = spawnSync('tmux', ['capture-pane', '-pt', `fleet-${MINT_NAME}`, '-S', '-160'], { encoding: 'utf8' })
   return result.status === 0 ? result.stdout : result.stderr || result.error?.message || ''
@@ -225,6 +268,7 @@ async function startMcpClient() {
       FLEET_HARNESS: 'codex',
       FLEET_TMUX_SESSION: 'fleet-real-mint-requester',
       TLDA_MCP_FLEET_ONLY: '1',
+      TLDA_FLEET_DURABLE_SEND_DEADLINE_MS: String(DURABLE_SEND_DEADLINE_MS),
       // No deadline override here. Nothing ever read
       // TLDA_FLEET_DURABLE_SEND_DEADLINE_MS -- the constant in fleet-tools.mjs is
       // hard-coded -- so this test always ran at the real 15s bound while
@@ -259,6 +303,21 @@ models:
       group: claude
       level: 3
       description: Claude Sonnet
+      options:
+        effort:
+          default: low
+          values:
+            low: {}
+    codex-sol:
+      id: gpt-5.6-sol
+      harness:
+        kind: codex
+        required: []
+        preferences: []
+        controls: true
+      group: codex
+      level: 3
+      description: Codex Sol
       options:
         effort:
           default: low
@@ -334,20 +393,26 @@ jsonlTailIdleSeconds: 600
       mint: {
         name: MINT_NAME,
         cwd: process.cwd(),
-        model: 'sonnet',
+        model: MINT_MODEL,
         effort: 'low',
         permissionRequest: 'ops',
       },
       description: 'Real route gate proof',
-      message: `Reply to ${REQUESTER_NAME} with exactly ${PHRASE}, then stop.`,
-      operation_id: `real-mint-gate:${process.pid}`,
+      message: TASK_MESSAGE,
+      success_criteria: TASK_CRITERIA,
+      operation_id: OPERATION_ID,
     },
   })
   const mintAckAt = Date.now()
   const text = result.content?.map(part => part.text || '').join('\n') || ''
   assert.equal(result.isError, undefined, text)
-  const agentId = text.match(/agent_id:\s*`?([^`\s]+)`?/)?.[1] || null
-  assert.ok(agentId, `delegate(mint:) returned no agent_id:\n${text}`)
+  if (EXPECT_TIMEOUT_RETRY) assert.match(text, /queued durably/, `forced deadline did not exercise the queued retry path:\n${text}`)
+  let agentId = text.match(/agent_id:\s*`?([^`\s]+)`?/)?.[1] || null
+  if (!agentId && EXPECT_TIMEOUT_RETRY) {
+    const shell = await rosterAgent(a => a.name === MINT_NAME, 60_000)
+    agentId = shell?.id || null
+  }
+  assert.ok(agentId, `delegate(mint:) returned or reconciled no agent_id:\n${text}`)
 
   // The bug this covers: the delegation was dropped whenever the mint's
   // acknowledgement outlived the client's 15s durable-send deadline, which a
@@ -355,8 +420,6 @@ jsonlTailIdleSeconds: 600
   // agent has logged in -- and that the login it is waiting for really does land
   // after that deadline. If login started arriving inside 15s this assertion
   // would stop being about the bug, and it says so rather than passing quietly.
-  const mintTaskId = text.match(/delegated \[([^\]]+)\]/)?.[1] || null
-  assert.ok(mintTaskId, `delegate(mint:) reported no task id:\n${text}`)
   const preLoginTask = await (async () => {
     const ws = await openFleet()
     try {
@@ -365,9 +428,26 @@ jsonlTailIdleSeconds: 600
       ws.close()
     }
   })()
+  const mintTaskId = text.match(/delegated \[([^\]]+)\]/)?.[1] || preLoginTask.task?.id || null
+  assert.ok(mintTaskId, `delegate(mint:) produced no persisted task id:\n${text}`)
   assert.equal(preLoginTask.task?.id, mintTaskId, `mint task not attached before login:\n${JSON.stringify(preLoginTask, null, 2)}`)
   assert.equal(preLoginTask.task?.agent, agentId)
+  assert.equal(preLoginTask.task?.message, TASK_MESSAGE)
+  assert.deepEqual(preLoginTask.task?.success_criteria, TASK_CRITERIA)
   console.log(`PASS: task ${mintTaskId} attached to ${agentId} at mint, before the agent logged in`)
+  if (EXPECT_TIMEOUT_RETRY) {
+    const outboxRow = await waitForOutboxRetry()
+    assert.ok(outboxRow, `operation ${OPERATION_ID} did not reach an accepted automatic retry`)
+    const db = new Database(DB, { readonly: true })
+    const sameNameRows = db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0').all(MINT_NAME)
+    db.close()
+    assert.equal(sameNameRows.length, 1, `retry reminted ${MINT_NAME}: ${JSON.stringify(sameNameRows)}`)
+    assert.equal(sameNameRows[0].id, agentId)
+    const retryResult = JSON.parse(outboxRow.result_json || '{}')
+    assert.equal(retryResult.agent_id, agentId, `retry reconciled to a different seat: ${outboxRow.result_json}`)
+    assert.equal(retryResult.task_id, mintTaskId, `retry reconciled to a different task: ${outboxRow.result_json}`)
+    console.log(`PASS: timed-out operation retried as attempt ${outboxRow.attempts} onto the same seat and task without remint`)
+  }
   // Not `/api/state`: its roster is `dead = 0 AND metadata.shell != 1`, so a row
   // that has been reserved but has not logged in is excluded by construction and
   // this could only ever have passed after login. It never ran to find out --
@@ -383,14 +463,18 @@ jsonlTailIdleSeconds: 600
   assert.equal(shell.runtime_status?.reason, 'reserved-shell-unclaimed', `expected ${agentId} to still be an unclaimed reserved shell before login`)
   console.log(`PASS: delegate(mint:) committed reserved shell ${agentId} with its task`)
 
-  const live = await stateAgent(a => a.id === agentId && a.metadata?.shell !== true, 180_000)
+  const live = await stateAgent(a => a.id === agentId && a.metadata?.shell !== true, LOGIN_TIMEOUT_MS)
   assert.ok(live, `minted agent never logged in as live ${agentId}\nSERVER LOG:\n${serverLog}\nDAEMON LOG:\n${daemonLog}`)
   const loginAfterAckMs = Date.now() - mintAckAt
   assert.ok(
-    loginAfterAckMs > 15_000,
-    `login landed ${loginAfterAckMs}ms after the mint ack, inside the 15s client durable-send deadline. The task-attached-before-login assertion above no longer exercises the dropped-delegation case; re-check what changed before trusting this suite.`,
+    loginAfterAckMs > DURABLE_SEND_DEADLINE_MS,
+    `login landed ${loginAfterAckMs}ms after the mint ack, inside the ${DURABLE_SEND_DEADLINE_MS}ms client durable-send deadline. The task-attached-before-login assertion above no longer exercises the timeout case; re-check what changed before trusting this suite.`,
   )
   console.log(`PASS: real daemon-spawned agent logged in ${agentId} ${loginAfterAckMs}ms after the mint ack (past the 15s client deadline)`)
+
+  const durableBinding = await waitForDurableBinding(agentId)
+  assert.ok(durableBinding, `mint ${agentId} did not reconcile durable process, session, joined, and permission-grant facts`)
+  console.log(`PASS: ${agentId} has durable process, session, joined, and permission-grant facts`)
 
   // Route presence is checked here rather than beside the shell assertion above.
   // A reserved shell has no daemon address -- the route is published at login --
@@ -403,9 +487,19 @@ jsonlTailIdleSeconds: 600
   const chat = await waitForChatFrom(agentId)
   assert.ok(chat, `minted agent did not answer with ${PHRASE}\nSERVER LOG:\n${serverLog}\nDAEMON LOG:\n${daemonLog}`)
   console.log('PASS: real delegate(mint:) agent answered through chat')
+
+  const lifecycleWs = await openFleet()
+  try {
+    await request(lifecycleWs, 'hibernate-session', { agent: agentId }, 60_000)
+  } finally {
+    lifecycleWs.close()
+  }
+  const hibernating = await rosterAgent(a => a.id === agentId && a.runtime_status?.status === 'hibernating', 60_000)
+  assert.ok(hibernating, `hibernate succeeded but ${agentId} did not clear from the awake roster projection:\n${JSON.stringify(rosterAgent.lastAgents, null, 2)}`)
+  console.log(`PASS: lifecycle hibernate durably cleared ${agentId} from awake roster state`)
   console.log('ALL CHECKS PASSED')
   cleanup(0)
 }
 
 run().catch(e => fail(`${e.stack || e.message || e}\nSERVER LOG:\n${serverLog}\nDAEMON LOG:\n${daemonLog}`))
-setTimeout(() => fail(`overall test timeout\nSERVER LOG:\n${serverLog}\nDAEMON LOG:\n${daemonLog}`), 360_000)
+setTimeout(() => fail(`overall test timeout\nSERVER LOG:\n${serverLog}\nDAEMON LOG:\n${daemonLog}`), OVERALL_TIMEOUT_MS)
