@@ -338,7 +338,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
         if (typeof submitSubmissionSource !== 'function') throw new Error('source-room daemon snapshot submission is not configured')
         const files = Object.entries(inspection.entries)
           .filter(([entryPath]) => !entryPath.endsWith('/'))
-          .map(([entryPath, bytes]) => ({ path: entryPath, content: Buffer.from(bytes).toString('base64') }))
+          .map(([entryPath, bytes]) => ({ path: entryPath, content: Buffer.from(bytes).toString('base64'), encoding: 'base64' }))
         const accepted = await submitSubmissionSource(contentRef, {
           files,
           sourceManifest: files.map(file => file.path).sort(),

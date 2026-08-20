@@ -802,7 +802,7 @@ async function seedScratchProject(base, branch) {
     name, title: `Scratch (${branch})`, mainFile: 'main.md', format: 'markdown',
   })
   if (!created) return null
-  const pushed = await post(`/api/projects/${name}/source-snapshot`, {
+  const pushed = await post(`/api/projects/${name}/source-room/files`, {
     // The manifest is the complete file list the snapshot consists of, and
     // every path in it must have an entry in `files` -- the snapshot IS the
     // project, so a path that leaves the manifest is deleted by not being

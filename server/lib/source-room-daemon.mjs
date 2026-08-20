@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto'
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { dirname, join } from 'path'
+import { dirname, isAbsolute, join } from 'path'
 import { spawnSync } from 'child_process'
 import * as Y from 'yjs'
 
@@ -466,9 +466,19 @@ export function createSourceRoomDaemon({
     await gitSync.sync([projectRecord])
     const paths = []
     for (const file of payload.files || []) {
+      if (typeof file?.path !== 'string' || !file.path || isAbsolute(file.path) || file.path.split(/[\\/]/).includes('..')) {
+        throw new Error(`invalid source-room path: ${file?.path || '<missing>'}`)
+      }
       const target = join(root, file.path)
-      atomicWrite(target, Buffer.from(file.content || '', file.encoding === 'utf8' ? 'utf8' : 'base64'))
+      atomicWrite(target, Buffer.from(file.content || '', file.encoding === 'base64' ? 'base64' : 'utf8'))
       paths.push(file.path)
+    }
+    for (const filePath of payload.deletedFiles || []) {
+      if (typeof filePath !== 'string' || !filePath || isAbsolute(filePath) || filePath.split(/[\\/]/).includes('..')) {
+        throw new Error(`invalid source-room path: ${filePath || '<missing>'}`)
+      }
+      rmSync(join(root, filePath), { force: true })
+      paths.push(filePath)
     }
     gitSync.queuePaths(project, paths)
     return { status: 202, body: { ok: true, status: 'queued' } }

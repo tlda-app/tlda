@@ -66,7 +66,6 @@ import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, r
 import { createSourceRoomDaemon, sourceRoomDaemonKey } from './lib/source-room-daemon.mjs'
 import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
-import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { admitProposal, initBuildDispatcher, killAllDispatchedBuilds, recoverBuildPublications, recoverProposalBuilds, setBuildHeadNotifier } from './lib/build-dispatch.mjs'
@@ -9870,12 +9869,6 @@ process.on('unhandledRejection', (err) => {
   console.log(`[config] active="${cfg.name}" database=${cfg.database.http} store=${cfg.store.http} license=${cfg.licenseKey ? 'set' : 'none'}`)
 }
 
-// Finish journal recovery before accepting a daemon redelivery. Starting the
-// listener first lets the startup recovery and the source-change handler race
-// over the same snapshot directory after a process crash.
-await resumeOverleafPollers(listProjects).catch(error => {
-  console.error(`[overleaf] source transaction recovery failed: ${error.message}`)
-})
 await recoverBuildPublications()
 await recoverProposalBuilds()
 

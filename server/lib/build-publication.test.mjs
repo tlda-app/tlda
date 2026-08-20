@@ -24,15 +24,16 @@ test('publication advances the shared head monotonically and a late ancestor pub
     await initProjectStore(root)
     createProject({ name, mainFile: 'main.md', format: 'markdown' })
     const lifecycle = await sourceLifecycleStore(name, { context: { referencedRoots: ['main.md'] } })
-    const old = await lifecycle.bootstrap({
-      expectedRevision: null,
-      sourceManifest: ['main.md'],
-      files: [{ path: 'main.md', content: 'old source' }],
-    })
     const git = await lifecycle.gitRepository()
+    const oldRevision = await git.acceptRevision({
+      project: name,
+      files: [{ path: 'main.md', content: 'old source' }],
+      message: 'shared base',
+    })
+    await git.advanceHead(name, oldRevision, null)
     const newerRevision = await git.acceptRevision({
       project: name,
-      parent: old.authority.currentRevision,
+      parent: oldRevision,
       files: [{ path: 'main.md', content: 'new source' }],
       message: 'new proposal',
     })
@@ -48,7 +49,7 @@ test('publication advances the shared head monotonically and a late ancestor pub
     assert.equal(readFileSync(join(root, name, 'output', 'artifact.txt'), 'utf8'), 'new artifact')
     assert.equal(readFileSync(join(root, name, 'build.log'), 'utf8'), 'new artifact log')
 
-    const stale = await publishBuildInstance(name, old.authority.currentRevision, null, oldProject, [])
+    const stale = await publishBuildInstance(name, oldRevision, null, oldProject, [])
     assert.equal(stale.published, false)
     assert.equal(stale.stale, true)
     assert.equal(readFileSync(join(root, name, 'output', 'artifact.txt'), 'utf8'), 'new artifact')

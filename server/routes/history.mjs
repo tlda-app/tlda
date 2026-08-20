@@ -14,7 +14,7 @@ import { promisify } from 'util'
 const execAsync = promisify(execCb)
 const execFileAsync = promisify(execFileCb)
 import { requireRead, requireRw } from '../lib/auth.mjs'
-import { readProject, outputDir, projectDir, sourceDir as getSourceDir, sourceLifecycleStore, validateSourceFilePath } from '../lib/project-store.mjs'
+import { readProject, outputDir, projectDir, sourceDir as getSourceDir, validateSourceFilePath } from '../lib/project-store.mjs'
 import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { announcePageJson } from '../../shared/pagination-announce.mjs'
@@ -37,7 +37,7 @@ async function snapshotFromDirectory(root, relative = '') {
     const path = relative ? `${relative}/${entry.name}` : entry.name
     if (path === '.gitignore') continue
     if (entry.isDirectory()) files.push(...await snapshotFromDirectory(root, path))
-    else if (entry.isFile()) files.push({ path, content: (await readFile(join(root, path))).toString('base64') })
+    else if (entry.isFile()) files.push({ path, content: (await readFile(join(root, path))).toString('base64'), encoding: 'base64' })
   }
   return files
 }
@@ -45,13 +45,10 @@ async function snapshotFromDirectory(root, relative = '') {
 async function submitHistorySnapshot(req, name, root) {
   const daemon = req.app?.locals?.sourceRoomDaemon
   if (!daemon?.submitFiles) throw new Error('source-room Git submission is not configured')
-  const lifecycle = await sourceLifecycleStore(name)
-  const authority = await lifecycle.readAuthority()
   const files = await snapshotFromDirectory(root)
   const result = await daemon.submitFiles(name, {
     files,
     sourceManifest: files.map(file => file.path).sort(),
-    expectedRevision: authority.currentRevision || null,
   })
   if (!result.body?.ok) throw new Error(result.body?.error || result.body?.status || `source snapshot failed (${result.status})`)
   return result

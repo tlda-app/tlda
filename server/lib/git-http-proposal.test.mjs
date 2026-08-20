@@ -37,12 +37,13 @@ test('authenticated Git HTTP admits one immutable proposal without moving shared
     await initProjectStore(join(root, 'projects'))
     createProject({ name: project, mainFile: 'main.tex', format: 'svg' })
     const lifecycle = await sourceLifecycleStore(project)
-    const bootstrap = await lifecycle.bootstrap({
-      expectedRevision: null,
-      sourceManifest: ['main.tex'],
+    const sourceGit = await lifecycle.gitRepository()
+    const sharedHead = await sourceGit.acceptRevision({
+      project,
       files: [{ path: 'main.tex', content: 'base\n' }],
+      message: 'shared base',
     })
-    const sharedHead = bootstrap.authority.currentRevision
+    await sourceGit.advanceHead(project, sharedHead, null)
     const app = express()
     app.use(createGitHttpHandler({
       validateToken: token => token === 'secret' ? 'rw' : null,
