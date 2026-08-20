@@ -57,6 +57,18 @@ async function makeScopedBundle(root, build) {
   return bundleRepo(root, shadow)
 }
 
+async function makeIdenticalTreeCommits(root) {
+  const shadow = await fs.promises.mkdtemp(path.join(root, 'shadow-identical-'))
+  await initRepo(shadow)
+  await write(path.join(shadow, 'main.tex'), 'same tree\n')
+  await git(shadow, ['add', 'main.tex'])
+  await git(shadow, ['commit', '-m', 'accepted source'])
+  const { stdout: acceptedRaw } = await git(shadow, ['rev-parse', 'HEAD'])
+  await git(shadow, ['commit', '--allow-empty', '-m', 'synthetic preservation'])
+  const bundled = await bundleRepo(root, shadow)
+  return { ...bundled, acceptedRevision: acceptedRaw.trim() }
+}
+
 async function makeSource(root, mainContent) {
   const source = await fs.promises.mkdtemp(path.join(root, 'source-'))
   await initRepo(source)
@@ -85,6 +97,7 @@ async function runMirror(source, hash, bundleBase64, options = {}) {
     hash,
     bundleBase64,
     sourceScope: options.sourceScope || ['main.tex'],
+    sourceRevision: options.sourceRevision,
   })
   return { result, messages }
 }
@@ -134,6 +147,7 @@ async function main() {
     const published = []
     const { result } = await runMirror(source, hash, bundleBase64, {
       afterMirror: payload => published.push(payload),
+      sourceRevision: hash,
     })
     const { stdout: afterHeadRaw } = await git(source, ['rev-parse', 'HEAD'])
     assert.equal(result.preservation.committed, true)
@@ -142,7 +156,23 @@ async function main() {
     await assertDirty(source, 'notes.tex')
     const { stdout: shadowHeadRaw } = await git(source, ['rev-parse', 'refs/tlda/shadow/HEAD'])
     assert.equal(shadowHeadRaw.trim(), hash)
+    const { stdout: acceptedRefRaw } = await git(source, ['rev-parse', 'refs/tlda/source/accepted'])
+    assert.equal(acceptedRefRaw.trim(), hash)
     assert.deepEqual(published, [{ project: 'fixture-doc', sourceRevision: hash, sourceDir: source }])
+
+    const synthetic = await makeIdenticalTreeCommits(root)
+    const syntheticRepo = path.join(root, 'synthetic-source')
+    await fs.promises.mkdir(syntheticRepo)
+    await initRepo(syntheticRepo)
+    await write(path.join(syntheticRepo, 'main.tex'), 'same tree\n')
+    await git(syntheticRepo, ['add', 'main.tex'])
+    await git(syntheticRepo, ['commit', '-m', 'local base'])
+    const syntheticPublished = []
+    await runMirror(syntheticRepo, synthetic.hash, synthetic.bundleBase64, {
+      sourceRevision: synthetic.acceptedRevision,
+      afterMirror: payload => syntheticPublished.push(payload),
+    })
+    assert.deepEqual(syntheticPublished, [], 'an identical tree under a different commit must not be published as the accepted revision')
 
     const stagedUnrelated = await makeSource(root, 'new\n')
     await git(stagedUnrelated, ['add', 'notes.tex'])

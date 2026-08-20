@@ -48,7 +48,17 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
       await execFileP('git', ['cat-file', '-e', `${hash}^{commit}`], { cwd: sourceDir, timeout: 5000 })
       const preservation = await preserveAuthorCommit({ sourceDir, project, hash, sourceScope, log, beforeUpdateRef: beforePreserveUpdateRef })
       await gitRetryOnLock(() => execFileP('git', ['update-ref', 'refs/tlda/shadow/HEAD', hash], { cwd: sourceDir, timeout: 5000 }))
-      if (afterMirror) await afterMirror({ project, sourceRevision: hash, sourceDir })
+      // A build mirror's `hash` is a preservation commit, not necessarily the
+      // accepted source commit named by `sourceRevision`. Identical trees do
+      // not make those commits interchangeable: a Git-backed source must push
+      // the exact accepted object. Only the ordinary accepted-revision mirror
+      // has `hash === sourceRevision`; record that transported object under an
+      // explicit ref and publish it. A later build mirror may preserve history,
+      // but it cannot replace the accepted commit at the external remote.
+      if (sourceRevision === hash) {
+        await gitRetryOnLock(() => execFileP('git', ['update-ref', 'refs/tlda/source/accepted', sourceRevision], { cwd: sourceDir, timeout: 5000 }))
+        if (afterMirror) await afterMirror({ project, sourceRevision, sourceDir })
+      }
 
       // A push the server refused is carried in the same bundle, and it gets a
       // ref here for one reason: so the person who made it can see it. Without
