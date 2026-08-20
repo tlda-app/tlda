@@ -78,6 +78,7 @@ async function runMirror(source, hash, bundleBase64, options = {}) {
       warn: (msg) => messages.push(['warn', msg]),
     },
     beforePreserveUpdateRef: options.beforePreserveUpdateRef,
+    afterMirror: options.afterMirror,
   })
   const result = await mirror.mirrorShadowRef({
     project: 'fixture-doc',
@@ -130,7 +131,10 @@ async function main() {
 
     const source = await makeSource(root, 'new\n')
     const { stdout: beforeHeadRaw } = await git(source, ['rev-parse', 'HEAD'])
-    const { result } = await runMirror(source, hash, bundleBase64)
+    const published = []
+    const { result } = await runMirror(source, hash, bundleBase64, {
+      afterMirror: payload => published.push(payload),
+    })
     const { stdout: afterHeadRaw } = await git(source, ['rev-parse', 'HEAD'])
     assert.equal(result.preservation.committed, true)
     assert.notEqual(afterHeadRaw.trim(), beforeHeadRaw.trim())
@@ -138,6 +142,7 @@ async function main() {
     await assertDirty(source, 'notes.tex')
     const { stdout: shadowHeadRaw } = await git(source, ['rev-parse', 'refs/tlda/shadow/HEAD'])
     assert.equal(shadowHeadRaw.trim(), hash)
+    assert.deepEqual(published, [{ project: 'fixture-doc', sourceRevision: hash, sourceDir: source }])
 
     const stagedUnrelated = await makeSource(root, 'new\n')
     await git(stagedUnrelated, ['add', 'notes.tex'])
