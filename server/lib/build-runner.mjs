@@ -55,7 +55,7 @@ import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
 import { tmpdir, homedir } from 'os'
 import { fileURLToPath } from 'url'
-import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors, sourceLifecycleStore } from './project-store.mjs'
+import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, aggregateBookToc, extractBuildErrors, sourceLifecycleStore } from './project-store.mjs'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { commitSnapshot, currentVersion, initShadowFromProjectRepo, initShadowFromBundle, listVersions, createShadowBundleBase64, readShadowSourceScope } from './shadow-repo.mjs'
@@ -74,6 +74,13 @@ import { projectRevisionStatus } from './source-lifecycle.mjs'
 // swaps these for IPC sends back to the server, which performs them there.
 // All four are fire-and-forget (no return value) → clean to ship over IPC.
 const _directReporter = {
+  regenerateBookTocs: async (name) => {
+    for (const project of await listProjects()) {
+      if (project.format === 'book' && Array.isArray(project.members) && project.members.includes(name)) {
+        aggregateBookToc(project.name, project.members)
+      }
+    }
+  },
   broadcastSignal: (room, signal, payload) => broadcastSignal(room, signal, payload),
   putShape: (docName, shape) => putShape(docName, shape),
   writeSentinel: (docName, propsPatch) => writeSentinel(docName, propsPatch),
@@ -343,11 +350,12 @@ let buildIdCounter = 0
 
 /**
  * Run a command, tracking the child process for cleanup.
- * Uses detached mode so we can kill the entire process group on abort.
+ * The build worker owns one process group. Commands inherit it so cancellation
+ * reaches the worker and every descendant through the transport's group signal.
  */
 function trackedExec(buildId, cmd, opts = {}) {
   return new Promise((resolve, reject) => {
-    const child = execCb(cmd, { maxBuffer: 50 * 1024 * 1024, detached: true, ...opts }, (err, stdout, stderr) => {
+    const child = execCb(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts, detached: false }, (err, stdout, stderr) => {
       const children = buildChildProcesses.get(buildId)
       if (children) children.delete(child)
       if (err) reject(err)
@@ -360,16 +368,23 @@ function trackedExec(buildId, cmd, opts = {}) {
 
 /**
  * Kill all child processes for a build instance.
- * Uses negative PID to kill the entire process group (shell + latexmk + pdflatex).
+ * The transport owns whole-tree cancellation. This only terminates commands
+ * when runBuild is aborted inside a still-live worker.
  */
 function killBuildProcesses(buildId) {
   const children = buildChildProcesses.get(buildId)
   if (!children) return
+  const errors = []
   for (const child of children) {
-    try { process.kill(-child.pid, 'SIGKILL') } catch {}
+    try {
+      child.kill('SIGKILL')
+    } catch (error) {
+      errors.push(error)
+    }
   }
   children.clear()
   buildChildProcesses.delete(buildId)
+  if (errors.length > 0) throw new AggregateError(errors, `failed to terminate ${errors.length} build process(es)`)
 }
 
 /**

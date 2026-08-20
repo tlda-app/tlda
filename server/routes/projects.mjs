@@ -39,7 +39,7 @@ import {
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus, SOURCE_AUTHORITY_UNINITIALIZED } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
-import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
+import { dispatchBuild, projectHeadChanged } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
@@ -381,13 +381,13 @@ router.post('/:name/parts', requireRw, async (req, res) => {
     }
     const project = await readProject(req.params.name)
     if (project?.format === 'markdown') {
-      await dispatchBuild(req.params.name)
+      await requestSourceRoomBuild(req.params.name)
     } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
       // svg/png/diff and any other format with no page-info.json of its own —
       // write the parts-only manifest and tell open viewers to reload.
       // (html/slides own page-info.json via their own build pipeline; wiring
       // parts into those is a separate, unstarted piece.)
-      await dispatchBuild(req.params.name, { kind: 'parts' })
+      await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
     }
     emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({ ok: true, ...result, outputFile: markdownColumnFileForSource(result.projectPath) })
@@ -441,9 +441,9 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
     })
     const touched = result.touchedDirs?.includes(projectPartsRoot(req.params.name)) || false
     if (project.format === 'markdown') {
-      await dispatchBuild(req.params.name)
+      await requestSourceRoomBuild(req.params.name)
     } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
-      await dispatchBuild(req.params.name, { kind: 'parts' })
+      await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
     }
     emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({
@@ -495,9 +495,9 @@ router.delete('/:name/parts', requireRw, async (req, res) => {
     parts: manifest.parts.filter(part => !deleted.has(part.id)),
   })
   if (project.format === 'markdown') {
-    await dispatchBuild(req.params.name)
+    await requestSourceRoomBuild(req.params.name)
   } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
-    await dispatchBuild(req.params.name, { kind: 'parts' })
+    await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
   }
   res.json({ ok: true, deleted: ids })
 })
@@ -519,9 +519,9 @@ router.delete('/:name/parts/:id', requireRw, async (req, res) => {
     parts: manifest.parts.filter(p => p.id !== req.params.id),
   })
   if (project.format === 'markdown') {
-    await dispatchBuild(req.params.name)
+    await requestSourceRoomBuild(req.params.name)
   } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
-    await dispatchBuild(req.params.name, { kind: 'parts' })
+    await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
   }
   res.json({ ok: true, deleted: req.params.id })
 })
@@ -577,10 +577,10 @@ router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
     })
     const project = await readProject(req.params.name)
     if (project?.format === 'markdown') {
-      await dispatchBuild(req.params.name)
+      await requestSourceRoomBuild(req.params.name)
       emitGlobalEvent('project-changed', { name: req.params.name })
     } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
-      await dispatchBuild(req.params.name, { kind: 'parts' })
+      await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
       emitGlobalEvent('project-changed', { name: req.params.name })
     }
     res.json({ ok: true, ...result })
@@ -638,7 +638,7 @@ router.post('/:name/link', requireRw, async (req, res) => {
     if (result.linked) {
       const project = await readProject(req.params.name)
       if (project?.format === 'svg') {
-        await dispatchBuild(req.params.name)
+        await requestSourceRoomBuild(req.params.name)
       }
       emitGlobalEvent('project-changed', { name: req.params.name })
     }
@@ -984,6 +984,16 @@ function conflictFilesFromLifecycleResult(result) {
 let acceptedSourceMutationHandler = null
 let pendingSourceReplicaHandler = null
 let sourceBindingTargetProvider = null
+let sourceRoomDaemonRequests = null
+
+export function setSourceRoomDaemonRequests(requests) {
+  sourceRoomDaemonRequests = requests || null
+}
+
+async function requestSourceRoomBuild(name, options = {}) {
+  if (!sourceRoomDaemonRequests?.requestBuild) throw new Error('source-room daemon build submission is not configured')
+  return sourceRoomDaemonRequests.requestBuild(name, options)
+}
 
 export function setAcceptedSourceMutationHandler(handler) {
   acceptedSourceMutationHandler = typeof handler === 'function' ? handler : null
@@ -1216,6 +1226,7 @@ async function materializeWorkingCopy(name, lifecycle, sourceRevision) {
  */
 export async function applyAcceptedSourceEffects(name, lifecycle, {
   sourceRevision, acceptSeq, previousRevision, editedBy, sourceBindingId, requestId,
+  daemonId = null,
   // Which daemon's push this was, so the fan-out can avoid echoing the change
   // back to the machine it came from. Absent means "tell everyone", which is
   // correct for a carrier that is not a daemon.
@@ -1236,8 +1247,14 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
   owner = null,
 }) {
   if (!sourceRevision) return []
+  if (!daemonId) {
+    throw new Error(`accepted source revision ${sourceRevision} did not arrive through a source daemon boundary`)
+  }
   const ran = []
-  lifecycle.recordAcceptedRevision(name, sourceRevision, acceptSeq)
+  lifecycle.recordAcceptedRevision(name, sourceRevision, acceptSeq, {
+    daemonId,
+    basedOnRevision: sourceRevision,
+  })
   ran.push('journal')
 
   const { changed, deleted } = await lifecycle.diffRevisions(previousRevision, sourceRevision)
@@ -1370,11 +1387,17 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
   const decision = shouldBuildOnPush(project, name, {
     changedFiles: [...changed, ...deleted],
     anyChanged: changed.length > 0 || deleted.length > 0,
-    building: isBuildKindPending(name, 'build'),
+    building: false,
     ready: projectRevisionStatus(lifecycle.listRevisionLifecycles(name)).status === 'success',
   })
   if (materialized && decision.build) {
-    void dispatchBuild(name, { sourceRevision, acceptSeq })
+    await projectHeadChanged(name, sourceRevision)
+    void dispatchBuild(name, {
+      sourceRevision,
+      acceptSeq,
+      basedOnRevision: sourceRevision,
+      daemonId,
+    })
       .catch(error => console.error(`[${name}] build dispatch after accept failed: ${error.message}`))
     ran.push('build')
   } else if (sourceRevision) {
@@ -1614,9 +1637,9 @@ async function referencedClosureForPush(name, roots, { files, sourceManifest }) 
 
 async function rebuildProjectPartsView(name, project) {
   if (project?.format === 'markdown') {
-    await dispatchBuild(name)
+    await requestSourceRoomBuild(name)
   } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
-    await dispatchBuild(name, { kind: 'parts' })
+    await requestSourceRoomBuild(name, { kind: 'parts' })
   }
 }
 
@@ -1804,7 +1827,7 @@ router.post('/:name/build', requireRw, async (req, res) => {
   res.json({ ok: true, building: true, clean })
 
   try {
-    await dispatchBuild(req.params.name)
+    await requestSourceRoomBuild(req.params.name)
   } catch (e) {
     console.error(`[api] Build failed for ${req.params.name}: ${e.message}`)
   }
@@ -1950,7 +1973,7 @@ function recordingsDir(name) {
  * Returns `{ status, body }` rather than writing a response, so an in-process
  * caller reads a value and the route sends it.
  */
-export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null } = {}) {
+export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null, daemonId = null } = {}) {
   const {
     files, sourceManifest, expectedRevision = null, dependencyPins = [],
     // Carried deliberately rather than by being remembered. `session` and
@@ -1966,6 +1989,9 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null 
   // move has been sending a field nobody reads. Dropped knowingly.
   if (!Array.isArray(files) || !Array.isArray(sourceManifest)) {
     return { status: 400, body: { ok: false, error: 'files[] and sourceManifest[] are required' } }
+  }
+  if (!daemonId) {
+    return { status: 400, body: { ok: false, error: 'source snapshot requires trusted daemon context' } }
   }
   try {
     const project = await readProject(name)
@@ -2144,6 +2170,7 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null 
       editedBy,
       sourceBindingId,
       sourceDaemonKey,
+      daemonId,
       owner: acceptOwner,
       requestId: requestId || randomUUID(),
     })
@@ -2210,7 +2237,10 @@ router.post('/:name/source-blob', requireRw, express.raw({ type: () => true, lim
 })
 
 router.post('/:name/source-snapshot', requireRw, async (req, res) => {
-  const { status, body } = await acceptSourceSnapshot(req.params.name, {
+  if (!sourceRoomDaemonRequests?.submitSnapshot) {
+    return res.status(503).json({ ok: false, error: 'source-room daemon snapshot submission is not configured' })
+  }
+  const { status, body } = await sourceRoomDaemonRequests.submitSnapshot(req.params.name, {
     ...(req.body || {}),
     editedBy: req.body?.editedBy || req.get('x-tlda-edited-by') || null,
   })
@@ -2221,6 +2251,13 @@ router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, l
   const name = req.params.name
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
     return res.status(400).json({ ok: false, error: 'a bundle body is required' })
+  }
+  const editedBy = req.get('x-tlda-edited-by') || null
+  const sourceBindingId = req.get('x-tlda-source-binding') || null
+  const sourceDaemonKey = req.get('x-tlda-source-daemon') || null
+  const owner = sourceConflictOwner({ editedBy, sourceBindingId, sourceDaemonKey })
+  if (!sourceDaemonKey) {
+    return res.status(400).json({ ok: false, error: 'source bundle requires source daemon context' })
   }
   const bundlePath = join(tmpdir(), `tlda-proposed-${process.pid}-${randomUUID()}.bundle`)
   try {
@@ -2253,12 +2290,14 @@ router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, l
       sourceRevision,
       acceptSeq,
       previousRevision: result.previous ?? null,
-      editedBy: req.get('x-tlda-edited-by') || null,
-      sourceBindingId: req.get('x-tlda-source-binding') || null,
+      editedBy,
+      sourceBindingId,
       // So the fan-out does not send this change back to the machine it came
       // from. A daemon that materializes its own push would overwrite the file
       // its author is still editing.
-      sourceDaemonKey: req.get('x-tlda-source-daemon') || null,
+      sourceDaemonKey,
+      daemonId: sourceDaemonKey,
+      owner,
       requestId: req.get('x-tlda-request-id') || randomUUID(),
     })
     res.json({

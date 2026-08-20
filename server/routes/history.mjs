@@ -14,8 +14,7 @@ import { promisify } from 'util'
 const execAsync = promisify(execCb)
 const execFileAsync = promisify(execFileCb)
 import { requireRead, requireRw } from '../lib/auth.mjs'
-import { readProject, outputDir, projectDir, sourceDir as getSourceDir, validateSourceFilePath } from '../lib/project-store.mjs'
-import { dispatchBuild } from '../lib/build-dispatch.mjs'
+import { readProject, outputDir, projectDir, sourceDir as getSourceDir, sourceLifecycleStore, validateSourceFilePath } from '../lib/project-store.mjs'
 import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { announcePageJson } from '../../shared/pagination-announce.mjs'
@@ -30,6 +29,32 @@ async function pathExists(path) {
   } catch {
     return false
   }
+}
+
+async function snapshotFromDirectory(root, relative = '') {
+  const files = []
+  for (const entry of await readdir(join(root, relative), { withFileTypes: true })) {
+    const path = relative ? `${relative}/${entry.name}` : entry.name
+    if (path === '.gitignore') continue
+    if (entry.isDirectory()) files.push(...await snapshotFromDirectory(root, path))
+    else if (entry.isFile()) files.push({ path, content: (await readFile(join(root, path))).toString('base64') })
+  }
+  return files
+}
+
+async function submitHistorySnapshot(req, name, root) {
+  const daemon = req.app?.locals?.sourceRoomDaemon
+  if (!daemon?.submitSnapshot) throw new Error('source-room daemon snapshot submission is not configured')
+  const lifecycle = await sourceLifecycleStore(name)
+  const authority = await lifecycle.readAuthority()
+  const files = await snapshotFromDirectory(root)
+  const result = await daemon.submitSnapshot(name, {
+    files,
+    sourceManifest: files.map(file => file.path).sort(),
+    expectedRevision: authority.currentRevision || null,
+  })
+  if (!result.body?.ok) throw new Error(result.body?.error || result.body?.status || `source snapshot failed (${result.status})`)
+  return result
 }
 
 async function readJsonOr(path, fallback) {
@@ -391,22 +416,8 @@ router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
 
   try {
     const tmpDir = await checkoutSource(name, ref)
-    const srcDir = getSourceDir(name)
-
-    // Clear existing source and copy from extracted ref
-    for (const entry of await readdir(srcDir)) {
-      await rm(join(srcDir, entry), { recursive: true, force: true })
-    }
-    for (const entry of await readdir(tmpDir)) {
-      if (entry === '.gitignore') continue
-      await cp(join(tmpDir, entry), join(srcDir, entry), { recursive: true })
-    }
-
-    // Clean up temp dir
+    await submitHistorySnapshot(req, name, tmpDir)
     await rm(tmpDir, { recursive: true, force: true })
-
-    // Trigger build
-    dispatchBuild(name).catch(e => console.error(`[history] build trigger failed for ${name}: ${e.message}`))
 
     // Tell the viewer it's showing a pinned old version (cleared when daemon pushes fresh files)
     broadcastSignal(`doc-${name}`, 'signal:view-pin', { ref: ref.slice(0, 7), timestamp: Date.now() })
@@ -430,17 +441,7 @@ router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
 
   try {
     const tmpDir = await checkoutSource(name, ref)
-    const srcDir = getSourceDir(name)
     const authorDir = project.sourceDir
-
-    // Write to server source (same as /checkout)
-    for (const entry of await readdir(srcDir)) {
-      await rm(join(srcDir, entry), { recursive: true, force: true })
-    }
-    for (const entry of await readdir(tmpDir)) {
-      if (entry === '.gitignore') continue
-      await cp(join(tmpDir, entry), join(srcDir, entry), { recursive: true })
-    }
 
     // Also write to author's working copy — this is what makes revert permanent
     const authorDirExists = !!(authorDir && await pathExists(authorDir))
@@ -452,8 +453,8 @@ router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
       }
     }
 
+    await submitHistorySnapshot(req, name, tmpDir)
     await rm(tmpDir, { recursive: true, force: true })
-    dispatchBuild(name).catch(e => console.error(`[history] build trigger failed for ${name}: ${e.message}`))
 
     res.json({
       ok: true,

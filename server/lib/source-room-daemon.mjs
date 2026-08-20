@@ -109,6 +109,8 @@ export function createSourceRoomDaemon({
   sourceLifecycleStore,
   readClientSourceManifest,
   acceptSourceSnapshot,
+  dispatchBuild = null,
+  projectHeadChanged = null,
   // How the room says it is holding an edit that never reached the paper, and
   // that it has stopped. Injected like everything else this file touches: the
   // room tests stand up their own project store, so importing the real
@@ -128,6 +130,37 @@ export function createSourceRoomDaemon({
   // drops the one nobody renamed.
   if (typeof acceptSourceSnapshot !== 'function') {
     throw new Error('createSourceRoomDaemon requires acceptSourceSnapshot (it previously took processProjectPush)')
+  }
+
+  async function submitSnapshot(project, payload, options = {}) {
+    if (payload?.expectedRevision === undefined) {
+      const lifecycle = await sourceLifecycleStore(project)
+      const authority = await lifecycle.readAuthority()
+      payload = { ...payload, expectedRevision: authority.currentRevision || null }
+    }
+    return acceptSourceSnapshot(project, payload, {
+      ...options,
+      daemonId: sourceRoomDaemonKey(project),
+    })
+  }
+
+  async function requestBuild(project, { kind = 'build' } = {}) {
+    if (typeof dispatchBuild !== 'function' || typeof projectHeadChanged !== 'function') {
+      throw new Error('source-room daemon build submission is not configured')
+    }
+    const lifecycle = await sourceLifecycleStore(project)
+    const authority = await lifecycle.readAuthority()
+    const sourceRevision = authority.currentRevision || null
+    if (!sourceRevision) throw new Error(`project ${project} has no accepted source revision to build`)
+    const revision = lifecycle.readRevisionLifecycle(project, sourceRevision)
+    await projectHeadChanged(project, sourceRevision)
+    return dispatchBuild(project, {
+      kind,
+      sourceRevision,
+      acceptSeq: revision?.acceptSeq ?? authority.acceptSeq ?? null,
+      basedOnRevision: sourceRevision,
+      daemonId: sourceRoomDaemonKey(project),
+    })
   }
   const rooms = new Map()
 
@@ -358,7 +391,7 @@ export function createSourceRoomDaemon({
         sourceDaemonKey: sourceRoomDaemonKey(room.project),
         requestId: submission.requestId,
         expectedRevision: submission.expectedRevision,
-      })
+      }, { daemonId: sourceRoomDaemonKey(room.project) })
       // Named rather than spread wholesale: the branches below read
       // `lifecycleStatus`, `authority.currentRevision` and `status`-as-HTTP,
       // and the new shape spells the first two differently. Mapping them here
@@ -509,6 +542,8 @@ export function createSourceRoomDaemon({
   return {
     getRoom,
     handleSocket,
+    submitSnapshot,
+    requestBuild,
     applyAcceptedSourceMutation,
     flushRoom,
     closeAll() {

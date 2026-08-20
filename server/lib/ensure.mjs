@@ -273,10 +273,16 @@ const RECIPES = [
  * Live version: trigger a full runBuild. Dynamic import breaks the cycle
  * ensure.mjs → build-runner.mjs → shadow-repo.mjs → ensure.mjs.
  */
+let currentBuildRequester = null
+
+export function setCurrentBuildRequester(requester) {
+  currentBuildRequester = typeof requester === 'function' ? requester : null
+}
+
 async function buildCurrentDvi(ctx) {
-  const { dispatchBuild } = await import('./build-dispatch.mjs')
   const { emitDocArrived } = await import('./build-runner.mjs')
-  await dispatchBuild(ctx.name)
+  if (!currentBuildRequester) throw new Error('source-room daemon build submission is not configured')
+  await currentBuildRequester(ctx.name)
   await emitDocArrived?.(ctx.name)
 }
 

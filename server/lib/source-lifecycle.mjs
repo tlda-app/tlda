@@ -903,6 +903,9 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
   return {
     readAuthority: state,
     readRevision: revision,
+    async isAncestor(ancestor, descendant) {
+      return (await sourceGit()).isAncestor(ancestor, descendant)
+    },
 
     /**
      * What a checkout needs to be brought to `id`: the commits it does not
@@ -1259,12 +1262,17 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
         .filter(lifecycle => lifecycle?.project === project)
         .sort((a, b) => (a.acceptSeq ?? 0) - (b.acceptSeq ?? 0))
     },
-    recordAcceptedRevision(project, sourceRevision, acceptSeq) {
+    recordAcceptedRevision(project, sourceRevision, acceptSeq, queueSubmission = null) {
       const journal = operationJournal()
       const existing = journal.revisionLifecycle[sourceRevision]
       if (existing) {
         if (existing.project !== project) {
           throw new Error(`Accepted revision identity mismatch for ${sourceRevision}`)
+        }
+        if (queueSubmission && !existing.queueSubmission) {
+          journal.revisionLifecycle[sourceRevision] = { ...existing, queueSubmission: stableValue(queueSubmission) }
+          writeOperationJournal(journal)
+          return operationJournal().revisionLifecycle[sourceRevision]
         }
         return existing
       }
@@ -1278,6 +1286,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
         version: { state: 'pending', updatedAt },
         mirror: { state: 'pending', updatedAt },
         replicas: {},
+        ...(queueSubmission ? { queueSubmission: stableValue(queueSubmission) } : {}),
         acceptedAt: updatedAt,
         updatedAt,
       }

@@ -4,10 +4,9 @@ import { extractToken, validateToken } from '../lib/auth.mjs'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
-import { createProject, readProject, sourceDir, sourceLifecycleStore, updateProject, writeSourceFileAsync } from '../lib/project-store.mjs'
+import { createProject, readProject, sourceDir, sourceLifecycleStore } from '../lib/project-store.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
-import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
 import crypto from 'node:crypto'
 
@@ -130,7 +129,7 @@ async function frozenTemplateSource(store, assignmentId, resolveTemplateSource) 
   }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, dispatchSubmissionBuild = dispatchBuild } = {}) {
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null } = {}) {
   const router = Router()
   router.post('/courses/:courseId/register', (req, res) => {
     if (!resolveRegistrationAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
@@ -336,25 +335,21 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
         if (!await readProject(contentRef)) {
           createProject({ name: contentRef, title: `${studentId} — ${assignmentId}`, mainFile: inspection.qmdPath, format: 'qmd' })
         }
-        for (const [entryPath, bytes] of Object.entries(inspection.entries)) {
-          if (entryPath.endsWith('/')) continue
-          await writeSourceFileAsync(contentRef, entryPath, Buffer.from(bytes))
-        }
+        if (typeof submitSubmissionSource !== 'function') throw new Error('source-room daemon snapshot submission is not configured')
+        const files = Object.entries(inspection.entries)
+          .filter(([entryPath]) => !entryPath.endsWith('/'))
+          .map(([entryPath, bytes]) => ({ path: entryPath, content: Buffer.from(bytes).toString('base64') }))
+        const accepted = await submitSubmissionSource(contentRef, {
+          files,
+          sourceManifest: files.map(file => file.path).sort(),
+        })
+        if (!accepted?.body?.ok) throw new Error(accepted?.body?.error || accepted?.body?.status || 'source snapshot was not accepted')
         const submission = store.submit({ assignmentId, studentId, contentRef, answerIds: inspection.answerIds })
         settled = true
         // The record is written before the render is asked for: a build that
         // fails leaves the work stored and re-renderable, where waiting on the
         // build would lose it.
         res.json({ ...submission, qmdPath: inspection.qmdPath, answerIds: inspection.answerIds })
-        dispatchSubmissionBuild(contentRef).catch(async error => {
-          console.error(`[classroom] render failed for ${contentRef}:`, error)
-          try {
-            await updateProject(contentRef, { buildStatus: 'error' })
-          } catch (updateError) {
-            // The submission response has already been sent; retain the original render failure in the server log.
-            console.error(`[classroom] failed to record render error for ${contentRef}:`, updateError)
-          }
-        })
       } catch (error) {
         console.error(`[classroom] could not store submission ${contentRef}:`, error)
         fail(500, { error: 'The submission could not be stored. Nothing was recorded — please try again.' })

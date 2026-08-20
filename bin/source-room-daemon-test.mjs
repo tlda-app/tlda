@@ -93,7 +93,7 @@ function suppressBuilds(name) {
 // object. Nothing here reads the HTTP status off the return -- it is asserted
 // below -- so the body is the whole useful value.
 async function acceptedPush(name, body) {
-  const result = await acceptSourceSnapshot(name, body)
+  const result = await acceptSourceSnapshot(name, body, { daemonId: 'daemon:test' })
   assert.equal(result.status, 200, JSON.stringify(result))
   assert.equal(result.body.ok, true, JSON.stringify(result))
   return result.body
@@ -259,9 +259,9 @@ try {
     readProject,
     sourceLifecycleStore,
     readClientSourceManifest,
-    acceptSourceSnapshot: async (project, body) => {
+    acceptSourceSnapshot: async (project, body, options) => {
       recoveredRequest = body
-      return acceptSourceSnapshot(project, body)
+      return acceptSourceSnapshot(project, body, options)
     },
     pushDelayMs: 10,
     log: { error() {} },

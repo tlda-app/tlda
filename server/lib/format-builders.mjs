@@ -7,7 +7,7 @@
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
 import { join, basename } from 'path'
-import { sourceDir as getSourceDir, outputDir as getOutputDir, listProjects, aggregateBookToc, readClientSourceManifest } from './project-store.mjs'
+import { sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { generateSlidesPageInfo } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
@@ -45,22 +45,14 @@ async function writeSourceScope(name, srcDir) {
   )
 }
 
-async function regenerateBookTocs(name) {
-  for (const p of await listProjects()) {
-    if (p.format === 'book' && Array.isArray(p.members) && p.members.includes(name)) {
-      aggregateBookToc(p.name, p.members)
-    }
-  }
-}
-
 export async function buildMarkdown(name) {
   await buildMarkdownDocument(name, (msg) => console.log(msg))
-  await regenerateBookTocs(name)
+  await getBuildReporter().regenerateBookTocs(name)
 }
 
 export async function buildQmd(name) {
   await buildQmdDocument(name, (msg) => console.log(msg))
-  await regenerateBookTocs(name)
+  await getBuildReporter().regenerateBookTocs(name)
 }
 
 export async function buildHtml(name) {

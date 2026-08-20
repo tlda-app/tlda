@@ -58,13 +58,13 @@ for (const boundary of ['after-accept', 'after-terminal-result']) {
       await initProjectStore(root)
       await createTestProject(root, name)
       setAcceptedSourceMutationHandler(async () => {})
-      const crashed = await acceptSourceSnapshot(name, input, { crashAt: boundary })
+      const crashed = await acceptSourceSnapshot(name, input, { crashAt: boundary, daemonId: 'daemon:test' })
       assert.equal(crashed.body.simulatedCrash, true)
       assert.equal(crashed.body.crashedAt, boundary, 'and the response names which boundary stopped it')
       await closeProjectStore()
 
       await initProjectStore(root)
-      const accepted = await acceptSourceSnapshot(name, input)
+      const accepted = await acceptSourceSnapshot(name, input, { daemonId: 'daemon:test' })
       assert.equal(accepted.status, 200, JSON.stringify(accepted.body))
       assert.equal(readSourceFile(name, 'main.tex'), `content-${boundary}\n`)
       const lifecycle = await sourceLifecycleStore(name)
@@ -74,7 +74,7 @@ for (const boundary of ['after-accept', 'after-terminal-result']) {
       assert.deepEqual(byRequest.terminalResult.operationIds, [`O-${boundary}`])
       assert.deepEqual(byRequest.orderedEffects[0].editOperations.map(record => record.operation.operation_id), [`O-${boundary}`])
 
-      const replay = await acceptSourceSnapshot(name, input)
+      const replay = await acceptSourceSnapshot(name, input, { daemonId: 'daemon:test' })
       assert.equal(replay.body.operationReplay, true)
       // deepEqual — see note 3 above.
       assert.deepEqual(replay.body.sourceOperationResult, accepted.body.sourceOperationResult)
@@ -112,7 +112,7 @@ test('accepted replica commands survive a crash before dispatch and same-id repl
     setSourceBindingTargetProvider(() => [{ bindingId: 'binding-target', daemonKey: 'target:test' }])
     setAcceptedSourceMutationHandler(null)
 
-    const accepted = await acceptSourceSnapshot(name, input)
+    const accepted = await acceptSourceSnapshot(name, input, { daemonId: 'daemon:test' })
     assert.equal(accepted.status, 200, JSON.stringify(accepted.body))
     const lifecycle = await sourceLifecycleStore(name)
     const revision = lifecycle.readRevisionLifecycle(name, accepted.body.sourceRevision)
@@ -123,7 +123,7 @@ test('accepted replica commands survive a crash before dispatch and same-id repl
     await closeProjectStore()
     await initProjectStore(root)
     const resumed = new Promise(resolve => setPendingSourceReplicaHandler(resolve))
-    const replay = await acceptSourceSnapshot(name, input)
+    const replay = await acceptSourceSnapshot(name, input, { daemonId: 'daemon:test' })
     assert.equal(replay.body.operationReplay, true)
     assert.deepEqual(await resumed, { project: name, sourceRevision: accepted.body.sourceRevision, resumeOnly: true })
   } finally {

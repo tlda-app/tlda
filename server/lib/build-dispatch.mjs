@@ -4,12 +4,15 @@
 // coalesces/serializes per project so rapid saves collapse to one build.
 
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
-import { updateProject, getProjectsDir, listProjects, sourceLifecycleStore } from './project-store.mjs'
+import { updateProject, getProjectsDir, listProjects, aggregateBookToc, sourceLifecycleStore } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { loadServerConfig } from '../../shared/config.mjs'
 import { ForkTransport } from './build-transport.mjs'
 import { createBuildQueue } from './build-queue.mjs'
 import { mirrorShadow } from './build-runner.mjs'
+import { cpSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 // The real server-side side-effect functions, keyed the way the worker reports
 // them. A build that runs in the worker calls these here, in the server process.
@@ -47,7 +50,69 @@ async function patchShape(docName, shapeId, propsPatch) {
   }
 }
 
-const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, mirrorShadow }
+export async function publishBuildInstance(name, sourceRevision, acceptSeq, instanceProject, reports = [], reportSinks = SINKS) {
+  const lifecycle = await sourceLifecycleStore(name)
+  const authority = await lifecycle.readAuthority()
+  if (authority.currentRevision !== sourceRevision || authority.acceptSeq !== acceptSeq) {
+    throw new Error(`stale build ${sourceRevision} is not authorized to publish over ${authority.currentRevision || 'no head'}`)
+  }
+
+  const liveProject = join(getProjectsDir(), name)
+  const transaction = join(liveProject, `.build-publish-${randomUUID()}`)
+  const stagedOutput = join(transaction, 'output')
+  const stagedCache = join(transaction, 'build-cache')
+  mkdirSync(transaction, { recursive: true })
+  try {
+    cpSync(join(instanceProject, 'output'), stagedOutput, { recursive: true })
+    if (existsSync(join(instanceProject, 'build-cache'))) {
+      cpSync(join(instanceProject, 'build-cache'), stagedCache, { recursive: true })
+    }
+    for (const file of ['build.log', 'latex.log']) {
+      if (existsSync(join(instanceProject, file))) cpSync(join(instanceProject, file), join(transaction, file))
+    }
+
+    // Re-check after staging. The synchronous swaps below cannot interleave
+    // with another server-side accept on this event loop.
+    const stillCurrent = await lifecycle.readAuthority()
+    if (stillCurrent.currentRevision !== sourceRevision || stillCurrent.acceptSeq !== acceptSeq) {
+      throw new Error(`build ${sourceRevision} lost publication authority while staging`)
+    }
+
+    const oldOutput = join(transaction, 'old-output')
+    const oldCache = join(transaction, 'old-cache')
+    if (existsSync(join(liveProject, 'output'))) renameSync(join(liveProject, 'output'), oldOutput)
+    renameSync(stagedOutput, join(liveProject, 'output'))
+    if (existsSync(stagedCache)) {
+      if (existsSync(join(liveProject, 'build-cache'))) renameSync(join(liveProject, 'build-cache'), oldCache)
+      renameSync(stagedCache, join(liveProject, 'build-cache'))
+    }
+    for (const file of ['build.log', 'latex.log']) {
+      const staged = join(transaction, file)
+      if (existsSync(staged)) renameSync(staged, join(liveProject, file))
+    }
+
+    for (const report of reports) {
+      const current = await lifecycle.readAuthority()
+      if (current.currentRevision !== sourceRevision || current.acceptSeq !== acceptSeq) break
+      const sink = reportSinks[report.method]
+      if (!sink || report.method === 'publishBuildInstance') continue
+      await sink(...(report.args || []))
+    }
+    return { published: true, sourceRevision, acceptSeq }
+  } finally {
+    rmSync(transaction, { recursive: true, force: true })
+  }
+}
+
+async function regenerateBookTocs(name) {
+  for (const project of await listProjects()) {
+    if (project.format === 'book' && Array.isArray(project.members) && project.members.includes(name)) {
+      aggregateBookToc(project.name, project.members)
+    }
+  }
+}
+
+const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, mirrorShadow, regenerateBookTocs, publishBuildInstance }
 
 export async function recordBuildResult(name, sourceRevision, acceptSeq, state, result = null) {
   if (!sourceRevision) return null
@@ -95,7 +160,9 @@ export function createDispatcher(transport) {
 }
 
 export function createDispatcherWithOptions(transport, options = {}) {
-  const sinks = options.sinks || SINKS
+  const sinks = { ...SINKS, ...(options.sinks || {}) }
+  sinks.publishBuildInstance = (...args) => publishBuildInstance(...args, sinks)
+  const acceptedHeads = new Map()
   const queue = createBuildQueue({
     transport,
     getProjectsDir,
@@ -117,22 +184,38 @@ export function createDispatcherWithOptions(transport, options = {}) {
     recordDisposition(job, state, result) {
       return sinks.recordBuildResult(job.name, job.sourceRevision, job.acceptSeq, state, result)
     },
+    getCurrentHead(name) {
+      return acceptedHeads.get(name) ?? null
+    },
+    async isAncestor(ancestor, descendant, name) {
+      if (!ancestor || !descendant) return false
+      return (await sourceLifecycleStore(name)).isAncestor(ancestor, descendant)
+    },
+    random: options.random || Math.random,
   }, options)
 
-  async function dispatchBuild(name, { kind = 'build', sourceRevision = null, acceptSeq = null } = {}) {
-    if (sourceRevision) {
-      const lifecycle = await sourceLifecycleStore(name)
-      const current = lifecycle.readRevisionLifecycle(name, sourceRevision)
-      if (!current) throw new Error(`Cannot lease build for unknown source revision ${sourceRevision}`)
-      lifecycle.recordRevisionPhase(name, sourceRevision, 'build', 'leased', {
-        acceptSeq,
-        leasedAt: new Date().toISOString(),
-      })
-    }
-    return queue.dispatchBuild(name, { kind, sourceRevision, acceptSeq })
+  async function dispatchBuild(name, {
+    kind = 'build', sourceRevision = null, acceptSeq = null, daemonId = null, basedOnRevision,
+  } = {}) {
+    if (!daemonId) throw new Error(`build submission for ${name}${sourceRevision ? `@${sourceRevision}` : ''} requires trusted daemon context`)
+    if (!sourceRevision) throw new Error(`build submission for ${name} requires sourceRevision`)
+    if (basedOnRevision === undefined) throw new Error(`build submission for ${name}@${sourceRevision} requires basedOnRevision`)
+    const lifecycle = await sourceLifecycleStore(name)
+    const current = lifecycle.readRevisionLifecycle(name, sourceRevision)
+    if (!current) throw new Error(`Cannot lease build for unknown source revision ${sourceRevision}`)
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'build', 'leased', {
+      acceptSeq,
+      leasedAt: new Date().toISOString(),
+    })
+    return queue.dispatchBuild(name, { kind, sourceRevision, acceptSeq, daemonId, basedOnRevision })
   }
 
-  return { ...queue, dispatchBuild }
+  async function projectHeadChanged(name, head) {
+    acceptedHeads.set(name, head)
+    return queue.projectHeadChanged(name, head)
+  }
+
+  return { ...queue, dispatchBuild, projectHeadChanged }
 }
 
 // The server always forks the local worker. Only real queue settings remain
@@ -143,18 +226,26 @@ const _default = createDispatcherWithOptions(ForkTransport, {
   priority: _config.buildPriority,
 })
 
-export const { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding, isBuildKindPending } = _default
+export const { dispatchBuild, projectHeadChanged, killBuild, killAllDispatchedBuilds, isBuilding, isBuildKindPending } = _default
 
-export async function resumeDurableBuildIntents({ dispatch = dispatchBuild } = {}) {
+export async function resumeDurableBuildIntents({ dispatch = dispatchBuild, headChanged = projectHeadChanged } = {}) {
   const resumed = []
   for (const project of await listProjects()) {
     const lifecycle = await sourceLifecycleStore(project.name)
+    const authority = await lifecycle.readAuthority()
+    await headChanged(project.name, authority.currentRevision || null)
     for (const revision of lifecycle.listRevisionLifecycles(project.name)) {
       if (!['pending', 'leased'].includes(revision.build?.state)) continue
+      const submission = revision.queueSubmission
+      if (!submission?.daemonId || !Object.prototype.hasOwnProperty.call(submission, 'basedOnRevision')) {
+        throw new Error(`cannot resume ${project.name}@${revision.sourceRevision}: durable queue submission identity is missing`)
+      }
       resumed.push({ project: project.name, sourceRevision: revision.sourceRevision, acceptSeq: revision.acceptSeq })
       void dispatch(project.name, {
         sourceRevision: revision.sourceRevision,
         acceptSeq: revision.acceptSeq,
+        daemonId: submission.daemonId,
+        basedOnRevision: submission.basedOnRevision,
       }).catch(error => {
         recordBuildResult(project.name, revision.sourceRevision, revision.acceptSeq, 'build_failed', {
           error: error?.message || String(error),

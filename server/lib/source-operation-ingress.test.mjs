@@ -53,15 +53,23 @@ test('source ingress replays one durable terminal result after reconnect', async
       deletedFiles: [],
       sourceManifest: ['main.tex'],
       editedBy: 'wire-test',
+      sourceDaemonKey: 'daemon:forged-payload',
     }
 
-    const first = await acceptSourceSnapshot(name, request)
+    const daemonContext = { daemonId: 'daemon:wire-test' }
+    const rejected = await acceptSourceSnapshot(name, request)
+    assert.equal(rejected.status, 400)
+
+    const first = await acceptSourceSnapshot(name, request, daemonContext)
     assert.equal(first.status, 200, JSON.stringify(first.body))
     const firstWireResult = first.body.sourceOperationResult
     assert.equal(firstWireResult.sourceRevision, first.body.sourceRevision)
     assert.equal(firstWireResult.acceptSeq, 1)
+    const acceptedLifecycle = (await sourceLifecycleStore(name)).readRevisionLifecycle(name, first.body.sourceRevision)
+    assert.equal(acceptedLifecycle.queueSubmission.daemonId, daemonContext.daemonId)
+    assert.notEqual(acceptedLifecycle.queueSubmission.daemonId, request.sourceDaemonKey)
 
-    const replay = await acceptSourceSnapshot(name, request)
+    const replay = await acceptSourceSnapshot(name, request, daemonContext)
     assert.equal(replay.body.operationReplay, true)
     // deepEqual — see note 1 above.
     assert.deepEqual(replay.body.sourceOperationResult, firstWireResult)
@@ -78,7 +86,7 @@ test('source ingress replays one durable terminal result after reconnect', async
     const reuse = await acceptSourceSnapshot(name, {
       ...request,
       files: [{ path: 'main.tex', content: 'Different\n' }],
-    })
+    }, daemonContext)
     assert.equal(reuse.status, 400)
     // `status`, not `lifecycleStatus` — see note 2 above.
     assert.equal(reuse.body.status, 'invalid-request-id-reuse')

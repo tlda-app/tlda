@@ -68,8 +68,9 @@ import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTur
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
-import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
-import projectRoutes, { acceptSourceSnapshot, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
+import { dispatchBuild, killAllDispatchedBuilds, projectHeadChanged, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
+import { setCurrentBuildRequester } from './lib/ensure.mjs'
+import projectRoutes, { acceptSourceSnapshot, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider, setSourceRoomDaemonRequests } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -229,9 +230,13 @@ const sourceRoomDaemon = createSourceRoomDaemon({
   sourceLifecycleStore,
   readClientSourceManifest,
   acceptSourceSnapshot,
+  dispatchBuild,
+  projectHeadChanged,
   recordHeldEdit: recordSourceSyncRefusal,
   clearHeldEdit: clearSourceSyncRefusal,
 })
+setSourceRoomDaemonRequests(sourceRoomDaemon)
+setCurrentBuildRequester((project, options) => sourceRoomDaemon.requestBuild(project, options))
 
 function activityDeliverySnapshot() {
   return {
@@ -5138,13 +5143,16 @@ app.use('/docs', (req, res, next) => {
 
 app.locals.fleetStore = fleetStore
 app.locals.sendDaemonEphemeral = sendDaemonEphemeral
+app.locals.sourceRoomDaemon = sourceRoomDaemon
 
 
 app.use('/api/projects', projectRoutes)
 // Constructed here, not at import: a module-level router opened its database
 // as a side effect of being imported, which made any tool or test that touched
 // the module open one too — including several at once, which SQLite refuses.
-app.use('/api/classroom', createClassroomRouter())
+app.use('/api/classroom', createClassroomRouter({
+  submitSubmissionSource: (project, payload) => sourceRoomDaemon.submitSnapshot(project, payload),
+}))
 
 // Handwriting recognition (MyScript proxy)
 import recognizeRoutes from './routes/recognize.mjs'
@@ -9870,7 +9878,7 @@ async function handleDaemonWsMessage(ws, msg) {
         sourceDaemonKey: ws._daemonKey || null,
         sourceMachineId: ws._machineId || null,
         sourceEnvName: ws._envName || null,
-      }, { crashAt })
+      }, { crashAt, daemonId: ws._daemonKey || null })
       // The accept returns `{status, body}` where the old push returned one
       // flat object. Reading it flat leaves `ok` and the lifecycle status
       // undefined, so the ternary below falls through to `'error'` on every

@@ -77,10 +77,13 @@ const server = await startServer({ port, projectsDir, fleetDb: path.join(root, '
 const banner = server.output().split('\n').find(line => line.includes('Unified server running')) || ''
 const base = (banner.match(/https?:\/\/[^\s]+/) || [`http://127.0.0.1:${port}`])[0]
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
-const propose = async body => {
+const propose = async (body, { identity = true } = {}) => {
   const response = await fetch(`${base}/api/projects/${PROJECT}/source-bundle`, {
     method: 'POST',
-    headers: { 'content-type': 'application/octet-stream' },
+    headers: {
+      'content-type': 'application/octet-stream',
+      ...(identity ? { 'x-tlda-source-daemon': 'checkout-proposal:test' } : {}),
+    },
     body,
   })
   return { status: response.status, body: await response.json() }
@@ -89,6 +92,9 @@ const propose = async body => {
 try {
   // A first proposal against an empty project is a fast-forward from nothing.
   const first = proposeCommit('first draft\n', null)
+  const missingIdentity = await propose(bundleSince(null), { identity: false })
+  assert.equal(missingIdentity.status, 400)
+  assert.match(missingIdentity.body.error, /source daemon context/)
   const accepted = await propose(bundleSince(null))
   assert.equal(accepted.status, 200, JSON.stringify(accepted.body))
   assert.equal(accepted.body.ok, true)
