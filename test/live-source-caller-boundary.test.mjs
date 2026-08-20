@@ -18,3 +18,13 @@ test('every live non-Git source caller enters through the server-side room check
     assert.doesNotMatch(source, /\/source-(?:snapshot|authority|entries|bundle|blob)/, `${file} retains an old source authority call`)
   }
 })
+
+test('deleted snapshot and bundle carriers have no server or executable test callers', async () => {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const run = promisify(execFile)
+  await assert.rejects(
+    run('rg', ['-n', 'source-(?:snapshot|bundle)', 'server', 'bin']),
+    error => error?.code === 1,
+  )
+})

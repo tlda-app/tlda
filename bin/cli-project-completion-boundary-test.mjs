@@ -38,8 +38,7 @@ const http = createServer((req, res) => {
     }
     if (req.method === 'GET' && req.url === '/api/projects/retry-project') return send(200, { name: 'retry-project', mainFile: 'main.tex', format: 'svg' })
     if (req.method === 'GET' && req.url === '/api/projects/retry-project/hashes') return send(200, { hashes: {} })
-    if (req.method === 'GET' && req.url === '/api/projects/retry-project/source-authority') return send(200, { currentRevision: null })
-    if (req.method === 'POST' && req.url === '/api/projects/retry-project/push') {
+    if (req.method === 'POST' && req.url === '/api/projects/retry-project/source-room/files') {
       pushes++
       return pushes === 1
         ? send(503, { error: 'temporary test outage' })
@@ -47,14 +46,12 @@ const http = createServer((req, res) => {
     }
     if (req.method === 'POST' && req.url === '/api/projects') return send(409, { error: 'already exists' })
     if (req.method === 'GET' && req.url === '/api/projects/linked-project') return send(200, { name: 'linked-project', mainFile: 'main.md', format: 'markdown' })
-    if (req.method === 'GET' && req.url === '/api/projects/linked-project/source-authority') return send(200, { currentRevision: null })
-    if (req.method === 'POST' && req.url === '/api/projects/linked-project/push') {
+    if (req.method === 'POST' && req.url === '/api/projects/linked-project/source-room/files') {
       linkedPushes++
       return send(200, { ok: true, sourceRevision: 'revision:linked', building: true })
     }
     if (req.method === 'GET' && req.url === '/api/projects/init-project') return send(200, { name: 'init-project', mainFile: 'main.md', format: 'markdown' })
-    if (req.method === 'GET' && req.url === '/api/projects/init-project/source-authority') return send(200, { currentRevision: null })
-    if (req.method === 'POST' && req.url === '/api/projects/init-project/push') {
+    if (req.method === 'POST' && req.url === '/api/projects/init-project/source-room/files') {
       initPushes++
       return send(200, { ok: true, sourceRevision: 'revision:init', building: true })
     }
@@ -98,7 +95,7 @@ try {
   assert.equal(status, 0, stderr)
   assert.equal(pushes, 2)
   assert.match(stderr, /project push attempt 1 did not complete: temporary test outage; retrying in 1s/)
-  assert.match(stdout, /Build triggered/)
+  assert.match(stdout, /Source pushed; viewer rebuilds on demand/)
 
   writeFileSync(join(sourceDir, 'main.md'), '# resumed link\n')
   const linked = spawn(process.execPath, [join(process.cwd(), 'cli/tlda.mjs'), '--env', 'test', 'project', 'link', 'linked-project', join(sourceDir, 'main.md'), '--format', 'markdown', '--server', server], {
