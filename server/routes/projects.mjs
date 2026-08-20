@@ -1940,8 +1940,20 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null 
         // unnamed manifest path is carried forward by reference from the
         // current revision, which is what keeps an incremental push
         // incremental. Removal is still expressed by leaving the manifest.
-        const complete = await lifecycle.carryForward(manifest, files)
-        const input = { expectedRevision, files: complete, sourceManifest: manifest, dependencyPins }
+        let supplied = files
+        let observedServerFiles = null
+        if (before.state === SOURCE_AUTHORITY_UNINITIALIZED) {
+          const sent = new Map(files.map(file => [file.path, file]))
+          const observed = await Promise.all(manifest.map(async filePath => {
+            const content = await readSourceFileAsync(name, filePath)
+            return content === null ? (sent.get(filePath) || null) : { path: filePath, content }
+          }))
+          const adopted = observed.filter(file => file && !sent.has(file.path))
+          supplied = [...files, ...adopted.filter(Boolean)]
+          observedServerFiles = observed.filter(Boolean)
+        }
+        const complete = await lifecycle.carryForward(manifest, supplied)
+        const input = { expectedRevision, files: complete, sourceManifest: manifest, dependencyPins, observedServerFiles }
         return before.state === SOURCE_AUTHORITY_UNINITIALIZED
           ? lifecycle.bootstrap(input)
           : lifecycle.submit(input)

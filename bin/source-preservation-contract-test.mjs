@@ -255,33 +255,8 @@ async function deleteRemovesTheBytes() {
 
 // **Bytes already on the server survive a push that does not send them.**
 //
-// KNOWN RED, and red against the behaviour rather than against the repoint.
-// This is the same defect as the bootstrap case in
-// `bin/source-lifecycle-http-test.mjs`, which is how it got noticed: the old
-// accept ADOPTED a file already on disk, and the new one refuses the push with
-// 400, "declared in sourceManifest but was neither sent nor already held" --
-// because at bootstrap there is no revision, so bytes on disk are neither.
-//
-// Measured both ways on the same input: `main` 200 with the file preserved,
-// this path 400.
-//
-// **Left asserting 200.** The promise is that pushing nothing does not endanger
-// what is already there, and rewriting it to expect 400 would make the suite
-// assert the regression. Two files hold this promise, so it is one defect and
-// not two.
-//
-// REACHABILITY, established 2026-08-19 and the reason this is not a deploy
-// blocker: it needs source bytes on disk that were never accepted into any
-// revision. Nothing produces that state -- `writeSourceFile`, the server-side
-// direct write, has NO production callers, and every other route onto disk goes
-// through the accept's working-copy effect, which by construction leaves a
-// revision. With a revision present the same daemon shape returns 409
-// stale-base instead, which is the ordinary refusal the retry path handles.
-//
-// So this is a test fixture reaching a state production cannot. It stays red
-// rather than being deleted, because the promise is real and the day something
-// does seed a project's disk ahead of its first accept, this is the assertion
-// that says so.
+// Fresh bootstrap adopts declared bytes already present on the server. It must
+// not generalize that adoption to a path absent from both the request and disk.
 async function bootstrapAdoption() {
   createProject({ name: 'zero-first', title: 'Zero', mainFile: 'main.tex', format: 'svg' })
   await updateProject('zero-first', { pages: 1, buildStatus: 'success' })
@@ -292,6 +267,14 @@ async function bootstrapAdoption() {
   assert.equal(result.ok, true, result.error)
   assert.deepEqual(Object.keys(await hashSourceFiles('zero-first')), ['main.tex'])
   assert.equal(readSourceFile('zero-first', 'main.tex'), 'already here\n')
+
+  createProject({ name: 'zero-missing', title: 'Missing', mainFile: 'main.tex', format: 'svg' })
+  await updateProject('zero-missing', { pages: 1, buildStatus: 'success' })
+  filterBuildsAway('zero-missing')
+  const missing = await push('zero-missing', { files: [], sourceManifest: ['main.tex'] })
+  assert.equal(missing.status, 400)
+  assert.match(missing.error, /neither sent nor already held/)
+  assert.deepEqual(Object.keys(await hashSourceFiles('zero-missing')), [])
 }
 
 async function main() {
