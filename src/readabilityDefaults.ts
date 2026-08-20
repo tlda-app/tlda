@@ -7,7 +7,8 @@ export type ReadabilityProfile = {
   contentOpacity: number
   layoutHeightFrac: number
   railAspect: number
-  chatAspect: number
+  columnAspect: number
+  columnMinAspect: number
   marginAspect: number
   agentsFrac: number
   /** Soft-snap pull between fleet panels, in em of the profile's font size. */
@@ -15,6 +16,39 @@ export type ReadabilityProfile = {
 }
 
 export type ReadabilityProfiles = Record<string, Partial<ReadabilityProfile>>
+
+/**
+ * Move the retired per-device chat width preference into the canonical column
+ * preference. This is a stored-data migration; runtime profile reads do not
+ * interpret the retired key.
+ */
+export function migrateReadabilityProfiles(value: unknown): {
+  profiles: ReadabilityProfiles
+  migrated: boolean
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { profiles: {}, migrated: false }
+  }
+
+  let migrated = false
+  const profiles = Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([deviceId, profile]) => {
+      if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return [deviceId, profile]
+      const next = { ...(profile as Record<string, unknown>) }
+      if (!Object.prototype.hasOwnProperty.call(next, 'columnAspect') && 'chatAspect' in next) {
+        next.columnAspect = next.chatAspect
+        migrated = true
+      }
+      if ('chatAspect' in next) {
+        delete next.chatAspect
+        migrated = true
+      }
+      return [deviceId, next]
+    }),
+  ) as ReadabilityProfiles
+
+  return { profiles, migrated }
+}
 
 export const DEFAULT_READABILITY_PROFILE: ReadabilityProfile = {
   // Skip, 2026-08-18: "if 14 is standard, let's use 14" — "let's just do
@@ -30,19 +64,20 @@ export const DEFAULT_READABILITY_PROFILE: ReadabilityProfile = {
   // Column widths are a fraction of the layout's height, which is deliberate --
   // you pan across, not up and down, so height is the fixed dimension. These
   // aspects are what decides how much of the screen is left for the document,
-  // and they were set too wide: the layout occupies leftW + 2*chatW + gaps at
-  // 1:1 screen px, so at 0.54/0.66 a 13" Air M2 was left 287px for the page and
+  // and they were set too wide: the layout occupies a rail plus columns and
+  // gaps at 1:1 screen px, so at 0.54/0.66 a 13" Air M2 was left 287px for the page and
   // rendered it at 36% of its width, against 61% on Skip's own larger screen.
   // The document is the point, so the aspects give it back the difference.
   //
-  // chatAspect is Skip's own setting, read off his settings panel on the M2 Air
+  // columnAspect is Skip's own setting, read off his settings panel on the M2 Air
   // rather than derived: he runs 0.8 and has been doing so for long enough to
   // call the default "too narrow". Skip, 2026-08-18: "what I'm using for my
   // three column layout in my settings is 70% height, aspect ratio point eight."
   // The other three here already match what he runs, so this is the one value
   // between a first-time reader and the layout the expert user chose.
   railAspect: 0.40,
-  chatAspect: 0.80,
+  columnAspect: 0.80,
+  columnMinAspect: 0.25,
   marginAspect: 0.06,
   agentsFrac: 0.4,
   nudgeStrength: 1,

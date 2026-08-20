@@ -5,7 +5,7 @@ import { CANONICAL_FLOW_LEAD, laneDy, layoutOffset } from './fleet-layout-geomet
 import { crossAxis, documentFlowAxis, type Axis } from './document-flow-axis'
 import type { FleetLayoutPlanInput, FleetLayoutVariant } from './fleet-layout-plan'
 import { defaultFleetLayoutChatFilters } from './fleet-layout-seeding'
-import { currentVisibleViewportSize, singleChatViewportPanelSize } from './fleet-layout-sizing'
+import { adaptiveInnerColumnWidth, currentVisibleViewportSize, projectedDocumentSpan, singleChatViewportPanelSize } from './fleet-layout-sizing'
 import { fleetLayoutDx } from './fleet-layout-offset-policy'
 
 export type DocumentPageBounds = {
@@ -26,14 +26,15 @@ function variantContentW(
   variant: FleetLayoutVariant | string,
   vp: { w: number; h: number },
   leftW: number,
-  chatW: number,
+  columnW: number,
+  innerColumnW: number,
   gap: number,
 ): number {
   if (variant === 'single-chat') return singleChatViewportPanelSize(vp).w
-  if (variant === 'two-chat') return chatW * 2 + gap
-  if (variant === 'big-chat') return leftW + gap + Math.round(chatW * 2)
-  if (variant === 'both-margins') return leftW + gap + Math.round(chatW * 1.5)
-  return leftW + gap + (chatW * 2 + gap)
+  if (variant === 'two-chat') return columnW * 2 + gap
+  if (variant === 'big-chat') return leftW + gap + columnW + innerColumnW
+  if (variant === 'both-margins') return leftW + gap + Math.round(columnW * 0.5) + innerColumnW
+  return leftW + gap + columnW + gap + innerColumnW
 }
 
 export function fleetLayoutPanelCount(variant: string): number {
@@ -96,7 +97,14 @@ export function buildFleetLayoutPlanInput({
   const layoutSpanFrac = 0.8
   // two-chat has no rail hanging outside it, so its span is just its content.
   const railSpan = variant === 'two-chat' ? 0 : layoutTokens.leftW + gap
-  const naturalSpan = railSpan + variantContentW(variant, vp, layoutTokens.leftW, layoutTokens.chatW, gap)
+  const naturalSpan = railSpan + variantContentW(
+    variant,
+    vp,
+    layoutTokens.leftW,
+    layoutTokens.columnW,
+    layoutTokens.columnW,
+    gap,
+  )
   // Deriving column widths from viewport HEIGHT is deliberate, not a defect.
   // Skip, 2026-08-18: "I don't really want to change the panel widths derived
   // from viewport height thing. That's a natural thing to do because you can pan
@@ -116,7 +124,17 @@ export function buildFleetLayoutPlanInput({
     ? (vp.w * layoutSpanFrac) / Math.max(1, naturalSpan)
     : 1
   const leftW = Math.round(layoutTokens.leftW * columnScale)
-  const chatW3 = Math.round(layoutTokens.chatW * columnScale)
+  const columnW = Math.round(layoutTokens.columnW * columnScale)
+  const columnMinW = Math.round(layoutTokens.columnMinW * columnScale)
+  const innerColumnW = flowAxis === 'y'
+    ? adaptiveInnerColumnWidth({
+        viewportWidth: vp.w,
+        documentWidth: projectedDocumentSpan(point => editor.pageToScreen(point), docBounds, marginAxis),
+        marginGap,
+        preferredWidth: columnW,
+        minimumWidth: columnMinW,
+      })
+    : columnW
   // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
   // map 1:1 to screen px — size off the raw viewport, not the main-camera zoom.
   const totalH = layoutTokens.totalH
@@ -131,7 +149,7 @@ export function buildFleetLayoutPlanInput({
   // places one chat in the RIGHT margin, at docRight + marginGap (below).
   // Everything is laid out relative to the document edges — never relative to
   // the HUD position, which is a separate offset (the anchor shape).
-  const leftContentW = variantContentW(variant, vp, leftW, chatW3, gap)
+  const leftContentW = variantContentW(variant, vp, leftW, columnW, innerColumnW, gap)
 
   // The layout lives in the margin the document leaves, which is the margin
   // ACROSS its flow: a document that runs down the canvas leaves room beside it,
@@ -184,7 +202,8 @@ export function buildFleetLayoutPlanInput({
     dx,
     gap,
     leftW,
-    chatW3,
+    columnW,
+    innerColumnW,
     marginGap,
     totalH,
     agentsH,

@@ -5,6 +5,41 @@ export const FLEET_HUD_VIEWPORT_FRAME_TOP_PX = 20
 
 export type FleetLayoutViewportSize = { w: number; h: number }
 
+export function projectedDocumentSpan(
+  pageToScreen: (point: { x: number; y: number }) => { x: number; y: number },
+  bounds: { minLeft: number; minTop: number; maxRight: number; maxBottom: number },
+  axis: 'x' | 'y',
+): number {
+  const near = pageToScreen({ x: bounds.minLeft, y: bounds.minTop })[axis]
+  const far = axis === 'x'
+    ? pageToScreen({ x: bounds.maxRight, y: bounds.minTop }).x
+    : pageToScreen({ x: bounds.minLeft, y: bounds.maxBottom }).y
+  return Math.abs(far - near)
+}
+
+/** Creation-time width of the normal column nearest the document. */
+export function adaptiveInnerColumnWidth({
+  viewportWidth,
+  marginGap,
+  preferredWidth,
+  minimumWidth,
+  documentWidth,
+}: {
+  viewportWidth: number
+  marginGap: number
+  preferredWidth: number
+  minimumWidth: number
+  documentWidth: number
+}): number {
+  const preferred = Math.max(1, Math.round(preferredWidth))
+  const minimum = Math.min(preferred, Math.max(1, Math.round(minimumWidth)))
+  const available = Math.floor(viewportWidth - documentWidth - marginGap)
+
+  // Below the minimum, preserve the configured column. Existing horizontal
+  // interaction then exposes the document and layout one at a time.
+  return available >= minimum ? Math.min(preferred, available) : preferred
+}
+
 /**
  * The viewport a layout is sized against, in the same units the HUD draws in.
  *

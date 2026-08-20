@@ -31,7 +31,8 @@ export type FleetLayoutPlanInput = {
   dx: number
   gap: number
   leftW: number
-  chatW3: number
+  columnW: number
+  innerColumnW: number
   marginGap: number
   totalH: number
   agentsH: number
@@ -74,7 +75,8 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     dx,
     gap,
     leftW,
-    chatW3,
+    columnW,
+    innerColumnW,
     marginGap,
     totalH,
     agentsH,
@@ -115,13 +117,13 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
           id: makeSlotId('chat-0'),
           x: anchorX, y: anchorY,
           isLocked: false,
-          props: { w: chatW3, h: totalH, filter: filter1 },
+          props: { w: columnW, h: totalH, filter: filter1 },
         }, myId, myDevice),
         panelShape('fleet-chat', {
           id: makeSlotId('chat-1'),
-          x: anchorX + chatW3 + gap, y: anchorY,
+          x: anchorX + columnW + gap, y: anchorY,
           isLocked: false,
-          props: { w: chatW3, h: totalH, filter: filter2 },
+          props: { w: columnW, h: totalH, filter: filter2 },
         }, myId, myDevice),
       ],
       dispatchHudReset: false,
@@ -150,7 +152,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
   ]
   if (variant === 'big-chat') {
     // Big-chat layout: half chat over half source editor.
-    const chatWide = Math.round(chatW3 * 2)
+    const chatWide = columnW + innerColumnW
     const wideChatH = Math.round((totalH - gap) / 2)
     const wideEditorH = totalH - gap - wideChatH
     shapes.push(
@@ -169,7 +171,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     )
   } else if (variant === '2x2') {
     // 2x2 layout: four chats in a square (no document viewer).
-    const gridChatW = chatW3
+    const gridChatW = columnW
     const gridChatH = Math.round((totalH - gap) / 2)
     shapes.push(
       panelShape('fleet-chat', {
@@ -182,7 +184,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
         id: makeSlotId('chat-1'),
         x: anchorX + leftW + gap + gridChatW + gap, y: anchorY,
         isLocked: false,
-        props: { w: gridChatW, h: gridChatH, filter: filter2 },
+        props: { w: innerColumnW, h: gridChatH, filter: filter2 },
       }, myId, myDevice),
       panelShape('fleet-chat', {
         id: makeSlotId('chat-2'),
@@ -194,7 +196,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
         id: makeSlotId('chat-3'),
         x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap,
         isLocked: false,
-        props: { w: gridChatW, h: gridChatH, filter: filter4 },
+        props: { w: innerColumnW, h: gridChatH, filter: filter4 },
       }, myId, myDevice),
     )
   } else if (variant === '3-col') {
@@ -203,23 +205,24 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
         id: makeSlotId('chat-0'),
         x: anchorX + leftW + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW3, h: totalH, filter: filter1 },
+        props: { w: columnW, h: totalH, filter: filter1 },
       }, myId, myDevice),
       panelShape('fleet-chat', {
         id: makeSlotId('chat-1'),
-        x: anchorX + leftW + gap + chatW3 + gap, y: anchorY,
+        x: anchorX + leftW + gap + columnW + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW3, h: rightChatH, filter: filter2 },
+        props: { w: innerColumnW, h: rightChatH, filter: filter2 },
       }, myId, myDevice),
       panelShape('fleet-docview', {
         id: makeSlotId('docview'),
-        x: anchorX + leftW + gap + chatW3 + gap, y: anchorY + rightChatH + gap,
+        x: anchorX + leftW + gap + columnW + gap, y: anchorY + rightChatH + gap,
         isLocked: false,
-        props: { w: chatW3, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '', sources: '["ref"]' },
+        props: { w: innerColumnW, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '', sources: '["ref"]' },
       }, myId, myDevice),
     )
   } else {
-    const chatWide = Math.round(chatW3 * 1.5)
+    const innerWide = Math.round(columnW * 0.5) + innerColumnW
+    const configuredWide = Math.round(columnW * 1.5)
     // A document has two margins across its flow, and this variant uses both:
     // the first group sits before the document's near edge (via the anchor), the
     // source editor after its far edge, each one marginGap away. Skip: "for these
@@ -241,20 +244,20 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
         id: makeSlotId('chat-0'),
         x: anchorX + leftW + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatWide, h: rightChatH, filter: filter1 },
+        props: { w: innerWide, h: rightChatH, filter: filter1 },
       }, myId, myDevice),
       panelShape('fleet-docview', {
         id: makeSlotId('docview'),
         x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
         isLocked: false,
-        props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '', sources: '["ref"]' },
+        props: { w: innerWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '', sources: '["ref"]' },
       }, myId, myDevice),
       // Two-margin layout: the right margin holds the source editor sheet.
       panelShape('fleet-source-editor', {
         id: makeSlotId('source-editor'),
         x: rightChatX, y: rightChatY,
         isLocked: false,
-        props: { w: chatWide, h: totalH, file: '', line: 1, title: 'Source' },
+        props: { w: configuredWide, h: totalH, file: '', line: 1, title: 'Source' },
       }, myId, myDevice),
     )
   }

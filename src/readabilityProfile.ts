@@ -20,7 +20,9 @@ function currentDeviceId() {
 
 function cleanProfile(value: Partial<ReadabilityProfile> | undefined): ReadabilityProfile {
   const base = DEFAULT_READABILITY_PROFILE
-  const p = { ...base, ...(value ?? {}) }
+  const stored = value as Partial<ReadabilityProfile> | undefined
+  const p = { ...base, ...(stored ?? {}) }
+  const columnAspect = clamp(Number(p.columnAspect) || base.columnAspect, 0.2, 2)
   return {
     fontSize: clamp(Number(p.fontSize) || base.fontSize, 8, 24),
     lineHeight: clamp(Number(p.lineHeight) || base.lineHeight, 1.15, 1.8),
@@ -30,7 +32,11 @@ function cleanProfile(value: Partial<ReadabilityProfile> | undefined): Readabili
     contentOpacity: clamp(Number(p.contentOpacity) || base.contentOpacity, 0, 1),
     layoutHeightFrac: clamp(Number(p.layoutHeightFrac) || base.layoutHeightFrac, 0.1, 1),
     railAspect: clamp(Number(p.railAspect) || base.railAspect, 0.2, 2),
-    chatAspect: clamp(Number(p.chatAspect) || base.chatAspect, 0.2, 2),
+    columnAspect,
+    columnMinAspect: Math.min(
+      columnAspect,
+      clamp(Number(p.columnMinAspect) || base.columnMinAspect, 0.1, 2),
+    ),
     marginAspect: clamp(Number(p.marginAspect) || base.marginAspect, 0, 0.4),
     agentsFrac: clamp(Number(p.agentsFrac) || base.agentsFrac, 0.25, 0.6),
     // Not `|| base`: 0 is a meaningful value here — it turns soft snap off.
@@ -83,7 +89,8 @@ export function getLayoutReadabilityTokens(
   return {
     gap: Math.round(Math.max(8, p.touchTarget * 0.35)),
     leftW: Math.round(clamp(totalH * p.railAspect, 160, w)),
-    chatW: Math.round(clamp(totalH * p.chatAspect, 180, w)),
+    columnW: Math.round(clamp(totalH * p.columnAspect, 1, w)),
+    columnMinW: Math.round(clamp(totalH * p.columnMinAspect, 1, w)),
     marginGap: Math.round(clamp(totalH * p.marginAspect, 0, Math.max(0, w * 0.25))),
     totalH,
     agentsH: Math.round(h * p.agentsFrac),

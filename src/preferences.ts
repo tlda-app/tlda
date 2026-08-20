@@ -10,7 +10,7 @@
 
 import type { CurveHandles } from './curveEditor.ts'
 import { DEFAULT_CURVE } from './curveEditor.ts'
-import { DEFAULT_READABILITY_PROFILES, type ReadabilityProfiles } from './readabilityDefaults.ts'
+import { DEFAULT_READABILITY_PROFILES, migrateReadabilityProfiles, type ReadabilityProfiles } from './readabilityDefaults.ts'
 import { fleetDurable, fleetEphemeral } from './fleet/fleet-data.mjs'
 
 export const DEFAULT_RADIO_SUBTITLE_DWELL_SEC = 15
@@ -187,7 +187,12 @@ export async function loadPrefs(userId: string): Promise<void> {
   let loaded = false
   try {
     const data = await fleetEphemeral('prefs-get-all', { user: userId })
-    Object.assign(_cache, data)
+    const readability = migrateReadabilityProfiles(data['readability-profiles'])
+    Object.assign(_cache, { ...data, 'readability-profiles': readability.profiles })
+    if (readability.migrated) {
+      fleetDurable('prefs-set', { user: userId, key: 'readability-profiles', value: readability.profiles })
+        .catch((e: Error) => console.warn('[prefs] readability migration save failed:', e.message))
+    }
     _loadError = null
     _notify()
     loaded = true

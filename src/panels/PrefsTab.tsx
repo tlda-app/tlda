@@ -49,7 +49,7 @@ const PREFS_SEARCH_TEXT: Record<PrefsSectionId, string> = {
   appearance: 'appearance theme colour color scheme dark light system one fog lilac warm power mono blue text font size line height faint opacity chrome content',
   reading: 'reading document toc hover region table of contents stingy doc viewer ribbon provenance note color voice notes',
   input: 'input touch target pointer thumb highlighter edge zone response curve editor vim',
-  panels: 'panels fleet layout height rail chat margin aspect snap strength nudge tool output fold bash write markdown diff thread card messages',
+  panels: 'panels fleet layout height rail column preferred minimum margin aspect snap strength nudge tool output fold bash write markdown diff thread card messages',
   voice: 'voice backend meter submit phrases ignored deepgram idle cutoff preroll endpointing',
   radio: 'radio agent subtitles card dwell',
   bots: 'bots self check countdown',
@@ -735,8 +735,13 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             <span className="prefs-num-unit">w/h</span>
           </div>
           <div className="prefs-num-row">
-            <span className="prefs-num-label">Chat aspect</span>
-            <input type="number" min={0.2} max={2} step={0.05} value={activeReadability.chatAspect} onChange={e => setReadability('chatAspect', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-label">Column preferred aspect</span>
+            <input type="number" min={0.2} max={2} step={0.05} value={activeReadability.columnAspect} onChange={e => setReadability('columnAspect', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">w/h</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Column minimum aspect</span>
+            <input type="number" min={0.1} max={2} step={0.05} value={activeReadability.columnMinAspect} onChange={e => setReadability('columnMinAspect', Number(e.target.value))} className="prefs-num" />
             <span className="prefs-num-unit">w/h</span>
           </div>
           <div className="prefs-num-row">
