@@ -15,7 +15,7 @@ function instance(root, name, text) {
   return project
 }
 
-test('only the exact accepted revision can publish its private staged result', async () => {
+test('publication advances the shared head monotonically and a late ancestor publishes nothing', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-build-publish-'))
   const oldRoot = mkdtempSync(join(tmpdir(), 'tlda-build-old-'))
   const newRoot = mkdtempSync(join(tmpdir(), 'tlda-build-new-'))
@@ -29,29 +29,28 @@ test('only the exact accepted revision can publish its private staged result', a
       sourceManifest: ['main.md'],
       files: [{ path: 'main.md', content: 'old source' }],
     })
-    const newer = await lifecycle.submit({
-      expectedRevision: old.authority.currentRevision,
-      sourceManifest: ['main.md'],
+    const git = await lifecycle.gitRepository()
+    const newerRevision = await git.acceptRevision({
+      project: name,
+      parent: old.authority.currentRevision,
       files: [{ path: 'main.md', content: 'new source' }],
+      message: 'new proposal',
     })
     const oldProject = instance(oldRoot, name, 'old artifact')
     const newProject = instance(newRoot, name, 'new artifact')
 
-    await assert.rejects(
-      publishBuildInstance(name, old.authority.currentRevision, old.authority.acceptSeq, oldProject, []),
-      /not authorized/,
-    )
     assert.equal(readFileSync(join(oldProject, 'output', 'artifact.txt'), 'utf8'), 'old artifact')
     assert.equal(readFileSync(join(newProject, 'output', 'artifact.txt'), 'utf8'), 'new artifact')
 
-    await publishBuildInstance(name, newer.authority.currentRevision, newer.authority.acceptSeq, newProject, [])
+    const published = await publishBuildInstance(name, newerRevision, null, newProject, [])
+    assert.equal(published.published, true)
+    assert.equal(await git.head(name), newerRevision)
     assert.equal(readFileSync(join(root, name, 'output', 'artifact.txt'), 'utf8'), 'new artifact')
     assert.equal(readFileSync(join(root, name, 'build.log'), 'utf8'), 'new artifact log')
 
-    await assert.rejects(
-      publishBuildInstance(name, old.authority.currentRevision, old.authority.acceptSeq, oldProject, []),
-      /not authorized/,
-    )
+    const stale = await publishBuildInstance(name, old.authority.currentRevision, null, oldProject, [])
+    assert.equal(stale.published, false)
+    assert.equal(stale.stale, true)
     assert.equal(readFileSync(join(root, name, 'output', 'artifact.txt'), 'utf8'), 'new artifact')
   } finally {
     await closeProjectStore()

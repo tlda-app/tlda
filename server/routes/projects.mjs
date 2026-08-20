@@ -20,7 +20,6 @@ import { createHash, randomUUID } from 'crypto'
 import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'fs/promises'
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'fs'
 import { join, basename, dirname, resolve } from 'path'
-import { tmpdir } from 'os'
 import { promisify } from 'util'
 import { requireRead, requireRecordingPrivateRead, requireRw } from '../lib/auth.mjs'
 import {
@@ -39,7 +38,6 @@ import {
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus, SOURCE_AUTHORITY_UNINITIALIZED } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
-import { dispatchBuild, projectHeadChanged } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
@@ -49,7 +47,6 @@ import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, mate
 import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { clipRecordingData, readRecordingPublication, writeOwnerInterval, writePublishedRecording } from '../lib/recording-publication.mjs'
 import { materializeRecordingAudioClip } from '../lib/recording-audio-clip.mjs'
-import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
 import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf, recoverProjectSourceTransactions, readOverleafLocalHead, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
@@ -379,16 +376,6 @@ router.post('/:name/parts', requireRw, async (req, res) => {
       const status = result.status === 'not materialized' && /no project resolved/i.test(result.error || '') ? 404 : 400
       return res.status(status).json({ ok: false, error: result.error, ...result })
     }
-    const project = await readProject(req.params.name)
-    if (project?.format === 'markdown') {
-      await requestSourceRoomBuild(req.params.name)
-    } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
-      // svg/png/diff and any other format with no page-info.json of its own —
-      // write the parts-only manifest and tell open viewers to reload.
-      // (html/slides own page-info.json via their own build pipeline; wiring
-      // parts into those is a separate, unstarted piece.)
-      await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
-    }
     emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({ ok: true, ...result, outputFile: markdownColumnFileForSource(result.projectPath) })
   } catch (e) {
@@ -440,11 +427,6 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
       checkpoint: checkpointProjectPartWritebackOffloop,
     })
     const touched = result.touchedDirs?.includes(projectPartsRoot(req.params.name)) || false
-    if (project.format === 'markdown') {
-      await requestSourceRoomBuild(req.params.name)
-    } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
-      await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
-    }
     emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({
       ok: true,
@@ -494,11 +476,6 @@ router.delete('/:name/parts', requireRw, async (req, res) => {
     ...manifest,
     parts: manifest.parts.filter(part => !deleted.has(part.id)),
   })
-  if (project.format === 'markdown') {
-    await requestSourceRoomBuild(req.params.name)
-  } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
-    await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
-  }
   res.json({ ok: true, deleted: ids })
 })
 
@@ -518,11 +495,6 @@ router.delete('/:name/parts/:id', requireRw, async (req, res) => {
     ...manifest,
     parts: manifest.parts.filter(p => p.id !== req.params.id),
   })
-  if (project.format === 'markdown') {
-    await requestSourceRoomBuild(req.params.name)
-  } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
-    await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
-  }
   res.json({ ok: true, deleted: req.params.id })
 })
 
@@ -575,14 +547,7 @@ router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
       actor: req.body?.actor,
       provenance: req.body?.provenance,
     })
-    const project = await readProject(req.params.name)
-    if (project?.format === 'markdown') {
-      await requestSourceRoomBuild(req.params.name)
-      emitGlobalEvent('project-changed', { name: req.params.name })
-    } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
-      await requestSourceRoomBuild(req.params.name, { kind: 'parts' })
-      emitGlobalEvent('project-changed', { name: req.params.name })
-    }
+    emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({ ok: true, ...result })
   } catch (e) {
     const message = e?.message || String(e)
@@ -636,10 +601,6 @@ router.post('/:name/link', requireRw, async (req, res) => {
     }
     const result = await linkOverleaf(req.params.name, { gitUrl: source, token, title, mainFile, format, pollSeconds })
     if (result.linked) {
-      const project = await readProject(req.params.name)
-      if (project?.format === 'svg') {
-        await requestSourceRoomBuild(req.params.name)
-      }
       emitGlobalEvent('project-changed', { name: req.params.name })
     }
     res.json({ ok: true, ...result })
@@ -778,17 +739,6 @@ router.get('/:name/source-entries', requireRead, async (req, res) => {
  * carries the refused ref too, because a proposer that wants to show somebody
  * what was refused needs the commit, not the sha.
  */
-router.get('/:name/source-bundle', requireRead, async (req, res) => {
-  try {
-    const lifecycle = await sourceLifecycleStore(req.params.name)
-    const payload = await lifecycle.proposerBundle(req.query.have || null)
-    if (!payload) return res.status(404).json({ ok: false, error: 'the project has no accepted revision' })
-    res.json({ ok: true, ...payload })
-  } catch (error) {
-    res.status(400).json({ ok: false, error: error.message })
-  }
-})
-
 // Read a specific source file's content
 router.get('/:name/source/:file', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
@@ -984,17 +934,6 @@ function conflictFilesFromLifecycleResult(result) {
 let acceptedSourceMutationHandler = null
 let pendingSourceReplicaHandler = null
 let sourceBindingTargetProvider = null
-let sourceRoomDaemonRequests = null
-
-export function setSourceRoomDaemonRequests(requests) {
-  sourceRoomDaemonRequests = requests || null
-}
-
-async function requestSourceRoomBuild(name, options = {}) {
-  if (!sourceRoomDaemonRequests?.requestBuild) throw new Error('source-room daemon build submission is not configured')
-  return sourceRoomDaemonRequests.requestBuild(name, options)
-}
-
 export function setAcceptedSourceMutationHandler(handler) {
   acceptedSourceMutationHandler = typeof handler === 'function' ? handler : null
 }
@@ -1251,10 +1190,7 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
     throw new Error(`accepted source revision ${sourceRevision} did not arrive through a source daemon boundary`)
   }
   const ran = []
-  lifecycle.recordAcceptedRevision(name, sourceRevision, acceptSeq, {
-    daemonId,
-    basedOnRevision: sourceRevision,
-  })
+  lifecycle.recordAcceptedRevision(name, sourceRevision, acceptSeq)
   ran.push('journal')
 
   const { changed, deleted } = await lifecycle.diffRevisions(previousRevision, sourceRevision)
@@ -1358,55 +1294,11 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
   // It is written from the accepted revision rather than from the request,
   // because the revision is what was accepted -- a carried-forward path and a
   // clean rebase both differ from what the caller sent.
-  let materialized = true
   try {
     await materializeWorkingCopy(name, lifecycle, sourceRevision)
     ran.push('working-copy')
   } catch (error) {
-    materialized = false
     console.error(`[${name}] writing the working copy after accept failed: ${error.message}`)
-  }
-
-  // **Ask whether to build, rather than always building.**
-  //
-  // The old path asked `shouldBuildOnPush` and suppressed for `unchanged`,
-  // `outside-tree`, `already-building` and a failed relevant-files parse. This
-  // path dispatched unconditionally, so the difference is not new behaviour
-  // appearing — it is a suppression that stopped happening.
-  //
-  // `already-building` is the one that bites: without it a project being edited
-  // continuously stacks a build worker per accept, on a box this fleet has
-  // already taken down once. Each of those workers also outlives the accept
-  // that spawned it, which is how an accept that completed can look like one
-  // that hung.
-  //
-  // Still gated on the working copy, because a build over bytes we failed to
-  // write publishes a render of the PREVIOUS revision under this one's number —
-  // worse than no build, which at least leaves the old output honest.
-  const project = await readProject(name)
-  const decision = shouldBuildOnPush(project, name, {
-    changedFiles: [...changed, ...deleted],
-    anyChanged: changed.length > 0 || deleted.length > 0,
-    building: false,
-    ready: projectRevisionStatus(lifecycle.listRevisionLifecycles(name)).status === 'success',
-  })
-  if (materialized && decision.build) {
-    await projectHeadChanged(name, sourceRevision)
-    void dispatchBuild(name, {
-      sourceRevision,
-      acceptSeq,
-      basedOnRevision: sourceRevision,
-      daemonId,
-    })
-      .catch(error => console.error(`[${name}] build dispatch after accept failed: ${error.message}`))
-    ran.push('build')
-  } else if (sourceRevision) {
-    // A revision that correctly did not build still says so. Without these a
-    // suppressed build is indistinguishable from one that never got dispatched.
-    const terminalState = decision.reason === 'already-building' ? 'superseded' : 'not_required'
-    lifecycle.recordRevisionPhase(name, sourceRevision, 'build', terminalState, { reason: decision.reason })
-    lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'not_reached', { buildState: terminalState })
-    ran.push(`build-skipped:${decision.reason}`)
   }
 
   // **The mirror: server -> every bound checkout. This is the return direction,
@@ -1635,13 +1527,7 @@ async function referencedClosureForPush(name, roots, { files, sourceManifest }) 
   return [...reached]
 }
 
-async function rebuildProjectPartsView(name, project) {
-  if (project?.format === 'markdown') {
-    await requestSourceRoomBuild(name)
-  } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
-    await requestSourceRoomBuild(name, { kind: 'parts' })
-  }
-}
+async function rebuildProjectPartsView() {}
 
 function bufferToUtf8(value) {
   return Buffer.isBuffer(value) ? value.toString('utf8') : String(value ?? '')
@@ -1784,54 +1670,6 @@ async function sourcePushWouldChange(name, { files, deletedFiles }) {
   }
   return false
 }
-
-// Trigger rebuild (no file changes)
-router.post('/:name/build', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
-
-  const clean = req.query.clean === '1'
-
-  // Clean build: delete aux/biber cache files before rebuilding
-  if (clean) {
-    const projDir = getProjectDir(req.params.name)
-    const mainFile = project.mainFile || 'main.tex'
-    const texBase = mainFile.split('/').pop().replace(/\.tex$/i, '')
-    try {
-      await rm(join(projDir, '.biber-par-cache'), { recursive: true, force: true })
-      for (const ext of ['.bbl', '.blg', '.run.xml']) {
-        await rm(join(projDir, 'build-cache', `${texBase}${ext}`), { force: true })
-      }
-      console.log(`[api] Clean build: cleared biber cache for ${req.params.name}`)
-    } catch (e) {
-      console.error(`[api] Clean build: failed to clear biber cache for ${req.params.name}: ${e.message}`)
-      return res.status(500).json({ error: 'Clean build failed to clear biber cache', detail: e.message })
-    }
-    const srcDir = getSourceDir(req.params.name)
-    if (await pathExists(srcDir)) {
-      const cleanExts = ['.aux', '.bbl', '.bcf', '.blg', '.run.xml', '.fls', '.fdb_latexmk', '.synctex.gz', '.log', '.out', '.toc', '.lof', '.lot']
-      for (const file of await readdir(srcDir)) {
-        if (cleanExts.some(ext => file.endsWith(ext))) {
-          try {
-            await unlink(join(srcDir, file))
-          } catch (e) {
-            console.error(`[api] Clean build: failed to delete aux file ${file} for ${req.params.name}: ${e.message}`)
-            return res.status(500).json({ error: 'Clean build failed to delete aux file', file, detail: e.message })
-          }
-        }
-      }
-      console.log(`[api] Clean build: deleted aux files for ${req.params.name}`)
-    }
-  }
-
-  res.json({ ok: true, building: true, clean })
-
-  try {
-    await requestSourceRoomBuild(req.params.name)
-  } catch (e) {
-    console.error(`[api] Build failed for ${req.params.name}: ${e.message}`)
-  }
-})
 
 // Build status + log
 router.get('/:name/build/status', requireRead, async (req, res) => {
@@ -2224,101 +2062,6 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null,
  * mechanism that nothing here schedules. Written down rather than left
  * implicit: an admitted gap costs nothing and a silent one costs a night.
  */
-router.post('/:name/source-blob', requireRw, express.raw({ type: () => true, limit: '100mb' }), async (req, res) => {
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-    return res.status(400).json({ ok: false, error: 'a body is required' })
-  }
-  try {
-    const lifecycle = await sourceLifecycleStore(req.params.name)
-    res.json({ ok: true, ...(await lifecycle.putBlob(req.body)) })
-  } catch (error) {
-    res.status(400).json({ ok: false, error: error.message })
-  }
-})
-
-router.post('/:name/source-snapshot', requireRw, async (req, res) => {
-  if (!sourceRoomDaemonRequests?.submitSnapshot) {
-    return res.status(503).json({ ok: false, error: 'source-room daemon snapshot submission is not configured' })
-  }
-  const { status, body } = await sourceRoomDaemonRequests.submitSnapshot(req.params.name, {
-    ...(req.body || {}),
-    editedBy: req.body?.editedBy || req.get('x-tlda-edited-by') || null,
-  })
-  res.status(status).json(body)
-})
-
-router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, limit: '500mb' }), async (req, res) => {
-  const name = req.params.name
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-    return res.status(400).json({ ok: false, error: 'a bundle body is required' })
-  }
-  const editedBy = req.get('x-tlda-edited-by') || null
-  const sourceBindingId = req.get('x-tlda-source-binding') || null
-  const sourceDaemonKey = req.get('x-tlda-source-daemon') || null
-  const owner = sourceConflictOwner({ editedBy, sourceBindingId, sourceDaemonKey })
-  if (!sourceDaemonKey) {
-    return res.status(400).json({ ok: false, error: 'source bundle requires source daemon context' })
-  }
-  const bundlePath = join(tmpdir(), `tlda-proposed-${process.pid}-${randomUUID()}.bundle`)
-  try {
-    await writeFile(bundlePath, req.body)
-    const lifecycle = await sourceLifecycleStore(name)
-    // Through the same journal as the JSON carrier, so the two cannot diverge
-    // on idempotency. In practice the daemon sends no requestId and wants none:
-    // it holds the change and RE-PROPOSES rather than retrying, which is a new
-    // commit rather than the same one twice. A caller that does send one gets
-    // the same dedup the other carrier gets.
-    const result = await runSerializedProjectSourceOperation(name, () =>
-      acceptUnderOperationJournal(name, lifecycle, { requestId: req.get('x-tlda-request-id') || null }, () =>
-        lifecycle.acceptBundle(bundlePath)))
-    if (result.replayed) {
-      return res.status(result.invalidReuse ? 400 : (result.httpStatus || 200)).json(result)
-    }
-    if (!result.ok) {
-      // A non-fast-forward is the proposer's to resolve, not ours to merge. They
-      // hold the commits; they rebase and propose again.
-      return res.status(409).json({
-        ok: false,
-        status: result.status,
-        currentRevision: result.revision ?? null,
-        refusedRevision: result.refusedRevision ?? null,
-      })
-    }
-    const sourceRevision = result.revision?.id ?? result.revision ?? null
-    const acceptSeq = result.authority?.acceptSeq ?? null
-    const ran = await applyAcceptedSourceEffects(name, lifecycle, {
-      sourceRevision,
-      acceptSeq,
-      previousRevision: result.previous ?? null,
-      editedBy,
-      sourceBindingId,
-      // So the fan-out does not send this change back to the machine it came
-      // from. A daemon that materializes its own push would overwrite the file
-      // its author is still editing.
-      sourceDaemonKey,
-      daemonId: sourceDaemonKey,
-      owner,
-      requestId: req.get('x-tlda-request-id') || randomUUID(),
-    })
-    res.json({
-      ok: true,
-      status: result.status,
-      sourceRevision,
-      acceptSeq,
-      // Named rather than boolean, because "the accept worked" and "the work was
-      // preserved" are different facts and the caller cannot see the second.
-      postAcceptEffects: ran,
-    })
-  } catch (error) {
-    console.error(`[${name}] proposed bundle failed: ${error.message}`)
-    res.status(400).json({ ok: false, error: error.message })
-  } finally {
-    await rm(bundlePath, { force: true }).catch(() => {
-      // Best effort on a temp file; the accept result is what the caller needs.
-    })
-  }
-})
-
 router.post('/:name/recording', requireRw, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })

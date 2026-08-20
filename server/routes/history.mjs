@@ -44,11 +44,11 @@ async function snapshotFromDirectory(root, relative = '') {
 
 async function submitHistorySnapshot(req, name, root) {
   const daemon = req.app?.locals?.sourceRoomDaemon
-  if (!daemon?.submitSnapshot) throw new Error('source-room daemon snapshot submission is not configured')
+  if (!daemon?.submitFiles) throw new Error('source-room Git submission is not configured')
   const lifecycle = await sourceLifecycleStore(name)
   const authority = await lifecycle.readAuthority()
   const files = await snapshotFromDirectory(root)
-  const result = await daemon.submitSnapshot(name, {
+  const result = await daemon.submitFiles(name, {
     files,
     sourceManifest: files.map(file => file.path).sort(),
     expectedRevision: authority.currentRevision || null,

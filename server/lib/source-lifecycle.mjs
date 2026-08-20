@@ -901,6 +901,9 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
   }
 
   return {
+    async gitRepository() {
+      return sourceGit()
+    },
     readAuthority: state,
     readRevision: revision,
     async isAncestor(ancestor, descendant) {

@@ -181,6 +181,12 @@ export function createGitProjectSync({
     if (dirty) await commitSettledTree()
     const local = await rev(localRef) || await rev('HEAD')
     const applied = await rev(appliedRef)
+    if (!local) {
+      await git(['checkout', '--force', '-B', branch, revision])
+      await git(['update-ref', localRef, revision])
+      await git(['update-ref', appliedRef, revision, applied || ZERO])
+      return { ok: true, status: 'applied', revision, localRevision: revision }
+    }
     if (local && await isAncestor(revision, local)) {
       await git(['update-ref', appliedRef, revision, applied || ZERO])
       return { ok: true, status: 'already-applied', revision }

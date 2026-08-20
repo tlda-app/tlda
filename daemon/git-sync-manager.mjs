@@ -29,6 +29,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   function record(project) { return records().find(item => item.project === project) || null }
 
   async function ensureRepo(item) {
+    fs.mkdirSync(item.sourceDir, { recursive: true })
     try { await execFile('git', ['rev-parse', '--git-dir'], { cwd: item.sourceDir }) } catch {
       await execFile('git', ['init', '-b', 'main'], { cwd: item.sourceDir })
       await execFile('git', ['config', 'user.name', 'tlda source daemon'], { cwd: item.sourceDir })
