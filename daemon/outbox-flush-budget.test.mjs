@@ -29,16 +29,32 @@ const DEADLINE_MS = 120_000
  */
 function countingOutbox(rows) {
   const store = rows.map(r => ({ ...r }))
-  const counts = { refScans: 0, payloadReads: 0 }
+  const counts = { refScans: 0, refLimits: [], claimedRefs: 0, payloadReads: 0 }
   const live = () => store.filter(r => !r.acked)
   const ref = r => ({ id: r.id, type: r.payload?.type || '' })
   return {
     counts,
-    pendingRefs: (limit = 100) => { counts.refScans++; return live().slice(0, limit).map(ref) },
+    pendingRefs: (limit = 100) => {
+      counts.refScans++
+      counts.refLimits.push(limit)
+      const rows = live().slice(0, limit).map(ref)
+      counts.claimedRefs += rows.length
+      return rows
+    },
     pendingRefsExcludingTypes: (types = [], limit = 100) => {
       counts.refScans++
       const skip = new Set(types)
-      return live().filter(r => !skip.has(r.payload?.type || '')).slice(0, limit).map(ref)
+      const rows = live().filter(r => !skip.has(r.payload?.type || '')).slice(0, limit).map(ref)
+      counts.claimedRefs += rows.length
+      return rows
+    },
+    pendingRefsOfTypes: (types = [], limit = 100) => {
+      counts.refScans++
+      counts.refLimits.push(limit)
+      const include = new Set(types)
+      const rows = live().filter(r => include.has(r.payload?.type || '')).slice(0, limit).map(ref)
+      counts.claimedRefs += rows.length
+      return rows
     },
     getWithSize: id => {
       counts.payloadReads++
@@ -89,6 +105,23 @@ test('a window that is entirely in flight costs no payload reads at all', () => 
   assert.equal(outbox.counts.payloadReads, readsAfterFirstPass,
     'a tick that sends nothing must read no payloads — this is the pin')
   assert.ok(outbox.counts.refScans >= 2, 'it should still have looked at the window')
+})
+
+test('a large same-type queue cannot all become inflight ahead of its acknowledgements', () => {
+  const clock = { ms: 1_000_000 }
+  const rows = Array.from({ length: 13_500 }, (_, i) => row(`r${i}`, 'activity-event', 100))
+  const { delivery, outbox, sent } = runtimeOver(rows, { clock, flushByteBudget: 1_048_576 })
+
+  delivery.flushDurable()
+  assert.equal(sent.length, 100, 'only one receiver-sized window may await acknowledgement')
+
+  const claimsAtCapacity = outbox.counts.claimedRefs
+  delivery.flushDurable()
+  assert.equal(sent.length, 100, 'a second flush without acknowledgements must send nothing')
+  assert.equal(outbox.counts.claimedRefs, claimsAtCapacity,
+    'at capacity it must not claim past the outstanding lane')
+  assert.ok(Math.max(...outbox.counts.refLimits) <= 200,
+    'the claim query must stay bounded independently of total queue depth')
 })
 
 test('one oversized payload cannot take the whole tick with it', () => {

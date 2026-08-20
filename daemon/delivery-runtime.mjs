@@ -22,6 +22,7 @@ export class DaemonDeliveryRuntime {
     inflightDeadlineMs,
     flushByteBudget,
     now = () => Date.now(),
+    maxInflightPerLane = 100,
   }) {
     if (!Number.isFinite(inflightDeadlineMs) || inflightDeadlineMs <= 0) {
       throw new Error(`DaemonDeliveryRuntime requires a positive inflightDeadlineMs (got ${JSON.stringify(inflightDeadlineMs)})`)
@@ -29,18 +30,22 @@ export class DaemonDeliveryRuntime {
     if (!Number.isFinite(flushByteBudget) || flushByteBudget <= 0) {
       throw new Error(`DaemonDeliveryRuntime requires a positive flushByteBudget (got ${JSON.stringify(flushByteBudget)})`)
     }
+    if (!Number.isInteger(maxInflightPerLane) || maxInflightPerLane <= 0) {
+      throw new Error(`DaemonDeliveryRuntime requires a positive integer maxInflightPerLane (got ${JSON.stringify(maxInflightPerLane)})`)
+    }
     this.outbox = outbox
     this.sendDirect = send
     this.isConnected = isConnected
     this.isReady = isReady
     this.log = log
     this.ephemeralQueueLimit = ephemeralQueueLimit
-    // id → the time we handed it to the socket. A Set was enough while the
-    // only exits were ack, error and reconnect; it has to carry the send time
-    // now so a row that is never answered can be released.
+    // id → { sentAt, type }. A Set was enough while the only exits were ack,
+    // error and reconnect; deadline release needs the time, and bounded lanes
+    // need the type without reading the durable payload again.
     this.inflight = new Map()
     this.inflightDeadlineMs = inflightDeadlineMs
     this.flushByteBudget = flushByteBudget
+    this.maxInflightPerLane = maxInflightPerLane
     this.now = now
     this.ephemeralQueues = new Map()
     this.flushTimer = null
@@ -195,6 +200,10 @@ export class DaemonDeliveryRuntime {
     return row?.type === 'source-change' ? 'source-change' : null
   }
 
+  static _deliveryLane(row) {
+    return DaemonDeliveryRuntime._orderingStream(row) || 'unordered'
+  }
+
   // Claim, then read. The window is scanned by id and type; a payload is read
   // and parsed only for a row this tick is going to hand to the socket, and only
   // until the byte budget is spent.
@@ -218,34 +227,50 @@ export class DaemonDeliveryRuntime {
       // cannot consume the window. Without this the fetch is the bug: pinned
       // rows are counted before the ones that could actually be sent.
       const budget = 100
-      const blocked = new Set()
+      const inflightByLane = new Map()
+      const now = this.now()
+      for (const [id, inflight] of this.inflight) {
+        const { type, sentAt } = inflight
+        const heldMs = now - sentAt
+        if (heldMs >= this.inflightDeadlineMs) {
+          this.log?.warn?.(`daemon durable message unanswered for ${Math.round(heldMs / 1000)}s (type=${type || 'unknown'}, id=${id}) — releasing its delivery slot and offering it again; the server received it and never answered`)
+          this.inflight.delete(id)
+          continue
+        }
+        const lane = DaemonDeliveryRuntime._deliveryLane({ type })
+        inflightByLane.set(lane, (inflightByLane.get(lane) || 0) + 1)
+      }
+      // The socket being OPEN does not mean the receiver has processed what
+      // was handed to it. Without this bound, byte-budgeted ticks put the whole
+      // durable queue in flight, so every enqueue/ack scans that entire set and
+      // every deadline replays it. Bound receiver debt in two lanes: the only
+      // ordered stream (`source-change`) and everything unordered. Keeping the
+      // lanes separate preserves the existing guarantee that an unresolved
+      // source change cannot stop RPC replies or activity delivery.
+      const sourceAtCapacity = (inflightByLane.get('source-change') || 0) >= this.maxInflightPerLane
+      const unorderedAtCapacity = (inflightByLane.get('unordered') || 0) >= this.maxInflightPerLane
+      if (sourceAtCapacity && unorderedAtCapacity) return
+      const blocked = new Set(sourceAtCapacity ? ['source-change'] : [])
       let sent = 0
       let remainingBytes = this.flushByteBudget
       const drain = (rows) => {
         for (const ref of rows) {
           if (sent >= budget) return true
           const stream = DaemonDeliveryRuntime._orderingStream(ref)
-          const sentAt = this.inflight.get(ref.id)
-          if (sentAt !== undefined) {
-            const heldMs = this.now() - sentAt
-            if (heldMs < this.inflightDeadlineMs) {
-              // Awaiting an ack and still within its deadline, so nothing may
-              // overtake it in ITS stream. Everything else steps past it.
-              if (stream) blocked.add(stream)
-              continue
-            }
-            // Loud on purpose. Reaching here means the server took this message
-            // and neither acked nor errored it, which the sender cannot tell
-            // from a message still in transit -- a severed wire reporting
-            // health. Releasing the slot keeps the queue moving; it does not
-            // make the silence acceptable, and this line is the only place that
-            // silence becomes visible.
-            // The type comes from the row's own column rather than the payload,
-            // so saying this costs no payload read.
-            this.log?.warn?.(`daemon durable message unanswered for ${Math.round(heldMs / 1000)}s (type=${ref.type || 'unknown'}, id=${ref.id}) — releasing its delivery slot and offering it again; the server received it and never answered`)
-            this.inflight.delete(ref.id)
+          const inflight = this.inflight.get(ref.id)
+          if (inflight !== undefined) {
+            // Awaiting an ack and still within the deadline: expired entries
+            // were released in one bounded pass above before capacity was
+            // calculated. Nothing may overtake it in ITS ordering stream.
+            if (stream) blocked.add(stream)
+            continue
           }
           if (stream && blocked.has(stream)) continue
+          const lane = DaemonDeliveryRuntime._deliveryLane(ref)
+          if ((inflightByLane.get(lane) || 0) >= this.maxInflightPerLane) {
+            if (stream) blocked.add(stream)
+            continue
+          }
           // Checked before the read, so an exhausted budget costs nothing. Only
           // consulted BETWEEN rows: the first row of a tick always goes, even if
           // it is larger than the whole budget, or an oversized payload could
@@ -259,10 +284,13 @@ export class DaemonDeliveryRuntime {
           // about to be handed to the socket.
           const row = this.outbox.getWithSize(ref.id)
           if (!row) continue
-          this.inflight.set(row.id, this.now())
+          this.inflight.set(row.id, { sentAt: this.now(), type: row.type || '' })
+          const rowLane = DaemonDeliveryRuntime._deliveryLane(row)
+          inflightByLane.set(rowLane, (inflightByLane.get(rowLane) || 0) + 1)
           this.outbox.markAttempt(row.id)
           if (!this.trySend(row.payload)) {
             this.inflight.delete(row.id)
+            inflightByLane.set(rowLane, Math.max(0, (inflightByLane.get(rowLane) || 1) - 1))
             this.outbox.markTransientError(row.id, 'websocket not open')
             return true
           }
@@ -273,12 +301,19 @@ export class DaemonDeliveryRuntime {
         return false
       }
 
-      const stop = drain(this.outbox.pendingRefs(budget + this.inflight.size))
+      const claimLimit = budget + this.inflight.size
+      const firstRows = unorderedAtCapacity
+        ? this.outbox.pendingRefsOfTypes(['source-change'], claimLimit)
+        : sourceAtCapacity
+          ? this.outbox.pendingRefsExcludingTypes(['source-change'], claimLimit)
+          : this.outbox.pendingRefs(claimLimit)
+      const stop = drain(firstRows)
       // A blocked stream's own backlog can fill the window on its own — 36,000
       // rows of which most were `source-change` is exactly that. Once a stream
       // is known blocked, re-ask for the rows it is NOT holding up, so a large
       // stuck backlog costs one extra query instead of everyone else's delivery.
-      if (!stop && sent < budget && blocked.size) {
+      if (!stop && sent < budget && blocked.size
+          && (inflightByLane.get('unordered') || 0) < this.maxInflightPerLane) {
         drain(this.outbox.pendingRefsExcludingTypes([...blocked], budget - sent))
       }
     } finally {

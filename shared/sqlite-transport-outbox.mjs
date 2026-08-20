@@ -189,6 +189,25 @@ export class SqliteTransportOutbox {
     return stmt.all(...params, ...list, limit)
   }
 
+  pendingRefsOfTypes(types = [], params = [], limit = 100) {
+    const list = [...new Set(types.filter(Boolean).map(String))]
+    if (!list.length) return []
+    const key = list.slice().sort().join(' ')
+    this._pendingRefsOfTypesStmts ||= new Map()
+    let stmt = this._pendingRefsOfTypesStmts.get(key)
+    if (!stmt) {
+      stmt = this.db.prepare(`
+        SELECT id, type FROM ${this.tableName}
+        WHERE ${this.pendingWhere}
+          AND type IN (${list.map(() => '?').join(',')})
+        ORDER BY ${this.pendingOrder}
+        LIMIT ?
+      `)
+      this._pendingRefsOfTypesStmts.set(key, stmt)
+    }
+    return stmt.all(...params, ...list, limit)
+  }
+
   pendingExcludingTypes(types = [], params = [], limit = 100) {
     const list = [...new Set(types.filter(Boolean).map(String))]
     if (!list.length) return this.pending(params, limit)

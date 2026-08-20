@@ -40,6 +40,9 @@ export class DaemonOutbox {
         `CREATE INDEX IF NOT EXISTS daemon_outbox_pending_idx
           ON daemon_outbox(created_at, id)
           WHERE dead_lettered_at IS NULL`,
+        `CREATE INDEX IF NOT EXISTS daemon_outbox_pending_type_idx
+          ON daemon_outbox(type, created_at, id)
+          WHERE dead_lettered_at IS NULL`,
       ],
       pendingWhere: 'dead_lettered_at IS NULL',
     })
@@ -94,6 +97,10 @@ export class DaemonOutbox {
 
   pendingRefsExcludingTypes(types = [], limit = 100) {
     return this.queue.pendingRefsExcludingTypes(types, [], limit)
+  }
+
+  pendingRefsOfTypes(types = [], limit = 100) {
+    return this.queue.pendingRefsOfTypes(types, [], limit)
   }
 
   // get(), plus the payload's size on the wire, taken from the stored JSON
