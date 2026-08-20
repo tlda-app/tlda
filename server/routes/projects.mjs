@@ -39,7 +39,7 @@ import {
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus, SOURCE_AUTHORITY_UNINITIALIZED } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
-import { dispatchBuild } from '../lib/build-dispatch.mjs'
+import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
@@ -1353,14 +1353,15 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
   // **Ask whether to build, rather than always building.**
   //
   // The old path asked `shouldBuildOnPush` and suppressed for `unchanged`,
-  // `outside-tree` and a failed relevant-files parse. This
+  // `outside-tree`, `already-building` and a failed relevant-files parse. This
   // path dispatched unconditionally, so the difference is not new behaviour
   // appearing — it is a suppression that stopped happening.
   //
-  // Build-worthy work always reaches the queue. The queue owns coalescing: one
-  // in-flight build and one latest-only pending slot per project. Suppressing a
-  // later accept here while an initial SVG build was running bypassed that slot,
-  // so the final accepted edit could be marked superseded and never built.
+  // `already-building` is the one that bites: without it a project being edited
+  // continuously stacks a build worker per accept, on a box this fleet has
+  // already taken down once. Each of those workers also outlives the accept
+  // that spawned it, which is how an accept that completed can look like one
+  // that hung.
   //
   // Still gated on the working copy, because a build over bytes we failed to
   // write publishes a render of the PREVIOUS revision under this one's number —
@@ -1369,6 +1370,7 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
   const decision = shouldBuildOnPush(project, name, {
     changedFiles: [...changed, ...deleted],
     anyChanged: changed.length > 0 || deleted.length > 0,
+    building: isBuildKindPending(name, 'build'),
     ready: projectRevisionStatus(lifecycle.listRevisionLifecycles(name)).status === 'success',
   })
   if (materialized && decision.build) {
@@ -1378,7 +1380,7 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
   } else if (sourceRevision) {
     // A revision that correctly did not build still says so. Without these a
     // suppressed build is indistinguishable from one that never got dispatched.
-    const terminalState = 'not_required'
+    const terminalState = decision.reason === 'already-building' ? 'superseded' : 'not_required'
     lifecycle.recordRevisionPhase(name, sourceRevision, 'build', terminalState, { reason: decision.reason })
     lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'not_reached', { buildState: terminalState })
     ran.push(`build-skipped:${decision.reason}`)

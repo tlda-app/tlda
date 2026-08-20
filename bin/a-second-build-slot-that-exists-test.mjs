@@ -1,9 +1,22 @@
 #!/usr/bin/env node
 //
-// The existing unconfigured default is two concurrent builds. This is a
-// capacity/latency choice, not a starvation guarantee: queue fairness is tested
-// separately at k=1. Keep pinning the configured behavior here without turning
-// the value into a correctness claim.
+// **`k >= 2` is a correctness bound, not a throughput preference.**
+//
+// Design §10.2b: *"at `k = 1` the two coincide, because the only slot is the
+// contested one: a collaborator with finished, buildable work never gets to run
+// it while someone upstream keeps typing and keeps reclaiming the slot on an
+// older `waitingSince`. At `k >= 2` their build runs concurrently and promotes
+// normally, and the typist simply never wins with unsettled work."*
+//
+// **The effective value was 1.** Nothing supplied a default,
+// `buildMaxConcurrency` shipped commented out of `server.yaml`, and
+// `Number(undefined || 1)` is 1 — so every install ran the starving case, and
+// the bound the design calls a correctness property was documentation.
+//
+// This asserts the behaviour rather than the constant: with nothing configured,
+// two projects must be building AT THE SAME TIME. And an explicit `1` must still
+// be honoured, because nothing here exists to protect somebody from a decision
+// they meant to make.
 import assert from 'node:assert/strict'
 import { createBuildQueue } from '../server/lib/build-queue.mjs'
 
@@ -35,7 +48,7 @@ function harness(options) {
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(running.length, 2,
-    `with nothing configured, a second project builds concurrently (saw ${running.length} in flight)`)
+    `THE BOUND: with nothing configured, a second project builds concurrently (saw ${running.length} in flight)`)
   assert.deepEqual(running.map(job => job.name).sort(), ['alpha', 'beta'],
     'and they are the two different projects, not one twice')
 }

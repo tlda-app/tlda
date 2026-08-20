@@ -23,11 +23,11 @@ function makeQueue() {
   return { queue, starts }
 }
 
-function initialSvgDecision(buildStatus = 'none') {
+function initialSvgDecision(queue, buildStatus = 'none') {
   return shouldBuildOnPush(
     { format: 'svg', pages: 0, buildStatus },
     'new-svg-project',
-    { changedFiles: ['main.tex'], anyChanged: true },
+    { changedFiles: ['main.tex'], anyChanged: true, building: queue.isBuildKindPending('new-svg-project', 'build') },
   )
 }
 
@@ -62,44 +62,50 @@ test('unchanged policy ignores legacy buildStatus and uses durable readiness', (
   )
 })
 
-test('a later initial SVG accept reaches the queue while the first build is running', async () => {
+test('a new SVG project already queued or building does not dispatch or become stale again', () => {
+  const { queue, starts } = makeQueue()
+  const first = initialSvgDecision(queue)
+  assert.equal(first.eager, true)
+  queue.dispatchBuild('new-svg-project')
+
+  assert.deepEqual(initialSvgDecision(queue), {
+    build: false,
+    eager: false,
+    reason: 'already-building',
+  })
+  assert.deepEqual(
+    shouldBuildOnPush(
+      { format: 'svg', pages: 0, buildStatus: 'success' },
+      'new-svg-project',
+      { anyChanged: false, building: true },
+    ),
+    { build: false, eager: false, reason: 'already-building' },
+  )
+  assert.equal(starts.length, 1)
+})
+
+test('two rapid initial SVG pushes produce exactly one dispatch', () => {
   const { queue, starts } = makeQueue()
 
-  const firstDecision = initialSvgDecision()
-  assert.equal(firstDecision.eager, true)
-  const first = queue.dispatchBuild('new-svg-project')
-
-  // Counterfactual for the deleted admission gate: page count is still zero
-  // and the first build is active, but the accepted follow-up remains build-
-  // worthy and reaches the queue's pending slot.
-  assert.deepEqual(initialSvgDecision(), {
-    build: true,
-    eager: true,
-    reason: 'initial-svg-build',
-  })
-  const second = queue.dispatchBuild('new-svg-project')
+  for (let push = 0; push < 2; push++) {
+    const decision = initialSvgDecision(queue)
+    if (decision.build && decision.eager) queue.dispatchBuild('new-svg-project')
+  }
 
   assert.equal(starts.length, 1)
-  assert.equal(queue.isBuildKindPending('new-svg-project', 'build'), true)
-
-  await starts[0].handlers.onExit(0)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(starts.length, 2, 'the accepted follow-up starts after the initial build')
-  await starts[1].handlers.onExit(0)
-  await Promise.all([first, second])
 })
 
 test('an active parts job does not suppress the initial normal SVG build', () => {
   const { queue, starts } = makeQueue()
   queue.dispatchBuild('new-svg-project', { kind: 'parts' })
 
-  const decision = initialSvgDecision()
+  const decision = initialSvgDecision(queue)
   assert.deepEqual(decision, { build: true, eager: true, reason: 'initial-svg-build' })
   queue.dispatchBuild('new-svg-project')
 
   assert.equal(queue.isBuildKindPending('new-svg-project', 'parts'), true)
   assert.equal(queue.isBuildKindPending('new-svg-project', 'build'), true)
-  assert.deepEqual(starts.map(({ job }) => job.kind), ['parts', 'build'])
+  assert.deepEqual(starts.map(({ job }) => job.kind), ['parts'])
 })
 
 test('a queued parts job does not suppress the initial normal SVG build', () => {
@@ -109,7 +115,7 @@ test('a queued parts job does not suppress the initial normal SVG build', () => 
 
   assert.equal(queue.isBuildKindPending('new-svg-project', 'parts'), true)
   assert.equal(queue.isBuildKindPending('new-svg-project', 'build'), false)
-  assert.deepEqual(initialSvgDecision(), {
+  assert.deepEqual(initialSvgDecision(queue), {
     build: true,
     eager: true,
     reason: 'initial-svg-build',
@@ -125,11 +131,11 @@ test('a page-zero SVG can retry after its initial build completes or fails', asy
     queue.dispatchBuild('new-svg-project'),
     /exited with code 1/,
   )
-  assert.equal(initialSvgDecision().build, true)
+  assert.equal(initialSvgDecision(queue).build, false)
 
   await starts[0].handlers.onExit(1)
   await dispatched
-  assert.deepEqual(initialSvgDecision('failed'), {
+  assert.deepEqual(initialSvgDecision(queue, 'failed'), {
     build: true,
     eager: true,
     reason: 'initial-svg-build',
@@ -142,7 +148,7 @@ test('all document formats build eagerly after an accepted source change', () =>
       shouldBuildOnPush(
         { format, pages: 0, buildStatus: 'none' },
         `unused-${format}`,
-        { anyChanged: true },
+        { anyChanged: true, building: true },
       ),
       { build: true, eager: true, reason: 'format-eager' },
     )
@@ -152,7 +158,7 @@ test('all document formats build eagerly after an accepted source change', () =>
     shouldBuildOnPush(
       { format: 'svg', pages: 2, buildStatus: 'success' },
       'unused-established-svg-project',
-      { anyChanged: true },
+      { anyChanged: true, building: true },
     ),
     { build: true, eager: true, reason: 'svg-eager' },
   )

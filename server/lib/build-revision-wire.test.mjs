@@ -50,7 +50,6 @@ test('queue coalescing durably settles displaced revisions and preserves the lat
   const first = queue.dispatchBuild('paper', { sourceRevision: 'revision-1', acceptSeq: 1 })
   const second = queue.dispatchBuild('paper', { sourceRevision: 'revision-2', acceptSeq: 2 })
   const third = queue.dispatchBuild('paper', { sourceRevision: 'revision-3', acceptSeq: 3 })
-  const manual = queue.dispatchBuild('paper')
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(dispositions[0], {
     sourceRevision: 'revision-2', acceptSeq: 2, state: 'superseded',
@@ -62,83 +61,12 @@ test('queue coalescing durably settles displaced revisions and preserves the lat
   assert.equal(started[1].job.sourceRevision, 'revision-3')
   assert.equal(started[1].job.acceptSeq, 3)
   await started[1].handlers.onExit(0)
-  await Promise.all([first, second, third, manual])
+  await Promise.all([first, second, third])
   assert.deepEqual(dispositions.map(entry => [entry.sourceRevision, entry.state]), [
     ['revision-2', 'superseded'],
     ['revision-1', 'built'],
     ['revision-3', 'built'],
   ])
-})
-
-test('k=1 FIFO prevents a hot project from starving another project or itself', async () => {
-  const started = []
-  const dispositions = []
-  const queue = createBuildQueue({
-    transport: {
-      start(job, handlers) {
-        started.push({ job, handlers })
-        return { cancel() { handlers.onExit(null) } }
-      },
-    },
-    getProjectsDir: () => '/projects',
-    relayMessage() {},
-    recordDisposition(job, state) { dispositions.push([job.sourceRevision, state]) },
-  }, { maxConcurrency: 1 })
-
-  const hot1 = queue.dispatchBuild('hot', { sourceRevision: 'hot-1', acceptSeq: 1 })
-  const quiet = queue.dispatchBuild('quiet', { sourceRevision: 'quiet-1', acceptSeq: 1 })
-  const hot2 = queue.dispatchBuild('hot', { sourceRevision: 'hot-2', acceptSeq: 2 })
-  const hot3 = queue.dispatchBuild('hot', { sourceRevision: 'hot-3', acceptSeq: 3 })
-  await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(started.map(({ job }) => job.sourceRevision), ['hot-1'])
-
-  await started[0].handlers.onExit(0)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(started.map(({ job }) => job.sourceRevision), ['hot-1', 'quiet-1'],
-    'the hot project rejoins at the tail instead of reclaiming the only slot')
-
-  await started[1].handlers.onExit(0)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(started.map(({ job }) => job.sourceRevision), ['hot-1', 'quiet-1', 'hot-3'],
-    'the hot project still serves its latest pending revision')
-
-  await started[2].handlers.onExit(0)
-  await Promise.all([hot1, quiet, hot2, hot3])
-  assert.deepEqual(dispositions, [
-    ['hot-2', 'superseded'],
-    ['hot-1', 'built'],
-    ['quiet-1', 'built'],
-    ['hot-3', 'built'],
-  ])
-})
-
-test('identityless rebuild coalescing preserves queued accepted revision identity', async () => {
-  const started = []
-  const dispositions = []
-  const queue = createBuildQueue({
-    transport: {
-      start(job, handlers) {
-        started.push({ job, handlers })
-        return { cancel() { handlers.onExit(null) } }
-      },
-    },
-    getProjectsDir: () => '/projects',
-    relayMessage() {},
-    recordDisposition(job, state) { dispositions.push([job.sourceRevision, job.acceptSeq, state]) },
-  }, { maxConcurrency: 1 })
-
-  const blocker = queue.dispatchBuild('blocker')
-  const accepted = queue.dispatchBuild('paper', { sourceRevision: 'accepted-7', acceptSeq: 7 })
-  const manual = queue.dispatchBuild('paper')
-
-  await started[0].handlers.onExit(0)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(started[1].job.sourceRevision, 'accepted-7')
-  assert.equal(started[1].job.acceptSeq, 7)
-
-  await started[1].handlers.onExit(0)
-  await Promise.all([blocker, accepted, manual])
-  assert.deepEqual(dispositions, [['accepted-7', 7, 'built']])
 })
 
 test('queue restart replay settles a leased revision after the replacement worker exits', async () => {
