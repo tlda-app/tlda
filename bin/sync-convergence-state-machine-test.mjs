@@ -20,6 +20,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import Database from 'better-sqlite3'
 
 import {
   closeProjectStore,
@@ -30,6 +31,8 @@ import {
   updateProject,
 } from '../server/lib/project-store.mjs'
 import { createSourceSync } from '../daemon/source-sync.mjs'
+import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
+import { DaemonOutbox } from '../daemon/outbox.mjs'
 import {
   deliver,
   openDaemon,
@@ -52,6 +55,8 @@ let ws
 let peerWs
 let targetWs
 let targetSync
+let durableDelivery
+let durableOutbox
 
 try {
   execFileSync('git', ['init', '--bare', '--quiet', remote])
@@ -129,7 +134,81 @@ try {
     onRpc: async () => ({ ok: false, reason: 'project-not-watched' }),
   })
 
-  let acceptedRevision = bootstrap.authority.currentRevision
+  // The production durable sender, including one forced reconnect. The row is
+  // inserted before its first send, survives the socket replacement, replays
+  // under the same delivery id, receives the canonical result and ACK, and is
+  // then cleared by the real delivery runtime.
+  const durableId = 'D-durable-reconnect'
+  const durableRequestId = 'R-durable-reconnect'
+  durableOutbox = new DaemonOutbox(join(root, 'writer-one-outbox.sqlite'))
+  let durableWs = ws
+  const durableMessages = []
+  const attachDurableReceiver = socket => socket.on('message', raw => {
+    const message = JSON.parse(String(raw))
+    durableMessages.push(message)
+    if (message.type === 'daemon-outbox-ack') durableDelivery.handleAck(message.outbox_id)
+    if (message.type === 'daemon-outbox-error') {
+      durableDelivery.handleError(message.outbox_id, message.error, { permanent: message.permanent === true })
+    }
+  })
+  durableDelivery = new DaemonDeliveryRuntime({
+    inflightDeadlineMs: 120_000,
+    flushByteBudget: 1_048_576,
+    outbox: durableOutbox,
+    send(message) { durableWs.send(JSON.stringify(message)); return true },
+    isConnected: () => durableWs?.readyState === 1,
+    isReady: () => durableWs?.readyState === 1,
+  })
+  attachDurableReceiver(durableWs)
+  durableDelivery.send({
+    type: 'source-change', project, requestId: durableRequestId,
+    expectedRevision: bootstrap.authority.currentRevision,
+    sourceBindingId: 'writer-one-binding',
+    files: [
+      { path: 'main.tex', content: 'revision-0:main\n' },
+      { path: 'part.tex', content: 'revision-0:part\n' },
+    ],
+    deletedFiles: [], sourceManifest: ['main.tex', 'part.tex'],
+    editedBy: 'writer-one', __daemon_outbox_id: durableId,
+  })
+  const firstSendDeadline = Date.now() + 20_000
+  while ((durableOutbox.get(durableId)?.attempts || 0) < 1 && Date.now() < firstSendDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(durableOutbox.get(durableId)?.attempts, 1, 'durable row was not offered before reconnect')
+  durableWs.terminate()
+  durableWs = await openDaemon(port, {
+    machineId: 'writer-one-machine',
+    sourceBindings: [{ bindingId: 'writer-one-binding', project }],
+    onRpc: async message => message.op === 'mirror-shadow-ref'
+      ? ({ ok: true, project })
+      : ({ ok: false, reason: 'project-not-watched' }),
+  })
+  ws = durableWs
+  attachDurableReceiver(durableWs)
+  durableDelivery.noteReady()
+  const durableDeadline = Date.now() + 20_000
+  while (durableOutbox.get(durableId) && Date.now() < durableDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  const durableResult = durableMessages.find(message => (
+    message.type === 'source-change-result' && message.deliveryId === durableId
+  ))
+  assert.equal(durableResult?.ok, true, JSON.stringify(durableMessages))
+  assert.ok(durableMessages.some(message => message.type === 'daemon-outbox-ack' && message.outbox_id === durableId))
+  assert.equal(durableOutbox.get(durableId), null, 'ACK did not clear the durable daemon row')
+  const fleetLedger = new Database(fleetDb, { readonly: true })
+  try {
+    assert.deepEqual(
+      fleetLedger.prepare('SELECT id, type FROM daemon_outbox_processed WHERE id = ?').get(durableId),
+      { id: durableId, type: 'source-change' },
+      'server processed ledger did not retain the replayed durable delivery id',
+    )
+  } finally {
+    fleetLedger.close()
+  }
+
+  let acceptedRevision = durableResult.sourceRevision
   let acceptedOrdinal = 0
   const writers = [
     { ws, bindingId: 'writer-one-binding', name: 'writer-one' },
@@ -261,6 +340,8 @@ try {
   if (server) error.message += `\nserver log:\n${server.output()}`
   throw error
 } finally {
+  durableDelivery?.dispose()
+  durableOutbox?.close()
   await targetSync?.closeAll()
   ws?.terminate()
   peerWs?.terminate()
