@@ -65,7 +65,6 @@ import { projectRevisionStatus } from './lib/source-lifecycle.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner, staleSourceSyncEntries } from './lib/source-sync-conflicts.mjs'
 import { createSourceRoomDaemon } from './lib/source-room-daemon.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
-import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
@@ -10020,7 +10019,6 @@ async function generateManifest() {
             ...(project.createdAt && { createdAt: project.createdAt }),
             ...(project.lastBuild && { lastBuild: project.lastBuild }),
             ...(project.starred && { starred: true }),
-            autoSync: project.autoSync !== false,
           }
         } catch (e) {
           console.error(`[manifest] Failed to read ${projectJsonPath}:`, e.message)
@@ -10093,9 +10091,6 @@ process.on('unhandledRejection', (err) => {
 // Finish journal recovery before accepting a daemon redelivery. Starting the
 // listener first lets the startup recovery and the source-change handler race
 // over the same snapshot directory after a process crash.
-await resumeOverleafPollers(listProjects).catch(error => {
-  console.error(`[overleaf] source transaction recovery failed: ${error.message}`)
-})
 
 server.listen(PORT, HOST, () => {
   const proto = useTls ? 'https' : 'http'

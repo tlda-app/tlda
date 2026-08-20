@@ -62,10 +62,13 @@ slide loaders. A Quarto render produces it after inspecting the output;
 pre-rendered HTML may supply it, while the server otherwise derives it from the
 top-level HTML files.
 
-An Overleaf or Git remote is polled and pushed through a server-owned clone.
-That path uses ordinary Git fetch, reset, commit, and push behavior rather than
-the symmetric stale-peer contract of an interactive edit. Concurrent remote
-edits may therefore require ordinary Git conflict resolution.
+An Overleaf or Git remote is an ordinary Git-backed daemon source. Its checkout
+lives on the daemon's machine, remote edits enter through the same source
+proposal as filesystem edits, and accepted revisions return through the same
+materialization path. The daemon pushes the exact accepted revision only when
+the remote is its ancestor. Fast-forward mode stops on divergence; auto-merge
+mode submits a clean merge normally and withholds unresolved checkouts until an
+ordinary editor or MCP resolution changes them.
 
 The server does not currently push a successful browser edit into an already
 linked local checkout. That checkout discovers the newer server revision when

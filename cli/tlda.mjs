@@ -201,7 +201,7 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Attach a source to a project. <source> is either a local file/repository path or a Git URL.\n  Local paths are bound only on this machine; Git URLs are cloned and polled by the server.\n  An existing different binding is refused until it is explicitly unlinked.\n\n  Examples:\n    tlda project link paper path/to/paper.tex\n    tlda project link talk path/to/talk.qmd --format slides\n    tlda project link paper https://git.overleaf.com/project-id --main paper.tex --token "$OVERLEAF_TOKEN"\n\n  Remote options: --token TOKEN, --poll SECONDS (default 60; minimum 15).',
+  link:    'tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Attach a source to a project. <source> is either a local file/repository path or a Git URL.\n  Local paths and Git-backed sources are owned by this machine daemon.\n  An existing different binding is refused until it is explicitly unlinked.\n\n  Examples:\n    tlda project link paper path/to/paper.tex\n    tlda project link talk path/to/talk.qmd --format slides\n    tlda project link paper https://git.overleaf.com/project-id --main paper.tex --token "$OVERLEAF_TOKEN"\n\n  Remote options: --token TOKEN, --poll SECONDS (default 60; minimum 15), --mirror-mode auto-merge|fast-forward.',
   unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local path or Git URL currently linked to the project.\n  The source must match the existing binding.',
   init:    'tlda project init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda project link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, a git repo with an initial commit,\n           then registers and pushes the requested main file to the tlda server.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
@@ -1167,16 +1167,27 @@ async function cmdLinkRemote(gitUrl) {
   const token = getFlag('token')
   const title = getFlag('title')
   const pollSeconds = Number(getFlag('poll') || '60') || 60
+  const mirrorMode = getFlag('mirror-mode') || 'auto-merge'
 
   console.log(`Linking ${name} ← ${gitUrl}${mainFile ? ` (main: ${mainFile})` : ''}…`)
-  const result = await api('POST', `/api/projects/${name}/link`,
-    { source: gitUrl, token, title, mainFile, format, pollSeconds },
-    { timeoutMs: 300000, token: getRwToken() })
+  const result = await callLocalDaemonLifecycle('git-source-link',
+    { project: name, remote: gitUrl, token, mirrorMode, pollSeconds },
+    { timeoutMs: 300000 })
   if (result.alreadyLinked) {
     console.log(dim(`Project "${name}" is already linked to ${gitUrl}.`))
-  } else {
-    console.log(`✓ Linked. Synced ${result.changed} file(s) at ${String(result.head || '').slice(0, 7)}; polling every ${pollSeconds}s.`)
   }
+  const inferredFormat = format || (/\.(?:md|markdown)$/i.test(mainFile || '') ? 'markdown' : 'svg')
+  const inferredMain = mainFile || (inferredFormat === 'markdown'
+    ? result.files.find(file => /\.(?:md|markdown)$/i.test(file))
+    : findMainTex(result.sourceDir))
+  if (!inferredMain) throw new Error('Could not infer the main file; pass --main <file>')
+  try {
+    await createProjectApi({ name, title: title || name, mainFile: inferredMain, format: inferredFormat })
+  } catch (error) {
+    if (!error.message.includes('already exists')) throw error
+  }
+  await callLocalDaemonLifecycle('git-source-activate', { project: name }, { timeoutMs: 300000 })
+  console.log(`✓ Linked at ${String(result.head || '').slice(0, 7)}; ${mirrorMode}, polling every ${pollSeconds}s.`)
 }
 
 async function cmdUnlink() {
@@ -1187,7 +1198,7 @@ async function cmdUnlink() {
     process.exit(1)
   }
   if (isGitUrl(source)) {
-    const result = await api('POST', `/api/projects/${name}/unlink`, { source }, { token: getRwToken() })
+    const result = await callLocalDaemonLifecycle('git-source-unlink', { project: name, remote: source })
     console.log(result.alreadyUnlinked ? dim(`Project "${name}" is not linked to a Git remote.`) : `Unlinked ${name} from ${source}.`)
     return
   }

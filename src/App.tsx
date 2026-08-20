@@ -130,7 +130,6 @@ interface DocConfig {
   sourceDoc?: string
   members?: string[]
   buildStatus?: string
-  autoSync?: boolean
   starred?: boolean
   lastBuild?: string
   createdAt?: string

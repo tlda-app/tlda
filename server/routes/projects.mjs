@@ -52,7 +52,6 @@ import { materializeRecordingAudioClip } from '../lib/recording-audio-clip.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
-import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf, recoverProjectSourceTransactions, readOverleafLocalHead, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
@@ -614,66 +613,9 @@ router.patch('/:name/star', requireRw, async (req, res) => {
   }
 })
 
-// Toggle autoSync (git mirror sync)
-router.patch('/:name/auto-sync', requireRw, async (req, res) => {
-  try {
-    const { autoSync } = req.body
-    const project = await updateProject(req.params.name, { autoSync: !!autoSync })
-    res.json({ ok: true, autoSync: project.autoSync })
-  } catch (e) {
-    res.status(404).json({ error: e.message })
-  }
-})
-
-// Link a Git remote → clone, initial sync, start polling.
-// Body: { source, token?, title?, mainFile?, format?, pollSeconds? }
-router.post('/:name/link', requireRw, async (req, res) => {
-  try {
-    const { source, token, title, mainFile, format, pollSeconds } = req.body || {}
-    if (!source) return res.status(400).json({ error: 'source is required' })
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(req.params.name)) {
-      return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
-    }
-    const result = await linkOverleaf(req.params.name, { gitUrl: source, token, title, mainFile, format, pollSeconds })
-    if (result.linked) {
-      const project = await readProject(req.params.name)
-      if (project?.format === 'svg') {
-        await dispatchBuild(req.params.name)
-      }
-      emitGlobalEvent('project-changed', { name: req.params.name })
-    }
-    res.json({ ok: true, ...result })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
-// Manually trigger one Overleaf sync (also serves as a webhook endpoint).
-router.post('/:name/overleaf-sync', requireRw, async (req, res) => {
-  try {
-    const result = await syncOverleaf(req.params.name)
-    res.json({ ok: true, ...result })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
-// Unlink the exact Git remote (stops polling, removes the clone; keeps the project).
-router.post('/:name/unlink', requireRw, async (req, res) => {
-  try {
-    const { source } = req.body || {}
-    if (!source) return res.status(400).json({ error: 'source is required' })
-    const result = await unlinkOverleaf(req.params.name, { gitUrl: source })
-    res.json({ ok: true, ...result })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
 // Delete project
 router.delete('/:name', requireRw, async (req, res) => {
   try {
-    stopPolling(req.params.name)
     await deleteProject(req.params.name)
     res.json({ ok: true })
   } catch (e) {

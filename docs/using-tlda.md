@@ -90,9 +90,10 @@ tlda project link eiv-paper https://git.overleaf.com/project-id \
   --poll 60
 ```
 
-The server clones the repository with its Git history, imports that history into
-the tlda project, builds the paper, and polls for later changes. Source edits
-made through tlda are committed and pushed back to the remote. You may omit
+The machine daemon clones the repository, binds that checkout as an ordinary
+project source, and polls for later changes. Remote edits use the same
+revision-checked source path as local filesystem edits. Accepted project
+revisions are pushed back only as their exact Git commits. You may omit
 `--main` when the project already has an entry file or the clone contains
 exactly one entry file. The same command works with another Git remote.
 
@@ -112,9 +113,9 @@ history fails and leaves no binding behind, so you can fix the reported problem
 and run the same command again. A project with a long history may take a moment
 to link.
 
-Local and browser edits submit through a revision-checked source transaction
-boundary. The server polls and pushes a linked Git remote through its own clone,
-so concurrent remote edits may require ordinary Git conflict resolution.
+Local, Git-remote, and browser edits submit through the revision-checked source
+transaction boundary. A Git-backed daemon can auto-merge clean divergence or
+stop at a conflict for ordinary working-copy resolution.
 The server does not silently overwrite a linked local checkout with a browser
 edit. The checkout discovers the newer server revision when it next submits and
 then receives a merge conflict to resolve locally.

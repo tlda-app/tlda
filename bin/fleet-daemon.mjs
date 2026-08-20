@@ -116,6 +116,7 @@ import { createAgentLiveness, livenessAgentsFromProcessBindings } from '../daemo
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
+import { createGitSourceManager } from '../daemon/git-source.mjs'
 import { createSourceChangeAckGate } from '../daemon/source-change-ack-gate.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
@@ -558,6 +559,13 @@ const sourceSync = createSourceSync({
   }),
 })
 
+const gitSources = createGitSourceManager({
+  stateFile: path.join(CONFIG_DIR, `git-sources${DAEMON_STATE_SUFFIX}.json`),
+  sourcesRoot: path.join(CONFIG_DIR, `git-source-checkouts${DAEMON_STATE_SUFFIX}`),
+  queuePaths: (project, paths) => sourceSync.queuePaths(project, paths),
+  log,
+})
+
 let lastInvalidSourceOwnerSignature = null
 
 function reportInvalidProjectSourceOwners(ownerMap) {
@@ -647,7 +655,7 @@ async function loadLocallyBoundProjects() {
 // failed link leaves nothing behind. A link that half-succeeds and leaves the
 // paper starting from version one is the old broken behaviour wearing a success
 // message.
-async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null }) {
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
 
   const status = sourceSync.bindingStatus(project, sourceDir)
@@ -658,7 +666,7 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
 
   if (!status.alreadyLinked) await offerShadowHistory({ project, sourceDir })
 
-  const result = sourceSync.bindSource(project, sourceDir)
+  const result = sourceSync.bindSource(project, sourceDir, { kind, remote, mirrorMode })
   try {
     const registration = await sendMsgWithReply({
       type: 'source-bindings-set',
@@ -672,6 +680,25 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
   applyProjectWorldOwnership('local-source-link')
   return result
+}
+
+async function rpcLinkGitSource(params) {
+  return gitSources.link(params)
+}
+
+async function rpcActivateGitSource({ project }) {
+  const item = gitSources.record(project)
+  if (!item) throw new Error(`Project "${project}" has no Git source`)
+  const metadata = await daemonApi('GET', `/api/projects/${encodeURIComponent(project)}`)
+  await rpcLinkProjectSource({ project, sourceDir: item.sourceDir, projectMetadata: metadata,
+    kind: 'git', remote: item.remote, mirrorMode: item.mirrorMode })
+  return gitSources.activate({ project })
+}
+
+function rpcUnlinkGitSource({ project, remote }) {
+  const item = gitSources.record(project)
+  if (item) rpcUnlinkProjectSource({ project, sourceDir: item.sourceDir })
+  return gitSources.unlink({ project, remote })
 }
 
 // Hand this project's mirrored history to the server it is being linked to, and
@@ -726,6 +753,7 @@ const localArtifacts = createLocalArtifacts({
 const shadowMirror = createShadowMirror({
   getSourceDir: project => sourceSync.getSourceDir(project),
   log,
+  afterMirror: update => gitSources.publishAccepted(update),
 })
 
 // Bots are independent, launchd-owned services configured in bots.yaml — the
@@ -1360,6 +1388,10 @@ function startLocalLifecycleRpc() {
           spawn: agentLauncher.handlers.spawn,
           'project-source-link': rpcLinkProjectSource,
           'project-source-unlink': rpcUnlinkProjectSource,
+          'git-source-link': rpcLinkGitSource,
+          'git-source-activate': rpcActivateGitSource,
+          'git-source-unlink': rpcUnlinkGitSource,
+          'git-source-sync': ({ project }) => gitSources.poll(project),
         }
         const handler = handlers[op]
         if (!handler) throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
@@ -1402,6 +1434,7 @@ function startLocalLifecycleRpc() {
 }
 
 startLocalLifecycleRpc()
+gitSources.resume()
 
 async function handleRpc(msg) {
   return daemonOperationContext.run(msg.fleet_operation || null, () => machineRpc.handleRpc(msg))

@@ -24,7 +24,7 @@ async function gitRetryOnLock(fn, retries = 3, delayMs = 500) {
   }
 }
 
-export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef = null }) {
+export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef = null, afterMirror = null }) {
   async function mirrorShadowRef({ project, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq, refusedRevision = null }) {
     if (!project) throw new Error('missing project')
     if (!/^[0-9a-f]{40}$/i.test(String(hash || ''))) throw new Error(`invalid shadow hash: ${hash}`)
@@ -48,6 +48,7 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
       await execFileP('git', ['cat-file', '-e', `${hash}^{commit}`], { cwd: sourceDir, timeout: 5000 })
       const preservation = await preserveAuthorCommit({ sourceDir, project, hash, sourceScope, log, beforeUpdateRef: beforePreserveUpdateRef })
       await gitRetryOnLock(() => execFileP('git', ['update-ref', 'refs/tlda/shadow/HEAD', hash], { cwd: sourceDir, timeout: 5000 }))
+      if (afterMirror) await afterMirror({ project, sourceRevision: hash, sourceDir })
 
       // A push the server refused is carried in the same bundle, and it gets a
       // ref here for one reason: so the person who made it can see it. Without

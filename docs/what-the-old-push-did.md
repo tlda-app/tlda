@@ -177,18 +177,14 @@ This interacts with deletion-by-omission: on the new path an absent path is an
 **instruction** to delete, where the old path's omission was passive. Any
 manifest crossing onto the new accept must be complete for that reason.
 
-### 8. Outbound Overleaf push — and it is NOT a seventh effect
+### 8. Outbound Git-remote push
 
-`prepareSourcePushToOverleaf` has one production caller and it is inside the old
-function.
-
-**Do not bolt it onto the effects list.** It prepares a remote push and the
-transaction decides whether to publish or unwind it —
-`previousRemoteHead`, `proposedRemoteHead`, `remoteBranch`,
-`originalLocalHead`, and `restoreRemote()` on failure. Run from the effects list
-it would fire **after the accept is already irreversible, with nothing left that
-can unwind a remote head**, so a failed publish becomes unrecoverable rather
-than rolled back. This is Overleaf-repoint work.
+Carried by the Git-backed daemon rather than by a server accept effect. The
+daemon fetches first and pushes only when the remote head is an ancestor of the
+exact accepted revision it just mirrored. Divergence is reconciled and proposed
+through the ordinary source path; unresolved or stale state is withheld. The
+server therefore never prepares, publishes, rolls back, or force-pushes a remote
+head.
 
 ---
 

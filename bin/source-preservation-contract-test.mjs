@@ -84,7 +84,7 @@ async function snapshotProject(name) {
     if (!fs.existsSync(current)) return
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name
-      if (rel === '.source-transactions' || rel === 'overleaf-clone/.git') continue
+      if (rel === '.source-transactions') continue
       if (rel === '.source-lifecycle/revisions' || rel === '.source-lifecycle/evidence') continue
       if (rel === '.source-lifecycle/blobs') continue
       if (rel === '.source-lifecycle/git') continue

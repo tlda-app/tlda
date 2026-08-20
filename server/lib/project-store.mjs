@@ -201,20 +201,11 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
   await mkdir(snapshotRoot, { recursive: true })
   const source = sourceDir(name)
   const metadata = join(dir, 'project.json')
-  const clone = join(dir, 'overleaf-clone')
   const lifecycleRoot = join(dir, '.source-lifecycle')
   const manifest = await readClientSourceManifest(name)
   if (await pathExists(source)) await cp(source, join(snapshotRoot, 'source'), { recursive: true, preserveTimestamps: true })
   await cp(metadata, join(snapshotRoot, 'project.json'), { preserveTimestamps: true })
   await writeFile(join(snapshotRoot, 'client-source-manifest.json'), JSON.stringify(manifest, null, 2))
-  if (await pathExists(clone)) {
-    const cloneSnapshot = join(snapshotRoot, 'overleaf-worktree')
-    await mkdir(cloneSnapshot, { recursive: true })
-    for (const entry of await readdir(clone, { withFileTypes: true })) {
-      if (entry.name === '.git') continue
-      await cp(join(clone, entry.name), join(cloneSnapshot, entry.name), { recursive: true, preserveTimestamps: true })
-    }
-  }
   await snapshotLifecycleMutableState(lifecycleRoot, join(snapshotRoot, 'source-lifecycle'))
   await syncTree(snapshotRoot, durabilityProbe)
   await syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
@@ -261,7 +252,6 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
       await cp(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
       await rename(metadataRestore, metadata)
       await restoreClientSourceManifestSnapshot(name, snapshotRoot)
-      await restoreCloneWorktreeAsync(clone, join(snapshotRoot, 'overleaf-worktree'))
       await restoreLifecycleMutableState(lifecycleRoot, join(snapshotRoot, 'source-lifecycle'))
       finished = true
       await rm(snapshotRoot, { recursive: true })
@@ -271,18 +261,6 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
       finished = true
       return { id, state: 'recovery-required' }
     },
-  }
-}
-
-async function restoreCloneWorktreeAsync(clone, snapshot) {
-  if (!await pathExists(clone)) return
-  for (const entry of await readdir(clone, { withFileTypes: true })) {
-    if (entry.name === '.git') continue
-    await rm(join(clone, entry.name), { recursive: true, force: true })
-  }
-  if (!await pathExists(snapshot)) return
-  for (const entry of await readdir(snapshot, { withFileTypes: true })) {
-    await cp(join(snapshot, entry.name), join(clone, entry.name), { recursive: true, preserveTimestamps: true })
   }
 }
 
@@ -309,7 +287,6 @@ export async function rollbackProjectSourceRecovery(name, id) {
   await cp(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
   await rename(metadataRestore, metadata)
   await restoreClientSourceManifestSnapshot(name, snapshotRoot)
-  await restoreCloneWorktreeAsync(join(dir, 'overleaf-clone'), join(snapshotRoot, 'overleaf-worktree'))
   await restoreLifecycleMutableState(join(dir, '.source-lifecycle'), join(snapshotRoot, 'source-lifecycle'))
 }
 

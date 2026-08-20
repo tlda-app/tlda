@@ -1,6 +1,7 @@
 import chokidar from 'chokidar'
 import fs from 'fs'
 import path from 'path'
+import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'crypto'
 import { DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
 import { gitBlobId } from '../shared/git-blob-id.mjs'
@@ -1269,6 +1270,24 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       return
     }
 
+    // A checkout with unresolved Git entries is not a source snapshot. The
+    // files may contain conflict markers and, more importantly, Git has not
+    // recorded which resolution the checkout chose. Hold the ordinary watcher;
+    // resolving the index changes the files again and the same path resumes.
+    try {
+      const unresolved = execFileSync('git', ['diff', '--name-only', '--diff-filter=U', '-z'], {
+        cwd: state.sourceDir,
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      if (unresolved) {
+        for (const file of unresolved.split('\0').filter(Boolean)) state.pending.add(file)
+        log.warn(`${projectName}: withholding source proposal while Git has unresolved paths`)
+        return
+      }
+    } catch { /* A non-Git source remains an ordinary watched directory. */ }
+
     const filePaths = [...state.pending]
     state.pending.clear()
     _pendingSourceProjects.delete(projectName)
@@ -1477,6 +1496,13 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return loadSourceBindings()[project]?.sourceDir || null
   }
 
+  function queuePaths(project, paths = []) {
+    const state = sourceWatchers.get(project)
+    if (!state) throw new Error(`project ${project} is not watched on this daemon`)
+    for (const rel of paths) state.onFileChange(rel)
+    return { queued: paths.length }
+  }
+
   function sourceFileForAbsolutePath(filePath) {
     return resolveWatchedSourceFile(sourceWatchers, filePath)
   }
@@ -1497,6 +1523,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     finishReconnect,
     flushPending,
     getSourceDir,
+    queuePaths,
     sourceFileForAbsolutePath,
     applyAcceptedSourceUpdate,
     closeAll,
