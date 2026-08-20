@@ -34,7 +34,6 @@ import { join } from 'path'
 import WebSocket, { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
 
-import { randomUUID } from 'crypto'
 import {
   closeProjectStore, createProject, initProjectStore, outputDir, projectDir,
   readClientSourceManifest, readProject, readSourceFile, sourceDir,
@@ -43,8 +42,7 @@ import {
 import { createSourceRoomDaemon } from '../server/lib/source-room-daemon.mjs'
 import { initSyncRooms } from '../server/lib/sync-rooms.mjs'
 import { syncOverleaf } from '../server/lib/overleaf-sync.mjs'
-import { applyAcceptedSourceEffects, setAcceptedSourceMutationHandler } from '../server/routes/projects.mjs'
-import { SOURCE_AUTHORITY_UNINITIALIZED } from '../server/lib/source-lifecycle.mjs'
+import { acceptSourceSnapshot, setAcceptedSourceMutationHandler } from '../server/routes/projects.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-room-and-remote-'))
 await initProjectStore(root)
@@ -54,55 +52,10 @@ const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', st
 const daemons = []
 const findings = []
 
-// The room daemon's injected checkpoint function. `processProjectPush` (the
-// old mechanism it used to call) is going away with the strip; this composes
-// the same two real primitives the new `POST /:name/source-snapshot` route
-// composes -- `lifecycle.bootstrap`/`.submit` plus `applyAcceptedSourceEffects`
-// -- in-process, the way the room checkpoint always ran (no HTTP hop before
-// or after). Field names are translated to what source-room-daemon.mjs reads
-// (`lifecycleStatus`, `authority.currentRevision`, `evidence.classifications`),
-// since those are the old mechanism's field names and the room daemon itself
-// is not being touched here.
-async function pushViaNewCarrier(project, body) {
-  const { files, sourceManifest, expectedRevision = null, dependencyPins = [], editedBy, sourceBindingId, requestId } = body || {}
-  const lifecycle = await sourceLifecycleStore(project)
-  const before = await lifecycle.readAuthority()
-  const previousRevision = before.currentRevision || null
-  const input = { expectedRevision, files, sourceManifest, dependencyPins }
-  const result = before.state === SOURCE_AUTHORITY_UNINITIALIZED
-    ? await lifecycle.bootstrap(input)
-    : await lifecycle.submit(input)
-  if (!result.ok) {
-    return {
-      ok: false,
-      status: result.status,
-      error: result.error || result.status,
-      authority: result.authority,
-      evidence: result.evidence || null,
-      lifecycleStatus: result.status,
-      refusedRevision: result.refusedRevision ?? null,
-    }
-  }
-  const sourceRevision = result.revision?.id ?? null
-  const acceptSeq = result.authority?.acceptSeq ?? null
-  const ran = await applyAcceptedSourceEffects(project, lifecycle, {
-    sourceRevision, acceptSeq, previousRevision,
-    editedBy: editedBy || null, sourceBindingId: sourceBindingId || null,
-    requestId: requestId || randomUUID(),
-  })
-  return {
-    ok: true,
-    status: result.status,
-    sourceRevision,
-    authority: result.authority,
-    building: ran.includes('build'),
-  }
-}
-
 function makeRoomDaemon(pushDelayMs = 1_000_000) {
   const daemon = createSourceRoomDaemon({
     projectDir, readProject, sourceLifecycleStore, readClientSourceManifest,
-    processProjectPush: pushViaNewCarrier, pushDelayMs, log: { error() {} },
+    acceptSourceSnapshot, pushDelayMs, log: { error() {} },
   })
   daemons.push(daemon)
   return daemon
