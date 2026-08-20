@@ -1157,7 +1157,12 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       const sourceDir = binding?.sourceDir
       if (!sourceDir) continue
       if (!fs.existsSync(sourceDir)) continue
-      const durableBinding = sourceMaterializer.seedBinding(binding.bindingId, sourceDir, p.sourceRevision || null)
+      const durableBinding = sourceMaterializer.seedBinding(
+        binding.bindingId,
+        sourceDir,
+        p.sourceRevision || null,
+        { authoritative: authoritativeRevisions },
+      )
       activeNames.add(p.name)
 
       const isMarkdown = isMarkdownDoc(p.format, p.mainFile)

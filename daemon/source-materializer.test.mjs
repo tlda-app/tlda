@@ -11,6 +11,28 @@ const sha = value => createHash('sha256').update(value).digest('hex')
 const entry = (path, value) => ({ path, sha256: sha(value), size: Buffer.byteLength(value) })
 const blob = value => [sha(value), Buffer.from(value).toString('base64')]
 
+test('only an authoritative seed establishes a materialized base', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-materializer-seed-'))
+  try {
+    const sourceDir = join(root, 'checkout')
+    mkdirSync(sourceDir)
+
+    const ordinary = createSourceMaterializer({ journalPath: join(root, 'ordinary.json') })
+    ordinary.seedBinding('ordinary', sourceDir, null)
+    ordinary.seedBinding('ordinary', sourceDir, 'revision-1')
+    assert.equal(ordinary.readBinding('ordinary').serverHeadRevision, 'revision-1')
+    assert.equal(ordinary.readBinding('ordinary').materializedRevision, null)
+
+    const authoritative = createSourceMaterializer({ journalPath: join(root, 'authoritative.json') })
+    authoritative.seedBinding('authoritative', sourceDir, null)
+    authoritative.seedBinding('authoritative', sourceDir, 'revision-1', { authoritative: true })
+    assert.equal(authoritative.readBinding('authoritative').serverHeadRevision, 'revision-1')
+    assert.equal(authoritative.readBinding('authoritative').materializedRevision, 'revision-1')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('materializer durably applies add change delete and preserves unmanaged paths', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-materializer-'))
   try {

@@ -113,11 +113,22 @@ export function createSourceMaterializer({ journalPath, fault = null, mergeIntoW
     return journal().materializations[key(bindingId, sourceRevision)] || null
   }
 
-  function seedBinding(bindingId, sourceDir, serverHeadRevision = null) {
+  function seedBinding(bindingId, sourceDir, serverHeadRevision = null, { authoritative = false } = {}) {
     if (!bindingId || !sourceDir) throw new Error('bindingId and sourceDir are required')
     const state = journal()
     const existing = state.bindings[bindingId]
     if (existing) {
+      if (authoritative && serverHeadRevision != null && existing.materializedRevision == null) {
+        state.bindings[bindingId] = {
+          ...existing,
+          sourceDir,
+          serverHeadRevision,
+          materializedRevision: serverHeadRevision,
+          status: 'materialized',
+        }
+        writeJournal(state, 'seed-binding-authoritative-head')
+        return journal().bindings[bindingId]
+      }
       if (existing.serverHeadRevision == null && serverHeadRevision != null) {
         state.bindings[bindingId] = { ...existing, sourceDir, serverHeadRevision, status: 'unknown' }
         writeJournal(state, 'seed-binding-head')
@@ -129,9 +140,9 @@ export function createSourceMaterializer({ journalPath, fault = null, mergeIntoW
       bindingId,
       sourceDir,
       serverHeadRevision,
-      materializedRevision: null,
+      materializedRevision: authoritative ? serverHeadRevision : null,
       activeTargetRevision: null,
-      status: serverHeadRevision ? 'unknown' : 'uninitialized',
+      status: authoritative && serverHeadRevision ? 'materialized' : serverHeadRevision ? 'unknown' : 'uninitialized',
       conflicts: [],
     }
     writeJournal(state, 'seed-binding')

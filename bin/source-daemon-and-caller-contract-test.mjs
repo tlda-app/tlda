@@ -87,19 +87,10 @@ async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
     assert.deepEqual(sent[0].files.map(file => file.path), ['main.tex'], 'daemon files must contain only byte-bearing changed paths')
     assert.equal(sent[0].files[0].content, 'second\n')
     assert.deepEqual(sent[0].sourceManifest, ['legacy-preserved.tex', 'main.tex'], 'daemon sourceManifest must preserve inherited ownership around the changed byte inventory')
-    // The base is what this checkout HOLDS (materializedRevision), never the
-    // server head it has merely been told about. This fixture never materializes
-    // anything, so it holds nothing and claims nothing — `null` is the honest
-    // value here, not a weakened assertion. The case where a real revision IS
-    // held is covered over the wire in
-    // server/lib/push-base-means-content.test.mjs.
-    //
-    // This asserted 'revision-1' — "reads the durable observed server head" —
-    // until 2026-08-18. That is the defect written down as a requirement: a
-    // source-change carries whole file contents, so a base naming a revision the
-    // sender was refused permission to materialize is a claim it cannot honour,
-    // and the server accepting it deleted three passages of his paper.
-    assert.equal(sent[0].expectedRevision, null)
+    // This sync is explicitly authoritative: the caller has established that
+    // this checkout is the accepted revision, so its first edit is based on
+    // that revision rather than being submitted as another bootstrap.
+    assert.equal(sent[0].expectedRevision, 'revision-1')
 
     write(path.join(sourceRoot, 'main.tex'), 'third\n')
     watchers[0].emit('change', path.join(sourceRoot, 'main.tex'))
@@ -129,6 +120,23 @@ async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
     // Asserted 'revision-3' until 2026-08-18. Three passages of his paper were
     // deleted by exactly that claim.
     assert.equal(sourceChanges[2].expectedRevision, 'revision-2', 'retry claims the revision this checkout holds, not the head the rejection named')
+
+    const observedOnlyRoot = path.join(root, 'observed-only-source')
+    fs.mkdirSync(observedOnlyRoot, { recursive: true })
+    write(path.join(observedOnlyRoot, 'main.tex'), 'observed only\n')
+    sourceSync.bindSource('observed-only', observedOnlyRoot)
+    sourceSync.sync([{
+      name: 'observed-only',
+      mainFile: 'main.tex',
+      format: 'svg',
+      sourceRevision: 'server-only-revision',
+      sourceManifest: ['main.tex'],
+    }])
+    write(path.join(observedOnlyRoot, 'main.tex'), 'observed only edit\n')
+    watchers[1].emit('change', path.join(observedOnlyRoot, 'main.tex'))
+    await new Promise(resolve => setTimeout(resolve, 250))
+    const observedOnlyChange = sent.find(message => message.project === 'observed-only' && message.type === 'source-change')
+    assert.equal(observedOnlyChange.expectedRevision, null, 'a non-authoritative sync observes the server head without claiming its bytes were materialized')
   } finally {
     sourceSync.closeAll()
   }
