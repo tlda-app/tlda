@@ -945,17 +945,22 @@ daemonMintCore = createDaemonMintCore({
     })
     if (processFact.session_id) return stripCompiledPermissionSet(processFact)
     if (processFact.harness !== 'codex') return stripCompiledPermissionSet(processFact)
-    const live = await resolveLiveCodexSessionIdentity({
-      agent: {
-        id: processFact.fleet_id || params.fleet_id || null,
-        friendly_name: processFact.name || params.name || null,
-        cwd: processFact.cwd,
-        registered_at: launchStartedAt,
-      },
-      tmuxSession: processFact.tmux_session,
-      tmuxArgs: TMUX_ARGS,
-      tmuxSocket: TMUX_SOCKET,
-    })
+    const identityDeadline = Date.now() + Math.min(getMintRegistrationDeadlineMs(), 60_000)
+    let live = null
+    while (!live?.sessionId && Date.now() < identityDeadline) {
+      live = await resolveLiveCodexSessionIdentity({
+        agent: {
+          id: processFact.fleet_id || params.fleet_id || null,
+          friendly_name: processFact.name || params.name || null,
+          cwd: processFact.cwd,
+          registered_at: launchStartedAt,
+        },
+        tmuxSession: processFact.tmux_session,
+        tmuxArgs: TMUX_ARGS,
+        tmuxSocket: TMUX_SOCKET,
+      })
+      if (!live?.sessionId) await new Promise(resolve => setTimeout(resolve, 250))
+    }
     const recorded = live?.sessionId
       ? { ...processFact, session_id: live.sessionId, session_path: live.jsonlPath || null, model: live.model || processFact.model }
       : processFact
