@@ -332,6 +332,7 @@ router.post('/', requireRw, async (req, res) => {
       return res.status(400).json({ error: 'book format requires a non-empty members array' })
     }
     const project = createProject({ name, title, mainFile, format, members })
+    await (await sourceLifecycleStore(project.name)).gitRepository()
     emitGlobalEvent('project-changed', { name: project.name })
     res.status(201).json(project)
   } catch (e) {
