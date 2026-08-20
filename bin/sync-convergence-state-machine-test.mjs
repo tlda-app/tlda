@@ -31,8 +31,10 @@ import {
   updateProject,
 } from '../server/lib/project-store.mjs'
 import { createSourceSync } from '../daemon/source-sync.mjs'
+import { createGitSourceManager } from '../daemon/git-source.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox } from '../daemon/outbox.mjs'
+import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
 import {
   deliver,
   openDaemon,
@@ -50,6 +52,24 @@ const remote = join(root, 'remote.git')
 const project = 'convergence-paper'
 const bindingId = 'git-backed-daemon-binding'
 const port = await unusedPort()
+const trace = label => { if (process.env.TLDA_SYNC_TRACE) process.stderr.write(`${label}\n`) }
+const deliverBounded = (socket, envelope, timeoutMs = 120_000) => new Promise((resolve, reject) => {
+  const received = []
+  const onMessage = raw => {
+    const message = JSON.parse(String(raw))
+    received.push(message)
+    if (message.type !== 'daemon-outbox-ack' || message.outbox_id !== envelope.__daemon_outbox_id) return
+    clearTimeout(timeout)
+    socket.off('message', onMessage)
+    resolve(received)
+  }
+  const timeout = setTimeout(() => {
+    socket.off('message', onMessage)
+    reject(new Error(`delivery timed out after ${timeoutMs}ms: ${JSON.stringify(received)}`))
+  }, timeoutMs)
+  socket.on('message', onMessage)
+  socket.send(JSON.stringify(envelope))
+})
 let server
 let ws
 let peerWs
@@ -57,6 +77,8 @@ let targetWs
 let targetSync
 let durableDelivery
 let durableOutbox
+let gitSync
+let gitSources
 
 try {
   execFileSync('git', ['init', '--bare', '--quiet', remote])
@@ -187,25 +209,50 @@ try {
   ws = durableWs
   attachDurableReceiver(durableWs)
   durableDelivery.noteReady()
-  const durableDeadline = Date.now() + 20_000
-  while (durableOutbox.get(durableId) && Date.now() < durableDeadline) {
+  const durableWaitStarted = Date.now()
+  const durableDeadline = durableWaitStarted + 120_000
+  const durableLedger = new Database(fleetDb, { readonly: true })
+  const durableState = () => ({
+    result: durableMessages.find(message => message.type === 'source-change-result' && message.deliveryId === durableId),
+    ack: durableMessages.some(message => message.type === 'daemon-outbox-ack' && message.outbox_id === durableId),
+    processed: durableLedger.prepare('SELECT id, type FROM daemon_outbox_processed WHERE id = ?').get(durableId),
+    outbox: durableOutbox.get(durableId),
+  })
+  let durableSnapshot = durableState()
+  const durableSendAttempts = 1
+  while (!(durableSnapshot.result?.ok && durableSnapshot.ack && durableSnapshot.processed && !durableSnapshot.outbox) && Date.now() < durableDeadline) {
     await new Promise(resolve => setTimeout(resolve, 20))
+    durableSnapshot = durableState()
   }
-  const durableResult = durableMessages.find(message => (
-    message.type === 'source-change-result' && message.deliveryId === durableId
-  ))
-  assert.equal(durableResult?.ok, true, JSON.stringify(durableMessages))
-  assert.ok(durableMessages.some(message => message.type === 'daemon-outbox-ack' && message.outbox_id === durableId))
-  assert.equal(durableOutbox.get(durableId), null, 'ACK did not clear the durable daemon row')
-  const fleetLedger = new Database(fleetDb, { readonly: true })
+  const durableElapsedMs = Date.now() - durableWaitStarted
+  const durableResult = durableSnapshot.result
+  if (process.env.TLDA_SYNC_SINGLE_TRANSITION) {
+    const diagnostic = {
+      elapsedMs: durableElapsedMs,
+      outbox: durableSnapshot.outbox,
+      sendAttempts: durableSendAttempts,
+      reconnectAttempts: 1,
+      socketReadyState: durableWs?.readyState ?? null,
+      processed: durableSnapshot.processed,
+      canonicalResult: durableSnapshot.result ?? null,
+      ack: durableSnapshot.ack,
+      localClearance: !durableSnapshot.outbox,
+    }
+    console.log(`sync convergence state machine: single durable transition ${JSON.stringify(diagnostic)}`)
+    if (!(durableResult?.ok && durableSnapshot.ack && durableSnapshot.processed && !durableSnapshot.outbox)) {
+      throw new Error(`single durable transition first missing state: ${JSON.stringify(diagnostic)}`)
+    }
+  }
+  assert.equal(durableResult?.ok, true, `elapsed=${durableElapsedMs}ms state=${JSON.stringify(durableSnapshot)} messages=${JSON.stringify(durableMessages)}`)
+  assert.equal(durableSnapshot.ack, true, `elapsed=${durableElapsedMs}ms state=${JSON.stringify(durableSnapshot)}`)
   try {
     assert.deepEqual(
-      fleetLedger.prepare('SELECT id, type FROM daemon_outbox_processed WHERE id = ?').get(durableId),
+      durableSnapshot.processed,
       { id: durableId, type: 'source-change' },
       'server processed ledger did not retain the replayed durable delivery id',
     )
   } finally {
-    fleetLedger.close()
+    durableLedger.close()
   }
 
   let acceptedRevision = durableResult.sourceRevision
@@ -227,7 +274,7 @@ try {
     // the materialized checkout before the same edit is retried from the head.
     if (step > 0 && step % 2 === 1) {
       const staleBase = bootstrap.authority.currentRevision
-      const staleMessages = await deliver(writer.ws, {
+      const staleMessages = await deliverBounded(writer.ws, {
         type: 'source-change', project, requestId: `R-stale-${step}`,
         expectedRevision: staleBase, sourceBindingId: writer.bindingId,
         files, deletedFiles: [], sourceManifest: ['main.tex', 'part.tex'],
@@ -239,7 +286,7 @@ try {
       assert.equal(readFileSync(join(projectsDir, project, 'source', 'part.tex'), 'utf8'), `revision-${acceptedOrdinal}:part\n`)
     }
 
-    const acceptedMessages = await deliver(writer.ws, {
+    const acceptedMessages = await deliverBounded(writer.ws, {
       type: 'source-change', project, requestId: `R-accepted-${step}`,
       expectedRevision: acceptedRevision, sourceBindingId: writer.bindingId,
       files, deletedFiles: [], sourceManifest: ['main.tex', 'part.tex'],
@@ -334,14 +381,139 @@ try {
     'auto-merge',
     'MISSING PRODUCTION BEHAVIOR: source binding registration discards the daemon mirror mode',
   )
+  trace('git:seed')
 
-  console.log('sync convergence state machine: Git-backed daemon boundary is available')
+  // A real Git edge now takes the same path to the fixed point. Seed the
+  // collaborator remote from the accepted server bytes, create a conflicting
+  // local/remote pair, resolve it in the watched working copy, and let the
+  // ordinary source watcher submit that resolution. The server's accepted Git
+  // commit is mirrored back through the daemon RPC and that exact commit is
+  // what publishAccepted pushes to the remote.
+  const seed = join(root, 'git-seed')
+  execFileSync('git', ['clone', '--quiet', remote, seed])
+  execFileSync('git', ['switch', '-c', 'main'], { cwd: seed })
+  execFileSync('git', ['config', 'user.name', 'fixture'], { cwd: seed })
+  execFileSync('git', ['config', 'user.email', 'fixture@example.test'], { cwd: seed })
+  writeFileSync(join(seed, 'main.tex'), `revision-${acceptedOrdinal}:main\n`)
+  writeFileSync(join(seed, 'part.tex'), `revision-${acceptedOrdinal}:part\n`)
+  execFileSync('git', ['add', 'main.tex', 'part.tex'], { cwd: seed })
+  execFileSync('git', ['commit', '--quiet', '-m', 'Seed accepted source'], { cwd: seed })
+  execFileSync('git', ['push', '--quiet', '-u', 'origin', 'main'], { cwd: seed })
+  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: remote })
+
+  const gitWatcher = new EventEmitter()
+  gitWatcher.close = () => Promise.resolve()
+  const gitResults = []
+  gitSync = createSourceSync({
+    sourceChangeSettleDeadlineMs: 300_000,
+    sourceBindingsFile: join(root, 'git-bindings.json'),
+    log: { info() {}, warn() {}, error() {} },
+    sendMsg(message) { ws.send(JSON.stringify(message)); return true },
+    isConnected: () => ws?.readyState === 1,
+    resolveEditor: () => null,
+    reconcileIntervalMs: 60_000,
+    watch() { return gitWatcher },
+  })
+  gitSources = createGitSourceManager({
+    stateFile: join(root, 'git-sources.json'),
+    sourcesRoot: join(root, 'git-sources'),
+    queuePaths: (name, paths) => gitSync.queuePaths(name, paths),
+    log: { info() {}, warn() {}, error() {} },
+  })
+  const linked = await gitSources.link({ project, remote, mirrorMode: 'auto-merge', pollSeconds: 3600 })
+  trace('git:linked')
+  const gitBinding = gitSync.bindSource(project, linked.sourceDir, registration)
+  gitSync.sync([{
+    name: project,
+    sourceDir: linked.sourceDir,
+    mainFile: 'main.tex',
+    format: 'svg',
+    sourceRevision: acceptedRevision,
+    sourceManifest: ['main.tex', 'part.tex'],
+  }], { authoritativeRevisions: true })
+  const shadowMirror = createShadowMirror({
+    getSourceDir: () => linked.sourceDir,
+    log: { info() {}, warn() {}, error() {} },
+    afterMirror: update => gitSources.publishAccepted(update),
+  })
+  ws.terminate()
+  ws = await openDaemon(port, {
+    machineId: 'git-backed-machine',
+    sourceBindings: [{ ...registration, bindingId: gitBinding.bindingId }],
+    onRpc: message => message.op === 'mirror-shadow-ref'
+      ? shadowMirror.mirrorShadowRef(message)
+      : message.op === 'apply-source-update'
+        ? gitSync.applyAcceptedSourceUpdate(message)
+        : ({ ok: false, reason: 'project-not-watched' }),
+  })
+  ws.on('message', raw => {
+    const message = JSON.parse(String(raw))
+    if (message.type === 'source-change-result') {
+      gitResults.push(message)
+      gitSync.handleSourceChangeResult(message)
+    }
+  })
+  trace('git:connected')
+
+  writeFileSync(join(linked.sourceDir, 'main.tex'), 'local-conflict:main\n')
+  execFileSync('git', ['add', 'main.tex'], { cwd: linked.sourceDir })
+  execFileSync('git', ['commit', '--quiet', '-m', 'Local conflicting edit'], { cwd: linked.sourceDir })
+  execFileSync('git', ['update-ref', 'refs/tlda/shadow/HEAD', 'HEAD'], { cwd: linked.sourceDir })
+  const collaborator = join(root, 'git-collaborator')
+  execFileSync('git', ['clone', '--quiet', remote, collaborator])
+  execFileSync('git', ['config', 'user.name', 'collaborator'], { cwd: collaborator })
+  execFileSync('git', ['config', 'user.email', 'collaborator@example.test'], { cwd: collaborator })
+  writeFileSync(join(collaborator, 'main.tex'), 'remote-conflict:main\n')
+  execFileSync('git', ['add', 'main.tex'], { cwd: collaborator })
+  execFileSync('git', ['commit', '--quiet', '-m', 'Remote conflicting edit'], { cwd: collaborator })
+  execFileSync('git', ['push', '--quiet'], { cwd: collaborator })
+
+  const conflicted = await gitSources.poll(project)
+  trace(`git:poll:${conflicted.status}`)
+  assert.equal(conflicted.status, 'conflicted', JSON.stringify(conflicted))
+  assert.deepEqual(conflicted.conflicted, ['main.tex'])
+  assert.match(readFileSync(join(linked.sourceDir, 'main.tex'), 'utf8'), /^<<<<<<< /)
+
+  const resolvedMain = 'resolved-fixed-point:main\n'
+  const resolvedPart = 'resolved-fixed-point:part\n'
+  writeFileSync(join(linked.sourceDir, 'main.tex'), resolvedMain)
+  writeFileSync(join(linked.sourceDir, 'part.tex'), resolvedPart)
+  execFileSync('git', ['add', 'main.tex', 'part.tex'], { cwd: linked.sourceDir })
+  gitSync.queuePaths(project, ['main.tex', 'part.tex'])
+  trace('git:resolution-queued')
+
+  const gitDeadline = Date.now() + 30_000
+  let remoteHead = ''
+  while (Date.now() < gitDeadline) {
+    const accepted = [...gitResults].reverse().find(message => message.ok)
+    try {
+      remoteHead = execFileSync('git', ['rev-parse', 'refs/heads/main'], { cwd: remote, encoding: 'utf8' }).trim()
+    } catch {
+      // Remote ref may not exist until the accepted mirror is published.
+    }
+    if (accepted?.sourceRevision && remoteHead === accepted.sourceRevision) break
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  const gitAccepted = [...gitResults].reverse().find(message => message.ok)
+  trace(`git:accepted:${gitAccepted?.sourceRevision || 'none'} remote:${remoteHead || 'none'}`)
+  assert.ok(gitAccepted?.sourceRevision, JSON.stringify(gitResults))
+  assert.equal(remoteHead, gitAccepted.sourceRevision, 'remote was not pushed to the exact accepted revision')
+  assert.equal(readFileSync(join(projectsDir, project, 'source', 'main.tex'), 'utf8'), resolvedMain)
+  assert.equal(readFileSync(join(projectsDir, project, 'source', 'part.tex'), 'utf8'), resolvedPart)
+  assert.equal(readFileSync(join(linked.sourceDir, 'main.tex'), 'utf8'), resolvedMain)
+  assert.equal(readFileSync(join(linked.sourceDir, 'part.tex'), 'utf8'), resolvedPart)
+  assert.equal(execFileSync('git', ['show', `${remoteHead}:main.tex`], { cwd: remote, encoding: 'utf8' }), resolvedMain)
+  assert.equal(execFileSync('git', ['show', `${remoteHead}:part.tex`], { cwd: remote, encoding: 'utf8' }), resolvedPart)
+
+  console.log('sync convergence state machine: Git conflict resolution reached an exact all-surface fixed point')
 } catch (error) {
   if (server) error.message += `\nserver log:\n${server.output()}`
   throw error
 } finally {
   durableDelivery?.dispose()
   durableOutbox?.close()
+  gitSources?.close()
+  await gitSync?.closeAll()
   await targetSync?.closeAll()
   ws?.terminate()
   peerWs?.terminate()
