@@ -113,12 +113,20 @@ export function createGitProjectSync({
       if (parent && (await git(['rev-parse', `${parent}^{tree}`])).stdout.trim() === tree) return { commit: parent, tree, roots, members: [...members], changed: false }
       const args = ['commit-tree', tree, '-m', 'tlda project revision']
       const remoteParent = await rev('refs/tlda/remote/observed')
-      if (parent && remoteParent && await isAncestor(parent, remoteParent)) {
-        args.push('-p', remoteParent)
-      } else {
-        if (parent) args.push('-p', parent)
-        if (remoteParent && (!parent || !(await isAncestor(remoteParent, parent)))) args.push('-p', remoteParent)
+      const parents = []
+      for (const candidate of [parent, workingCommit, remoteParent]) {
+        if (!candidate || parents.includes(candidate)) continue
+        let redundant = false
+        for (let index = parents.length - 1; index >= 0; index--) {
+          if (await isAncestor(candidate, parents[index])) {
+            redundant = true
+            break
+          }
+          if (await isAncestor(parents[index], candidate)) parents.splice(index, 1)
+        }
+        if (!redundant) parents.push(candidate)
       }
+      for (const commit of parents) args.push('-p', commit)
       const commit = (await git(args)).stdout.trim()
       return { commit, tree, roots, members: [...members], changed: true }
     } finally {
@@ -187,6 +195,7 @@ export function createGitProjectSync({
     if (dirty) await commitSettledTree()
     const local = await rev(localRef) || await rev('HEAD')
     const applied = await rev(appliedRef)
+    if (applied === revision) return { ok: true, status: 'already-applied', revision }
     if (!local) {
       await git(['checkout', '--force', '-B', branch, revision])
       await git(['update-ref', localRef, revision])
@@ -197,18 +206,27 @@ export function createGitProjectSync({
       await git(['update-ref', appliedRef, revision, applied || ZERO])
       return { ok: true, status: 'already-applied', revision }
     }
+    const checkoutHead = await rev('HEAD')
+    if (applied && !(await isAncestor(applied, revision))) {
+      throw new Error(`${project}: accepted revision ${revision} does not descend from applied base ${applied}`)
+    }
+    if (applied && checkoutHead && !(await isAncestor(applied, checkoutHead))) {
+      const checkoutTree = (await git(['rev-parse', `${checkoutHead}^{tree}`])).stdout.trim()
+      const bridge = (await git(['commit-tree', checkoutTree, '-p', checkoutHead, '-p', applied, '-m', 'tlda attach applied mirror base'])).stdout.trim()
+      await git(['update-ref', 'HEAD', bridge, checkoutHead])
+    }
     try {
-      await git(['merge', '--no-edit', revision])
+      await git(['merge', '--no-edit', ...(applied ? [] : ['--allow-unrelated-histories']), revision])
     } catch (error) {
       const held = await unresolved()
       if (!held.length) throw error
       return { ok: false, status: 'conflicted', conflicted: held, revision }
     }
-    const merged = await rev('HEAD')
-    await git(['update-ref', localRef, merged])
+    const merged = await commitSettledTree()
+    if (!merged.ok) return merged
     await git(['update-ref', appliedRef, revision, applied || ZERO])
-    await onEditClusterSettled({ project, revision: merged, cause: 'clean-mirror-merge' })
-    return { ok: true, status: 'merged', revision, localRevision: merged }
+    await onEditClusterSettled({ project, revision: merged.revision, cause: 'clean-mirror-merge' })
+    return { ok: true, status: 'merged', revision, localRevision: merged.revision }
   }
 
   async function headChanged(revision = null) {
