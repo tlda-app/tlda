@@ -368,11 +368,9 @@ const STARTER_SERVER_YAML = `# tlda server settings. The file itself is required
 #     policy: immediate
 
 # How many document builds run at once, and build ordering across projects.
-# k >= 2 is a correctness bound rather than a throughput preference: at k = 1 the
-# only slot is the contested one, so somebody with finished work never gets to
-# build it while someone upstream keeps typing and keeps reclaiming the slot.
-# Shipped uncommented because it was commented out and the effective value was 1,
-# which is the starving case.
+# Concurrency trades machine load for latency. Starvation-freedom comes from the
+# queue's one FIFO position per project and holds even when this is explicitly 1.
+# The existing default remains 2.
 buildMaxConcurrency: 2
 # buildPriority: []
 

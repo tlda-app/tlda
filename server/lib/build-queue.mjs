@@ -5,19 +5,10 @@ export function createBuildQueue({
   recordDisposition = async () => {},
   logError = (name, e) => console.error(`[build-dispatch] worker error for ${name}: ${e.message}`),
 }, options = {}) {
-  // **`k >= 2` is a correctness bound, not a throughput preference** (§10.2b).
-  //
-  // At `k = 1` the only slot is the contested one, so a collaborator with
-  // finished, buildable work never gets to run it while someone upstream keeps
-  // typing and keeps reclaiming the slot on an older `waitingSince`. At `k >= 2`
-  // their build runs concurrently and promotes normally, and the typist simply
-  // never wins with unsettled work.
-  //
-  // So the DEFAULT is 2. `server.yaml` can still say otherwise — including 1,
-  // which is a decision somebody is allowed to make and this does not prevent —
-  // but an unset value must not silently be the starving case. It was: nothing
-  // supplies a default, `buildMaxConcurrency` ships commented out, and
-  // `Number(undefined || 1)` is 1.
+  // Concurrency is a capacity/latency setting, not the fairness mechanism.
+  // Fairness comes from one FIFO position per project: overwriting a queued job
+  // does not move it, and pending work behind an in-flight job rejoins at the
+  // tail. The existing default remains 2; this path does not choose a new one.
   const configured = Number(options.maxConcurrency)
   const maxConcurrency = Number.isFinite(configured) && configured >= 1 ? configured : 2
   const buildPriority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 10
@@ -39,14 +30,19 @@ export function createBuildQueue({
     const key = jobKey(name, kind)
     if (_inFlight.has(key)) {
       const displaced = _pending.get(key)
-      if (displaced?.sourceRevision && displaced.sourceRevision !== sourceRevision) {
+      if (sourceRevision != null && displaced?.sourceRevision && displaced.sourceRevision !== sourceRevision) {
         await recordDisposition(displaced, 'superseded', { bySourceRevision: sourceRevision, byAcceptSeq: acceptSeq })
       }
       return new Promise((resolve, reject) => {
         const pending = _pending.get(key) || { name, kind, waiters: [] }
         pending.kind = kind
-        pending.sourceRevision = sourceRevision
-        pending.acceptSeq = acceptSeq
+        // An identityless manual rebuild is still a request, but it must not
+        // erase the accepted revision identity already occupying this slot.
+        // A later accepted revision does replace that identity: latest wins.
+        if (sourceRevision != null) {
+          pending.sourceRevision = sourceRevision
+          pending.acceptSeq = acceptSeq
+        }
         pending.waiters.push({ resolve, reject })
         _pending.set(key, pending)
       })
@@ -54,14 +50,16 @@ export function createBuildQueue({
 
     if (_queued.has(key)) {
       const displaced = _queued.get(key)
-      if (displaced?.sourceRevision && displaced.sourceRevision !== sourceRevision) {
+      if (sourceRevision != null && displaced?.sourceRevision && displaced.sourceRevision !== sourceRevision) {
         await recordDisposition(displaced, 'superseded', { bySourceRevision: sourceRevision, byAcceptSeq: acceptSeq })
       }
       return new Promise((resolve, reject) => {
-      const queued = _queued.get(key)
-      queued.kind = kind
-      queued.sourceRevision = sourceRevision
-      queued.acceptSeq = acceptSeq
+        const queued = _queued.get(key)
+        queued.kind = kind
+        if (sourceRevision != null) {
+          queued.sourceRevision = sourceRevision
+          queued.acceptSeq = acceptSeq
+        }
         queued.waiters.push({ resolve, reject })
       })
     }
