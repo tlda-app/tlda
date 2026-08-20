@@ -453,6 +453,9 @@ function recordDaemonSourceBindings(daemonKey, reported) {
       project: binding.project,
       daemonKey,
       reportedAt,
+      ...(binding.kind === 'git' ? { kind: 'git' } : {}),
+      ...(binding.kind === 'git' && typeof binding.remote === 'string' ? { remote: binding.remote } : {}),
+      ...(binding.kind === 'git' && ['fast-forward', 'auto-merge'].includes(binding.mirrorMode) ? { mirrorMode: binding.mirrorMode } : {}),
     }
   }
   writeSourceBindingRegistry(registry)

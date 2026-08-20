@@ -616,7 +616,13 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         const bindingId = typeof value === 'object' && typeof value.bindingId === 'string'
           ? value.bindingId
           : createHash('sha256').update(`source-binding\0${project}\0${sourceDir}`).digest('hex')
-        return [project, { bindingId, project, sourceDir }]
+        const metadata = typeof value === 'object' ? value : {}
+        return [project, {
+          bindingId, project, sourceDir,
+          ...(metadata.kind === 'git' ? { kind: 'git' } : {}),
+          ...(metadata.kind === 'git' && typeof metadata.remote === 'string' ? { remote: metadata.remote } : {}),
+          ...(metadata.kind === 'git' && ['fast-forward', 'auto-merge'].includes(metadata.mirrorMode) ? { mirrorMode: metadata.mirrorMode } : {}),
+        }]
       }))
     } catch (e) {
       log.warn(`corrupt source-bindings file, ignoring: ${e.message}`)
@@ -645,7 +651,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     try { fs.fsyncSync(parentFd) } finally { fs.closeSync(parentFd) }
   }
 
-  function bindSource(project, sourceDir) {
+  function bindSource(project, sourceDir, metadata = {}) {
     const normalized = path.resolve(sourceDir)
     if (!fs.existsSync(normalized) || !fs.statSync(normalized).isDirectory()) {
       throw new Error(`Source directory does not exist: ${normalized}`)
@@ -656,7 +662,12 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     if (existing) {
       throw new Error(`Project "${project}" is already linked to ${existing.sourceDir}; unlink it first`)
     }
-    bindings[project] = { bindingId: randomUUID(), project, sourceDir: normalized }
+    bindings[project] = {
+      bindingId: randomUUID(), project, sourceDir: normalized,
+      ...(metadata.kind === 'git' ? { kind: 'git' } : {}),
+      ...(metadata.kind === 'git' && typeof metadata.remote === 'string' ? { remote: metadata.remote } : {}),
+      ...(metadata.kind === 'git' && ['fast-forward', 'auto-merge'].includes(metadata.mirrorMode) ? { mirrorMode: metadata.mirrorMode } : {}),
+    }
     saveSourceBindings(bindings)
     sourceMaterializer.seedBinding(bindings[project].bindingId, normalized, null)
     return { linked: true, alreadyLinked: false, bindingId: bindings[project].bindingId, sourceDir: normalized }
