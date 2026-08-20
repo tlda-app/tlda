@@ -49,7 +49,7 @@ test('the two unresolved types are untouched', () => {
 })
 
 test('the rest of the durable set is unchanged', () => {
-  for (const type of ['agent-route', 'daemon-roster', 'source-change', 'daemon-warning']) {
+  for (const type of ['agent-route', 'daemon-roster', 'daemon-warning']) {
     assert.equal(daemonDeliveryPolicy({ type }), DELIVERY_DURABLE_FIFO, type)
   }
   assert.equal(daemonDeliveryPolicy({ type: 'rpc-reply', id: 'r1' }), DELIVERY_DURABLE_FIFO)

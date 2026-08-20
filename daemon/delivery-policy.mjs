@@ -18,7 +18,6 @@ const DURABLE_TYPES = new Set([
   'native-task-event',
   'plan-mode-prompt',
   'prompt-auto-accepted',
-  'source-change',
   'spawn-startup-failed',
   'terminal-chat',
   'terminal-dead',
