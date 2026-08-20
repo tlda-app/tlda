@@ -1922,6 +1922,9 @@ function threadWindow(descriptor: any) {
 function threadSearchRequest(descriptor: any, agentId: string | null, currentProject?: string) {
   const view = descriptor?.view || {}
   const filters: any = { eventOnly: true, historyOnly: true, currentProject, throwOnError: true }
+  // `me` is lexically bound to the activity row's caller. Keep the recorded
+  // expression unchanged while evaluating it in the environment that issued it.
+  if (descriptor?.caller) filters.me = descriptor.caller
   const requestedTypes = Array.isArray(view.types) ? view.types : []
   if (requestedTypes.length === 1) filters.eventType = requestedTypes[0]
   else if (requestedTypes.length > 1) filters.eventTypes = requestedTypes

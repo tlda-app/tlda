@@ -82,7 +82,7 @@ function semanticOperationKind(toolName) {
   return ''
 }
 
-function semanticOperationDescriptor(toolName, input, arg, ts) {
+export function semanticOperationDescriptor(toolName, input, arg, ts, caller = '') {
   const kind = semanticOperationKind(toolName)
   if (!kind) return null
   const rawInput = input && typeof input === 'object' ? input : {}
@@ -98,6 +98,7 @@ function semanticOperationDescriptor(toolName, input, arg, ts) {
   const filterExpression = String(rawInput.filter || rawInput.filterExpression || (kind === 'thread' ? argText : '') || '')
   const semanticIdentity = {
     kind,
+    caller,
     query,
     filterExpression,
     agent: rawInput.agent || rawInput.from || rawInput.to || '',
@@ -111,6 +112,9 @@ function semanticOperationDescriptor(toolName, input, arg, ts) {
   return {
     descriptorShape: 'SemanticChatOperationDescriptor',
     kind,
+    // The query text remains the recorded call. `caller` is the lexical
+    // environment in which the card must evaluate `me` when it is reopened.
+    caller,
     tool: toolName || '',
     arg: argText,
     query,
@@ -123,12 +127,12 @@ function semanticOperationDescriptor(toolName, input, arg, ts) {
 }
 
 function semanticOperationKey(item) {
-  return semanticOperationDescriptor(item?._toolName, item?._toolInput, item?._toolArg, item?.timestamp)?.semanticKey || ''
+  return semanticOperationDescriptor(item?._toolName, item?._toolInput, item?._toolArg, item?.timestamp, item?.from)?.semanticKey || ''
 }
 
 function mergeSemanticInspected(host, item) {
   const pages = host._semanticInspectedPages || []
-  const desc = semanticOperationDescriptor(item._toolName, item._toolInput, item._toolArg, item.timestamp)
+  const desc = semanticOperationDescriptor(item._toolName, item._toolInput, item._toolArg, item.timestamp, item.from)
   if (desc) pages.push(desc.inspected)
   host._semanticInspectedPages = pages
   host._toolInput = { ...(host._toolInput || {}), _semanticInspectedPages: pages }
@@ -140,9 +144,9 @@ function mergePrettyResultOntoHost(host, item) {
   if (!host._prettyResult) host._prettyResult = item._prettyResult
 }
 
-function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '') {
+function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '', caller = '') {
   const kind = semanticOperationKind(toolName)
-  const descriptor = semanticOperationDescriptor(toolName, input, arg, ts)
+  const descriptor = semanticOperationDescriptor(toolName, input, arg, ts, caller)
   if (!descriptor) return null
   const json = esc(JSON.stringify(descriptor))
   const key = esc(descriptor.semanticKey)
@@ -1046,7 +1050,7 @@ export function renderActivityGroup(group, ctx) {
       // transit.
       const semanticKind = semanticOperationKind(t._toolName)
       const prettyHtml = semanticKind
-        ? renderSemanticOperationResult(t._toolName, '', ctx, t._toolInput, t.timestamp, t._toolArg)
+        ? renderSemanticOperationResult(t._toolName, '', ctx, t._toolInput, t.timestamp, t._toolArg, t.from)
         : (t._prettyResult && !isPropose)
           ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
           : ''

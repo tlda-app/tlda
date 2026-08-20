@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { renderActivityGroup, renderThreadRows } from '../src/fleet/activity-render.mjs'
+import { renderActivityGroup, renderThreadRows, semanticOperationDescriptor } from '../src/fleet/activity-render.mjs'
 
 const ctx = {
   agentLabel: id => id,
@@ -19,6 +19,15 @@ function threadRows(start, count) {
     to: 'pretty',
     body: `message ${start + i}`,
   }))
+}
+
+function decodeSemanticDescriptor(html) {
+  const encoded = html.match(/data-semantic-operation="([^"]+)"/)?.[1]
+  return JSON.parse(encoded
+    .replaceAll('&quot;', '"')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&'))
 }
 
 // The rows are the picture: first 3, the gap marker, the last 2, and one
@@ -118,6 +127,50 @@ test('a thread card carries no semantic-operation shell', () => {
   assert.equal((html.match(/semantic-chat-operation/g) || []).length, 0)
   assert.equal((html.match(/semantic-operation-inspected/g) || []).length, 0)
   assert.match(html, /semantic-operation-body/)
+})
+
+// `me` belongs to the agent who made the recorded call, not the human who later
+// reads its card. The descriptor preserves the visible call while carrying that
+// lexical environment to the client-side rerun.
+test('a thread card keeps its agent caller when a human reads it', () => {
+  const caller = 'fleet:agent'
+  const html = renderActivityGroup([{
+    from: caller,
+    timestamp: '2026-08-20T12:00:00.000Z',
+    _toolName: 'mcp__tlda__thread',
+    _toolInput: { agent: 'skip' },
+  }], ctx)
+  const descriptor = decodeSemanticDescriptor(html)
+
+  assert.equal(descriptor.caller, caller)
+  assert.equal(descriptor.view.agent, 'skip')
+  assert.equal(descriptor.arg, '')
+  assert.notEqual(descriptor.semanticKey, semanticOperationDescriptor('mcp__tlda__thread', { agent: 'skip' }, '', '2026-08-20T12:00:00.000Z', 'fleet:human').semanticKey)
+})
+
+test('a lexical me filter keeps its displayed text', () => {
+  const html = renderActivityGroup([{
+    from: 'fleet:agent',
+    timestamp: '2026-08-20T12:00:00.000Z',
+    _toolName: 'mcp__tlda__thread',
+    _toolArg: 'me <> skip',
+    _toolInput: { filter: 'me <> skip' },
+  }], ctx)
+  const descriptor = decodeSemanticDescriptor(html)
+
+  assert.equal(descriptor.caller, 'fleet:agent')
+  assert.equal(descriptor.filterExpression, 'me <> skip')
+  assert.equal(descriptor.view.filter, 'me <> skip')
+  assert.match(html, /me &lt;&gt; skip/)
+})
+
+test('the thread rerun evaluates me as the recorded caller', () => {
+  const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
+  const start = source.indexOf('function threadSearchRequest(')
+  const end = source.indexOf('\nfunction semanticSearchRequest(', start)
+  const request = source.slice(start, end)
+
+  assert.match(request, /if \(descriptor\?\.caller\) filters\.me = descriptor\.caller/)
 })
 
 // Skip, 2026-08-19 05:37 EDT: "the search you just did returned four results.
