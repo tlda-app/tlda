@@ -106,6 +106,8 @@ export function checkChatRender(message, macros = null) {
   }
   const codeBlocks = message.match(/```[\s\S]*?```/g) || []
   for (const block of codeBlocks) {
+    const language = block.slice(3).match(/^([^\s`]*)/)?.[1]?.toLowerCase()
+    if (language === 'tex' || language === 'latex') continue
     const inner = block.slice(3, -3).replace(/^[a-z]*\n/, '')
     if (/\\(?:begin|end|frac|sum|int|prod|hat|bar|tilde|mathbb|mathrm|operatorname|left|right|alpha|beta|gamma|theta|lambda|mu|sigma|phi|psi|omega|infty|partial|nabla|sqrt|over|under)\b/.test(inner)) {
       validity.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place by re-chatting with amend_id after it sends.`)

@@ -142,7 +142,7 @@ export function SyncErrorPill() {
         className={'sync-error-badge' + (errors.some(e => e.kind === 'source-conflict') ? ' sync-error-badge-conflict' : '')}
         onClick={() => setShowList(s => !s)}
         onPointerDown={e => e.stopPropagation()}
-        title="Source sync blocked"
+        title={errors.some(e => e.kind === 'source-conflict') ? 'Source sync blocked' : 'Mirror sync failed'}
       >⇄ sync</span>
       {showList && (
         <div className="sync-error-list" onPointerDown={e => e.stopPropagation()}>

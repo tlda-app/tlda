@@ -25,6 +25,18 @@ test('a paper macro quoted as SOURCE in a fenced block does not demand a preambl
   assert.deepEqual(checkChatRender(msg).validity, [])
 })
 
+test('explicit tex and latex fences may show literal TeX', () => {
+  for (const language of ['tex', 'latex']) {
+    const msg = 'The source is:\n```' + language + '\n\\frac{a}{b}\n```'
+    assert.deepEqual(checkChatRender(msg).validity, [])
+  }
+})
+
+test('an untagged fence containing LaTeX still warns', () => {
+  const issues = checkChatRender('This should render:\n```\n\\frac{a}{b}\n```').validity
+  assert.ok(issues.some(i => /Don\'t put LaTeX in a code block/.test(i)))
+})
+
 test('a latex command as a literal in inline code is not math', () => {
   assert.deepEqual(checkChatRender('Write `\\hat\\mu`, not the word.').validity, [])
 })
