@@ -1090,6 +1090,7 @@ async function rpcMint(params = {}) {
     requester,
     spawnerPermissionSet: compilePermissionGrant(grantConfig, spawnerGrant.permissionGrant, { cwd }),
     spawnerPermissionProfile: permissionGrantProfileName(spawnerGrant.permissionGrant),
+    spawnerPermissionGrant: spawnerGrant.permissionGrant,
     model: modelSpec.id,
     kind: modelSpec.harness,
     modelCap: modelSpec.cap || null,
