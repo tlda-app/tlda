@@ -48,7 +48,6 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
       await execFileP('git', ['cat-file', '-e', `${hash}^{commit}`], { cwd: sourceDir, timeout: 5000 })
       const preservation = await preserveAuthorCommit({ sourceDir, project, hash, sourceScope, log, beforeUpdateRef: beforePreserveUpdateRef })
       await gitRetryOnLock(() => execFileP('git', ['update-ref', 'refs/tlda/shadow/HEAD', hash], { cwd: sourceDir, timeout: 5000 }))
-
       // A push the server refused is carried in the same bundle, and it gets a
       // ref here for one reason: so the person who made it can see it. Without
       // one it is an unreachable commit — not lost, but invisible to them and

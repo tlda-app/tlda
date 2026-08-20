@@ -113,7 +113,6 @@ import { createAgentLiveness, livenessAgentsFromProcessBindings } from '../daemo
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
-import { createGitSourceManager } from '../daemon/git-source.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
@@ -536,13 +535,7 @@ const sourceSync = createGitSyncManager({
   daemonId: `${MACHINE_ID}:${ACTIVE_ENV}`,
   server: SERVER,
   token: TOKEN,
-  log,
-})
-
-const gitSources = createGitSourceManager({
-  stateFile: path.join(CONFIG_DIR, `git-sources${DAEMON_STATE_SUFFIX}.json`),
-  sourcesRoot: path.join(CONFIG_DIR, `git-source-checkouts${DAEMON_STATE_SUFFIX}`),
-  queuePaths: (project, paths) => sourceSync.queuePaths(project, paths),
+  remoteCheckoutsRoot: path.join(CONFIG_DIR, `git-source-checkouts${DAEMON_STATE_SUFFIX}`),
   log,
 })
 
@@ -654,22 +647,22 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
 }
 
 async function rpcLinkGitSource(params) {
-  return gitSources.link(params)
+  const prepared = await sourceSync.prepareRemote(params)
+  const metadata = await daemonApi('GET', `/api/projects/${encodeURIComponent(params.project)}`)
+  const linked = await rpcLinkProjectSource({ ...prepared, projectMetadata: metadata })
+  await sourceSync.pollRemote(params.project)
+  return linked
 }
 
 async function rpcActivateGitSource({ project }) {
-  const item = gitSources.record(project)
-  if (!item) throw new Error(`Project "${project}" has no Git source`)
-  const metadata = await daemonApi('GET', `/api/projects/${encodeURIComponent(project)}`)
-  await rpcLinkProjectSource({ project, sourceDir: item.sourceDir, projectMetadata: metadata,
-    kind: 'git', remote: item.remote, mirrorMode: item.mirrorMode })
-  return gitSources.activate({ project })
+  return sourceSync.pollRemote(project)
 }
 
 function rpcUnlinkGitSource({ project, remote }) {
-  const item = gitSources.record(project)
-  if (item) rpcUnlinkProjectSource({ project, sourceDir: item.sourceDir })
-  return gitSources.unlink({ project, remote })
+  const item = sourceSync.bindingRecords().find(record => record.project === project)
+  if (!item) return { unlinked: false, alreadyUnlinked: true }
+  if (remote && item.remote !== remote) throw new Error(`Project "${project}" is linked to ${item.remote}, not ${remote}`)
+  return rpcUnlinkProjectSource({ project, sourceDir: item.sourceDir })
 }
 
 // Hand this project's mirrored history to the server it is being linked to, and
@@ -724,7 +717,6 @@ const localArtifacts = createLocalArtifacts({
 const shadowMirror = createShadowMirror({
   getSourceDir: project => sourceSync.getSourceDir(project),
   log,
-  afterMirror: update => gitSources.publishAccepted(update),
 })
 
 // Bots are independent, launchd-owned services configured in bots.yaml — the
@@ -1361,7 +1353,7 @@ function startLocalLifecycleRpc() {
           'git-source-link': rpcLinkGitSource,
           'git-source-activate': rpcActivateGitSource,
           'git-source-unlink': rpcUnlinkGitSource,
-          'git-source-sync': ({ project }) => gitSources.poll(project),
+          'git-source-sync': ({ project }) => sourceSync.pollRemote(project),
         }
         const handler = handlers[op]
         if (!handler) throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
@@ -1404,7 +1396,6 @@ function startLocalLifecycleRpc() {
 }
 
 startLocalLifecycleRpc()
-gitSources.resume()
 
 async function handleRpc(msg) {
   return daemonOperationContext.run(msg.fleet_operation || null, () => machineRpc.handleRpc(msg))

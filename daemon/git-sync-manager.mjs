@@ -5,6 +5,7 @@ import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createEditClusterDebouncer } from './edit-cluster.mjs'
 import { createGitProjectSync } from './git-project-sync.mjs'
+import { createRemoteGitBridge } from './remote-git-bridge.mjs'
 
 const execFile = promisify(execFileCb)
 
@@ -12,7 +13,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000 } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000, remoteCheckoutsRoot = null } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
 
@@ -42,6 +43,28 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     catch { await execFile('git', ['remote', 'add', 'tlda', remoteUrl], { cwd: item.sourceDir }) }
   }
 
+  function authenticatedUrl(value, remoteToken) {
+    if (!remoteToken || !/^https?:\/\//i.test(value)) return value
+    const url = new URL(value)
+    url.username = 'git'
+    url.password = remoteToken
+    return url.toString()
+  }
+
+  async function prepareRemote({ project, remote, token: remoteToken = null, pollSeconds = 60 } = {}) {
+    if (!remoteCheckoutsRoot) throw new Error('remoteCheckoutsRoot is required for remote-backed sources')
+    if (!project || !remote) throw new Error('project and remote are required')
+    const sourceDir = path.join(remoteCheckoutsRoot, project)
+    if (!fs.existsSync(sourceDir)) {
+      fs.mkdirSync(remoteCheckoutsRoot, { recursive: true })
+      await execFile('git', ['clone', '--', authenticatedUrl(remote, remoteToken), sourceDir], { encoding: 'utf8', timeout: 180000 })
+      await execFile('git', ['config', 'user.name', 'tlda remote source daemon'], { cwd: sourceDir })
+      await execFile('git', ['config', 'user.email', 'tlda@local'], { cwd: sourceDir })
+    }
+    const branch = (await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: sourceDir, encoding: 'utf8' })).stdout.trim()
+    return { project, sourceDir, kind: 'git', remote, branch, pollSeconds: Math.max(15, Number(pollSeconds) || 60) }
+  }
+
   async function start(item) {
     if (runtimes.has(item.project)) return runtimes.get(item.project)
     await ensureRepo(item)
@@ -59,6 +82,12 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       sourceDir: item.sourceDir,
       onSettled: () => sync.editClusterSettled().catch(error => log.warn(`${item.project}: proposal failed: ${error.message}`)),
     })
+    const remoteBridge = item.remote ? createRemoteGitBridge({
+      sourceDir: item.sourceDir,
+      branch: item.branch || 'main',
+      onRemoteSettled: () => cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
+      log,
+    }) : null
     const watcher = watch(item.sourceDir, {
       ignoreInitial: true,
       persistent: true,
@@ -69,9 +98,15 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     })
     for (const event of ['add', 'change', 'unlink', 'addDir', 'unlinkDir']) watcher.on(event, file => cluster.note(file))
     watcher.on('error', error => log.warn(`${item.project}: source watcher failed: ${error.message}`))
-    runtime = { item, sync, cluster, watcher }
+    const remoteTimer = remoteBridge ? setInterval(
+      () => remoteBridge.poll().catch(error => log.warn(`${item.project}: remote Git poll failed: ${error.message}`)),
+      Math.max(15, Number(item.pollSeconds) || 60) * 1000,
+    ) : null
+    remoteTimer?.unref?.()
+    runtime = { item, sync, cluster, watcher, remoteBridge, remoteTimer }
     runtimes.set(item.project, runtime)
     await sync.recover()
+    if (remoteBridge) await remoteBridge.poll()
     return runtime
   }
 
@@ -97,9 +132,13 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     const runtime = runtimes.get(project)
     runtime?.cluster.close()
     runtime?.watcher.close()
+    if (runtime?.remoteTimer) clearInterval(runtime.remoteTimer)
     runtimes.delete(project)
     delete all[project]
     save(all)
+    if (existing?.kind === 'git' && remoteCheckoutsRoot && path.dirname(path.resolve(existingDir)) === path.resolve(remoteCheckoutsRoot)) {
+      fs.rmSync(existingDir, { recursive: true, force: true })
+    }
     return { unlinked: true, project, sourceDir: existingDir }
   }
 
@@ -116,10 +155,19 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     const item = record(project)
     if (!item) return { skipped: true, reason: 'not-bound' }
     const runtime = await start(item)
-    return runtime.cluster.serializeMirror(
+    const result = await runtime.cluster.serializeMirror(
       () => runtime.sync.headChanged(revision),
       async () => Boolean((await execFile('git', ['status', '--porcelain', '-z'], { cwd: item.sourceDir, encoding: 'utf8' })).stdout),
     )
+    if (result?.ok && runtime.remoteBridge && revision) await runtime.remoteBridge.publish(revision)
+    return result
+  }
+
+  async function pollRemote(project) {
+    const item = record(project)
+    if (!item) return { skipped: true, reason: 'not-bound' }
+    const runtime = await start(item)
+    return runtime.remoteBridge ? runtime.remoteBridge.poll() : { skipped: true, reason: 'not-remote-backed' }
   }
 
   function sourceFileForAbsolutePath(filePath) {
@@ -138,15 +186,21 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   }
 
   async function closeAll() {
-    for (const runtime of runtimes.values()) { runtime.cluster.close(); await runtime.watcher.close() }
+    for (const runtime of runtimes.values()) {
+      runtime.cluster.close()
+      if (runtime.remoteTimer) clearInterval(runtime.remoteTimer)
+      await runtime.watcher.close()
+    }
     runtimes.clear()
   }
 
   return {
     bindSource,
+    prepareRemote,
     unbindSource,
     sync,
     headChanged,
+    pollRemote,
     queuePaths,
     sourceFileForAbsolutePath,
     getSourceDir: project => record(project)?.sourceDir || null,

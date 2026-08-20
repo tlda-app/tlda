@@ -130,7 +130,9 @@ async function main() {
 
     const source = await makeSource(root, 'new\n')
     const { stdout: beforeHeadRaw } = await git(source, ['rev-parse', 'HEAD'])
-    const { result } = await runMirror(source, hash, bundleBase64)
+    const { result } = await runMirror(source, hash, bundleBase64, {
+      sourceRevision: hash,
+    })
     const { stdout: afterHeadRaw } = await git(source, ['rev-parse', 'HEAD'])
     assert.equal(result.preservation.committed, true)
     assert.notEqual(afterHeadRaw.trim(), beforeHeadRaw.trim())

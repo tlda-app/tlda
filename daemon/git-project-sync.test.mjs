@@ -28,6 +28,9 @@ test('settle submits an immutable daemon proposal and HeadChanged fetches exact 
   await git(checkout, ['push', 'tlda', `${base}:refs/tlda/source/paper`])
   await git(checkout, ['update-ref', 'refs/tlda/applied/binding-a', base])
   await git(checkout, ['fetch', 'tlda', '+refs/tlda/source/paper:refs/tlda/fetched/paper'])
+  const baseTree = (await git(checkout, ['rev-parse', `${base}^{tree}`])).stdout.trim()
+  const remoteSibling = (await git(checkout, ['commit-tree', baseTree, '-p', base, '-m', 'external remote head'])).stdout.trim()
+  await git(checkout, ['update-ref', 'refs/tlda/remote/observed', remoteSibling])
 
   const submitted = []
   const arrived = []
@@ -38,6 +41,7 @@ test('settle submits an immutable daemon proposal and HeadChanged fetches exact 
   assert.equal(submitted.length, 1)
   assert.match(proposal.proposalRef, new RegExp(`^refs/tlda/proposals/daemon-a/main/${proposal.revision}$`))
   assert.equal((await git(remote, ['rev-parse', proposal.proposalRef])).stdout.trim(), proposal.revision)
+  await git(checkout, ['merge-base', '--is-ancestor', remoteSibling, proposal.revision])
   assert.deepEqual((await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'), ['chapter.tex', 'main.tex'])
   await assert.rejects(git(remote, ['cat-file', '-e', `${proposal.revision}:notes.txt`]))
   assert.equal((await git(remote, ['rev-parse', 'refs/tlda/source/paper'])).stdout.trim(), base, 'submission does not advance shared head')

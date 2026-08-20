@@ -112,7 +112,13 @@ export function createGitProjectSync({
       const parent = await rev(localRef) || await rev(fetchedRef) || await rev(appliedRef)
       if (parent && (await git(['rev-parse', `${parent}^{tree}`])).stdout.trim() === tree) return { commit: parent, tree, roots, members: [...members], changed: false }
       const args = ['commit-tree', tree, '-m', 'tlda project revision']
-      if (parent) args.push('-p', parent)
+      const remoteParent = await rev('refs/tlda/remote/observed')
+      if (parent && remoteParent && await isAncestor(parent, remoteParent)) {
+        args.push('-p', remoteParent)
+      } else {
+        if (parent) args.push('-p', parent)
+        if (remoteParent && (!parent || !(await isAncestor(remoteParent, parent)))) args.push('-p', remoteParent)
+      }
       const commit = (await git(args)).stdout.trim()
       return { commit, tree, roots, members: [...members], changed: true }
     } finally {
