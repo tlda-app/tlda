@@ -3,13 +3,18 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const liveCallers = [
-  'cli/tlda.mjs',
   'cli/lib/dev-worktree.mjs',
   'bin/live-editor-acceptance.mjs',
   'src/panels/TocTab.tsx',
   'src/shapes/FleetPillShape.tsx',
   'src/shapes/FleetSourceEditorShape.tsx',
 ]
+
+test('CLI project source enters only through its owning daemon Git checkout', () => {
+  const source = readFileSync('cli/tlda.mjs', 'utf8')
+  assert.match(source, /project-source-link/)
+  assert.doesNotMatch(source, /\/source-room\/files|\/source-snapshot/)
+})
 
 test('every live non-Git source caller enters through the server-side room checkout', () => {
   for (const file of liveCallers) {

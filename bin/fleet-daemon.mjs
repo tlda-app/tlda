@@ -628,8 +628,6 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     return { linked: false, alreadyLinked: status.alreadyLinked, sourceDir: status.sourceDir }
   }
 
-  if (!status.alreadyLinked) await offerShadowHistory({ project, sourceDir })
-
   const result = sourceSync.bindSource(project, sourceDir, { kind, remote, mirrorMode })
   try {
     const registration = await sendMsgWithReply({
@@ -642,8 +640,10 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     throw new Error(`${project} was not linked: its source binding could not be registered (${error.message})`)
   }
   serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
+  await sourceSync.sync([projectMetadata])
+  const submission = await sourceSync.submit(project)
   applyProjectWorldOwnership('local-source-link')
-  return result
+  return { ...result, submission }
 }
 
 async function rpcLinkGitSource(params) {
@@ -663,40 +663,6 @@ function rpcUnlinkGitSource({ project, remote }) {
   if (!item) return { unlinked: false, alreadyUnlinked: true }
   if (remote && item.remote !== remote) throw new Error(`Project "${project}" is linked to ${item.remote}, not ${remote}`)
   return rpcUnlinkProjectSource({ project, sourceDir: item.sourceDir })
-}
-
-// Hand this project's mirrored history to the server it is being linked to, and
-// do not return until the server says it holds it.
-//
-// The confirmation has to come from the adoption itself. The daemon transport
-// acknowledges every envelope it accepts — including one whose type no handler
-// claims, which is how this feature shipped broken for two days — so an ACK
-// proves delivery of bytes and nothing about whether a shadow repo now exists.
-// `sendMsgWithReply` resolves only on `{ id, result }` from the handler, and we
-// require the version count the server read back off its own disk AFTER
-// adopting. A reply is the outcome of the thing that produced the state; the
-// count is the state.
-async function offerShadowHistory({ project, sourceDir }) {
-  const exported = await shadowMirror.exportShadowBundle({ project, sourceDir })
-  if (exported.empty) return  // never built here — an ordinary state, nothing to carry
-
-  const hash7 = exported.head.slice(0, 7)
-  let reply
-  try {
-    reply = await sendMsgWithReply({
-      type: 'adopt-shadow-history',
-      project,
-      head: exported.head,
-      bundleBase64: exported.bundleBase64,
-      machine_id: MACHINE_ID,
-    }, { timeoutMs: 120000 })
-  } catch (e) {
-    throw new Error(`${project} was not linked: its ${hash7} history could not be delivered (${e.message})`)
-  }
-  if (!reply?.ok || !(reply.versions > 0)) {
-    throw new Error(`${project} was not linked: the server did not confirm its ${hash7} history (${JSON.stringify(reply)})`)
-  }
-  log.info(`delivered ${project}@${hash7} history to the server — ${reply.versions} version(s)`)
 }
 
 function rpcUnlinkProjectSource({ project, sourceDir }) {

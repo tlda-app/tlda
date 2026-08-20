@@ -46,3 +46,30 @@ test('bound working-copy event settles through the one Git proposal path', async
   assert.match(refs, /^refs\/tlda\/proposals\/daemon-a\/main\/[0-9a-f]{40}$/m, warnings.join('\n'))
   await manager.closeAll()
 })
+
+test('initial project link submits the existing checkout through the ordinary proposal ref', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-link-submit-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'paper.git')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}linked\\end{document}\n')
+  await git(checkout, ['add', 'main.tex'])
+  await git(checkout, ['commit', '-m', 'existing local paper'])
+  const watcher = new EventEmitter()
+  watcher.close = async () => {}
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-link', server: 'http://unused.test',
+    remoteUrlFor: () => remote, quietMs: 10, watch: () => watcher,
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout)
+  await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  const submitted = await manager.submit('paper')
+  assert.equal(submitted.status, 'SubmittedToBuildQueue')
+  assert.match(submitted.proposalRef, /^refs\/tlda\/proposals\/daemon-link\/main\/[0-9a-f]{40}$/)
+  assert.equal((await git(remote, ['rev-parse', submitted.proposalRef])).stdout.trim(), submitted.revision)
+  await manager.closeAll()
+})

@@ -26,9 +26,7 @@ environments:
 `)
 writeFileSync(join(sourceDir, 'main.tex'), '\\documentclass{article}\\begin{document}test\\end{document}\n')
 
-let pushes = 0
-let linkedPushes = 0
-let initPushes = 0
+let fileSnapshots = 0
 const http = createServer((req, res) => {
   req.resume()
   req.on('end', () => {
@@ -37,32 +35,24 @@ const http = createServer((req, res) => {
       res.end(JSON.stringify(body))
     }
     if (req.method === 'GET' && req.url === '/api/projects/retry-project') return send(200, { name: 'retry-project', mainFile: 'main.tex', format: 'svg' })
-    if (req.method === 'GET' && req.url === '/api/projects/retry-project/hashes') return send(200, { hashes: {} })
-    if (req.method === 'POST' && req.url === '/api/projects/retry-project/source-room/files') {
-      pushes++
-      return pushes === 1
-        ? send(503, { error: 'temporary test outage' })
-        : send(200, { ok: true, sourceRevision: 'revision:test', building: true })
-    }
+    if (req.url?.includes('/source-room/files')) fileSnapshots++
     if (req.method === 'POST' && req.url === '/api/projects') return send(409, { error: 'already exists' })
     if (req.method === 'GET' && req.url === '/api/projects/linked-project') return send(200, { name: 'linked-project', mainFile: 'main.md', format: 'markdown' })
-    if (req.method === 'POST' && req.url === '/api/projects/linked-project/source-room/files') {
-      linkedPushes++
-      return send(200, { ok: true, sourceRevision: 'revision:linked', building: true })
-    }
     if (req.method === 'GET' && req.url === '/api/projects/init-project') return send(200, { name: 'init-project', mainFile: 'main.md', format: 'markdown' })
-    if (req.method === 'POST' && req.url === '/api/projects/init-project/source-room/files') {
-      initPushes++
-      return send(200, { ok: true, sourceRevision: 'revision:init', building: true })
-    }
     send(404, { error: `unexpected ${req.method} ${req.url}` })
   })
 })
 
 const socketPath = daemonLifecycleSocketPath(configDir, 'test')
+const lifecycleRequests = []
 const daemon = createNetServer({ allowHalfOpen: true }, socket => {
-  socket.resume()
-  socket.on('end', () => socket.end(`${JSON.stringify({ ok: true, result: { alreadyLinked: true } })}\n`))
+  let raw = ''
+  socket.setEncoding('utf8')
+  socket.on('data', chunk => { raw += chunk })
+  socket.on('end', () => {
+    lifecycleRequests.push(JSON.parse(raw))
+    socket.end(`${JSON.stringify({ ok: true, result: { alreadyLinked: true, submission: { status: 'SubmittedToBuildQueue', revision: '1234567890abcdef' } } })}\n`)
+  })
 })
 
 try {
@@ -93,9 +83,7 @@ try {
     child.on('exit', code => { clearTimeout(timer); resolve(code) })
   })
   assert.equal(status, 0, stderr)
-  assert.equal(pushes, 2)
-  assert.match(stderr, /project push attempt 1 did not complete: temporary test outage; retrying in 1s/)
-  assert.match(stdout, /Source pushed; viewer rebuilds on demand/)
+  assert.match(stdout, /Source pushed/)
 
   writeFileSync(join(sourceDir, 'main.md'), '# resumed link\n')
   const linked = spawn(process.execPath, [join(process.cwd(), 'cli/tlda.mjs'), '--env', 'test', 'project', 'link', 'linked-project', join(sourceDir, 'main.md'), '--format', 'markdown', '--server', server], {
@@ -122,9 +110,9 @@ try {
     linked.on('exit', code => { clearTimeout(timer); resolve(code) })
   })
   assert.equal(linkedStatus, 0, linkedStderr)
-  assert.equal(linkedPushes, 1, 'an existing daemon binding must resume the remaining link work')
+  assert.equal(fileSnapshots, 0)
   assert.match(linkedStdout, /already linked/)
-  assert.match(linkedStdout, /Markdown project processed/)
+  assert.match(linkedStdout, /Submitted 1234567 through the daemon Git remote/)
 
   const initDir = join(root, 'init-project')
   mkdirSync(initDir)
@@ -160,9 +148,10 @@ try {
     initialized.on('exit', code => { clearTimeout(timer); resolve(code) })
   })
   assert.equal(initStatus, 0, initStderr)
-  assert.equal(initPushes, 1)
+  assert.equal(fileSnapshots, 0)
   assert.match(initStdout, /Resuming tlda project init/)
   assert.equal(execFileSync('git', ['show', 'HEAD:main.md'], { cwd: initDir, encoding: 'utf8' }), '# keep this text\n')
+  assert.ok(lifecycleRequests.every(request => request.op === 'project-source-link'))
 } finally {
   await new Promise(resolve => http.close(resolve))
   await new Promise(resolve => daemon.close(resolve))

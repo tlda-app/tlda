@@ -36,7 +36,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       await execFile('git', ['config', 'user.name', 'tlda source daemon'], { cwd: item.sourceDir })
       await execFile('git', ['config', 'user.email', 'tlda@local'], { cwd: item.sourceDir })
     }
-    let remoteUrl = remoteUrlFor ? remoteUrlFor(item.project) : new URL(`/git/${encodeURIComponent(item.project)}.git`, server)
+    let remoteUrl = remoteUrlFor ? remoteUrlFor(item.project) : new URL(`/git/${encodeURIComponent(item.project)}`, server)
     if (remoteUrl instanceof URL && token) { remoteUrl.username = daemonId; remoteUrl.password = token }
     remoteUrl = remoteUrl.toString()
     try { await execFile('git', ['remote', 'set-url', 'tlda', remoteUrl], { cwd: item.sourceDir }) }
@@ -170,6 +170,13 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return runtime.remoteBridge ? runtime.remoteBridge.poll() : { skipped: true, reason: 'not-remote-backed' }
   }
 
+  async function submit(project) {
+    const item = record(project)
+    if (!item) throw new Error(`project ${project} is not bound on this daemon`)
+    const runtime = await start(item)
+    return runtime.sync.editClusterSettled()
+  }
+
   function sourceFileForAbsolutePath(filePath) {
     const matches = records().flatMap(item => {
       const rel = path.relative(path.resolve(item.sourceDir), path.resolve(filePath))
@@ -201,6 +208,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     sync,
     headChanged,
     pollRemote,
+    submit,
     queuePaths,
     sourceFileForAbsolutePath,
     getSourceDir: project => record(project)?.sourceDir || null,
