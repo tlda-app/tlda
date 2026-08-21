@@ -22,3 +22,16 @@ test('local document class and bibliography style belong to the TeX dependency c
     'paper.tex',
   ])
 })
+
+test('local class and package dependencies are followed transitively', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-tex-deps-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(join(dir, 'main.tex'), String.raw`\documentclass{local}\begin{document}x\end{document}`)
+  writeFileSync(join(dir, 'local.cls'), String.raw`\RequirePackage{first}`)
+  writeFileSync(join(dir, 'first.sty'), String.raw`\usepackage{second}`)
+  writeFileSync(join(dir, 'second.sty'), '')
+
+  const closure = scanTexDependencyClosure('main.tex', dir)
+  assert.deepEqual(closure.files, ['first.sty', 'local.cls', 'main.tex', 'second.sty'])
+  assert.deepEqual(closure.missing, [])
+})

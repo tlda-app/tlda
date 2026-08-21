@@ -25,8 +25,8 @@ const TEX_BARE_INPUT_RE = /\\input\s+([^\s{}\\%]+)/g
 const TEX_GRAPHICS_RE = /\\includegraphics\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g
 // \bibliography{a,b}  \addbibresource{a.bib}
 const TEX_BIB_RE = /\\(?:bibliography|addbibresource)\s*\{([^}]+)\}/g
-// \usepackage{a} only matters when a.sty sits in the project.
-const TEX_PACKAGE_RE = /\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g
+// \usepackage{a} and \RequirePackage{a} only matter when a.sty sits in the project.
+const TEX_PACKAGE_RE = /\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g
 // Local document classes and BibTeX styles are source dependencies too.
 const TEX_CLASS_RE = /\\documentclass\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g
 const TEX_BIB_STYLE_RE = /\\bibliographystyle\s*\{([^}]+)\}/g
@@ -81,7 +81,7 @@ export function scanTexDeps(content) {
   const source = stripComments(content)
   const seen = new Set()
   const deps = []
-  const collect = (re, implicit, followable) => {
+  const collect = (re, implicit, followable, required = followable) => {
     for (const match of source.matchAll(re)) {
       // \bibliography{a,b} takes a comma-separated list; the others take one.
       for (const piece of String(match[1]).split(',')) {
@@ -90,7 +90,7 @@ export function scanTexDeps(content) {
         const key = `${ref}\u0000${implicit[0]}`
         if (seen.has(key)) continue
         seen.add(key)
-        deps.push({ ref, implicit, followable })
+        deps.push({ ref, implicit, followable, required })
       }
     }
   }
@@ -99,8 +99,8 @@ export function scanTexDeps(content) {
   collect(TEX_SCRATCH_RE, IMPLICIT_TEX, true)
   collect(TEX_GRAPHICS_RE, IMPLICIT_GRAPHICS, false)
   collect(TEX_BIB_RE, IMPLICIT_BIB, false)
-  collect(TEX_PACKAGE_RE, IMPLICIT_PACKAGE, false)
-  collect(TEX_CLASS_RE, IMPLICIT_CLASS, false)
+  collect(TEX_PACKAGE_RE, IMPLICIT_PACKAGE, true, false)
+  collect(TEX_CLASS_RE, IMPLICIT_CLASS, true, false)
   collect(TEX_BIB_STYLE_RE, IMPLICIT_BIB_STYLE, false)
   return deps
 }
@@ -138,7 +138,7 @@ export function scanTexDependencyClosure(mainFile, sourceDir) {
       if (!targetRel) {
         // A \usepackage naming a real LaTeX distribution package is not a
         // missing project file, so only followable refs are reported absent.
-        if (dep.followable) missing.push({ from: rel, ref: dep.ref, path: dep.ref })
+        if (dep.required) missing.push({ from: rel, ref: dep.ref, path: dep.ref })
         continue
       }
       if (dep.followable) {
