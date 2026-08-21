@@ -49,3 +49,18 @@ test('references in an included file may resolve from the project root', t => {
   assert.deepEqual(closure.files, ['figures/result.pdf', 'main.tex', 'sections/body.tex'])
   assert.deepEqual(closure.missing, [])
 })
+
+test('an SVG-authored figure excludes its generated PDF and bounding-box companions', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-tex-deps-svg-source-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  mkdirSync(join(dir, 'figures'))
+  writeFileSync(join(dir, 'main.tex'), String.raw`\includegraphics{figures/errors-combined-error}`)
+  writeFileSync(join(dir, 'figures/errors-combined-error.pdf'), '')
+  writeFileSync(join(dir, 'figures/errors-combined-error.svg'), '<svg viewBox="0 0 100 100"/>')
+  writeFileSync(join(dir, 'figures/errors-combined-error.bb'), '%%BoundingBox: 0 0 100 100\n')
+
+  assert.deepEqual(scanTexDependencyClosure('main.tex', dir).files, [
+    'figures/errors-combined-error.svg',
+    'main.tex',
+  ])
+})
