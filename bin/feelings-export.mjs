@@ -46,6 +46,10 @@ const SINCE = arg('--since', 'FEELINGS_SINCE', null) // ISO8601; null = all hist
 const REMOTE = arg('--remote', 'FEELINGS_REMOTE', 'feelings-drive:fleet-feelings-export')
 const OUT = arg('--out', 'FEELINGS_OUT', null) // explicit output file; else a temp file
 const PUSH = !hasFlag('--no-push')
+const MAX_MESSAGES = Number(arg('--max-messages', 'FEELINGS_MAX_MESSAGES', '250000'))
+const BATCH_SIZE = Math.min(10_000, Number(arg('--batch-size', 'FEELINGS_BATCH_SIZE', '5000')))
+if (!Number.isInteger(MAX_MESSAGES) || MAX_MESSAGES <= 0) throw new Error('--max-messages must be a positive integer')
+if (!Number.isInteger(BATCH_SIZE) || BATCH_SIZE <= 0) throw new Error('--batch-size must be a positive integer')
 
 const db = new Database(DB_PATH, { readonly: true, fileMustExist: true })
 
@@ -91,16 +95,47 @@ function nameAt(id, ts) {
 //
 // A chat with no recipients row cannot appear. That is a message addressed to
 // nobody, and it had no `to_id` to be exported under either.
-const rows = db.prepare(`
+// Page by the existing event/recipient identity instead of asking SQLite to
+// sort the whole chat join by a CASE expression. On the live 9.7 GB database
+// that global sort wrote more than 7 GB to a deleted temp file, contended with
+// the server's persistent-volume traffic, and eventually failed SQLITE_FULL.
+// Each SQL result is bounded; the final consumer ordering happens only after a
+// hard total-row ceiling has proved the export fits in memory.
+const page = db.prepare(`
   SELECT e.id, e.timestamp, e.from_id, r.agent_id AS to_id, e.text, e.metadata
   FROM events e
   JOIN recipients r ON r.event_id = e.id
   WHERE e.type = 'chat'
     AND (e.from_id = @human OR r.agent_id = @human)
     AND (@since IS NULL OR e.timestamp >= @since)
-  ORDER BY CASE WHEN e.from_id = @human THEN r.agent_id ELSE e.from_id END ASC,
-           e.timestamp ASC, e.id ASC
-`).all({ human: HUMAN, since: SINCE })
+    AND (e.id > @afterId OR (e.id = @afterId AND r.agent_id > @afterRecipient))
+  ORDER BY e.id ASC, r.agent_id ASC
+  LIMIT @limit
+`)
+
+const rows = []
+let afterId = 0
+let afterRecipient = ''
+for (;;) {
+  const batch = page.all({ human: HUMAN, since: SINCE, afterId, afterRecipient, limit: BATCH_SIZE })
+  if (!batch.length) break
+  rows.push(...batch)
+  if (rows.length > MAX_MESSAGES) {
+    throw new Error(`feelings export exceeds the ${MAX_MESSAGES} message safety limit; pass --since or raise --max-messages explicitly`)
+  }
+  const last = batch.at(-1)
+  afterId = last.id
+  afterRecipient = last.to_id
+}
+
+rows.sort((a, b) => {
+  const aThread = a.from_id === HUMAN ? a.to_id : a.from_id
+  const bThread = b.from_id === HUMAN ? b.to_id : b.from_id
+  return aThread.localeCompare(bThread)
+    || String(a.timestamp).localeCompare(String(b.timestamp))
+    || a.id - b.id
+    || String(a.to_id).localeCompare(String(b.to_id))
+})
 
 // The export is a directory: the JSONL plus an attachments/ subdir holding the
 // files messages referenced. rclone pushes both.
