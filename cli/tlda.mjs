@@ -615,6 +615,7 @@ async function cmdCreate() {
   let mainArg = getFlag('main') || documentRoots[0]
   const title = getFlag('title') || name
   const version = getFlag('version')
+  const acceptContainedServerHistory = hasFlag('accept-contained-server-history')
   let seedBranch = null
   let seedRevision = 'HEAD'
   let linkedRemote = null
@@ -641,7 +642,13 @@ async function cmdCreate() {
   }
 
   const bindLocalSource = async () => {
-    const binding = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, ...linkedRemote })
+    const binding = await callLocalDaemonLifecycle('project-source-link', {
+      project: name,
+      sourceDir: dir,
+      acceptContainedServerHistory,
+      preflightOnly: true,
+      ...linkedRemote,
+    })
     if (binding.alreadyLinked) console.log(dim(`Project "${name}" is already linked to ${dir}.`))
     return binding.alreadyLinked
   }
@@ -655,6 +662,7 @@ async function cmdCreate() {
       seedRevision,
       documentRoots: documentRoots.length ? documentRoots : defaultRoots,
       forceRebuild,
+      acceptContainedServerHistory,
       ...linkedRemote,
     })
   }

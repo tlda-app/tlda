@@ -628,30 +628,46 @@ async function loadLocallyBoundProjects() {
 // failed link leaves nothing behind. A link that half-succeeds and leaves the
 // paper starting from version one is the old broken behaviour wearing a success
 // message.
-async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null, forceRebuild = false }) {
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null, forceRebuild = false, acceptContainedServerHistory = false, preflightOnly = false }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
 
   const status = sourceSync.bindingStatus(project, sourceDir)
-  if (projectMetadata?.name !== project) {
+  if (preflightOnly || projectMetadata?.name !== project) {
     // Nothing to adopt into yet. Report, do not write.
     return { linked: false, alreadyLinked: status.alreadyLinked, sourceDir: status.sourceDir }
   }
 
   if (!status.alreadyLinked) {
-    const history = await shadowMirror.prepareHistorySeed({ project, sourceDir, seedBranch, seedRevision, documentRoots: documentRoots || [] })
-    try {
-      if (!history.empty) {
-        const pushed = await sourceSync.pushHistorySeed(project, history.repositoryDir, history.head)
-        const adopted = await sendMsgWithReply({
-          type: 'adopt-shadow-history-ref',
-          project,
-          head: history.head,
-          ref: pushed.ref,
-        })
-        if (!adopted?.ok) throw new Error(`${project} was not linked: the server did not confirm its history`)
+    let serverHistoryContained = false
+    if (acceptContainedServerHistory) {
+      const page = await daemonApi('GET', `/api/projects/${encodeURIComponent(project)}/history/shadow?limit=10000`)
+      if (page.page_limited) throw new Error(`${project} was not linked: server history exceeds the containment audit page`)
+      const hashes = (page.versions || []).map(version => version.hash)
+      if (hashes.length) {
+        const containment = await shadowMirror.containsCommits({ sourceDir, hashes })
+        if (!containment.ok) {
+          throw new Error(`${project} was not linked: local Git history is missing ${containment.missing.length} server version(s), beginning ${containment.missing.slice(0, 3).join(', ')}`)
+        }
+        serverHistoryContained = true
+        log.info(`${project}: all ${hashes.length} server versions are contained in ${sourceDir}; preserving server history during relink`)
       }
-    } finally {
-      await history.cleanup?.()
+    }
+    if (!serverHistoryContained) {
+      const history = await shadowMirror.prepareHistorySeed({ project, sourceDir, seedBranch, seedRevision, documentRoots: documentRoots || [] })
+      try {
+        if (!history.empty) {
+          const pushed = await sourceSync.pushHistorySeed(project, history.repositoryDir, history.head)
+          const adopted = await sendMsgWithReply({
+            type: 'adopt-shadow-history-ref',
+            project,
+            head: history.head,
+            ref: pushed.ref,
+          })
+          if (!adopted?.ok) throw new Error(`${project} was not linked: the server did not confirm its history`)
+        }
+      } finally {
+        await history.cleanup?.()
+      }
     }
   }
 

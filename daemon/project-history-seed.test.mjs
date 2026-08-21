@@ -62,3 +62,19 @@ test('existing tlda shadow history takes precedence over ordinary Git seeding', 
   assert.equal(prepared.head, shadow)
   await prepared.cleanup()
 })
+
+test('contained-history relink requires every server version in durable local refs', async () => {
+  const { repo } = await fixtureRepo('tlda-contained-history-')
+  writeFileSync(join(repo, 'paper.tex'), 'first\n')
+  await git(repo, ['add', '.'])
+  await git(repo, ['commit', '-m', 'first'])
+  const first = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim()
+  writeFileSync(join(repo, 'paper.tex'), 'second\n')
+  await git(repo, ['commit', '-am', 'second'])
+  const second = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim()
+
+  const mirror = createShadowMirror({ getSourceDir: () => repo, log: { info() {}, warn() {} } })
+  assert.deepEqual(await mirror.containsCommits({ sourceDir: repo, hashes: [first, second] }), { ok: true, missing: [] })
+  const absent = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  assert.deepEqual(await mirror.containsCommits({ sourceDir: repo, hashes: [first, absent] }), { ok: false, missing: [absent] })
+})
