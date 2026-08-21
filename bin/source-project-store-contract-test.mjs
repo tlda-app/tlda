@@ -34,18 +34,10 @@ function assertProjectFilesDbPragmas(root) {
   assert.match(projectStore, /journal_size_limit = 67108864/, 'project-files DB connection must cap retained journal size')
 }
 
-function assertInitCreatesOnlyRequestedMainFile() {
+function assertProjectInitIsRemoved() {
   const source = fs.readFileSync(path.join(process.cwd(), 'cli/tlda.mjs'), 'utf8')
-  const initStart = source.indexOf('async function cmdInit')
-  const initEnd = source.indexOf('// Fleet-daemon control:', initStart)
-  assert.ok(initStart >= 0 && initEnd > initStart, 'cmdInit not found')
-  const initSource = source.slice(initStart, initEnd)
-  assert.match(initSource, /writeFileSync\(join\(targetDir,\s*mainFile\)/, 'project init must create the requested main file')
-  assert.doesNotMatch(initSource, /writeFileSync\(join\(targetDir,\s*['"]README\.md['"]/, 'project init must not seed README.md')
-  assert.doesNotMatch(initSource, /git',\s*\['add',\s*mainFile,\s*['"]README\.md['"]/, 'project init must not commit README.md')
-  assert.match(initSource, /sourceManifestForFiles\(files,\s*\{\s*format:\s*'svg',\s*mainFile\s*\}\)/, 'LaTeX init must declare the requested main file')
-  assert.match(initSource, /sourceManifestForFiles\(files,\s*\{\s*format:\s*'markdown',\s*mainFile\s*\}\)/, 'Markdown init must declare the requested main file')
-  assert.match(initSource, /sourceManifestForFiles\(files,\s*\{\s*format:\s*'html',\s*mainFile\s*\}\)/, 'HTML init must declare the requested main file')
+  assert.doesNotMatch(source, /async function cmdInit\(/, 'project init implementation must be removed')
+  assert.doesNotMatch(source, /case ['"]init['"]:/, 'project init must not be routed')
 }
 
 async function main() {
@@ -57,7 +49,7 @@ async function main() {
     assert.equal(isSourceFilePath('main.run.xml', { mainFile: 'main.tex' }), false)
     assert.equal(isSourceFilePath('main.fdb_latexmk', { mainFile: 'main.tex' }), false)
     assert.equal(isSourceFilePath('README.md', { format: 'markdown', mainFile: 'README.md' }), true)
-    assertInitCreatesOnlyRequestedMainFile()
+    assertProjectInitIsRemoved()
     console.log('PASS source project store contract')
   } finally {
     await closeProjectStore()

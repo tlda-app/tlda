@@ -535,7 +535,6 @@ const sourceSync = createGitSyncManager({
   daemonId: `${MACHINE_ID}:${ACTIVE_ENV}`,
   server: SERVER,
   token: TOKEN,
-  remoteCheckoutsRoot: path.join(CONFIG_DIR, `git-source-checkouts${DAEMON_STATE_SUFFIX}`),
   log,
 })
 
@@ -662,25 +661,6 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   const submission = await sourceSync.submit(project)
   applyProjectWorldOwnership('local-source-link')
   return { ...result, submission }
-}
-
-async function rpcLinkGitSource(params) {
-  const prepared = await sourceSync.prepareRemote(params)
-  const metadata = await daemonApi('GET', `/api/projects/${encodeURIComponent(params.project)}`)
-  const linked = await rpcLinkProjectSource({ ...params, ...prepared, projectMetadata: metadata })
-  await sourceSync.pollRemote(params.project)
-  return linked
-}
-
-async function rpcActivateGitSource({ project }) {
-  return sourceSync.pollRemote(project)
-}
-
-function rpcUnlinkGitSource({ project, remote }) {
-  const item = sourceSync.bindingRecords().find(record => record.project === project)
-  if (!item) return { unlinked: false, alreadyUnlinked: true }
-  if (remote && item.remote !== remote) throw new Error(`Project "${project}" is linked to ${item.remote}, not ${remote}`)
-  return rpcUnlinkProjectSource({ project, sourceDir: item.sourceDir })
 }
 
 function rpcUnlinkProjectSource({ project, sourceDir }) {
@@ -1320,6 +1300,7 @@ machineRpc.register({
   'wake': rpcWake,
   ...localArtifacts.handlers,
   'mirror-shadow-ref': shadowMirror.mirrorShadowRef,
+  'project-git-remote': ({ project, operation, ...params }) => sourceSync.remoteOperation(project, operation, params),
 })
 
 function startLocalLifecycleRpc() {
@@ -1348,10 +1329,7 @@ function startLocalLifecycleRpc() {
           spawn: agentLauncher.handlers.spawn,
           'project-source-link': rpcLinkProjectSource,
           'project-source-unlink': rpcUnlinkProjectSource,
-          'git-source-link': rpcLinkGitSource,
-          'git-source-activate': rpcActivateGitSource,
-          'git-source-unlink': rpcUnlinkGitSource,
-          'git-source-sync': ({ project }) => sourceSync.pollRemote(project),
+          'project-git-remote': ({ project, operation, ...params }) => sourceSync.remoteOperation(project, operation, params),
         }
         const handler = handlers[op]
         if (!handler) throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)

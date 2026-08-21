@@ -132,43 +132,6 @@ try {
   assert.equal(activatedLink.params.seedBranch, 'main')
   assert.equal(activatedLink.params.seedRevision, linkHead)
 
-  const initDir = join(root, 'init-project')
-  mkdirSync(initDir)
-  writeFileSync(join(initDir, 'main.md'), '# keep this text\n')
-  execFileSync('git', ['init'], { cwd: initDir, stdio: 'ignore' })
-  execFileSync('git', ['add', 'main.md'], { cwd: initDir, stdio: 'ignore' })
-  execFileSync('git', ['commit', '-m', 'init: init-project (markdown)'], {
-    cwd: initDir,
-    stdio: 'ignore',
-    env: { ...process.env, GIT_AUTHOR_NAME: 'tlda', GIT_COMMITTER_NAME: 'tlda', GIT_AUTHOR_EMAIL: 'tlda@localhost', GIT_COMMITTER_EMAIL: 'tlda@localhost' },
-  })
-  const initialized = spawn(process.execPath, [join(process.cwd(), 'cli/tlda.mjs'), '--env', 'test', 'project', 'init', 'init-project', 'main.md', '--dir', initDir, '--server', server], {
-    cwd: root,
-    env: {
-      ...process.env,
-      TLDA_CONFIG_DIR: configDir,
-      TLDA_DAEMON_CONFIG_DIR: configDir,
-      TLDA_ENV: 'test',
-      TLDA_TOKEN: 'test-token',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  let initStdout = ''
-  let initStderr = ''
-  initialized.stdout.on('data', chunk => { initStdout += chunk })
-  initialized.stderr.on('data', chunk => { initStderr += chunk })
-  const initStatus = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      initialized.kill('SIGTERM')
-      reject(new Error(`init CLI timed out\nstdout:\n${initStdout}\nstderr:\n${initStderr}`))
-    }, 15_000)
-    initialized.on('error', reject)
-    initialized.on('exit', code => { clearTimeout(timer); resolve(code) })
-  })
-  assert.equal(initStatus, 0, initStderr)
-  assert.equal(fileSnapshots, 0)
-  assert.match(initStdout, /Resuming tlda project init/)
-  assert.equal(execFileSync('git', ['show', 'HEAD:main.md'], { cwd: initDir, encoding: 'utf8' }), '# keep this text\n')
   assert.ok(lifecycleRequests.every(request => request.op === 'project-source-link'))
 } finally {
   await new Promise(resolve => http.close(resolve))

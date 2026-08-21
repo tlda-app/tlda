@@ -1,5 +1,6 @@
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
+import { createGitRemotes } from '../shared/git-remotes.mjs'
 
 const execFile = promisify(execFileCb)
 
@@ -19,8 +20,8 @@ export function createRemoteGitBridge({ sourceDir, remote = 'origin', branch = '
   }
 
   async function pollOnce() {
-    await git(['fetch', '--no-tags', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`])
-    const fetched = await rev(`refs/remotes/${remote}/${branch}`)
+    const remoteState = (await createGitRemotes({ sourceDir }).list({ fetch: true, names: [remote] }))[0]
+    const fetched = remoteState?.branches.find(item => item.name === branch)?.commit || null
     const observed = await rev(observedRef)
     const held = await conflictedFiles()
     if (held.length) return { ok: false, status: 'conflicted', conflicted: held, revision: fetched }
@@ -29,7 +30,7 @@ export function createRemoteGitBridge({ sourceDir, remote = 'origin', branch = '
     const published = await rev(publishedRef)
     if (fetched === published) return { ok: true, status: 'publication-acknowledged', revision: fetched }
     try {
-      await git(['merge', '--no-edit', fetched])
+      await createGitRemotes({ sourceDir }).pull(remote, branch)
     } catch (error) {
       const conflicted = await conflictedFiles()
       if (!conflicted.length) throw error
@@ -48,7 +49,7 @@ export function createRemoteGitBridge({ sourceDir, remote = 'origin', branch = '
     const remoteHead = await rev(`refs/remotes/${remote}/${branch}`)
     if (remoteHead && !(await ancestor(remoteHead, revision))) return pollOnce()
     try {
-      await git(['push', remote, `${revision}:refs/heads/${branch}`])
+      await createGitRemotes({ sourceDir }).push(remote, branch, revision)
     } catch (error) {
       log.warn?.(`remote push rejected; fetching and merging: ${error.message}`)
       return pollOnce()

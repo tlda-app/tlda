@@ -494,6 +494,23 @@ function sourceBindingsForProject(project) {
     .sort((a, b) => a.bindingId.localeCompare(b.bindingId))
 }
 
+async function sendProjectSourceDaemon(project, operation, params = {}) {
+  const bindings = sourceBindingsForProject(project)
+  if (!bindings.length) throw new Error(`Project ${project} has no source checkout binding`)
+  const failures = []
+  for (const binding of bindings) {
+    if (!daemonConnections.has(binding.daemonKey)) continue
+    try {
+      return await sendDaemonEphemeral(binding.daemonKey, operation, { project, ...params }, { timeoutMs: 120000 })
+    } catch (error) {
+      failures.push(`${binding.daemonKey}: ${error.message}`)
+    }
+  }
+  throw new Error(failures.length
+    ? `No source daemon could answer for ${project}: ${failures.join('; ')}`
+    : `No source daemon is connected for ${project}`)
+}
+
 function sourceBindingForDaemon(bindingId, daemonKey) {
   if (!bindingId || !daemonKey) return null
   const binding = readSourceBindingRegistry().bindings?.[bindingId] || null
@@ -5079,6 +5096,7 @@ app.use('/docs', (req, res, next) => {
 app.locals.fleetStore = fleetStore
 app.locals.sendDaemonEphemeral = sendDaemonEphemeral
 app.locals.sourceRoomDaemon = sourceRoomDaemon
+app.locals.sendProjectSourceDaemon = sendProjectSourceDaemon
 
 
 app.use('/api/projects', projectRoutes)

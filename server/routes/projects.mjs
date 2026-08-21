@@ -675,6 +675,60 @@ router.get('/:name/source-head', requireRead, async (req, res) => {
   }
 })
 
+router.get('/:name/remotes', requireRead, async (req, res) => {
+  const send = req.app?.locals?.sendProjectSourceDaemon
+  if (!send) return res.status(503).json({ error: 'project source daemon routing is not configured' })
+  try {
+    const remotes = await send(req.params.name, 'project-git-remote', {
+      operation: 'list',
+      fetch: req.query.fetch === '1' || req.query.fetch === 'true',
+    })
+    const writable = req.authLevel !== 'read'
+    res.json({
+      project: req.params.name,
+      writable,
+      remotes: remotes.map(remote => ({
+        ...remote,
+        writable: remote.writable === false ? false : writable,
+        branches: remote.branches.map(branch => ({
+          ...branch,
+          writable: remote.writable === false || branch.writable === false ? false : writable,
+        })),
+      })),
+    })
+  } catch (error) {
+    res.status(503).json({ error: error.message })
+  }
+})
+
+router.post('/:name/remotes', requireRw, async (req, res) => {
+  const send = req.app?.locals?.sendProjectSourceDaemon
+  if (!send) return res.status(503).json({ error: 'project source daemon routing is not configured' })
+  const operation = String(req.body?.operation || '')
+  if (!['add', 'pull', 'push', 'checkout'].includes(operation)) {
+    return res.status(400).json({ error: 'operation must be add, pull, push, or checkout' })
+  }
+  try {
+    const result = await send(req.params.name, 'project-git-remote', { operation, ...req.body })
+    res.json({ ok: true, project: req.params.name, operation, result })
+  } catch (error) {
+    res.status(409).json({ ok: false, error: error.message })
+  }
+})
+
+router.delete('/:name/remotes/:remote', requireRw, async (req, res) => {
+  const send = req.app?.locals?.sendProjectSourceDaemon
+  if (!send) return res.status(503).json({ error: 'project source daemon routing is not configured' })
+  try {
+    const result = await send(req.params.name, 'project-git-remote', {
+      operation: 'delete', name: req.params.remote,
+    })
+    res.json({ ok: true, project: req.params.name, operation: 'delete', result })
+  } catch (error) {
+    res.status(409).json({ ok: false, error: error.message })
+  }
+})
+
 /**
  * The commits a proposer lacks, so that a refusal is recoverable.
  *
@@ -698,6 +752,17 @@ router.get('/:name/source/:file', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   try {
+    if (req.query.revision) {
+      const send = req.app?.locals?.sendProjectSourceDaemon
+      if (!send) return res.status(503).json({ error: 'project source daemon routing is not configured' })
+      const result = await send(req.params.name, 'project-git-remote', {
+        operation: 'read-file',
+        revision: String(req.query.revision),
+        file: req.params.file,
+      })
+      res.set('X-TLDA-Source-Revision', result.revision)
+      return res.set('Content-Type', 'text/plain; charset=utf-8').send(result.content)
+    }
     const current = await (await sourceLifecycleStore(req.params.name)).readCurrentFile(req.params.file)
     if (current) {
       if (current.content === null) return res.status(404).json({ error: 'File not found' })

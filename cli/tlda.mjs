@@ -73,6 +73,7 @@ import { sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.
 import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
+import { createGitRemotes } from '../shared/git-remotes.mjs'
 
 // --- Argument parsing ---
 
@@ -83,10 +84,10 @@ import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mj
 // are their own top-level commands.)
 const PROJECT_SUBS = new Set([
   'open', 'push', 'list', 'ls', 'status', 'errors',
-  'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'unlink', 'init',
+  'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'unlink', 'remote',
   'repo-doctor', 'init-shadow',
 ])
-const REMOVED_PROJECT_SUBS = new Set(['create', 'preview'])
+const REMOVED_PROJECT_SUBS = new Set(['create', 'preview', 'init'])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
 const TOP_LEVEL_COMMANDS = [
   ['project', 'work on a project'],
@@ -103,9 +104,9 @@ const TOP_LEVEL_COMMANDS = [
   ['completions', 'output zsh completion script'],
 ]
 const PROJECT_COMMANDS = [
-  ['init', 'Create a new blank git-backed project'],
   ['link', 'Link an existing project, push files, build'],
-  ['unlink', 'Detach a local path or Git remote from a project'],
+  ['remote', 'Manage the linked Git repository remotes'],
+  ['unlink', 'Detach a local checkout from a project'],
   ['open', 'Open the viewer'],
   ['push', 'Push source, rebuild'],
   ['status', 'Build status'],
@@ -205,9 +206,9 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda project link <name> <root> [root ...] [--version <branch>@<commit>] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Attach the current Git working copy to a project. Positional paths are document roots; each root and its include graph seed project history. --version selects the branch and endpoint (default: the checked-out branch at HEAD).\n  An existing different binding is refused until it is explicitly unlinked.\n\n  Example:\n    tlda project link survival arXiv_v2.tex supplement.tex --version master@a457016\n\n  A Git URL remains valid as the single source argument for a remote-backed project. Remote options: --main FILE, --token TOKEN, --poll SECONDS (default 60; minimum 15), --mirror-mode auto-merge|fast-forward.',
-  unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local path or Git URL currently linked to the project.\n  The source must match the existing binding.',
-  init:    'tlda project init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda project link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, a git repo with an initial commit,\n           then registers and pushes the requested main file to the tlda server.',
+  link:    'tlda project link <name> <root> [root ...] [--version <branch>@<commit>] [--github] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Create a project from the current existing Git repository. Positional paths are document roots; each root and its include graph seed project history. --version selects the branch and endpoint (default: the checked-out branch at HEAD). --github creates a private repository with the authenticated gh account and adds it through the ordinary Git remote path.\n  An existing different binding is refused until it is explicitly unlinked.',
+  unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local checkout currently linked to the project. The source must match the existing binding.',
+  remote:  'tlda project remote add <remote> <url> [--project <name>]\ntlda project remote delete <remote> [--project <name>]\ntlda project remote pull|push|checkout <remote> [branch] [--project <name>]\n\n  Manage remotes on the existing Git repository linked to the project. The project is inferred from the current checkout unless --project is supplied.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Alias for `tlda daemon start/restart/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
@@ -234,7 +235,7 @@ const VALUE_FLAGS = new Set([
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'name', 'kind',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'poll', 'config',
-  'label', 'plist', 'only', 'version',
+  'label', 'plist', 'only', 'version', 'project',
   'course', 'course-title', 'assignment', 'assignment-title', 'due',
   'handout', 'solutions', 'solutions-version',
 ])
@@ -613,6 +614,7 @@ async function cmdCreate() {
   const version = getFlag('version')
   let seedBranch = null
   let seedRevision = 'HEAD'
+  let linkedRemote = null
   if (version) {
     const split = version.lastIndexOf('@')
     if (split <= 0 || split === version.length - 1) {
@@ -623,8 +625,20 @@ async function cmdCreate() {
     seedRevision = version.slice(split + 1)
   }
 
+  if (hasFlag('github')) {
+    execFileSync('gh', ['repo', 'create', name, '--private', '--source', repoRoot], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    const gitUrl = execFileSync('gh', ['repo', 'view', name, '--json', 'sshUrl', '--jq', '.sshUrl'], { encoding: 'utf8' }).trim()
+    if (!gitUrl) throw new Error(`gh did not return a Git URL for ${name}`)
+    const remotes = createGitRemotes({ sourceDir: repoRoot })
+    await remotes.add('github', gitUrl)
+    const branch = seedBranch || execFileSync('git', ['-C', repoRoot, 'symbolic-ref', '--quiet', '--short', 'HEAD'], { encoding: 'utf8' }).trim()
+    await remotes.push('github', branch, seedRevision)
+    linkedRemote = { kind: 'git', remote: 'github', branch }
+    console.log(dim(`  GitHub remote: ${gitUrl}`))
+  }
+
   const bindLocalSource = async () => {
-    const binding = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir })
+    const binding = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, ...linkedRemote })
     if (binding.alreadyLinked) console.log(dim(`Project "${name}" is already linked to ${dir}.`))
     return binding.alreadyLinked
   }
@@ -637,6 +651,7 @@ async function cmdCreate() {
       seedBranch,
       seedRevision,
       documentRoots: documentRoots.length ? documentRoots : defaultRoots,
+      ...linkedRemote,
     })
   }
 
@@ -949,51 +964,11 @@ async function cmdLink() {
     console.error('Usage: tlda project link <name> <source> [--main <file>]')
     process.exit(1)
   }
-  if (isGitUrl(source)) await cmdLinkRemote(source)
-  else await cmdCreate()
-}
-
-async function cmdLinkRemote(gitUrl) {
-  const name = getPositional(0)
-  const mainFile = getFlag('main')
-  const format = getFlag('format')
-  if (!name) {
-    console.error('Usage: tlda project link <name> <git-url> [--main <file>] [--token TOKEN] [--title "Title"] [--poll 60]')
+  if (isGitUrl(source)) {
+    console.error('A Git URL is not a project source. Run project link from an existing Git checkout and manage its remotes with `tlda project remote`.')
     process.exit(1)
   }
-  const token = getFlag('token')
-  const title = getFlag('title')
-  const pollSeconds = Number(getFlag('poll') || '60') || 60
-  const mirrorMode = getFlag('mirror-mode') || 'auto-merge'
-  const version = getFlag('version')
-  let seedBranch = null
-  let seedRevision = 'HEAD'
-  if (version) {
-    const split = version.lastIndexOf('@')
-    if (split <= 0 || split === version.length - 1) throw new Error('--version must be <branch>@<commit>')
-    seedBranch = version.slice(0, split)
-    seedRevision = version.slice(split + 1)
-  }
-
-  console.log(`Linking ${name} ← ${gitUrl}${mainFile ? ` (main: ${mainFile})` : ''}…`)
-  const result = await callLocalDaemonLifecycle('git-source-link',
-    { project: name, remote: gitUrl, token, mirrorMode, pollSeconds, seedBranch, seedRevision, documentRoots: mainFile ? [mainFile] : [] },
-    { timeoutMs: 300000 })
-  if (result.alreadyLinked) {
-    console.log(dim(`Project "${name}" is already linked to ${gitUrl}.`))
-  }
-  const inferredFormat = format || (/\.(?:md|markdown)$/i.test(mainFile || '') ? 'markdown' : 'svg')
-  const inferredMain = mainFile || (inferredFormat === 'markdown'
-    ? result.files.find(file => /\.(?:md|markdown)$/i.test(file))
-    : findMainTex(result.sourceDir))
-  if (!inferredMain) throw new Error('Could not infer the main file; pass --main <file>')
-  try {
-    await createProjectApi({ name, title: title || name, mainFile: inferredMain, format: inferredFormat })
-  } catch (error) {
-    if (!error.message.includes('already exists')) throw error
-  }
-  await callLocalDaemonLifecycle('git-source-activate', { project: name }, { timeoutMs: 300000 })
-  console.log(`✓ Linked at ${String(result.head || '').slice(0, 7)}; ${mirrorMode}, polling every ${pollSeconds}s.`)
+  await cmdCreate()
 }
 
 async function cmdUnlink() {
@@ -1002,11 +977,6 @@ async function cmdUnlink() {
   if (!name || !source) {
     console.error('Usage: tlda project unlink <name> <source>')
     process.exit(1)
-  }
-  if (isGitUrl(source)) {
-    const result = await callLocalDaemonLifecycle('git-source-unlink', { project: name, remote: source })
-    console.log(result.alreadyUnlinked ? dim(`Project "${name}" is not linked to a Git remote.`) : `Unlinked ${name} from ${source}.`)
-    return
   }
   const sourcePath = resolve(source)
   let sourceDir = existsSync(sourcePath) && !statSync(sourcePath).isDirectory() ? dirname(sourcePath) : sourcePath
@@ -1017,141 +987,31 @@ async function cmdUnlink() {
   console.log(result.alreadyUnlinked ? dim(`Project "${name}" is not linked on this machine.`) : `Unlinked ${name} from ${result.sourceDir}.`)
 }
 
-async function cmdInit() {
-  const name = getPositional(0)
-  if (!name) {
-    console.error('Usage: tlda project init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown]')
+async function cmdRemote() {
+  const operation = getPositional(0)
+  const remote = getPositional(1)
+  const value = getPositional(2)
+  const project = getFlag('project') || await inferProjectName()
+  if (!project) throw new Error('Could not infer the linked project; pass --project <name>')
+  if (!['add', 'delete', 'pull', 'push', 'checkout'].includes(operation) || !remote) {
+    console.error('Usage: tlda project remote add <remote> <url> [--project <name>]')
+    console.error('       tlda project remote delete <remote> [--project <name>]')
+    console.error('       tlda project remote pull|push|checkout <remote> [branch] [--project <name>]')
     process.exit(1)
   }
-
-  // Determine format and main file name
-  let format = getFlag('format') || null
-  const mainArg = getPositional(1)  // optional: paper.tex, notes.md, etc.
-
-  // Infer format from the main file extension (same logic as cmdCreate)
-  let mainFile
-  if (mainArg) {
-    const ext = mainArg.toLowerCase().split('.').pop()
-    if (!format) {
-      if (ext === 'md') format = 'markdown'
-      else if (ext === 'html' || ext === 'htm') format = 'html'
-    }
-    mainFile = mainArg
-  } else {
-    // No explicit main file — pick sensible default per format
-    if (format === 'markdown') mainFile = 'main.md'
-    else if (format === 'html') mainFile = 'index.html'
-    else mainFile = 'main.tex'
-    // Default format for .tex is left as null (LaTeX/svg pipeline)
+  if (operation === 'add' && !value) throw new Error('remote add requires a URL')
+  let branch = value
+  if (!branch && operation !== 'add' && operation !== 'delete') {
+    branch = execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { encoding: 'utf8' }).trim()
   }
-
-  const title = getFlag('title') || name
-
-  const isMarkdown = format === 'markdown'
-  const isHtml = format === 'html'
-  const formatLabel = isMarkdown ? 'markdown' : isHtml ? 'html' : 'LaTeX'
-
-  // Determine target directory: --dir overrides, otherwise ./<name> in CWD
-  const targetDir = resolve(getFlag('dir') || join(process.cwd(), name))
-  let resumeExistingInit = false
-
-  // Guard: refuse to clobber a non-empty directory
-  if (existsSync(targetDir)) {
-    const entries = readdirSync(targetDir)
-    if (entries.length > 0) {
-      let initialSubject = null
-      try {
-        initialSubject = execFileSync('git', ['-C', targetDir, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim()
-      } catch {
-        // A non-git directory cannot be a resumable tlda initialization.
-      }
-      if (existsSync(join(targetDir, mainFile)) && initialSubject === `init: ${name} (${formatLabel})`) {
-        resumeExistingInit = true
-        console.log(dim(`  Resuming tlda project init in ${targetDir}`))
-      } else {
-        console.error(red(`Directory already exists and is not empty: ${targetDir}`))
-        console.error(`  Use \`tlda project link\` to attach an existing project directory.`)
-        process.exit(1)
-      }
-    }
-  }
-
-  if (!resumeExistingInit) {
-    // Create the directory
-    mkdirSync(targetDir, { recursive: true })
-    console.log(dim(`  Creating project in ${targetDir}`))
-
-  // Create only the explicitly requested starter main file; do not add ancillary source.
-  const createdFiles = []
-
-  if (isMarkdown) {
-    // Minimal markdown stub
-    const mdContent = `# ${title}\n\nWrite your notes here. Math works: $E = mc^2$\n`
-    writeFileSync(join(targetDir, mainFile), mdContent, 'utf8')
-    createdFiles.push(mainFile)
-  } else if (isHtml) {
-    // Minimal HTML stub
-    const htmlContent = `<!DOCTYPE html>\n<html>\n<head><meta charset="utf-8"><title>${title}</title></head>\n<body>\n<h1>${title}</h1>\n<p>Edit this file.</p>\n</body>\n</html>\n`
-    writeFileSync(join(targetDir, mainFile), htmlContent, 'utf8')
-    createdFiles.push(mainFile)
-  } else {
-    // Minimal compilable LaTeX stub for the requested main document.
-    const texContent = `\\documentclass{article}\n\\title{${title}}\n\\author{}\n\\date{\\today}\n\\begin{document}\n\\maketitle\n\n\\section{Introduction}\n\nWrite your paper here.\n\n\\end{document}\n`
-    writeFileSync(join(targetDir, mainFile), texContent, 'utf8')
-    createdFiles.push(mainFile)
-  }
-
-  console.log(dim(`  Created ${createdFiles.join(', ')}`))
-
-  // Git init + initial commit
-  try {
-    execFileSync('git', ['init'], { cwd: targetDir, stdio: 'pipe' })
-    if (createdFiles.length) execFileSync('git', ['add', ...createdFiles], { cwd: targetDir, stdio: 'pipe' })
-    execFileSync('git', ['commit', '--allow-empty', '-m', `init: ${name} (${formatLabel})`], {
-      cwd: targetDir,
-      stdio: 'pipe',
-      env: { ...process.env, GIT_AUTHOR_NAME: 'tlda', GIT_COMMITTER_NAME: 'tlda',
-             GIT_AUTHOR_EMAIL: 'tlda@localhost', GIT_COMMITTER_EMAIL: 'tlda@localhost' },
-    })
-    console.log(dim(`  git init + initial commit`))
-    } catch (gitErr) {
-      throw new Error(`git initialization is incomplete: ${gitErr.message.trim()}`, { cause: gitErr })
-    }
-  }
-
-  // Register on the server and push the seeded files
-  const ensureProject = async body => {
-    try {
-      await createProjectApi(body)
-      console.log(green(`Created project "${name}".`))
-    } catch (error) {
-      if (!error.message.includes('already exists')) throw error
-      console.log(dim(`Project "${name}" already exists; resuming registration and push.`))
-    }
-  }
-  try {
-    await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: targetDir })
-    let projectBody
-    if (isMarkdown) {
-      projectBody = { name, title, mainFile, format: 'markdown' }
-    } else if (isHtml) {
-      projectBody = { name, title, mainFile, format: 'html' }
-    } else {
-      projectBody = { name, title, mainFile }
-    }
-    await ensureProject(projectBody)
-    const linked = await callLocalDaemonLifecycle('project-source-link', {
-      project: name,
-      sourceDir: targetDir,
-      projectMetadata: await api('GET', `/api/projects/${name}`),
-    })
-    console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
-  } catch (e) {
-    throw new Error(`project init is incomplete: ${e.message}`, { cause: e })
-  }
-
-  const server = getServer()
-  console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
+  const result = await callLocalDaemonLifecycle('project-git-remote', {
+    project,
+    operation,
+    name: remote,
+    ...(operation === 'add' ? { url: value } : {}),
+    ...(branch ? { branch } : {}),
+  }, { timeoutMs: 300000 })
+  console.log(JSON.stringify(result, null, 2))
 }
 
 // Fleet-daemon control: `tlda daemon start | stop | status | log | run`
@@ -6255,7 +6115,7 @@ async function main() {
       case 'push':   await finishCliOperation('project push', cmdPush); break
       case 'link':   await finishCliOperation('project link', cmdLink); break
       case 'unlink': await finishCliOperation('project unlink', cmdUnlink); break
-      case 'init':   await finishCliOperation('project init', cmdInit); break
+      case 'remote': await finishCliOperation('project remote', cmdRemote); break
       case 'daemon': await cmdDaemon(); break
       case 'bot': await cmdBot(); break
       case 'env': printEnvironments(); break

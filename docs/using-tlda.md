@@ -57,7 +57,7 @@ a tlda project. Local editing, browser editing, and history then stay connected.
 ```mermaid
 flowchart LR
   local[Linked checkout] <--> project[tlda project]
-  remote[Overleaf or Git remote] <--> project
+  remote[Git remote] <--> local
   browser[Browser editor] <--> project
   project --> record[Rendered document and history]
 ```
@@ -96,30 +96,31 @@ cd /path/to/notes
 tlda project link proof-notes README.md
 ```
 
-If your paper is on Overleaf, copy its Git URL and link it directly with your
-Overleaf Git token:
+The checkout remains the project source when it also has a hosted Git remote.
+Manage that remote through the project command:
 
 ```sh
-tlda project link eiv-paper https://git.overleaf.com/project-id \
-  --main least-squares.tex \
-  --token "$OVERLEAF_TOKEN" \
-  --poll 60
+tlda project remote add origin https://example.test/team/project.git
+tlda project remote pull origin main
+tlda project remote push origin main
+tlda project remote checkout origin main
 ```
 
-The machine daemon clones the repository, binds that checkout as an ordinary
-project source, and polls for later changes. Remote edits use the same
-revision-checked source path as local filesystem edits. Accepted project
-revisions are pushed back only as their exact Git commits. You may omit
-`--main` when the project already has an entry file or the clone contains
-exactly one entry file. The same command works with another Git remote.
+These operations are provider-neutral. `--github` is creation sugar: on the
+initial `project link`, it creates a private repository through the authenticated
+`gh` account, adds the returned Git URL through the same remote implementation,
+and pushes the selected branch.
+
+```sh
+tlda project link notes README.md --github
+```
 
 Linking the same project to the same source is an idempotent no-op. Linking it
-to a different local path on one machine or a different Git URL fails without
+to a different local path on one machine fails without
 changing the existing binding. Detach the exact source first:
 
 ```sh
 tlda project unlink eiv-paper /path/to/eiv-paper/least-squares.tex
-tlda project unlink eiv-paper https://git.overleaf.com/project-id
 ```
 
 When you move an existing local tlda project to a new server, linking carries

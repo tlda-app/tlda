@@ -7,6 +7,7 @@ import { createEditClusterDebouncer } from './edit-cluster.mjs'
 import { createGitProjectSync, safeRefPart } from './git-project-sync.mjs'
 import { createRemoteGitBridge } from './remote-git-bridge.mjs'
 import { historySeedRef } from '../shared/history-seed-ref.mjs'
+import { createGitRemotes } from '../shared/git-remotes.mjs'
 
 const execFile = promisify(execFileCb)
 
@@ -14,7 +15,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000, remoteCheckoutsRoot = null } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000 } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
 
@@ -60,28 +61,6 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return { project, ref, revision }
   }
 
-  function authenticatedUrl(value, remoteToken) {
-    if (!remoteToken || !/^https?:\/\//i.test(value)) return value
-    const url = new URL(value)
-    url.username = 'git'
-    url.password = remoteToken
-    return url.toString()
-  }
-
-  async function prepareRemote({ project, remote, token: remoteToken = null, pollSeconds = 60 } = {}) {
-    if (!remoteCheckoutsRoot) throw new Error('remoteCheckoutsRoot is required for remote-backed sources')
-    if (!project || !remote) throw new Error('project and remote are required')
-    const sourceDir = path.join(remoteCheckoutsRoot, project)
-    if (!fs.existsSync(sourceDir)) {
-      fs.mkdirSync(remoteCheckoutsRoot, { recursive: true })
-      await execFile('git', ['clone', '--', authenticatedUrl(remote, remoteToken), sourceDir], { encoding: 'utf8', timeout: 180000 })
-      await execFile('git', ['config', 'user.name', 'tlda remote source daemon'], { cwd: sourceDir })
-      await execFile('git', ['config', 'user.email', 'tlda@local'], { cwd: sourceDir })
-    }
-    const branch = (await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: sourceDir, encoding: 'utf8' })).stdout.trim()
-    return { project, sourceDir, kind: 'git', remote, branch, pollSeconds: Math.max(15, Number(pollSeconds) || 60) }
-  }
-
   async function start(item) {
     if (runtimes.has(item.project)) return runtimes.get(item.project)
     await ensureRepo(item)
@@ -120,6 +99,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     })
     const remoteBridge = item.remote ? createRemoteGitBridge({
       sourceDir: item.sourceDir,
+      remote: item.remote,
       branch: item.branch || 'main',
       onRemoteSettled: () => cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
       log,
@@ -169,9 +149,6 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     runtimes.delete(project)
     delete all[project]
     save(all)
-    if (existing?.kind === 'git' && remoteCheckoutsRoot && path.dirname(path.resolve(existingDir)) === path.resolve(remoteCheckoutsRoot)) {
-      fs.rmSync(existingDir, { recursive: true, force: true })
-    }
     return { unlinked: true, project, sourceDir: existingDir }
   }
 
@@ -213,6 +190,41 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return result
   }
 
+  async function remoteOperation(project, operation, params = {}) {
+    const item = record(project)
+    if (!item) throw new Error(`project ${project} is not bound on this daemon`)
+    const remotes = createGitRemotes({ sourceDir: item.sourceDir })
+    if (operation === 'list') {
+      const listed = (await remotes.list({ fetch: params.fetch === true })).filter(remote => remote.name !== 'tlda')
+      const projectPart = safeRefPart(project)
+      const localTip = await remotes.resolveRef(`refs/tlda/project/${projectPart}`)
+        || await remotes.resolveRef(`refs/tlda/fetched/${projectPart}`)
+      if (localTip) {
+        const transport = (await remotes.list({ names: ['tlda'] }))[0]
+        listed.push({
+          name: 'tlda',
+          url: transport?.url || null,
+          kind: 'tlda',
+          writable: false,
+          branches: [{ name: project, commit: localTip, selected: false, writable: false }],
+        })
+      }
+      return listed
+    }
+    if (operation === 'read-file') return remotes.readFile(params.revision, params.file)
+    if (params.name === 'tlda') throw new Error('The tlda transport remote is not a project remote')
+    if (operation === 'add') return remotes.add(params.name, params.url)
+    if (operation === 'delete') return remotes.delete(params.name)
+    if (operation === 'pull') return remotes.pull(params.name, params.branch)
+    if (operation === 'push') return remotes.push(params.name, params.branch, params.revision)
+    if (operation === 'checkout') {
+      const checkedOut = await remotes.checkout(params.name, params.branch, params.revision)
+      const submission = await submit(project)
+      return { ...checkedOut, submission }
+    }
+    throw new Error(`unsupported Git remote operation: ${operation || '(missing)'}`)
+  }
+
   function sourceFileForAbsolutePath(filePath) {
     const matches = records().flatMap(item => {
       const rel = path.relative(path.resolve(item.sourceDir), path.resolve(filePath))
@@ -239,11 +251,11 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
 
   return {
     bindSource,
-    prepareRemote,
     unbindSource,
     sync,
     headChanged,
     pollRemote,
+    remoteOperation,
     submit,
     pushHistorySeed,
     queuePaths,

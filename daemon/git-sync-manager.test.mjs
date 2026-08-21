@@ -80,6 +80,13 @@ test('initial project link submits the existing checkout through the ordinary pr
   assert.match(submitted.proposalRef, /^refs\/tlda\/proposals\/daemon-link\/main\/[0-9a-f]{40}$/)
   assert.equal((await git(remote, ['rev-parse', submitted.proposalRef])).stdout.trim(), submitted.revision)
   assert.deepEqual(watcher.added, [join(checkout, 'main.tex')])
+  assert.deepEqual(await manager.remoteOperation('paper', 'list'), [{
+    name: 'tlda',
+    url: remote,
+    kind: 'tlda',
+    writable: false,
+    branches: [{ name: 'paper', commit: submitted.revision, selected: false, writable: false }],
+  }])
 
   writeFileSync(join(checkout, 'child.tex'), 'included\n')
   writeFileSync(join(checkout, 'unrelated.txt'), 'not a project member\n')
