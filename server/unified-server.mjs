@@ -9806,6 +9806,7 @@ async function generateManifest() {
             ...(project.createdAt && { createdAt: project.createdAt }),
             ...(project.lastBuild && { lastBuild: project.lastBuild }),
             ...(project.starred && { starred: true }),
+            autoSync: project.autoSync !== false,
           }
         } catch (e) {
           console.error(`[manifest] Failed to read ${projectJsonPath}:`, e.message)

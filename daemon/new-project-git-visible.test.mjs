@@ -8,7 +8,7 @@ import test from 'node:test'
 import { promisify } from 'node:util'
 import Database from 'better-sqlite3'
 
-import { startServer, stopServer, unusedPort } from '../server/lib/durable-source-wire-harness.mjs'
+import { startServer, stopServer, unusedPort } from '../server/lib/unified-server-test-harness.mjs'
 import { createGitSyncManager } from './git-sync-manager.mjs'
 
 const execFile = promisify(execFileCb)
