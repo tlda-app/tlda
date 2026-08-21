@@ -147,6 +147,14 @@ export function scanTexDependencyClosure(mainFile, sourceDir) {
         if (!tex.has(targetRel)) queue.push(targetRel)
       } else {
         assets.add(targetRel)
+        if (/\.pdf$/i.test(targetRel)) {
+          const boundingBox = targetRel.replace(/\.pdf$/i, '.bb')
+          try {
+            if (fs.statSync(path.resolve(root, boundingBox)).isFile()) assets.add(boundingBox)
+          } catch {
+            // A PDF bounding-box sidecar is optional; carry it only when the source repository has one.
+          }
+        }
       }
     }
   }
