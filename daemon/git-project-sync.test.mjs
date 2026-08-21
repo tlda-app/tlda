@@ -10,6 +10,31 @@ import { createGitProjectSync } from './git-project-sync.mjs'
 const execFile = promisify(execFileCb)
 async function git(cwd, args) { return execFile('git', args, { cwd, encoding: 'utf8', timeout: 30000 }) }
 
+test('concurrent project pushes from one checkout use immutable owning remotes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-concurrent-remotes-'))
+  const checkout = join(root, 'checkout')
+  const paperRemote = join(root, 'paper.git')
+  const responseRemote = join(root, 'response.git')
+  await git(root, ['init', '--bare', paperRemote])
+  await git(root, ['init', '--bare', responseRemote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'main.tex'), 'shared\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'shared'])
+  const revision = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
+  const paper = createGitProjectSync({ sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'paper', remote: paperRemote })
+  const response = createGitProjectSync({ sourceDir: checkout, project: 'response', daemonId: 'daemon-a', bindingId: 'response', remote: responseRemote })
+
+  const [paperPush, responsePush] = await Promise.all([
+    paper.pushRevision(revision),
+    response.pushRevision(revision),
+  ])
+  assert.equal((await git(paperRemote, ['rev-parse', paperPush.proposalRef])).stdout.trim(), revision)
+  assert.equal((await git(responseRemote, ['rev-parse', responsePush.proposalRef])).stdout.trim(), revision)
+})
+
 test('settle submits an immutable daemon proposal and HeadChanged fetches exact head', async t => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-project-git-sync-'))
   const remote = join(root, 'server.git')

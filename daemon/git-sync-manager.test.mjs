@@ -109,6 +109,51 @@ test('existing tlda remote is reconciled without attempting to add it again', as
   await manager.closeAll()
 })
 
+test('two projects sharing one checkout submit to their owning project remotes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-shared-checkout-'))
+  const checkout = join(root, 'checkout')
+  const remotes = {
+    paper: join(root, 'paper.git'),
+    response: join(root, 'response.git'),
+  }
+  await git(root, ['init', '--bare', remotes.paper])
+  await git(root, ['init', '--bare', remotes.response])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'main.tex'), 'shared source\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'shared source'])
+
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-shared', server: 'http://unused.test',
+    remoteUrlFor: project => remotes[project], watch: () => testWatcher(),
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
+  manager.bindSource('response', checkout, { documentRoots: ['main.tex'] })
+  await manager.sync([
+    { name: 'paper', mainFile: 'main.tex' },
+    { name: 'response', mainFile: 'main.tex' },
+  ])
+
+  const paper = await manager.submit('paper')
+  const response = await manager.submit('response')
+  assert.equal((await git(remotes.paper, ['rev-parse', paper.proposalRef])).stdout.trim(), paper.revision)
+  assert.equal((await git(remotes.response, ['rev-parse', response.proposalRef])).stdout.trim(), response.revision)
+
+  const tree = (await git(checkout, ['rev-parse', 'HEAD^{tree}'])).stdout.trim()
+  const paperHead = (await git(checkout, ['commit-tree', tree, '-m', 'paper accepted'])).stdout.trim()
+  const responseHead = (await git(checkout, ['commit-tree', tree, '-m', 'response accepted'])).stdout.trim()
+  await git(checkout, ['push', remotes.paper, `${paperHead}:refs/tlda/source/paper`])
+  await git(checkout, ['push', remotes.response, `${responseHead}:refs/tlda/source/response`])
+  await manager.headChanged('paper', paperHead)
+  await manager.headChanged('response', responseHead)
+  assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/fetched/paper'])).stdout.trim(), paperHead)
+  assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/fetched/response'])).stdout.trim(), responseHead)
+  await manager.closeAll()
+})
+
 test('initial project link submits the existing checkout through the ordinary proposal ref', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-git-link-submit-'))
   const checkout = join(root, 'checkout')
