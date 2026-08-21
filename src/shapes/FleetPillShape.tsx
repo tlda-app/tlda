@@ -396,6 +396,10 @@ export async function createTemporaryMarkdownColumn(
   }
   const identity = spatialDocumentIdentity(title, url, meta)
   const shapeId = spatialDocumentShapeId(identity)
+  const materializedFile = typeof meta.materializedFile === 'string' ? meta.materializedFile : ''
+  const sourceFile = typeof meta.sharedDocPath === 'string' && meta.sharedDocPath
+    ? meta.sharedDocPath
+    : materializedFile.replace(/\.html$/i, '.md')
   const existing = editor.getShape(shapeId)
   const sourceShape = findSpatialSourceShape(editor, shapeId)
   const sourceAnchor = sourceShape ? editor.getViewportPageBounds().center : pagePoint
@@ -412,7 +416,7 @@ export async function createTemporaryMarkdownColumn(
       x: parkedPoint.x,
       y: parkedPoint.y,
       isLocked: true,
-      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url },
+      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url, source: sourceFile },
       meta: {
         ...existing.meta,
         temporaryMarkdownColumn: true,
@@ -431,7 +435,7 @@ export async function createTemporaryMarkdownColumn(
       x: parkedPoint.x,
       y: parkedPoint.y,
       isLocked: true,
-      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url },
+      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url, source: sourceFile },
       meta: {
         temporaryMarkdownColumn: true,
         spatialWorldDocument: true,
