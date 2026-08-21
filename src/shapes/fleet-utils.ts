@@ -6,7 +6,15 @@ import { getHumanId, getHumanName, getDeviceId, whenDeviceReady } from '../fleet
 import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 import { isDocumentPageShape } from './document-pages'
 import { setFleetNudgeGuides, clearFleetNudgeGuides } from './fleet-nudge-guides'
-import { completeFleetNudgeGuides, highlightFleetNudgeGuides, type FleetNudgeGridGuide } from './fleet-nudge-grid'
+import {
+  closestFleetNudgeGuide,
+  completeFleetNudgeGuides,
+  fleetNudgeGuidesForFeatures,
+  highlightFleetNudgeGuides,
+  type FleetNudgeGridFeature,
+  type FleetNudgeGridGuide,
+  type FleetNudgeGridMatch,
+} from './fleet-nudge-grid'
 import { getFleetNudgeStrengthPx } from '../readabilityProfile'
 import { dispatchFleetHudReset, getHudEditor, markMainEditorHistoryStoppingPoint } from '../wm/editor-host-bridge'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
@@ -79,31 +87,13 @@ export type FleetNudgeGuide = FleetNudgeGridGuide
  * resize moves only the edges the grabbed handle carries, which is the whole
  * difference between the two paths.
  */
-type FleetNudgeFeature = 'left' | 'right' | 'top' | 'bottom'
+type FleetNudgeFeature = FleetNudgeGridFeature
 
-type FleetNudgeMatch = FleetNudgeGuide & { delta: number; feature: FleetNudgeFeature }
+type FleetNudgeMatch = FleetNudgeGridMatch
 
 const ALL_FLEET_NUDGE_FEATURES: ReadonlySet<FleetNudgeFeature> = new Set<FleetNudgeFeature>([
   'left', 'right', 'top', 'bottom',
 ])
-
-function overlapSize(a0: number, a1: number, b0: number, b1: number): number {
-  return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0))
-}
-
-function sameBandOnY(a: FleetNudgeRect, b: FleetNudgeRect): boolean {
-  return overlapSize(a.top, a.bottom, b.top, b.bottom) > Math.min(a.bottom - a.top, b.bottom - b.top) * 0.35
-}
-
-function sameBandOnX(a: FleetNudgeRect, b: FleetNudgeRect): boolean {
-  return overlapSize(a.left, a.right, b.left, b.right) > Math.min(a.right - a.left, b.right - b.left) * 0.35
-}
-
-function keepClosest(match: FleetNudgeMatch, current: FleetNudgeMatch | null): FleetNudgeMatch | null {
-  if (match.delta === 0) return current
-  if (current === null || Math.abs(match.delta) < Math.abs(current.delta)) return match
-  return current
-}
 
 /**
  * Inside the capture zone the panel goes to the line. Outside it, nothing
@@ -160,33 +150,6 @@ function collectFleetPanelNudgeCandidates(editor: Editor, current: TLShape): Fle
 }
 
 /**
- * One rule for every match, alignment and equal-gap alike: the guide marks the
- * page coordinate the dragged feature is being pulled to, and spans both the
- * shape being dragged and the one it is lining up with.
- */
-function matchOnX(target: number, feature: 'left' | 'right', dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
-  return {
-    axis: 'x',
-    feature,
-    delta: target - dragged[feature],
-    line: target,
-    spanFrom: Math.min(dragged.top, candidate.top),
-    spanTo: Math.max(dragged.bottom, candidate.bottom),
-  }
-}
-
-function matchOnY(target: number, feature: 'top' | 'bottom', dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
-  return {
-    axis: 'y',
-    feature,
-    delta: target - dragged[feature],
-    line: target,
-    spanFrom: Math.min(dragged.left, candidate.left),
-    spanTo: Math.max(dragged.right, candidate.right),
-  }
-}
-
-/**
  * `live` names the features that are free to move. A translate hands over all
  * four; a resize hands over only the ones its handle carries, so the pull can
  * never be offered on an edge that is standing still — which is the same
@@ -195,69 +158,36 @@ function matchOnY(target: number, feature: 'top' | 'bottom', dragged: FleetNudge
 function closestFleetPanelNudge(
   dragged: FleetNudgeRect,
   candidates: FleetNudgeRect[],
+  grid: FleetNudgeGuide[],
   threshold: number,
   live: ReadonlySet<FleetNudgeFeature> = ALL_FLEET_NUDGE_FEATURES,
 ): { dx: FleetNudgeMatch | null; dy: FleetNudgeMatch | null } {
-  let dx: FleetNudgeMatch | null = null
-  let dy: FleetNudgeMatch | null = null
-  const on = (match: FleetNudgeMatch, current: FleetNudgeMatch | null) =>
-    live.has(match.feature) ? keepClosest(match, current) : current
-
-  for (const candidate of candidates) {
-    dx = on(matchOnX(candidate.left, 'left', dragged, candidate), dx)
-    dx = on(matchOnX(candidate.right, 'right', dragged, candidate), dx)
-
-    dy = on(matchOnY(candidate.top, 'top', dragged, candidate), dy)
-    dy = on(matchOnY(candidate.bottom, 'bottom', dragged, candidate), dy)
-  }
+  const alignmentX = new Set(candidates.flatMap(candidate => [candidate.left, candidate.right]))
+  const alignmentY = new Set(candidates.flatMap(candidate => [candidate.top, candidate.bottom]))
+  const alignmentGrid = grid.filter(guide => guide.axis === 'x'
+    ? alignmentX.has(guide.line)
+    : alignmentY.has(guide.line))
+  const closestAlignmentX = closestFleetNudgeGuide(dragged, alignmentGrid, 'x', live)
+  const closestAlignmentY = closestFleetNudgeGuide(dragged, alignmentGrid, 'y', live)
 
   // An edge that lines up wins outright. Equal-gap spacing is only
   // consulted on an axis that has no alignment to offer.
   //
-  // These are not comparable by distance. Alignment gives at most six lines per
+  // These are not comparable by distance. Alignment gives at most four lines per
   // panel; equal-gap gives two per panel per DISTINCT GAP IN THE SCENE, so with
   // a screen of panels it is thousands of lines and one of them is nearly always
   // nearer than the alignment you were reaching for. Taking the closest of the
   // union means the obvious position loses to a spacing coincidence — which is
   // "it doesn't wanna fucking snap there, despite everything being perfectly
   // aligned" and "it wants to snap to a bunch of weird shit" in one behaviour.
-  const alignedX = dx && Math.abs(dx.delta) <= threshold ? dx : null
-  const alignedY = dy && Math.abs(dy.delta) <= threshold ? dy : null
+  const alignedX = closestAlignmentX && Math.abs(closestAlignmentX.delta) <= threshold ? closestAlignmentX : null
+  const alignedY = closestAlignmentY && Math.abs(closestAlignmentY.delta) <= threshold ? closestAlignmentY : null
   if (alignedX && alignedY) return { dx: alignedX, dy: alignedY }
 
-  const horizontalGaps = new Set<number>()
-  const verticalGaps = new Set<number>()
-  for (let i = 0; i < candidates.length; i++) {
-    for (let j = i + 1; j < candidates.length; j++) {
-      const a = candidates[i]
-      const b = candidates[j]
-      if (!alignedX && sameBandOnY(a, b)) {
-        const gap = Math.max(a.left, b.left) - Math.min(a.right, b.right)
-        if (gap > 0) horizontalGaps.add(gap)
-      }
-      if (!alignedY && sameBandOnX(a, b)) {
-        const gap = Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom)
-        if (gap > 0) verticalGaps.add(gap)
-      }
-    }
+  return {
+    dx: alignedX ?? closestFleetNudgeGuide(dragged, grid, 'x', live),
+    dy: alignedY ?? closestFleetNudgeGuide(dragged, grid, 'y', live),
   }
-
-  for (const candidate of candidates) {
-    if (!alignedX && sameBandOnY(dragged, candidate)) {
-      for (const gap of horizontalGaps) {
-        dx = on(matchOnX(candidate.right + gap, 'left', dragged, candidate), dx)
-        dx = on(matchOnX(candidate.left - gap, 'right', dragged, candidate), dx)
-      }
-    }
-    if (!alignedY && sameBandOnX(dragged, candidate)) {
-      for (const gap of verticalGaps) {
-        dy = on(matchOnY(candidate.bottom + gap, 'top', dragged, candidate), dy)
-        dy = on(matchOnY(candidate.top - gap, 'bottom', dragged, candidate), dy)
-      }
-    }
-  }
-
-  return { dx: alignedX ?? dx, dy: alignedY ?? dy }
 }
 
 /** The guide is the taken match and nothing else, on both paths. */
@@ -305,8 +235,11 @@ export function nudgeFleetPanelTranslate(
   const threshold = fleetNudgeThreshold(editor)
   if (threshold === null) return clearFleetNudgeGuides()
 
-  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, threshold)
-  const grid = completeFleetNudgeGuides(dragged, candidates)
+  const grid = fleetNudgeGuidesForFeatures(
+    completeFleetNudgeGuides(dragged, candidates),
+    ALL_FLEET_NUDGE_FEATURES,
+  )
+  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, grid, threshold)
 
   // One decision, read twice. The guide and the move cannot disagree about
   // whether a match was taken, because they are the same value.
@@ -411,8 +344,8 @@ export function nudgeFleetPanelResize<T extends TLBaseBoxShape>(
   if (threshold === null) return resized()
 
   const dragged = fleetNudgeRectForBox(shape.id, box.x, box.y, box.props.w, box.props.h)
-  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, threshold, live)
-  const grid = completeFleetNudgeGuides(dragged, candidates)
+  const grid = fleetNudgeGuidesForFeatures(completeFleetNudgeGuides(dragged, candidates), live)
+  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, grid, threshold, live)
 
   const takenX = takenMatch(dx, threshold)
   const takenY = takenMatch(dy, threshold)
