@@ -9102,9 +9102,7 @@ async function handleDaemonWsMessage(ws, msg) {
         broadcastEvent('agent-status', { agent: agentId, status, activity, tool: result.tool || null, ts })
       }
       broadcastState()
-    }, () => daemonConnections.get(ws._daemonKey) === ws
-      && ws._daemonKey === msg.daemon_key
-      && ws._bootId === msg.daemon_boot_id)
+    })
     return
   }
 
