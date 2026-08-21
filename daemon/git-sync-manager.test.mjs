@@ -139,3 +139,31 @@ test('same-daemon relink installs corrected roots and later metadata updates pre
   assert.deepEqual(manager.bindingStatus('paper', checkout).binding.documentRoots, ['main.tex'])
   await manager.closeAll()
 })
+
+test('an up-to-date immutable proposal still requests confirmed admission', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-proposal-readmit-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'paper.git')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'main.tex'), 'paper\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'paper'])
+  const admissions = []
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-readmit', server: 'http://unused.test',
+    remoteUrlFor: () => remote, watch: () => testWatcher(),
+    onProposalSubmitted: async event => admissions.push(event),
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
+  await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  const first = await manager.submit('paper')
+  const second = await manager.submit('paper')
+  assert.equal(first.revision, second.revision)
+  assert.equal(admissions.length, 2)
+  assert.deepEqual(admissions.map(item => item.proposalRef), [first.proposalRef, first.proposalRef])
+  await manager.closeAll()
+})

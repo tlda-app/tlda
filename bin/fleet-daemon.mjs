@@ -541,6 +541,10 @@ const sourceSync = createGitSyncManager({
   server: SERVER,
   token: TOKEN,
   log,
+  onProposalSubmitted: async ({ project, revision, proposalRef }) => {
+    const admitted = await sendMsgWithReply({ type: 'source-proposal-admit', project, revision, ref: proposalRef })
+    if (!admitted?.ok) throw new Error(`${project}: server did not confirm proposal admission`)
+  },
 })
 
 let lastInvalidSourceOwnerSignature = null

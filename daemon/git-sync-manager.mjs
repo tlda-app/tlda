@@ -15,7 +15,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000 } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000, onProposalSubmitted = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
 
@@ -73,6 +73,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       bindingId: item.bindingId,
       documentRoots: item.documentRoots || [],
       log,
+      onSubmitted: event => onProposalSubmitted({ project: item.project, ...event }),
       onEditClusterSettled: () => runtime.cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
     })
     const watchedMembers = new Set()
