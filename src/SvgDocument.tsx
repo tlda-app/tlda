@@ -114,6 +114,7 @@ import { AnnotationViewer } from './overlays/AnnotationViewer'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { openInEditor } from './texsync'
+import { updateReferenceDocviews } from './docviewReference'
 import { setupSvgEditor, anchorIdToLabel, type ReloadResult } from './editorSetup'
 import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
@@ -1240,18 +1241,13 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
             const { displayLabel } = anchorIdToLabel(labelTitle)
 
             const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
-            editor.getCurrentPageShapes()
-              .filter((s: any) => s.type === 'fleet-docview')
-              .filter((s: any) => {
-                try { return JSON.parse(s.props?.sources || '["ref"]').includes('ref') } catch { return true }
-              })
-              .forEach((dvShape: any) => {
-                if (dvShape.isLocked) editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
-                editor.updateShape({
-                  id: dvShape.id, type: dvShape.type,
-                  props: { ...dvShape.props, label: labelForRegion, page, yTop, yBottom, title: dvTitle },
-                })
-              })
+            updateReferenceDocviews(editor, {
+              label: labelForRegion,
+              page,
+              yTop,
+              yBottom,
+              title: dvTitle,
+            })
           })
 
           const editorSetup = setupSvgEditor(editor, document)

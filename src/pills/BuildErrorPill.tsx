@@ -14,6 +14,7 @@ import { useEditor } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
 import { ProjectContext } from '../PanelContext'
 import { openInEditor } from '../texsync'
+import { showBuildErrorInReferenceDocviews } from '../docviewReference'
 import type { BuildError } from '../useYjsSync'
 import './BuildErrorPill.css'
 
@@ -71,7 +72,10 @@ export function BuildErrorPill() {
               <div
                 key={i}
                 className={'build-error-item' + (hasLine ? ' clickable' : '')}
-                onClick={hasLine && doc ? () => openInEditor(doc.projectName, err.file || '', err.line!) : undefined}
+                onClick={hasLine && doc ? () => {
+                  void showBuildErrorInReferenceDocviews(editor, doc.projectName, err)
+                  void openInEditor(doc.projectName, err.file || '', err.line!)
+                } : undefined}
               >
                 {hasLine && <span className="build-error-loc">{(err.file || '').split('/').pop()}:{err.line}</span>}
                 {cleanMessage(err.message)}
