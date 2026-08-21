@@ -1537,7 +1537,9 @@ const httpServer = http.createServer(async (req, res) => {
         Object.entries(docs).map(([name, config]) => [name, {
           name: config.name,
           pages: config.pages,
-          format: config.format || 'svg',
+          sourceFormat: config.sourceFormat,
+          renderer: config.renderer,
+          documentFormat: config.documentFormat,
         }])
       ),
     };
