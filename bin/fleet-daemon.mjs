@@ -541,8 +541,8 @@ const sourceSync = createGitSyncManager({
   server: SERVER,
   token: TOKEN,
   log,
-  onProposalSubmitted: async ({ project, revision, proposalRef }) => {
-    const admitted = await sendMsgWithReply({ type: 'source-proposal-admit', project, revision, ref: proposalRef })
+  onProposalSubmitted: async ({ project, revision, proposalRef, forceRebuild = false }) => {
+    const admitted = await sendMsgWithReply({ type: 'source-proposal-admit', project, revision, ref: proposalRef, retry_terminal: forceRebuild })
     if (!admitted?.ok) throw new Error(`${project}: server did not confirm proposal admission`)
     log.info(`${project}: proposal admission confirmed id=${admitted.submissionId} state=${admitted.state} started_once=${admitted.startedOnce} lifecycle_present=${admitted.lifecyclePresent} reason=${admitted.terminalReason || 'none'}`)
   },
@@ -628,7 +628,7 @@ async function loadLocallyBoundProjects() {
 // failed link leaves nothing behind. A link that half-succeeds and leaves the
 // paper starting from version one is the old broken behaviour wearing a success
 // message.
-async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null }) {
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null, forceRebuild = false }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
 
   const status = sourceSync.bindingStatus(project, sourceDir)
@@ -673,7 +673,7 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   }
   serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
   await sourceSync.sync([projectMetadata])
-  const submission = await sourceSync.submit(project)
+  const submission = await sourceSync.submit(project, { forceRebuild })
   applyProjectWorldOwnership('local-source-link')
   return { ...result, submission }
 }

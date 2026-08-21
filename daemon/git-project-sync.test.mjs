@@ -80,6 +80,35 @@ test('configured document roots exclude unrelated broken TeX files', async () =>
   assert.deepEqual((await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'), ['chapter.tex', 'main.tex'])
 })
 
+test('explicit same-revision rebuild reaches proposal admission metadata', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-force-rebuild-'))
+  const remote = join(root, 'server.git')
+  const checkout = join(root, 'checkout')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  await git(checkout, ['remote', 'add', 'tlda', remote])
+  writeFileSync(join(checkout, 'main.tex'), 'paper\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'paper'])
+  const submitted = []
+  const sync = createGitProjectSync({
+    sourceDir: checkout,
+    project: 'paper',
+    daemonId: 'daemon-a',
+    bindingId: 'binding-a',
+    documentRoots: ['main.tex'],
+    onSubmitted: value => submitted.push(value),
+  })
+
+  const first = await sync.submitCurrent()
+  const rebuilt = await sync.submitCurrent({ forceRebuild: true })
+  assert.equal(rebuilt.revision, first.revision)
+  assert.equal(submitted[0].forceRebuild, false)
+  assert.equal(submitted[1].forceRebuild, true)
+})
+
 test('missing canonical source ref is pre-first-acceptance, while other fetch failures remain errors', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-project-missing-shared-'))
   const remote = join(root, 'server.git')

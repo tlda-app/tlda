@@ -645,7 +645,7 @@ async function cmdCreate() {
     if (binding.alreadyLinked) console.log(dim(`Project "${name}" is already linked to ${dir}.`))
     return binding.alreadyLinked
   }
-  const activateLocalSource = async (defaultRoots = []) => {
+  const activateLocalSource = async (defaultRoots = [], { forceRebuild = false } = {}) => {
     const projectMetadata = await api('GET', `/api/projects/${name}`)
     return callLocalDaemonLifecycle('project-source-link', {
       project: name,
@@ -654,6 +654,7 @@ async function cmdCreate() {
       seedBranch,
       seedRevision,
       documentRoots: documentRoots.length ? documentRoots : defaultRoots,
+      forceRebuild,
       ...linkedRemote,
     })
   }
@@ -908,18 +909,20 @@ async function cmdCreate() {
   console.log(dim(`  Main file: ${mainFile}`))
 
   // Create or update project on server
+  let updatedExistingProject = false
   try {
     await createProjectApi({ name, title, mainFile, documentRoots: effectiveDocumentRoots })
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
       await api('PATCH', `/api/projects/${name}/document-roots`, { documentRoots: effectiveDocumentRoots })
+      updatedExistingProject = true
       console.log(`Project "${name}" exists, pushing files.`)
     } else {
       throw e
     }
   }
-  const linked = await activateLocalSource([mainFile])
+  const linked = await activateLocalSource([mainFile], { forceRebuild: updatedExistingProject })
   console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
 
   const server = getServer()

@@ -164,6 +164,8 @@ try {
   assert.deepEqual(documentRootPatches.at(-1), {
     documentRoots: [{ path: 'main.tex', format: 'svg' }],
   })
+  const retriedLink = lifecycleRequests.find(request => request.params?.projectMetadata?.name === 'retry-project')
+  assert.equal(retriedLink.params.forceRebuild, true)
 
   assert.ok(lifecycleRequests.every(request => request.op === 'project-source-link'))
 } finally {

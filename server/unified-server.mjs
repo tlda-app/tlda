@@ -9030,7 +9030,7 @@ async function handleDaemonWsMessage(ws, msg) {
       if (!proposal) throw new Error(`${project}: proposal ref is not present`)
       const hasCurrentLifecycle = lifecycle.listRevisionLifecycles(project)
         .some(item => item.sourceRevision === revision)
-      const row = await admitProposal({ project, ...proposal }, { retryTerminal: !hasCurrentLifecycle })
+      const row = await admitProposal({ project, ...proposal }, { retryTerminal: msg.retry_terminal === true || !hasCurrentLifecycle })
       if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: {
         ok: true,
         project,
