@@ -12,7 +12,7 @@ test('production project listing ignores corrupt legacy build status', async () 
   const name = 'projected-paper'
   try {
     await initProjectStore(root)
-    createProject({ name, mainFile: 'main.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
     await updateProject(name, { buildStatus: 'success' })
     const lifecycle = await sourceLifecycleStore(name)
     lifecycle.recordRevisionAdmission(name, 'projected-revision', 8)

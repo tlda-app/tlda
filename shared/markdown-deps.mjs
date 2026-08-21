@@ -106,7 +106,7 @@ export function scanMarkdownDependencyClosure(mainFile, sourceDir) {
       }
       if (isMarkdownPath(targetRel)) {
         if (!markdown.has(targetRel)) queue.push(targetRel)
-      } else if (isSourceFilePath(targetRel, { sourceFormat: 'md', mainFile: main })) {
+      } else if (isSourceFilePath(targetRel, { format: 'markdown', mainFile: main })) {
         assets.add(targetRel)
       }
     }
@@ -161,7 +161,7 @@ export async function scanMarkdownDependencyClosureAsync(mainFile, sourceDir) {
       }
       if (isMarkdownPath(targetRel)) {
         if (!markdown.has(targetRel)) queue.push(targetRel)
-      } else if (isSourceFilePath(targetRel, { sourceFormat: 'md', mainFile: main })) {
+      } else if (isSourceFilePath(targetRel, { format: 'markdown', mainFile: main })) {
         assets.add(targetRel)
       }
     }

@@ -342,7 +342,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
       const contentRef = `submission-${assignmentId}-${studentId}`
       try {
         if (!await readProject(contentRef)) {
-          createProject({ name: contentRef, title: `${studentId} — ${assignmentId}`, mainFile: inspection.qmdPath, sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html' })
+          createProject({ name: contentRef, title: `${studentId} — ${assignmentId}`, mainFile: inspection.qmdPath, format: 'qmd' })
         }
         if (typeof submitSubmissionSource !== 'function') throw new Error('source-room daemon snapshot submission is not configured')
         const files = Object.entries(inspection.entries)

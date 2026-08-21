@@ -8,7 +8,7 @@ import { closeProjectStore, createProject, initProjectStore, sourceLifecycleStor
 const root = mkdtempSync(join(tmpdir(), 'tlda-missing-main-'))
 const name = 'missing-main-proof'
 await initProjectStore(root)
-createProject({ name, mainFile: 'proof.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
+createProject({ name, mainFile: 'proof.md', format: 'markdown' })
 await updateProject(name, { pages: 1, buildStatus: 'unknown' })
 const git = await (await sourceLifecycleStore(name)).gitRepository()
 const sourceRevision = await git.acceptRevision({

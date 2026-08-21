@@ -79,10 +79,10 @@ test('deleteProject clears its manifest through replace(project, [])', async () 
   const root = join(tempRoot, 'projects')
   try {
     await initProjectStore(root)
-    createProject({ name: 'paper', title: 'Paper', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
+    createProject({ name: 'paper', title: 'Paper' })
     await updateClientSourceManifest('paper', ['main.tex'])
     await deleteProject('paper')
-    createProject({ name: 'paper', title: 'Paper', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
+    createProject({ name: 'paper', title: 'Paper' })
     assert.deepEqual(await readClientSourceManifest('paper'), [])
   } finally {
     await closeProjectStore()
@@ -95,7 +95,7 @@ test('project metadata reads and updates run through the project files worker', 
   const root = join(tempRoot, 'projects')
   try {
     await initProjectStore(root)
-    createProject({ name: 'paper', title: 'Paper', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
+    createProject({ name: 'paper', title: 'Paper' })
     writeFileSync(join(root, 'paper', 'sync-snapshot.json'), '{}')
     const checkpoint = await checkpointProjectPartWritebackOffloop({
       filePath: join(root, 'paper', 'source', 'parts', 'note.md'),
@@ -108,26 +108,6 @@ test('project metadata reads and updates run through the project files worker', 
     assert.match((await readProjectMeta()).paper.lastAnnotated, /^\d{4}-\d{2}-\d{2}T/)
     assert.equal((await updateProject('paper', { title: 'Revised' })).title, 'Revised')
     assert.equal((await readProject('paper')).title, 'Revised')
-  } finally {
-    await closeProjectStore()
-    rmSync(tempRoot, { recursive: true, force: true })
-  }
-})
-
-test('project-store startup rejects legacy records without changing them', async () => {
-  const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-project-axis-migration-'))
-  const root = join(tempRoot, 'projects')
-  const projectDir = join(root, 'legacy-qmd')
-  mkdirSync(projectDir, { recursive: true })
-  writeFileSync(join(projectDir, 'project.json'), JSON.stringify({
-    name: 'legacy-qmd', format: 'qmd', renderedFormat: 'slides', pages: 3,
-    mainFile: 'index.qmd', clientSourceManifest: ['index.qmd', 'index.html'],
-  }))
-  try {
-    await assert.rejects(async () => { await initProjectStore(root) }, /removed legacy format field/)
-    const persisted = JSON.parse(readFileSync(join(projectDir, 'project.json'), 'utf8'))
-    assert.equal(persisted.format, 'qmd')
-    assert.equal(Object.hasOwn(persisted, 'sourceFormat'), false)
   } finally {
     await closeProjectStore()
     rmSync(tempRoot, { recursive: true, force: true })

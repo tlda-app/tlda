@@ -26,7 +26,7 @@ async function serve() {
     templateVersion: 'handout-rev',
     solutionsDocKey: 'hw1-solutions',
   })
-  createProject({ name: 'hw1-solutions', title: 'HW1 solutions', mainFile: 'homework.qmd', sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html' })
+  createProject({ name: 'hw1-solutions', title: 'HW1 solutions', mainFile: 'homework.qmd', format: 'html' })
   await writeSourceFileAsync('hw1-solutions', 'homework.qmd', 'solution source')
   fs.writeFileSync(path.join(outputDir('hw1-solutions'), 'page.html'), '<p>solution page</p>')
 

@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
-import { loadSvgDocument } from './svgDocumentLoader'
-import { loadDocumentFromManifest, type DocumentViewManifest } from './loaders/documentLoaderRegistry'
+import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, createHtmlDocumentFromPageInfo, loadHtmlDocument, loadSlidesDocument, type HtmlPageEntry } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
 import { attachAppRecordingEditor, openAppRecordingSession } from './recording/recorder'
@@ -19,6 +18,7 @@ import { ProblemMarking } from './classroom/ProblemMarking'
 import { StudentWork } from './classroom/StudentWork'
 import { MarkingLifecycle } from './classroom/MarkingLifecycle'
 import { STORE_HTTP } from './activeConfig'
+import { viewFormat } from '../shared/document-formats.mjs'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
@@ -124,16 +124,16 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  sourceFormat: 'tex' | 'md' | 'qmd' | 'html' | 'pdf' | 'png' | 'book'
-  renderer: 'latex' | 'markdown' | 'quarto' | 'identity'
-  documentFormat: 'paged' | 'html' | 'slides' | 'book'
+  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd'
+  // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
+  renderedFormat?: 'html' | 'slides'
   members?: string[]
   buildStatus?: string
   starred?: boolean
   lastBuild?: string
   createdAt?: string
   targets?: { texBase: string; mainFile: string; pages: number }[]
-  documentManifest?: DocumentViewManifest
+  pageInfo?: HtmlPageEntry[]
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
@@ -164,11 +164,11 @@ const ASSET_BASE = STORE_HTTP
 const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
 
 // Fetch a single document config from the API — fast path for ?project=X
-async function fetchDocConfig(projectName: string): Promise<DocConfig | null> {
+async function fetchDocConfig(projectName: string, includePageInfo = false): Promise<DocConfig | null> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8000)
   try {
-    const url = `${ASSET_BASE}/api/projects/${projectName}`
+    const url = `${ASSET_BASE}/api/projects/${projectName}${includePageInfo ? '?include=page-info' : ''}`
     const resp = await fetch(url, { signal: controller.signal })
     if (resp.status === 401 || resp.status === 403) {
       throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
@@ -264,7 +264,7 @@ function DocumentApp() {
     if (projectName) {
       const roomId = `doc-${projectName}`
       setState({ phase: 'loading', message: 'Loading document...', roomId })
-      loadDocument(projectName, roomId)
+      loadDocument(projectName, roomId, undefined, true)
     } else {
       // No doc specified — show document picker or auto-load single doc
       setState({ phase: 'loading', message: 'Loading...', roomId: '' })
@@ -302,7 +302,7 @@ function DocumentApp() {
     }
   }, [])
 
-  async function loadDocument(projectName: string, roomId: string, knownConfig?: DocConfig) {
+  async function loadDocument(projectName: string, roomId: string, knownConfig?: DocConfig, includePageInfo = false) {
     // Bump generation and abort any in-flight load
     const gen = ++loadGeneration
     loadAbort?.abort()
@@ -312,7 +312,7 @@ function DocumentApp() {
     // Fast path: fetch single doc config instead of full manifest
     let config: DocConfig | null
     try {
-      config = knownConfig?.documentManifest ? knownConfig : await fetchDocConfig(projectName)
+      config = knownConfig ?? await fetchDocConfig(projectName, includePageInfo)
     } catch (e) {
       const msg = (e as Error).message
       setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
@@ -321,7 +321,7 @@ function DocumentApp() {
     if (gen !== loadGeneration) return  // superseded
 
     // Book format: needs full manifest to resolve member docs
-    if (config?.documentFormat === 'book' && config.members) {
+    if (config?.format === 'book' && config.members) {
       let manifest: Record<string, DocConfig>
       try {
         manifest = await fetchManifest()
@@ -338,7 +338,7 @@ function DocumentApp() {
           return {
             key,
             name: memberConfig.name || key,
-            documentManifest: memberConfig.documentManifest,
+            format: memberConfig.format,
             pages: memberConfig.pages,
             basePath: memberConfig.basePath,
             ...((memberConfig as any).sessionAt && { sessionAt: (memberConfig as any).sessionAt }),
@@ -373,7 +373,7 @@ function DocumentApp() {
           await new Promise(r => setTimeout(r, 2000))
           if (gen !== loadGeneration) return
           try {
-            const c = await fetchDocConfig(projectName)
+            const c = await fetchDocConfig(projectName, includePageInfo)
             // Pages existing is the whole condition now: the moment there is a
             // render to show, show it, rather than waiting for the build that
             // produced it to also finish reporting.
@@ -407,19 +407,40 @@ function DocumentApp() {
         ? config.basePath
         : `${import.meta.env.BASE_URL || '/'}${config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath}`
 
-      if (!config.documentManifest) throw new Error(`Document ${projectName} has no view manifest`)
-      const targets = config.targets?.map(t => ({
-        name: t.texBase,
-        title: t.texBase.replace(/_/g, ' '),
-        pages: t.pages,
-        basePath: fullBasePath,
-      }))
-      let document = await loadDocumentFromManifest({
-        name: projectName,
-        basePath: fullBasePath,
-        manifest: config.documentManifest as DocumentViewManifest,
-        targets,
-      })
+      let document
+      // A .qmd is the one project whose pages are not the format that built
+      // them: quarto renders it to a scrolling document or to a reveal deck.
+      // viewFormat() reads which the build produced.
+      const shownAs = viewFormat(config)
+      if (shownAs === 'html' || shownAs === 'markdown') {
+        document = config.pageInfo
+          ? createHtmlDocumentFromPageInfo(config.name, fullBasePath, config.pageInfo)
+          : await loadHtmlDocument(config.name, fullBasePath)
+      } else if (shownAs === 'slides') {
+        document = await loadSlidesDocument(config.name, fullBasePath)
+      } else if (shownAs === 'png') {
+        const makeUrl = (n: number) => `${fullBasePath}page-${n}.png`
+        // Probe beyond manifest hint to discover extra pages (handles stale page counts)
+        let pageCount = config.pages
+        while (true) {
+          if (signal.aborted) return
+          const resp = await fetch(makeUrl(pageCount + 1), { method: 'HEAD', signal })
+          if (!resp.ok || !resp.headers.get('content-type')?.includes('image/png')) break
+          pageCount++
+        }
+        const urls = Array.from({ length: pageCount }, (_, i) => makeUrl(i + 1))
+        document = await loadImageDocument(config.name, urls, fullBasePath)
+      } else {
+        // SVG: create layout immediately, pages fetched async after editor mounts.
+        // targets[] always present from API; map to TargetInfo for the layout.
+        const targets = config.targets?.map(t => ({
+          name: t.texBase,
+          title: t.texBase.replace(/_/g, ' '),
+          pages: t.pages,
+          basePath: fullBasePath,
+        }))
+        document = createSvgDocumentLayout(projectName, config.pages, fullBasePath, targets)
+      }
 
       if (gen !== loadGeneration) return  // superseded during fetch
       // The manifest's display name, which is a written title for some documents
@@ -917,7 +938,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 
   const bookMembers = new Set<string>()
   for (const config of Object.values(manifest)) {
-    if (config.documentFormat === 'book' && config.members) {
+    if (config.format === 'book' && config.members) {
       for (const m of config.members) bookMembers.add(m)
     }
   }
@@ -1206,9 +1227,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
           pages: 1,
           basePath: `${ASSET_BASE}/docs/${key}/`,
           mainFile: 'notes.md',
-          sourceFormat: 'md',
-          renderer: 'markdown',
-          documentFormat: 'html',
+          format: 'markdown',
           starred: archivedProject.starred,
         },
       }))
@@ -1251,9 +1270,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
             pages: 1,
             basePath: `${ASSET_BASE}/docs/${key}/`,
             mainFile: 'notes.md',
-            sourceFormat: 'md',
-            renderer: 'markdown',
-            documentFormat: 'html',
+            format: 'markdown',
             starred: true,
           },
         }))

@@ -1,6 +1,6 @@
 /**
  * Extract TOC from Quarto HTML chapter files.
- * Reads the document manifest, scans each HTML file for headings, outputs toc.json.
+ * Reads page-info.json, scans each HTML file for headings, outputs toc.json.
  *
  * Usage: node server/lib/html-toc-extractor.mjs <project-name>
  */
@@ -8,7 +8,6 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { readDocumentManifest } from './document-manifest.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECTS_DIR = join(__dirname, '..', 'projects')
@@ -20,7 +19,7 @@ function stripHtmlTags(html) {
 function extractHeadings(html, pageNum, chapterTitle, tocLevel) {
   const entries = []
 
-  // Add chapter/part title from the document manifest.
+  // Add chapter/part title from page-info.json
   if (chapterTitle) {
     entries.push({ title: chapterTitle, level: tocLevel || 'chapter', page: pageNum })
   }
@@ -74,9 +73,13 @@ function extractHeadings(html, pageNum, chapterTitle, tocLevel) {
 
 function extractToc(projectName) {
   const outputDir = join(PROJECTS_DIR, projectName, 'output')
-  const documentManifest = readDocumentManifest(outputDir)
-  if (!documentManifest) throw new Error(`No document manifest found for project ${projectName}`)
-  const pageInfo = documentManifest.pages
+  const pageInfoPath = join(outputDir, 'page-info.json')
+
+  if (!existsSync(pageInfoPath)) {
+    throw new Error(`No page-info.json found for project ${projectName}`)
+  }
+
+  const pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
   const toc = []
 
   // Compute "Chapter N" display titles (same logic as unified-server)
@@ -118,19 +121,19 @@ function extractToc(projectName) {
 function buildSearchIndex(projectName) {
   const outputDir = join(PROJECTS_DIR, projectName, 'output')
   const searchJsonPath = join(outputDir, 'search.json')
+  const pageInfoPath = join(outputDir, 'page-info.json')
 
   if (!existsSync(searchJsonPath)) {
     console.warn(`No search.json found for project ${projectName} — skipping search index`)
     return
   }
-  const documentManifest = readDocumentManifest(outputDir)
-  if (!documentManifest) {
-    console.warn(`No document manifest found — skipping search index`)
+  if (!existsSync(pageInfoPath)) {
+    console.warn(`No page-info.json found — skipping search index`)
     return
   }
 
   const quartoSearch = JSON.parse(readFileSync(searchJsonPath, 'utf8'))
-  const pageInfo = documentManifest.pages
+  const pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
 
   // Build filename → 1-indexed page number map
   const fileToPage = {}

@@ -41,7 +41,7 @@ const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]
 const MANIFEST = ['fig.png', 'main.tex', 'notes.tex']
 
 async function paperWithAFigure(name) {
-  createProject({ name, title: name, mainFile: 'main.tex', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
+  createProject({ name, title: name, mainFile: 'main.tex', format: 'svg' })
   const lifecycle = await sourceLifecycleStore(name)
   const files = [figure(PNG), chapter('main.tex', 'opening\n'), chapter('notes.tex', 'notes\n')]
   const booted = lifecycle.bootstrap({ expectedRevision: null, sourceManifest: MANIFEST, files })

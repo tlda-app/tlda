@@ -47,7 +47,7 @@ test('remote routes expose token writeability and keep revision reads inside the
     const base = `http://127.0.0.1:${server.address().port}/api/projects`
     const created = await fetch(base, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'fixture', mainFile: 'main.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' }),
+      body: JSON.stringify({ name: 'fixture', mainFile: 'main.md', format: 'markdown' }),
     })
     assert.equal(created.status, 201)
 

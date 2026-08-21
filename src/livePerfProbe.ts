@@ -303,7 +303,7 @@ export function installLivePerfProbe(
     },
     document: {
       name: documentInfo.name,
-      view: documentInfo.view.kind,
+      format: documentInfo.format || 'svg',
       roomId,
       manifestPages: documentInfo.pages.length,
       targets: documentInfo.targets?.map(target => ({ name: target.name, pages: target.pages })) || [],

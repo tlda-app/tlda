@@ -65,6 +65,7 @@ import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
 import { FleetChatTool } from './tools/FleetChatTool'
 import { FleetAgentsTool } from './tools/FleetAgentsTool'
+import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 import { FleetSearchTool } from './tools/FleetSearchTool'
 import { FleetInboxTool } from './tools/FleetInboxTool'
 import { ClusterTool } from './tools/ClusterTool'
@@ -437,7 +438,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const book = useBook()
   const recordingProjectName = book?.bookName ?? projectName
 
-  const isPresentation = document.view.capabilities.presentation
+  const isPresentation = document.format === 'slides'
   const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
 
   // Role only meaningful in presentation (slides) format
@@ -673,7 +674,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
 
   // n/p keyboard shortcuts for multipage HTML: switch TLDraw pages
   useEffect(() => {
-    if (document.view.kind !== 'html-pages') return
+    if (document.format !== 'html') return
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -713,8 +714,8 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         // Phone: drop the TLDraw/Format toolbar entirely — most tools aren't usable
         // on a phone (Skip's call). The phone control scheme is the bottom-right
         // button cluster instead. iPad/tablet presentation keeps normal chrome.
-        Toolbar: () => IS_PHONE ? null : <FormatToolbar view={document.view} />,
-        HelperButtons: () => isPresentation ? null : <PenHelperButtons view={document.view} />,
+        Toolbar: () => IS_PHONE ? null : <FormatToolbar format={document.format} />,
+        HelperButtons: () => isPresentation ? null : <PenHelperButtons format={document.format} />,
         InFrontOfTheCanvas: () => chrome,
       }
     },
@@ -725,12 +726,11 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const projectContextValue = useMemo(() => ({
     projectName,
     title: document.title || document.name,
-    view: document.view,
-    pages: document.pages.map((p, index) => ({
+    format: document.format,
+    pages: document.pages.map(p => ({
       bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
       width: p.width,
       height: p.height,
-      title: document.slideInfo?.[index]?.title,
       textData: p.textData,
       shapeId: p.shapeId,
       tldrawPageId: p.tldrawPageId,
@@ -1064,7 +1064,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           onClose={() => setScreenshotCapture(null)}
         />
       )}
-      {panelsLocal && getFormatConfig(document.view).showScrollyOverlay && editorMounted && editorRef.current && (
+      {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (
         <ScrollyOverlay mainEditor={editorRef.current} />
       )}
       {shadowVisible && shadowTimeBounds && (
@@ -1200,7 +1200,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           // Load source map (labels index) for ref resolution.
           // For multi-target docs, pass targets so per-target source-maps are merged
           // with global page offsets — the bare alias only covers the primary target.
-          if (document.view.kind === 'svg-pages' && document.view.capabilities.sourceMapping) {
+          if (!HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')) {
             sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
           }
 
@@ -1273,7 +1273,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           // Set global document info for synctex anchoring
           setCurrentDocumentInfo({
             name: document.name,
-            view: document.view,
+            format: document.format,
             pages: document.pages.map(p => ({
               bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
               width: p.width,
@@ -1434,7 +1434,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
               if (session?.tool) {
                 try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
               } else {
-                const home = getHomeTool(getFormatConfig(document.view))
+                const home = getHomeTool(getFormatConfig(document.format))
                 if (home !== 'select') {
                   editor.setCurrentTool(home)
                 }

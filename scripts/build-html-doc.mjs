@@ -688,7 +688,7 @@ ${processedChunks[i].html.join('\n')}
     }
   }
 
-  // --- Step 4: Write the document manifest ---
+  // --- Step 4: Write page-info.json (dimensions per page) ---
   const pageInfo = pageFiles.map((file, i) => {
     const entry = {
       file,
@@ -705,20 +705,8 @@ ${processedChunks[i].html.join('\n')}
   })
 
   fs.writeFileSync(
-    path.join(outDir, 'document-manifest.json'),
-    JSON.stringify({
-      version: 1,
-      kind: 'tlda-document',
-      source: { format: 'html', renderer: 'identity' },
-      document: { format: 'html' },
-      pages: pageInfo,
-      assets: [],
-      sourceMapping: 'none',
-      view: {
-        kind: 'html-pages',
-        capabilities: { presentation: false, sourceMapping: false, searchableText: false },
-      },
-    }, null, 2)
+    path.join(outDir, 'page-info.json'),
+    JSON.stringify(pageInfo, null, 2)
   )
 
   // --- Step 4b: Generate TOC from headings ---
@@ -903,7 +891,7 @@ ${processedChunks[i].html.join('\n')}
 
   // --- Step 5: Update manifest ---
   const { updateDoc } = await import('./manifest.mjs')
-  updateDoc(docName, { name: docTitle, pages: pageFiles.length, sourceFormat: 'html', renderer: 'identity', documentFormat: 'html' })
+  updateDoc(docName, { name: docTitle, pages: pageFiles.length, format: 'html' })
 
   console.log('')
   console.log(`Done! ${pageFiles.length} pages written to ${outDir}`)

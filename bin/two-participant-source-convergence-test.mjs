@@ -23,7 +23,7 @@ function suppressBuilds(name) {
 }
 
 try {
-  createProject({ name: 'two-participant-source', title: 'Two participant source', mainFile: 'main.tex', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
+  createProject({ name: 'two-participant-source', title: 'Two participant source', mainFile: 'main.tex', format: 'svg' })
   await updateProject('two-participant-source', { pages: 1, buildStatus: 'success' })
   suppressBuilds('two-participant-source')
   const lifecycle = await sourceLifecycleStore('two-participant-source')
@@ -60,7 +60,7 @@ try {
   assert.equal((await lifecycle.snapshotFile(bob.revision, 'notes.tex')).toString(), 'bob notes\n')
   assert.equal((await lifecycle.readAuthority()).currentRevision, bob.revision.id)
 
-  createProject({ name: 'two-participant-conflict', title: 'Two participant conflict', mainFile: 'main.tex', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
+  createProject({ name: 'two-participant-conflict', title: 'Two participant conflict', mainFile: 'main.tex', format: 'svg' })
   await updateProject('two-participant-conflict', { pages: 1, buildStatus: 'success' })
   suppressBuilds('two-participant-conflict')
   const conflictLifecycle = await sourceLifecycleStore('two-participant-conflict')

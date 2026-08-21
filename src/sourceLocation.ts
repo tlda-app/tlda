@@ -2,7 +2,6 @@ export type SourceLocationReason =
   | 'missing-iframe'
   | 'missing-line-anchor'
   | 'missing-synctex'
-  | 'source-unavailable'
   | 'ambiguous'
   | 'unresolved'
 
@@ -10,7 +9,6 @@ const SOURCE_LOCATION_REASONS = new Set<SourceLocationReason>([
   'missing-iframe',
   'missing-line-anchor',
   'missing-synctex',
-  'source-unavailable',
   'ambiguous',
   'unresolved',
 ])

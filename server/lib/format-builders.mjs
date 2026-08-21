@@ -1,16 +1,22 @@
 /**
- * Identity-renderer adapter implementations.
+ * Format-specific build logic for non-SVG project formats.
  *
- * Each function returns a BuildResult. Publication and all success side
- * effects belong to buildDocument().
+ * Each builder: copies source → output, generates page-info.json,
+ * updates project metadata, signals reload to viewers.
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
 import { join, basename } from 'path'
 import { sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
+import { getBuildReporter } from './build-runner.mjs'
 import { generateSlidesPageInfo } from './slides-parser.mjs'
+import { buildMarkdownDocument } from './build-markdown.mjs'
+import { buildQmdDocument } from './build-qmd.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
-import { createDocumentManifest } from './document-manifest.mjs'
+
+function signalReload(name, pages) {
+  getBuildReporter().broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: Date.now() })
+}
 
 /**
  * Declare paper scope for the formats whose project IS a rendered document.
@@ -39,7 +45,18 @@ async function writeSourceScope(name, srcDir) {
   )
 }
 
-export async function buildHtmlDocument(name) {
+export async function buildMarkdown(name) {
+  await buildMarkdownDocument(name, (msg) => console.log(msg))
+  await getBuildReporter().regenerateBookTocs(name)
+}
+
+export async function buildQmd(name) {
+  await buildQmdDocument(name, (msg) => console.log(msg))
+  await getBuildReporter().regenerateBookTocs(name)
+}
+
+export async function buildHtml(name) {
+  const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
   mkdirSync(outDir, { recursive: true })
@@ -61,9 +78,13 @@ export async function buildHtmlDocument(name) {
 
   // A tlda-aware Quarto render declares its page order and source coordinates.
   const renderedProject = readTldaManifest(outDir)
+  const pageInfoPath = join(outDir, 'page-info.json')
   let pageInfo
   if (renderedProject) {
     pageInfo = renderedProject.pageInfo
+    writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
+  } else if (existsSync(pageInfoPath)) {
+    pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
   } else {
     const htmlFiles = readdirSync(outDir).filter(f => f.endsWith('.html') && !f.startsWith('_'))
     pageInfo = htmlFiles.map(f => {
@@ -72,20 +93,17 @@ export async function buildHtmlDocument(name) {
       const title = titleMatch ? titleMatch[1].replace(/\s*[-–|].*$/, '').trim() : basename(f, '.html')
       return { file: f, width: 800, height: 1000, title }
     })
+    writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
   }
 
-  const manifest = createDocumentManifest({
-    format: 'html', sourceFormat: 'html', renderer: 'identity', documentFormat: 'html',
-  }, pageInfo, { sourceMapping: pageInfo.some(page => page.source) ? 'page-source' : 'none', view: {
-    kind: 'html-pages', capabilities: { presentation: false, sourceMapping: pageInfo.some(page => page.source), searchableText: false },
-  } })
-
   await writeSourceScope(name, srcDir)
+  await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
+  signalReload(name, pageInfo.length)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
-  return { manifest }
 }
 
-export async function buildSlidesDocument(name) {
+export async function buildSlides(name) {
+  const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
   mkdirSync(outDir, { recursive: true })
@@ -100,14 +118,10 @@ export async function buildSlidesDocument(name) {
 
   const htmlContent = readFileSync(join(outDir, htmlFiles[0]), 'utf8')
   const pageInfo = generateSlidesPageInfo(htmlContent, htmlFiles[0])
-  const manifest = createDocumentManifest({
-    format: 'slides', sourceFormat: 'html', renderer: 'identity', documentFormat: 'slides',
-    mainFile: htmlFiles[0],
-  }, pageInfo, { sourceMapping: 'none', view: {
-    kind: 'slides', capabilities: { presentation: true, sourceMapping: false, searchableText: false },
-  } })
+  writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
 
   await writeSourceScope(name, srcDir)
+  await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
+  signalReload(name, pageInfo.length)
   console.log(`[slides] ${name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
-  return { manifest }
 }

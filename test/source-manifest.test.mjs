@@ -18,20 +18,20 @@ test('Quarto freeze directories are render output', () => {
 })
 
 test('declared main file is source even when its extension is not generic source', () => {
-  const qmdBook = { sourceFormat: 'qmd', mainFile: '_quarto_book.yml' }
+  const qmdBook = { format: 'qmd', mainFile: '_quarto_book.yml' }
   assert.equal(isSourceFilePath('_quarto_book.yml', qmdBook), true)
   assert.deepEqual(normalizeSourceManifest(['_quarto_book.yml'], qmdBook), ['_quarto_book.yml'])
 })
 
 test('markdown main file rule does not admit unrelated markdown beside TeX', () => {
-  const latex = { sourceFormat: 'tex', mainFile: 'paper.md' }
+  const latex = { format: 'svg', mainFile: 'paper.md' }
   assert.equal(isSourceFilePath('paper.md', latex), true)
   assert.equal(isSourceFilePath('notes.md', latex), false)
   assert.equal(isSourceFilePath('notes.md', { ...latex, referencedRoots: ['notes.md'] }), true)
 })
 
 test('declared managed membership is extension-independent while discovery stays conservative', () => {
-  const latex = { sourceFormat: 'tex', mainFile: 'main.tex' }
+  const latex = { format: 'svg', mainFile: 'main.tex' }
   for (const path of ['data/model.bin', 'figures/input.pdf', 'assets/extensionless']) {
     assert.equal(isSourceFilePath(path, latex), false)
     assert.equal(isManagedSourcePath(path, latex), true)
@@ -42,15 +42,6 @@ test('declared managed membership is extension-independent while discovery stays
   )
   assert.equal(isManagedSourcePath('.git/config', latex), false)
   assert.equal(isManagedSourcePath('main.aux', latex), false)
-})
-
-test('a native PDF root is source without admitting generated PDFs in TeX projects', () => {
-  assert.equal(isSourceFilePath('book.pdf', { sourceFormat: 'pdf', mainFile: 'book.pdf' }), true)
-  assert.deepEqual(
-    normalizeSourceManifest(['book.pdf'], { sourceFormat: 'pdf', mainFile: 'book.pdf' }),
-    ['book.pdf'],
-  )
-  assert.equal(isSourceFilePath('paper.pdf', { sourceFormat: 'tex', mainFile: 'paper.tex' }), false)
 })
 
 test('qmd batch manifests carry only server paths surviving the final manifest', () => {
@@ -70,7 +61,7 @@ test('qmd source scan keeps main yml and skips symlinks outside the source root'
   writeFileSync(join(outside, '.mcp.json'), '{"outside":true}\n')
   symlinkSync(join(outside, '.mcp.json'), join(root, '.mcp.json'))
 
-  const hashes = collectProjectSourceHashes(root, { sourceFormat: 'qmd', mainFile: '_quarto_book.yml' })
+  const hashes = collectProjectSourceHashes(root, { format: 'qmd', mainFile: '_quarto_book.yml' })
   assert.equal('_quarto_book.yml' in hashes, true)
   assert.equal('chapter.qmd' in hashes, true)
   assert.equal('.mcp.json' in hashes, false)

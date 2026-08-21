@@ -86,8 +86,11 @@ export function TocTab({ query = '' }: { query?: string }) {
     setCollapsed(null)
     void (async () => {
       try {
-        if (doc.view.capabilities.presentation) {
-          if (!cancelled) setSlideTitles(doc.pages.map(page => page.title || ''))
+        // Slides format: load TOC from page-info.json
+        if (doc.format === 'slides') {
+          const response = await fetch(`/docs/${doc.projectName}/page-info.json`)
+          const entries = response.ok ? await response.json() as Array<{ title?: string }> : null
+          if (!cancelled && entries) setSlideTitles(entries.map(entry => entry.title || ''))
           return
         }
 
@@ -140,7 +143,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       }
     })()
     return () => { cancelled = true }
-  }, [doc?.projectName, doc?.view, doc?.pages, doc?.targets, reloadCount])
+  }, [doc?.projectName, doc?.format, doc?.targets, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!doc) return
@@ -196,7 +199,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       const createRes = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: slug, title, mainFile: 'content.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' }),
+        body: JSON.stringify({ name: slug, title, format: 'markdown', mainFile: 'content.md' }),
       })
       if (!createRes.ok) {
         const err = await createRes.json().catch(() => ({}))
@@ -267,7 +270,8 @@ export function TocTab({ query = '' }: { query?: string }) {
     onDrop: handleTocDrop,
   } : {}
 
-  if (doc?.view.capabilities.presentation && slideTitles) {
+  // Slides format: render TOC from page-info.json titles
+  if (doc?.format === 'slides' && slideTitles) {
     const normalizedQuery = query.trim().toLowerCase()
     const visibleSlides = slideTitles
       .map((title, i) => ({ title, i }))
@@ -431,7 +435,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       {tocAdding && (
         <div className="toc-item toc-adding">Adding {tocAdding}...</div>
       )}
-      {ctx?.onToggleRole && hasPresenterPrivilege && doc?.view.capabilities.presentation && (
+      {ctx?.onToggleRole && hasPresenterPrivilege && doc?.format === 'slides' && (
         <div
           className="toc-diff-hint"
           onClick={() => ctx.onToggleRole?.()}

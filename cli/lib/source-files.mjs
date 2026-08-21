@@ -93,7 +93,7 @@ export function collectSourceHashes(dir, context = {}) {
 /** Collect hashes through the project's format-specific source-set adapter. */
 export function collectProjectSourceHashes(dir, context = {}) {
   const resolvedContext = withReferencedRoots(dir, context)
-  if (resolvedContext.sourceFormat !== 'md' || !resolvedContext.mainFile) {
+  if (resolvedContext.format !== 'markdown' || !resolvedContext.mainFile) {
     return collectSourceHashes(dir, resolvedContext)
   }
 

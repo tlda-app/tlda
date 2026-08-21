@@ -41,7 +41,7 @@ function classroomServer() {
       } else if (req.method === 'POST' && req.url === '/api/projects') {
         projects.set(body.name, body)
         res.statusCode = 201
-        res.end(JSON.stringify({ name: body.name, title: body.title, mainFile: body.mainFile, sourceFormat: body.sourceFormat, renderer: body.renderer, documentFormat: body.documentFormat }))
+        res.end(JSON.stringify({ name: body.name, title: body.title, mainFile: body.mainFile, format: body.format }))
       } else if (req.method === 'GET' && req.url?.startsWith('/api/projects/')) {
         const name = decodeURIComponent(req.url.split('/').pop())
         const project = projects.get(name)
@@ -49,7 +49,7 @@ function classroomServer() {
           res.statusCode = 404
           res.end(JSON.stringify({ error: 'Project not found' }))
         } else {
-          res.end(JSON.stringify({ name: project.name, title: project.title, mainFile: project.mainFile, sourceFormat: project.sourceFormat, renderer: project.renderer, documentFormat: project.documentFormat }))
+          res.end(JSON.stringify({ name: project.name, title: project.title, mainFile: project.mainFile, format: project.format }))
         }
       } else if (req.method === 'POST' && req.url === '/api/classroom/courses') {
         res.end(JSON.stringify({ id: body.id, title: body.title }))
@@ -157,9 +157,9 @@ test('classroom setup posts course, assignment, and frozen handout through exist
       'POST /api/classroom/courses/qtm285/assignments',
       'PUT /api/classroom/assignments/hw1/template',
     ])
-    assert.deepEqual(fixture.requests[0].body, { name: 'hw1-source', title: 'Homework 1 source', mainFile: 'homework/week0-homework.qmd', sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html' })
-    assert.deepEqual(fixture.requests[2].body, { name: 'hw1-handout', title: 'Homework 1 handout', mainFile: 'hw1-handout.html', sourceFormat: 'html', renderer: 'identity', documentFormat: 'html' })
-    assert.deepEqual(fixture.requests[4].body, { name: 'hw1-solutions', title: 'Homework 1 solutions', mainFile: 'hw1-solution.html', sourceFormat: 'html', renderer: 'identity', documentFormat: 'html' })
+    assert.deepEqual(fixture.requests[0].body, { name: 'hw1-source', title: 'Homework 1 source', mainFile: 'homework/week0-homework.qmd', format: 'qmd' })
+    assert.deepEqual(fixture.requests[2].body, { name: 'hw1-handout', title: 'Homework 1 handout', mainFile: 'hw1-handout.html', format: 'html' })
+    assert.deepEqual(fixture.requests[4].body, { name: 'hw1-solutions', title: 'Homework 1 solutions', mainFile: 'hw1-solution.html', format: 'html' })
     assert.equal(daemon.calls.length, 3)
     assert.deepEqual(daemon.calls.map(call => call.op), ['project-source-link', 'project-source-link', 'project-source-link'])
     assert.deepEqual(daemon.calls.map(call => call.params.project), ['hw1-source', 'hw1-handout', 'hw1-solutions'])
