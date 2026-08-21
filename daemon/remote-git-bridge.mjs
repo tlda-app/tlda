@@ -14,11 +14,16 @@ export function createRemoteGitBridge({ sourceDir, remote = 'origin', branch = '
   }
   async function rev(ref) { try { return (await git(['rev-parse', '--verify', `${ref}^{commit}`])).stdout.trim() } catch { return null } }
   async function ancestor(a, b) { try { await git(['merge-base', '--is-ancestor', a, b]); return true } catch { return false } }
+  async function conflictedFiles() {
+    return (await git(['diff', '--name-only', '--diff-filter=U', '-z'])).stdout.split('\0').filter(Boolean)
+  }
 
   async function pollOnce() {
     await git(['fetch', '--no-tags', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`])
     const fetched = await rev(`refs/remotes/${remote}/${branch}`)
     const observed = await rev(observedRef)
+    const held = await conflictedFiles()
+    if (held.length) return { ok: false, status: 'conflicted', conflicted: held, revision: fetched }
     if (!fetched || fetched === observed) return { ok: true, status: 'unchanged', revision: fetched }
     await git(['update-ref', observedRef, fetched, observed || '0000000000000000000000000000000000000000'])
     const published = await rev(publishedRef)
@@ -26,7 +31,7 @@ export function createRemoteGitBridge({ sourceDir, remote = 'origin', branch = '
     try {
       await git(['merge', '--no-edit', fetched])
     } catch (error) {
-      const conflicted = (await git(['diff', '--name-only', '--diff-filter=U', '-z'])).stdout.split('\0').filter(Boolean)
+      const conflicted = await conflictedFiles()
       if (!conflicted.length) throw error
       return { ok: false, status: 'conflicted', conflicted, revision: fetched }
     }
