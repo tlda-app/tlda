@@ -1,7 +1,7 @@
 /* Theme tokens live above the overlay so a theme can replace them. */
 :root {
-  --fleet-nudge-guide-color: color-mix(in srgb, var(--color-text-1, #1f2937) 45%, transparent);
-  --fleet-nudge-guide-tone: var(--ui-tone-dormant, 0.28);
+  --fleet-nudge-guide-color: color-mix(in srgb, var(--color-text-1, #1f2937) 35%, transparent);
+  --fleet-nudge-guide-tone: var(--ui-tone-dormant, 0.22);
   --fleet-nudge-guide-capture-color: color-mix(in srgb, var(--color-primary, #2563eb) 72%, var(--color-text-1, #1f2937));
   --fleet-nudge-guide-capture-tone: var(--ui-tone-rest, 0.62);
 }

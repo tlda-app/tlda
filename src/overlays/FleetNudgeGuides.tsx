@@ -11,7 +11,7 @@ import {
 } from '../shapes/fleet-nudge-guides'
 import './FleetNudgeGuides.css'
 
-type ScreenLine = { key: string; x: number; y: number; length: number; vertical: boolean }
+type ScreenLine = { key: string; x: number; y: number; length: number; vertical: boolean; highlighted: boolean }
 
 /**
  * Draws the line a soft snap is pulling toward, for as long as the pull is on.
@@ -62,6 +62,7 @@ export function FleetNudgeGuides() {
           y: from.y,
           length: guide.axis === 'x' ? to.y - from.y : to.x - from.x,
           vertical: guide.axis === 'x',
+          highlighted: guide.highlighted === true,
         }
       }))
       raf = requestAnimationFrame(project)
@@ -77,7 +78,7 @@ export function FleetNudgeGuides() {
       {lines.map(line => (
         <div
           key={line.key}
-          className="fleet-nudge-guide fleet-nudge-guide--capture"
+          className={`fleet-nudge-guide${line.highlighted ? ' fleet-nudge-guide--capture' : ''}`}
           data-snap-capture="true"
           style={{
             left: line.x,
