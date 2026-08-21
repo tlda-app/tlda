@@ -899,6 +899,9 @@ async function cmdCreate() {
 
   const mainFile = mainArg || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
+  const effectiveDocumentRoots = projectDocumentRoots.length > 0
+    ? projectDocumentRoots
+    : normalizeDocumentRoots([mainFile], { mainFile, format: 'svg' })
 
   await bindLocalSource()
   console.log(dim(`  Source: ${dir}`))
@@ -906,11 +909,11 @@ async function cmdCreate() {
 
   // Create or update project on server
   try {
-    await createProjectApi({ name, title, mainFile, documentRoots: projectDocumentRoots })
+    await createProjectApi({ name, title, mainFile, documentRoots: effectiveDocumentRoots })
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
-      await api('PATCH', `/api/projects/${name}/document-roots`, { documentRoots: projectDocumentRoots })
+      await api('PATCH', `/api/projects/${name}/document-roots`, { documentRoots: effectiveDocumentRoots })
       console.log(`Project "${name}" exists, pushing files.`)
     } else {
       throw e
