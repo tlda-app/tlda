@@ -656,6 +656,29 @@ router.patch('/:name/members', requireRw, async (req, res) => {
   }
 })
 
+router.patch('/:name/document-roots', requireRw, async (req, res) => {
+  const project = await readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!Array.isArray(req.body?.documentRoots) || req.body.documentRoots.length === 0) {
+    return res.status(400).json({ error: 'documentRoots must be a non-empty array' })
+  }
+  try {
+    const documentRoots = normalizeDocumentRoots(req.body.documentRoots, {
+      mainFile: project.mainFile,
+      format: project.format,
+    })
+    for (const root of documentRoots) validateSourceFilePath(req.params.name, root.path)
+    if (!documentRoots.some(root => root.path === project.mainFile)) {
+      return res.status(400).json({ error: 'documentRoots must include the project mainFile' })
+    }
+    const updated = await updateProject(req.params.name, { documentRoots })
+    emitGlobalEvent('project-changed', { name: req.params.name })
+    res.json({ ok: true, project: updated })
+  } catch (error) {
+    res.status(400).json({ error: error.message })
+  }
+})
+
 // List source files
 router.get('/:name/files', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
