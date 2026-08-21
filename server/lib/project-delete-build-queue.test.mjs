@@ -54,3 +54,41 @@ test('deleting and recreating a project can retry the same content-addressed rev
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('missing recreated-project lifecycle re-drives only a terminal identical admission', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-readmit-build-'))
+  const starts = []
+  const store = new BuildQueueStore(join(root, 'build-queue.sqlite'))
+  const queue = createBuildQueue({
+    store,
+    getProjectsDir: () => join(root, 'projects'),
+    transport: {
+      start(job, handlers) {
+        starts.push({ job, handlers })
+        return { cancel() { void handlers.onExit(null) } }
+      },
+    },
+  }, { maxConcurrency: 1 })
+  try {
+    const proposal = { revision: 'same-revision', daemonId: 'mini-testing', branch: 'main' }
+    const first = await queue.admitBuild('paper', proposal)
+    starts[0].handlers.onMessage({ t: 'done', ok: false, error: 'old project failed' })
+    await starts[0].handlers.onExit(1)
+
+    const retried = await queue.admitBuild('paper', proposal, { retryTerminal: true })
+    assert.notEqual(retried.id, first.id)
+    assert.equal(starts.length, 2)
+
+    const activeReplay = await queue.admitBuild('paper', proposal, { retryTerminal: true })
+    assert.equal(activeReplay.id, retried.id)
+    assert.equal(starts.length, 2)
+    await starts[1].handlers.onExit(0)
+
+    const currentProjectReplay = await queue.admitBuild('paper', proposal)
+    assert.equal(currentProjectReplay.id, retried.id)
+    assert.equal(starts.length, 2)
+  } finally {
+    store.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})

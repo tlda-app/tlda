@@ -9098,10 +9098,13 @@ async function handleDaemonWsMessage(ws, msg) {
     try {
       const parsed = parseDaemonProposalRef(ref, ws._daemonKey)
       if (!parsed || parsed.revision !== revision) throw new Error(`invalid proposal ref for ${ws._daemonKey || 'unknown daemon'}`)
-      const git = await (await sourceLifecycleStore(project)).gitRepository()
+      const lifecycle = await sourceLifecycleStore(project)
+      const git = await lifecycle.gitRepository()
       const proposal = (await listProposalRefs(git.gitDir)).find(item => item.ref === ref && item.revision === revision)
       if (!proposal) throw new Error(`${project}: proposal ref is not present`)
-      const row = await admitProposal({ project, ...proposal })
+      const hasCurrentLifecycle = lifecycle.listRevisionLifecycles(project)
+        .some(item => item.sourceRevision === revision)
+      const row = await admitProposal({ project, ...proposal }, { retryTerminal: !hasCurrentLifecycle })
       if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: { ok: true, project, revision, submissionId: row.id } }))
     } catch (e) {
       if (msg.id) ws.send(JSON.stringify({ id: msg.id, error: e.message }))

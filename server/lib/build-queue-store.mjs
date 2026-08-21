@@ -67,6 +67,13 @@ export class BuildQueueStore {
     })()
   }
 
+  removeTerminalRevision(project, revision) {
+    return this.db.prepare(`
+      DELETE FROM build_submissions
+      WHERE project = ? AND revision = ? AND state IN ('complete','failed','killed')
+    `).run(project, revision).changes
+  }
+
   ring() {
     return new Map(this.db.prepare('SELECT daemon_id, position FROM build_ring ORDER BY position DESC').all()
       .map(row => [row.daemon_id, row.position]))
