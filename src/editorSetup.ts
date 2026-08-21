@@ -254,7 +254,7 @@ async function fetchPage(
 ): Promise<{ index: number; svgDoc: Document } | null> {
   const pageBasePath = page.targetBasePath || basePath
   const pageNum = page.pageInTarget || (index + 1)
-  const url = `${pageBasePath}page-${pageNum}.svg`
+  const url = getPageUrl(index) || `${pageBasePath}page-${pageNum}.svg`
   const svgText = await fetchCachedSvgPage(url, buildHash, { cold: true })
   if (svgText === null) return null
   const svgDoc = processPage(page, svgText)
