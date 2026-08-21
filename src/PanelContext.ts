@@ -39,6 +39,10 @@ export interface PanelContextValue {
   // Currently displayed shadow version (null = showing the current project).
   // Used to stamp outgoing chats with the project version the user is viewing.
   shadowActiveVersion?: { hash: string; timestamp: number } | null
+  wholeDocumentDiffVisible?: boolean
+  wholeDocumentDiffLoading?: boolean
+  wholeDocumentDiffError?: string | null
+  onToggleWholeDocumentDiff?: () => void
 }
 
 export const ProjectContext = createContext<ProjectContextValue | null>(null)

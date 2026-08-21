@@ -132,6 +132,7 @@ import { usePanPerfLog, useLongTaskProfileLog } from './hooks/usePanPerfLog'
 import { STORE_WS, LICENSE_KEY as CFG_LICENSE_KEY } from './activeConfig'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
 import { useDividerDiff } from './hooks/useDividerDiff'
+import { useWholeDocumentDiff } from './hooks/useWholeDocumentDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
@@ -529,6 +530,19 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
   useDividerDiff(editorRef, projectName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)
+  const {
+    wholeDocumentDiffVisible,
+    wholeDocumentDiffLoading,
+    wholeDocumentDiffError,
+    toggleWholeDocumentDiff,
+  } = useWholeDocumentDiff(
+    editorRef,
+    projectName,
+    shadowActiveVersion?.hash ?? null,
+    document.pages.length,
+    shadowColumnX,
+    shadowYOffset,
+  )
 
   // Side-by-side version comparison — relay Yjs signal to window event
   useEffect(() => {
@@ -828,7 +842,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     shadowHistoryVisible: shadowVisible,
     onToggleShadowHistory: toggleShadowOverlay,
     shadowActiveVersion,
-  }), [hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
+    wholeDocumentDiffVisible,
+    wholeDocumentDiffLoading,
+    wholeDocumentDiffError,
+    onToggleWholeDocumentDiff: shadowActiveVersion ? toggleWholeDocumentDiff : undefined,
+  }), [hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError, toggleWholeDocumentDiff])
 
   // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
   // shapes must remain visible to custom WM viewports; the HUD renders from the

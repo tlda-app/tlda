@@ -11,6 +11,7 @@ import { join } from 'path'
 import { access, cp, readFile, readdir, rm, writeFile } from 'fs/promises'
 import { exec as execCb, execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
+import { createHash } from 'crypto'
 const execAsync = promisify(execCb)
 const execFileAsync = promisify(execFileCb)
 import { requireRead, requireRw } from '../lib/auth.mjs'
@@ -194,7 +195,10 @@ async function _createHighlightShape(docName, span, color, xColumnOffset, yColum
   const xs = start.x + xColumnOffset
   const xe = end.x + xColumnOffset
   const w  = Math.max(xe - xs, 4)
-  const shapeId = `shape:diff-${Date.now()}-${Math.random().toString(36).slice(2,8)}`
+  const stableKey = triggerId.startsWith('whole-doc:')
+    ? createHash('sha256').update(JSON.stringify({ triggerId, span, color, xColumnOffset, yColumnOffset })).digest('hex').slice(0, 24)
+    : `${Date.now()}-${Math.random().toString(36).slice(2,8)}`
+  const shapeId = `shape:diff-${stableKey}`
   await putShape(`doc-${docName}`, {
     id: shapeId, type: 'highlight', typeName: 'shape',
     x: xs, y: start.y + yColumnOffset - 3,

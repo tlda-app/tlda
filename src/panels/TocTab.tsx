@@ -444,6 +444,17 @@ export function TocTab({ query = '' }: { query?: string }) {
         </div>
       )}
       <div className="toc-bottom-controls">
+        {ctx?.onToggleWholeDocumentDiff && (
+          <button
+            className={`toc-diff-hint history-compare-btn${ctx.wholeDocumentDiffVisible ? ' active' : ''}`}
+            type="button"
+            onClick={ctx.onToggleWholeDocumentDiff}
+            disabled={ctx.wholeDocumentDiffLoading}
+            title={ctx.wholeDocumentDiffError || 'Highlight every change between the current and historical document'}
+          >
+            {ctx.wholeDocumentDiffLoading ? 'Diffing…' : ctx.wholeDocumentDiffError ? 'Diff failed' : ctx.wholeDocumentDiffVisible ? 'Hide diff' : 'Show diff'}
+          </button>
+        )}
         <PlaceStackNav />
         <CameraLinkToggle />
         <JoinVoiceVideoToggle />
