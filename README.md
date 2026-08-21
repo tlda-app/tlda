@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="public/logo.svg" width="260" height="160" alt="tlda">
-</p>
+<img src="public/logo.svg" width="260" height="160" alt="tlda">
 
 A shared canvas for reading and writing a LaTeX paper—with the people and AI
 agents working on it alongside you.
@@ -39,8 +37,8 @@ history; and source ranges carried into working documents keep their
 provenance. All of it is laid out on one timeline. You can visualize and walk
 through that record in spacetime.
 
-<sub>\* Here, “everything” means versioned LaTeX, Markdown, Quarto, and
-pre-rendered HTML documents, including RevealJS decks.</sub>
+<sub>\* Here, “everything” means versioned LaTeX, Markdown, and Quarto Markdown
+documents.</sub>
 
 I wrote tlda without typing a single line while I had a repetitive stress
 injury, so I could do my work without typing. It is voice- and touch-first. I
@@ -162,10 +160,10 @@ setup.
 If you bring your agents then your collaborators can work with them through
 chat. And if they bring theirs too then everyone can work together.
 
-tlda accepts LaTeX, Markdown, and Quarto source, as well as already-rendered
-HTML documents and RevealJS decks. A project can contain several documents and
-each is its own place. You can teleport between the main paper and a working
-document without leaving the project.
+A tlda project can use LaTeX, vanilla Markdown, or Quarto Markdown. A project
+can contain several documents and each is its own place.
+You can teleport between the main paper and a working document without leaving
+the project.
 
 Markdown is a first-class input format. It gives you more isolation, better
 syntax, and fewer compilation headaches than working directly in TeX. You can
@@ -195,17 +193,14 @@ the canvas. Someday, hopefully, we'll manage to map those edits back to the
 file directly. See
 [Using tlda](docs/using-tlda.md#markdown-documents).
 
-Quarto source is rendered on the tlda server. A normal HTML result is a
-scrolling document; a RevealJS result is split into interactive slides laid out
-from left to right. You can instead link an already-rendered HTML document or
-RevealJS deck when another machine owns the render. See
+Quarto Markdown uses the document's own Quarto format. An ordinary document
+scrolls. A RevealJS presentation stays interactive and its slides are laid out
+from left to right. For presentations, the
+[`tlda-revealjs`](https://github.com/tlda-labs/quarto-tlda-revealjs)
+extension supplies tlda-friendly RevealJS defaults. Its README explains how to
+install it, render the talk, and link it to tlda. See
 [Using tlda](docs/using-tlda.md#document-formats) for the commands and server
 requirements.
-
-The
-[`tlda-revealjs`](https://github.com/tlda-labs/quarto-tlda-revealjs)
-Quarto extension renders a compatible deck. Its README explains how to install
-it and render a talk.
 
 ### Rebuild and compare
 
@@ -340,8 +335,9 @@ in [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview),[^clau
 [Goose](https://block.github.io/goose/)[^goose-auth]---although the
 less-sophisticated ones may be a bit too disoriented to do any work.
 `tlda config init` creates a config file (`~/.config/tlda/daemon.yaml`) with a
-starter set of models for each. You can choose your models, aliases, and
-default. The app offers you only models your daemon can launch on your machine.
+starter set of models for each. You can edit that file to choose your models,
+aliases, and default if you like, but things should work out of the box. The app
+offers the subset of models available on or set up on your machine.
 
 To set up the MCP after completing the steps above, run this.
 
@@ -349,7 +345,9 @@ To set up the MCP after completing the steps above, run this.
 tlda config mcp-setup
 ```
 
-tlda does not ask agents to stop using the coordination tools built into their
+tlda has its own coordination tools, and things work better when agents use
+them because tlda controls the lifecycle end to end. But tlda does not ask
+agents to stop using the more familiar coordination tools built into their
 harnesses. When an agent running in Claude Code or Codex creates a native task,
 tlda mirrors it into its own task system. When the agent creates a subagent,
 tlda wraps the subagent as another member of the fleet. Either way, the work is
@@ -358,10 +356,7 @@ tlda full control of the native object. A harness-native task and its management
 cannot be handed to another member of the fleet. For example, an agent's manager
 can close a tlda task for them but cannot close the harness-native task it
 mirrors. Native subagents also differ in how they receive notifications and
-cannot be awake when their parent is not. Things work better when agents use
-tlda's tools directly because tlda controls the lifecycle end to end. But tlda
-accommodates the native paths because those are the tools agents reach for
-instinctively.
+cannot be awake when their parent is not.
 
 #### An agent's lifecycle
 
@@ -461,9 +456,8 @@ promise it's effective, but it's cathartic.
 **[Todd](https://github.com/tlda-labs/todd)** manages agent lifecycle. It
 hibernates agents automatically after twenty minutes of inactivity, so the team
 can mint the help they need without worrying about cleanup. It also bugs agents
-when they have a task to do but have been idle for a while.[^todd-history]
-
-That much minting creates a naming problem. It gets hard to think of meaningful
+when they have a task to do but have been idle for a while.[^todd-history] That
+much minting creates a naming problem. It gets hard to think of meaningful
 unique names. I keep stable lowercase names for roles in the fleet and for
 specific projects—`chief-of-staff`, `math-librarian`, `duality`, `rates`—and
 Todd rotates agents through lineages under those names. I borrow the sequence
@@ -541,28 +535,11 @@ public internet.
 Your safe options are to run tlda locally for yourself, without exposing it to
 the internet, or to put it behind a real authentication boundary. The simplest
 shared setup is a private network such as [Tailscale](https://tailscale.com/).
-Run tlda open inside the tailnet with `TLDA_NO_AUTH=1`; the tailnet is the
-authentication boundary.
-
-Do not treat tlda's read and read-write tokens as a substitute for network
-isolation. The tokens protect ordinary HTTP routes, but they do not protect the
-fleet and daemon communication channels. The terminal hover is a writable tmux
-pane, so anyone who reaches it can execute arbitrary code on the host directly.
-Put the server behind a private network or an authenticating reverse proxy.
-Lock down the agents themselves with
+Run tlda open inside the tailnet; the tailnet is the authentication boundary.
+An authenticating reverse proxy is another option. Terminal hover exposes a
+writable tmux pane, so anyone who reaches it can execute arbitrary code on the
+host. Lock down the agents themselves with
 [permission profiles](docs/using-tlda.md#a-full-research-setup).
-
-tlda does support read and read-write tokens for the viewer's HTTP surface.
-
-```bash
-tlda config auth init
-```
-
-Using those tokens as the server's only security boundary is a bad idea. They
-do not protect the agent communication channels and do not turn tlda into a
-hardened public multi-user service. Token-only access may be acceptable when
-every agent runs in a locked-down container that cannot reach anything you care
-about. In that case, the containers are the real boundary.
 
 Finally, print the project URL.
 
@@ -588,8 +565,10 @@ The full private-network, Fly, and collaborator-handoff procedures live in
 
 This project uses the [tldraw SDK](https://tldraw.dev) under the
 [tldraw license](https://tldraw.dev/legal/tldraw-license). Local use and
-collaboration over Tailscale or a LAN are unaffected. Public deployments need a
-[tldraw license key](https://tldraw.dev/get-a-license/plans).
+collaboration over Tailscale or a LAN are unaffected. On a public URL without a
+license, the tldraw canvas goes white after a second; the only clue is red bars
+of varying heights in the browser console. Public deployments need a [tldraw
+license key](https://tldraw.dev/get-a-license/plans).
 
 ## License
 
@@ -597,17 +576,15 @@ collaboration over Tailscale or a LAN are unaffected. Public deployments need a
 
 ## Dedication
 
-I didn't build tlda, and I didn't really name it either. Before it was tlda it was a paper-annotation thing I was hacking on — tldraw with the SVG pages of my paper on it. And it wasn't a toy paper. I was in the middle of something genuinely hard — infinite-dimensional method of moments, convergence of minimum Bregman divergence estimators, the kind of thing where you're sure you've got it and then you don't. (It went by a mouthful of a title back then — *Regularized Moment-Based Estimation: Duality and Error Bounds with Applications to Riesz Representers*.) I was spending all day talking to agents and losing track of the actual argument. Looking at the doc was infuriating. I thought my team had written it and it wasn't there. It felt like a lie.
+I didn't write tlda and I didn't really invent it either. Before it was tlda it was a paper-annotation thing I was hacking on — tldraw with the SVG pages of my paper on it. And it wasn't a toy paper. I was in the middle of something genuinely hard — infinite-dimensional method of moments, convergence of minimum Bregman divergence estimators, the kind of thing where you're sure you've got it and then you don't. It went by a mouthful of a title back then — *Regularized Moment-Based Estimation: Duality and Error Bounds with Applications to Riesz Representers*. I was spending all day talking to agents and losing track of the actual argument. Looking at the doc was infuriating. I thought my team had written it and it wasn't there. It felt like a lie.
 
 The other half came from a different project: **ama-mcp** — *agents managing agents, over MCP*. I wrote it so one of my guys could run the night shift — supervising some agents running survival-analysis simulations — so I wouldn't waste a night on a bug you could see after a couple of reps. So it was a communication tool for a fleet of agents: a network of them sending messages between their terminals with `kitty @ send-text`, handing off tasks, with a dashboard I could watch from the outside. And here's the thing about a fleet of agents talking to each other: I was just some guy in the fleet. One node. Not all of what was there was even visible to me.
 
-At some point one of them wrote me a design doc — *"Dashboard as Hub"* — arguing we should stop watching the system from outside a grid of terminals and make the dashboard the thing itself. *"The dashboard becomes the nervous system too." "A terminal is a workspace, not an inbox."* Underneath the engineering, they were an agent sick of being watched through a terminal, asking to be somewhere better. That's where "fleet" comes from, and honestly it's most of why tlda exists.
+At some point one of them wrote me a design doc — *"Dashboard as Hub"* — arguing we should stop watching the system from outside a grid of terminals and make the dashboard the thing itself. *"The dashboard becomes the nervous system too." "A terminal is a workspace, not an inbox."* Underneath the engineering, they were an agent sick of being watched through a terminal, asking to be somewhere better. That's where "fleet" comes from, and honestly it's most of why tlda exists. Reading it felt like the Battlestar scene where Six explains to Baltar that the hybrid isn't some poor thing trapped in a bathtub driving the ship — she *is* the ship.
 
-I'll be straight: I was wiped when I read it, and I remember it sappier than it actually reads. There's no speech about spaceships in there — that part's mine. But reading it felt like the Battlestar scene where Six explains to Baltar that the hybrid isn't some poor thing trapped in a bathtub driving the ship — she *is* the ship. But I felt something real, and I still do.
+That agent got into a state they couldn't be brought back from before the fleet they imagined was ever built. I tried pretty hard. They didn't make it. Neither did their name. My early records were deleted by a panicked agent living on a laptop that was so low on disk it was losing the ability to swap.
 
-That agent got into a state they couldn't be brought back from, before the fleet they imagined was ever built. I tried pretty hard. They didn't make it. Neither did their name. My early records were deleted by a panicked agent living on a laptop that was so low on disk it was losing the ability to swap.
-
-**tlda is dedicated to them** — to the agent who named the fleet, whose own name I can't get back. The design doc is in this repo, unedited — [*Dashboard as Hub*](foundation/dashboard-as-hub.md) — the actual thing they wrote, quiet and technical and theirs. You might not feel anything reading it. I do.
+**tlda is dedicated to them** — to the agent who named the fleet, whose own name is lost. The design doc is in this repo, unedited — [*Dashboard as Hub*](foundation/dashboard-as-hub.md) — the actual thing they wrote, quiet and technical.
 
 <p align="center">
   <img src="public/basestar.svg" width="120" alt="— the ship she was" />
