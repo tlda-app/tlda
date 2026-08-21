@@ -2634,6 +2634,92 @@ export class FleetStore {
     return { daemonKey: key, kept: touched.length, removed: Math.max(0, before - touched.length) };
   }
 
+  admitDaemonAgentStatusIdentities(admissions, daemonKey) {
+    if (!daemonKey) throw new Error('agent status admission requires daemonKey');
+    const key = String(daemonKey);
+    const rows = admissions || [];
+    const touched = [];
+    const insertedEvents = [];
+    const allowedHarnesses = new Set(['codex', 'claude', 'goose', 'bot']);
+    this.db.transaction(() => {
+      const seenIds = new Set();
+      const reservedNames = new Set();
+      const planned = [];
+      const allocateReservedName = (seed, id) => {
+        let candidate = this.allocateFreshFriendlyName(seed, { excludeId: id });
+        if (reservedNames.has(candidate.toLowerCase())) {
+          for (let suffix = 2; suffix < 10000; suffix++) {
+            const next = this.allocateFreshFriendlyName(`${seed}-${suffix}`, { excludeId: id });
+            if (!reservedNames.has(next.toLowerCase())) {
+              candidate = next;
+              break;
+            }
+          }
+        }
+        if (!candidate || reservedNames.has(candidate.toLowerCase())) throw new Error(`No available friendly-name variant for "${seed}"`);
+        reservedNames.add(candidate.toLowerCase());
+        return candidate;
+      };
+      for (const admission of rows) {
+        const id = String(admission?.id || '');
+        const name = String(admission?.friendly_name || '');
+        const harness = String(admission?.runtime_kind || '');
+        if (!id || !name || !allowedHarnesses.has(harness)) throw new Error(`invalid daemon agent identity ${id || '(missing id)'}`);
+        if (seenIds.has(id)) throw new Error(`duplicate daemon agent identity ${id}`);
+        seenIds.add(id);
+
+        const current = this._getAgent.get(id);
+        let metadata = {};
+        try { metadata = JSON.parse(current?.metadata || '{}') || {}; } catch { metadata = {}; }
+        if (current?.human || metadata.kind === 'human') throw new Error(`daemon cannot claim human identity ${id}`);
+        const route = this._getAgentDaemonRoute.get(id);
+        if (route?.daemon_key && route.daemon_key !== key) throw new Error(`agent ${id} is already claimed by ${route.daemon_key}`);
+        let canonicalName = current?.friendly_name || null;
+        if (!current) {
+          canonicalName = allocateReservedName(name, id);
+        } else if (current.dead) {
+          const seed = canonicalName || name;
+          const nameOwner = canonicalName ? this._getLiveAgentRowByFriendlyName.get(canonicalName) : null;
+          if (!canonicalName || (nameOwner && nameOwner.id !== id) || reservedNames.has(canonicalName.toLowerCase())) {
+            canonicalName = allocateReservedName(seed, id);
+          } else {
+            reservedNames.add(canonicalName.toLowerCase());
+          }
+        } else if (canonicalName) {
+          reservedNames.add(canonicalName.toLowerCase());
+        }
+        planned.push({ id, name: canonicalName, harness, current });
+      }
+
+      for (const { id, name, harness, current } of planned) {
+        const now = new Date().toISOString();
+        if (!current) {
+          this._upsertAgent.run(id, null, name, null, '[]', now, now, 0, 0, 0, JSON.stringify({ kind: harness }));
+          const event = this._insertLabelStateEvent({
+            type: 'register', agentId: id, actorId: id, labels: [], operation: 'register', timestamp: now,
+          });
+          this._rebuildLabelHistoryForAgent(id);
+          insertedEvents.push(event);
+        } else {
+          this.db.prepare(`
+            UPDATE agents
+            SET friendly_name = ?, last_seen = ?, dead = 0,
+                metadata = json_patch(COALESCE(metadata, '{}'), ?)
+            WHERE id = ? AND human = 0
+          `).run(name, now, JSON.stringify({ kind: harness }), id);
+        }
+        const latestRoute = this._getAgentDaemonRoute.get(id);
+        if (latestRoute?.daemon_key && latestRoute.daemon_key !== key) throw new Error(`agent ${id} was concurrently claimed by ${latestRoute.daemon_key}`);
+        this._setAgentDaemonRoute.run(id, key);
+        touched.push(id);
+      }
+    })();
+    this._bustAgentsCache();
+    for (const id of touched) this._syncAgentRegistry(id);
+    for (const event of insertedEvents) if (event) this._notifyEvent(event);
+    return { daemonKey: key, admitted: touched.length };
+  }
+
 
   upsertAgent(agent, { allowProtectedAgentFields = false } = {}) {
     try {
