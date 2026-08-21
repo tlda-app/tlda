@@ -26,26 +26,19 @@ function seed(store) {
   store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: NOW, last_seen: NOW })
   store.upsertAgent({ id: 'fleet:riser', friendly_name: 'riser', labels: [], registered_at: NOW, last_seen: NOW })
   store.upsertAgent({ id: 'fleet:sleeper', friendly_name: 'sleeper', labels: [], registered_at: NOW, last_seen: NOW })
+  store.refreshAgentLiveness('fleet:riser', runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.AWAKE))
+  store.refreshAgentLiveness('fleet:sleeper', runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.HIBERNATING))
 }
 
-const INITIAL_PROJECTIONS = {
-  'fleet:riser': runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.AWAKE),
-  'fleet:sleeper': runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.HIBERNATING),
-}
-
-function recipients(store, expression, runtimeProjections = {}) {
-  return store.resolveChatRecipients(parseFilter(expression), {
-    from: 'fleet:sender',
-    filter: expression,
-    runtimeProjections,
-  })
+function recipients(store, expression) {
+  return store.resolveChatRecipients(parseFilter(expression), { from: 'fleet:sender', filter: expression })
 }
 
 test('addressing awake reaches the awake agent', async () => {
   await withStore(async dbPath => {
     const store = new FleetStore(dbPath)
     seed(store)
-    assert.deepEqual(recipients(store, 'awake & riser', INITIAL_PROJECTIONS), ['fleet:riser'])
+    assert.deepEqual(recipients(store, 'awake & riser'), ['fleet:riser'])
     store.close?.()
   })
 })
@@ -56,7 +49,7 @@ test('addressing hibernating does not reach an awake agent', async () => {
     // agent in the store read as hibernating.
     const store = new FleetStore(dbPath)
     seed(store)
-    assert.deepEqual(recipients(store, 'hibernating & riser', INITIAL_PROJECTIONS), [])
+    assert.deepEqual(recipients(store, 'hibernating & riser'), [])
     store.close?.()
   })
 })
@@ -65,7 +58,7 @@ test('addressing hibernating still reaches an agent that is hibernating', async 
   await withStore(async dbPath => {
     const store = new FleetStore(dbPath)
     seed(store)
-    assert.deepEqual(recipients(store, 'hibernating & sleeper', INITIAL_PROJECTIONS), ['fleet:sleeper'])
+    assert.deepEqual(recipients(store, 'hibernating & sleeper'), ['fleet:sleeper'])
     store.close?.()
   })
 })
@@ -74,13 +67,12 @@ test('waking an agent changes who awake addresses, without a restart', async () 
   await withStore(async dbPath => {
     const store = new FleetStore(dbPath)
     seed(store)
-    assert.deepEqual(recipients(store, 'awake & sleeper', INITIAL_PROJECTIONS), [])
-    const awake = {
-      ...INITIAL_PROJECTIONS,
-      'fleet:sleeper': runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.AWAKE),
-    }
-    assert.deepEqual(recipients(store, 'awake & sleeper', awake), ['fleet:sleeper'])
-    assert.deepEqual(recipients(store, 'hibernating & sleeper', awake), [])
+    assert.deepEqual(recipients(store, 'awake & sleeper'), [])
+
+    store.refreshAgentLiveness('fleet:sleeper', runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.AWAKE))
+
+    assert.deepEqual(recipients(store, 'awake & sleeper'), ['fleet:sleeper'])
+    assert.deepEqual(recipients(store, 'hibernating & sleeper'), [])
     store.close?.()
   })
 })
