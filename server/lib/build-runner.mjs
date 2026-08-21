@@ -161,7 +161,8 @@ export async function adoptShadowHistory({ name, bundleBase64, head }) {
   if (!name || !bundleBase64) throw new Error('adoptShadowHistory requires a project name and a bundle')
   const shadowDir = join(projectDir(name), 'shadow-repo')
   if (existsSync(join(shadowDir, '.git'))) {
-    const existingHead = execSync('git rev-parse --verify HEAD', { cwd: shadowDir, encoding: 'utf8' }).trim()
+    const { stdout } = await execAsync('git rev-parse --verify HEAD', { cwd: shadowDir, encoding: 'utf8' })
+    const existingHead = stdout.trim()
     if (existingHead === String(head || '').trim()) return true
     throw new Error(`${name} already has version history on this server; adopting another copy is a different operation`)
   }
