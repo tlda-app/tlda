@@ -27,6 +27,9 @@ const TEX_GRAPHICS_RE = /\\includegraphics\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g
 const TEX_BIB_RE = /\\(?:bibliography|addbibresource)\s*\{([^}]+)\}/g
 // \usepackage{a} only matters when a.sty sits in the project.
 const TEX_PACKAGE_RE = /\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g
+// Local document classes and BibTeX styles are source dependencies too.
+const TEX_CLASS_RE = /\\documentclass\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g
+const TEX_BIB_STYLE_RE = /\\bibliographystyle\s*\{([^}]+)\}/g
 // \inputscratch{path}{label}{caption} — tlda's own scratch inclusion.
 const TEX_SCRATCH_RE = /\\inputscratch\s*\{([^}]+)\}/g
 
@@ -35,6 +38,8 @@ const IMPLICIT_TEX = ['.tex']
 const IMPLICIT_GRAPHICS = ['.pdf', '.png', '.jpg', '.jpeg', '.svg', '.eps']
 const IMPLICIT_BIB = ['.bib']
 const IMPLICIT_PACKAGE = ['.sty']
+const IMPLICIT_CLASS = ['.cls']
+const IMPLICIT_BIB_STYLE = ['.bst']
 
 function isExternal(ref) {
   return /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(ref)
@@ -95,6 +100,8 @@ export function scanTexDeps(content) {
   collect(TEX_GRAPHICS_RE, IMPLICIT_GRAPHICS, false)
   collect(TEX_BIB_RE, IMPLICIT_BIB, false)
   collect(TEX_PACKAGE_RE, IMPLICIT_PACKAGE, false)
+  collect(TEX_CLASS_RE, IMPLICIT_CLASS, false)
+  collect(TEX_BIB_STYLE_RE, IMPLICIT_BIB_STYLE, false)
   return deps
 }
 
