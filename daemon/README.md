@@ -18,11 +18,14 @@ lifecycle, module construction, and RPC/event routing.
   inbox attachment materialization, and playwright orphan cleanup handlers.
 - `prompt-plan.mjs`: permission prompt detection, auto-accept cooldown/sweep
   state, surfaced prompt state, and plan-mode prompt extraction/deduping.
-- `agent-status.mjs`: one session inventory per tick, authoritative status and
-  activity results, armed live-pane classification, terminal attention, and
-  disarm cleanup.
+- `agent-status.mjs`: armed status scanning, pane classification state,
+  thinking/compacting/status edges, terminal attention edges, and disarm
+  cleanup.
 - `goose-supervisor.mjs`: goose sqlite activity polling, turn-end kick state,
   freeze tracking, and idle/stuck/pending goose nudges.
+- `agent-liveness.mjs`: daemon liveness cache, activity heartbeat updates,
+  hibernation probe state, crash capture, liveness messages, and the currently
+  disabled liveness sweep.
 - `activity-events.mjs`: Claude JSONL turn parsing, activity noise filtering,
   pretty-result matching, and activity-event extraction.
 - `harness-runtime.mjs`: harness adapter definitions, live pane process

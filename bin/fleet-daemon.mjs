@@ -109,6 +109,7 @@ import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
+import { createAgentLiveness, livenessAgentsFromProcessBindings } from '../daemon/agent-liveness.mjs'
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
@@ -421,8 +422,7 @@ function bufferActivity(agentId, evts) {
   // A JSONL line is a per-turn heartbeat. Warm the liveness cache keyed by
   // tmux_session so rpcCheckAlive / wake read "alive" from observed activity,
   // without a fleet-wide background demotion sweep.
-  const activeBinding = permissionLedger.listProcessBindings().find(row => row.id === agentId)
-  if (activeBinding?.tmuxSession) alivenessCache.set(activeBinding.tmuxSession, true)
+  agentLiveness.noteActivity(agentId)
   // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
   // watch this agent's pane frequently — arm it for the status state machine.
   agentStatus.armAgent(agentId)
@@ -739,15 +739,23 @@ const agentStatus = createAgentStatus({
     metadata: { kind: row.sessionKind, model: row.model },
   })),
   harnessForAgent: harnessRuntime.harnessForAgent,
-  listSessions: () => terminalRpc.listSessions(),
   isConnected: () => _serverReady && _rws?.connected,
-  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
-  daemonBootId: BOOT_ID,
   statusScanMs: getStatusScanMs(),
 })
 
 let gooseSupervisor
-const alivenessCache = new Map()
+// The server projects current durable-seat bindings onto every roster row, so
+// liveness and every other daemon consumer read the same server authority.
+const agentLiveness = createAgentLiveness({
+  getAgents: () => livenessAgentsFromProcessBindings(permissionLedger.listProcessBindings(), {
+    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+  }),
+  listSessions: () => terminalRpc.listSessions(),
+  sendMsg,
+  log,
+  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+  daemonBootId: BOOT_ID,
+})
 
 const promptPlan = createPromptPlan({
   tmuxArgs: TMUX_ARGS,
@@ -767,7 +775,7 @@ terminalRpc = createTerminalRpc({
   stripAnsi: promptPlan.stripAnsi,
   promptCooldowns: promptPlan.promptCooldowns,
   surfacedPrompts: promptPlan.surfacedPrompts,
-  alivenessCache,
+  alivenessCache: agentLiveness.alivenessCache,
   thinkingSpinnerRe: THINKING_SPINNER_RE,
   interruptHintRe: INTERRUPT_HINT_RE,
   thinkingScanLines: THINKING_SCAN_LINES,
@@ -1616,7 +1624,8 @@ function connect() {
         { error: `${reason || 'unknown'}${uptimeMs == null ? '' : ` uptimeMs=${uptimeMs}`}` }
       )
       _serverReady = false
-      alivenessCache.clear()
+      agentLiveness.stop()
+      agentLiveness.clearTransientMissingState()
       teardownWatchers({ reason: `connection-lost:${reason || 'unknown'}` })
     },
   })
@@ -1634,7 +1643,7 @@ function reconcileRoster(reason) {
       // The roster is no longer republished here. A roster change means one
       // agent arrived or left; a new agent publishes its own route at mint, and
       // this callback used to re-announce every other agent to carry that one.
-      void agentStatus.scanStatus(reason)
+      void agentLiveness.reportHostedSessions(reason)
     },
   })
 }
@@ -1710,7 +1719,7 @@ async function handleServerMessage(msg, wsAttemptId) {
     jsonlIngestor.retryPendingNativeSubagents()
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
-    void agentStatus.scanStatus('daemon-welcome')
+    agentLiveness.start()
     log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_ENV} projects=${projects.length} watchers=started`)
     return
   }

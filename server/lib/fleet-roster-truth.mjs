@@ -7,7 +7,7 @@ function agentName(agent) {
 
 function rowForAgent(agent, now = Date.now()) {
   const lastSeenMs = agent.last_seen ? now - new Date(agent.last_seen).getTime() : null
-  const runtime = agent.runtime_status || null
+  const act = agent.metadata?.status || null
   return {
     id: agent.id,
     name: agentName(agent),
@@ -20,13 +20,17 @@ function rowForAgent(agent, now = Date.now()) {
     inbox_status: agent.metadata?.inboxStatus || null,
     inbox_status_tag: agent.metadata?.inboxStatusTag || null,
     delivery_channel: agent.metadata?.deliveryChannel || null,
-    activity: runtime?.activity || null,
-    tool: runtime?.evidence?.activity_tool || null,
-    // `activity` without `activity_at` is a state with no age. The authoritative
-    // daemon scan advances this timestamp only when its pane classification
-    // changes, while liveness scans may continue to confirm the process exists.
-    activity_at: runtime?.evidence?.activity_at || null,
-    runtime_status: runtime,
+    activity: act?.state || null,
+    tool: act?.tool || null,
+    // `activity` without `activity_at` is a state with no age, and the age is
+    // the whole signal for a watcher: `reportStatus` fires on every tlda MCP
+    // tool call, so this is the last time the agent's OWN client reached the
+    // server. Read against `last_seen` — which the daemon advances from the
+    // process — a frozen `activity_at` beside a fresh `last_seen` is an agent
+    // whose process is up and whose client has stopped. Read by the dev bot's
+    // `agent-receiving` check.
+    activity_at: act?.ts || null,
+    runtime_status: agent.runtime_status || null,
     activity_health: agent.human ? null : activityHealthForProjection(agent.metadata || {}),
   }
 }

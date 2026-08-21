@@ -1,73 +1,133 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { createAgentStatus } from '../daemon/agent-status.mjs'
-import { daemonDeliveryPolicy, DELIVERY_LATEST_WINS } from '../daemon/delivery-policy.mjs'
 
-function fixture({ capturePane = async () => ({ stdout: '' }) } = {}) {
-  const sent = []
-  let listCalls = 0
-  const agents = [
-    { id: 'fleet:busy', tmux_session: 'fleet-busy', runtimeKind: 'codex', metadata: {} },
-    { id: 'fleet:idle', tmux_session: 'fleet-idle', runtimeKind: 'codex', metadata: {} },
-    { id: 'fleet:gone', tmux_session: 'fleet-gone', runtimeKind: 'codex', metadata: {} },
-  ]
-  const status = createAgentStatus({
-    getAgents: () => agents,
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+test('server roster messages never start local terminal inspection', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'bin/fleet-daemon.mjs'), 'utf8')
+  const starts = [...source.matchAll(/agentStatus\.start\(\)/g)]
+  assert.equal(starts.length, 1)
+  const messageHandler = source.indexOf('function handleServerMessage(msg')
+  const lifecycle = source.indexOf('// ---------- lifecycle ----------')
+  const connect = source.lastIndexOf('\nconnect()')
+  assert.ok(messageHandler >= 0)
+  assert.ok(lifecycle > messageHandler)
+  assert.ok(connect > lifecycle)
+  assert.ok(starts[0].index > lifecycle && starts[0].index < connect)
+  assert.doesNotMatch(source.slice(messageHandler, lifecycle), /agentStatus\.start\(\)/)
+})
+
+test('agent status start does not cold-scan the full roster', async () => {
+  let captureCalls = 0
+  const intervals = []
+  const agentStatus = createAgentStatus({
+    getAgents: () => [{
+      id: 'fleet:singleflight',
+      tmux_session: 'fleet-singleflight',
+      dead: false,
+      human: false,
+      hibernating: false,
+      metadata: {},
+    }],
     harnessForAgent: () => ({ kind: 'codex' }),
-    listSessions: async () => { listCalls += 1; return { sessions: ['fleet-busy', 'fleet-idle'] } },
     isConnected: () => true,
-    sendMsg: message => sent.push(message),
-    log: { info() {}, warn() {}, error() {} },
-    capturePane,
-    daemonKey: 'mini:testing',
-    daemonBootId: 7,
-    statusScanMs: 3000,
-    setIntervalFn: () => ({ unref() {} }),
+    sendMsg: () => true,
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    capturePane: async () => {
+      captureCalls += 1
+      return { stdout: '' }
+    },
+    setIntervalFn: (fn, ms) => {
+      intervals.push({ fn, ms })
+      return { unref() {} }
+    },
   })
-  return { status, sent, listCalls: () => listCalls }
-}
 
-test('one inventory produces one complete status result and captures only live armed panes', async () => {
-  const captured = []
-  const f = fixture({ capturePane: async session => { captured.push(session); return { stdout: '' } } })
-  f.status.armAgent('fleet:busy')
-  f.status.armAgent('fleet:gone')
+  agentStatus.start()
+  agentStatus.start()
+  await new Promise(resolve => setImmediate(resolve))
 
-  await f.status.scanStatus('test')
-
-  assert.equal(f.listCalls(), 1)
-  assert.deepEqual(captured, ['fleet-busy'])
-  assert.equal(f.sent.length, 1)
-  assert.deepEqual(f.sent[0].agents, [
-    { agent_id: 'fleet:busy', status: 'awake', activity: 'idle', tool: null },
-    { agent_id: 'fleet:idle', status: 'awake', activity: 'unknown', tool: null },
-    { agent_id: 'fleet:gone', status: 'hibernating', activity: 'unknown', tool: null },
-  ])
-  assert.equal(f.sent[0].daemon_key, 'mini:testing')
-  assert.equal(f.sent[0].daemon_boot_id, 7)
-  assert.equal(f.sent[0].report_seq, 1)
+  assert.equal(captureCalls, 0)
+  assert.equal(intervals.length, 1)
 })
 
-test('overlapping ticks serialize list and capture work', async () => {
-  let release
-  let captures = 0
-  const pane = new Promise(resolve => { release = resolve })
-  const f = fixture({ capturePane: async () => { captures += 1; return pane } })
-  f.status.armAgent('fleet:busy')
+test('agent status scans an explicitly armed agent without overlapping', async () => {
+  let captureCalls = 0
+  let releaseCapture
+  const firstCapture = new Promise(resolve => {
+    releaseCapture = () => resolve({ stdout: '' })
+  })
+  const intervals = []
+  const agentStatus = createAgentStatus({
+    getAgents: () => [{
+      id: 'fleet:singleflight',
+      tmux_session: 'fleet-singleflight',
+      dead: false,
+      human: false,
+      hibernating: false,
+      metadata: {},
+    }],
+    harnessForAgent: () => ({ kind: 'codex' }),
+    isConnected: () => true,
+    sendMsg: () => true,
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    capturePane: async () => {
+      captureCalls += 1
+      return firstCapture
+    },
+    setIntervalFn: (fn, ms) => {
+      intervals.push({ fn, ms })
+      return { unref() {} }
+    },
+  })
 
-  const first = f.status.scanStatus('first')
-  void f.status.scanStatus('second')
+  agentStatus.start()
+  agentStatus.armAgent('fleet:singleflight')
+  void agentStatus.scanArmedStatus()
+  void agentStatus.scanArmedStatus()
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(f.listCalls(), 1)
-  assert.equal(captures, 1)
 
-  release({ stdout: '' })
-  await first
+  assert.equal(captureCalls, 1)
+  assert.equal(intervals.length, 1)
+
+  releaseCapture()
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(f.listCalls(), 2)
 })
 
-test('a newer complete status batch replaces a queued older tick', () => {
-  assert.equal(daemonDeliveryPolicy({ type: 'agent-status' }), DELIVERY_LATEST_WINS)
+test('agent status disarms idle agents and repeated start does not rearm all', async () => {
+  const intervals = []
+  const agentStatus = createAgentStatus({
+    getAgents: () => [{
+      id: 'fleet:idle',
+      tmux_session: 'fleet-idle',
+      dead: false,
+      human: false,
+      hibernating: false,
+      metadata: {},
+    }],
+    harnessForAgent: () => ({ kind: 'codex' }),
+    isConnected: () => true,
+    sendMsg: () => true,
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    capturePane: async () => ({ stdout: '' }),
+    statusLingerMs: -1,
+    setIntervalFn: (fn, ms) => {
+      intervals.push({ fn, ms })
+      return { unref() {} }
+    },
+  })
+
+  agentStatus.start()
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(agentStatus.isArmed('fleet:idle'), false)
+
+  agentStatus.start()
+  assert.equal(agentStatus.isArmed('fleet:idle'), false)
+  assert.equal(intervals.length, 1)
 })
