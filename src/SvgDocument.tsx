@@ -421,7 +421,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const shapeIdsArrayRef = useRef<TLShapeId[]>([])
   const updateCameraBoundsRef = useRef<((bounds: any) => void) | null>(null)
   const ensurePagesAtBottomRef = useRef<(() => void) | null>(null)
-  const focusChangeRef = useRef<((currentPage: number) => void) | null>(null)
 
   // --- Screenshot capture state ---
   const [screenshotCapture, setScreenshotCapture] = useState<import('./hooks/useYjsSignals').ScreenshotCaptureState | null>(null)

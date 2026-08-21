@@ -356,7 +356,7 @@ export function createImageShapes(editor: Editor, document: SvgDocument): boolea
 
   editor.createShapes(
     document.pages.map(
-      (page, i) => ({
+      (page) => ({
         id: page.shapeId,
         type: 'zoomable-image' as any,
         x: page.bounds.x,

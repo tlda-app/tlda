@@ -1,5 +1,4 @@
 import {
-  createShapeId,
   getIndicesBetween,
   react,
   sortByIndex,
@@ -841,7 +840,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   }, { scope: 'document' })
 
   // Initialize the single ribbon shape + eraser support
-  const ribbonEnabled = document.format !== 'diff' && document.format !== 'png' && document.format !== 'html' &&
+  const ribbonEnabled = document.format !== 'png' && document.format !== 'html' &&
       document.format !== 'slides' && document.format !== 'markdown'
   if (ribbonEnabled) {
     void initRibbon(editor, document.name, document.pages)
@@ -930,7 +929,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           log.info('outline-hl', 'processShape', { color: (s.props as any)?.color, w: bounds?.width, h: bounds?.height })
           if (!bounds || (bounds.width < 5 && bounds.height < 10)) { log.warn('outline-hl', 'processShape: too small', { w: bounds?.width, h: bounds?.height }); return }
           // Ribbon zone: highlight drawn in left margin → update understanding lines
-          if (document.format !== 'diff' && isInRibbonZone(editor, shape.id as any)) {
+          if (isInRibbonZone(editor, shape.id as any)) {
             processRibbonHighlight(editor, shape.id as any, document.name, document.pages)
             return
           }
