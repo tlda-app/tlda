@@ -15,22 +15,5 @@ export function validateDaemonAgentStatusBatch({ message, daemonKey, bootId, las
     if (!agent || agent.route_daemon_key !== daemonKey) return null
     seen.add(agentId)
   }
-  const results = [...message.agents]
-  for (const agent of rows.values()) {
-    if (agent.route_daemon_key === daemonKey && !seen.has(agent.id)) {
-      results.push({ agent_id: agent.id, status: 'hibernating', activity: 'unknown', tool: null })
-    }
-  }
-  return { sequence: message.report_seq, results }
-}
-
-export async function applyDaemonAgentStatusBatch(chains, generationKey, applyBatch) {
-  const previous = chains.get(generationKey) || Promise.resolve()
-  const current = previous.catch(() => {}).then(applyBatch)
-  chains.set(generationKey, current)
-  try {
-    return await current
-  } finally {
-    if (chains.get(generationKey) === current) chains.delete(generationKey)
-  }
+  return { sequence: message.report_seq, results: message.agents }
 }

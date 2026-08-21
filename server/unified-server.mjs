@@ -147,7 +147,7 @@ import {
   createAgentLivenessTraceStore,
   recordLivenessProjection,
 } from './lib/agent-liveness-trace.mjs'
-import { applyDaemonAgentStatusBatch, validateDaemonAgentStatusBatch } from './lib/daemon-agent-status.mjs'
+import { validateDaemonAgentStatusBatch } from './lib/daemon-agent-status.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -435,7 +435,6 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 // for that daemon config lane. Used for RPC routing and agent updates.
 const daemonConnections = new Map()         // machine_id:env_name -> ws
 const daemonAgentStatusSequences = new Map() // daemon_key\0boot_id -> last accepted complete batch
-const daemonAgentStatusApplyChains = new Map()
 setBuildHeadNotifier(async (project, revision) => {
   await sourceRoomDaemon.headChanged(project, revision)
   const message = JSON.stringify({ type: 'head-changed', project, revision })
@@ -591,15 +590,19 @@ function traceGate1(stage, detail) {
 // or copied route state does not fabricate hibernation.
 const runtimeStatusStore = createAgentRuntimeStatusStore({
   onChange: agentId => {
+    // Send the exact main-thread projection to the worker registry. This is
+    // asynchronous because the database owns the agent row, but the state
+    // broadcast is already debounced beyond an ordinary worker round trip.
+    syncRuntimeProjection(agentId).catch(e => console.error(`[runtime-status] projection refresh failed for ${agentId}: ${e?.message || e}`))
     if (typeof broadcastState === 'function') broadcastState(agentId)
   },
 })
 fleetStore.setRuntimeProjector(agent => runtimeStatusStore.project(agent))
 
-async function resolveChatRecipientsCurrent(filterAst, options) {
-  const agents = await fleetStore.getAliveAgents()
-  const runtimeProjections = Object.fromEntries(agents.map(agent => [agent.id, agent.runtime_status]))
-  return fleetStore.resolveChatRecipients(filterAst, { ...options, runtimeProjections })
+async function syncRuntimeProjection(agentId) {
+  const agent = await fleetStore.getAgent(agentId)
+  if (!agent) return
+  await fleetStore.refreshAgentLiveness(agentId, agent.runtime_status)
 }
 
 const humanPresence = createHumanPresenceTracker({
@@ -706,6 +709,7 @@ async function refreshRuntimeRoutesForDaemon(daemonKey) {
   if (!daemonKey) return
   const seated = await fleetStore.getAgentsByDaemonKey(daemonKey)
   const affected = seated.filter(agent => agent && !agent.human).map(agent => agent.id)
+  for (const id of affected) await syncRuntimeProjection(id)
   if (affected.length) broadcastState(affected)
 }
 
@@ -6753,7 +6757,7 @@ async function dispatchFleetWsMessage(ws, msg) {
       return
     }
     reply({
-      recipients: await resolveChatRecipientsCurrent(filterAst, {
+      recipients: await fleetStore.resolveChatRecipients(filterAst, {
         from: msg.from || null,
         filter: msg.to || '',
       }),
@@ -7266,7 +7270,7 @@ async function dispatchFleetWsMessage(ws, msg) {
     // an old `preread` row + the live `preread`) → the sender sees their
     // message twice. To reach a dead agent, reanimate it first (it goes live,
     // then matches here). No "prefer the live one" — dead is simply excluded.
-    const recipients = await resolveChatRecipientsCurrent(filterAst, { from, filter: rawTo })
+    const recipients = await fleetStore.resolveChatRecipients(filterAst, { from, filter: rawTo })
     // Server-owner pseudo-recipient: not in the roster, so evaluate the filter
     // against its literal id/name label set. An empty filter (null) does NOT
     // fan out to the owner.
@@ -9037,72 +9041,71 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-status') {
     if (!fleetStore) return
     const generationKey = `${ws._daemonKey}\0${ws._bootId}`
-    await applyDaemonAgentStatusBatch(daemonAgentStatusApplyChains, ws._daemonKey, async () => {
-      const routedAgents = await fleetStore.getAgentsByDaemonKey(ws._daemonKey)
-      const accepted = validateDaemonAgentStatusBatch({
-        message: msg,
-        daemonKey: ws._daemonKey,
-        bootId: ws._bootId,
-        lastSequence: daemonAgentStatusSequences.get(generationKey) || 0,
-        agents: routedAgents,
-      })
-      if (!accepted) return
-      daemonAgentStatusSequences.set(generationKey, accepted.sequence)
-      const ts = msg.ts || new Date().toISOString()
-      const atMs = Date.parse(ts) || Date.now()
-      for (const result of accepted.results) {
-        const agentId = result?.agent_id
-        const status = result?.status
-        const activity = result?.activity || 'unknown'
-        const previous = runtimeStatusStore.evidenceFor(agentId)
-        const previousStatus = previous?.liveness === 'alive'
-          ? 'awake'
-          : previous?.liveness === 'dead' || previous?.liveness === 'wedged' ? 'hibernating' : null
-        const statusChanged = previousStatus !== status
-        const activityChanged = previous?.activity !== activity || (previous?.activity_tool || null) !== (result.tool || null)
-        const generation = {
+    const agentIds = Array.isArray(msg.agents) ? msg.agents.map(result => result?.agent_id).filter(Boolean) : []
+    const ownedAgents = await fleetStore.getAgentsByIds(agentIds)
+    const accepted = validateDaemonAgentStatusBatch({
+      message: msg,
+      daemonKey: ws._daemonKey,
+      bootId: ws._bootId,
+      lastSequence: daemonAgentStatusSequences.get(generationKey) || 0,
+      agents: ownedAgents,
+    })
+    if (!accepted) return
+    daemonAgentStatusSequences.set(generationKey, accepted.sequence)
+    const ts = msg.ts || new Date().toISOString()
+    const atMs = Date.parse(ts) || Date.now()
+    for (const result of accepted.results) {
+      const agentId = result?.agent_id
+      const status = result?.status
+      const activity = result?.activity || 'unknown'
+      const previous = runtimeStatusStore.evidenceFor(agentId)
+      const previousStatus = previous?.liveness === 'alive'
+        ? 'awake'
+        : previous?.liveness === 'dead' || previous?.liveness === 'wedged' ? 'hibernating' : null
+      const statusChanged = previousStatus !== status
+      const activityChanged = previous?.activity !== activity || (previous?.activity_tool || null) !== (result.tool || null)
+      const generation = {
+        daemon_key: msg.daemon_key,
+        daemon_boot_id: msg.daemon_boot_id,
+        report_seq: msg.report_seq,
+        agent_id: agentId,
+      }
+      if (status === 'awake') {
+        markAgentAlive(agentId, atMs, {
+          source: 'daemon-agent-status',
+          reason: msg.reason,
           daemon_key: msg.daemon_key,
           daemon_boot_id: msg.daemon_boot_id,
           report_seq: msg.report_seq,
-          agent_id: agentId,
-        }
-        if (status === 'awake') {
-          markAgentAlive(agentId, atMs, {
-            source: 'daemon-agent-status',
-            reason: msg.reason,
-            daemon_key: msg.daemon_key,
-            daemon_boot_id: msg.daemon_boot_id,
-            report_seq: msg.report_seq,
-            liveness_generation: generation,
-          })
-        } else {
-          await markAgentNotAlive(agentId, {
-            source: 'daemon-agent-status',
-            reason: 'absent from daemon session inventory',
-            atMs,
-            daemon_key: msg.daemon_key,
-            daemon_boot_id: msg.daemon_boot_id,
-            report_seq: msg.report_seq,
-            liveness_generation: generation,
-          })
-          await fleetStore.retirePendingShell?.(agentId)
-        }
-        if (previous?.activity === 'thinking' && activity !== 'thinking') {
-          await emitTurnEnded(agentId, previous.activity_at_ms)
-        }
-        if (activityChanged) runtimeStatusStore.updateActivity(agentId, activity, {
-          tool: result.tool,
-          atMs,
-          generation,
+          liveness_generation: generation,
         })
-        if (statusChanged || activityChanged) {
-          await fleetStore.updateAgentStatus?.(agentId, status, activity, result.tool, ts)
-        }
-        if (activityChanged && activity === 'thinking') touchActivity(agentId)
-        broadcastEvent('agent-status', { agent: agentId, status, activity, tool: result.tool || null, ts })
+      } else {
+        await markAgentNotAlive(agentId, {
+          source: 'daemon-agent-status',
+          reason: 'absent from daemon session inventory',
+          atMs,
+          daemon_key: msg.daemon_key,
+          daemon_boot_id: msg.daemon_boot_id,
+          report_seq: msg.report_seq,
+          liveness_generation: generation,
+        })
+        await fleetStore.retirePendingShell?.(agentId)
       }
-      broadcastState()
-    })
+      if (previous?.activity === 'thinking' && activity !== 'thinking') {
+        await emitTurnEnded(agentId, previous.activity_at_ms)
+      }
+      if (activityChanged) runtimeStatusStore.updateActivity(agentId, activity, {
+        tool: result.tool,
+        atMs,
+        generation,
+      })
+      if (statusChanged || activityChanged) {
+        await fleetStore.updateAgentStatus?.(agentId, status, activity, result.tool, ts)
+      }
+      if (activityChanged && activity === 'thinking') touchActivity(agentId)
+      broadcastEvent('agent-status', { agent: agentId, status, activity, tool: result.tool || null, ts })
+    }
+    broadcastState()
     return
   }
 
