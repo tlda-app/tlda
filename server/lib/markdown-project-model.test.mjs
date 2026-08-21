@@ -6,7 +6,7 @@ import test from 'node:test'
 
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { renderMarkdownColumnHtml } from './build-markdown.mjs'
-import { listDocumentColumns, listMarkdownProjectDocuments } from './document-columns.mjs'
+import { listDocumentColumns, listMarkdownProjectDocuments, markdownProjectRootColumn } from './document-columns.mjs'
 import { closeProjectStore, initProjectStore } from './project-store.mjs'
 
 test('A markdown project document is its main file; the closure is its file scope', async t => {
@@ -72,6 +72,39 @@ test('A markdown project document is its main file; the closure is its file scop
       { sourceFile: 'chapters/one.md', outputFile: 'chapters/one.html' },
     ],
   )
+})
+
+test('mixed-project Markdown roots retain distinct render identities', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-mixed-markdown-roots-'))
+  const source = join(root, 'source')
+  mkdirSync(join(source, 'reviews'), { recursive: true })
+  writeFileSync(join(source, 'reviews', 'editor.md'), '# Editor response\n\nEditor body.\n')
+  writeFileSync(join(source, 'reviews', 'referee.md'), '# Referee response\n\nReferee body.\n')
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+
+  const editor = await markdownProjectRootColumn('paper', 'reviews/editor.md', { srcDir: source })
+  const referee = await markdownProjectRootColumn('paper', 'reviews/referee.md', { srcDir: source })
+  assert.equal(editor.outputFile, 'reviews/editor.html')
+  assert.equal(referee.outputFile, 'reviews/referee.html')
+  assert.notEqual(editor.outputFile, referee.outputFile)
+
+  const editorHtml = renderMarkdownColumnHtml({
+    source: '# Editor response\n\nEditor body.\n',
+    title: editor.title,
+    projectName: 'paper',
+    sourceFile: editor.sourceFile,
+    mainFile: 'main.tex',
+  })
+  const refereeHtml = renderMarkdownColumnHtml({
+    source: '# Referee response\n\nReferee body.\n',
+    title: referee.title,
+    projectName: 'paper',
+    sourceFile: referee.sourceFile,
+    mainFile: 'main.tex',
+  })
+  assert.match(editorHtml, /Editor body\./)
+  assert.doesNotMatch(editorHtml, /Referee body\./)
+  assert.match(refereeHtml, /Referee body\./)
 })
 
 test('Markdown member links target project routes while external URLs stay external', () => {

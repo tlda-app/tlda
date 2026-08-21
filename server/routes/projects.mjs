@@ -45,7 +45,7 @@ import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex
 import { compareHighlightFeedbackBySource, highlightFeedbackFromShape } from '../lib/highlight-feedback.mjs'
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
-import { markdownColumnFileForSource, listMarkdownProjectDocuments, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
+import { markdownColumnFileForSource, markdownProjectRootColumn, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { clipRecordingData, readRecordingPublication, writeOwnerInterval, writePublishedRecording } from '../lib/recording-publication.mjs'
 import { materializeRecordingAudioClip } from '../lib/recording-audio-clip.mjs'
 import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
@@ -691,13 +691,9 @@ router.get('/:name/files', requireRead, async (req, res) => {
   const documents = []
   for (const root of rootDocuments) {
     if (root.format === 'markdown') {
-      const markdownDocuments = await listMarkdownProjectDocuments(req.params.name, {
-        project: { ...project, mainFile: root.path, format: 'markdown' },
-      })
-      for (const document of markdownDocuments) {
-        if (!documents.some(existing => existing.sourceFile === document.sourceFile)) {
-          documents.push({ sourceFile: document.sourceFile, outputFile: document.outputFile, title: document.title, format: 'markdown' })
-        }
+      const document = await markdownProjectRootColumn(req.params.name, root.path)
+      if (document && !documents.some(existing => existing.sourceFile === document.sourceFile)) {
+        documents.push({ sourceFile: document.sourceFile, outputFile: document.outputFile, title: document.title, format: 'markdown' })
       }
       continue
     }

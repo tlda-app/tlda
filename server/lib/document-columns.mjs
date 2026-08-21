@@ -51,6 +51,21 @@ export async function listMarkdownProjectDocuments(name, { project = null, srcDi
   return documents
 }
 
+// An explicitly linked Markdown root is one document, even when its parent
+// project is TeX. Its output identity follows its source path so sibling roots
+// cannot collapse onto a shared index.html.
+export async function markdownProjectRootColumn(name, sourceFile, { srcDir = getSourceDir(name) } = {}) {
+  const normalized = String(sourceFile || '').replace(/\\/g, '/').replace(/^\.?\//, '')
+  if (!normalized || normalized.split('/').includes('..') || !/\.(md|markdown)$/i.test(normalized)) return null
+  const columns = []
+  await addMarkdownColumn(columns, {
+    sourceFile: normalized,
+    outputFile: markdownColumnFileForSource(normalized),
+    srcDir,
+  })
+  return columns[0] || null
+}
+
 // Markdown-part columns for a project whose own main document is NOT
 // markdown (e.g. a LaTeX/svg project's scratch/notes parts). Excludes the
 // project's own main-document concept entirely — that's rendered by
