@@ -17,7 +17,7 @@ test('foreign native PDF remains PDF and uses transported manifest filenames', (
     sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged',
     pages: 2, pageFiles: ['scan-01.svg', 'scan-02.svg'],
   }), {
-    sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged', format: 'pdf',
+    sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged',
     pages: 2, pageFiles: ['scan-01.svg', 'scan-02.svg'],
   })
 })

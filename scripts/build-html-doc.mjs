@@ -688,7 +688,7 @@ ${processedChunks[i].html.join('\n')}
     }
   }
 
-  // --- Step 4: Write page-info.json (dimensions per page) ---
+  // --- Step 4: Write the document manifest ---
   const pageInfo = pageFiles.map((file, i) => {
     const entry = {
       file,
@@ -705,8 +705,20 @@ ${processedChunks[i].html.join('\n')}
   })
 
   fs.writeFileSync(
-    path.join(outDir, 'page-info.json'),
-    JSON.stringify(pageInfo, null, 2)
+    path.join(outDir, 'document-manifest.json'),
+    JSON.stringify({
+      version: 1,
+      kind: 'tlda-document',
+      source: { format: 'html', renderer: 'identity' },
+      document: { format: 'html' },
+      pages: pageInfo,
+      assets: [],
+      sourceMapping: 'none',
+      view: {
+        kind: 'html-pages',
+        capabilities: { presentation: false, sourceMapping: false, searchableText: false },
+      },
+    }, null, 2)
   )
 
   // --- Step 4b: Generate TOC from headings ---

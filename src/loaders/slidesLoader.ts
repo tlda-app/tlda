@@ -6,18 +6,6 @@ import { layoutPageBounds } from './pageLayout'
 export type SlidePageEntry = SlideInfo
 
 /** Load a reveal.js deck as pages laid out on the horizontal page axis. */
-export async function loadSlidesDocument(
-  name: string,
-  basePath: string,
-): Promise<SvgDocument> {
-  console.log(`Loading slides document from ${basePath}`)
-
-  const infoUrl = basePath + 'page-info.json'
-  const pageInfos: SlidePageEntry[] = await fetch(infoUrl).then(r => r.json())
-
-  return createSlidesDocumentFromPageInfo(name, basePath, pageInfos)
-}
-
 export function createSlidesDocumentFromPageInfo(name: string, basePath: string, pageInfos: SlidePageEntry[]): SvgDocument {
   console.log(`Found ${pageInfos.length} slides`)
 
@@ -46,5 +34,10 @@ export function createSlidesDocumentFromPageInfo(name: string, basePath: string,
   })
 
   console.log(`Slides document ready (${pageInfos.length} slides, horizontal page axis)`)
-  return { name, pages, basePath, format: 'slides', slideInfo: pageInfos }
+  return {
+    name, pages, basePath, slideInfo: pageInfos,
+    view: { kind: 'slides', capabilities: { presentation: true, sourceMapping: false, searchableText: false } },
+    source: { format: 'html', renderer: 'identity' },
+    documentFormat: 'slides',
+  }
 }

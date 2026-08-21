@@ -86,11 +86,8 @@ export function TocTab({ query = '' }: { query?: string }) {
     setCollapsed(null)
     void (async () => {
       try {
-        // Slides format: load TOC from page-info.json
-        if (doc.format === 'slides') {
-          const response = await fetch(`/docs/${doc.projectName}/page-info.json`)
-          const entries = response.ok ? await response.json() as Array<{ title?: string }> : null
-          if (!cancelled && entries) setSlideTitles(entries.map(entry => entry.title || ''))
+        if (doc.view.capabilities.presentation) {
+          if (!cancelled) setSlideTitles(doc.pages.map(page => page.title || ''))
           return
         }
 
@@ -143,7 +140,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       }
     })()
     return () => { cancelled = true }
-  }, [doc?.projectName, doc?.format, doc?.targets, reloadCount])
+  }, [doc?.projectName, doc?.view, doc?.pages, doc?.targets, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!doc) return
@@ -270,8 +267,7 @@ export function TocTab({ query = '' }: { query?: string }) {
     onDrop: handleTocDrop,
   } : {}
 
-  // Slides format: render TOC from page-info.json titles
-  if (doc?.format === 'slides' && slideTitles) {
+  if (doc?.view.capabilities.presentation && slideTitles) {
     const normalizedQuery = query.trim().toLowerCase()
     const visibleSlides = slideTitles
       .map((title, i) => ({ title, i }))
@@ -435,7 +431,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       {tocAdding && (
         <div className="toc-item toc-adding">Adding {tocAdding}...</div>
       )}
-      {ctx?.onToggleRole && hasPresenterPrivilege && doc?.format === 'slides' && (
+      {ctx?.onToggleRole && hasPresenterPrivilege && doc?.view.capabilities.presentation && (
         <div
           className="toc-diff-hint"
           onClick={() => ctx.onToggleRole?.()}

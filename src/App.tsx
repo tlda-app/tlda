@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
-import { loadSvgDocument, type HtmlPageEntry } from './svgDocumentLoader'
+import { loadSvgDocument } from './svgDocumentLoader'
 import { loadDocumentFromManifest, type DocumentViewManifest } from './loaders/documentLoaderRegistry'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
@@ -19,7 +19,6 @@ import { ProblemMarking } from './classroom/ProblemMarking'
 import { StudentWork } from './classroom/StudentWork'
 import { MarkingLifecycle } from './classroom/MarkingLifecycle'
 import { STORE_HTTP } from './activeConfig'
-import { viewFormat } from '../shared/document-formats.mjs'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
@@ -128,19 +127,13 @@ interface DocConfig {
   sourceFormat: 'tex' | 'md' | 'qmd' | 'html' | 'pdf' | 'png' | 'book'
   renderer: 'latex' | 'markdown' | 'quarto' | 'identity'
   documentFormat: 'paged' | 'html' | 'slides' | 'book'
-  // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
-  renderedFormat?: 'html' | 'slides' | 'paged'
   members?: string[]
   buildStatus?: string
   starred?: boolean
   lastBuild?: string
   createdAt?: string
   targets?: { texBase: string; mainFile: string; pages: number }[]
-  pageInfo?: HtmlPageEntry[]
-  documentManifest?: {
-    pages: Array<{ file: string; width: number; height: number }>
-    view: DocumentViewManifest['view']
-  }
+  documentManifest?: DocumentViewManifest
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
@@ -171,11 +164,11 @@ const ASSET_BASE = STORE_HTTP
 const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
 
 // Fetch a single document config from the API — fast path for ?project=X
-async function fetchDocConfig(projectName: string, includePageInfo = false): Promise<DocConfig | null> {
+async function fetchDocConfig(projectName: string): Promise<DocConfig | null> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8000)
   try {
-    const url = `${ASSET_BASE}/api/projects/${projectName}${includePageInfo ? '?include=page-info' : ''}`
+    const url = `${ASSET_BASE}/api/projects/${projectName}`
     const resp = await fetch(url, { signal: controller.signal })
     if (resp.status === 401 || resp.status === 403) {
       throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
@@ -271,7 +264,7 @@ function DocumentApp() {
     if (projectName) {
       const roomId = `doc-${projectName}`
       setState({ phase: 'loading', message: 'Loading document...', roomId })
-      loadDocument(projectName, roomId, undefined, true)
+      loadDocument(projectName, roomId)
     } else {
       // No doc specified — show document picker or auto-load single doc
       setState({ phase: 'loading', message: 'Loading...', roomId: '' })
@@ -309,7 +302,7 @@ function DocumentApp() {
     }
   }, [])
 
-  async function loadDocument(projectName: string, roomId: string, _knownConfig?: DocConfig, includePageInfo = false) {
+  async function loadDocument(projectName: string, roomId: string, knownConfig?: DocConfig) {
     // Bump generation and abort any in-flight load
     const gen = ++loadGeneration
     loadAbort?.abort()
@@ -319,7 +312,7 @@ function DocumentApp() {
     // Fast path: fetch single doc config instead of full manifest
     let config: DocConfig | null
     try {
-      config = await fetchDocConfig(projectName, true)
+      config = knownConfig?.documentManifest ? knownConfig : await fetchDocConfig(projectName)
     } catch (e) {
       const msg = (e as Error).message
       setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
@@ -345,7 +338,7 @@ function DocumentApp() {
           return {
             key,
             name: memberConfig.name || key,
-            format: viewFormat(memberConfig),
+            documentManifest: memberConfig.documentManifest,
             pages: memberConfig.pages,
             basePath: memberConfig.basePath,
             ...((memberConfig as any).sessionAt && { sessionAt: (memberConfig as any).sessionAt }),
@@ -380,7 +373,7 @@ function DocumentApp() {
           await new Promise(r => setTimeout(r, 2000))
           if (gen !== loadGeneration) return
           try {
-            const c = await fetchDocConfig(projectName, includePageInfo)
+            const c = await fetchDocConfig(projectName)
             // Pages existing is the whole condition now: the moment there is a
             // render to show, show it, rather than waiting for the build that
             // produced it to also finish reporting.

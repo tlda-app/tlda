@@ -13,7 +13,7 @@ export function useMarkedExerciseHtmlAlignment(
   useEffect(() => {
     const compareDoc = new URLSearchParams(window.location.search).get('compareDoc')
     const editor = editorRef.current
-    if (!compareDoc || document.format !== 'html' || document.pages.length < 2 || !editorMounted || !editor) return
+    if (!compareDoc || document.view.kind !== 'html-pages' || document.pages.length < 2 || !editorMounted || !editor) return
 
     const comparisonId = document.pages[1].shapeId
 

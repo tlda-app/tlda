@@ -2059,7 +2059,7 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
     })))
     const documentBuildResult = { manifest: createDocumentManifest({
       ...project,
-    }, manifestPages, { sourceMapping: 'synctex' }),
+    }, manifestPages, { sourceMapping: 'synctex', viewKind: 'svg-pages' }),
     targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
     recordLastBuildSuccess: true }
 

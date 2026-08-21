@@ -93,13 +93,6 @@ async function mapWithConcurrency(items, concurrency, mapper) {
   return results
 }
 
-// Formats that already write their own page-info.json via their own build
-// pipeline (server/lib/format-builders.mjs) — writing a parts-only one would
-// clobber it. Everything else (svg, png, ...) has no page-info.json of
-// its own, so a project's parts get one. The viewer needs the same fact to
-// know whether a page-info.json it fetches is parts or the document's own
-// pages, so the set lives in shared/ rather than here.
-
 function sameOrigin(a, b) {
   try {
     return new URL(a).origin === new URL(b).origin
@@ -356,21 +349,12 @@ router.get('/:name', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  let pageInfo
   let documentManifest
   try {
     documentManifest = readDocumentManifest(getOutputDir(req.params.name)) || undefined
   } catch {
     documentManifest = undefined
   }
-  if (req.query.include === 'page-info' && ['html', 'slides'].includes(project.documentFormat)) {
-    try {
-      pageInfo = JSON.parse(await readFile(join(getOutputDir(req.params.name), 'page-info.json'), 'utf8'))
-    } catch {
-      pageInfo = undefined
-    }
-  }
-
   const durableStatus = projectRevisionStatus((await sourceLifecycleStore(req.params.name)).listRevisionLifecycles(req.params.name))
   // The chat-reference seed of project membership. This is the payload the
   // watcher already reads its source context from, so the roots arrive by the
@@ -383,7 +367,6 @@ router.get('/:name', requireRead, async (req, res) => {
     sourceRevision: durableStatus.sourceRevision,
     acceptSeq: durableStatus.acceptSeq,
     referencedSourcePaths: await referencedSourcePaths(req.params.name).catch(() => []),
-    ...(pageInfo && { pageInfo }),
     ...(documentManifest && { documentManifest }),
   })
 })

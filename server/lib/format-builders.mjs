@@ -61,12 +61,9 @@ export async function buildHtmlDocument(name) {
 
   // A tlda-aware Quarto render declares its page order and source coordinates.
   const renderedProject = readTldaManifest(outDir)
-  const pageInfoPath = join(outDir, 'page-info.json')
   let pageInfo
   if (renderedProject) {
     pageInfo = renderedProject.pageInfo
-  } else if (existsSync(pageInfoPath)) {
-    pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
   } else {
     const htmlFiles = readdirSync(outDir).filter(f => f.endsWith('.html') && !f.startsWith('_'))
     pageInfo = htmlFiles.map(f => {
@@ -79,11 +76,11 @@ export async function buildHtmlDocument(name) {
 
   const manifest = createDocumentManifest({
     format: 'html', sourceFormat: 'html', renderer: 'identity', documentFormat: 'html',
-  }, pageInfo, { sourceMapping: pageInfo.some(page => page.source) ? 'page-source' : 'none' })
+  }, pageInfo, { sourceMapping: pageInfo.some(page => page.source) ? 'page-source' : 'none', viewKind: 'html-pages' })
 
   await writeSourceScope(name, srcDir)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
-  return { manifest, writePageInfo: true }
+  return { manifest }
 }
 
 export async function buildSlidesDocument(name) {
@@ -104,9 +101,9 @@ export async function buildSlidesDocument(name) {
   const manifest = createDocumentManifest({
     format: 'slides', sourceFormat: 'html', renderer: 'identity', documentFormat: 'slides',
     mainFile: htmlFiles[0],
-  }, pageInfo, { sourceMapping: 'none' })
+  }, pageInfo, { sourceMapping: 'none', viewKind: 'slides' })
 
   await writeSourceScope(name, srcDir)
   console.log(`[slides] ${name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
-  return { manifest, writePageInfo: true }
+  return { manifest }
 }

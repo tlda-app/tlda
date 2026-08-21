@@ -8,7 +8,7 @@ import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighligh
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { setCurrentDocumentInfo, createSvgDocumentLayout, createHtmlDocumentFromPageInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
-import { loadSlidesDocument } from './loaders/slidesLoader'
+import { createSlidesDocumentFromPageInfo } from './loaders/slidesLoader'
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { log } from './logger'
@@ -20,7 +20,7 @@ import { diffWords, extractFlatWords } from './wordDiff'
 import { getViewerId } from './useYjsSync'
 import { htmlPageReloadUrl } from './html-page-navigation-helpers'
 import { htmlIframeElements } from './htmlIframeRegistry'
-import { FORMATS_WITH_OWN_PAGE_INFO, HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
+import { usesHtmlPageShapes } from './loaders/types'
 import { resolveAnnotationSourceAnchor, type AnnotationSourceAnchor } from './annotationSourceAnchor'
 import { getPref } from './preferences'
 import { fetchCachedSvgPage } from './pageSvgCache'
@@ -428,23 +428,8 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
   return { failedPages: [], remapResult }
 }
 
-/**
- * Markdown parts (notes/scratch) attached to a project whose own document has
- * no page-info.json — e.g. a LaTeX project's scratch columns. They render
- * through the exact same markdown renderer and html-page shape machinery as a
- * markdown project's own columns, on their own TLDraw page — separate from
- * this document's SVG pages, which createSvgShapes owns exclusively. Best-
- * effort and self-correcting: a project with no parts yet just 404s and no-ops.
- *
- * Only for a format whose page-info.json IS the parts listing. A format that
- * owns its own page-info has its DOCUMENT'S pages in that file, and reading
- * those as parts renders the whole document a second time — which is what a
- * slides deck got, stacked on the real deck and eating every click in it. The
- * check lives here rather than at the call sites so a third caller can't miss
- * it.
- */
+/** Render project scratch/notes through the dedicated parts API. */
 async function refreshSvgProjectParts(editor: Editor, document: SvgDocument) {
-  if (document.format && FORMATS_WITH_OWN_PAGE_INFO.has(document.format)) return
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   // Distinct namespace from the main document's own page/shape ids — the
   // main document already owns `${name}-page-N`; parts must never collide
@@ -452,13 +437,13 @@ async function refreshSvgProjectParts(editor: Editor, document: SvgDocument) {
   // page (reuseDefaultPage: false).
   const partsName = `${document.name}--parts`
   try {
-    const res = await fetch(`${basePath}page-info.json?t=${Date.now()}`)
+    const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}/parts?t=${Date.now()}`)
     if (!res.ok) return
     const pageInfos = await res.json()
     if (!Array.isArray(pageInfos) || pageInfos.length === 0) return
     const partsDoc = createHtmlDocumentFromPageInfo(partsName, basePath, pageInfos, { reuseDefaultPage: false })
     document.partPages = partsDoc.pages
-    createHtmlShapes(editor, { ...document, name: partsName, pages: partsDoc.pages, format: 'html' }, { reuseDefaultPage: false })
+    createHtmlShapes(editor, { ...partsDoc, name: partsName }, { reuseDefaultPage: false })
   } catch (e) {
     console.warn('[Parts] refresh failed:', (e as Error).message)
   }
@@ -485,7 +470,12 @@ async function reconcileSlideCount(editor: Editor, document: SvgDocument): Promi
     if (newCount <= 0 || newCount === document.pages.length) return
 
     const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
-    const fresh = await loadSlidesDocument(document.name, basePath)
+    const manifest = cfg.documentManifest
+    if (!manifest?.pages) return
+    const fresh = createSlidesDocumentFromPageInfo(document.name, basePath, manifest.pages)
+    fresh.view = manifest.view
+    fresh.source = manifest.source
+    fresh.documentFormat = manifest.document.format
     document.pages.length = 0
     document.pages.push(...fresh.pages)
     document.slideInfo = fresh.slideInfo
@@ -504,10 +494,7 @@ export async function reloadPages(
   pageNumbers: number[] | null, // null = all pages
 ): Promise<ReloadResult> {
   // A deck's pages are iframes too, so it reloads the same way: swap each
-  // shape's URL and let the iframe re-fetch. document-formats.mjs keeps `slides`
-  // out of HTML_PAGE_FORMATS deliberately — that set also answers "does this
-  // have synctex" and "is the source line-addressed", and a deck answers no to
-  // both — so the routing says `slides` here rather than widening the set.
+  // shape's URL and let the iframe re-fetch.
   //
   // The reason given there for slides taking "its own reload path" is that a
   // deck is addressed by slide coordinates. That is true of the shapes and not
@@ -516,7 +503,7 @@ export async function reloadPages(
   // window.location.reload(), which is what this replaces. Skip: "the deck
   // updates... it changes. The page doesn't refresh. The same kind of experience
   // that we have editing tex."
-  if (document.format === 'slides') {
+  if (document.view.kind === 'slides') {
     // A rebuild can change the number of slides, and the iframe reloader cannot
     // help with that: it walks the shapes that already exist and swaps their
     // URLs, so a deck that grew would show its old slides updated and never
@@ -535,14 +522,14 @@ export async function reloadPages(
     await reconcileSlideCount(editor, document)
     return reloadHtmlPages(editor, document)
   }
-  if (HTML_PAGE_FORMATS.has(document.format || '')) return reloadHtmlPages(editor, document)
+  if (usesHtmlPageShapes(document)) return reloadHtmlPages(editor, document)
 
   // Markdown parts attached to this project — independent of whatever this
   // document's own reload does below (own try/catch, never blocks it).
   void refreshSvgProjectParts(editor, document)
 
   // Hot-reload is LaTeX-specific (re-fetch SVGs after rebuild)
-  if (document.format === 'png') return { failedPages: [] }
+  if (document.view.kind === 'image-pages') return { failedPages: [] }
 
   const gen = ++reloadGeneration
 
@@ -558,12 +545,17 @@ export async function reloadPages(
   // than left as decoration.
   if (pageNumbers === null) {
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}?include=page-info`)
+      const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}`)
       if (res.ok) {
         const cfg = await res.json()
         const newCount: number = cfg.pages ?? document.pages.length
         if (newCount > 0) setBuiltPageCount(newCount)
-        if (newCount > 0 && (newCount !== document.pages.length || document.format === 'pdf')) {
+        const manifestPages = cfg.documentManifest?.pages
+        const geometryChanged = Array.isArray(manifestPages) && manifestPages.some((page: any, index: number) => {
+          const current = document.pages[index]
+          return !current || current.width !== page.width || current.height !== page.height
+        })
+        if (newCount > 0 && (newCount !== document.pages.length || geometryChanged)) {
           const docBasePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
           const targets = cfg.targets?.map((t: any) => ({
             name: t.texBase,
@@ -576,7 +568,7 @@ export async function reloadPages(
             newCount,
             docBasePath,
             targets,
-            document.format === 'pdf' ? cfg.documentManifest?.pages : undefined,
+            manifestPages,
           )
           // Mutate the live layout object in place so every reader — this reload,
           // remapAnnotations below, and future reloads — sees the new page set.
@@ -587,7 +579,7 @@ export async function reloadPages(
           // Keep the synctex/anchoring snapshot in step with the new page set.
           setCurrentDocumentInfo({
             name: document.name,
-            format: document.format,
+            view: document.view,
             pages: document.pages.map(p => ({
               bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
               width: p.width,
@@ -812,11 +804,11 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   ensurePagesAtBottom: () => void
 } {
   // Create page shapes if they don't already exist (from Yjs sync)
-  if (HTML_PAGE_FORMATS.has(document.format || '')) {
-    createHtmlShapes(editor, document)
-  } else if (document.format === 'slides') {
+  if (document.view.kind === 'slides') {
     createSlidesShapes(editor, document)
-  } else if (document.format === 'png') {
+  } else if (usesHtmlPageShapes(document)) {
+    createHtmlShapes(editor, document)
+  } else if (document.view.kind === 'image-pages') {
     createImageShapes(editor, document)
   } else {
     createSvgShapes(editor, document)
@@ -846,8 +838,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   }, { scope: 'document' })
 
   // Initialize the single ribbon shape + eraser support
-  const ribbonEnabled = document.format !== 'png' && document.format !== 'pdf' && document.format !== 'html' &&
-      document.format !== 'slides' && document.format !== 'markdown'
+  const ribbonEnabled = document.view.kind === 'svg-pages' && document.view.capabilities.sourceMapping
   if (ribbonEnabled) {
     void initRibbon(editor, document.name, document.pages)
     setupRibbonEraser(editor, document.name, document.pages)
@@ -1008,7 +999,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     document.pages[0].bounds.clone()
   )
 
-  const isSlides = document.format === 'slides'
+  const isSlides = document.view.capabilities.presentation
 
   function applyCameraBounds() {
     if (isSlides) {

@@ -30,18 +30,18 @@ function minimalPdf(text) {
   return body
 }
 
-test('common manifest validates artifact paths and projects page-info for compatibility', () => {
+test('common manifest validates artifact paths and carries declared view capabilities', () => {
   const outDir = mkdtempSync(join(tmpdir(), 'tlda-document-manifest-'))
   const manifest = createDocumentManifest(
     { sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html', mainFile: 'notes.md' },
     [{ file: 'notes.html', width: 800, height: 1000 }],
-    { sourceMapping: 'page-source' },
+    { sourceMapping: 'page-source', viewKind: 'html-pages' },
   )
-  writeDocumentManifest(outDir, manifest, { writePageInfo: true })
+  writeDocumentManifest(outDir, manifest)
   assert.equal(existsSync(join(outDir, 'document-manifest.json')), true)
-  assert.equal(JSON.parse(readFileSync(join(outDir, 'page-info.json')))[0].file, 'notes.html')
+  assert.deepEqual(manifest.view.capabilities, { presentation: false, sourceMapping: true, searchableText: false })
   assert.throws(() => normalizeDocumentManifest({
-    version: 1, kind: 'tlda-document', pages: [{ file: '../outside', width: 1, height: 1 }],
+    version: 1, kind: 'tlda-document', view: { kind: 'svg-pages' }, pages: [{ file: '../outside', width: 1, height: 1 }],
   }), /stay inside document output/)
 })
 

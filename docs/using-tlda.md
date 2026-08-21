@@ -150,7 +150,7 @@ automatically. LaTeX remains the default for `.tex` files and repository paths.
 | Markdown (`.md`) | Renders the authored Markdown and the local Markdown documents and assets it links to. | `tlda project link notes notes.md` |
 | Quarto (`.qmd`) | Sends the source directory to the server and runs Quarto there. An HTML document becomes a scrolling page; a RevealJS result becomes individual interactive slides. | `tlda project link report report.qmd` |
 | PDF (`.pdf`) | Preserves the PDF as versioned source, extracts paged display and searchable text, and keeps annotations in page coordinates. Source-line mapping is unavailable. | `tlda project link book book.pdf` |
-| Rendered HTML | Copies a rendered HTML site or book and its assets without running its source renderer. Top-level HTML files become document pages unless the artifact supplies `page-info.json`. | `tlda project link book index.html --format html` |
+| Rendered HTML | Copies a rendered HTML site or book and its assets without running its source renderer. Top-level HTML files become document pages unless the artifact supplies `tlda-manifest.json`. | `tlda project link book index.html --format html` |
 | Rendered RevealJS | Copies an already-rendered deck and its assets, then lays its interactive slides from left to right on the canvas. | `tlda project link talk index.html --format slides` |
 
 For a Quarto project, the server needs `quarto` on `PATH`. It uses the document's

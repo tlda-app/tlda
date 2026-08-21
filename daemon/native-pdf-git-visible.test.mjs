@@ -108,6 +108,10 @@ test('a native PDF root reaches a visible searchable document through the daemon
     const manifest = await fetch(`${base}/docs/${project}/document-manifest.json`).then(response => response.json())
     assert.equal(manifest.pages.length, 1)
     assert.equal(manifest.sourceMapping, 'none')
+    assert.deepEqual(manifest.view, {
+      kind: 'svg-pages',
+      capabilities: { presentation: false, sourceMapping: false, searchableText: true },
+    })
     assert.equal(existsSync(join(projectsDir, project, 'output', 'book.pdf')), true)
     assert.equal(existsSync(join(projectsDir, project, 'output', manifest.pages[0].file)), true)
     const geometry = JSON.parse(readFileSync(join(projectsDir, project, 'output', manifest.pages[0].textGeometry), 'utf8'))

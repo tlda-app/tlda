@@ -9,18 +9,14 @@ A tlda document has three independent axes:
 | document format | `paged`, `html`, `slides` | viewer and interaction model |
 
 These are stored as `sourceFormat`, `renderer`, and `documentFormat`, and they
-are authoritative at runtime. Runtime startup rejects records without all
-three axes or with the removed `format` field. Convert an old store explicitly
-with `node scripts/migrate-document-axes-v1.mjs <projects-dir>` before starting
-the server. The command journals every before/after record, resumes an
-interrupted conversion, and supports `--recover`; project creation and runtime
-reads have no legacy path.
+are authoritative for source and build identity. Runtime startup rejects records without all
+three axes or with the removed `format` field; there is no compatibility or
+startup migration path.
 
 Every builder writes `output/document-manifest.json`. It identifies the source
 root and renderer, the document format, ordered display pages with dimensions,
 assets, optional searchable-text geometry, and the available source-mapping
-mode. `page-info.json` remains a compatibility projection for the existing HTML
-and slide readers while they move to the common manifest.
+mode. Its `view` capabilities are the sole runtime viewer behavior contract.
 
 Renderer adapters are registered in `server/lib/build-adapter-registry.mjs`.
 Each returns one `BuildResult`; `buildDocument()` is the sole completion

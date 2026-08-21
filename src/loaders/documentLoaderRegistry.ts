@@ -2,7 +2,7 @@ import { createSvgDocumentLayout } from './svgLoader'
 import { createHtmlDocumentFromPageInfo } from './htmlLoader'
 import { createSlidesDocumentFromPageInfo } from './slidesLoader'
 import { loadImageDocument } from './imageLoader'
-import type { SvgDocument, TargetInfo } from './types'
+import type { DocumentView, SvgDocument, TargetInfo } from './types'
 
 export interface DocumentManifestPage {
   file: string
@@ -16,8 +16,10 @@ export interface DocumentManifestPage {
 }
 
 export interface DocumentViewManifest {
+  source: { format: string; renderer: string; root?: string }
+  document: { format: string }
   pages: DocumentManifestPage[]
-  view: { kind: 'svg-pages' | 'html-pages' | 'slides' | 'image-pages'; capabilities: Record<string, boolean> }
+  view: DocumentView
 }
 
 export interface DocumentLoaderContext {
@@ -47,5 +49,11 @@ export function registeredDocumentLoaders() {
 export async function loadDocumentFromManifest(context: DocumentLoaderContext) {
   const loader = loaders[context.manifest.view.kind]
   if (!loader) throw new Error(`No document loader registered for ${context.manifest.view.kind}`)
-  return loader(context)
+  const document = await loader(context)
+  return {
+    ...document,
+    view: context.manifest.view,
+    source: context.manifest.source,
+    documentFormat: context.manifest.document.format,
+  }
 }

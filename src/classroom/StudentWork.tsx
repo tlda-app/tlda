@@ -19,9 +19,9 @@ import './ClassroomWorkspace.css'
 
 async function firstPage(docKey: string) {
   const basePath = `/docs/${encodeURIComponent(docKey)}/`
-  const response = await fetch(`${basePath}page-info.json`)
+  const response = await fetch(`/api/projects/${encodeURIComponent(docKey)}`)
   if (!response.ok) throw new Error('Your submission is still being prepared. Give it a moment and reload.')
-  const pages = await response.json()
+  const pages = (await response.json()).documentManifest?.pages || []
   if (!pages[0]) throw new Error('Your submission has no rendered page yet.')
   return { basePath, page: pages[0] }
 }
