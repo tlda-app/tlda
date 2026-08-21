@@ -7,8 +7,14 @@ import {
   terminalInputAllowedFromConfig,
 } from '../shared/terminal-input-policy.mjs'
 
-function makeTerminalRpc({ terminalInputAllowed, resolveTerminalAgent = () => ({ id: 'fleet:test', tmuxSession: 'agent-session', sessionId: 'session-1' }) }) {
+function makeTerminalRpc({
+  terminalInputAllowed,
+  resolveTerminalAgent = () => ({ id: 'fleet:test', tmuxSession: 'agent-session', sessionId: 'session-1' }),
+  onSessionInventoryChanged,
+  execFileImpl,
+}) {
   const calls = []
+  const inventoryChanges = []
   const rpc = createTerminalRpc({
     tmuxArgs: [],
     log: { info() {}, warn() {}, error() {} },
@@ -25,7 +31,7 @@ function makeTerminalRpc({ terminalInputAllowed, resolveTerminalAgent = () => ({
     decideTerminalWatchExit: () => ({ terminalDead: false }),
     onArmAgent() {},
     onArmBySession() {},
-    onEmitAgentStatus() {},
+    onSessionInventoryChanged: onSessionInventoryChanged || (reason => { inventoryChanges.push(reason) }),
     onPlanModeSeen() {},
     onPlanModeGone() {},
     hasPlanMode: () => false,
@@ -33,12 +39,12 @@ function makeTerminalRpc({ terminalInputAllowed, resolveTerminalAgent = () => ({
     validateTmuxOwner: () => true,
     resolveTerminalAgent,
     terminalInputAllowed,
-    execFileImpl: async (cmd, args) => {
+    execFileImpl: execFileImpl || (async (cmd, args) => {
       calls.push([cmd, args])
       return { stdout: '', stderr: '' }
-    },
+    }),
   })
-  return { rpc, calls }
+  return { rpc, calls, inventoryChanges }
 }
 
 function makeTerminalRpcWithPty() {
@@ -67,7 +73,7 @@ function makeTerminalRpcWithPty() {
     decideTerminalWatchExit: () => ({ terminalDead: false }),
     onArmAgent() {},
     onArmBySession() {},
-    onEmitAgentStatus() {},
+    onSessionInventoryChanged() {},
     onPlanModeSeen() {},
     onPlanModeGone() {},
     hasPlanMode: () => false,
@@ -138,7 +144,7 @@ test('explicit opt-in preserves terminal text injection', async () => {
 })
 
 test('kill-session succeeds when the terminal ledger row is already absent', async () => {
-  const { rpc, calls } = makeTerminalRpc({
+  const { rpc, calls, inventoryChanges } = makeTerminalRpc({
     terminalInputAllowed: false,
     resolveTerminalAgent: () => null,
   })
@@ -149,6 +155,54 @@ test('kill-session succeeds when the terminal ledger row is already absent', asy
     reason: 'terminal already unavailable',
   })
   assert.deepEqual(calls, [])
+  assert.deepEqual(inventoryChanges, ['kill-session-unavailable'])
+})
+
+test('kill-session rescans authoritative process inventory after tmux removal', async () => {
+  const { rpc, calls, inventoryChanges } = makeTerminalRpc({ terminalInputAllowed: false })
+  const result = await rpc.handlers['kill-session']({ agent_id: 'fleet:test' })
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls, [['tmux', ['kill-session', '-t', '=agent-session']]])
+  assert.deepEqual(inventoryChanges, ['kill-session'])
+})
+
+test('kill-session waits for authoritative rescan on every terminal outcome', async t => {
+  for (const boundary of [
+    {
+      name: 'removed',
+      resolveTerminalAgent: undefined,
+      execFileImpl: async () => ({ stdout: '', stderr: '' }),
+      reason: 'kill-session',
+    },
+    {
+      name: 'already absent',
+      resolveTerminalAgent: undefined,
+      execFileImpl: async () => { throw Object.assign(new Error('gone'), { stderr: "can't find session" }) },
+      reason: 'kill-session-already-absent',
+    },
+    {
+      name: 'unavailable',
+      resolveTerminalAgent: () => null,
+      execFileImpl: async () => { throw new Error('tmux must not run') },
+      reason: 'kill-session-unavailable',
+    },
+  ]) {
+    await t.test(boundary.name, async () => {
+      const rpc = makeTerminalRpc({
+        terminalInputAllowed: false,
+        resolveTerminalAgent: boundary.resolveTerminalAgent,
+        execFileImpl: boundary.execFileImpl,
+        onSessionInventoryChanged: async reason => {
+          assert.equal(reason, boundary.reason)
+          throw new Error('inventory rescan failed')
+        },
+      }).rpc
+      await assert.rejects(
+        () => rpc.handlers['kill-session']({ agent_id: 'fleet:test' }),
+        /inventory rescan failed/,
+      )
+    })
+  }
 })
 
 test('notification text is converted to one printable line', () => {
