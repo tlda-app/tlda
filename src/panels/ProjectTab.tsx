@@ -108,6 +108,25 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     }
     const placed = nodes.find(node => node.documentRef.path === document.outputFile)
     if (placed) {
+      const expectedUrl = `/docs/${encodeURIComponent(project.projectName)}/${document.outputFile}`
+      const shape = placed.shape
+      const currentUrl = (shape?.props as { url?: string } | undefined)?.url
+      if (shape && (currentUrl !== expectedUrl || shape.meta.spatialWorldTitle !== document.title)) {
+        const wasLocked = !!shape.isLocked
+        if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+        editor.updateShape({
+          id: shape.id,
+          type: shape.type,
+          props: { ...shape.props, url: expectedUrl },
+          meta: {
+            ...shape.meta,
+            spatialWorldTitle: document.title,
+            materializedDoc: project.projectName,
+            materializedFile: document.outputFile,
+          },
+        } as never)
+        if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: true })
+      }
       activate(placed.id)
       return
     }
