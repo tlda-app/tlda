@@ -50,8 +50,9 @@ test('reference updates reach only docviews subscribed to ref and preserve their
   ])
 })
 
-test('bottom-right build-error click keeps source opening and also drives ref docviews', () => {
+test('bottom-right build-error click only retargets ref docviews and does not open an editor', () => {
   const source = readFileSync(new URL('../src/pills/BuildErrorPill.tsx', import.meta.url), 'utf8')
   assert.match(source, /showBuildErrorInReferenceDocviews\(editor, doc\.projectName, err\)/)
-  assert.match(source, /openInEditor\(doc\.projectName, err\.file \|\| '', err\.line!\)/)
+  assert.doesNotMatch(source, /openInEditor/)
+  assert.doesNotMatch(source, /createShape|fleet-source-editor|source-editor/)
 })
