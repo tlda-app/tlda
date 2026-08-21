@@ -90,6 +90,7 @@ const REMOVED_PROJECT_SUBS = new Set(['create', 'preview'])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
 const TOP_LEVEL_COMMANDS = [
   ['project', 'work on a project'],
+  ['classroom', 'set up classroom courses and assignments'],
   ['server', 'run/manage the tlda server'],
   ['daemon', 'fleet daemon (source watch + activity)'],
   ['bot', 'manage configured fleet bots'],
@@ -116,6 +117,9 @@ const PROJECT_COMMANDS = [
   ['book', 'Group existing projects into a book'],
   ['repo-doctor', 'Diagnose/repair a project source repo'],
   ['init-shadow', 'Rebuild a project shadow history repo'],
+]
+const CLASSROOM_COMMANDS = [
+  ['setup', 'Create/update a course and assignment, then freeze the handout'],
 ]
 const SERVER_COMMANDS = [
   ['start', 'Refuse to override launchd supervision'],
@@ -217,6 +221,7 @@ const COMMAND_HELP = {
   bot:     'tlda bot [list|start|restart|stop|status|log|uninstall] [name]\n\n  One launchd bot manager keeps every declared bot running. Start and stop refuse; restart terminates the selected bot process and the manager returns it. Config apply reconciles the declaration.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
+  classroom: 'tlda classroom setup --course <id> --course-title "Title" --assignment <id> --assignment-title "Title" --due <iso> --handout <project> --solutions <project> [--solutions-version <version>]\n\n  Instructor setup for the first classroom loop.\n  Creates or updates the course, creates or updates the assignment with the solutions document key, then freezes the handout through the existing classroom template route.\n\n  Prints the registration, gradebook, problem-marking, and student-work paths. No printed URL contains a name parameter.',
   daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service. Stop refuses because unloading the job from an agent shell strands it; use restart or uninstall.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model <provider-model>] [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         With no model or kind, uses the configured default model. --model names\n         a provider model directly; --kind then defaults to codex. Run in a\n         terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Non-interactive calls report the local tmux\n         session and local mint id; they do not claim a fleet-recipient binding.',
   'repo-doctor': 'tlda project repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
@@ -230,6 +235,8 @@ const VALUE_FLAGS = new Set([
   'model', 'cwd', 'effort', 'mode', 'name', 'kind',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'poll', 'config',
   'label', 'plist', 'only',
+  'course', 'course-title', 'assignment', 'assignment-title', 'due',
+  'handout', 'solutions', 'solutions-version',
 ])
 
 const SPAWN_BOOLEAN_FLAGS = new Set([
@@ -2767,6 +2774,66 @@ async function cmdErrors() {
   }
   if (!data.errors?.length && !data.warnings?.length && !data.pipelineWarnings?.length && !data.building) {
     console.log(green('Clean.'))
+  }
+}
+
+function requiredClassroomSetupFlag(name) {
+  const value = getFlag(name)
+  if (!value) {
+    console.error(`Missing required --${name}.`)
+    console.error(COMMAND_HELP.classroom)
+    process.exit(1)
+  }
+  return value
+}
+
+async function cmdClassroomSetup() {
+  const courseId = requiredClassroomSetupFlag('course')
+  const courseTitle = requiredClassroomSetupFlag('course-title')
+  const assignmentId = requiredClassroomSetupFlag('assignment')
+  const assignmentTitle = requiredClassroomSetupFlag('assignment-title')
+  const dueAt = requiredClassroomSetupFlag('due')
+  const templateDocKey = requiredClassroomSetupFlag('handout')
+  const solutionsDocKey = requiredClassroomSetupFlag('solutions')
+  const solutionsVersion = getFlag('solutions-version')
+
+  const course = await api('POST', '/api/classroom/courses', { id: courseId, title: courseTitle })
+  const assignment = await api('POST', `/api/classroom/courses/${encodeURIComponent(courseId)}/assignments`, {
+    id: assignmentId,
+    title: assignmentTitle,
+    dueAt,
+    solutionsDocKey,
+    ...(solutionsVersion ? { solutionsVersion } : {}),
+  })
+  const frozen = await api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey })
+
+  console.log(green('Classroom setup complete.'))
+  console.log(`Course: ${course.title || courseTitle} (${course.id || courseId})`)
+  console.log(`Assignment: ${assignment.title || assignmentTitle} (${assignment.id || assignmentId})`)
+  console.log(`Due: ${assignment.dueAt || dueAt}`)
+  console.log(`Handout frozen: ${frozen.templateDocKey || templateDocKey}@${frozen.templateVersion || '(server version)'}`)
+  console.log(`Solutions: ${assignment.solutionsDocKey || solutionsDocKey}${assignment.solutionsVersion ? `@${assignment.solutionsVersion}` : ''}`)
+  console.log()
+  console.log('Next paths:')
+  console.log(`  Registration: ?workspace=classroom-register&course=${encodeURIComponent(courseId)}`)
+  console.log(`  Gradebook:    ?workspace=classroom-gradebook&course=${encodeURIComponent(courseId)}`)
+  console.log(`  Marking:      ?workspace=classroom-problems&assignment=${encodeURIComponent(assignmentId)}`)
+  console.log(`  Student work: ?workspace=classroom-work&assignment=${encodeURIComponent(assignmentId)}`)
+}
+
+async function cmdClassroom() {
+  const sub = getPositional(0)
+  if (!sub || sub === '--help') {
+    console.log(`tlda classroom — classroom course and assignment setup
+
+${formatCommandRows(CLASSROOM_COMMANDS)}`)
+    return
+  }
+  switch (sub) {
+    case 'setup': await finishCliOperation('classroom setup', cmdClassroomSetup); break
+    default:
+      console.error(`Unknown tlda classroom subcommand: ${sub}`)
+      process.exit(1)
   }
 }
 
@@ -6160,6 +6227,7 @@ async function main() {
     switch (command) {
       case 'server': await cmdServer(); break
       case 'system': await cmdSystem(); break
+      case 'classroom': await cmdClassroom(); break
       case 'scratch': await finishCliOperation('project scratch', cmdScratch); break
       case 'book':   await finishCliOperation('project book', cmdBook); break
       case 'push':   await finishCliOperation('project push', cmdPush); break
