@@ -4,16 +4,14 @@ import { documentAxes } from '../../shared/document-formats.mjs'
 
 export const DOCUMENT_MANIFEST_FILE = 'document-manifest.json'
 
-function viewDescriptor(manifest, pages) {
-  const extension = pages[0]?.file?.split('.').pop()?.toLowerCase()
-  const kind = extension === 'html' && manifest.document?.format === 'slides' ? 'slides'
-    : extension === 'html' ? 'html-pages'
-      : extension === 'png' ? 'image-pages'
-        : 'svg-pages'
+function viewDescriptor(manifest, pages, kind) {
+  if (!['svg-pages', 'html-pages', 'slides', 'image-pages'].includes(kind)) {
+    throw new Error('Document manifest view.kind must be declared by the document builder')
+  }
   return {
     kind,
     capabilities: {
-      presentation: manifest.document?.format === 'slides',
+      presentation: kind === 'slides' || manifest.document?.format === 'slides',
       sourceMapping: (manifest.sourceMapping || 'none') !== 'none',
       searchableText: pages.some(page => Boolean(page.textGeometry)),
     },
@@ -52,7 +50,7 @@ export function normalizeDocumentManifest(manifest) {
     assets: Array.isArray(manifest.assets) ? manifest.assets.map((asset, index) => relativeArtifact(asset, `assets[${index}]`)) : [],
     sourceMapping: manifest.sourceMapping || 'none',
   }
-  return { ...normalized, view: viewDescriptor(normalized, pages) }
+  return { ...normalized, view: viewDescriptor(normalized, pages, manifest.view?.kind) }
 }
 
 export function createDocumentManifest(project, pages, options = {}) {
@@ -69,13 +67,13 @@ export function createDocumentManifest(project, pages, options = {}) {
     pages,
     assets: options.assets || [],
     sourceMapping: options.sourceMapping || 'none',
+    view: { kind: options.viewKind },
   })
 }
 
-export function writeDocumentManifest(outDir, manifest, { writePageInfo = false } = {}) {
+export function writeDocumentManifest(outDir, manifest) {
   const normalized = normalizeDocumentManifest(manifest)
   writeFileSync(join(outDir, DOCUMENT_MANIFEST_FILE), `${JSON.stringify(normalized, null, 2)}\n`)
-  if (writePageInfo) writeFileSync(join(outDir, 'page-info.json'), `${JSON.stringify(normalized.pages, null, 2)}\n`)
   return normalized
 }
 

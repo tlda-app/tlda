@@ -64,8 +64,7 @@ Format-specific builders share the same project record and
 
 `document-manifest.json` is the common ordered display manifest. It records the
 three format axes, page dimensions and artifacts, searchable text geometry,
-assets, and source-mapping capability. `page-info.json` remains a compatibility
-projection consumed by the existing HTML and slide loaders.
+assets, and the view capabilities consumed by every document loader.
 
 An Overleaf or Git remote is an ordinary Git-backed daemon source. Its checkout
 lives on the daemon's machine, remote edits enter through the same source

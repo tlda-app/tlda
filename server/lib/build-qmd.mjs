@@ -8,7 +8,7 @@
  * render on, so the render has to happen where the build happens.
  *
  * The output contract is the one every other format already meets: HTML files
- * plus a page-info.json listing them. src/loaders/htmlLoader.ts does not care
+ * plus a document manifest listing them. src/loaders/htmlLoader.ts does not care
  * how the HTML was produced, which is why this is a new builder rather than a
  * new rendering path inside an existing one.
  */
@@ -275,10 +275,10 @@ export async function buildQmdDocument(name, addLog = console.log) {
     const manifest = createDocumentManifest({
       ...project,
       sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html', mainFile,
-    }, renderedProject.pageInfo, { sourceMapping: 'page-source' })
+    }, renderedProject.pageInfo, { sourceMapping: 'page-source', viewKind: 'html-pages' })
     await writeSourceScope(name, srcDir, outDir)
     addLog(`[qmd] ${name}: rendered tlda project with ${renderedProject.pageInfo.length} pages`)
-    return { manifest, writePageInfo: true, renderedFormat: 'html', regenerateBookTocs: true }
+    return { manifest, regenerateBookTocs: true }
   }
 
   const outputFile = qmdOutputFileForSource(mainFile)
@@ -297,7 +297,6 @@ export async function buildQmdDocument(name, addLog = console.log) {
     addLog(`[qmd] ${name}: rendered ${mainFile} → ${pdfOutputFile}`)
     return {
       manifest,
-      renderedFormat: 'paged',
       targets: [{ texBase: mainFile.split('/').pop().replace(/\.qmd$/i, ''), mainFile, pages: manifest.pages.length }],
       regenerateBookTocs: true,
     }
@@ -346,14 +345,12 @@ export async function buildQmdDocument(name, addLog = console.log) {
   const manifest = createDocumentManifest({
     ...project,
     sourceFormat: 'qmd', renderer: 'quarto', documentFormat: isDeck ? 'slides' : 'html', mainFile,
-  }, pageInfo, { sourceMapping: isDeck ? 'none' : 'page-source' })
+  }, pageInfo, { sourceMapping: isDeck ? 'none' : 'page-source', viewKind: isDeck ? 'slides' : 'html-pages' })
 
   await writeSourceScope(name, srcDir, outDir)
   addLog(`[qmd] ${name}: rendered ${mainFile} → ${outputFile}`)
   return {
     manifest,
-    writePageInfo: true,
-    renderedFormat: isDeck ? 'slides' : 'html',
     regenerateBookTocs: true,
   }
 }

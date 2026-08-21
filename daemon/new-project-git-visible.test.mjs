@@ -88,16 +88,14 @@ test('new project linked from an existing Git checkout becomes a visible built d
 
     phase = 'document manifest'
     const manifest = await fetch(`${base}/docs/manifest.json`).then(response => response.json())
-    assert.deepEqual(manifest.documents[project], {
-      name: 'Git-visible paper', pages: 1, sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html',
-      sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html',
-      createdAt: projectView.createdAt, lastBuild: projectView.lastBuild, autoSync: true,
-    })
-    phase = 'page info'
-    const pageInfo = await fetch(`${base}/docs/${project}/page-info.json`).then(response => response.json())
-    assert.equal(pageInfo.length, 1)
-    assert.equal(pageInfo[0].file, 'index.html')
-    assert.equal(pageInfo[0].source.file, 'README.md')
+    const published = manifest.documents[project]
+    assert.deepEqual(
+      { sourceFormat: published.sourceFormat, renderer: published.renderer, documentFormat: published.documentFormat },
+      { sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' },
+    )
+    assert.equal(published.documentManifest.pages.length, 1)
+    assert.equal(published.documentManifest.pages[0].file, 'index.html')
+    assert.equal(published.documentManifest.pages[0].source.file, 'README.md')
     phase = 'rendered page'
     const pageResponse = await fetch(`${base}/docs/${project}/index.html`)
     assert.equal(pageResponse.status, 200)

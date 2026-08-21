@@ -2,13 +2,14 @@ import { createContext, type ReactNode } from 'react'
 import type { PageTextData } from './TextSelectionLayer'
 import type { ProofPair } from './svgDocumentLoader'
 import type { BuildError, BuildWarning } from './useYjsSync'
+import type { DocumentView } from './loaders/types'
 
 /** Stable project info — set once per project load, never changes during session. */
 export interface ProjectContextValue {
   projectName: string
   title?: string
-  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd' | 'pdf'
-  pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
+  view: DocumentView
+  pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; title?: string; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
   targets?: Array<{ name: string; title: string; pages: number }>
 }
 

@@ -3,7 +3,7 @@
  *
  * Reads a .md file from sourceDir, renders with markdown-it + KaTeX,
  * wraps in a full HTML page with the tlda bridge script, and writes
- * output/index.html + page-info.json.
+ * output/index.html plus a document manifest.
  *
  * The output format is identical to the 'html' format — the viewer
  * uses loadHtmlDocument and html-page shapes, same as for Quarto HTML.
@@ -896,9 +896,9 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   const manifest = createDocumentManifest({
     ...project,
     sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html',
-  }, pageInfo, { sourceMapping: 'page-source' })
+  }, pageInfo, { sourceMapping: 'page-source', viewKind: 'html-pages' })
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
   addLog(`[markdown] ${name}: indexed ${pageInfo.length} column${pageInfo.length === 1 ? '' : 's'}`)
-  return { manifest, writePageInfo: true, regenerateBookTocs: true }
+  return { manifest, regenerateBookTocs: true }
 }

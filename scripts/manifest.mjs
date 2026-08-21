@@ -94,7 +94,7 @@ export function removeDoc(name) {
 // --- Derived fields ---
 
 function enrich(name, doc) {
-  if (Object.hasOwn(doc, 'format')) throw new Error(`Document ${name} requires the explicit document-axes-v1 migration`)
+  if (Object.hasOwn(doc, 'format')) throw new Error(`Document ${name} uses the removed legacy format field`)
   const axes = documentAxes(doc)
   return {
     ...doc,

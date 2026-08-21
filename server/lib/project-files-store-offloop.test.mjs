@@ -124,7 +124,7 @@ test('project-store startup rejects legacy records without changing them', async
     mainFile: 'index.qmd', clientSourceManifest: ['index.qmd', 'index.html'],
   }))
   try {
-    await assert.rejects(async () => { await initProjectStore(root) }, /explicit document-axes-v1 storage migration/)
+    await assert.rejects(async () => { await initProjectStore(root) }, /removed legacy format field/)
     const persisted = JSON.parse(readFileSync(join(projectDir, 'project.json'), 'utf8'))
     assert.equal(persisted.format, 'qmd')
     assert.equal(Object.hasOwn(persisted, 'sourceFormat'), false)

@@ -1,4 +1,4 @@
-import { documentAxes, viewFormat } from './document-formats.mjs'
+import { documentAxes } from './document-formats.mjs'
 
 export function documentTransport(project) {
   return {
@@ -16,7 +16,6 @@ export function foreignDocumentTransport(project, event = {}) {
   }
   return {
     ...combined,
-    format: viewFormat(combined),
     pages: project.pages || event.pages || 0,
     pageFiles: Array.isArray(project.pageFiles) && project.pageFiles.length
       ? project.pageFiles

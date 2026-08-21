@@ -152,7 +152,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     useFullBounds: useFullBoundsRaw,
   } = shape.props
   const targetShapeId = resolveDocViewTargetShapeId({
-    format: doc?.format,
+    viewKind: doc?.view.kind,
     pages: doc?.pages || [],
     page,
     explicitTargetShapeId: typeof targetShapeIdRaw === 'string' ? targetShapeIdRaw : '',

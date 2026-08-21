@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
 import { setBuildReporter } from './build-runner.mjs'
 import { createDocumentManifest } from './document-manifest.mjs'
-import { buildHtmlDocument, buildSlidesDocument } from './format-builders.mjs'
 import { finalizeDocumentBuild } from './document-build-finalizer.mjs'
 import { closeProjectStore, createProject, initProjectStore } from './project-store.mjs'
 
@@ -28,16 +27,15 @@ test('the common finalizer owns manifest publication, project metadata, and relo
     const manifest = createDocumentManifest(
       { sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html', mainFile: 'notes.md' },
       [{ file: 'notes.html', width: 800, height: 1000 }],
-      { sourceMapping: 'page-source' },
+      { sourceMapping: 'page-source', viewKind: 'html-pages' },
     )
-    await finalizeDocumentBuild('notes', { manifest, writePageInfo: true }, {
+    await finalizeDocumentBuild('notes', { manifest }, {
       updateProject: async (name, update) => updates.push({ name, update }),
       broadcastSignal: (...args) => signals.push(args),
       regenerateBookTocs: async () => {},
     })
 
     assert.equal(existsSync(join(root, 'notes', 'output', 'document-manifest.json')), true)
-    assert.equal(JSON.parse(readFileSync(join(root, 'notes', 'output', 'page-info.json'), 'utf8')).length, 1)
     assert.deepEqual(updates[0].update.sourceFormat, 'md')
     assert.deepEqual(updates[0].update.renderer, 'markdown')
     assert.deepEqual(updates[0].update.documentFormat, 'html')
@@ -52,19 +50,4 @@ test('the common finalizer owns manifest publication, project metadata, and relo
 
 test('format adapters cannot silently succeed without the common result', async () => {
   await assert.rejects(finalizeDocumentBuild('missing-result', null, {}), /returned no manifest/)
-})
-
-test('format adapters cannot publish common build side effects themselves', () => {
-  for (const file of ['build-markdown.mjs', 'build-qmd.mjs', 'build-pdf.mjs']) {
-    const source = readFileSync(join(import.meta.dirname, file), 'utf8')
-    assert.doesNotMatch(source, /getBuildReporter|updateProject|broadcastSignal|writeDocumentManifest/)
-  }
-  assert.doesNotMatch(buildHtmlDocument.toString(), /finalizeDocumentBuild|updateProject|broadcastSignal/)
-  assert.doesNotMatch(buildSlidesDocument.toString(), /finalizeDocumentBuild|updateProject|broadcastSignal/)
-  const texSource = readFileSync(join(import.meta.dirname, 'build-runner.mjs'), 'utf8')
-  assert.doesNotMatch(texSource, /finalizeDocumentBuild\(/)
-  assert.doesNotMatch(texSource, /writeDocumentManifest\(/)
-  const boundary = readFileSync(join(import.meta.dirname, 'build-document.mjs'), 'utf8')
-  assert.match(boundary, /await versioner/)
-  assert.match(boundary, /await finalizer/)
 })

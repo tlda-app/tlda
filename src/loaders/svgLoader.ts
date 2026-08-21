@@ -76,7 +76,12 @@ export function createSvgDocumentLayout(
     .catch(e => console.warn('[svg-loader] macros fetch failed:', e.message))
 
   console.log(`SVG document layout ready: ${pages.length} pages (${effectiveTargets.length} target${effectiveTargets.length > 1 ? 's' : ''})`)
-  return { name, pages, basePath, targets: effectiveTargets }
+  return {
+    name, pages, basePath, targets: effectiveTargets,
+    view: { kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: true } },
+    source: { format: 'tex', renderer: 'latex' },
+    documentFormat: 'paged',
+  }
 }
 
 /** Legacy: fetch all SVGs synchronously and return a fully-loaded document. */
@@ -205,5 +210,10 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
   }
 
   console.log(`SVG document ready (${anchorIndex.size} hyperref anchors indexed)`)
-  return { name, pages, basePath }
+  return {
+    name, pages, basePath,
+    view: { kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: true } },
+    source: { format: 'tex', renderer: 'latex' },
+    documentFormat: 'paged',
+  }
 }

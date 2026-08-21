@@ -24,17 +24,6 @@ export interface HtmlPageEntry {
 
 const tabSpacing = 24  // horizontal gap between side-by-side tabs
 
-export async function loadHtmlDocument(
-  name: string,
-  basePath: string,
-): Promise<SvgDocument> {
-  console.log(`Loading HTML document from ${basePath}`)
-
-  const infoUrl = basePath + 'page-info.json'
-  const pageInfos: HtmlPageEntry[] = await fetch(infoUrl).then(r => r.json())
-  return createHtmlDocumentFromPageInfo(name, basePath, pageInfos)
-}
-
 export function createHtmlDocumentFromPageInfo(
   name: string,
   basePath: string,
@@ -106,5 +95,10 @@ export function createHtmlDocumentFromPageInfo(
   }
 
   console.log(`HTML document ready (${pageInfos.length} pages, ${tldrawPageIdx} TLDraw pages)`)
-  return { name, pages, basePath, format: 'html' }
+  return {
+    name, pages, basePath,
+    view: { kind: 'html-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: true } },
+    source: { format: 'html', renderer: 'identity' },
+    documentFormat: 'html',
+  }
 }

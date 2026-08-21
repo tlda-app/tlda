@@ -44,7 +44,7 @@ function assertStoredProjectAxes(dir) {
     let project
     try { project = JSON.parse(readFileSync(projectPath, 'utf8')) } catch { continue }
     if (project.sourceFormat && project.renderer && project.documentFormat && !Object.hasOwn(project, 'format')) continue
-    throw new Error(`Project ${entry.name} requires the explicit document-axes-v1 storage migration`)
+    throw new Error(`Project ${entry.name} uses the removed legacy format field`)
   }
 }
 

@@ -20,11 +20,10 @@ export {
 } from './loaders/svgLoader'
 
 // HTML loader
-export { loadHtmlDocument, createHtmlDocumentFromPageInfo } from './loaders/htmlLoader'
+export { createHtmlDocumentFromPageInfo } from './loaders/htmlLoader'
 export type { HtmlPageEntry } from './loaders/htmlLoader'
 
 // Slides loader (Quarto reveal.js decks)
-export { loadSlidesDocument } from './loaders/slidesLoader'
 export { createSlidesDocumentFromPageInfo } from './loaders/slidesLoader'
 
 // Image loader (vestigial PNG format)
