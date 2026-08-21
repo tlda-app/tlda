@@ -59,7 +59,7 @@ export interface SvgDocument {
   slideInfo?: SlideInfo[]
   macros?: Record<string, string>
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
-  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd' | 'pdf'
   targets?: TargetInfo[]  // present for multi-target projects
   // Markdown parts (notes/scratch) attached to a non-html/markdown project —
   // e.g. a LaTeX project's scratch columns. Rendered as html-page shapes on

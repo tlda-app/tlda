@@ -16,10 +16,10 @@ import katex from 'katex'
 import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
 import { join, basename, dirname, posix } from 'path'
-import { readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
+import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
 import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
-import { getBuildReporter } from './build-runner.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
 import { stripVolatileMarkdownMarkersForRender } from '../../shared/markdown-volatile.mjs'
 import { baseMacros } from '../../shared/katex-base-macros.mjs'
 
@@ -843,7 +843,6 @@ ${taskDocAssets.script}
 // ---- Main build function ----
 
 export async function buildMarkdownDocument(name, addLog = console.log) {
-  const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
 
@@ -859,8 +858,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     source = readFileSync(srcFile, 'utf8')
   } catch (e) {
     addLog(`[markdown] Error reading source: ${e.message}`)
-    await reporter.updateProject(name, { buildStatus: 'error', pages: 0 })
-    return
+    throw e
   }
 
   mkdirSync(outDir, { recursive: true })
@@ -895,20 +893,12 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   )
 
   const pageInfo = pageInfoFromDocumentColumns(name, columns)
-  writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
+  const manifest = createDocumentManifest({
+    ...project,
+    sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html',
+  }, pageInfo, { sourceMapping: 'page-source' })
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
-  const buildReadyAt = Date.now()
-  await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
-  // The sentinel is written by recordBuildVersion, with the real commit hash.
-  reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
-
-  // Re-aggregate any book that contains this doc as a member
-  for (const proj of await listProjects()) {
-    if (proj.format === 'book' && (proj.members || []).includes(name)) {
-      aggregateBookToc(proj.name, proj.members)
-    }
-  }
-
   addLog(`[markdown] ${name}: indexed ${pageInfo.length} column${pageInfo.length === 1 ? '' : 's'}`)
+  return { manifest, writePageInfo: true, regenerateBookTocs: true }
 }

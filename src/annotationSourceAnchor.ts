@@ -6,7 +6,7 @@ import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 
 export type AnchorDocument = {
   name: string
-  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd' | 'pdf'
   pages: Parameters<typeof canvasToPdf>[2]
 }
 
@@ -83,6 +83,7 @@ export async function annotationSourceAnchorAtCanvasPoint(
   if (htmlPage) return htmlSourceLineAnchorAtCanvasY(htmlPage.shape, htmlPage.bounds, y)
 
   if (HTML_PAGE_FORMATS.has(document.format || '')) return null
+  if (document.format === 'pdf') return unanchoredSourceLocation('source-unavailable')
 
   const pdfPos = canvasToPdf(x, y, document.pages)
   if (!pdfPos) return null

@@ -65,6 +65,7 @@ import { clearSynctexCache } from './synctex-query.mjs'
 import { generateWordSynctexSourceTree } from './word-synctex.mjs'
 import { bibliographyRunReason } from './build-bibliography-decision.mjs'
 import { projectRevisionStatus } from './source-lifecycle.mjs'
+import { createDocumentManifest, writeDocumentManifest } from './document-manifest.mjs'
 
 // --- Side-effect reporter ----------------------------------------------------
 // Everything in the build that reaches the live server — client broadcasts
@@ -2053,11 +2054,25 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
     // Total pages across all targets — what the viewer reports as project.pages.
     const expectedPages = totalPages
 
+    const manifestPages = targetMeta.flatMap(target => Array.from({ length: target.expectedPages }, (_, index) => ({
+      file: `${target.texBase}-page-${index + 1}.svg`,
+      width: 612,
+      height: 792,
+      source: { type: 'project-source', format: 'tex', file: target.mainFile },
+    })))
+    writeDocumentManifest(outDir, createDocumentManifest({
+      ...project,
+      sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged',
+    }, manifestPages, { sourceMapping: 'synctex' }))
+
     // Store the target shape before finalization. `targets` always reflects the
     // viewer doesn't have to special-case single-target — it just renders
     // a one-element list.
     const lastBuildSuccess = (await readProject(name))?.lastBuildSuccess || null
     await _reporter.updateProject(name, {
+      sourceFormat: 'tex',
+      renderer: 'latex',
+      documentFormat: 'paged',
       pages: expectedPages,
       buildStatus: 'finalizing',
       lastBuild: new Date().toISOString(),

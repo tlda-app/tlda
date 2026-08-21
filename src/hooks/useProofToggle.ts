@@ -20,7 +20,7 @@ export function useProofToggle({
   editorRef, document,
   shapeIdSetRef, shapeIdsArrayRef,
 }: UseProofToggleParams) {
-  const hasProofInfo = !!document.basePath && !HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')
+  const hasProofInfo = !!document.basePath && !HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides', 'pdf'].includes(document.format || '')
 
   const [proofMode, setProofMode] = useState(false)
   const proofDataRef = useRef<ProofData | null>(null)

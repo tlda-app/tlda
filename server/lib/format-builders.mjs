@@ -12,10 +12,32 @@ import { getBuildReporter } from './build-runner.mjs'
 import { generateSlidesPageInfo } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
 import { buildQmdDocument } from './build-qmd.mjs'
+import { buildPdfDocument } from './build-pdf.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
+import { createDocumentManifest, writeDocumentManifest } from './document-manifest.mjs'
 
-function signalReload(name, pages) {
-  getBuildReporter().broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: Date.now() })
+export async function finalizeDocumentBuild(name, result) {
+  if (!result?.manifest) throw new Error(`Document builder for ${name} returned no manifest`)
+  const reporter = getBuildReporter()
+  const manifest = writeDocumentManifest(getOutputDir(name), result.manifest, { writePageInfo: result.writePageInfo === true })
+  const builtAt = new Date().toISOString()
+  await reporter.updateProject(name, {
+    sourceFormat: manifest.source.format,
+    renderer: manifest.source.renderer,
+    documentFormat: manifest.document.format,
+    buildStatus: 'success',
+    pages: manifest.pages.length,
+    lastBuild: builtAt,
+    ...(result.renderedFormat && { renderedFormat: result.renderedFormat }),
+    ...(result.targets && { targets: result.targets }),
+  })
+  reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: manifest.pages.length, timestamp: Date.parse(builtAt) })
+  if (result.regenerateBookTocs) await reporter.regenerateBookTocs(name)
+  return manifest
+}
+
+async function runDocumentBuilder(name, adapter) {
+  return finalizeDocumentBuild(name, await adapter(name, (message) => console.log(message)))
 }
 
 /**
@@ -46,17 +68,18 @@ async function writeSourceScope(name, srcDir) {
 }
 
 export async function buildMarkdown(name) {
-  await buildMarkdownDocument(name, (msg) => console.log(msg))
-  await getBuildReporter().regenerateBookTocs(name)
+  return runDocumentBuilder(name, buildMarkdownDocument)
 }
 
 export async function buildQmd(name) {
-  await buildQmdDocument(name, (msg) => console.log(msg))
-  await getBuildReporter().regenerateBookTocs(name)
+  return runDocumentBuilder(name, buildQmdDocument)
 }
 
-export async function buildHtml(name) {
-  const reporter = getBuildReporter()
+export async function buildPdf(name) {
+  return runDocumentBuilder(name, buildPdfDocument)
+}
+
+export async function buildHtmlDocument(name) {
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
   mkdirSync(outDir, { recursive: true })
@@ -82,7 +105,6 @@ export async function buildHtml(name) {
   let pageInfo
   if (renderedProject) {
     pageInfo = renderedProject.pageInfo
-    writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
   } else if (existsSync(pageInfoPath)) {
     pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
   } else {
@@ -93,17 +115,22 @@ export async function buildHtml(name) {
       const title = titleMatch ? titleMatch[1].replace(/\s*[-–|].*$/, '').trim() : basename(f, '.html')
       return { file: f, width: 800, height: 1000, title }
     })
-    writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
   }
 
+  const manifest = createDocumentManifest({
+    format: 'html', sourceFormat: 'html', renderer: 'identity', documentFormat: 'html',
+  }, pageInfo, { sourceMapping: pageInfo.some(page => page.source) ? 'page-source' : 'none' })
+
   await writeSourceScope(name, srcDir)
-  await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
-  signalReload(name, pageInfo.length)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
+  return { manifest, writePageInfo: true }
 }
 
-export async function buildSlides(name) {
-  const reporter = getBuildReporter()
+export async function buildHtml(name) {
+  return runDocumentBuilder(name, buildHtmlDocument)
+}
+
+export async function buildSlidesDocument(name) {
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
   mkdirSync(outDir, { recursive: true })
@@ -118,10 +145,16 @@ export async function buildSlides(name) {
 
   const htmlContent = readFileSync(join(outDir, htmlFiles[0]), 'utf8')
   const pageInfo = generateSlidesPageInfo(htmlContent, htmlFiles[0])
-  writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
+  const manifest = createDocumentManifest({
+    format: 'slides', sourceFormat: 'html', renderer: 'identity', documentFormat: 'slides',
+    mainFile: htmlFiles[0],
+  }, pageInfo, { sourceMapping: 'none' })
 
   await writeSourceScope(name, srcDir)
-  await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
-  signalReload(name, pageInfo.length)
   console.log(`[slides] ${name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
+  return { manifest, writePageInfo: true }
+}
+
+export async function buildSlides(name) {
+  return runDocumentBuilder(name, buildSlidesDocument)
 }

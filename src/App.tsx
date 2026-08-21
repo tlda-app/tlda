@@ -124,9 +124,12 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd' | 'pdf'
+  sourceFormat?: 'tex' | 'md' | 'qmd' | 'html' | 'pdf' | 'png' | 'book'
+  renderer?: 'latex' | 'markdown' | 'quarto' | 'identity'
+  documentFormat?: 'paged' | 'html' | 'slides' | 'book'
   // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
-  renderedFormat?: 'html' | 'slides'
+  renderedFormat?: 'html' | 'slides' | 'paged'
   members?: string[]
   buildStatus?: string
   starred?: boolean
@@ -134,6 +137,9 @@ interface DocConfig {
   createdAt?: string
   targets?: { texBase: string; mainFile: string; pages: number }[]
   pageInfo?: HtmlPageEntry[]
+  documentManifest?: {
+    pages: Array<{ file: string; width: number; height: number }>
+  }
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
@@ -312,7 +318,9 @@ function DocumentApp() {
     // Fast path: fetch single doc config instead of full manifest
     let config: DocConfig | null
     try {
-      config = knownConfig ?? await fetchDocConfig(projectName, includePageInfo)
+      config = knownConfig && (knownConfig.sourceFormat === 'pdf' || knownConfig.sourceFormat === 'qmd')
+        ? await fetchDocConfig(projectName, true)
+        : knownConfig ?? await fetchDocConfig(projectName, includePageInfo)
     } catch (e) {
       const msg = (e as Error).message
       setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
@@ -439,7 +447,15 @@ function DocumentApp() {
           pages: t.pages,
           basePath: fullBasePath,
         }))
-        document = createSvgDocumentLayout(projectName, config.pages, fullBasePath, targets)
+        let manifestPages = config.documentManifest?.pages
+        const extractedPaged = config.documentFormat === 'paged' && config.renderer !== 'latex'
+        if (extractedPaged && !manifestPages) {
+          const response = await fetch(`${fullBasePath}document-manifest.json`, { signal })
+          if (!response.ok) throw new Error(`Failed to fetch PDF document manifest (${response.status})`)
+          manifestPages = (await response.json()).pages
+        }
+        document = createSvgDocumentLayout(projectName, config.pages, fullBasePath, targets, manifestPages)
+        if (extractedPaged) document = { ...document, format: 'pdf' }
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch

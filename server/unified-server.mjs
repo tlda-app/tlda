@@ -49,7 +49,7 @@ import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, getRwToken, hasTls, loadSe
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
-import { viewFormat } from '../shared/document-formats.mjs'
+import { documentAxes, viewFormat } from '../shared/document-formats.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
@@ -4636,7 +4636,7 @@ app.use('/docs', async (req, res, next) => {
   if (!filePath.endsWith('.html')) {
     try {
       const project = await readProject(name)
-      if (project?.format === 'html') {
+      if (project?.sourceFormat === 'html') {
         const access = classroomStore.solutionDocumentAccess(name, null)
         if (access.restricted) {
           return requireRead(req, res, async error => {
@@ -4719,7 +4719,7 @@ app.use('/docs', (req, res, next) => {
       const pageInfoPath = join(outputDir, 'page-info.json')
       const project = await readProject(name)
       if (project && await docPathExists(pageInfoPath)) {
-        if (project.format === 'html') {
+        if (project.sourceFormat === 'html') {
           const pageInfo = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))
           // Find chapter list: either from first entry's chapters field, or all entries
           const chapters = pageInfo[0]?.chapters || pageInfo.map(e => ({ file: e.file, title: e.title }))
@@ -4810,7 +4810,7 @@ app.use('/docs', (req, res, next) => {
         // markdown renderer — the parent project's own format only owns its
         // own main document, not its parts.
         const srcDir = join(PROJECTS_DIR, name, 'source')
-        const columns = project.format === 'markdown'
+        const columns = project.sourceFormat === 'md'
           ? await listDocumentColumns(name, { project, srcDir })
           : await listProjectPartColumns(name, { srcDir })
         // Falling through to the project source is what keeps a linked document
@@ -4819,7 +4819,7 @@ app.use('/docs', (req, res, next) => {
         // markdown file" are different questions; only the first one is a page
         // list, and answering both from it is what made linked files chapters.
         const column = columns.find(c => c.file === filePath)
-          || (project.format === 'markdown'
+          || (project.sourceFormat === 'md'
             ? await markdownDocumentColumnForOutputFile(name, filePath, { srcDir })
             : null)
         if (column) {
@@ -9731,6 +9731,7 @@ async function generateManifest() {
             name: project.title || project.name || name,
             pages: project.pages || 0,
             format: project.format || 'svg',
+            ...documentAxes(project),
             ...(project.members && { members: project.members }),
             ...(durableStatus.status !== 'success' && { buildStatus: durableStatus.status }),
             ...(project.session && { session: project.session, sessionAt: project.sessionAt }),
