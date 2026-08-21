@@ -158,12 +158,12 @@ export function createGitProjectSync({
     return { ok: true, revision: filtered.commit, changed: filtered.changed, roots: filtered.roots, members: filtered.members }
   }
 
-  async function pushRevision(revision) {
+  async function pushRevision(revision, { forceRebuild = false } = {}) {
     const proposalRef = `refs/tlda/proposals/${daemonPart}/${branchPart}/${revision}`
     try {
       const result = await git(['push', '--porcelain', remote, `${revision}:${proposalRef}`])
       const submitted = { status: 'SubmittedToBuildQueue', revision, proposalRef, output: `${result.stdout || ''}${result.stderr || ''}` }
-      await onSubmitted(submitted)
+      await onSubmitted({ ...submitted, forceRebuild })
       return { ok: true, ...submitted }
     } catch (error) {
       const output = `${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`
@@ -190,10 +190,10 @@ export function createGitProjectSync({
     return pushRevision(committed.revision)
   }
 
-  async function submitCurrent() {
+  async function submitCurrent(options = {}) {
     const committed = await commitSettledTree()
     if (!committed.ok) return committed
-    return pushRevision(committed.revision)
+    return pushRevision(committed.revision, options)
   }
 
   async function fetchHead(expected = null) {
@@ -285,7 +285,7 @@ export function createGitProjectSync({
   return {
     refs: { localRef, appliedRef, sharedRef, fetchedRef },
     editClusterSettled: () => serialized(settle),
-    submitCurrent: () => serialized(submitCurrent),
+    submitCurrent: options => serialized(() => submitCurrent(options)),
     headChanged: revision => serialized(() => headChanged(revision)),
     mirrorArrived: revision => serialized(() => mirrorArrived(revision)),
     recover: () => serialized(recover),

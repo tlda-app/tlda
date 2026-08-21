@@ -200,11 +200,11 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return runtime.remoteBridge ? runtime.remoteBridge.poll() : { skipped: true, reason: 'not-remote-backed' }
   }
 
-  async function submit(project) {
+  async function submit(project, options = {}) {
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
     const runtime = await start(item)
-    const result = await runtime.sync.submitCurrent()
+    const result = await runtime.sync.submitCurrent(options)
     await runtime.refreshWatchedMembers()
     return result
   }
