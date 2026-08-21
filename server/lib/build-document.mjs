@@ -9,7 +9,7 @@ export async function buildDocument(project, context, services = {}) {
   const versioner = services.versioner || finalizeBuildVersion
   const finalizer = services.finalizer || finalizeDocumentBuild
   const completer = services.completer || completeBuildSuccess
-  const result = await adapter.build(context)
+  const result = await adapter.build({ ...context, view: adapter.view })
   if (result?.disposition === 'superseded') return { adapter: adapter.id, disposition: 'superseded' }
   if (!result?.manifest) throw new Error(`Build adapter ${adapter.id} returned no manifest`)
   await versioner({

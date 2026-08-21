@@ -4,16 +4,20 @@ import { documentAxes } from '../../shared/document-formats.mjs'
 
 export const DOCUMENT_MANIFEST_FILE = 'document-manifest.json'
 
-function viewDescriptor(manifest, pages, kind) {
-  if (!['svg-pages', 'html-pages', 'slides', 'image-pages'].includes(kind)) {
+function viewDescriptor(view) {
+  if (!['svg-pages', 'html-pages', 'slides', 'image-pages'].includes(view?.kind)) {
     throw new Error('Document manifest view.kind must be declared by the document builder')
   }
+  const capabilities = view?.capabilities
+  if (!capabilities || ['presentation', 'sourceMapping', 'searchableText'].some(key => typeof capabilities[key] !== 'boolean')) {
+    throw new Error('Document manifest view.capabilities must be declared by the document builder')
+  }
   return {
-    kind,
+    kind: view.kind,
     capabilities: {
-      presentation: kind === 'slides' || manifest.document?.format === 'slides',
-      sourceMapping: (manifest.sourceMapping || 'none') !== 'none',
-      searchableText: pages.some(page => Boolean(page.textGeometry)),
+      presentation: capabilities.presentation,
+      sourceMapping: capabilities.sourceMapping,
+      searchableText: capabilities.searchableText,
     },
   }
 }
@@ -50,7 +54,7 @@ export function normalizeDocumentManifest(manifest) {
     assets: Array.isArray(manifest.assets) ? manifest.assets.map((asset, index) => relativeArtifact(asset, `assets[${index}]`)) : [],
     sourceMapping: manifest.sourceMapping || 'none',
   }
-  return { ...normalized, view: viewDescriptor(normalized, pages, manifest.view?.kind) }
+  return { ...normalized, view: viewDescriptor(manifest.view) }
 }
 
 export function createDocumentManifest(project, pages, options = {}) {
@@ -67,7 +71,7 @@ export function createDocumentManifest(project, pages, options = {}) {
     pages,
     assets: options.assets || [],
     sourceMapping: options.sourceMapping || 'none',
-    view: { kind: options.viewKind },
+    view: options.view,
   })
 }
 

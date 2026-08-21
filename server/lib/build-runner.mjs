@@ -1793,7 +1793,7 @@ export async function finalizeBuildVersion({
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
-export async function runBuild(name, { sourceRevision = null, acceptSeq = null } = {}) {
+export async function runBuild(name, { sourceRevision = null, acceptSeq = null, view } = {}) {
   // Serialize builds per project: wait for any in-flight build to finish before starting.
   while (_buildLocks.has(name)) {
     // Kill the running build so we don't wait for it to complete naturally.
@@ -1811,7 +1811,7 @@ export async function runBuild(name, { sourceRevision = null, acceptSeq = null }
   const previousActiveBuild = activeBuilds.get(name)
 
   try {
-    return await _runBuildInner(name, { sourceRevision, acceptSeq })
+    return await _runBuildInner(name, { sourceRevision, acceptSeq, view })
   } catch (e) {
     // _runBuildInner marks the project building before validating its inputs.
     // Its own catch starts later, after the active-build record is created, so
@@ -1832,7 +1832,7 @@ export async function runBuild(name, { sourceRevision = null, acceptSeq = null }
   }
 }
 
-async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } = {}) {
+async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null, view } = {}) {
   // Increment version so any in-flight mirror callbacks from previous builds
   // can detect they've been superseded and skip.
 
@@ -2059,7 +2059,7 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
     })))
     const documentBuildResult = { manifest: createDocumentManifest({
       ...project,
-    }, manifestPages, { sourceMapping: 'synctex', viewKind: 'svg-pages' }),
+    }, manifestPages, { sourceMapping: 'synctex', view }),
     targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
     recordLastBuildSuccess: true }
 

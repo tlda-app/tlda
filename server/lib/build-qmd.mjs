@@ -275,7 +275,9 @@ export async function buildQmdDocument(name, addLog = console.log) {
     const manifest = createDocumentManifest({
       ...project,
       sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html', mainFile,
-    }, renderedProject.pageInfo, { sourceMapping: 'page-source', viewKind: 'html-pages' })
+    }, renderedProject.pageInfo, { sourceMapping: 'page-source', view: {
+      kind: 'html-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false },
+    } })
     await writeSourceScope(name, srcDir, outDir)
     addLog(`[qmd] ${name}: rendered tlda project with ${renderedProject.pageInfo.length} pages`)
     return { manifest, regenerateBookTocs: true }
@@ -345,7 +347,10 @@ export async function buildQmdDocument(name, addLog = console.log) {
   const manifest = createDocumentManifest({
     ...project,
     sourceFormat: 'qmd', renderer: 'quarto', documentFormat: isDeck ? 'slides' : 'html', mainFile,
-  }, pageInfo, { sourceMapping: isDeck ? 'none' : 'page-source', viewKind: isDeck ? 'slides' : 'html-pages' })
+  }, pageInfo, { sourceMapping: isDeck ? 'none' : 'page-source', view: {
+    kind: isDeck ? 'slides' : 'html-pages',
+    capabilities: { presentation: isDeck, sourceMapping: !isDeck, searchableText: false },
+  } })
 
   await writeSourceScope(name, srcDir, outDir)
   addLog(`[qmd] ${name}: rendered ${mainFile} → ${outputFile}`)

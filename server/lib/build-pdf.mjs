@@ -82,7 +82,9 @@ export async function extractPdfArtifacts({ pdfPath, outDir, target, project, ou
 
   const manifest = createDocumentManifest({
     ...project,
-  }, pages, { assets: [outputPdf], sourceMapping: 'none', viewKind: 'svg-pages' })
+  }, pages, { assets: [outputPdf], sourceMapping: 'none', view: {
+    kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: false, searchableText: true },
+  } })
   return manifest
 }
 
