@@ -52,6 +52,31 @@ const chatComposerSource = readFileSync(new URL('../src/shapes/ChatComposer.tsx'
 assert.match(chatComposerSource, /const textarea = inputRef\.current\s+return \(\) => \{ if \(textarea\) clearVoiceTarget\(textarea\) \}/)
 assert.match(chatComposerSource, /completeMessageSend\(submittedText \?\? text\)/)
 const voiceSource = readFileSync(new URL('../src/voice.mjs', import.meta.url), 'utf8')
+const micStartPhases = [
+  'get-user-media-request',
+  'get-user-media-resolved',
+  'track-ended-handler-attached',
+  'audio-context-create',
+  'audio-context-created',
+  'audio-context-resume',
+  'audio-context-resumed',
+  'media-stream-source-create',
+  'media-stream-source-created',
+  'audio-worklet-module-load',
+  'audio-worklet-module-loaded',
+  'audio-worklet-node-create',
+  'audio-worklet-node-created',
+  'audio-worklet-source-connect',
+  'audio-worklet-source-connected',
+]
+let previousMicStartPhaseOffset = -1
+for (const phase of micStartPhases) {
+  const offset = voiceSource.indexOf(`micStartPhase('${phase}'`)
+  assert.ok(offset > previousMicStartPhaseOffset, `${phase} must be logged at its native mic-start boundary`)
+  previousMicStartPhaseOffset = offset
+}
+assert.match(voiceSource, /vlog\('mic native start phase', \{\s+micAttempt,\s+phase,/)
+assert.doesNotMatch(voiceSource, /micStartPhase\([^\n]*deviceId|micStartPhase\([^\n]*label/)
 assert.doesNotMatch(voiceSource, /retainVoiceTextareaValue|retention-check/)
 assert.doesNotMatch(voiceSource, /hardResetVoice\(\{ keepDeepgramMic: true \}\)/)
 assert.match(voiceSource, /if \(msg\.type === 'utterance_end'\) \{[\s\S]*?_dgLastFinalAt = 0\s+return\s+\}/)

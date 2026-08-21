@@ -3497,13 +3497,23 @@ async function startDeepgramMic() {
   if (_deepgramStream) return
 
   const micAttempt = ++_deepgramMicAttempt
+  const micStartPhase = (phase, detail = {}) => vlog('mic native start phase', {
+    micAttempt,
+    phase,
+    ...detail,
+  })
 
   try {
+    micStartPhase('get-user-media-request')
     _deepgramStream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
     })
+    micStartPhase('get-user-media-resolved', {
+      audioTrackCount: _deepgramStream.getAudioTracks().length,
+    })
     _deepgramHardFailure = null
   } catch (err) {
+    micStartPhase('get-user-media-rejected', { error: err?.name || String(err) })
     console.error('voice: deepgram mic access failed', err)
     const failure = await classifyMicFailure(err)
     if (micAttempt !== _deepgramMicAttempt) return
@@ -3526,12 +3536,19 @@ async function startDeepgramMic() {
       }
     }
   }
+  micStartPhase('track-ended-handler-attached', { hasTrack: !!track })
 
+  micStartPhase('audio-context-create')
   _deepgramContext = new AudioContext()
+  micStartPhase('audio-context-created', { state: _deepgramContext.state })
   if (_deepgramContext.state === 'suspended') {
+    micStartPhase('audio-context-resume')
     await _deepgramContext.resume()
+    micStartPhase('audio-context-resumed', { state: _deepgramContext.state })
   }
+  micStartPhase('media-stream-source-create')
   const source = _deepgramContext.createMediaStreamSource(_deepgramStream)
+  micStartPhase('media-stream-source-created')
 
   // Capture on the audio thread via an AudioWorklet. Unlike ScriptProcessor it
   // does NOT need to be connected to the destination to run, so there's no
@@ -3540,8 +3557,11 @@ async function startDeepgramMic() {
   // the bridge. AudioWorklet is also far more robust under iOS audio-session
   // interruptions than ScriptProcessor (the source of the constant mic restarts).
   try {
+    micStartPhase('audio-worklet-module-load')
     await _deepgramContext.audioWorklet.addModule(`${import.meta.env.BASE_URL}deepgram-capture-worklet.js`)
+    micStartPhase('audio-worklet-module-loaded')
   } catch (err) {
+    micStartPhase('audio-worklet-module-rejected', { error: err?.name || String(err) })
     vlog('audioWorklet.addModule failed', { err: err?.message })
     _deepgramHardFailure = 'mic unavailable; tap to retry'
     _voiceHealthLabel = _deepgramHardFailure
@@ -3552,9 +3572,14 @@ async function startDeepgramMic() {
   }
   // addModule is async — a stop or backend switch may have torn the context
   // down while we awaited. Bail rather than build a node on a dead context.
-  if (!_deepgramContext || !_deepgramStream) return
+  if (!_deepgramContext || !_deepgramStream) {
+    micStartPhase('cancelled-after-worklet-load')
+    return
+  }
 
+  micStartPhase('audio-worklet-node-create')
   _deepgramWorklet = new AudioWorkletNode(_deepgramContext, 'deepgram-capture')
+  micStartPhase('audio-worklet-node-created')
   _deepgramWorklet.port.onmessage = (e) => {
     const now = Date.now()
     _micFrameCadenceMs = _lastMicFrameTime ? now - _lastMicFrameTime : null
@@ -3562,7 +3587,9 @@ async function startDeepgramMic() {
     setMicInputLevel(pcmInputLevel(e.data))
     sendDeepgramAudioChunk(e.data)
   }
+  micStartPhase('audio-worklet-source-connect')
   source.connect(_deepgramWorklet)
+  micStartPhase('audio-worklet-source-connected')
   _voiceHealthLabel = deepgramHealthLabel()
   if (_recording) showRecordingHud()
 
