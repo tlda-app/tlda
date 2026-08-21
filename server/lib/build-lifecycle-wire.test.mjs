@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, renameSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { closeProjectStore, createProject, initProjectStore, sourceLifecycleStore, updateProject } from './project-store.mjs'
+import { closeProjectStore, createProject, initProjectStore, projectDir, sourceLifecycleStore, updateProject } from './project-store.mjs'
 import { listProjectsWithLifecycleStatus } from '../routes/projects.mjs'
 
 test('production project listing ignores corrupt legacy build status', async () => {
@@ -25,6 +25,31 @@ test('production project listing ignores corrupt legacy build status', async () 
     assert.equal(project.buildPhase, 'build')
     assert.equal(project.sourceRevision, 'projected-revision')
     assert.equal(project.acceptSeq, 8)
+
+    await closeProjectStore()
+    await initProjectStore(root)
+    const [restarted] = await listProjectsWithLifecycleStatus()
+    assert.equal(restarted.buildStatus, 'error')
+    assert.equal(restarted.buildPhase, 'build')
+    assert.equal(restarted.sourceRevision, 'projected-revision')
+    assert.equal(restarted.acceptSeq, 8)
+
+    // The list route reads the durable SQLite projection, not every project's
+    // lifecycle journal. Moving the journal aside makes a request-time rescan
+    // return unknown while the indexed response must remain identical.
+    renameSync(join(projectDir(name), '.source-lifecycle', 'operations.json'), join(projectDir(name), '.source-lifecycle', 'operations-held.json'))
+    const [indexed] = await listProjectsWithLifecycleStatus()
+    assert.deepEqual({
+      buildStatus: indexed.buildStatus,
+      buildPhase: indexed.buildPhase,
+      sourceRevision: indexed.sourceRevision,
+      acceptSeq: indexed.acceptSeq,
+    }, {
+      buildStatus: 'error',
+      buildPhase: 'build',
+      sourceRevision: 'projected-revision',
+      acceptSeq: 8,
+    })
   } finally {
     await closeProjectStore()
     rmSync(root, { recursive: true, force: true })

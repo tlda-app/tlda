@@ -33,6 +33,7 @@ import {
   updateClientSourceManifest,
   sourceLifecycleStore,
   checkpointProjectPartWritebackOffloop,
+  indexedProjectLifecycleStatuses,
 } from '../lib/project-store.mjs'
 import { deleteProjectAndBuildSubmissions } from '../lib/build-dispatch.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
@@ -173,8 +174,11 @@ router.use('/:name/history', historyRoutes)
 
 // List all projects
 export async function listProjectsWithLifecycleStatus() {
-  return Promise.all((await listProjects()).map(async project => {
-    const durableStatus = projectRevisionStatus((await sourceLifecycleStore(project.name)).listRevisionLifecycles(project.name))
+  const lifecycleStatuses = indexedProjectLifecycleStatuses()
+  return (await listProjects()).map(project => {
+    const durableStatus = lifecycleStatuses.get(project.name) || {
+      status: 'unknown', phase: null, sourceRevision: null, acceptSeq: null,
+    }
     return {
       ...project,
       buildStatus: durableStatus.status,
@@ -182,7 +186,7 @@ export async function listProjectsWithLifecycleStatus() {
       sourceRevision: durableStatus.sourceRevision,
       acceptSeq: durableStatus.acceptSeq,
     }
-  }))
+  })
 }
 
 router.get('/', requireRead, async (req, res) => {

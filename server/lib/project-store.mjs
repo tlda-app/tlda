@@ -21,12 +21,14 @@ import {
   writeProjectPartsManifest as writePartsManifestForRoot,
 } from './project-parts-scanner.mjs'
 import { resolveContainedPath } from './path-containment.mjs'
-import { createSourceLifecycleStore } from './source-lifecycle.mjs'
+import { createSourceLifecycleStore, projectRevisionStatus } from './source-lifecycle.mjs'
+import { ProjectLifecycleStatusIndex, UNKNOWN_PROJECT_LIFECYCLE_STATUS } from './project-lifecycle-status-index.mjs'
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 
 let projectsDir = null
 let projectFilesDb = null
+let projectLifecycleStatusIndex = null
 const projectPathOverrides = new Map()
 
 export function setProjectPathOverride(name, root = null) {
@@ -36,10 +38,18 @@ export function setProjectPathOverride(name, root = null) {
 
 export async function initProjectStore(dir) {
   if (projectFilesDb) await projectFilesDb.close()
+  projectLifecycleStatusIndex?.close()
+  projectLifecycleStatusIndex = null
   projectsDir = dir
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   projectFilesDb = new ProjectFilesStoreClient(dir)
   await projectFilesDb.ready()
+  projectLifecycleStatusIndex = new ProjectLifecycleStatusIndex(dir)
+  const projects = await projectFilesDb.listProjects()
+  projectLifecycleStatusIndex.replaceAll(projects.map(project => {
+    const lifecycle = createSourceLifecycleStore({ root: join(dir, project.name, '.source-lifecycle'), project: project.name })
+    return { project: project.name, status: projectRevisionStatus(lifecycle.listRevisionLifecycles(project.name)) }
+  }))
 }
 
 export function getProjectsDir() {
@@ -47,6 +57,8 @@ export function getProjectsDir() {
 }
 
 export async function closeProjectStore() {
+  projectLifecycleStatusIndex?.close()
+  projectLifecycleStatusIndex = null
   if (!projectFilesDb) return
   await projectFilesDb.close()
   projectFilesDb = null
@@ -54,6 +66,11 @@ export async function closeProjectStore() {
 export async function listProjects() {
   if (!projectFilesDb) throw new Error('project store is not initialized')
   return (await projectFilesDb.listProjects()).map(({ sourceDir: _sourceDir, ...project }) => project)
+}
+
+export function indexedProjectLifecycleStatuses() {
+  if (!projectLifecycleStatusIndex) throw new Error('project lifecycle status index is not initialized')
+  return projectLifecycleStatusIndex.list()
 }
 
 export async function readProjectMeta() {
@@ -98,6 +115,7 @@ export function createProject({ name, title, mainFile, format = 'svg', members }
   }
 
   writeFileSync(join(dir, 'project.json'), JSON.stringify(project, null, 2))
+  projectLifecycleStatusIndex?.upsert(name, UNKNOWN_PROJECT_LIFECYCLE_STATUS)
   return project
 }
 
@@ -361,6 +379,7 @@ export async function deleteProject(name) {
   }
   rmSync(dir, { recursive: true })
   await projectFilesDb.replace(name, [])
+  projectLifecycleStatusIndex?.delete(name)
 }
 
 export function projectDir(name) {
@@ -392,6 +411,7 @@ export async function sourceLifecycleStore(name, options = {}) {
     // manifest the client was told to send.
     context: await sourceMembershipContext(project, await clientOwnedSourceSet(project)),
     ...options,
+    onStatusChange: (projectName, status) => projectLifecycleStatusIndex?.upsert(projectName, status),
   })
 }
 

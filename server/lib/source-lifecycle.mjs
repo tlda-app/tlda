@@ -62,7 +62,7 @@ function stableValue(value) {
   return value
 }
 
-export function createSourceLifecycleStore({ root, project = 'project' }) {
+export function createSourceLifecycleStore({ root, project = 'project', onStatusChange = null }) {
   const gitDir = join(root, 'git')
   const operationsPath = join(root, 'operations.json')
   let gitPromise = null
@@ -81,6 +81,10 @@ export function createSourceLifecycleStore({ root, project = 'project' }) {
     if (!existsSync(operationsPath)) return { version: 1, revisionLifecycle: {} }
     const value = JSON.parse(readFileSync(operationsPath, 'utf8'))
     return { ...value, version: 1, revisionLifecycle: value.revisionLifecycle || {} }
+  }
+
+  function notifyStatus(value, name) {
+    onStatusChange?.(name, projectRevisionStatus(Object.values(value.revisionLifecycle || {})))
   }
 
   return {
@@ -126,6 +130,7 @@ export function createSourceLifecycleStore({ root, project = 'project' }) {
         updatedAt,
       }
       atomicJson(operationsPath, value)
+      notifyStatus(value, name)
       return value.revisionLifecycle[sourceRevision]
     },
     recordRevisionPhase(name, sourceRevision, phase, state, result = null) {
@@ -140,6 +145,7 @@ export function createSourceLifecycleStore({ root, project = 'project' }) {
         updatedAt,
       }
       atomicJson(operationsPath, value)
+      notifyStatus(value, name)
       return value.revisionLifecycle[sourceRevision]
     },
   }
