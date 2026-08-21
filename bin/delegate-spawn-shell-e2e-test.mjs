@@ -166,14 +166,13 @@ async function startMockDaemon() {
     reportAbsent(agentId) {
       reportSeq += 1
       daemon.send(JSON.stringify({
-        type: 'agent-liveness-snapshot',
-        running_agent_ids: [],
-        absent_agent_ids: [agentId],
+        type: 'agent-status',
+        agents: [{ agent_id: agentId, status: 'hibernating', activity: 'unknown', tool: null }],
         snapshot_complete: true,
         daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
         daemon_boot_id: bootId,
         report_seq: reportSeq,
-        report_reason: 'test-authoritative-absence',
+        reason: 'test-authoritative-absence',
         ts: new Date().toISOString(),
       }))
     },

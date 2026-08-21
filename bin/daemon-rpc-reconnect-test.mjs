@@ -6,7 +6,7 @@ import test from 'node:test'
 import Database from 'better-sqlite3'
 
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
-import { daemonDeliveryPolicy, DELIVERY_DURABLE_FIFO, DELIVERY_LATEST_WINS } from '../daemon/delivery-policy.mjs'
+import { daemonDeliveryPolicy, DELIVERY_DURABLE_FIFO } from '../daemon/delivery-policy.mjs'
 import { createMachineRpc, rpcRequestFingerprint } from '../daemon/machine-rpc.mjs'
 import { DaemonOutbox } from '../daemon/outbox.mjs'
 import { startWsRequest } from '../shared/fleet-transport.mjs'
@@ -79,23 +79,6 @@ test('agent routes are durable and replay after reconnect', t => {
   assert.equal(h.sent[0].type, 'agent-route')
   assert.equal(h.sent[0].agent_id, 'fleet:seat')
   assert.ok(h.sent[0].__daemon_outbox_id)
-})
-
-test('liveness survives a reconnect as a latest-wins message', t => {
-  const h = harness(t)
-  h.disconnect()
-
-  assert.equal(daemonDeliveryPolicy({ type: 'agent-liveness' }), DELIVERY_LATEST_WINS)
-
-  assert.equal(h.delivery.send({ type: 'agent-liveness', agent_ids: ['fleet:a'], checked_agent_ids: ['fleet:a'], ts: '2026-07-21T23:00:00.000Z' }), false)
-  assert.equal(h.delivery.send({ type: 'agent-liveness', agent_ids: ['fleet:b'], checked_agent_ids: ['fleet:b'], ts: '2026-07-21T23:00:01.000Z' }), false)
-  assert.equal(h.sent.length, 0)
-
-  h.reconnect()
-  h.delivery.flushEphemeral()
-
-  assert.deepEqual(h.sent.map(m => m.type), ['agent-liveness'])
-  assert.deepEqual(h.sent[0].agent_ids, ['fleet:b'])
 })
 
 test('closed socket after execution replays reply on daemon-ready and resolves server request', async t => {
