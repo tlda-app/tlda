@@ -891,7 +891,7 @@ ${processedChunks[i].html.join('\n')}
 
   // --- Step 5: Update manifest ---
   const { updateDoc } = await import('./manifest.mjs')
-  updateDoc(docName, { name: docTitle, pages: pageFiles.length, format: 'html' })
+  updateDoc(docName, { name: docTitle, pages: pageFiles.length, sourceFormat: 'html', renderer: 'identity', documentFormat: 'html' })
 
   console.log('')
   console.log(`Done! ${pageFiles.length} pages written to ${outDir}`)
