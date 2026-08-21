@@ -35,7 +35,8 @@ export class ClassroomStore {
       CREATE TABLE IF NOT EXISTS assignments (
         id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
         title TEXT NOT NULL, due_at TEXT NOT NULL, solutions_doc_key TEXT,
-        solutions_version TEXT, template_doc_key TEXT, template_version TEXT
+        solutions_version TEXT, template_doc_key TEXT, template_version TEXT,
+        source_doc_key TEXT, handout_filter TEXT, solution_filter TEXT
       );
       CREATE TABLE IF NOT EXISTS submissions (
         assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
@@ -55,6 +56,9 @@ export class ClassroomStore {
     `)
     const assignmentColumns = new Set(this.db.pragma('table_info(assignments)').map(column => column.name))
     if (!assignmentColumns.has('template_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN template_doc_key TEXT')
+    if (!assignmentColumns.has('source_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN source_doc_key TEXT')
+    if (!assignmentColumns.has('handout_filter')) this.db.exec('ALTER TABLE assignments ADD COLUMN handout_filter TEXT')
+    if (!assignmentColumns.has('solution_filter')) this.db.exec('ALTER TABLE assignments ADD COLUMN solution_filter TEXT')
     // The answer ids a submission actually contains. Problem-by-problem marking
     // pairs one exercise across every student, so the join key has to survive
     // upload rather than being re-derived by reparsing each archive.
@@ -101,19 +105,41 @@ export class ClassroomStore {
   }
   listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, university_login AS universityLogin, layer_scope AS layerScope FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
 
-  upsertAssignment({ id, courseId, title, dueAt, solutionsDocKey = null, solutionsVersion = null, templateDocKey = null, templateVersion = null }) {
-    this.db.prepare(`INSERT INTO assignments(id,course_id,title,due_at,solutions_doc_key,solutions_version,template_doc_key,template_version)
-      VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET course_id=excluded.course_id,title=excluded.title,due_at=excluded.due_at,
+  upsertAssignment({ id, courseId, title, dueAt, solutionsDocKey = null, solutionsVersion = null, templateDocKey = null, templateVersion = null, sourceDocKey = null, handoutFilter = null, solutionFilter = null }) {
+    this.db.prepare(`INSERT INTO assignments(id,course_id,title,due_at,solutions_doc_key,solutions_version,template_doc_key,template_version,source_doc_key,handout_filter,solution_filter)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET course_id=excluded.course_id,title=excluded.title,due_at=excluded.due_at,
       solutions_doc_key=excluded.solutions_doc_key,solutions_version=excluded.solutions_version,
       template_doc_key=COALESCE(assignments.template_doc_key,excluded.template_doc_key),
-      template_version=COALESCE(assignments.template_version,excluded.template_version)`)
-      .run(id, courseId, title, dueAt, solutionsDocKey, solutionsVersion, templateDocKey, templateVersion)
+      template_version=COALESCE(assignments.template_version,excluded.template_version),
+      source_doc_key=excluded.source_doc_key,handout_filter=excluded.handout_filter,solution_filter=excluded.solution_filter`)
+      .run(id, courseId, title, dueAt, solutionsDocKey, solutionsVersion, templateDocKey, templateVersion, sourceDocKey, handoutFilter, solutionFilter)
     return this.getAssignment(id)
   }
   getAssignment(id) { return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
-    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion FROM assignments WHERE id=?`).get(id) || null }
+    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
+    source_doc_key AS sourceDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter FROM assignments WHERE id=?`).get(id) || null }
   listAssignments(courseId) { return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
-    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion FROM assignments WHERE course_id=? ORDER BY due_at`).all(courseId) }
+    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
+    source_doc_key AS sourceDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter FROM assignments WHERE course_id=? ORDER BY due_at`).all(courseId) }
+  assignmentsForSolutionsDoc(docKey) {
+    if (!docKey) return []
+    return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
+      solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
+      source_doc_key AS sourceDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter
+      FROM assignments WHERE solutions_doc_key=? ORDER BY due_at`).all(docKey)
+  }
+
+  solutionDocumentAccess(docKey, principal) {
+    const assignments = this.assignmentsForSolutionsDoc(docKey)
+    if (assignments.length === 0) return { restricted: false, allowed: true, assignments }
+    if (principal?.role === 'instructor') return { restricted: true, allowed: true, assignments }
+    if (principal?.role !== 'student') return { restricted: true, allowed: false, assignments }
+    const allowed = assignments.some(assignment =>
+      assignment.courseId === principal.courseId
+      && this.getSubmission(assignment.id, principal.studentId)
+    )
+    return { restricted: true, allowed, assignments }
+  }
 
   freezeTemplate(assignmentId, { templateDocKey, templateVersion }) {
     if (!templateDocKey || !templateVersion) throw new Error('templateDocKey and templateVersion are required')

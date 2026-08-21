@@ -41,6 +41,15 @@ export function classroomPrincipal(req, store) {
   return student ? { role: 'student', studentId: student.id, courseId: student.courseId, layerScope: student.layerScope } : null
 }
 
+export function requireClassroomDocumentAccess(req, res, next) {
+  const store = req.app?.locals?.classroomStore
+  if (!store || !req.params?.name) return next()
+  const resolvePrincipal = req.app?.locals?.resolveClassroomPrincipal || classroomPrincipal
+  const access = store.solutionDocumentAccess(req.params.name, resolvePrincipal(req, store))
+  if (!access.restricted || access.allowed) return next()
+  return res.status(403).json({ error: 'Classroom solution access requires instructor access or a submitted assignment' })
+}
+
 function ownsStudent(principal, studentId) {
   return principal?.role === 'instructor' || (principal?.role === 'student' && principal.studentId === studentId)
 }
@@ -176,9 +185,9 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   })
 
   router.post('/courses/:courseId/assignments', instructor, (req, res) => {
-    const { id, title, dueAt, solutionsDocKey, solutionsVersion } = req.body || {}
+    const { id, title, dueAt, solutionsDocKey, solutionsVersion, sourceDocKey, handoutFilter, solutionFilter } = req.body || {}
     if (!id || !title || !dueAt) return res.status(400).json({ error: 'id, title, and dueAt are required' })
-    res.status(201).json(store.upsertAssignment({ id, courseId: req.params.courseId, title, dueAt, solutionsDocKey, solutionsVersion }))
+    res.status(201).json(store.upsertAssignment({ id, courseId: req.params.courseId, title, dueAt, solutionsDocKey, solutionsVersion, sourceDocKey, handoutFilter, solutionFilter }))
   })
 
   router.get('/courses/:courseId/assignments', (req, res) => {

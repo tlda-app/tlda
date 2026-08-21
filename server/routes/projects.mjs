@@ -59,6 +59,7 @@ import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
+import { requireClassroomDocumentAccess } from './classroom.mjs'
 
 const router = Router()
 const execFileAsync = promisify(execFile)
@@ -343,6 +344,8 @@ router.post('/', requireRw, async (req, res) => {
     res.status(409).json({ error: e.message })
   }
 })
+
+router.use('/:name', requireRead, requireClassroomDocumentAccess)
 
 // Get project
 router.get('/:name', requireRead, async (req, res) => {

@@ -8,7 +8,7 @@
  */
 
 import { resolve, relative, basename, dirname, join, delimiter } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
+import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { createHash, randomBytes, randomUUID } from 'crypto'
@@ -17,6 +17,7 @@ import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, readForUpload, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
 import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
+import { renderQtm285HomeworkVariants } from './lib/classroom-qtm285-render.mjs'
 import {
   loadCliConfig, saveCliConfig, loadServerConfig, initConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
@@ -222,7 +223,7 @@ const COMMAND_HELP = {
   bot:     'tlda bot [list|start|restart|stop|status|log|uninstall] [name]\n\n  One launchd bot manager keeps every declared bot running. Start and stop refuse; restart terminates the selected bot process and the manager returns it. Config apply reconciles the declaration.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
-  classroom: 'tlda classroom setup --course <id> --course-title "Title" --assignment <id> --assignment-title "Title" --due <iso> --handout <project> --solutions <project> [--solutions-version <version>]\n\n  Instructor setup for the first classroom loop.\n  Creates or updates the course, creates or updates the assignment with the solutions document key, then freezes the handout through the existing classroom template route.\n\n  Prints the registration, gradebook, problem-marking, and student-work paths. No printed URL contains a name parameter.',
+  classroom: 'tlda classroom setup --course <id> --course-title "Title" --assignment <id> --assignment-title "Title" --due <iso> --homework-root <dir> --homework <path> [--project-prefix <prefix>] [--source <project>] [--handout <project>] [--solutions <project>] [--quarto-bin <path>]\n\n  Instructor setup for the first classroom loop.\n  Generates handout and solution HTML artifacts from one authoritative QTM homework QMD using the existing QTM handout generator, Quarto, and solution filter; materializes source/handout/solution as ordinary Git checkouts linked through the project-link daemon path; records the source and transform pair on the assignment; then freezes the generated handout through the existing classroom template route.\n\n  Prints the registration, gradebook, problem-marking, and student-work paths. No printed URL contains a name parameter.',
   daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service. Stop refuses because unloading the job from an agent shell strands it; use restart or uninstall.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model <provider-model>] [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         With no model or kind, uses the configured default model. --model names\n         a provider model directly; --kind then defaults to codex. Run in a\n         terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Non-interactive calls report the local tmux\n         session and local mint id; they do not claim a fleet-recipient binding.',
   'repo-doctor': 'tlda project repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
@@ -237,7 +238,8 @@ const VALUE_FLAGS = new Set([
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'poll', 'config',
   'label', 'plist', 'only', 'version', 'project',
   'course', 'course-title', 'assignment', 'assignment-title', 'due',
-  'handout', 'solutions', 'solutions-version',
+  'source', 'handout', 'solutions', 'solutions-version', 'handout-filter', 'solution-filter',
+  'homework-root', 'homework', 'project-prefix', 'quarto-bin',
 ])
 
 const SPAWN_BOOLEAN_FLAGS = new Set([
@@ -2666,15 +2668,131 @@ function requiredClassroomSetupFlag(name) {
   return value
 }
 
+async function createOrUpdateClassroomProject({ name, title, mainFile, format }) {
+  try {
+    await createProjectApi({ name, title, mainFile, format })
+  } catch (error) {
+    if (!error.message?.includes('already exists')) throw error
+  }
+}
+
+function copyClassroomFiles(root, destinationRoot, includeFile) {
+  const paths = []
+  function collect(prefix = '') {
+    for (const entry of readdirSync(join(root, prefix), { withFileTypes: true })) {
+      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+      const fullPath = join(root, relPath)
+      if (entry.isDirectory()) {
+        if (entry.name === '.git' || entry.name === '.quarto') continue
+        collect(relPath)
+      } else if (includeFile(relPath)) {
+        const target = join(destinationRoot, relPath)
+        mkdirSync(dirname(target), { recursive: true })
+        copyFileSync(fullPath, target)
+        paths.push(relPath)
+      }
+    }
+  }
+  collect()
+  return paths.sort()
+}
+
+function commitClassroomProjectSource(sourceDir, message) {
+  execFileSync('git', ['init'], { cwd: sourceDir, stdio: 'pipe' })
+  execFileSync('git', ['add', '--all'], { cwd: sourceDir, stdio: 'pipe' })
+  execFileSync('git', ['commit', '--allow-empty', '-m', message], {
+    cwd: sourceDir,
+    stdio: 'pipe',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'tlda classroom setup',
+      GIT_AUTHOR_EMAIL: 'classroom-setup@tlda.local',
+      GIT_COMMITTER_NAME: 'tlda classroom setup',
+      GIT_COMMITTER_EMAIL: 'classroom-setup@tlda.local',
+    },
+  })
+}
+
+async function linkClassroomGitProject({ name, title, mainFile, format, sourceDir, documentRoots }) {
+  commitClassroomProjectSource(sourceDir, `classroom setup: ${name}`)
+  await createOrUpdateClassroomProject({ name, title, mainFile, format })
+  const projectMetadata = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
+  return callLocalDaemonLifecycle('project-source-link', {
+    project: name,
+    sourceDir,
+    projectMetadata,
+    documentRoots,
+  }, { timeoutMs: 300000 })
+}
+
+function copyHtmlProjectFiles(bookDir, destinationRoot, mainFile, otherHtmlFile) {
+  return copyClassroomFiles(bookDir, destinationRoot, relPath => {
+    if (relPath === mainFile) return true
+    if (relPath === otherHtmlFile) return false
+    return !relPath.endsWith('.html')
+  })
+}
+
 async function cmdClassroomSetup() {
   const courseId = requiredClassroomSetupFlag('course')
   const courseTitle = requiredClassroomSetupFlag('course-title')
   const assignmentId = requiredClassroomSetupFlag('assignment')
   const assignmentTitle = requiredClassroomSetupFlag('assignment-title')
   const dueAt = requiredClassroomSetupFlag('due')
-  const templateDocKey = requiredClassroomSetupFlag('handout')
-  const solutionsDocKey = requiredClassroomSetupFlag('solutions')
+  const homeworkRoot = resolve(requiredClassroomSetupFlag('homework-root'))
+  const homeworkPath = requiredClassroomSetupFlag('homework')
+  const projectPrefix = getFlag('project-prefix') || `${courseId}-${assignmentId}`
+  const sourceDocKey = getFlag('source') || `${projectPrefix}-source`
+  const templateDocKey = getFlag('handout') || `${projectPrefix}-handout`
+  const solutionsDocKey = getFlag('solutions') || `${projectPrefix}-solutions`
   const solutionsVersion = getFlag('solutions-version')
+  const quartoBin = getFlag('quarto-bin') || 'quarto'
+
+  const rendered = await renderQtm285HomeworkVariants({
+    sourceRoot: homeworkRoot,
+    homeworkPath,
+    outputStem: assignmentId,
+    quartoBin,
+  })
+  const handoutFilter = getFlag('handout-filter') || rendered.handoutGenerator
+  const solutionFilter = getFlag('solution-filter') || rendered.solutionFilter
+  const bookDir = join(rendered.outDir, '_book')
+  const projectRoot = join(rendered.outDir, '.classroom-projects')
+  const sourceDir = join(projectRoot, sourceDocKey)
+  const handoutDir = join(projectRoot, templateDocKey)
+  const solutionDir = join(projectRoot, solutionsDocKey)
+  mkdirSync(sourceDir, { recursive: true })
+  mkdirSync(handoutDir, { recursive: true })
+  mkdirSync(solutionDir, { recursive: true })
+
+  copyClassroomFiles(rendered.outDir, sourceDir, relPath => rendered.copiedFiles.includes(relPath))
+  copyHtmlProjectFiles(bookDir, handoutDir, rendered.handoutOutput, rendered.solutionOutput)
+  copyHtmlProjectFiles(bookDir, solutionDir, rendered.solutionOutput, rendered.handoutOutput)
+
+  await linkClassroomGitProject({
+    name: sourceDocKey,
+    title: `${assignmentTitle} source`,
+    mainFile: rendered.homeworkPath,
+    format: 'qmd',
+    sourceDir,
+    documentRoots: [rendered.homeworkPath],
+  })
+  await linkClassroomGitProject({
+    name: templateDocKey,
+    title: `${assignmentTitle} handout`,
+    mainFile: rendered.handoutOutput,
+    format: 'html',
+    sourceDir: handoutDir,
+    documentRoots: [rendered.handoutOutput],
+  })
+  await linkClassroomGitProject({
+    name: solutionsDocKey,
+    title: `${assignmentTitle} solutions`,
+    mainFile: rendered.solutionOutput,
+    format: 'html',
+    sourceDir: solutionDir,
+    documentRoots: [rendered.solutionOutput],
+  })
 
   const course = await api('POST', '/api/classroom/courses', { id: courseId, title: courseTitle })
   const assignment = await api('POST', `/api/classroom/courses/${encodeURIComponent(courseId)}/assignments`, {
@@ -2683,6 +2801,9 @@ async function cmdClassroomSetup() {
     dueAt,
     solutionsDocKey,
     ...(solutionsVersion ? { solutionsVersion } : {}),
+    sourceDocKey,
+    handoutFilter,
+    solutionFilter,
   })
   const frozen = await api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey })
 
@@ -2691,6 +2812,9 @@ async function cmdClassroomSetup() {
   console.log(`Assignment: ${assignment.title || assignmentTitle} (${assignment.id || assignmentId})`)
   console.log(`Due: ${assignment.dueAt || dueAt}`)
   console.log(`Handout frozen: ${frozen.templateDocKey || templateDocKey}@${frozen.templateVersion || '(server version)'}`)
+  console.log(`Source: ${assignment.sourceDocKey || sourceDocKey}`)
+  console.log(`Generated from: ${rendered.homeworkPath}`)
+  console.log(`Filters: handout=${assignment.handoutFilter || handoutFilter}; solution=${assignment.solutionFilter || solutionFilter}`)
   console.log(`Solutions: ${assignment.solutionsDocKey || solutionsDocKey}${assignment.solutionsVersion ? `@${assignment.solutionsVersion}` : ''}`)
   console.log()
   console.log('Next paths:')

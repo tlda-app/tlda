@@ -11,7 +11,7 @@ function fixture() {
   store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
   store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret' })
   store.upsertStudent({ id: 'grace', courseId: 'qtm285', displayName: 'Grace', enrollmentToken: 'grace-secret' })
-  store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z', solutionsDocKey: 'hw1-solutions', solutionsVersion: 'abc' })
+  store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z', sourceDocKey: 'hw1-source', handoutFilter: 'homework/assignment-callout.lua', solutionFilter: 'homework/solution-callout.lua', solutionsDocKey: 'hw1-solutions', solutionsVersion: 'abc' })
   return { store, close() { store.close(); fs.rmSync(dir, { recursive: true, force: true }) } }
 }
 

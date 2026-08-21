@@ -72,7 +72,8 @@ import { admitProposal, initBuildDispatcher, killAllDispatchedBuilds, recoverBui
 import { createGitHttpHandler } from './lib/git-http.mjs'
 import { parseHistorySeedRef } from '../shared/history-seed-ref.mjs'
 import projectRoutes from './routes/projects.mjs'
-import { createClassroomRouter } from './routes/classroom.mjs'
+import { createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
+import { ClassroomStore } from './lib/classroom-store.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
@@ -282,6 +283,7 @@ try {
 const PORT = process.env.PORT || DEFAULT_PORT
 const HOST = process.env.HOST || '0.0.0.0'
 const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
+const classroomStore = new ClassroomStore()
 
 // Initialize stores
 await initProjectStore(PROJECTS_DIR)
@@ -4609,6 +4611,14 @@ async function docPathExists(path) {
   }
 }
 
+async function runDocsAccessCheck(req, res, name) {
+  req.params = { ...(req.params || {}), name }
+  return await new Promise(resolve => {
+    requireClassroomDocumentAccess(req, res, error => resolve(error || null))
+    if (res.headersSent) resolve('sent')
+  })
+}
+
 app.get('/docs/manifest.json', requireRead, async (req, res) => {
   const manifest = await generateManifest()
   res.json(manifest)
@@ -4627,6 +4637,20 @@ app.use('/docs', async (req, res, next) => {
     try {
       const project = await readProject(name)
       if (project?.format === 'html') {
+        const access = classroomStore.solutionDocumentAccess(name, null)
+        if (access.restricted) {
+          return requireRead(req, res, async error => {
+            if (error) return next(error)
+            const gated = await runDocsAccessCheck(req, res, name)
+            if (gated) return gated === 'sent' ? undefined : next(gated)
+            const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
+            if (await docPathExists(assetPath)) {
+              res.set('Cache-Control', 'public, max-age=3600')
+              return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
+            }
+            next()
+          })
+        }
         const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
         if (await docPathExists(assetPath)) {
           res.set('Cache-Control', 'public, max-age=3600')
@@ -4652,6 +4676,8 @@ app.use('/docs', (req, res, next) => {
   if (parts.length < 2) return next()
   const name = parts[0]
   const filePath = parts.slice(1).join('/')
+  const gated = await runDocsAccessCheck(req, res, name)
+  if (gated) return gated === 'sent' ? undefined : next(gated)
 
   // Serve derived shadow render cache:
   // /docs/{name}/history/shadow-{hash7}/<texBase>-page-N.svg
@@ -4990,6 +5016,7 @@ app.locals.fleetStore = fleetStore
 app.locals.sendDaemonEphemeral = sendDaemonEphemeral
 app.locals.sourceRoomDaemon = sourceRoomDaemon
 app.locals.sendProjectSourceDaemon = sendProjectSourceDaemon
+app.locals.classroomStore = classroomStore
 
 
 app.use('/api/projects', projectRoutes)
@@ -4997,6 +5024,7 @@ app.use('/api/projects', projectRoutes)
 // as a side effect of being imported, which made any tool or test that touched
 // the module open one too — including several at once, which SQLite refuses.
 app.use('/api/classroom', createClassroomRouter({
+  store: classroomStore,
   submitSubmissionSource: (project, payload) => sourceRoomDaemon.submitFiles(project, payload),
 }))
 
