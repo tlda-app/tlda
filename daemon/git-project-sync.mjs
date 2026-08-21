@@ -190,6 +190,12 @@ export function createGitProjectSync({
     return pushRevision(committed.revision)
   }
 
+  async function submitCurrent() {
+    const committed = await commitSettledTree()
+    if (!committed.ok) return committed
+    return pushRevision(committed.revision)
+  }
+
   async function fetchHead(expected = null) {
     await git(['fetch', '--no-tags', remote, `+${sharedRef}:${fetchedRef}`])
     const revision = await rev(fetchedRef)
@@ -271,6 +277,7 @@ export function createGitProjectSync({
   return {
     refs: { localRef, appliedRef, sharedRef, fetchedRef },
     editClusterSettled: () => serialized(settle),
+    submitCurrent: () => serialized(submitCurrent),
     headChanged: revision => serialized(() => headChanged(revision)),
     mirrorArrived: revision => serialized(() => mirrorArrived(revision)),
     recover: () => serialized(recover),

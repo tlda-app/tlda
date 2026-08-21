@@ -167,3 +167,35 @@ test('an up-to-date immutable proposal still requests confirmed admission', asyn
   assert.deepEqual(admissions.map(item => item.proposalRef), [first.proposalRef, first.proposalRef])
   await manager.closeAll()
 })
+
+test('explicit submit confirms admission even when the shared tree is already equal', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-equal-tree-submit-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'paper.git')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'main.tex'), 'paper\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'paper'])
+  const head = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
+  await git(checkout, ['push', remote, `${head}:refs/tlda/source/paper`])
+  await git(checkout, ['remote', 'add', 'tlda', remote])
+  await git(checkout, ['fetch', 'tlda', '+refs/tlda/source/paper:refs/tlda/fetched/paper'])
+  await git(checkout, ['update-ref', 'refs/tlda/applied/binding-a', head])
+  const admissions = []
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'mini-testing', server: 'http://unused.test',
+    remoteUrlFor: () => remote, watch: () => testWatcher(),
+    onProposalSubmitted: async event => admissions.push(event),
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout, { bindingId: 'binding-a', documentRoots: ['main.tex'] })
+  await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  const submitted = await manager.submit('paper')
+  assert.equal(submitted.status, 'SubmittedToBuildQueue')
+  assert.equal(admissions.length, 1)
+  assert.equal(admissions[0].revision, submitted.revision)
+  await manager.closeAll()
+})

@@ -194,7 +194,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
     const runtime = await start(item)
-    const result = await runtime.sync.editClusterSettled()
+    const result = await runtime.sync.submitCurrent()
     await runtime.refreshWatchedMembers()
     return result
   }
