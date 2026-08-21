@@ -61,14 +61,16 @@ function projectRelativeRef(raw) {
 // extension. Returns the project-relative path, or null when nothing exists.
 function resolveWithExtensions(baseDir, root, ref, implicit) {
   const candidates = [ref, ...implicit.map(ext => `${ref}${ext}`)]
-  for (const candidate of candidates) {
-    const abs = path.resolve(baseDir, candidate)
-    const rel = path.relative(root, abs).replace(/\\/g, '/')
-    if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) continue
-    try {
-      if (fs.statSync(abs).isFile()) return rel
-    } catch {
-      // Not this candidate; try the next extension.
+  for (const from of [...new Set([baseDir, root])]) {
+    for (const candidate of candidates) {
+      const abs = path.resolve(from, candidate)
+      const rel = path.relative(root, abs).replace(/\\/g, '/')
+      if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) continue
+      try {
+        if (fs.statSync(abs).isFile()) return rel
+      } catch {
+        // Not this candidate; try the next extension or project root.
+      }
     }
   }
   return null
