@@ -147,6 +147,7 @@ import {
   createAgentLivenessTraceStore,
   recordLivenessProjection,
 } from './lib/agent-liveness-trace.mjs'
+import { validateDaemonAgentStatusBatch } from './lib/daemon-agent-status.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -433,6 +434,7 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 // Daemon connections — keyed by machine_id:env_name. Each value is the live WS
 // for that daemon config lane. Used for RPC routing and agent updates.
 const daemonConnections = new Map()         // machine_id:env_name -> ws
+const daemonAgentStatusSequences = new Map() // daemon_key\0boot_id -> last accepted complete batch
 setBuildHeadNotifier(async (project, revision) => {
   await sourceRoomDaemon.headChanged(project, revision)
   const message = JSON.stringify({ type: 'head-changed', project, revision })
@@ -588,26 +590,20 @@ function traceGate1(stage, detail) {
 // or copied route state does not fabricate hibernation.
 const runtimeStatusStore = createAgentRuntimeStatusStore({
   onChange: agentId => {
-    // Not awaited, and these three are the only refreshes treated this way.
-    // refreshAgentLiveness returns nothing — it re-syncs the agent registry so
-    // the roster view and footer count see the change. Nothing downstream reads
-    // a result, and every caller that follows it with broadcastState hits a
-    // 50ms debounce, which is far longer than a worker round trip, so the
-    // refresh lands before the broadcast it feeds.
-    //
-    // .catch rather than bare `void`: a dropped rejection here would be an
-    // unhandled rejection, and a registry that stopped re-syncing is worth
-    // seeing in the log rather than discovering as a roster that quietly stops
-    // updating.
-    //
-    // The alternative was making markAgentAlive/markAgentNotAlive async, which
-    // cascades through the whole liveness path for a call whose value nobody
-    // uses.
-    fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[runtime-status] liveness refresh failed for ${agentId}: ${e?.message || e}`))
+    // Send the exact main-thread projection to the worker registry. This is
+    // asynchronous because the database owns the agent row, but the state
+    // broadcast is already debounced beyond an ordinary worker round trip.
+    syncRuntimeProjection(agentId).catch(e => console.error(`[runtime-status] projection refresh failed for ${agentId}: ${e?.message || e}`))
     if (typeof broadcastState === 'function') broadcastState(agentId)
   },
 })
 fleetStore.setRuntimeProjector(agent => runtimeStatusStore.project(agent))
+
+async function syncRuntimeProjection(agentId) {
+  const agent = await fleetStore.getAgent(agentId)
+  if (!agent) return
+  await fleetStore.refreshAgentLiveness(agentId, agent.runtime_status)
+}
 
 const humanPresence = createHumanPresenceTracker({
   onEdge: ({ humanId, status, atMs }) => {
@@ -648,8 +644,6 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
       .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
   }
   if (!wasAlive) {
-    // Fire-and-forget for the reason given where onChange does the same.
-    fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
     // Recovery: an agent transitioning to alive (login/reconnect) clears its
     // wake breaker so a restored session is nudged again immediately (§4.2).
     _wakeBreaker.delete(agentId)
@@ -658,7 +652,6 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
 
 function markAgentNotAlive(agentId, detail = {}) {
   const previousLiveness = runtimeStatusStore.evidenceFor(agentId)?.liveness
-  const wasAlive = previousLiveness === 'alive'
   const evidence = detail.unknown
     ? runtimeStatusStore.markUnknown(agentId, detail.source || 'runtime-unknown', detail)
     : runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
@@ -674,8 +667,6 @@ function markAgentNotAlive(agentId, detail = {}) {
   durableWrite.catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
   clearSourceEditsForAgent(agentId)
   clearEphemeralState(agentId)
-  // Fire-and-forget for the reason given where onChange does the same.
-  if (wasAlive) fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
   return durableWrite
 }
 
@@ -718,7 +709,7 @@ async function refreshRuntimeRoutesForDaemon(daemonKey) {
   if (!daemonKey) return
   const seated = await fleetStore.getAgentsByDaemonKey(daemonKey)
   const affected = seated.filter(agent => agent && !agent.human).map(agent => agent.id)
-  for (const id of affected) await fleetStore.refreshAgentLiveness(id)
+  for (const id of affected) await syncRuntimeProjection(id)
   if (affected.length) broadcastState(affected)
 }
 
@@ -2872,6 +2863,11 @@ if (fleetStore) {
     registered_at: new Date().toISOString(),
     last_seen: new Date().toISOString(),
   })
+  runtimeStatusStore.markHumanPresence(
+    SERVER_OWNER_ID,
+    RUNTIME_STATUS.AWAY,
+    'server-startup-no-browser-connections',
+  )
   await fleetStore.recordRuntimeState(
     SERVER_OWNER_ID,
     { kind: RUNTIME_KIND.HUMAN, status: RUNTIME_STATUS.AWAY },
@@ -8940,6 +8936,10 @@ async function handleDaemonWsMessage(ws, msg) {
       terminalInputAllowed: capabilities?.terminalInputAllowed === true,
     }
     daemonConnections.set(daemonKey, ws)
+    const activeStatusGeneration = `${daemonKey}\0${boot_id}`
+    for (const key of daemonAgentStatusSequences.keys()) {
+      if (key.startsWith(`${daemonKey}\0`) && key !== activeStatusGeneration) daemonAgentStatusSequences.delete(key)
+    }
     recordDaemonSourceBindings(daemonKey, source_bindings)
     traceGate1('registry-set', {
       daemon_key: daemonKey,
@@ -9043,16 +9043,24 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'agent-status') {
     if (!fleetStore) return
-    if (!msg.daemon_key || msg.daemon_boot_id == null || msg.report_seq == null) return
-    if (msg.daemon_key !== ws._daemonKey || msg.daemon_boot_id !== ws._bootId) return
-    if (msg.snapshot_complete !== true || !Array.isArray(msg.agents)) return
+    const generationKey = `${ws._daemonKey}\0${ws._bootId}`
+    const agentIds = Array.isArray(msg.agents) ? msg.agents.map(result => result?.agent_id).filter(Boolean) : []
+    const ownedAgents = await fleetStore.getAgentsByIds(agentIds)
+    const accepted = validateDaemonAgentStatusBatch({
+      message: msg,
+      daemonKey: ws._daemonKey,
+      bootId: ws._bootId,
+      lastSequence: daemonAgentStatusSequences.get(generationKey) || 0,
+      agents: ownedAgents,
+    })
+    if (!accepted) return
+    daemonAgentStatusSequences.set(generationKey, accepted.sequence)
     const ts = msg.ts || new Date().toISOString()
     const atMs = Date.parse(ts) || Date.now()
-    for (const result of msg.agents || []) {
+    for (const result of accepted.results) {
       const agentId = result?.agent_id
       const status = result?.status
       const activity = result?.activity || 'unknown'
-      if (!agentId || !['awake', 'hibernating'].includes(status)) continue
       const previous = runtimeStatusStore.evidenceFor(agentId)
       const previousStatus = previous?.liveness === 'alive'
         ? 'awake'
@@ -9089,7 +9097,11 @@ async function handleDaemonWsMessage(ws, msg) {
       if (previous?.activity === 'thinking' && activity !== 'thinking') {
         await emitTurnEnded(agentId, previous.activity_at_ms)
       }
-      if (activityChanged) runtimeStatusStore.updateActivity(agentId, activity, { tool: result.tool, atMs })
+      if (activityChanged) runtimeStatusStore.updateActivity(agentId, activity, {
+        tool: result.tool,
+        atMs,
+        generation,
+      })
       if (statusChanged || activityChanged) {
         await fleetStore.updateAgentStatus?.(agentId, status, activity, result.tool, ts)
       }

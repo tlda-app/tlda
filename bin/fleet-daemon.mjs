@@ -421,11 +421,16 @@ function bufferActivity(agentId, evts) {
   // A JSONL line is a per-turn heartbeat. Warm the liveness cache keyed by
   // tmux_session so rpcCheckAlive / wake read "alive" from observed activity,
   // without a fleet-wide background demotion sweep.
-  const activeBinding = permissionLedger.listProcessBindings().find(row => row.id === agentId)
+  const activeDaemonKey = `${MACHINE_ID}:${ACTIVE_ENV}`
+  const activeBinding = permissionLedger.listProcessBindings().find(row =>
+    row.id === agentId && row.daemonKey === activeDaemonKey)
   if (activeBinding?.tmuxSession) alivenessCache.set(activeBinding.tmuxSession, true)
+  const toolActivity = [...stampedEvents].reverse().find(event =>
+    event?.tool && !String(event.tool).startsWith('_'))
+  if (activeBinding && toolActivity) agentStatus.noteToolActivity(agentId, toolActivity.tool)
   // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
   // watch this agent's pane frequently — arm it for the status state machine.
-  agentStatus.armAgent(agentId)
+  if (activeBinding) agentStatus.armAgent(agentId)
   sendMsg({
     type: 'activity-health',
     agent_id: agentId,
@@ -731,13 +736,16 @@ const agentStatus = createAgentStatus({
   tmuxArgs: TMUX_ARGS,
   sendMsg,
   log,
-  getAgents: () => permissionLedger.listProcessBindings().map(row => ({
-    id: row.id,
-    friendly_name: row.friendlyName,
-    tmux_session: row.tmuxSession,
-    runtimeKind: row.sessionKind,
-    metadata: { kind: row.sessionKind, model: row.model },
-  })),
+  getAgents: () => permissionLedger.listProcessBindings()
+    .filter(row => row.daemonKey === `${MACHINE_ID}:${ACTIVE_ENV}`)
+    .map(row => ({
+      id: row.id,
+      daemonKey: row.daemonKey,
+      friendly_name: row.friendlyName,
+      tmux_session: row.tmuxSession,
+      runtimeKind: row.sessionKind,
+      metadata: { kind: row.sessionKind, model: row.model },
+    })),
   harnessForAgent: harnessRuntime.harnessForAgent,
   listSessions: () => terminalRpc.listSessions(),
   isConnected: () => _serverReady && _rws?.connected,
