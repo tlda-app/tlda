@@ -126,16 +126,6 @@ const ALLOWED = {
     reason: 'Reads a message back by the id the server assigned it, over the socket the MCP transport uses. The wire is the whole claim: thread(message_id:) sends the ephemeral verb `event-by-id` and dispatchFleetWsMessage answers it, and calling both functions in one process would prove the two ends and not that they are joined. Endpoint: /ws/fleet.',
   },
 
-  'bin/the-room-and-a-git-remote-test.mjs': {
-    count: 1,
-    category: 'tooling',
-    reason: 'Source-room client speaking the room\'s JSON frames against a linked git remote. Endpoint: /source-sync/.',
-  },
-  'bin/typing-when-the-socket-goes-away-test.mjs': {
-    count: 2,
-    category: 'tooling',
-    reason: 'Two source-room clients: the story is a socket dying mid-edit, which needs one connection to lose and one to observe with. Endpoint: /source-sync/.',
-  },
   'scripts/backfill-agent-models.mjs': {
     count: 1,
     category: 'tooling',
@@ -252,10 +242,8 @@ const ALLOWED = {
   },
 
   // --- tooling: test and script clients that speak the wire on purpose -----
-  'bin/collaborators-and-an-editor-test.mjs': { count: 2, category: 'tooling', reason: 'Source-room clients: two of them, on /source-sync/<project>/<file>, speaking the room\'s JSON frames — sync, update, flush, status — with base64 Yjs updates inside. Two because the story is two people with one file open at once, which one socket cannot show.' },
   'bin/delegate-spawn-shell-e2e-test.mjs': { count: 2, category: 'tooling', reason: 'E2E client: drives /ws/fleet and /ws/fleet-daemon directly to test the wire.' },
   'bin/server-originated-claude-mint-real-daemon-test.mjs': { count: 1, category: 'tooling', reason: 'Real-daemon mint test: one /ws/fleet client in openFleet(), same shape as the spawn tests beside it.' },
-  'bin/source-room-daemon-test.mjs': { count: 3, category: 'tooling', reason: 'Source-room protocol tests: Node participants open /source-sync to send Yjs updates without a browser, including checkpoint-error and duplicate-render cases.' },
   'bin/filter-expr-integration.mjs': { count: 1, category: 'tooling', reason: 'Integration client for filter expressions over the live fleet socket.' },
   'bin/spawn-collision-test.mjs': { count: 2, category: 'tooling', reason: 'Spawn collision test: needs two independent raw connections to race them.' },
   'bin/spawn-mailbox-outcome-test.mjs': { count: 2, category: 'tooling', reason: 'Mailbox outcome test: agent and daemon sockets, asserted against directly.' },
@@ -263,6 +251,7 @@ const ALLOWED = {
   'bin/test-refevent-amend.mjs': { count: 1, category: 'tooling', reason: 'Ref-event amend test client.' },
   'bin/test-source-roundtrip.mjs': { count: 1, category: 'tooling', reason: 'Source roundtrip test client.' },
   'scripts/smoke-test.mjs': { count: 1, category: 'tooling', reason: 'Smoke test: constructs the socket inside browser-evaluated source, in the page.' },
+  'server/lib/unified-server-test-harness.mjs': { count: 1, category: 'tooling', reason: 'Shared integration-test harness opens the real fleet wire so server tests exercise the deployed WebSocket boundary.' },
   'server/lib/fleet-inbox-delivery.test.mjs': { count: 1, category: 'tooling', reason: 'Delivery test: one openFleetWs() helper, called per client to observe fan-out.' },
   'server/lib/fleet-login-route-gate.test.mjs': { count: 1, category: 'tooling', reason: 'Login route gate test: one /ws/fleet client in openFleetWs(), asserted against directly.' },
   'server/lib/fleet-store-offloop.test.mjs': { count: 1, category: 'tooling', reason: 'Off-loop store test client.' },
