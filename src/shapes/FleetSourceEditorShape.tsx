@@ -641,7 +641,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       .then(async res => {
         if (!res.ok) throw new Error(`remotes ${res.status}`)
         const payload = await res.json()
-        const versions = Array.isArray(payload?.remotes)
+        const versions: DocumentVersion[] = Array.isArray(payload?.remotes)
           ? payload.remotes.flatMap((remote: any) => Array.isArray(remote?.branches)
               ? remote.branches.flatMap((branch: any) => (
                   typeof remote?.name === 'string'
