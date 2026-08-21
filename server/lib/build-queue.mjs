@@ -144,12 +144,16 @@ export function createBuildQueue({
     })
   }
 
-  function admitBuild(project, { revision, daemonId, branch = 'main', kind = 'build' }) {
+  function admitBuild(project, { revision, daemonId, branch = 'main', kind = 'build' }, { retryTerminal = false } = {}) {
     let admittedRow
     const admission = transition(async () => {
       if (!project || !revision || !daemonId || !branch) throw new Error('project, revision, daemonId, and branch are required')
       admittedRow = await serializeProject(project, async () => {
-        const existing = store.get(project, revision)
+        let existing = store.get(project, revision)
+        if (existing && retryTerminal && ['complete', 'failed', 'killed'].includes(existing.state)) {
+          store.removeTerminalRevision(project, revision)
+          existing = null
+        }
         if (existing) return existing
         const fractionalPriority = random()
         if (!(fractionalPriority >= 0 && fractionalPriority < 1)) throw new Error('build queue random source must return a value in [0, 1)')

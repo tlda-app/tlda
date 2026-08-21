@@ -227,8 +227,8 @@ async function recordAdmission(project, row) {
   return (await sourceLifecycleStore(project)).recordRevisionAdmission(project, row.revision, row.id)
 }
 
-export async function admitProposal(submission) {
-  const row = await dispatcher().admitBuild(submission.project, submission)
+export async function admitProposal(submission, options = {}) {
+  const row = await dispatcher().admitBuild(submission.project, submission, options)
   await recordAdmission(submission.project, row)
   return row
 }
