@@ -1199,7 +1199,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           // Load source map (labels index) for ref resolution.
           // For multi-target docs, pass targets so per-target source-maps are merged
           // with global page offsets — the bare alias only covers the primary target.
-          if (!HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')) {
+          if (!HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides', 'pdf'].includes(document.format || '')) {
             sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
           }
 

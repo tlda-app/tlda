@@ -114,6 +114,32 @@ test('project metadata reads and updates run through the project files worker', 
   }
 })
 
+test('project-store startup persists authoritative document axes on legacy records', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-project-axis-migration-'))
+  const root = join(tempRoot, 'projects')
+  const projectDir = join(root, 'legacy-qmd')
+  mkdirSync(projectDir, { recursive: true })
+  writeFileSync(join(projectDir, 'project.json'), JSON.stringify({
+    name: 'legacy-qmd', format: 'qmd', renderedFormat: 'slides', pages: 3,
+    mainFile: 'index.qmd', clientSourceManifest: ['index.qmd', 'index.html'],
+  }))
+  try {
+    await initProjectStore(root)
+    assert.deepEqual(
+      (({ sourceFormat, renderer, documentFormat }) => ({ sourceFormat, renderer, documentFormat }))(await readProject('legacy-qmd')),
+      { sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'slides' },
+    )
+    const persisted = JSON.parse(readFileSync(join(projectDir, 'project.json'), 'utf8'))
+    assert.equal(persisted.sourceFormat, 'qmd')
+    assert.equal(persisted.renderer, 'quarto')
+    assert.equal(persisted.documentFormat, 'slides')
+    assert.deepEqual(await readClientSourceManifest('legacy-qmd'), ['index.qmd'])
+  } finally {
+    await closeProjectStore()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('document associations mix primary, materialized, and daemon-fed shared text', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-document-associations-'))
   const root = join(tempRoot, 'projects')

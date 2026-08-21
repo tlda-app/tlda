@@ -207,7 +207,7 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda project link <name> <root> [root ...] [--version <branch>@<commit>] [--github] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Create a project from the current existing Git repository. Positional paths are document roots; each root and its include graph seed project history. --version selects the branch and endpoint (default: the checked-out branch at HEAD). --github creates a private repository with the authenticated gh account and adds it through the ordinary Git remote path.\n  An existing different binding is refused until it is explicitly unlinked.',
+  link:    'tlda project link <name> <root> [root ...] [--version <branch>@<commit>] [--github] [--title "Title"] [--format slides|html|markdown|qmd|pdf]\n\n  Create a project from the current existing Git repository. Positional paths are document roots; each root and its include graph seed project history. --version selects the branch and endpoint (default: the checked-out branch at HEAD). --github creates a private repository with the authenticated gh account and adds it through the ordinary Git remote path.\n  An existing different binding is refused until it is explicitly unlinked.',
   unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local checkout currently linked to the project. The source must match the existing binding.',
   remote:  'tlda project remote add <remote> <url> [--project <name>]\ntlda project remote delete <remote> [--project <name>]\ntlda project remote pull|push|checkout <remote> [branch] [--project <name>]\n\n  Manage remotes on the existing Git repository linked to the project. The project is inferred from the current checkout unless --project is supplied.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
@@ -667,7 +667,36 @@ async function cmdCreate() {
     if (ext === 'md') format = 'markdown'
     else if (ext === 'html' || ext === 'htm') format = 'html'
     else if (ext === 'qmd') format = 'qmd'
+    else if (ext === 'pdf') format = 'pdf'
     if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainHint})`))
+  }
+
+  if (format === 'pdf') {
+    const mainFile = mainArg
+    if (!mainFile || !mainFile.toLowerCase().endsWith('.pdf') || !existsSync(join(dir, mainFile))) {
+      console.error('A PDF project requires an existing .pdf document root.')
+      process.exit(1)
+    }
+    await bindLocalSource()
+    console.log(dim(`  Source: ${dir}`))
+    console.log(dim('  Source format: pdf'))
+    console.log(dim('  Renderer: identity'))
+    console.log(dim('  Document format: paged'))
+    console.log(dim(`  Main file: ${mainFile}`))
+    try {
+      await createProjectApi({
+        name, title, mainFile,
+        sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged',
+      })
+      console.log(green(`Created PDF project "${name}".`))
+    } catch (e) {
+      if (e.message.includes('already exists')) console.log(`Project "${name}" exists, pushing files.`)
+      else throw e
+    }
+    const linked = await activateLocalSource([mainFile])
+    console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
+    console.log(`\nViewer: ${cyan(`${getServer()}/?project=${name}`)}`)
+    return
   }
 
   // Slides format: push HTML files, no TeX
@@ -801,7 +830,7 @@ async function cmdCreate() {
     // isSourceFilePath is the one rule; the watcher that pushes his later
     // saves asks the same function, so a file this drops does not come back
     // through the other door.
-    const qmdContext = { format: 'qmd', mainFile }
+    const qmdContext = { sourceFormat: 'qmd', mainFile }
     // Paths and sizes only. Reading every file up front cost 527 MB of base64 —
     // over a gigabyte once V8 holds it as strings — before the first request was
     // sent, on a tree the server then takes in 20 MB pieces. Content is read a

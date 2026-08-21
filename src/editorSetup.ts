@@ -558,12 +558,12 @@ export async function reloadPages(
   // than left as decoration.
   if (pageNumbers === null) {
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}`)
+      const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}?include=page-info`)
       if (res.ok) {
         const cfg = await res.json()
         const newCount: number = cfg.pages ?? document.pages.length
         if (newCount > 0) setBuiltPageCount(newCount)
-        if (newCount > 0 && newCount !== document.pages.length) {
+        if (newCount > 0 && (newCount !== document.pages.length || document.format === 'pdf')) {
           const docBasePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
           const targets = cfg.targets?.map((t: any) => ({
             name: t.texBase,
@@ -571,7 +571,13 @@ export async function reloadPages(
             pages: t.pages,
             basePath: docBasePath,
           }))
-          const fresh = createSvgDocumentLayout(document.name, newCount, docBasePath, targets)
+          const fresh = createSvgDocumentLayout(
+            document.name,
+            newCount,
+            docBasePath,
+            targets,
+            document.format === 'pdf' ? cfg.documentManifest?.pages : undefined,
+          )
           // Mutate the live layout object in place so every reader — this reload,
           // remapAnnotations below, and future reloads — sees the new page set.
           document.pages.length = 0
@@ -840,7 +846,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   }, { scope: 'document' })
 
   // Initialize the single ribbon shape + eraser support
-  const ribbonEnabled = document.format !== 'png' && document.format !== 'html' &&
+  const ribbonEnabled = document.format !== 'png' && document.format !== 'pdf' && document.format !== 'html' &&
       document.format !== 'slides' && document.format !== 'markdown'
   if (ribbonEnabled) {
     void initRibbon(editor, document.name, document.pages)

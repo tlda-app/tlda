@@ -7,9 +7,17 @@ import { join } from 'node:path'
 import { shouldBuildOnPush } from './build-decision.mjs'
 import { closeProjectStore, initProjectStore } from './project-store.mjs'
 
+const latexProject = updates => ({
+  sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged', ...updates,
+})
+
+const documentProject = (sourceFormat, renderer, documentFormat, updates = {}) => ({
+  sourceFormat, renderer, documentFormat, ...updates,
+})
+
 test('a new SVG project builds eagerly because no page can trigger the lazy build', () => {
   assert.deepEqual(shouldBuildOnPush(
-    { format: 'svg', pages: 0, buildStatus: 'none' },
+    latexProject({ pages: 0, buildStatus: 'none' }),
     'unused-new-svg-project',
     { changedFiles: ['main.tex'], anyChanged: true },
   ), { build: true, eager: true, reason: 'initial-svg-build' })
@@ -17,14 +25,14 @@ test('a new SVG project builds eagerly because no page can trigger the lazy buil
 
 test('an established SVG project builds eagerly so accepted edits enter history', () => {
   assert.deepEqual(shouldBuildOnPush(
-    { format: 'svg', pages: 1, buildStatus: 'success' },
+    latexProject({ pages: 1, buildStatus: 'success' }),
     'unused-established-svg-project',
     { changedFiles: [], anyChanged: true },
   ), { build: true, eager: true, reason: 'svg-eager' })
 })
 
 test('unchanged policy ignores legacy buildStatus and uses durable readiness', () => {
-  const project = { format: 'markdown', pages: 1, buildStatus: 'success' }
+  const project = documentProject('md', 'markdown', 'html', { pages: 1, buildStatus: 'success' })
   assert.equal(shouldBuildOnPush(project, 'paper', { anyChanged: false, ready: false }).build, true)
   assert.deepEqual(
     shouldBuildOnPush({ ...project, buildStatus: 'failed' }, 'paper', { anyChanged: false, ready: true }),
@@ -33,15 +41,21 @@ test('unchanged policy ignores legacy buildStatus and uses durable readiness', (
 })
 
 test('all document formats build eagerly after an accepted source change', () => {
-  for (const format of ['markdown', 'html', 'slides']) {
+  for (const [label, project] of [
+    ['markdown', documentProject('md', 'markdown', 'html')],
+    ['html', documentProject('html', 'identity', 'html')],
+    ['slides', documentProject('html', 'identity', 'slides')],
+    ['qmd', documentProject('qmd', 'quarto', 'html')],
+    ['pdf', documentProject('pdf', 'identity', 'paged')],
+  ]) {
     assert.deepEqual(shouldBuildOnPush(
-      { format, pages: 0, buildStatus: 'none' },
-      `unused-${format}`,
+      { ...project, pages: 0, buildStatus: 'none' },
+      `unused-${label}`,
       { anyChanged: true, building: true },
     ), { build: true, eager: true, reason: 'format-eager' })
   }
   assert.deepEqual(shouldBuildOnPush(
-    { format: 'svg', pages: 2, buildStatus: 'success' },
+    latexProject({ pages: 2, buildStatus: 'success' }),
     'unused-established-svg-project',
     { anyChanged: true, building: true },
   ), { build: true, eager: true, reason: 'svg-eager' })
@@ -52,7 +66,7 @@ test('SVG source changes without a usable relevant-files filter still build eage
   try {
     await initProjectStore(root)
     assert.deepEqual(shouldBuildOnPush(
-      { format: 'svg', pages: 2, buildStatus: 'success' },
+      latexProject({ pages: 2, buildStatus: 'success' }),
       'unused-no-relevant-files-project',
       { changedFiles: ['main.tex'], anyChanged: true },
     ), { build: true, eager: true, reason: 'no-relevant-files-yet' })

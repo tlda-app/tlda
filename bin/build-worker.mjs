@@ -9,13 +9,14 @@
 
 import { runBuild, finalizeBuildVersion, setBuildReporter } from '../server/lib/build-runner.mjs'
 import { initProjectStore, readProject, projectDir, sourceLifecycleStore, setProjectPathOverride } from '../server/lib/project-store.mjs'
-import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
+import { buildMarkdown, buildHtml, buildSlides, buildQmd, buildPdf } from '../server/lib/format-builders.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
 import { missingDeclaredMainFile, missingMainFileMessage } from '../server/lib/build-decision.mjs'
 import { setPriority, constants as osConstants } from 'node:os'
 import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { materializeBuildInstance } from '../server/lib/build-instance.mjs'
+import { documentAxes } from '../shared/document-formats.mjs'
 
 const BUILD_PRIORITY = Number(process.env.TLDA_BUILD_PRIORITY ?? 10)
 if (Number.isFinite(BUILD_PRIORITY)) {
@@ -135,7 +136,13 @@ process.on('message', async (msg) => {
         throw new Error(message)
       }
 
-      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides, qmd: buildQmd }[project?.format]
+      const axes = documentAxes(project)
+      const builder = {
+        md: buildMarkdown,
+        qmd: buildQmd,
+        pdf: buildPdf,
+        html: axes.documentFormat === 'slides' ? buildSlides : buildHtml,
+      }[axes.sourceFormat]
       if (builder) {
         await builder(msg.name)
         // A build happened, so it gets a version — same as LaTeX, which reaches

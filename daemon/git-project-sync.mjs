@@ -18,6 +18,8 @@ export function safeRefPart(value) {
 export function createGitProjectSync({
   sourceDir,
   project,
+  mainFile = null,
+  sourceFormat = null,
   daemonId,
   bindingId,
   remote = 'tlda',
@@ -67,10 +69,15 @@ export function createGitProjectSync({
       await git(['archive', '--format=tar', `--output=${archive}`, workingCommit])
       await execFile('tar', ['-xf', archive, '-C', extracted], { timeout: 30000 })
       const paths = (await git(['ls-tree', '-r', '--name-only', workingCommit])).stdout.split('\n').filter(Boolean)
-      const candidates = paths.filter(file => /\.(?:tex|md|qmd)$/i.test(file))
+      const nativePdfRoot = sourceFormat === 'pdf' && mainFile ? String(mainFile).replace(/\\/g, '/').replace(/^\.\//, '') : null
+      const candidates = nativePdfRoot ? paths.filter(file => file === nativePdfRoot) : paths.filter(file => /\.(?:tex|md|qmd)$/i.test(file))
       if (!candidates.length) throw new Error(`${project}: no document roots in settled tree`)
       const closures = new Map()
       for (const candidate of candidates) {
+        if (nativePdfRoot) {
+          closures.set(candidate, new Set([candidate]))
+          continue
+        }
         const files = new Set()
         const pending = [candidate]
         const scanned = new Set()

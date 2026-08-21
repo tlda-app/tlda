@@ -76,7 +76,7 @@ export function useYjsSignals({
   panelsLocalRef: _panelsLocalRef,
   onReloadResult, onReloadError, setScreenshotCapture,
 }: UseYjsSignalsParams) {
-  const hasSynctex = !HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')
+  const hasSynctex = !HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides', 'pdf'].includes(document.format || '')
 
   // Keep a snapshot of the current lookup for scroll anchoring across rebuilds.
   // The signalBus fires synctexLookup's cache-clear listener before ours, so we

@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { outputDir, sourceDir } from './project-store.mjs'
+import { sourceFormat } from '../../shared/document-formats.mjs'
 
 /**
  * The project's declared main file, when the source tree does not contain it.
@@ -54,9 +55,10 @@ export function missingMainFileMessage(name, declared) {
  *   - reason: human-readable explanation
  */
 export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged = false, building = false, ready = false } = {}) {
-  const format = project.format
+  const source = sourceFormat(project)
+  const latexPaged = source === 'tex' && project.renderer === 'latex' && project.documentFormat === 'paged'
 
-  if (format === 'svg' && Number(project.pages || 0) === 0 && building) {
+  if (latexPaged && Number(project.pages || 0) === 0 && building) {
     return { build: false, eager: false, reason: 'already-building' }
   }
 
@@ -65,17 +67,17 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
   }
 
   // A brand-new SVG project builds eagerly, like every other changed project.
-  if (format === 'svg' && Number(project.pages || 0) === 0) {
+  if (latexPaged && Number(project.pages || 0) === 0) {
     return { build: true, eager: true, reason: 'initial-svg-build' }
   }
 
   // Non-SVG formats always build eagerly on push
-  if (format === 'markdown' || format === 'html' || format === 'slides' || format === 'qmd') {
+  if (['md', 'html', 'qmd', 'pdf'].includes(source)) {
     return { build: true, eager: true, reason: 'format-eager' }
   }
 
   // SVG: check relevant-files filter
-  if (format === 'svg' && changedFiles.length > 0) {
+  if (latexPaged && changedFiles.length > 0) {
     const relevantPath = join(outputDir(name), 'relevant-files.json')
 
     if (!existsSync(relevantPath)) {
@@ -148,12 +150,3 @@ export function isSvgBuildStale(name) {
  * @param {string} format
  * @returns {'runBuild' | 'buildMarkdown' | 'buildHtml' | 'buildSlides' | 'buildQmd'}
  */
-export function builderForFormat(format) {
-  const map = {
-    markdown: 'buildMarkdown',
-    html: 'buildHtml',
-    slides: 'buildSlides',
-    qmd: 'buildQmd',
-  }
-  return map[format] || 'runBuild'
-}

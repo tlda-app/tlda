@@ -46,21 +46,26 @@ manifest contains the main Markdown file, the local Markdown documents it links
 to, and their referenced assets. Those files remain ordinary versioned project
 source rather than detached chat artifacts.
 
-Format-specific builders share the same project record and output manifest:
+Format-specific builders share the same project record and
+[document manifest](document-formats.md):
 
 - LaTeX builds to SVG pages and SyncTeX source positions.
 - Markdown source is rendered to HTML on the server.
 - Quarto source is rendered on the server; the rendered HTML determines whether
-  it is served as a scrolling document or split into RevealJS slides.
+  it is served as a scrolling document, split into RevealJS slides, or extracted
+  into paged SVG display artifacts from a PDF result.
 - Pre-rendered HTML and RevealJS projects arrive with their assets. The server
   copies and indexes them without running their source renderer.
+- Native PDF roots remain ordinary Git source. The server preserves the PDF and
+  extracts SVG pages and searchable text geometry without inventing a second
+  history path.
 - A book is a navigation grouping over existing projects. Its members retain
   separate source, history, sync rooms, and annotations.
 
-`page-info.json` is the common page manifest consumed by the browser's HTML and
-slide loaders. A Quarto render produces it after inspecting the output;
-pre-rendered HTML may supply it, while the server otherwise derives it from the
-top-level HTML files.
+`document-manifest.json` is the common ordered display manifest. It records the
+three format axes, page dimensions and artifacts, searchable text geometry,
+assets, and source-mapping capability. `page-info.json` remains a compatibility
+projection consumed by the existing HTML and slide loaders.
 
 An Overleaf or Git remote is an ordinary Git-backed daemon source. Its checkout
 lives on the daemon's machine, remote edits enter through the same source

@@ -52,7 +52,8 @@ import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths,
 import historyRoutes from './history.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
-import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
+import { documentAxes } from '../../shared/document-formats.mjs'
+import { readDocumentManifest } from '../lib/document-manifest.mjs'
 import { gitBlobId } from '../../shared/git-blob-id.mjs'
 import { writeSentinel } from '../lib/sentinel.mjs'
 import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
@@ -328,7 +329,7 @@ router.get('/archived', requireRead, async (req, res) => {
 // Create project
 router.post('/', requireRw, async (req, res) => {
   try {
-    const { name, title, mainFile, format, members } = req.body
+    const { name, title, mainFile, format, members, sourceFormat, renderer, documentFormat } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
@@ -336,7 +337,7 @@ router.post('/', requireRw, async (req, res) => {
     if (format === 'book' && (!members || !Array.isArray(members) || members.length === 0)) {
       return res.status(400).json({ error: 'book format requires a non-empty members array' })
     }
-    const project = createProject({ name, title, mainFile, format, members })
+    const project = createProject({ name, title, mainFile, format, members, sourceFormat, renderer, documentFormat })
     await (await sourceLifecycleStore(project.name)).gitRepository()
     emitGlobalEvent('project-changed', { name: project.name })
     res.status(201).json(project)
@@ -353,7 +354,15 @@ router.get('/:name', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   let pageInfo
-  if (req.query.include === 'page-info' && FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
+  let documentManifest
+  if (req.query.include === 'page-info') {
+    try {
+      documentManifest = readDocumentManifest(getOutputDir(req.params.name)) || undefined
+    } catch {
+      documentManifest = undefined
+    }
+  }
+  if (req.query.include === 'page-info' && ['html', 'slides'].includes(project.documentFormat)) {
     try {
       pageInfo = JSON.parse(await readFile(join(getOutputDir(req.params.name), 'page-info.json'), 'utf8'))
     } catch {
@@ -367,12 +376,14 @@ router.get('/:name', requireRead, async (req, res) => {
   // channel that already carries mainFile rather than a second call.
   res.json({
     ...project,
+    ...documentAxes(project),
     buildStatus: durableStatus.status,
     buildPhase: durableStatus.phase,
     sourceRevision: durableStatus.sourceRevision,
     acceptSeq: durableStatus.acceptSeq,
     referencedSourcePaths: await referencedSourcePaths(req.params.name).catch(() => []),
     ...(pageInfo && { pageInfo }),
+    ...(documentManifest && { documentManifest }),
   })
 })
 
