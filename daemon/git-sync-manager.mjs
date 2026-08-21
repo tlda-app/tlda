@@ -174,7 +174,10 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
         failures.push(new Error(`${item.project}: ${error.message}`, { cause: error }))
       }
     }
-    if (failures.length) throw new AggregateError(failures, `${failures.length} project Git sync binding${failures.length === 1 ? '' : 's'} failed`)
+    if (failures.length) {
+      const summary = failures.map(failure => failure.message).join('; ')
+      throw new AggregateError(failures, `${failures.length} project Git sync binding${failures.length === 1 ? '' : 's'} failed: ${summary}`)
+    }
   }
 
   async function headChanged(project, revision = null) {
