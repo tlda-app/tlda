@@ -1,7 +1,8 @@
 import chokidar from 'chokidar'
 import fs from 'fs'
 import path from 'path'
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createHash, randomUUID } from 'crypto'
 import { DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
 import { gitBlobId } from '../shared/git-blob-id.mjs'
@@ -9,6 +10,18 @@ import { gitBlobId } from '../shared/git-blob-id.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, isTextSourcePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { createSourceMaterializer } from './source-materializer.mjs'
+
+const execFileAsync = promisify(execFile)
+
+function isInsideGitCheckout(dir) {
+  let current = path.resolve(dir)
+  while (true) {
+    if (fs.existsSync(path.join(current, '.git'))) return true
+    const parent = path.dirname(current)
+    if (parent === current) return false
+    current = parent
+  }
+}
 
 export function resolveWatchedSourceFile(sourceWatchers, filePath) {
   if (!filePath || !path.isAbsolute(filePath)) return null
@@ -1265,7 +1278,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   const _pendingSourceProjects = new Set()
 
-  function flushSourceChanges(projectName) {
+  async function flushSourceChanges(projectName) {
     const state = sourceWatchers.get(projectName)
     if (!state) return
     state.debounce = null
@@ -1280,11 +1293,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     // recorded which resolution the checkout chose. Hold the ordinary watcher;
     // resolving the index changes the files again and the same path resumes.
     try {
-      const unresolved = execFileSync('git', ['diff', '--name-only', '--diff-filter=U', '-z'], {
+      if (!isInsideGitCheckout(state.sourceDir)) throw new Error('not a Git checkout')
+      const { stdout: unresolved } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U', '-z'], {
         cwd: state.sourceDir,
         encoding: 'utf8',
         timeout: 5000,
-        stdio: ['ignore', 'pipe', 'ignore'],
       })
       if (unresolved) {
         for (const file of unresolved.split('\0').filter(Boolean)) state.pending.add(file)
