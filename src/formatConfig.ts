@@ -11,8 +11,6 @@
  * (home tool).
  */
 
-import type { DocumentView } from './loaders/types'
-
 export interface FormatConfig {
   /**
    * Ordered list of tool IDs for the toolbar.
@@ -107,8 +105,18 @@ const SLIDES_CONFIG: FormatConfig = {
   browseBounce: true,
 }
 
-export function getFormatConfig(view: DocumentView): FormatConfig {
-  if (view.capabilities.presentation) return SLIDES_CONFIG
-  if (view.kind === 'html-pages') return HTML_CONFIG
-  return SVG_CONFIG
+const DIFF_CONFIG: FormatConfig = {
+  ...SVG_CONFIG,
+  // Diff uses SVG pages with the history overlay — same tools as SVG
+}
+
+export function getFormatConfig(format?: string): FormatConfig {
+  switch (format) {
+    case 'html': return HTML_CONFIG
+    case 'markdown': return HTML_CONFIG
+    case 'qmd': return HTML_CONFIG
+    case 'slides': return SLIDES_CONFIG
+    case 'diff': return DIFF_CONFIG
+    default: return SVG_CONFIG  // svg, png, undefined
+  }
 }

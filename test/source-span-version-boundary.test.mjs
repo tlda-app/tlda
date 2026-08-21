@@ -65,7 +65,7 @@ test('diff-region crosses the server boundary with shared current and historical
 
   await initProjectStore(projects)
   initSyncRooms(projects)
-  createProject({ name: 'span-fixture', mainFile: 'main.tex', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
+  createProject({ name: 'span-fixture', mainFile: 'main.tex', format: 'svg' })
 
   const currentSource = 'alpha newword gamma\n'
   const historicalSource = 'alpha oldword gamma\n'

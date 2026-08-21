@@ -69,8 +69,6 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       sourceDir: item.sourceDir,
       quietMs,
       project: item.project,
-      mainFile: item.mainFile,
-      sourceFormat: item.sourceFormat,
       daemonId,
       bindingId: item.bindingId,
       documentRoots: item.documentRoots || [],
@@ -168,11 +166,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     for (const item of records()) {
       const project = byName.get(item.project)
       if (!project) continue
-      await start({
-        ...item,
-        mainFile: project.mainFile || null,
-        sourceFormat: project.sourceFormat || null,
-      })
+      await start({ ...item, mainFile: project.mainFile || null })
     }
   }
 

@@ -7,9 +7,9 @@
 // writes) are shipped back to the parent over IPC, which performs them in the
 // server process where the live rooms actually are. See setBuildReporter.
 
-import { setBuildReporter, getBuildReporter } from '../server/lib/build-runner.mjs'
+import { runBuild, finalizeBuildVersion, setBuildReporter } from '../server/lib/build-runner.mjs'
 import { initProjectStore, readProject, projectDir, sourceLifecycleStore, setProjectPathOverride } from '../server/lib/project-store.mjs'
-import { buildDocument } from '../server/lib/build-document.mjs'
+import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
 import { missingDeclaredMainFile, missingMainFileMessage } from '../server/lib/build-decision.mjs'
 import { setPriority, constants as osConstants } from 'node:os'
@@ -135,18 +135,16 @@ process.on('message', async (msg) => {
         throw new Error(message)
       }
 
-      const outcome = await buildDocument(project, {
-        name: msg.name,
-        sourceRevision: msg.sourceRevision,
-        acceptSeq: msg.acceptSeq,
-        reporter: getBuildReporter(),
-        log: message => console.log(message),
-      })
-      if (outcome.disposition === 'superseded') {
-        await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, 'superseded', { ok: true }])
-        process.send?.({ t: 'done', ok: true, disposition: 'superseded' })
-        setImmediate(() => process.exit(0))
-        return
+      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides, qmd: buildQmd }[project?.format]
+      if (builder) {
+        await builder(msg.name)
+        // A build happened, so it gets a version — same as LaTeX, which reaches
+        // recordBuildVersion through runBuild's finalizer. Versioning used to
+        // live inside the LaTeX branch, which is why these formats built for
+        // months without ever recording one.
+        await finalizeBuildVersion({ name: msg.name, sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
+      } else {
+        await runBuild(msg.name, { sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
       }
     }
     await callParent('publishBuildInstance', [msg.name, msg.sourceRevision, msg.acceptSeq, instanceProject, stagedReports])

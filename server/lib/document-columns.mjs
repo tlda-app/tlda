@@ -24,7 +24,7 @@ export function markdownColumnFileForSource(path, { defaultColumn = false } = {}
 export async function listDocumentColumns(name, { project = null, srcDir = getSourceDir(name) } = {}) {
   project ||= await readProject(name)
   if (!project) return []
-  if (project.sourceFormat === 'md') return listMarkdownDocumentColumns(name, { project, srcDir })
+  if (project.format === 'markdown') return listMarkdownDocumentColumns(name, { project, srcDir })
   return []
 }
 

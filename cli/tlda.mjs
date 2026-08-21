@@ -10,7 +10,6 @@
 import { resolve, relative, basename, dirname, join, delimiter } from 'path'
 import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
-import { documentTransport } from '../shared/document-transport.mjs'
 import { homedir, hostname } from 'os'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
@@ -208,7 +207,7 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda project link <name> <root> [root ...] [--version <branch>@<commit>] [--github] [--title "Title"] [--format slides|html|markdown|qmd|pdf]\n\n  Create a project from the current existing Git repository. Positional paths are document roots; each root and its include graph seed project history. --version selects the branch and endpoint (default: the checked-out branch at HEAD). --github creates a private repository with the authenticated gh account and adds it through the ordinary Git remote path.\n  An existing different binding is refused until it is explicitly unlinked.',
+  link:    'tlda project link <name> <root> [root ...] [--version <branch>@<commit>] [--github] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Create a project from the current existing Git repository. Positional paths are document roots; each root and its include graph seed project history. --version selects the branch and endpoint (default: the checked-out branch at HEAD). --github creates a private repository with the authenticated gh account and adds it through the ordinary Git remote path.\n  An existing different binding is refused until it is explicitly unlinked.',
   unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local checkout currently linked to the project. The source must match the existing binding.',
   remote:  'tlda project remote add <remote> <url> [--project <name>]\ntlda project remote delete <remote> [--project <name>]\ntlda project remote pull|push|checkout <remote> [branch] [--project <name>]\n\n  Manage remotes on the existing Git repository linked to the project. The project is inferred from the current checkout unless --project is supplied.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
@@ -506,7 +505,7 @@ async function cmdBook() {
 
   // Create the book project
   try {
-    await createProjectApi({ name, title, sourceFormat: 'book', renderer: 'identity', documentFormat: 'book', members })
+    await createProjectApi({ name, title, format: 'book', members })
     console.log(green(`Created book "${name}" with ${members.length} members.`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -566,7 +565,7 @@ async function cmdScratch() {
 
   // Create or update markdown project
   try {
-    await createProjectApi({ name, title, mainFile: fileName, sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
+    await createProjectApi({ name, title, mainFile: fileName, format: 'markdown' })
     console.log(green(`Created scratch project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -668,36 +667,7 @@ async function cmdCreate() {
     if (ext === 'md') format = 'markdown'
     else if (ext === 'html' || ext === 'htm') format = 'html'
     else if (ext === 'qmd') format = 'qmd'
-    else if (ext === 'pdf') format = 'pdf'
     if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainHint})`))
-  }
-
-  if (format === 'pdf') {
-    const mainFile = mainArg
-    if (!mainFile || !mainFile.toLowerCase().endsWith('.pdf') || !existsSync(join(dir, mainFile))) {
-      console.error('A PDF project requires an existing .pdf document root.')
-      process.exit(1)
-    }
-    await bindLocalSource()
-    console.log(dim(`  Source: ${dir}`))
-    console.log(dim('  Source format: pdf'))
-    console.log(dim('  Renderer: identity'))
-    console.log(dim('  Document format: paged'))
-    console.log(dim(`  Main file: ${mainFile}`))
-    try {
-      await createProjectApi({
-        name, title, mainFile,
-        sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged',
-      })
-      console.log(green(`Created PDF project "${name}".`))
-    } catch (e) {
-      if (e.message.includes('already exists')) console.log(`Project "${name}" exists, pushing files.`)
-      else throw e
-    }
-    const linked = await activateLocalSource([mainFile])
-    console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
-    console.log(`\nViewer: ${cyan(`${getServer()}/?project=${name}`)}`)
-    return
   }
 
   // Slides format: push HTML files, no TeX
@@ -724,7 +694,7 @@ async function cmdCreate() {
 
     // Create or update project
     try {
-      await createProjectApi({ name, title, mainFile: slidesMain || deckHtml[0], sourceFormat: 'html', renderer: 'identity', documentFormat: 'slides' })
+      await createProjectApi({ name, title, mainFile: slidesMain || deckHtml[0], format: 'slides' })
       console.log(green(`Created slides project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -756,7 +726,7 @@ async function cmdCreate() {
 
     // Create or update project
     try {
-      await createProjectApi({ name, title, sourceFormat: 'html', renderer: 'identity', documentFormat: 'html' })
+      await createProjectApi({ name, title, format: 'html' })
       console.log(green(`Created HTML project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -812,7 +782,7 @@ async function cmdCreate() {
     console.log(dim(`  Main file: ${mainFile}`))
 
     try {
-      await api('POST', '/api/projects', { name, title, mainFile, sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html' })
+      await api('POST', '/api/projects', { name, title, mainFile, format: 'qmd' })
       console.log(green(`Created Quarto project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -831,7 +801,7 @@ async function cmdCreate() {
     // isSourceFilePath is the one rule; the watcher that pushes his later
     // saves asks the same function, so a file this drops does not come back
     // through the other door.
-    const qmdContext = { sourceFormat: 'qmd', mainFile }
+    const qmdContext = { format: 'qmd', mainFile }
     // Paths and sizes only. Reading every file up front cost 527 MB of base64 —
     // over a gigabyte once V8 holds it as strings — before the first request was
     // sent, on a tree the server then takes in 20 MB pieces. Content is read a
@@ -889,7 +859,7 @@ async function cmdCreate() {
     console.log(dim(`  Main file: ${mainFile}`))
 
     try {
-      await createProjectApi({ name, title, mainFile, sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
+      await createProjectApi({ name, title, mainFile, format: 'markdown' })
       console.log(green(`Created markdown project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -923,7 +893,7 @@ async function cmdCreate() {
 
   // Create or update project on server
   try {
-    await createProjectApi({ name, title, mainFile, sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
+    await createProjectApi({ name, title, mainFile })
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -2698,9 +2668,9 @@ function requiredClassroomSetupFlag(name) {
   return value
 }
 
-async function createOrUpdateClassroomProject({ name, title, mainFile, sourceFormat, renderer, documentFormat }) {
+async function createOrUpdateClassroomProject({ name, title, mainFile, format }) {
   try {
-    await createProjectApi({ name, title, mainFile, sourceFormat, renderer, documentFormat })
+    await createProjectApi({ name, title, mainFile, format })
   } catch (error) {
     if (!error.message?.includes('already exists')) throw error
   }
@@ -2743,9 +2713,9 @@ function commitClassroomProjectSource(sourceDir, message) {
   })
 }
 
-async function linkClassroomGitProject({ name, title, mainFile, sourceFormat, renderer, documentFormat, sourceDir, documentRoots }) {
+async function linkClassroomGitProject({ name, title, mainFile, format, sourceDir, documentRoots }) {
   commitClassroomProjectSource(sourceDir, `classroom setup: ${name}`)
-  await createOrUpdateClassroomProject({ name, title, mainFile, sourceFormat, renderer, documentFormat })
+  await createOrUpdateClassroomProject({ name, title, mainFile, format })
   const projectMetadata = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
   return callLocalDaemonLifecycle('project-source-link', {
     project: name,
@@ -2803,7 +2773,7 @@ async function cmdClassroomSetup() {
     name: sourceDocKey,
     title: `${assignmentTitle} source`,
     mainFile: rendered.homeworkPath,
-    sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html',
+    format: 'qmd',
     sourceDir,
     documentRoots: [rendered.homeworkPath],
   })
@@ -2811,7 +2781,7 @@ async function cmdClassroomSetup() {
     name: templateDocKey,
     title: `${assignmentTitle} handout`,
     mainFile: rendered.handoutOutput,
-    sourceFormat: 'html', renderer: 'identity', documentFormat: 'html',
+    format: 'html',
     sourceDir: handoutDir,
     documentRoots: [rendered.handoutOutput],
   })
@@ -2819,7 +2789,7 @@ async function cmdClassroomSetup() {
     name: solutionsDocKey,
     title: `${assignmentTitle} solutions`,
     mainFile: rendered.solutionOutput,
-    sourceFormat: 'html', renderer: 'identity', documentFormat: 'html',
+    format: 'html',
     sourceDir: solutionDir,
     documentRoots: [rendered.solutionOutput],
   })
@@ -2945,7 +2915,7 @@ async function cmdMoveProject() {
       name: project.name,
       title: project.title || project.name,
       mainFile: project.mainFile,
-      ...documentTransport(project),
+      format: project.format,
       sourceDir,
       ...(project.members ? { members: project.members } : {}),
     })

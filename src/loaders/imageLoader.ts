@@ -91,10 +91,5 @@ export async function loadImageDocument(
   }
 
   console.log('Image document ready')
-  return {
-    name, pages, basePath,
-    view: { kind: 'image-pages', capabilities: { presentation: false, sourceMapping: false, searchableText: false } },
-    source: { format: 'png', renderer: 'identity' },
-    documentFormat: 'paged',
-  }
+  return { name, pages, basePath, format: 'png' }
 }

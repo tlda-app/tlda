@@ -58,7 +58,7 @@ initSyncRooms(projectsRoot)
 const NAME = 'a-paper-with-a-scratch-section'
 
 try {
-  createProject({ name: NAME, title: NAME, mainFile: 'main.tex', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
+  createProject({ name: NAME, title: NAME, mainFile: 'main.tex', format: 'pdf' })
 
   const src = sourceDir(NAME)
   mkdirSync(src, { recursive: true })

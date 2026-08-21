@@ -123,7 +123,7 @@ test('the shadow version advances only for nonvolatile edits and then records cu
     await closeProjectStore()
     rmSync(root, { recursive: true, force: true })
   })
-  createProject({ name: project, mainFile: 'index.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
+  createProject({ name: project, format: 'markdown', mainFile: 'index.md' })
   const src = sourceDir(project)
   const out = outputDir(project)
   mkdirSync(path.join(src, 'figures'), { recursive: true })
