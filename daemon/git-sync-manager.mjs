@@ -4,7 +4,7 @@ import path from 'node:path'
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createEditClusterDebouncer } from './edit-cluster.mjs'
-import { createGitProjectSync } from './git-project-sync.mjs'
+import { createGitProjectSync, safeRefPart } from './git-project-sync.mjs'
 import { createRemoteGitBridge } from './remote-git-bridge.mjs'
 
 const execFile = promisify(execFileCb)
@@ -37,7 +37,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       await execFile('git', ['config', 'user.email', 'tlda@local'], { cwd: item.sourceDir })
     }
     let remoteUrl = remoteUrlFor ? remoteUrlFor(item.project) : new URL(`/git/${encodeURIComponent(item.project)}`, server)
-    if (remoteUrl instanceof URL && token) { remoteUrl.username = daemonId; remoteUrl.password = token }
+    if (remoteUrl instanceof URL && token) { remoteUrl.username = safeRefPart(daemonId); remoteUrl.password = token }
     remoteUrl = remoteUrl.toString()
     try { await execFile('git', ['remote', 'set-url', 'tlda', remoteUrl], { cwd: item.sourceDir }) }
     catch { await execFile('git', ['remote', 'add', 'tlda', remoteUrl], { cwd: item.sourceDir }) }

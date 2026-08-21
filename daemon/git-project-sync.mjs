@@ -9,7 +9,7 @@ import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 const execFile = promisify(execFileCb)
 const ZERO = '0000000000000000000000000000000000000000'
 
-function safeRefPart(value) {
+export function safeRefPart(value) {
   const part = String(value || '').replace(/[^A-Za-z0-9._-]+/g, '-')
   if (!part || part.startsWith('.') || part.endsWith('.')) throw new Error(`invalid ref component: ${value}`)
   return part

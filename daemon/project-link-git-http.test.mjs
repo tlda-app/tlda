@@ -56,7 +56,7 @@ test('new local project initializes its remote, then materializes only by daemon
     writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}linked\\end{document}\n')
     const watcher = sourceWatcher()
     manager = createGitSyncManager({
-      bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-link', server: base, token: 'secret',
+      bindingsFile: join(root, 'bindings.json'), daemonId: 'mini:testing', server: base, token: 'secret',
       watch: () => watcher, quietMs: 10, log: { info() {}, warn() {}, error() {} },
     })
     manager.bindSource('paper', checkout)
