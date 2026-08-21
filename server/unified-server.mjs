@@ -2560,7 +2560,7 @@ async function performDelegate(msg) {
     },
     finish: async () => {
       if (!Number.isFinite(atMs) || atMs <= Date.now()) {
-        await requestWake(resolved.id, await delegateWakeText(description, resolved.id, from), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
+        await requestWake(resolved.id, await taskDelegateWakeText(description, resolved.id, from), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
       }
     },
   }
@@ -7201,7 +7201,6 @@ async function dispatchFleetWsMessage(ws, msg) {
   const agentDisplayName = async (id) => (id ? (await fleetStore.getAgent?.(id))?.friendly_name || id : 'someone')
   const wakeText = ({ what, preview }) => `${NOTIFICATION_MARKER} Check your inbox(). You have ${what}${preview ? `: ${preview}` : '.'}`
   const chatWakeText = async (text, agentId, from) => wakeText({ what: `a message from ${await agentDisplayName(from)}`, preview: previewForWake(text) })
-  const delegateWakeText = async (description, agentId, from) => wakeText({ what: `a task from ${await agentDisplayName(from)}`, preview: previewForWake(description) })
   const subscriptionBatchKey = (delivery) => `${delivery.recipient}\u0000${delivery.subscription_id}\u0000${delivery.notification_policy}`
   const reserveSubscriptionBatch = (delivery) => {
     if (delivery.delivery !== 'batched' || !delivery.notifyBy) return delivery

@@ -234,6 +234,16 @@ export async function injectCodexPrompt(session, prompt, {
   while (Date.now() < deadline) {
     try {
       const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p')
+      const updateDialog = stdout.includes('Update available!')
+        && stdout.includes('Skip until next version')
+        && stdout.includes('Press enter to continue')
+      if (updateDialog) {
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), '2')
+        await sleep(200)
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'Enter')
+        await sleep(500)
+        continue
+      }
       // A resumed Codex pane contains its durable transcript. Startup warnings
       // in that transcript may belong to the previous process, so they cannot
       // decide whether this prompt delivery succeeded. The paste-marker check
