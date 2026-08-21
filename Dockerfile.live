@@ -298,6 +298,7 @@ COPY bin/feelings-export.mjs ./bin/feelings-export.mjs
 # (server/lib/build-dispatch.mjs spawns it as a subprocess). Without this file in
 # the image, every build crashes with ERR_MODULE_NOT_FOUND and produces 0 pages.
 COPY bin/build-worker.mjs ./bin/build-worker.mjs
+COPY bin/git-proposal-hook.mjs ./bin/git-proposal-hook.mjs
 
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), Skip's tldraw license
