@@ -3,8 +3,6 @@ export type FleetNudgeGridRect = {
   right: number
   top: number
   bottom: number
-  centerX: number
-  centerY: number
 }
 
 export type FleetNudgeGridGuide = {
@@ -29,7 +27,7 @@ function sameBandOnX(a: FleetNudgeGridRect, b: FleetNudgeGridRect): boolean {
   return overlapSize(a.left, a.right, b.left, b.right) > Math.min(a.right - a.left, b.right - b.left) * 0.35
 }
 
-/** Return every alignment and equal-gap line available to the nudge matcher. */
+/** Return every edge-alignment and equal-gap line available to the nudge matcher. */
 export function completeFleetNudgeGuides(
   dragged: FleetNudgeGridRect,
   candidates: FleetNudgeGridRect[],
@@ -56,10 +54,8 @@ export function completeFleetNudgeGuides(
 
   for (const candidate of candidates) {
     add('x', candidate.left, verticalFrom, verticalTo)
-    add('x', candidate.centerX, verticalFrom, verticalTo)
     add('x', candidate.right, verticalFrom, verticalTo)
     add('y', candidate.top, horizontalFrom, horizontalTo)
-    add('y', candidate.centerY, horizontalFrom, horizontalTo)
     add('y', candidate.bottom, horizontalFrom, horizontalTo)
   }
 

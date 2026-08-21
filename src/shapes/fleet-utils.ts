@@ -68,24 +68,22 @@ type FleetNudgeRect = {
   right: number
   top: number
   bottom: number
-  centerX: number
-  centerY: number
 }
 
 /** The page-space line a nudge is pulling toward, for drawing the guide. */
 export type FleetNudgeGuide = FleetNudgeGridGuide
 
 /**
- * The feature of the dragged rect a match pulls. Translate moves all six; a
- * resize moves only the ones the grabbed handle carries, which is the whole
+ * The feature of the dragged rect a match pulls. Translate moves all four edges; a
+ * resize moves only the edges the grabbed handle carries, which is the whole
  * difference between the two paths.
  */
-type FleetNudgeFeature = 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom'
+type FleetNudgeFeature = 'left' | 'right' | 'top' | 'bottom'
 
 type FleetNudgeMatch = FleetNudgeGuide & { delta: number; feature: FleetNudgeFeature }
 
 const ALL_FLEET_NUDGE_FEATURES: ReadonlySet<FleetNudgeFeature> = new Set<FleetNudgeFeature>([
-  'left', 'centerX', 'right', 'top', 'centerY', 'bottom',
+  'left', 'right', 'top', 'bottom',
 ])
 
 function overlapSize(a0: number, a1: number, b0: number, b1: number): number {
@@ -134,8 +132,6 @@ function fleetNudgeRectForBox(id: TLShapeId, x: number, y: number, w: number, h:
     right,
     top,
     bottom,
-    centerX: (left + right) / 2,
-    centerY: (top + bottom) / 2,
   }
 }
 
@@ -167,7 +163,7 @@ function collectFleetPanelNudgeCandidates(editor: Editor, current: TLShape): Fle
  * page coordinate the dragged feature is being pulled to, and spans both the
  * shape being dragged and the one it is lining up with.
  */
-function matchOnX(target: number, feature: 'left' | 'centerX' | 'right', dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
+function matchOnX(target: number, feature: 'left' | 'right', dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
   return {
     axis: 'x',
     feature,
@@ -178,7 +174,7 @@ function matchOnX(target: number, feature: 'left' | 'centerX' | 'right', dragged
   }
 }
 
-function matchOnY(target: number, feature: 'top' | 'centerY' | 'bottom', dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
+function matchOnY(target: number, feature: 'top' | 'bottom', dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
   return {
     axis: 'y',
     feature,
@@ -191,7 +187,7 @@ function matchOnY(target: number, feature: 'top' | 'centerY' | 'bottom', dragged
 
 /**
  * `live` names the features that are free to move. A translate hands over all
- * six; a resize hands over only the ones its handle carries, so the pull can
+ * four; a resize hands over only the ones its handle carries, so the pull can
  * never be offered on an edge that is standing still — which is the same
  * taken-is-drawn invariant `takenMatch` keeps, one step earlier.
  */
@@ -208,15 +204,13 @@ function closestFleetPanelNudge(
 
   for (const candidate of candidates) {
     dx = on(matchOnX(candidate.left, 'left', dragged, candidate), dx)
-    dx = on(matchOnX(candidate.centerX, 'centerX', dragged, candidate), dx)
     dx = on(matchOnX(candidate.right, 'right', dragged, candidate), dx)
 
     dy = on(matchOnY(candidate.top, 'top', dragged, candidate), dy)
-    dy = on(matchOnY(candidate.centerY, 'centerY', dragged, candidate), dy)
     dy = on(matchOnY(candidate.bottom, 'bottom', dragged, candidate), dy)
   }
 
-  // An edge or centre that lines up wins outright. Equal-gap spacing is only
+  // An edge that lines up wins outright. Equal-gap spacing is only
   // consulted on an axis that has no alignment to offer.
   //
   // These are not comparable by distance. Alignment gives at most six lines per
@@ -332,22 +326,20 @@ export function nudgeFleetPanelTranslate(
 
 /**
  * The features a resize handle actually moves. Grab the right edge and the left
- * one stands still, so only `right` — and `centerX`, which travels with it — may
- * be offered a pull. An edge handle locks the other axis outright, and a flipped
- * drag (negative scale) turns the grabbed edge into the opposite one, so that
- * axis sits the pull out rather than snapping to a line it would land past.
+ * one stands still, so only `right` may be offered a pull. An edge handle locks
+ * the other axis outright. A flipped drag (negative scale) turns the grabbed
+ * edge into the opposite one, so that axis sits the pull out rather than
+ * snapping to a line it would land past.
  */
 function liveFleetResizeFeatures(handle: string, scaleX: number, scaleY: number): Set<FleetNudgeFeature> {
   const live = new Set<FleetNudgeFeature>()
   if (scaleX > 0) {
     if (handle.includes('left')) live.add('left')
     if (handle.includes('right')) live.add('right')
-    if (live.has('left') || live.has('right')) live.add('centerX')
   }
   if (scaleY > 0) {
     if (handle.includes('top')) live.add('top')
     if (handle.includes('bottom')) live.add('bottom')
-    if (live.has('top') || live.has('bottom')) live.add('centerY')
   }
   return live
 }
@@ -355,9 +347,8 @@ function liveFleetResizeFeatures(handle: string, scaleX: number, scaleY: number)
 /**
  * Turn a match on a moving feature into the axis the resize should land on. The
  * edge you did not grab is the anchor: pulling the grabbed edge by `delta` moves
- * it by `delta`, and pulling the centre by `delta` moves that edge by twice it,
- * because a centre travels half as fast as the edge under it. A pull that would
- * invert the panel is refused, and refusing it here is what stops a guide being
+ * it by `delta`. A pull that would invert the panel is refused, and refusing it
+ * here is what stops a guide being
  * drawn for a move that will not happen.
  */
 function pullResizedAxis(
@@ -367,7 +358,7 @@ function pullResizedAxis(
   startIsMoving: boolean,
 ): { start: number; size: number } | null {
   if (match === null) return null
-  const edgeDelta = match.feature === 'centerX' || match.feature === 'centerY' ? match.delta * 2 : match.delta
+  const edgeDelta = match.delta
   const next = startIsMoving
     ? { start: start + edgeDelta, size: size - edgeDelta }
     : { start, size: size + edgeDelta }
