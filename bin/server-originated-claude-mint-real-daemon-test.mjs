@@ -496,6 +496,15 @@ jsonlTailIdleSeconds: 600
   }
   const hibernating = await rosterAgent(a => a.id === agentId && a.runtime_status?.status === 'hibernating', 60_000)
   assert.ok(hibernating, `hibernate succeeded but ${agentId} did not clear from the awake roster projection:\n${JSON.stringify(rosterAgent.lastAgents, null, 2)}`)
+  assert.equal(
+    hibernating.runtime_status?.evidence?.liveness_source,
+    'daemon-agent-status',
+    `hibernate was published outside the authoritative daemon inventory result:\n${JSON.stringify(hibernating, null, 2)}`,
+  )
+  assert.ok(
+    hibernating.runtime_status?.evidence?.liveness_generation,
+    `hibernate has no authoritative daemon generation:\n${JSON.stringify(hibernating, null, 2)}`,
+  )
   console.log(`PASS: lifecycle hibernate durably cleared ${agentId} from awake roster state`)
   console.log('ALL CHECKS PASSED')
   cleanup(0)
