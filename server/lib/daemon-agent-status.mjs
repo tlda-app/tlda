@@ -24,13 +24,13 @@ export function validateDaemonAgentStatusBatch({ message, daemonKey, bootId, las
   return { sequence: message.report_seq, results }
 }
 
-export async function applyDaemonAgentStatusBatch(chains, generationKey, applyBatch) {
-  const previous = chains.get(generationKey) || Promise.resolve()
-  const current = previous.catch(() => {}).then(applyBatch)
-  chains.set(generationKey, current)
+export async function applyDaemonAgentStatusBatch(chains, daemonKey, applyBatch, isCurrent = () => true) {
+  const previous = chains.get(daemonKey) || Promise.resolve()
+  const current = previous.catch(() => {}).then(() => isCurrent() ? applyBatch() : undefined)
+  chains.set(daemonKey, current)
   try {
     return await current
   } finally {
-    if (chains.get(generationKey) === current) chains.delete(generationKey)
+    if (chains.get(daemonKey) === current) chains.delete(daemonKey)
   }
 }
