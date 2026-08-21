@@ -628,6 +628,8 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     return { linked: false, alreadyLinked: status.alreadyLinked, sourceDir: status.sourceDir }
   }
 
+  if (!status.alreadyLinked) await offerShadowHistory({ project, sourceDir })
+
   const result = sourceSync.bindSource(project, sourceDir, { kind, remote, mirrorMode })
   try {
     const registration = await sendMsgWithReply({
@@ -652,6 +654,29 @@ async function rpcLinkGitSource(params) {
   const linked = await rpcLinkProjectSource({ ...prepared, projectMetadata: metadata })
   await sourceSync.pollRemote(params.project)
   return linked
+}
+
+async function offerShadowHistory({ project, sourceDir }) {
+  const exported = await shadowMirror.exportShadowBundle({ project, sourceDir })
+  if (exported.empty) return
+
+  const hash7 = exported.head.slice(0, 7)
+  let reply
+  try {
+    reply = await sendMsgWithReply({
+      type: 'adopt-shadow-history',
+      project,
+      head: exported.head,
+      bundleBase64: exported.bundleBase64,
+      machine_id: MACHINE_ID,
+    }, { timeoutMs: 120000 })
+  } catch (error) {
+    throw new Error(`${project} was not linked: its ${hash7} history could not be delivered (${error.message})`)
+  }
+  if (!reply?.ok || !(reply.versions > 0)) {
+    throw new Error(`${project} was not linked: the server did not confirm its ${hash7} history (${JSON.stringify(reply)})`)
+  }
+  log.info(`delivered ${project}@${hash7} history to the server — ${reply.versions} version(s)`)
 }
 
 async function rpcActivateGitSource({ project }) {
