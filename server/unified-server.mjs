@@ -9025,7 +9025,16 @@ async function handleDaemonWsMessage(ws, msg) {
       const hasCurrentLifecycle = lifecycle.listRevisionLifecycles(project)
         .some(item => item.sourceRevision === revision)
       const row = await admitProposal({ project, ...proposal }, { retryTerminal: !hasCurrentLifecycle })
-      if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: { ok: true, project, revision, submissionId: row.id } }))
+      if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: {
+        ok: true,
+        project,
+        revision,
+        submissionId: row.id,
+        state: row.state,
+        startedOnce: row.started_once === 1,
+        terminalReason: row.terminal_reason || null,
+        lifecyclePresent: hasCurrentLifecycle,
+      } }))
     } catch (e) {
       if (msg.id) ws.send(JSON.stringify({ id: msg.id, error: e.message }))
     }
