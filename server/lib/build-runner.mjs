@@ -65,6 +65,7 @@ import { clearSynctexCache } from './synctex-query.mjs'
 import { generateWordSynctexSourceTree } from './word-synctex.mjs'
 import { bibliographyRunReason } from './build-bibliography-decision.mjs'
 import { projectRevisionStatus } from './source-lifecycle.mjs'
+import { latexDocumentRootPaths } from '../../shared/document-roots.mjs'
 
 // --- Side-effect reporter ----------------------------------------------------
 // Everything in the build that reaches the live server — client broadcasts
@@ -1839,15 +1840,16 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
   const project = await readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
 
-  // Targets are derived purely from the source: the primary mainFile plus
-  // any sibling X.tex pulled in by `\externaldocument{X}` (xr / xr-hyper).
-  // Single-target projects simply have a one-element list. There is no
-  // declaration in project.json — the document itself is the source of
-  // truth. Output naming uses each target's texBase as a flat prefix, so
-  // single-target and multi-target follow the same code path.
+  // Explicit document roots are render entry points. xr siblings remain
+  // source-derived additions so toggling an externaldocument declaration can
+  // still add or remove a dependent document.
   const primary = project.mainFile || 'main.tex'
   const xrSiblings = detectXrSiblings(srcDir, primary)
-  const mainFiles = [primary, ...xrSiblings]
+  const mainFiles = latexDocumentRootPaths(project.documentRoots, {
+    mainFile: primary,
+    format: project.format,
+    xrSiblings,
+  })
 
   // Validate all targets exist before starting any work.
   for (const mf of mainFiles) {

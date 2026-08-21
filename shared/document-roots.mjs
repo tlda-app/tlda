@@ -22,3 +22,10 @@ export function normalizeDocumentRoots(documentRoots, { mainFile = null, format 
   }
   return result
 }
+
+export function latexDocumentRootPaths(documentRoots, { mainFile = null, format = 'svg', xrSiblings = [] } = {}) {
+  const declared = normalizeDocumentRoots(documentRoots, { mainFile, format })
+    .filter(root => root.format === 'svg' && /\.tex$/i.test(root.path))
+    .map(root => root.path)
+  return [...new Set([mainFile, ...declared, ...xrSiblings].filter(Boolean))]
+}

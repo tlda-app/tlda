@@ -910,6 +910,7 @@ async function cmdCreate() {
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
+      await api('PATCH', `/api/projects/${name}/document-roots`, { documentRoots: projectDocumentRoots })
       console.log(`Project "${name}" exists, pushing files.`)
     } else {
       throw e
