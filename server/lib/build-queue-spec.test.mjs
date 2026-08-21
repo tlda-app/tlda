@@ -44,6 +44,29 @@ function harness({ slots = 1, draws = [0.5], heads = {}, ancestors = {} } = {}) 
   return { queue, submit, started, dispositions, signals, flush, finishAll, drawsUsed: () => drawIndex }
 }
 
+test('one project publication lock does not block another project admission', async () => {
+  let releaseSurvival
+  const survivalHeld = new Promise(resolve => { releaseSurvival = resolve })
+  const queue = createBuildQueue({
+    transport: { start() { return { cancel() {} } } },
+    getProjectsDir: () => '/projects',
+    serializeProject: async (project, operation) => {
+      if (project === 'survival') await survivalHeld
+      return operation()
+    },
+  }, { maxConcurrency: 2 })
+
+  const blocked = queue.admitBuild('survival', { revision: 'survival-revision', daemonId: 'mini:testing' })
+  await new Promise(resolve => setImmediate(resolve))
+  const admitted = await Promise.race([
+    queue.admitBuild('survival-response', { revision: 'response-revision', daemonId: 'mini:testing' }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('independent admission blocked')), 100)),
+  ])
+  assert.equal(admitted.project, 'survival-response')
+  releaseSurvival()
+  await blocked
+})
+
 test('priority is sampled once and integer ring positions dominate stored draws', async () => {
   const h = harness({ slots: 1, draws: [0.01, 0.99, 0.2], heads: { paper: 'head' } })
   await h.submit('a1', 'a')
