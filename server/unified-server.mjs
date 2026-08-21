@@ -8133,7 +8133,6 @@ async function dispatchFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-      await markAgentNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'operator hibernated session' })
       await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'native parent session hibernated' })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
