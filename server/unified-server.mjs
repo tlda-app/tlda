@@ -147,7 +147,7 @@ import {
   createAgentLivenessTraceStore,
   recordLivenessProjection,
 } from './lib/agent-liveness-trace.mjs'
-import { applyDaemonAgentStatusBatch, planDaemonAgentStatusBatch } from './lib/daemon-agent-status.mjs'
+import { applyDaemonAgentStatusBatch, validateDaemonAgentStatusBatch } from './lib/daemon-agent-status.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -9051,17 +9051,14 @@ async function handleDaemonWsMessage(ws, msg) {
     const generationKey = `${ws._daemonKey}\0${ws._bootId}`
     await applyDaemonAgentStatusBatch(daemonAgentStatusApplyChains, ws._daemonKey, async () => {
       const routedAgents = await fleetStore.getAgentsByDaemonKey(ws._daemonKey)
-      const knownAgents = await fleetStore.getAgentsByIds(msg.agents.map(result => result?.agent_id).filter(Boolean))
-      const accepted = planDaemonAgentStatusBatch({
+      const accepted = validateDaemonAgentStatusBatch({
         message: msg,
         daemonKey: ws._daemonKey,
         bootId: ws._bootId,
         lastSequence: daemonAgentStatusSequences.get(generationKey) || 0,
-        routedAgents,
-        knownAgents,
+        agents: routedAgents,
       })
       if (!accepted) return
-      await fleetStore.admitDaemonAgentStatusIdentities(accepted.admissions, ws._daemonKey)
       daemonAgentStatusSequences.set(generationKey, accepted.sequence)
       const ts = msg.ts || new Date().toISOString()
       const atMs = Date.parse(ts) || Date.now()
