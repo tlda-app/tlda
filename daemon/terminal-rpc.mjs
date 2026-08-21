@@ -375,10 +375,14 @@ export function createTerminalRpc({
 
   async function rpcListSessions() {
     try {
-      const { stdout } = await tmux('list-sessions', '-F', '#{session_name}')
-      return { ok: true, sessions: stdout.trim().split('\n').filter(Boolean) }
+      const { stdout } = await tmux('list-sessions', '-F', '#{session_name}\t#{pane_pid}')
+      const processes = stdout.trim().split('\n').filter(Boolean).map(line => {
+        const [session, pidText] = line.split('\t')
+        return { session, pid: Number(pidText) || null }
+      })
+      return { ok: true, sessions: processes.map(row => row.session), processes }
     } catch (e) {
-      if (/no server running|no sessions/i.test(e.stderr || '')) return { ok: true, sessions: [] }
+      if (/no server running|no sessions/i.test(e.stderr || '')) return { ok: true, sessions: [], processes: [] }
       throw e
     }
   }
