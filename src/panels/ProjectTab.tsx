@@ -7,11 +7,14 @@ import {
   SPATIAL_MAP_ZOOM,
   clearSavedSpatialMapView,
   currentSpatialDocument,
+  placeSpatialDocument,
   getSavedSpatialMapView,
   openSpatialDocument,
   saveSpatialMapView,
   spatialWorldBounds,
   spatialWorldDocuments,
+  spatialDocumentIdentity,
+  spatialDocumentShapeId,
   spatialMapActivationSource,
   zoomToSpatialWorld,
 } from '../spatialDocumentWorld'
@@ -25,7 +28,7 @@ import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 import { readingPositionStore } from '../readingPositionStore'
 import { isProjectMapShape } from './project-map-shape-predicate'
 
-type ProjectDocument = { sourceFile: string; outputFile: string; title: string }
+type ProjectDocument = { sourceFile: string; outputFile: string; title: string; format: string }
 export function ProjectTab({ query = '' }: { query?: string }) {
   const editor = useEditor()
   const project = useContext(ProjectContext)
@@ -49,10 +52,10 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     return () => { active = false }
   }, [project?.projectName])
   const placedOutputFiles = new Set(nodes.map(node => node.documentRef.path).filter(Boolean))
-  // The main document is represented by the primary spatial node; it has no
-  // materializedFile meta, so exclude its canonical output explicitly.
+  // The main document is represented by the primary spatial node. Every root
+  // that is not already represented by a spatial node remains selectable here.
   const unplacedDocuments = projectDocuments.filter(document =>
-    document.outputFile !== 'index.html' && !placedOutputFiles.has(document.outputFile)
+    !placedOutputFiles.has(document.outputFile)
   )
   const normalizedQuery = query.trim().toLowerCase()
   const visibleNodes = nodes.filter(node =>
@@ -101,24 +104,48 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     if (!project?.projectName) return
     const source = currentSpatialDocument(editor, nodes)
     if (!source) return
-    const response = await fetch(`/api/projects/${encodeURIComponent(project.projectName)}/source/${encodeURIComponent(document.sourceFile)}`)
-    if (!response.ok) return
-    const markdown = await response.text()
-    const { createTemporaryMarkdownColumn } = await import('../shapes/FleetPillShape')
-    const result = await createTemporaryMarkdownColumn(
-      editor,
-      editor.getViewportPageBounds().center,
-      document.title,
-      markdown,
-      { materializedDoc: project.projectName, materializedFile: document.outputFile },
-      `/docs/${encodeURIComponent(project.projectName)}/${document.outputFile}`,
-    )
+    const url = `/docs/${encodeURIComponent(project.projectName)}/${document.outputFile}`
+    const identity = spatialDocumentIdentity(document.title, url, {
+      materializedFile: document.outputFile,
+    })
+    const shapeId = spatialDocumentShapeId(identity)
+    const existing = editor.getShape(shapeId)
+    if (!existing) {
+      const point = editor.getViewportPageBounds().center
+      const bounds = placeSpatialDocument(editor, identity, source, { w: 800, h: 1200 }, point)
+      editor.createShape({
+        id: shapeId,
+        type: document.format === 'svg' ? 'svg-page' : 'html-page',
+        x: bounds.x,
+        y: bounds.y,
+        isLocked: true,
+        props: {
+          w: 800,
+          h: 1200,
+          url,
+          ...(document.format === 'svg' ? { pageIndex: 0 } : {}),
+        },
+        meta: {
+          spatialWorldDocument: true,
+          spatialWorldIdentity: identity,
+          spatialWorldTitle: document.title,
+          materializedDoc: project.projectName,
+          materializedFile: document.outputFile,
+        },
+      } as never)
+    }
     const target = spatialWorldDocuments(editor, project.projectName, project.title)
-      .find(node => node.id === result.shapeId)
+      .find(node => node.id === shapeId)
     if (!target) return
     recordPlaceDeparture(editor)
     suppressFleetHudCameraTracking()
-    activateSpatialDocument(editor, source, target, editor.getCamera())
+    openSpatialDocument(
+      editor,
+      source,
+      target,
+      editor.getCamera(),
+      readingPositionStore(project.projectName),
+    )
   }, [editor, nodes, project?.projectName, project?.title])
 
   return (

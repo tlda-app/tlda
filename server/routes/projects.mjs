@@ -60,6 +60,7 @@ import { readSharedDocumentThroughOwner } from '../lib/document-association-sour
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
 import { requireClassroomDocumentAccess } from './classroom.mjs'
+import { normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 
 const router = Router()
 const execFileAsync = promisify(execFile)
@@ -328,7 +329,7 @@ router.get('/archived', requireRead, async (req, res) => {
 // Create project
 router.post('/', requireRw, async (req, res) => {
   try {
-    const { name, title, mainFile, format, members } = req.body
+    const { name, title, mainFile, format, members, documentRoots } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
@@ -336,7 +337,7 @@ router.post('/', requireRw, async (req, res) => {
     if (format === 'book' && (!members || !Array.isArray(members) || members.length === 0)) {
       return res.status(400).json({ error: 'book format requires a non-empty members array' })
     }
-    const project = createProject({ name, title, mainFile, format, members })
+    const project = createProject({ name, title, mainFile, format, members, documentRoots: normalizeDocumentRoots(documentRoots, { mainFile, format }) })
     await (await sourceLifecycleStore(project.name)).gitRepository()
     emitGlobalEvent('project-changed', { name: project.name })
     res.status(201).json(project)
@@ -660,13 +661,33 @@ router.get('/:name/files', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const files = await listSourceFiles(req.params.name)
-  const documents = project.format === 'markdown'
-    ? (await listMarkdownProjectDocuments(req.params.name, { project })).map(document => ({
-        sourceFile: document.sourceFile,
-        outputFile: document.outputFile,
-        title: document.title,
-      }))
-    : []
+  const rootDocuments = normalizeDocumentRoots(project.documentRoots, {
+    mainFile: project.mainFile,
+    format: project.format,
+  })
+  const documents = []
+  for (const root of rootDocuments) {
+    if (root.format === 'markdown') {
+      const markdownDocuments = await listMarkdownProjectDocuments(req.params.name, {
+        project: { ...project, mainFile: root.path, format: 'markdown' },
+      })
+      for (const document of markdownDocuments) {
+        if (!documents.some(existing => existing.sourceFile === document.sourceFile)) {
+          documents.push({ sourceFile: document.sourceFile, outputFile: document.outputFile, title: document.title, format: 'markdown' })
+        }
+      }
+      continue
+    }
+    const outputFile = root.format === 'svg'
+      ? `${root.path.replace(/\.tex$/i, '')}-page-1.svg`
+      : root.path.replace(/\.(?:tex|qmd|md|markdown|html|htm)$/i, '.html')
+    documents.push({
+      sourceFile: root.path,
+      outputFile,
+      title: root.path.split('/').pop().replace(/\.[^.]+$/, ''),
+      format: root.format,
+    })
+  }
   res.json({ files, documents })
 })
 
