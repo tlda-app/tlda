@@ -618,7 +618,7 @@ async function loadLocallyBoundProjects() {
 // failed link leaves nothing behind. A link that half-succeeds and leaves the
 // paper starting from version one is the old broken behaviour wearing a success
 // message.
-async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = [] }) {
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
 
   const status = sourceSync.bindingStatus(project, sourceDir)
@@ -628,7 +628,7 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   }
 
   if (!status.alreadyLinked) {
-    const history = await shadowMirror.prepareHistorySeed({ project, sourceDir, seedBranch, seedRevision, documentRoots })
+    const history = await shadowMirror.prepareHistorySeed({ project, sourceDir, seedBranch, seedRevision, documentRoots: documentRoots || [] })
     try {
       if (!history.empty) {
         const pushed = await sourceSync.pushHistorySeed(project, history.repositoryDir, history.head)
@@ -645,7 +645,12 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     }
   }
 
-  const result = sourceSync.bindSource(project, sourceDir, { kind, remote, mirrorMode })
+  const result = sourceSync.bindSource(project, sourceDir, {
+    kind,
+    remote,
+    mirrorMode,
+    ...(Array.isArray(documentRoots) ? { documentRoots } : {}),
+  })
   try {
     const registration = await sendMsgWithReply({
       type: 'source-bindings-set',

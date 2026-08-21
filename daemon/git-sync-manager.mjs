@@ -71,6 +71,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       project: item.project,
       daemonId,
       bindingId: item.bindingId,
+      documentRoots: item.documentRoots || [],
       log,
       onEditClusterSettled: () => runtime.cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
     })
@@ -130,9 +131,16 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     if (existing && path.resolve(typeof existing === 'string' ? existing : existing.sourceDir) !== absolute) {
       throw new Error(`Project ${project} is already bound to another checkout`)
     }
-    const value = { sourceDir: absolute, bindingId: existing?.bindingId || bindingId(project, absolute), ...metadata }
+    const prior = existing && typeof existing === 'object' ? existing : {}
+    const definedMetadata = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== undefined))
+    const value = { ...prior, sourceDir: absolute, bindingId: prior.bindingId || bindingId(project, absolute), ...definedMetadata }
     all[project] = value
     save(all)
+    const runtime = runtimes.get(project)
+    if (runtime) {
+      Object.assign(runtime.item, value)
+      if (Object.hasOwn(definedMetadata, 'documentRoots')) runtime.sync.setDocumentRoots(value.documentRoots || [])
+    }
     return { linked: !existing, project, ...value }
   }
 

@@ -30,7 +30,7 @@ test('bound working-copy event settles through the one Git proposal path', async
   await git(checkout, ['config', 'user.name', 'fixture'])
   await git(checkout, ['config', 'user.email', 'fixture@example.test'])
   writeFileSync(join(checkout, 'main.tex'), 'base\n')
-  await git(checkout, ['add', 'main.tex'])
+  await git(checkout, ['add', '.'])
   await git(checkout, ['commit', '-m', 'base'])
   const base = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
   await git(checkout, ['push', remote, `${base}:refs/tlda/source/paper`])
@@ -65,7 +65,8 @@ test('initial project link submits the existing checkout through the ordinary pr
   await git(checkout, ['config', 'user.name', 'fixture'])
   await git(checkout, ['config', 'user.email', 'fixture@example.test'])
   writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}linked\\end{document}\n')
-  await git(checkout, ['add', 'main.tex'])
+  writeFileSync(join(checkout, 'unrelated-broken.tex'), '\\input{missing}\n')
+  await git(checkout, ['add', '.'])
   await git(checkout, ['commit', '-m', 'existing local paper'])
   const watcher = testWatcher()
   const manager = createGitSyncManager({
@@ -73,7 +74,7 @@ test('initial project link submits the existing checkout through the ordinary pr
     remoteUrlFor: () => remote, quietMs: 10, watch: () => watcher,
     log: { info() {}, warn() {}, error() {} },
   })
-  manager.bindSource('paper', checkout)
+  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
   await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
   const submitted = await manager.submit('paper')
   assert.equal(submitted.status, 'SubmittedToBuildQueue')
@@ -104,5 +105,37 @@ test('initial project link submits the existing checkout through the ordinary pr
   }
   assert.deepEqual(watcher.added, [join(checkout, 'main.tex'), join(checkout, 'child.tex')])
   assert.equal(watcher.added.includes(join(checkout, 'unrelated.txt')), false)
+  await manager.closeAll()
+})
+
+test('same-daemon relink installs corrected roots and later metadata updates preserve them', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-root-relink-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'paper.git')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'main.tex'), 'paper\n')
+  writeFileSync(join(checkout, 'broken.tex'), '\\input{missing}\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'existing paper and unrelated backup'])
+
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-relink', server: 'http://unused.test',
+    remoteUrlFor: () => remote, watch: () => testWatcher(),
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout)
+  await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  await assert.rejects(manager.submit('paper'), /broken\.tex has missing dependencies/)
+
+  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
+  const submitted = await manager.submit('paper')
+  assert.equal(submitted.status, 'SubmittedToBuildQueue')
+  assert.deepEqual((await git(remote, ['ls-tree', '-r', '--name-only', submitted.revision])).stdout.trim().split('\n'), ['main.tex'])
+
+  manager.bindSource('paper', checkout, { remote: 'origin' })
+  assert.deepEqual(manager.bindingStatus('paper', checkout).binding.documentRoots, ['main.tex'])
   await manager.closeAll()
 })

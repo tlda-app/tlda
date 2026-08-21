@@ -22,6 +22,7 @@ export function createGitProjectSync({
   bindingId,
   remote = 'tlda',
   branch = 'main',
+  documentRoots = [],
   log = console,
   onSubmitted = () => {},
   onWrongHead = () => {},
@@ -39,6 +40,11 @@ export function createGitProjectSync({
   const sharedRef = `refs/tlda/source/${projectPart}`
   const fetchedRef = `refs/tlda/fetched/${projectPart}`
   let chain = Promise.resolve()
+  let configuredRoots = []
+  function setDocumentRoots(values = []) {
+    configuredRoots = [...new Set(values.map(value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '')).filter(Boolean))]
+  }
+  setDocumentRoots(documentRoots)
 
   async function git(args, options = {}) {
     if (runGit) return runGit(args, options)
@@ -67,8 +73,13 @@ export function createGitProjectSync({
       await git(['archive', '--format=tar', `--output=${archive}`, workingCommit])
       await execFile('tar', ['-xf', archive, '-C', extracted], { timeout: 30000 })
       const paths = (await git(['ls-tree', '-r', '--name-only', workingCommit])).stdout.split('\n').filter(Boolean)
-      const candidates = paths.filter(file => /\.(?:tex|md|qmd)$/i.test(file))
+      const candidates = configuredRoots.length
+        ? configuredRoots
+        : paths.filter(file => /\.(?:tex|md|qmd)$/i.test(file))
       if (!candidates.length) throw new Error(`${project}: no document roots in settled tree`)
+      for (const candidate of candidates) {
+        if (!paths.includes(candidate)) throw new Error(`${project}: configured document root is absent: ${candidate}`)
+      }
       const closures = new Map()
       for (const candidate of candidates) {
         const files = new Set()
@@ -266,5 +277,6 @@ export function createGitProjectSync({
     members: () => serialized(members),
     fetchHead,
     pushRevision,
+    setDocumentRoots,
   }
 }
