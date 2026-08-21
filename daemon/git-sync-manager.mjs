@@ -215,10 +215,11 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     if (params.name === 'tlda') throw new Error('The tlda transport remote is not a project remote')
     if (operation === 'add') return remotes.add(params.name, params.url)
     if (operation === 'delete') return remotes.delete(params.name)
-    if (operation === 'pull') return remotes.pull(params.name, params.branch)
-    if (operation === 'push') return remotes.push(params.name, params.branch, params.revision)
+    const branch = params.branch || await remotes.currentBranch()
+    if (operation === 'pull') return remotes.pull(params.name, branch)
+    if (operation === 'push') return remotes.push(params.name, branch, params.revision)
     if (operation === 'checkout') {
-      const checkedOut = await remotes.checkout(params.name, params.branch, params.revision)
+      const checkedOut = await remotes.checkout(params.name, branch, params.revision)
       const submission = await submit(project)
       return { ...checkedOut, submission }
     }

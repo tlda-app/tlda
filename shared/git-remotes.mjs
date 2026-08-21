@@ -26,6 +26,12 @@ export function createGitRemotes({ sourceDir, run = execFile } = {}) {
     return remote
   }
 
+  async function currentBranch() {
+    const branch = await output(['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => null)
+    if (!branch) throw new Error('The linked Git checkout has no current branch')
+    return branch
+  }
+
   async function list({ fetch = false, names: selectedNames = null } = {}) {
     const allNames = await lines(['remote'])
     const names = selectedNames == null ? allNames : selectedNames.filter(name => allNames.includes(name))
@@ -113,5 +119,5 @@ export function createGitRemotes({ sourceDir, run = execFile } = {}) {
     return output(['rev-parse', '--verify', `${ref}^{commit}`]).catch(() => null)
   }
 
-  return { list, add, delete: deleteRemote, pull, push, checkout, readFile, resolveRef }
+  return { list, add, delete: deleteRemote, pull, push, checkout, readFile, resolveRef, currentBranch }
 }

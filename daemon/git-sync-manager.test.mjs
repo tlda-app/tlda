@@ -87,6 +87,12 @@ test('initial project link submits the existing checkout through the ordinary pr
     writable: false,
     branches: [{ name: 'paper', commit: submitted.revision, selected: false, writable: false }],
   }])
+  await manager.remoteOperation('paper', 'add', { name: 'origin', url: remote })
+  const pushed = await manager.remoteOperation('paper', 'push', { name: 'origin' })
+  assert.equal(pushed.branch, 'main')
+  const checkoutHead = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
+  assert.equal(pushed.commit, checkoutHead)
+  assert.equal((await git(remote, ['rev-parse', 'refs/heads/main'])).stdout.trim(), checkoutHead)
 
   writeFileSync(join(checkout, 'child.tex'), 'included\n')
   writeFileSync(join(checkout, 'unrelated.txt'), 'not a project member\n')

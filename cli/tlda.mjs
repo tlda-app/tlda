@@ -1000,10 +1000,7 @@ async function cmdRemote() {
     process.exit(1)
   }
   if (operation === 'add' && !value) throw new Error('remote add requires a URL')
-  let branch = value
-  if (!branch && operation !== 'add' && operation !== 'delete') {
-    branch = execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { encoding: 'utf8' }).trim()
-  }
+  const branch = value
   const result = await callLocalDaemonLifecycle('project-git-remote', {
     project,
     operation,
