@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
-import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, createHtmlDocumentFromPageInfo, loadHtmlDocument, loadSlidesDocument, type HtmlPageEntry } from './svgDocumentLoader'
+import { loadSvgDocument, type HtmlPageEntry } from './svgDocumentLoader'
+import { loadDocumentFromManifest, type DocumentViewManifest } from './loaders/documentLoaderRegistry'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
 import { attachAppRecordingEditor, openAppRecordingSession } from './recording/recorder'
@@ -138,6 +139,7 @@ interface DocConfig {
   pageInfo?: HtmlPageEntry[]
   documentManifest?: {
     pages: Array<{ file: string; width: number; height: number }>
+    view: DocumentViewManifest['view']
   }
 }
 
@@ -307,7 +309,7 @@ function DocumentApp() {
     }
   }, [])
 
-  async function loadDocument(projectName: string, roomId: string, knownConfig?: DocConfig, includePageInfo = false) {
+  async function loadDocument(projectName: string, roomId: string, _knownConfig?: DocConfig, includePageInfo = false) {
     // Bump generation and abort any in-flight load
     const gen = ++loadGeneration
     loadAbort?.abort()
@@ -317,9 +319,7 @@ function DocumentApp() {
     // Fast path: fetch single doc config instead of full manifest
     let config: DocConfig | null
     try {
-      config = knownConfig && (knownConfig.sourceFormat === 'pdf' || knownConfig.sourceFormat === 'qmd')
-        ? await fetchDocConfig(projectName, true)
-        : knownConfig ?? await fetchDocConfig(projectName, includePageInfo)
+      config = await fetchDocConfig(projectName, true)
     } catch (e) {
       const msg = (e as Error).message
       setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
@@ -414,48 +414,19 @@ function DocumentApp() {
         ? config.basePath
         : `${import.meta.env.BASE_URL || '/'}${config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath}`
 
-      let document
-      // A .qmd is the one project whose pages are not the format that built
-      // them: quarto renders it to a scrolling document or to a reveal deck.
-      // viewFormat() reads which the build produced.
-      const shownAs = viewFormat(config)
-      if (shownAs === 'html' || shownAs === 'markdown') {
-        document = config.pageInfo
-          ? createHtmlDocumentFromPageInfo(config.name, fullBasePath, config.pageInfo)
-          : await loadHtmlDocument(config.name, fullBasePath)
-      } else if (shownAs === 'slides') {
-        document = await loadSlidesDocument(config.name, fullBasePath)
-      } else if (shownAs === 'png') {
-        const makeUrl = (n: number) => `${fullBasePath}page-${n}.png`
-        // Probe beyond manifest hint to discover extra pages (handles stale page counts)
-        let pageCount = config.pages
-        while (true) {
-          if (signal.aborted) return
-          const resp = await fetch(makeUrl(pageCount + 1), { method: 'HEAD', signal })
-          if (!resp.ok || !resp.headers.get('content-type')?.includes('image/png')) break
-          pageCount++
-        }
-        const urls = Array.from({ length: pageCount }, (_, i) => makeUrl(i + 1))
-        document = await loadImageDocument(config.name, urls, fullBasePath)
-      } else {
-        // SVG: create layout immediately, pages fetched async after editor mounts.
-        // targets[] always present from API; map to TargetInfo for the layout.
-        const targets = config.targets?.map(t => ({
-          name: t.texBase,
-          title: t.texBase.replace(/_/g, ' '),
-          pages: t.pages,
-          basePath: fullBasePath,
-        }))
-        let manifestPages = config.documentManifest?.pages
-        const extractedPaged = config.documentFormat === 'paged' && config.renderer !== 'latex'
-        if (extractedPaged && !manifestPages) {
-          const response = await fetch(`${fullBasePath}document-manifest.json`, { signal })
-          if (!response.ok) throw new Error(`Failed to fetch PDF document manifest (${response.status})`)
-          manifestPages = (await response.json()).pages
-        }
-        document = createSvgDocumentLayout(projectName, config.pages, fullBasePath, targets, manifestPages)
-        if (extractedPaged) document = { ...document, format: 'pdf' as const }
-      }
+      if (!config.documentManifest) throw new Error(`Document ${projectName} has no view manifest`)
+      const targets = config.targets?.map(t => ({
+        name: t.texBase,
+        title: t.texBase.replace(/_/g, ' '),
+        pages: t.pages,
+        basePath: fullBasePath,
+      }))
+      let document = await loadDocumentFromManifest({
+        name: projectName,
+        basePath: fullBasePath,
+        manifest: config.documentManifest as DocumentViewManifest,
+        targets,
+      })
 
       if (gen !== loadGeneration) return  // superseded during fetch
       // The manifest's display name, which is a written title for some documents

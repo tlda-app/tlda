@@ -15,6 +15,10 @@ export async function loadSlidesDocument(
   const infoUrl = basePath + 'page-info.json'
   const pageInfos: SlidePageEntry[] = await fetch(infoUrl).then(r => r.json())
 
+  return createSlidesDocumentFromPageInfo(name, basePath, pageInfos)
+}
+
+export function createSlidesDocumentFromPageInfo(name: string, basePath: string, pageInfos: SlidePageEntry[]): SvgDocument {
   console.log(`Found ${pageInfos.length} slides`)
 
   // Skip: "make the slides be spaced out a bit more so they're kind of more in

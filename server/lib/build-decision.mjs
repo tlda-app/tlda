@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { outputDir, sourceDir } from './project-store.mjs'
-import { sourceFormat } from '../../shared/document-formats.mjs'
+import { buildCapabilities } from './build-adapter-registry.mjs'
 
 /**
  * The project's declared main file, when the source tree does not contain it.
@@ -55,10 +55,9 @@ export function missingMainFileMessage(name, declared) {
  *   - reason: human-readable explanation
  */
 export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged = false, building = false, ready = false } = {}) {
-  const source = sourceFormat(project)
-  const latexPaged = source === 'tex' && project.renderer === 'latex' && project.documentFormat === 'paged'
+  const capabilities = buildCapabilities(project)
 
-  if (latexPaged && Number(project.pages || 0) === 0 && building) {
+  if (capabilities.relevantFiles && Number(project.pages || 0) === 0 && building) {
     return { build: false, eager: false, reason: 'already-building' }
   }
 
@@ -67,17 +66,16 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
   }
 
   // A brand-new SVG project builds eagerly, like every other changed project.
-  if (latexPaged && Number(project.pages || 0) === 0) {
-    return { build: true, eager: true, reason: 'initial-svg-build' }
+  if (Number(project.pages || 0) === 0) {
+    return { build: true, eager: true, reason: 'initial-build' }
   }
 
-  // Non-SVG formats always build eagerly on push
-  if (['md', 'html', 'qmd', 'pdf'].includes(source)) {
-    return { build: true, eager: true, reason: 'format-eager' }
+  if (!capabilities.relevantFiles) {
+    return { build: true, eager: true, reason: 'adapter-eager' }
   }
 
   // SVG: check relevant-files filter
-  if (latexPaged && changedFiles.length > 0) {
+  if (capabilities.relevantFiles && changedFiles.length > 0) {
     const relevantPath = join(outputDir(name), 'relevant-files.json')
 
     if (!existsSync(relevantPath)) {
@@ -116,7 +114,7 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
   // A successful build is also the project's automatic Git checkpoint.
   // Deferring an SVG build until somebody requests a page leaves accepted
   // source edits outside project history whenever nobody is viewing the paper.
-  return { build: true, eager: true, reason: 'svg-eager' }
+  return { build: true, eager: true, reason: 'relevant-eager' }
 }
 
 /**

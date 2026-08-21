@@ -20,7 +20,7 @@ test('a new SVG project builds eagerly because no page can trigger the lazy buil
     latexProject({ pages: 0, buildStatus: 'none' }),
     'unused-new-svg-project',
     { changedFiles: ['main.tex'], anyChanged: true },
-  ), { build: true, eager: true, reason: 'initial-svg-build' })
+  ), { build: true, eager: true, reason: 'initial-build' })
 })
 
 test('an established SVG project builds eagerly so accepted edits enter history', () => {
@@ -28,7 +28,7 @@ test('an established SVG project builds eagerly so accepted edits enter history'
     latexProject({ pages: 1, buildStatus: 'success' }),
     'unused-established-svg-project',
     { changedFiles: [], anyChanged: true },
-  ), { build: true, eager: true, reason: 'svg-eager' })
+  ), { build: true, eager: true, reason: 'relevant-eager' })
 })
 
 test('unchanged policy ignores legacy buildStatus and uses durable readiness', () => {
@@ -52,13 +52,13 @@ test('all document formats build eagerly after an accepted source change', () =>
       { ...project, pages: 0, buildStatus: 'none' },
       `unused-${label}`,
       { anyChanged: true, building: true },
-    ), { build: true, eager: true, reason: 'format-eager' })
+    ), { build: true, eager: true, reason: 'initial-build' })
   }
   assert.deepEqual(shouldBuildOnPush(
     latexProject({ pages: 2, buildStatus: 'success' }),
     'unused-established-svg-project',
     { anyChanged: true, building: true },
-  ), { build: true, eager: true, reason: 'svg-eager' })
+  ), { build: true, eager: true, reason: 'relevant-eager' })
 })
 
 test('SVG source changes without a usable relevant-files filter still build eagerly', async () => {

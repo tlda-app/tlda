@@ -66,7 +66,6 @@ import { generateWordSynctexSourceTree } from './word-synctex.mjs'
 import { bibliographyRunReason } from './build-bibliography-decision.mjs'
 import { projectRevisionStatus } from './source-lifecycle.mjs'
 import { createDocumentManifest } from './document-manifest.mjs'
-import { finalizeDocumentBuild } from './document-build-finalizer.mjs'
 import { documentTransport } from '../../shared/document-transport.mjs'
 
 // --- Side-effect reporter ----------------------------------------------------
@@ -1606,6 +1605,11 @@ export async function emitDocArrived(name) {
   } catch {}
 }
 
+export function completeBuildSuccess(name, { elapsed, pages } = {}) {
+  signalBuildProgress(name, 'done', `${elapsed}s`)
+  emitBuildComplete(name, { status: 'success', elapsed, pages: pages ?? 0, errors: [] })
+}
+
 /**
  * Record the version for a build that just succeeded — the one path EVERY
  * format goes through.
@@ -1974,16 +1978,7 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
         // 'success' is the honest description of the published state, not a
         // claim about this discarded build. The per-project lock in runBuild
         // means no other build can be mid-flight to contradict it.
-        try { await _reporter.updateProject(name, { buildStatus: 'success' }) }
-        catch (e) {
-          // Report, don't rethrow: this build is already being discarded, and
-          // throwing here would route it into the failure path and publish a
-          // 'failed' status over a project whose artifacts are fine. The status
-          // is descriptive, the discard is the decision, and the discard has
-          // already succeeded by the time we get here.
-          console.error(`[build:${name}] failed to restore status after discard: ${e.message}`)
-        }
-        return
+        return { disposition: 'superseded' }
       }
       status.phase = 'converting'
       const dviFile = join(tBuildDir, `${tBase}.dvi`)
@@ -2064,7 +2059,6 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
     })))
     const documentBuildResult = { manifest: createDocumentManifest({
       ...project,
-      sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged',
     }, manifestPages, { sourceMapping: 'synctex' }),
     targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
     recordLastBuildSuccess: true }
@@ -2099,40 +2093,27 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
       ctx.addLog(`shadow bootstrap from project repo skipped (non-fatal): ${e.message}`)
     })
 
-    try {
-      await finalizeBuildVersion({
-        name,
-        ctx,
-        projDir,
-        expectedPages,
-        svgsReadyAt,
-        buildErrSnapshot,
-        buildWarnSnapshot,
-        sourceRevision,
-        acceptSeq,
-        lastBuildSuccess,
-      })
-    } catch (e) {
-      ctx.addLog(`build publish/finalize failed: ${e.message}`)
-      await _reporter.updateProject(name, { buildStatus: 'finalize-failed' })
-      signalBuildProgress(name, 'failed', `publish failed: ${e.message}`)
-      emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), pages: expectedPages ?? 0, errors: [e.message] })
-      throw e
-    }
-
-    await finalizeDocumentBuild(name, documentBuildResult, _reporter)
-
     const totalElapsed = elapsed()
-    ctx.addLog(`Build complete in ${totalElapsed}s`)
-    signalBuildProgress(name, 'done', `${totalElapsed}s`)
-    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
+    ctx.addLog(`Build adapter finished in ${totalElapsed}s`)
 
     status.building = false
     status.phase = 'done'
     status.completedAt = new Date().toISOString()
 
     writeFileSync(join(projDir, 'build.log'), log.join('\n'))
-    return status
+    return {
+      ...documentBuildResult,
+      version: {
+        ctx,
+        projDir,
+        expectedPages,
+        svgsReadyAt,
+        buildErrSnapshot,
+        buildWarnSnapshot,
+        lastBuildSuccess,
+      },
+      completion: { elapsed: totalElapsed, pages: expectedPages },
+    }
   } catch (e) {
     ctx.addLog(`BUILD FAILED: ${e.message}`)
     status.building = false
