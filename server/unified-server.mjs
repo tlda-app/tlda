@@ -5496,13 +5496,19 @@ server.on('upgrade', async (req, socket, head) => {
       })
       let daemonMessageChain = Promise.resolve()
       ws.on('message', (raw) => {
-        daemonMessageChain = daemonMessageChain.then(async () => {
-          let msg
-          try { msg = JSON.parse(raw.toString()) } catch { return }
+        let msg
+        try { msg = JSON.parse(raw.toString()) } catch { return }
+        const dispatch = async () => {
           await handleDaemonOutboxEnvelope(ws, msg, handleDaemonWsMessage, {
             onHandlerError: e => console.error('[daemon-ws] handler error:', e?.message),
           })
-        }).catch(e => console.error('[daemon-ws] dispatch error:', e?.message || e))
+        }
+        if (msg.type === 'source-bindings-set' || msg.type === 'source-proposal-admit') {
+          void dispatch().catch(e => console.error('[daemon-ws] dispatch error:', e?.message || e))
+          return
+        }
+        daemonMessageChain = daemonMessageChain.then(dispatch)
+          .catch(e => console.error('[daemon-ws] dispatch error:', e?.message || e))
       })
       ws.on('close', async (code, reason) => {
         logWsClose('daemon', ws, code, reason?.toString?.() || '')
