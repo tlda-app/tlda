@@ -67,7 +67,17 @@ function resolveWithExtensions(baseDir, root, ref, implicit) {
       const rel = path.relative(root, abs).replace(/\\/g, '/')
       if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) continue
       try {
-        if (fs.statSync(abs).isFile()) return rel
+        if (!fs.statSync(abs).isFile()) continue
+        if (/\.pdf$/i.test(rel)) {
+          const svgAbs = abs.replace(/\.pdf$/i, '.svg')
+          const svgRel = rel.replace(/\.pdf$/i, '.svg')
+          try {
+            if (fs.statSync(svgAbs).isFile()) return svgRel
+          } catch {
+            // No author SVG sibling: the PDF itself is the source asset.
+          }
+        }
+        return rel
       } catch {
         // Not this candidate; try the next extension or project root.
       }
