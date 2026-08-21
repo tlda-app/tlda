@@ -114,22 +114,13 @@ export function createAgentRuntimeStatusStore({
 
   function updateActivity(agentId, activity, detail = {}) {
     const previous = evidenceFor(agentId)
-    const previousGeneration = previous?.activity_generation
-    const nextGeneration = detail.generation || null
-    if (previousGeneration && nextGeneration
-      && previousGeneration.daemon_key === nextGeneration.daemon_key
-      && previousGeneration.daemon_boot_id === nextGeneration.daemon_boot_id
-      && nextGeneration.report_seq <= previousGeneration.report_seq) return previous
-    const atMs = Number.isFinite(detail.atMs) ? detail.atMs : now()
-    if (!nextGeneration && Number.isFinite(previous?.activity_at_ms) && atMs < previous.activity_at_ms) return previous
     const nextActivity = activity || 'unknown'
     const nextTool = detail.tool || null
     return update(agentId, {
       activity: nextActivity,
       activity_tool: nextTool,
-      activity_at_ms: atMs,
-      activity_at: new Date(atMs).toISOString(),
-      activity_generation: nextGeneration,
+      activity_at_ms: Number.isFinite(detail.atMs) ? detail.atMs : now(),
+      activity_at: new Date(Number.isFinite(detail.atMs) ? detail.atMs : now()).toISOString(),
     }, {
       notify: previous?.activity !== nextActivity || previous?.activity_tool !== nextTool,
     })
@@ -188,7 +179,6 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     activity: evidence?.activity || metadata.status?.activity || 'unknown',
     activity_tool: evidence?.activity_tool || metadata.status?.tool || null,
     activity_at: evidence?.activity_at || metadata.status?.ts || null,
-    activity_generation: evidence?.activity_generation || null,
     activity_health: metadata.activityHealth || null,
     liveness_generation: evidence?.liveness_generation || null,
     liveness_daemon_key: evidence?.liveness_daemon_key || null,
