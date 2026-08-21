@@ -4,29 +4,19 @@ import test from 'node:test'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { daemonDeliveryPolicy, DELIVERY_LATEST_WINS } from '../daemon/delivery-policy.mjs'
 
-function fixture({ capturePane = async () => ({ stdout: '' }), processes = null, resolveProcessIdentity = null } = {}) {
+function fixture({ capturePane = async () => ({ stdout: '' }) } = {}) {
   const sent = []
   let listCalls = 0
   const agents = [
+    { id: 'fleet:busy', daemonKey: 'mini:testing', tmux_session: 'fleet-busy', runtimeKind: 'codex', metadata: {} },
+    { id: 'fleet:idle', daemonKey: 'mini:testing', tmux_session: 'fleet-idle', runtimeKind: 'codex', metadata: {} },
     { id: 'fleet:gone', daemonKey: 'mini:testing', tmux_session: 'fleet-gone', runtimeKind: 'codex', metadata: {} },
+    { id: 'fleet:stable', daemonKey: 'mini:stable', tmux_session: 'fleet-stable', runtimeKind: 'codex', metadata: {} },
   ]
-  const identities = new Map([
-    [101, { id: 'fleet:busy', daemonKey: 'mini:testing', friendly_name: 'busy', tmux_session: 'fleet-busy', runtimeKind: 'codex', metadata: {} }],
-    [102, { id: 'fleet:idle', daemonKey: 'mini:testing', friendly_name: 'idle', tmux_session: 'fleet-idle', runtimeKind: 'codex', metadata: {} }],
-    [103, { id: 'fleet:stable', daemonKey: 'mini:stable', friendly_name: 'stable', tmux_session: 'fleet-stable', runtimeKind: 'codex', metadata: {} }],
-  ])
   const status = createAgentStatus({
     getAgents: () => agents,
     harnessForAgent: () => ({ kind: 'codex' }),
-    listSessions: async () => {
-      listCalls += 1
-      return { processes: processes || [
-        { session: 'fleet-busy', pid: 101 },
-        { session: 'fleet-idle', pid: 102 },
-        { session: 'fleet-stable', pid: 103 },
-      ] }
-    },
-    resolveProcessIdentity: resolveProcessIdentity || (async process => identities.get(process.pid) || null),
+    listSessions: async () => { listCalls += 1; return { sessions: ['fleet-busy', 'fleet-idle'] } },
     isConnected: () => true,
     sendMsg: message => sent.push(message),
     log: { info() {}, warn() {}, error() {} },
@@ -39,7 +29,7 @@ function fixture({ capturePane = async () => ({ stdout: '' }), processes = null,
   return { status, sent, listCalls: () => listCalls }
 }
 
-test('one process inventory emits a live unledgered agent, excludes stale ledger rows, and captures only armed panes', async () => {
+test('one inventory produces one complete status result and captures only live armed panes', async () => {
   const captured = []
   const f = fixture({ capturePane: async session => { captured.push(session); return { stdout: '' } } })
   f.status.armAgent('fleet:busy')
@@ -53,6 +43,7 @@ test('one process inventory emits a live unledgered agent, excludes stale ledger
   assert.deepEqual(f.sent[0].agents, [
     { agent_id: 'fleet:busy', status: 'awake', activity: 'idle', tool: null },
     { agent_id: 'fleet:idle', status: 'awake', activity: 'unknown', tool: null },
+    { agent_id: 'fleet:gone', status: 'hibernating', activity: 'unknown', tool: null },
   ])
   assert.equal(f.sent[0].daemon_key, 'mini:testing')
   assert.equal(f.sent[0].daemon_boot_id, 7)
@@ -90,38 +81,6 @@ test('the complete batch carries the latest real tool observation', async () => 
     activity: 'tool_call:exec_command',
     tool: 'exec_command',
   })
-})
-
-test('an unresolved listed pane suppresses the complete generation', async () => {
-  const f = fixture({
-    processes: [{ session: 'fleet-unknown', pid: 999 }],
-    resolveProcessIdentity: async () => null,
-  })
-
-  await f.status.scanStatus('unresolved')
-
-  assert.deepEqual(f.sent, [])
-})
-
-test('duplicate live fleet identities suppress the complete generation', async () => {
-  const f = fixture({
-    processes: [
-      { session: 'fleet-duplicate-a', pid: 201 },
-      { session: 'fleet-duplicate-b', pid: 202 },
-    ],
-    resolveProcessIdentity: async process => ({
-      id: 'fleet:duplicate',
-      daemonKey: 'mini:testing',
-      friendly_name: 'duplicate',
-      tmux_session: process.session,
-      runtimeKind: 'codex',
-      metadata: { kind: 'codex' },
-    }),
-  })
-
-  await f.status.scanStatus('duplicate')
-
-  assert.deepEqual(f.sent, [])
 })
 
 test('a newer complete status batch replaces a queued older tick', () => {
