@@ -27,6 +27,14 @@ async function gitRetryOnLock(fn, retries = 3, delayMs = 500) {
 }
 
 export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef = null }) {
+  async function containsCommits({ sourceDir, hashes }) {
+    const requested = [...new Set((hashes || []).map(String).filter(hash => /^[0-9a-f]{40}$/i.test(hash)))]
+    if (requested.length !== (hashes || []).length) throw new Error('server history contained an invalid commit id')
+    const { stdout } = await execFileP('git', ['rev-list', '--all'], { cwd: sourceDir, timeout: 120000, maxBuffer: 64 * 1024 * 1024 })
+    const available = new Set(stdout.split('\n').filter(Boolean))
+    return { ok: requested.every(hash => available.has(hash)), missing: requested.filter(hash => !available.has(hash)) }
+  }
+
   async function mirrorShadowRef({ project, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq, refusedRevision = null }) {
     if (!project) throw new Error('missing project')
     if (!/^[0-9a-f]{40}$/i.test(String(hash || ''))) throw new Error(`invalid shadow hash: ${hash}`)
@@ -124,7 +132,7 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
     return { ok: true, empty: false, project, sourceDir, head, repositoryDir: sourceDir, cleanup: async () => {} }
   }
 
-  return { mirrorShadowRef, prepareHistorySeed }
+  return { mirrorShadowRef, prepareHistorySeed, containsCommits }
 }
 
 export async function prepareProjectHistorySeed({ project, sourceDir, seedBranch = null, seedRevision = 'HEAD', documentRoots = [], log = console }) {
