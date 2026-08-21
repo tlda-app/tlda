@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { encodeRefComponent } from './source-git-store.mjs'
+import { gitDaemonNamespace } from '../../shared/history-seed-ref.mjs'
 import { parseHistorySeedRef } from '../../shared/history-seed-ref.mjs'
 
 const ZERO = '0000000000000000000000000000000000000000'
@@ -50,6 +51,10 @@ export function parseProposalRef(ref, daemonId = null) {
   const revision = rest.slice(slash + 1)
   if (!branch || !/^[0-9a-f]{40,64}$/.test(revision)) return null
   return { daemonId: resolvedDaemon, branch, revision }
+}
+
+export function parseDaemonProposalRef(ref, daemonKey) {
+  return parseProposalRef(ref, gitDaemonNamespace(daemonKey))
 }
 
 export async function validateProposalUpdates({ gitDir, project, daemonId, input }) {

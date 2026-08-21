@@ -12,6 +12,7 @@ import { createGitHttpHandler } from './git-http.mjs'
 import { encodeRefComponent } from './source-git-store.mjs'
 import { closeProjectStore, createProject, initProjectStore, sourceLifecycleStore } from './project-store.mjs'
 import { historySeedRef } from '../../shared/history-seed-ref.mjs'
+import { parseDaemonProposalRef } from './git-proposals.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -31,7 +32,7 @@ test('authenticated Git HTTP admits one immutable proposal without moving shared
   const root = mkdtempSync(join(tmpdir(), 'tlda-git-http-'))
   const checkout = join(root, 'checkout')
   const project = 'paper'
-  const daemonId = 'mini-test'
+  const daemonId = 'mini-testing'
   const admitted = []
   let server
   try {
@@ -79,6 +80,7 @@ test('authenticated Git HTTP admits one immutable proposal without moving shared
       /history seed ref must be a new immutable ref/
     )
     const ref = `refs/tlda/proposals/${encodeRefComponent(daemonId)}/work/${revision}`
+    assert.equal(parseDaemonProposalRef(ref, 'mini:testing')?.revision, revision)
     const pushed = await git(checkout, ['push', remote, `HEAD:${ref}`])
     assert.match(`${pushed.stdout}\n${pushed.stderr}`, /SubmittedToBuildQueue/)
 
