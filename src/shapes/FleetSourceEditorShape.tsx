@@ -637,7 +637,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   useEffect(() => {
     if (!doc?.projectName) return
     let cancelled = false
-    void fetch(projectApiPath(doc.projectName, '/remotes?fetch=true'))
+    void fetch(projectApiPath(doc.projectName, '/remotes'))
       .then(async res => {
         if (!res.ok) throw new Error(`remotes ${res.status}`)
         const payload = await res.json()

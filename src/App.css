@@ -25,8 +25,18 @@
   --ui-tone-full: 1;
 }
 
+html[data-theme="dark"],
 .tl-theme__dark {
   --tlda-canvas-background: #0f0f1a;
+}
+
+/* Tldraw renders its loading screen before onMount can copy our saved color
+   scheme into its user preferences. Keep that pre-mount surface on the theme
+   the document shell already resolved instead of flashing tldraw's light
+   default. Theme families can still override the canvas variable on body. */
+.tl-loading {
+  background-color: var(--tlda-canvas-background) !important;
+  color: var(--text-bright) !important;
 }
 
 /* Default-family ink, above <body> so a theme family's own value wins. */
