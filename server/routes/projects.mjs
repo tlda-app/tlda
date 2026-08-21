@@ -701,8 +701,9 @@ router.get('/:name/files', requireRead, async (req, res) => {
       }
       continue
     }
+    const rootBase = root.path.split('/').pop()
     const outputFile = root.format === 'svg'
-      ? `${root.path.replace(/\.tex$/i, '')}-page-1.svg`
+      ? `${rootBase.replace(/\.tex$/i, '')}-page-1.svg`
       : root.path.replace(/\.(?:tex|qmd|md|markdown|html|htm)$/i, '.html')
     documents.push({
       sourceFile: root.path,

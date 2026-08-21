@@ -102,6 +102,23 @@ export function ProjectTab({ query = '' }: { query?: string }) {
 
   const activateUnplaced = useCallback(async (document: ProjectDocument) => {
     if (!project?.projectName) return
+    if (document.format === 'svg') {
+      const targetName = document.outputFile.replace(/-page-1\.svg$/i, '')
+      let pageOffset = 0
+      for (const target of project.targets || []) {
+        if (target.name === targetName) {
+          const page = project.pages[pageOffset]
+          if (!page) return
+          editor.centerOnPoint({
+            x: page.bounds.x + page.bounds.width / 2,
+            y: page.bounds.y + page.bounds.height / 2,
+          }, { animation: { duration: 300 } })
+          return
+        }
+        pageOffset += target.pages
+      }
+      return
+    }
     const source = currentSpatialDocument(editor, nodes)
     if (!source) return
     const url = `/docs/${encodeURIComponent(project.projectName)}/${document.outputFile}`
