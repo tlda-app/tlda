@@ -8,7 +8,7 @@
  *   build.log     — last build log
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync, renameSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync } from 'fs'
 import { access, cp, mkdir, open as openFile, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises'
 import { join, relative, dirname } from 'path'
 import { createHash, randomUUID } from 'crypto'
@@ -25,7 +25,6 @@ import { createSourceLifecycleStore, projectRevisionStatus } from './source-life
 import { ProjectLifecycleStatusIndex, UNKNOWN_PROJECT_LIFECYCLE_STATUS } from './project-lifecycle-status-index.mjs'
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
-import { legacyDocumentAxes } from '../../shared/document-formats.mjs'
 
 let projectsDir = null
 let projectFilesDb = null
@@ -37,18 +36,15 @@ export function setProjectPathOverride(name, root = null) {
   else projectPathOverrides.delete(name)
 }
 
-function migrateStoredProjectAxes(dir) {
+function assertStoredProjectAxes(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const projectPath = join(dir, entry.name, 'project.json')
     if (!existsSync(projectPath)) continue
     let project
     try { project = JSON.parse(readFileSync(projectPath, 'utf8')) } catch { continue }
-    if (project.sourceFormat && project.renderer && project.documentFormat) continue
-    const migrated = { ...project, ...legacyDocumentAxes(project) }
-    const pending = `${projectPath}.axes-${process.pid}`
-    writeFileSync(pending, `${JSON.stringify(migrated, null, 2)}\n`)
-    renameSync(pending, projectPath)
+    if (project.sourceFormat && project.renderer && project.documentFormat && !Object.hasOwn(project, 'format')) continue
+    throw new Error(`Project ${entry.name} requires the explicit document-axes-v1 storage migration`)
   }
 }
 
@@ -58,7 +54,7 @@ export async function initProjectStore(dir) {
   projectLifecycleStatusIndex = null
   projectsDir = dir
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  migrateStoredProjectAxes(dir)
+  assertStoredProjectAxes(dir)
   projectFilesDb = new ProjectFilesStoreClient(dir)
   await projectFilesDb.ready()
   projectLifecycleStatusIndex = new ProjectLifecycleStatusIndex(dir)
@@ -109,7 +105,7 @@ export async function readProject(name) {
 // both imagined-randomization projects got a mainFile that does not exist.
 // Undeclared is a state the build tolerates; declared-and-absent is an error.
 // Readers that need a LaTeX name still fall back to `main.tex` at read time.
-export function createProject({ name, title, mainFile, format, members, sourceFormat, renderer, documentFormat }) {
+export function createProject({ name, title, mainFile, members, sourceFormat, renderer, documentFormat, pages = 0, pageFiles, ...unsupported }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -118,23 +114,20 @@ export function createProject({ name, title, mainFile, format, members, sourceFo
   mkdirSync(join(dir, 'source'), { recursive: true })
   mkdirSync(join(dir, 'output'), { recursive: true })
 
-  const legacyFormat = format || 'svg'
-  const isBook = legacyFormat === 'book'
-  const explicitAxes = [sourceFormat, renderer, documentFormat].filter(Boolean).length
-  if (explicitAxes !== 0 && explicitAxes !== 3) throw new Error('sourceFormat, renderer, and documentFormat must be supplied together')
-  const axes = explicitAxes === 3
-    ? { sourceFormat, renderer, documentFormat }
-    : legacyDocumentAxes({ format: legacyFormat })
+  if (Object.hasOwn(unsupported, 'format')) throw new Error('format is not a project field; supply the three document axes')
+  if (!sourceFormat || !renderer || !documentFormat) throw new Error('sourceFormat, renderer, and documentFormat are required')
+  const axes = { sourceFormat, renderer, documentFormat }
+  const isBook = documentFormat === 'book'
   const project = {
     name,
     title: title || name,
     ...(!isBook && mainFile && { mainFile }),
-    ...(format || explicitAxes === 0 ? { format: legacyFormat } : {}),
     sourceFormat: axes.sourceFormat,
     renderer: axes.renderer,
     documentFormat: axes.documentFormat,
     ...(isBook && members && { members }),
-    pages: 0,
+    pages,
+    ...(Array.isArray(pageFiles) && { pageFiles }),
     createdAt: new Date().toISOString(),
     lastBuild: null,
     buildStatus: isBook ? 'success' : 'none',  // books don't need builds
@@ -351,7 +344,7 @@ export async function removeProjectSourceRecovery(name, id) {
 export async function addBookMember(bookName, memberName) {
   let book = await readProject(bookName)
   if (!book) {
-    book = createProject({ name: bookName, title: bookName, format: 'book', members: [memberName] })
+    book = createProject({ name: bookName, title: bookName, sourceFormat: 'book', renderer: 'identity', documentFormat: 'book', members: [memberName] })
   } else {
     const members = Array.from(new Set([...(book.members || []), memberName]))
     book = await updateProject(bookName, { members })

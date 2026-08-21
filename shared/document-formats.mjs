@@ -1,29 +1,8 @@
 /**
  * The three independent document axes.
  *
- * `format` is accepted only at creation and migration boundaries. Runtime
- * readers use the stored axes.
+ * Runtime and wire records contain these axes and no legacy `format` field.
  */
-
-const LEGACY_AXES = {
-  svg:      { sourceFormat: 'tex',  renderer: 'latex',    documentFormat: 'paged' },
-  markdown: { sourceFormat: 'md',   renderer: 'markdown', documentFormat: 'html' },
-  html:     { sourceFormat: 'html', renderer: 'identity', documentFormat: 'html' },
-  slides:   { sourceFormat: 'html', renderer: 'identity', documentFormat: 'slides' },
-  qmd:      { sourceFormat: 'qmd',  renderer: 'quarto',   documentFormat: 'html' },
-  png:      { sourceFormat: 'png',  renderer: 'identity', documentFormat: 'paged' },
-  book:     { sourceFormat: 'book', renderer: 'identity', documentFormat: 'book' },
-}
-
-export function legacyDocumentAxes(project = {}) {
-  const fallback = LEGACY_AXES[project?.format] || LEGACY_AXES.svg
-  return {
-    sourceFormat: project?.sourceFormat || fallback.sourceFormat,
-    renderer: project?.renderer || fallback.renderer,
-    documentFormat: project?.documentFormat
-      || (project?.format === 'qmd' && project?.renderedFormat === 'slides' ? 'slides' : fallback.documentFormat),
-  }
-}
 
 export function documentAxes(project = {}) {
   if (!project.sourceFormat || !project.renderer || !project.documentFormat) {

@@ -65,7 +65,9 @@ import { clearSynctexCache } from './synctex-query.mjs'
 import { generateWordSynctexSourceTree } from './word-synctex.mjs'
 import { bibliographyRunReason } from './build-bibliography-decision.mjs'
 import { projectRevisionStatus } from './source-lifecycle.mjs'
-import { createDocumentManifest, writeDocumentManifest } from './document-manifest.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
+import { finalizeDocumentBuild } from './document-build-finalizer.mjs'
+import { documentTransport } from '../../shared/document-transport.mjs'
 
 // --- Side-effect reporter ----------------------------------------------------
 // Everything in the build that reaches the live server — client broadcasts
@@ -77,7 +79,7 @@ import { createDocumentManifest, writeDocumentManifest } from './document-manife
 const _directReporter = {
   regenerateBookTocs: async (name) => {
     for (const project of await listProjects()) {
-      if (project.format === 'book' && Array.isArray(project.members) && project.members.includes(name)) {
+      if (project.documentFormat === 'book' && Array.isArray(project.members) && project.members.includes(name)) {
         aggregateBookToc(project.name, project.members)
       }
     }
@@ -1598,7 +1600,7 @@ export async function emitDocArrived(name) {
     if (updated && durableStatus.status === 'success') {
       _reporter.emitGlobalEvent('doc-arrived', {
         name, title: updated.title || name,
-        format: updated.format, pages: updated.pages || 0,
+        ...documentTransport(updated),
       })
     }
   } catch {}
@@ -2060,24 +2062,14 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
       height: 792,
       source: { type: 'project-source', format: 'tex', file: target.mainFile },
     })))
-    writeDocumentManifest(outDir, createDocumentManifest({
+    const documentBuildResult = { manifest: createDocumentManifest({
       ...project,
       sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged',
-    }, manifestPages, { sourceMapping: 'synctex' }))
+    }, manifestPages, { sourceMapping: 'synctex' }),
+    targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
+    recordLastBuildSuccess: true }
 
-    // Store the target shape before finalization. `targets` always reflects the
-    // viewer doesn't have to special-case single-target — it just renders
-    // a one-element list.
     const lastBuildSuccess = (await readProject(name))?.lastBuildSuccess || null
-    await _reporter.updateProject(name, {
-      sourceFormat: 'tex',
-      renderer: 'latex',
-      documentFormat: 'paged',
-      pages: expectedPages,
-      buildStatus: 'finalizing',
-      lastBuild: new Date().toISOString(),
-      targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
-    })
     clearSynctexCache(name)
 
     // Touch build.stamp — staleness counterpart to source.stamp. Replaces
@@ -2128,13 +2120,7 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
       throw e
     }
 
-    signalReload(name, null)
-
-    await _reporter.updateProject(name, {
-      buildStatus: 'success',
-      lastBuild: new Date().toISOString(),
-      lastBuildSuccess: new Date().toISOString(),
-    })
+    await finalizeDocumentBuild(name, documentBuildResult, _reporter)
 
     const totalElapsed = elapsed()
     ctx.addLog(`Build complete in ${totalElapsed}s`)

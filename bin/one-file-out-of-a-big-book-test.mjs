@@ -65,7 +65,7 @@ const OTHER_TEXT = 'a chapter of prose that nobody is opening right now.\n'.repe
 
 try {
   // ## Opening one file out of a big book
-  createProject({ name: NAME, title: NAME, mainFile: 'main.tex', format: 'svg' })
+  createProject({ name: NAME, title: NAME, mainFile: 'main.tex', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
   await updateProject(NAME, { pages: 1, buildStatus: 'success' })
   mkdirSync(outputDir(NAME), { recursive: true })
   writeFileSync(join(outputDir(NAME), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))

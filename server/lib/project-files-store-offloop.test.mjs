@@ -79,10 +79,10 @@ test('deleteProject clears its manifest through replace(project, [])', async () 
   const root = join(tempRoot, 'projects')
   try {
     await initProjectStore(root)
-    createProject({ name: 'paper', title: 'Paper' })
+    createProject({ name: 'paper', title: 'Paper', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
     await updateClientSourceManifest('paper', ['main.tex'])
     await deleteProject('paper')
-    createProject({ name: 'paper', title: 'Paper' })
+    createProject({ name: 'paper', title: 'Paper', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
     assert.deepEqual(await readClientSourceManifest('paper'), [])
   } finally {
     await closeProjectStore()
@@ -95,7 +95,7 @@ test('project metadata reads and updates run through the project files worker', 
   const root = join(tempRoot, 'projects')
   try {
     await initProjectStore(root)
-    createProject({ name: 'paper', title: 'Paper' })
+    createProject({ name: 'paper', title: 'Paper', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
     writeFileSync(join(root, 'paper', 'sync-snapshot.json'), '{}')
     const checkpoint = await checkpointProjectPartWritebackOffloop({
       filePath: join(root, 'paper', 'source', 'parts', 'note.md'),
@@ -114,7 +114,7 @@ test('project metadata reads and updates run through the project files worker', 
   }
 })
 
-test('project-store startup persists authoritative document axes on legacy records', async () => {
+test('project-store startup rejects legacy records without changing them', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-project-axis-migration-'))
   const root = join(tempRoot, 'projects')
   const projectDir = join(root, 'legacy-qmd')
@@ -124,16 +124,10 @@ test('project-store startup persists authoritative document axes on legacy recor
     mainFile: 'index.qmd', clientSourceManifest: ['index.qmd', 'index.html'],
   }))
   try {
-    await initProjectStore(root)
-    assert.deepEqual(
-      (({ sourceFormat, renderer, documentFormat }) => ({ sourceFormat, renderer, documentFormat }))(await readProject('legacy-qmd')),
-      { sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'slides' },
-    )
+    await assert.rejects(async () => { await initProjectStore(root) }, /explicit document-axes-v1 storage migration/)
     const persisted = JSON.parse(readFileSync(join(projectDir, 'project.json'), 'utf8'))
-    assert.equal(persisted.sourceFormat, 'qmd')
-    assert.equal(persisted.renderer, 'quarto')
-    assert.equal(persisted.documentFormat, 'slides')
-    assert.deepEqual(await readClientSourceManifest('legacy-qmd'), ['index.qmd'])
+    assert.equal(persisted.format, 'qmd')
+    assert.equal(Object.hasOwn(persisted, 'sourceFormat'), false)
   } finally {
     await closeProjectStore()
     rmSync(tempRoot, { recursive: true, force: true })

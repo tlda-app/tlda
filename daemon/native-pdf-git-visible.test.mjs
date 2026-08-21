@@ -84,7 +84,7 @@ test('a native PDF root reaches a visible searchable document through the daemon
       log: { info() {}, warn() {}, error() {} },
     })
     manager.bindSource(project, checkout)
-    await manager.sync([{ name: project, mainFile: 'book.pdf', format: 'pdf', sourceFormat: 'pdf' }])
+    await manager.sync([{ name: project, mainFile: 'book.pdf', sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged' }])
     const submission = await manager.submit(project)
     assert.equal(submission.status, 'SubmittedToBuildQueue')
 

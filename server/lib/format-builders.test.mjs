@@ -16,7 +16,7 @@ test('the common finalizer owns manifest publication, project metadata, and relo
   try {
     await initProjectStore(root)
     createProject({
-      name: 'notes', mainFile: 'notes.md', format: 'markdown',
+      name: 'notes', mainFile: 'notes.md',
       sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html',
     })
     setBuildReporter({
@@ -29,7 +29,11 @@ test('the common finalizer owns manifest publication, project metadata, and relo
       [{ file: 'notes.html', width: 800, height: 1000 }],
       { sourceMapping: 'page-source' },
     )
-    await finalizeDocumentBuild('notes', { manifest, writePageInfo: true })
+    await finalizeDocumentBuild('notes', { manifest, writePageInfo: true }, {
+      updateProject: async (name, update) => updates.push({ name, update }),
+      broadcastSignal: (...args) => signals.push(args),
+      regenerateBookTocs: async () => {},
+    })
 
     assert.equal(existsSync(join(root, 'notes', 'output', 'document-manifest.json')), true)
     assert.equal(JSON.parse(readFileSync(join(root, 'notes', 'output', 'page-info.json'), 'utf8')).length, 1)
@@ -46,7 +50,7 @@ test('the common finalizer owns manifest publication, project metadata, and relo
 })
 
 test('format adapters cannot silently succeed without the common result', async () => {
-  await assert.rejects(finalizeDocumentBuild('missing-result', null), /returned no manifest/)
+  await assert.rejects(finalizeDocumentBuild('missing-result', null, {}), /returned no manifest/)
 })
 
 test('format adapters cannot publish common build side effects themselves', () => {
@@ -58,4 +62,7 @@ test('format adapters cannot publish common build side effects themselves', () =
   assert.doesNotMatch(buildSlidesDocument.toString(), /finalizeDocumentBuild|updateProject|broadcastSignal/)
   assert.match(buildHtml.toString(), /runDocumentBuilder/)
   assert.match(buildSlides.toString(), /runDocumentBuilder/)
+  const texSource = readFileSync(join(import.meta.dirname, 'build-runner.mjs'), 'utf8')
+  assert.match(texSource, /finalizeDocumentBuild\(name, documentBuildResult, _reporter\)/)
+  assert.doesNotMatch(texSource, /writeDocumentManifest\(/)
 })

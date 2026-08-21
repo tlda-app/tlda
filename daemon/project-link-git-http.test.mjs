@@ -52,7 +52,7 @@ test('new local project initializes its remote, then materializes only by daemon
     const base = `http://127.0.0.1:${server.address().port}`
     const created = await fetch(`${base}/api/projects`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'paper', mainFile: 'main.tex', format: 'svg' }),
+      body: JSON.stringify({ name: 'paper', mainFile: 'main.tex', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' }),
     })
     assert.equal(created.status, 201)
     assert.equal(existsSync(join(projectsDir, 'paper', '.source-lifecycle', 'git', 'HEAD')), true, '201 must follow remote initialization')

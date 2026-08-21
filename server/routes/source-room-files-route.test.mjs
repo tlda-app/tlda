@@ -54,7 +54,7 @@ test('project creation initializes its Git remote before the first source push',
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/projects`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'fresh-paper', mainFile: 'main.tex', format: 'svg' }),
+      body: JSON.stringify({ name: 'fresh-paper', mainFile: 'main.tex', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' }),
     })
     assert.equal(response.status, 201)
     assert.equal(existsSync(join(projectsDir, 'fresh-paper', '.source-lifecycle', 'git', 'HEAD')), true)

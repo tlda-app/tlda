@@ -17,6 +17,7 @@ import { TARGET_WIDTH, PAGE_GAP } from '../layoutConstants'
 import { setSvgText } from '../stores/svgTextStore'
 import { svgViewBoxStore } from '../stores'
 import { appendToken } from '../authToken'
+import { foreignDocumentTransport } from '../../shared/document-transport.mjs'
 
 const INBOX_GAP = 120  // gap between current doc and auto-opened docs
 const FOREIGN_DOC_OPACITY = 0.85
@@ -25,8 +26,11 @@ interface DocArrivedEvent {
   type: 'doc-arrived'
   name: string
   title: string
-  format: string
+  sourceFormat: string
+  renderer: string
+  documentFormat: string
   pages: number
+  pageFiles: string[]
   timestamp: number
 }
 
@@ -75,7 +79,8 @@ export function useDocAutoOpen(
       return
     }
 
-    const format = projectInfo.format || event.format
+    const transported = foreignDocumentTransport(projectInfo, event)
+    const format = transported.format
     let htmlPages: HtmlPageInfo[] = []
     if (format === 'markdown') {
       try {
@@ -89,9 +94,10 @@ export function useDocAutoOpen(
       }
     }
 
+    const pageFiles = transported.pageFiles
     const pageCount = format === 'markdown'
       ? htmlPages.length
-      : projectInfo.pages || event.pages || 0
+      : pageFiles.length || transported.pages
     if (pageCount === 0) return
 
     if (existing) {
@@ -175,7 +181,7 @@ export function useDocAutoOpen(
     const svgBasePath = `/docs/${event.name}/`
     for (let i = 0; i < pageCount; i++) {
       const id = shapeIds[i]
-      fetchForeignPage(event.name, i, id, svgBasePath)
+      fetchForeignPage(event.name, i, id, svgBasePath, pageFiles[i])
     }
   }, [editorRef, document, projectName, onReloadRequest])
 
@@ -221,9 +227,10 @@ async function fetchForeignPage(
   pageIndex: number,
   shapeId: TLShapeId,
   basePath: string,
+  pageFile?: string,
 ) {
   try {
-    const url = `${basePath}page-${pageIndex + 1}.svg`
+    const url = `${basePath}${pageFile || `page-${pageIndex + 1}.svg`}`
     const res = await fetch(url)
     if (!res.ok) return
     const svgText = await res.text()

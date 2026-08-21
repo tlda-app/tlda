@@ -10,6 +10,7 @@
 import { resolve, relative, basename, dirname, join, delimiter } from 'path'
 import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
+import { documentTransport } from '../shared/document-transport.mjs'
 import { homedir, hostname } from 'os'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
@@ -505,7 +506,7 @@ async function cmdBook() {
 
   // Create the book project
   try {
-    await createProjectApi({ name, title, format: 'book', members })
+    await createProjectApi({ name, title, sourceFormat: 'book', renderer: 'identity', documentFormat: 'book', members })
     console.log(green(`Created book "${name}" with ${members.length} members.`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -565,7 +566,7 @@ async function cmdScratch() {
 
   // Create or update markdown project
   try {
-    await createProjectApi({ name, title, mainFile: fileName, format: 'markdown' })
+    await createProjectApi({ name, title, mainFile: fileName, sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
     console.log(green(`Created scratch project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -723,7 +724,7 @@ async function cmdCreate() {
 
     // Create or update project
     try {
-      await createProjectApi({ name, title, mainFile: slidesMain || deckHtml[0], format: 'slides' })
+      await createProjectApi({ name, title, mainFile: slidesMain || deckHtml[0], sourceFormat: 'html', renderer: 'identity', documentFormat: 'slides' })
       console.log(green(`Created slides project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -755,7 +756,7 @@ async function cmdCreate() {
 
     // Create or update project
     try {
-      await createProjectApi({ name, title, format: 'html' })
+      await createProjectApi({ name, title, sourceFormat: 'html', renderer: 'identity', documentFormat: 'html' })
       console.log(green(`Created HTML project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -811,7 +812,7 @@ async function cmdCreate() {
     console.log(dim(`  Main file: ${mainFile}`))
 
     try {
-      await api('POST', '/api/projects', { name, title, mainFile, format: 'qmd' })
+      await api('POST', '/api/projects', { name, title, mainFile, sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html' })
       console.log(green(`Created Quarto project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -888,7 +889,7 @@ async function cmdCreate() {
     console.log(dim(`  Main file: ${mainFile}`))
 
     try {
-      await createProjectApi({ name, title, mainFile, format: 'markdown' })
+      await createProjectApi({ name, title, mainFile, sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
       console.log(green(`Created markdown project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -922,7 +923,7 @@ async function cmdCreate() {
 
   // Create or update project on server
   try {
-    await createProjectApi({ name, title, mainFile })
+    await createProjectApi({ name, title, mainFile, sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -2697,9 +2698,9 @@ function requiredClassroomSetupFlag(name) {
   return value
 }
 
-async function createOrUpdateClassroomProject({ name, title, mainFile, format }) {
+async function createOrUpdateClassroomProject({ name, title, mainFile, sourceFormat, renderer, documentFormat }) {
   try {
-    await createProjectApi({ name, title, mainFile, format })
+    await createProjectApi({ name, title, mainFile, sourceFormat, renderer, documentFormat })
   } catch (error) {
     if (!error.message?.includes('already exists')) throw error
   }
@@ -2742,9 +2743,9 @@ function commitClassroomProjectSource(sourceDir, message) {
   })
 }
 
-async function linkClassroomGitProject({ name, title, mainFile, format, sourceDir, documentRoots }) {
+async function linkClassroomGitProject({ name, title, mainFile, sourceFormat, renderer, documentFormat, sourceDir, documentRoots }) {
   commitClassroomProjectSource(sourceDir, `classroom setup: ${name}`)
-  await createOrUpdateClassroomProject({ name, title, mainFile, format })
+  await createOrUpdateClassroomProject({ name, title, mainFile, sourceFormat, renderer, documentFormat })
   const projectMetadata = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
   return callLocalDaemonLifecycle('project-source-link', {
     project: name,
@@ -2802,7 +2803,7 @@ async function cmdClassroomSetup() {
     name: sourceDocKey,
     title: `${assignmentTitle} source`,
     mainFile: rendered.homeworkPath,
-    format: 'qmd',
+    sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html',
     sourceDir,
     documentRoots: [rendered.homeworkPath],
   })
@@ -2810,7 +2811,7 @@ async function cmdClassroomSetup() {
     name: templateDocKey,
     title: `${assignmentTitle} handout`,
     mainFile: rendered.handoutOutput,
-    format: 'html',
+    sourceFormat: 'html', renderer: 'identity', documentFormat: 'html',
     sourceDir: handoutDir,
     documentRoots: [rendered.handoutOutput],
   })
@@ -2818,7 +2819,7 @@ async function cmdClassroomSetup() {
     name: solutionsDocKey,
     title: `${assignmentTitle} solutions`,
     mainFile: rendered.solutionOutput,
-    format: 'html',
+    sourceFormat: 'html', renderer: 'identity', documentFormat: 'html',
     sourceDir: solutionDir,
     documentRoots: [rendered.solutionOutput],
   })
@@ -2944,7 +2945,7 @@ async function cmdMoveProject() {
       name: project.name,
       title: project.title || project.name,
       mainFile: project.mainFile,
-      format: project.format,
+      ...documentTransport(project),
       sourceDir,
       ...(project.members ? { members: project.members } : {}),
     })

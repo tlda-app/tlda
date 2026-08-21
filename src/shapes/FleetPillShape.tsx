@@ -165,8 +165,10 @@ async function ensureTemporaryMarkdownProject() {
     body: JSON.stringify({
       name: TEMP_MARKDOWN_PROJECT,
       title: 'Markdown chip',
-      format: 'markdown',
       mainFile: TEMP_MARKDOWN_FILE,
+      sourceFormat: 'md',
+      renderer: 'markdown',
+      documentFormat: 'html',
     }),
   })
   if (!createRes.ok && createRes.status !== 409) {

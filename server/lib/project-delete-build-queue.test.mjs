@@ -27,7 +27,7 @@ test('deleting and recreating a project can retry the same content-addressed rev
 
   try {
     await initProjectStore(projectsDir)
-    createProject({ name: 'retry-project', title: 'Retry Project' })
+    createProject({ name: 'retry-project', title: 'Retry Project', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
 
     const first = await queue.admitBuild('retry-project', {
       revision: 'same-content-revision', daemonId: 'daemon-a', branch: 'main',
@@ -39,7 +39,7 @@ test('deleting and recreating a project can retry the same content-addressed rev
     await deleteProjectAndBuildSubmissions('retry-project', queue)
     assert.equal(store.get('retry-project', 'same-content-revision'), null)
 
-    createProject({ name: 'retry-project', title: 'Retry Project' })
+    createProject({ name: 'retry-project', title: 'Retry Project', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
     const retried = await queue.admitBuild('retry-project', {
       revision: 'same-content-revision', daemonId: 'daemon-a', branch: 'main',
     })
