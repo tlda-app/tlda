@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { encodeRefComponent } from './source-git-store.mjs'
+import { parseHistorySeedRef } from '../../shared/history-seed-ref.mjs'
 
 const ZERO = '0000000000000000000000000000000000000000'
 
@@ -57,6 +58,13 @@ export async function validateProposalUpdates({ gitDir, project, daemonId, input
     .then(result => result.stdout.trim() || null, () => null)
   for (const line of String(input).trim().split('\n').filter(Boolean)) {
     const [oldRevision, newRevision, ref] = line.trim().split(/\s+/)
+    const seed = parseHistorySeedRef(ref, daemonId)
+    if (seed) {
+      if (seed.revision !== newRevision || oldRevision !== ZERO) {
+        throw new Error(`history seed ref must be a new immutable ref in the authenticated daemon namespace: ${ref}`)
+      }
+      continue
+    }
     const parsed = parseProposalRef(ref, daemonId)
     if (!parsed || parsed.revision !== newRevision || oldRevision !== ZERO) {
       throw new Error(`proposal ref must be a new immutable ref in the authenticated daemon namespace: ${ref}`)

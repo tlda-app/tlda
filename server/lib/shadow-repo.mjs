@@ -124,20 +124,15 @@ export async function createShadowBundleBase64(name, hash) {
  * Every origin gets the same write guards, which the blank path alone used to
  * install — a cloned shadow came up with no commit-msg hook at all.
  */
-export async function ensureShadowRepo(name, { bundlePath = null, projectRepoPath = null, paperScope = null } = {}) {
+export async function ensureShadowRepo(name, { gitDir = null, gitRef = null, projectRepoPath = null, paperScope = null } = {}) {
   const repoDir = shadowRepoDir(name)
   if (existsSync(join(repoDir, '.git'))) return repoDir
   if (!existsSync(repoDir)) mkdirSync(repoDir, { recursive: true })
 
-  if (bundlePath) {
-    if (!existsSync(bundlePath)) throw new Error(`Shadow bundle not found: ${bundlePath}`)
-    // Not `git clone`. The daemon bundles one ref — the mirrored history — and
-    // deliberately not `--all`, so the bundle names no branch and no HEAD. Clone
-    // accepts that silently and leaves an empty repo with no commits, which then
-    // reads as "this paper has no versions". Fetch the ref onto a branch and
-    // point HEAD at it instead.
+  if (gitDir && gitRef) {
+    if (!existsSync(gitDir)) throw new Error(`Git repository not found: ${gitDir}`)
     await execAsync('git init', { cwd: repoDir, timeout: 10000 })
-    await execAsync(`git fetch "${bundlePath}" "${SHADOW_HEAD_REF}:refs/heads/main"`, { cwd: repoDir, timeout: 120000 })
+    await execAsync(`git fetch "${gitDir}" "${gitRef}:refs/heads/main"`, { cwd: repoDir, timeout: 120000 })
     await execAsync('git symbolic-ref HEAD refs/heads/main', { cwd: repoDir, timeout: 5000 })
     await execAsync('git reset --hard', { cwd: repoDir, timeout: 30000 })
   } else if (projectRepoPath) {
@@ -181,23 +176,16 @@ export async function ensureShadowRepo(name, { bundlePath = null, projectRepoPat
 }
 
 /**
- * Seed a project's shadow from a bundle of another environment's shadow —
- * the import half of `mirrorShadow`, which has always produced these bundles
- * (`git bundle create --all`) and had nothing on the other side to read them.
- * That gap is why moving a project between environments arrived with one
- * version: the source and render were pushed, and the history had no carrier.
- *
- * This is not a second way to build a shadow. A bundle and a repo are the same
- * kind of thing to `git clone`, so this is the same clone as
- * `initShadowFromProjectRepo` with a different origin — and no filter, because
- * a shadow bundle is already scoped to the paper.
+ * Seed a project's shadow from an immutable history ref already pushed into
+ * the project's canonical Git repository. The ref is already scoped to the
+ * document graph, so this copies the history without filtering it again.
  */
-export async function initShadowFromBundle(name, bundlePath) {
+export async function initShadowFromGitRef(name, gitDir, gitRef) {
   const repoDir = shadowRepoDir(name)
   if (existsSync(join(repoDir, '.git'))) {
     throw new Error(`Shadow repo already exists at ${repoDir} — rename or delete first`)
   }
-  return await ensureShadowRepo(name, { bundlePath })
+  return await ensureShadowRepo(name, { gitDir, gitRef })
 }
 
 export async function initShadowFromProjectRepo(name, projectRepoPath, paperScope) {

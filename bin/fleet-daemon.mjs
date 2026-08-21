@@ -629,15 +629,20 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   }
 
   if (!status.alreadyLinked) {
-    const history = await shadowMirror.exportShadowBundle({ project, sourceDir, seedBranch, seedRevision, documentRoots })
-    if (!history.empty) {
-      const adopted = await sendMsgWithReply({
-        type: 'adopt-shadow-history',
-        project,
-        head: history.head,
-        bundleBase64: history.bundleBase64,
-      })
-      if (!adopted?.ok) throw new Error(`${project} was not linked: the server did not confirm its history`)
+    const history = await shadowMirror.prepareHistorySeed({ project, sourceDir, seedBranch, seedRevision, documentRoots })
+    try {
+      if (!history.empty) {
+        const pushed = await sourceSync.pushHistorySeed(project, history.repositoryDir, history.head)
+        const adopted = await sendMsgWithReply({
+          type: 'adopt-shadow-history-ref',
+          project,
+          head: history.head,
+          ref: pushed.ref,
+        })
+        if (!adopted?.ok) throw new Error(`${project} was not linked: the server did not confirm its history`)
+      }
+    } finally {
+      await history.cleanup?.()
     }
   }
 
@@ -1315,7 +1320,6 @@ machineRpc.register({
   'wake': rpcWake,
   ...localArtifacts.handlers,
   'mirror-shadow-ref': shadowMirror.mirrorShadowRef,
-  'export-shadow-bundle': shadowMirror.exportShadowBundle,
 })
 
 function startLocalLifecycleRpc() {

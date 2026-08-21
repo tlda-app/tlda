@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { createShadowMirror, exportProjectHistoryBundle } from './shadow-mirror.mjs'
+import { createShadowMirror, prepareProjectHistorySeed } from './shadow-mirror.mjs'
 
 const execFile = promisify(execFileCb)
 const git = (cwd, args) => execFile('git', args, { cwd, encoding: 'utf8', timeout: 120000 })
@@ -18,16 +18,6 @@ async function fixtureRepo(prefix) {
   await git(repo, ['config', 'user.name', 'fixture'])
   await git(repo, ['config', 'user.email', 'fixture@example.test'])
   return { root, repo }
-}
-
-async function readBundle(bundleBase64, root) {
-  const bundle = join(root, 'history.bundle')
-  const imported = join(root, 'imported')
-  writeFileSync(bundle, Buffer.from(bundleBase64, 'base64'))
-  mkdirSync(imported)
-  await git(imported, ['init'])
-  await git(imported, ['fetch', bundle, 'refs/tlda/shadow/HEAD:refs/heads/main'])
-  return imported
 }
 
 test('new-to-tlda link history uses the selected revision and document include graph', async () => {
@@ -43,17 +33,17 @@ test('new-to-tlda link history uses the selected revision and document include g
   writeFileSync(join(repo, 'notes.txt'), 'later unrelated\n')
   await git(repo, ['commit', '-am', 'later unrelated work'])
 
-  const exported = await exportProjectHistoryBundle({
+  const prepared = await prepareProjectHistorySeed({
     project: 'paper', sourceDir: repo, seedBranch: 'main', seedRevision: selected, documentRoots: ['paper.tex'], log: { info() {} },
   })
-  assert.equal(exported.empty, false)
-  assert.equal(exported.seed, selected)
-  assert.deepEqual(exported.members, ['paper.tex', 'section.tex'])
+  assert.equal(prepared.empty, false)
+  assert.equal(prepared.seed, selected)
+  assert.deepEqual(prepared.members, ['paper.tex', 'section.tex'])
 
-  const imported = await readBundle(exported.bundleBase64, root)
-  assert.equal(Number((await git(imported, ['rev-list', '--count', 'main'])).stdout.trim()), 2)
-  assert.deepEqual((await git(imported, ['ls-tree', '-r', '--name-only', 'main'])).stdout.trim().split('\n'), ['paper.tex', 'section.tex'])
-  assert.equal((await git(imported, ['show', 'main:section.tex'])).stdout, 'second\n')
+  assert.equal(Number((await git(prepared.repositoryDir, ['rev-list', '--count', prepared.head])).stdout.trim()), 2)
+  assert.deepEqual((await git(prepared.repositoryDir, ['ls-tree', '-r', '--name-only', prepared.head])).stdout.trim().split('\n'), ['paper.tex', 'section.tex'])
+  assert.equal((await git(prepared.repositoryDir, ['show', `${prepared.head}:section.tex`])).stdout, 'second\n')
+  await prepared.cleanup()
 })
 
 test('existing tlda shadow history takes precedence over ordinary Git seeding', async () => {
@@ -65,9 +55,10 @@ test('existing tlda shadow history takes precedence over ordinary Git seeding', 
   await git(repo, ['update-ref', 'refs/tlda/shadow/HEAD', shadow])
 
   const mirror = createShadowMirror({ getSourceDir: () => repo, log: { info() {}, warn() {} } })
-  const exported = await mirror.exportShadowBundle({
+  const prepared = await mirror.prepareHistorySeed({
     project: 'paper', sourceDir: repo, seedRevision: 'does-not-exist', documentRoots: ['missing.tex'],
   })
-  const imported = await readBundle(exported.bundleBase64, root)
-  assert.equal((await git(imported, ['rev-parse', 'main'])).stdout.trim(), shadow)
+  assert.equal(prepared.repositoryDir, repo)
+  assert.equal(prepared.head, shadow)
+  await prepared.cleanup()
 })

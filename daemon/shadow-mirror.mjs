@@ -98,18 +98,17 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
    * That is what makes a project movable. A move re-links the paper to another
    * environment, and the new server starts with no history — but the working
    * copy has been accumulating it all along, under refs this daemon wrote. The
-   * bundle is what a clone reads, so the new server clones what the old one
-   * mirrored out, and the versions carry across without either server talking
-   * to the other.
+   * daemon pushes that history through the canonical authenticated Git HTTP
+   * repository before it asks the server to promote the immutable ref.
    *
    * Returns `{ empty: true }` rather than throwing when the working copy holds
    * no shadow history: a paper that has never been built has none, and that is
    * an ordinary state, not a failure.
    */
-  async function exportShadowBundle({ project, sourceDir: explicitSourceDir = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = [] }) {
+  async function prepareHistorySeed({ project, sourceDir: explicitSourceDir = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = [] }) {
     if (!project) throw new Error('missing project')
     // The caller may name the directory instead of letting us resolve it. A link
-    // offers this history BEFORE it writes the binding — so that a failed offer
+    // pushes this history BEFORE it writes the binding — so that a failed push
     // leaves nothing behind — and at that moment there is no binding to resolve.
     const sourceDir = explicitSourceDir || getSourceDir(project)
     if (!sourceDir) throw new Error(`project ${project} is not watched on this daemon`)
@@ -119,38 +118,16 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
       const { stdout } = await execFileP('git', ['rev-parse', '--verify', SHADOW_HEAD_REF], { cwd: sourceDir, timeout: 5000 })
       head = stdout.trim()
     } catch {
-      return exportProjectHistoryBundle({ project, sourceDir, seedBranch, seedRevision, documentRoots, log })
+      return prepareProjectHistorySeed({ project, sourceDir, seedBranch, seedRevision, documentRoots, log })
     }
     if (!/^[0-9a-f]{40}$/i.test(head)) return { ok: true, empty: true, project, sourceDir }
-
-    const bundlePath = path.join(os.tmpdir(), `tlda-shadow-export-${project}-${head.slice(0, 7)}-${Date.now()}.bundle`)
-    try {
-      // Bundle the REF, not the bare sha: `git bundle create <path> <sha>`
-      // writes nothing ("Refusing to create empty bundle") because a bundle
-      // carries refs. Naming the ref carries every commit reachable from it,
-      // which is the whole version history.
-      //
-      // Deliberately not `--all`: that would sweep up the author's own branches,
-      // and the server is not supposed to hold every file they have.
-      await execFileP('git', ['bundle', 'create', bundlePath, SHADOW_HEAD_REF], { cwd: sourceDir, timeout: 60000 })
-      const bundleBase64 = fs.readFileSync(bundlePath).toString('base64')
-      log.info(`exported ${project}@${head.slice(0, 7)} shadow history from ${sourceDir}`)
-      return { ok: true, empty: false, project, sourceDir, head, bundleBase64 }
-    } finally {
-      try {
-        fs.rmSync(bundlePath, { force: true })
-      } catch (e) {
-        // Best-effort cleanup of a temp file: failing to delete it must not mask
-        // the export result, which is the thing the caller needs.
-        log.warn(`failed to remove temporary shadow export bundle ${bundlePath}: ${e.message}`)
-      }
-    }
+    return { ok: true, empty: false, project, sourceDir, head, repositoryDir: sourceDir, cleanup: async () => {} }
   }
 
-  return { mirrorShadowRef, exportShadowBundle }
+  return { mirrorShadowRef, prepareHistorySeed }
 }
 
-export async function exportProjectHistoryBundle({ project, sourceDir, seedBranch = null, seedRevision = 'HEAD', documentRoots = [], log = console }) {
+export async function prepareProjectHistorySeed({ project, sourceDir, seedBranch = null, seedRevision = 'HEAD', documentRoots = [], log = console }) {
   const roots = [...new Set(documentRoots.map(value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '')).filter(Boolean))]
   if (!roots.length) return { ok: true, empty: true, project, sourceDir }
 
@@ -169,7 +146,6 @@ export async function exportProjectHistoryBundle({ project, sourceDir, seedBranc
   const treeDir = path.join(workDir, 'tree')
   const filteredDir = path.join(workDir, 'filtered')
   const archivePath = path.join(workDir, 'tree.tar')
-  const bundlePath = path.join(workDir, 'history.bundle')
   try {
     await fs.promises.mkdir(treeDir)
     await execFileP('git', ['archive', '--format=tar', `--output=${archivePath}`, seed], { cwd: sourceDir, timeout: 60000 })
@@ -198,12 +174,14 @@ export async function exportProjectHistoryBundle({ project, sourceDir, seedBranc
     const { stdout: headOut } = await execFileP('git', ['rev-parse', '--verify', 'HEAD^{commit}'], { cwd: filteredDir, timeout: 5000 })
     const head = headOut.trim()
     await execFileP('git', ['update-ref', SHADOW_HEAD_REF, head], { cwd: filteredDir, timeout: 5000 })
-    await execFileP('git', ['bundle', 'create', bundlePath, SHADOW_HEAD_REF], { cwd: filteredDir, timeout: 120000 })
-    const bundleBase64 = fs.readFileSync(bundlePath).toString('base64')
-    log.info(`exported ${project}@${head.slice(0, 7)} project history from ${seed.slice(0, 7)} (${members.size} member(s))`)
-    return { ok: true, empty: false, project, sourceDir, head, seed, roots, members: [...members].sort(), bundleBase64 }
-  } finally {
+    log.info(`prepared ${project}@${head.slice(0, 7)} project history from ${seed.slice(0, 7)} (${members.size} member(s))`)
+    return {
+      ok: true, empty: false, project, sourceDir, head, seed, roots, members: [...members].sort(), repositoryDir: filteredDir,
+      cleanup: () => fs.promises.rm(workDir, { recursive: true, force: true }),
+    }
+  } catch (error) {
     await fs.promises.rm(workDir, { recursive: true, force: true })
+    throw error
   }
 }
 

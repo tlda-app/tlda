@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { adoptShadowHistory } from './build-runner.mjs'
+import { adoptShadowHistoryRef } from './build-runner.mjs'
 import { setProjectPathOverride } from './project-store.mjs'
 
 function git(cwd, ...args) {
@@ -16,25 +16,36 @@ test('adopting the existing shadow head is an idempotent retry, but divergent hi
   const root = mkdtempSync(join(tmpdir(), 'tlda-shadow-adopt-retry-'))
   const name = 'adopt-retry'
   const projectDir = join(root, name)
+  const sourceDir = join(root, 'source')
   const shadowDir = join(projectDir, 'shadow-repo')
-  mkdirSync(shadowDir, { recursive: true })
+  mkdirSync(sourceDir, { recursive: true })
+  mkdirSync(projectDir, { recursive: true })
   setProjectPathOverride(name, projectDir)
   t.after(() => {
     setProjectPathOverride(name)
     rmSync(root, { recursive: true, force: true })
   })
 
-  git(shadowDir, 'init')
-  git(shadowDir, 'config', 'user.email', 'tlda@test.invalid')
-  git(shadowDir, 'config', 'user.name', 'tlda test')
-  writeFileSync(join(shadowDir, 'paper.tex'), 'first\n')
-  git(shadowDir, 'add', 'paper.tex')
-  git(shadowDir, 'commit', '-m', 'first')
-  const head = git(shadowDir, 'rev-parse', 'HEAD')
+  git(sourceDir, 'init')
+  git(sourceDir, 'config', 'user.email', 'tlda@test.invalid')
+  git(sourceDir, 'config', 'user.name', 'tlda test')
+  writeFileSync(join(sourceDir, 'paper.tex'), 'first\n')
+  git(sourceDir, 'add', 'paper.tex')
+  git(sourceDir, 'commit', '-m', 'first')
+  const head = git(sourceDir, 'rev-parse', 'HEAD')
+  const ref = `refs/tlda/history-seeds/mini-testing/${head}`
+  git(sourceDir, 'update-ref', ref, head)
 
-  assert.equal(await adoptShadowHistory({ name, bundleBase64: 'not-read-on-retry', head }), true)
+  assert.equal(await adoptShadowHistoryRef({ name, gitDir: join(sourceDir, '.git'), ref, head }), true)
+  assert.equal(git(shadowDir, 'rev-parse', 'HEAD'), head)
+  assert.equal(await adoptShadowHistoryRef({ name, gitDir: join(sourceDir, '.git'), ref, head }), true)
+  writeFileSync(join(sourceDir, 'paper.tex'), 'second\n')
+  git(sourceDir, 'commit', '-am', 'second')
+  const divergentHead = git(sourceDir, 'rev-parse', 'HEAD')
+  const divergentRef = `refs/tlda/history-seeds/mini-testing/${divergentHead}`
+  git(sourceDir, 'update-ref', divergentRef, divergentHead)
   await assert.rejects(
-    adoptShadowHistory({ name, bundleBase64: 'not-read-on-divergence', head: '0'.repeat(40) }),
+    adoptShadowHistoryRef({ name, gitDir: join(sourceDir, '.git'), ref: divergentRef, head: divergentHead }),
     /already has version history on this server/
   )
 })

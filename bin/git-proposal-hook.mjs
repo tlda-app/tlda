@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { validateProposalUpdates } from '../server/lib/git-proposals.mjs'
+import { parseProposalRef, validateProposalUpdates } from '../server/lib/git-proposals.mjs'
 
 const chunks = []
 for await (const chunk of process.stdin) chunks.push(chunk)
@@ -16,7 +16,8 @@ try {
     })
   } else if (mode === 'post-receive') {
     for (const line of input.trim().split('\n').filter(Boolean)) {
-      const [, revision] = line.trim().split(/\s+/)
+      const [, revision, ref] = line.trim().split(/\s+/)
+      if (!parseProposalRef(ref, process.env.TLDA_GIT_DAEMON_ID)) continue
       process.stdout.write(`SubmittedToBuildQueue ${revision}\n`)
     }
   } else {

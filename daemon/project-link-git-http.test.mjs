@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 import projectRoutes from '../server/routes/projects.mjs'
 import { createGitHttpHandler } from '../server/lib/git-http.mjs'
@@ -18,6 +19,10 @@ function sourceWatcher() {
   watcher.unwatch = async () => {}
   watcher.close = async () => {}
   return watcher
+}
+
+function git(cwd, ...args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
 }
 
 test('new local project initializes its remote, then materializes only by daemon Git proposal', { timeout: 60000 }, async () => {
@@ -54,11 +59,21 @@ test('new local project initializes its remote, then materializes only by daemon
 
     mkdirSync(checkout)
     writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}linked\\end{document}\n')
+    git(checkout, 'init')
+    git(checkout, 'config', 'user.name', 'fixture')
+    git(checkout, 'config', 'user.email', 'fixture@example.test')
+    git(checkout, 'add', 'main.tex')
+    git(checkout, 'commit', '-m', 'existing paper')
+    const historyHead = git(checkout, 'rev-parse', 'HEAD')
     const watcher = sourceWatcher()
     manager = createGitSyncManager({
       bindingsFile: join(root, 'bindings.json'), daemonId: 'mini:testing', server: base, token: 'secret',
       watch: () => watcher, quietMs: 10, log: { info() {}, warn() {}, error() {} },
     })
+    const seed = await manager.pushHistorySeed('paper', checkout, historyHead)
+    const sourceGit = await (await sourceLifecycleStore('paper')).gitRepository()
+    assert.equal(git(sourceGit.gitDir, 'rev-parse', seed.ref), historyHead)
+    assert.equal(admitted.length, 0, 'history seed push is not a source proposal')
     manager.bindSource('paper', checkout)
     await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
     const submission = await manager.submit('paper')

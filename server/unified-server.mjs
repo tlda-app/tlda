@@ -66,10 +66,11 @@ import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, r
 import { createSourceRoomDaemon, sourceRoomDaemonKey } from './lib/source-room-daemon.mjs'
 import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
-import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
+import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistoryRef } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { admitProposal, initBuildDispatcher, killAllDispatchedBuilds, recoverBuildPublications, recoverProposalBuilds, setBuildHeadNotifier } from './lib/build-dispatch.mjs'
 import { createGitHttpHandler } from './lib/git-http.mjs'
+import { parseHistorySeedRef } from '../shared/history-seed-ref.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
@@ -9732,24 +9733,17 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
-  // The receiving half of a move. A daemon offers a project's version history
-  // because the paper was just linked here and its working copy has been
-  // accumulating that history on every build. `d5984269e` wrote both ends of
-  // this and never added this case, so the daemon sent and every server dropped
-  // it from 2026-08-10 until it was measured: four versions on the source, one
-  // disjoint version on the destination.
-  //
-  // The reply is the link's gate, not a courtesy. Skip: "we do not lose data in
-  // this fucking app" — so the daemon blocks the link until this says versions
-  // landed, and the CLI does not push until the link returns. That is why the
-  // reply must come from adoptShadowHistory having actually run: the generic
-  // outbox ACK travels a different path (`ackDaemonOutboxMessage`, keyed by
-  // outbox_id) and would happily acknowledge a message this branch never saw.
-  // Only `{ id, result }` resolves the daemon's pending request.
-  if (type === 'adopt-shadow-history') {
-    const { project, bundleBase64, head } = msg
+  // History bytes arrive first through the authenticated Git HTTP repository.
+  // This control message carries only the immutable ref and commit to promote
+  // into the shadow repo. The reply remains the link gate: delivery of the ref
+  // is not proof that the shadow history was installed.
+  if (type === 'adopt-shadow-history-ref') {
+    const { project, ref, head } = msg
     try {
-      await adoptShadowHistory({ name: project, bundleBase64, head })
+      const parsed = parseHistorySeedRef(ref, ws._daemonKey)
+      if (!parsed || parsed.revision !== head) throw new Error(`invalid history seed ref for ${ws._daemonKey || 'unknown daemon'}`)
+      const git = await (await sourceLifecycleStore(project)).gitRepository()
+      await adoptShadowHistoryRef({ name: project, gitDir: git.gitDir, ref, head })
       const { listVersions } = await import('./lib/shadow-repo.mjs')
       const versions = await listVersions(project, { limit: 500 })
       console.log(`[shadow] adopted ${project}@${String(head || '').slice(0, 7)} — ${versions.length} version(s)`)

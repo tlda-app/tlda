@@ -11,6 +11,7 @@ import express from 'express'
 import { createGitHttpHandler } from './git-http.mjs'
 import { encodeRefComponent } from './source-git-store.mjs'
 import { closeProjectStore, createProject, initProjectStore, sourceLifecycleStore } from './project-store.mjs'
+import { historySeedRef } from '../../shared/history-seed-ref.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -60,10 +61,23 @@ test('authenticated Git HTTP admits one immutable proposal without moving shared
     const repository = await lifecycle.gitRepository()
     await git(root, ['clone', '--quiet', '--no-checkout', repository.gitDir, checkout])
     await git(checkout, ['checkout', '--quiet', '-b', 'work', sharedHead])
+    const seedRef = historySeedRef({ daemonId, revision: sharedHead })
+    const seeded = await git(checkout, ['push', remote, `${sharedHead}:${seedRef}`])
+    assert.doesNotMatch(`${seeded.stdout}\n${seeded.stderr}`, /SubmittedToBuildQueue/)
+    assert.equal(admitted.length, 0)
+
     writeFileSync(join(checkout, 'main.tex'), 'proposal\n')
     await git(checkout, ['add', 'main.tex'])
     await git(checkout, ['commit', '--quiet', '-m', 'proposal'])
     const revision = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
+    await assert.rejects(
+      git(checkout, ['push', remote, `${revision}:refs/tlda/history-seeds/other-daemon/${revision}`]),
+      /history seed ref|proposal ref/
+    )
+    await assert.rejects(
+      git(checkout, ['push', '--force', remote, `${revision}:${seedRef}`]),
+      /history seed ref must be a new immutable ref/
+    )
     const ref = `refs/tlda/proposals/${encodeRefComponent(daemonId)}/work/${revision}`
     const pushed = await git(checkout, ['push', remote, `HEAD:${ref}`])
     assert.match(`${pushed.stdout}\n${pushed.stderr}`, /SubmittedToBuildQueue/)

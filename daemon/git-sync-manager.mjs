@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { createEditClusterDebouncer } from './edit-cluster.mjs'
 import { createGitProjectSync, safeRefPart } from './git-project-sync.mjs'
 import { createRemoteGitBridge } from './remote-git-bridge.mjs'
+import { historySeedRef } from '../shared/history-seed-ref.mjs'
 
 const execFile = promisify(execFileCb)
 
@@ -29,6 +30,19 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   }
   function record(project) { return records().find(item => item.project === project) || null }
 
+  function projectRemoteUrl(project) {
+    let remoteUrl = remoteUrlFor ? remoteUrlFor(project) : new URL(`/git/${encodeURIComponent(project)}`, server)
+    if (remoteUrl instanceof URL && token) { remoteUrl.username = safeRefPart(daemonId); remoteUrl.password = token }
+    return remoteUrl.toString()
+  }
+
+  async function configureProjectRemote(project, sourceDir) {
+    const remoteUrl = projectRemoteUrl(project)
+    try { await execFile('git', ['remote', 'set-url', 'tlda', remoteUrl], { cwd: sourceDir }) }
+    catch { await execFile('git', ['remote', 'add', 'tlda', remoteUrl], { cwd: sourceDir }) }
+    return remoteUrl
+  }
+
   async function ensureRepo(item) {
     fs.mkdirSync(item.sourceDir, { recursive: true })
     try { await execFile('git', ['rev-parse', '--git-dir'], { cwd: item.sourceDir }) } catch {
@@ -36,11 +50,14 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       await execFile('git', ['config', 'user.name', 'tlda source daemon'], { cwd: item.sourceDir })
       await execFile('git', ['config', 'user.email', 'tlda@local'], { cwd: item.sourceDir })
     }
-    let remoteUrl = remoteUrlFor ? remoteUrlFor(item.project) : new URL(`/git/${encodeURIComponent(item.project)}`, server)
-    if (remoteUrl instanceof URL && token) { remoteUrl.username = safeRefPart(daemonId); remoteUrl.password = token }
-    remoteUrl = remoteUrl.toString()
-    try { await execFile('git', ['remote', 'set-url', 'tlda', remoteUrl], { cwd: item.sourceDir }) }
-    catch { await execFile('git', ['remote', 'add', 'tlda', remoteUrl], { cwd: item.sourceDir }) }
+    await configureProjectRemote(item.project, item.sourceDir)
+  }
+
+  async function pushHistorySeed(project, repositoryDir, revision) {
+    const ref = historySeedRef({ daemonId, revision })
+    await configureProjectRemote(project, repositoryDir)
+    await execFile('git', ['push', 'tlda', `${revision}:${ref}`], { cwd: repositoryDir, encoding: 'utf8', timeout: 180000 })
+    return { project, ref, revision }
   }
 
   function authenticatedUrl(value, remoteToken) {
@@ -228,6 +245,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     headChanged,
     pollRemote,
     submit,
+    pushHistorySeed,
     queuePaths,
     sourceFileForAbsolutePath,
     getSourceDir: project => record(project)?.sourceDir || null,

@@ -58,7 +58,7 @@ import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, aggregateBookToc, extractBuildErrors, sourceLifecycleStore } from './project-store.mjs'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
-import { commitSnapshot, currentVersion, initShadowFromProjectRepo, initShadowFromBundle, listVersions, createShadowBundleBase64, readShadowSourceScope } from './shadow-repo.mjs'
+import { commitSnapshot, currentVersion, initShadowFromProjectRepo, initShadowFromGitRef, listVersions, createShadowBundleBase64, readShadowSourceScope } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
@@ -157,8 +157,12 @@ export function setShadowMirrorHandler(handler) {
  * whether they share ancestry — and quietly doing nothing here would hide that
  * an offer arrived and was dropped. So it throws rather than skipping.
  */
-export async function adoptShadowHistory({ name, bundleBase64, head }) {
-  if (!name || !bundleBase64) throw new Error('adoptShadowHistory requires a project name and a bundle')
+export async function adoptShadowHistoryRef({ name, gitDir, ref, head }) {
+  if (!name || !gitDir || !ref || !/^[0-9a-f]{40}$/i.test(String(head || ''))) {
+    throw new Error('adoptShadowHistoryRef requires a project name, Git repository, ref, and commit')
+  }
+  const advertised = (await execAsync(`git --git-dir="${gitDir}" rev-parse --verify "${ref}^{commit}"`, { encoding: 'utf8' })).stdout.trim()
+  if (advertised !== head) throw new Error(`${name} history ref ${ref} does not point at ${head}`)
   const shadowDir = join(projectDir(name), 'shadow-repo')
   if (existsSync(join(shadowDir, '.git'))) {
     const { stdout } = await execAsync('git rev-parse --verify HEAD', { cwd: shadowDir, encoding: 'utf8' })
@@ -166,24 +170,10 @@ export async function adoptShadowHistory({ name, bundleBase64, head }) {
     if (existingHead === String(head || '').trim()) return true
     throw new Error(`${name} already has version history on this server; adopting another copy is a different operation`)
   }
-
-  const bundlePath = join(tmpdir(), `tlda-shadow-adopt-${name}-${String(head || '').slice(0, 7)}.bundle`)
-  try {
-    writeFileSync(bundlePath, Buffer.from(bundleBase64, 'base64'))
-    await initShadowFromBundle(name, bundlePath)
-    // Confirm history actually landed rather than trusting that the import did
-    // not throw. It didn't throw the first time either, and produced a repo with
-    // no commits — "adopted" while the paper still showed no versions.
-    const landed = (await listVersions(name, { limit: 1 })).length > 0
-    if (!landed) throw new Error(`adopted bundle for ${name} produced no versions`)
-    return true
-  } finally {
-    try { rmSync(bundlePath, { force: true }) } catch (e) {
-      // Best-effort cleanup of a temp file: the history has already been adopted
-      // or not, and a leftover bundle must not turn that into a failure.
-      console.warn(`[shadow] temporary adopt bundle cleanup failed for ${name}: ${e.message}`)
-    }
-  }
+  await initShadowFromGitRef(name, gitDir, ref)
+  const landed = (await listVersions(name, { limit: 1 })).length > 0
+  if (!landed) throw new Error(`adopted ref for ${name} produced no versions`)
+  return true
 }
 
 export async function mirrorShadow(name, hash, sourceRevision, acceptSeq) {
