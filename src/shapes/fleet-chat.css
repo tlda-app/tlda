@@ -178,6 +178,7 @@
   transition: opacity 2s;
 }
 html.mousemove .fleet-shape:has(.fleet-chat-log:hover, .fleet-search-results:hover) .fleet-btn-group,
+html.mousemove .fleet-source-editor:hover .fleet-btn-group,
 html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hover .fleet-btn-group {
   opacity: var(--ui-tone-full);
   transition: opacity 2s;
