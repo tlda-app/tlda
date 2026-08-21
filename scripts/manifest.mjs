@@ -9,7 +9,7 @@
  *
  * Usage as CLI:
  *   node scripts/manifest.mjs get <doc>
- *   node scripts/manifest.mjs set <doc> [--pages N] [--texFile path] [--format fmt] [--sourceDoc name] [--name title]
+ *   node scripts/manifest.mjs set <doc> [--pages N] [--texFile path] [--format fmt] [--name title]
  *   node scripts/manifest.mjs update <doc>          # recompute pages from disk
  *   node scripts/manifest.mjs list
  */

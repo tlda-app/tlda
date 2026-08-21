@@ -7,7 +7,7 @@ import * as sourceMap from '../sourceMap'
 import type { LookupData } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
-import type { SvgDocument, DiffData } from '../svgDocumentLoader'
+import type { SvgDocument } from '../svgDocumentLoader'
 import { getPageRenderHash, getSvgText } from '../stores'
 import { createDocVersionReloadObserver, docVersionHashFromRecord, hasRenderedPageMismatch } from './docVersionReload'
 // @ts-ignore — vanilla JS module
@@ -61,8 +61,6 @@ interface UseYjsSignalsParams {
   editorRef: React.MutableRefObject<Editor | null>
   editorMounted: number
   document: SvgDocument
-  diffDataRef: React.MutableRefObject<DiffData | null>
-  setDiffFetchSeq: React.Dispatch<React.SetStateAction<number>>
   proofDataRef: React.MutableRefObject<any>
   setProofDataReady: (ready: boolean) => void
   setProofFetchSeq: React.Dispatch<React.SetStateAction<number>>
@@ -74,7 +72,6 @@ interface UseYjsSignalsParams {
 
 export function useYjsSignals({
   editorRef, editorMounted, document,
-  diffDataRef, setDiffFetchSeq,
   proofDataRef, setProofDataReady, setProofFetchSeq,
   panelsLocalRef: _panelsLocalRef,
   onReloadResult, onReloadError, setScreenshotCapture,
@@ -98,8 +95,6 @@ export function useYjsSignals({
     clearLookupCache(document.name)
     sourceMap.clear()
     if (hasSynctex) sourceMap.load(document.name)
-    diffDataRef.current = null
-    setDiffFetchSeq(s => s + 1)
     proofDataRef.current = null
     setProofDataReady(false)
     setProofFetchSeq(s => s + 1)

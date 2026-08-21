@@ -93,7 +93,7 @@ function checkManifest() {
   const docs = readManifest()
 
   for (const [name, config] of Object.entries(docs)) {
-    if (config.format === 'html' || config.format === 'diff') continue
+    if (config.format === 'html') continue
     const dir = resolve(ROOT, 'public', 'docs', name)
     try {
       const svgFiles = readdirSync(dir).filter(f => /^page-\d+\.svg$/.test(f))

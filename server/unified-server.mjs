@@ -9799,7 +9799,6 @@ async function generateManifest() {
             name: project.title || project.name || name,
             pages: project.pages || 0,
             format: project.format || 'svg',
-            ...(project.sourceDoc && { sourceDoc: project.sourceDoc }),
             ...(project.members && { members: project.members }),
             ...(durableStatus.status !== 'success' && { buildStatus: durableStatus.status }),
             ...(project.session && { session: project.session, sessionAt: project.sessionAt }),

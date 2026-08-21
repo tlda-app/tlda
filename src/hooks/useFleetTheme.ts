@@ -72,6 +72,7 @@ export function resolveIsDark(scheme: ColorScheme): boolean {
 
 export function applyThemeClass(family: ThemeFamily, scheme: ColorScheme) {
   const isDark = resolveIsDark(scheme)
+  document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light')
   const entry = family ? FAMILY_BODY_CLASS[family] : null
   const cls = entry ? (isDark ? entry.dark : entry.light) : null
   for (const c of ALL_BODY_CLASSES) document.body.classList.remove(c)

@@ -9,21 +9,14 @@ export type {
   SvgDocument,
   SlideInfo,
   TargetInfo,
-  DiffHighlight,
-  DiffArrow,
-  DiffChange,
-  DiffLayout,
-  DiffData,
 } from './loaders/types'
 export { currentDocumentInfo, setCurrentDocumentInfo } from './loaders/types'
 
-// SVG loader (includes diff)
+// SVG loader
 export {
   pageSpacing,
   createSvgDocumentLayout,
   loadSvgDocument,
-  loadDiffData,
-  loadDiffDocument,
 } from './loaders/svgLoader'
 
 // HTML loader

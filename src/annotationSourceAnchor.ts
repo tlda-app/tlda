@@ -6,7 +6,7 @@ import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 
 export type AnchorDocument = {
   name: string
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'
   pages: Parameters<typeof canvasToPdf>[2]
 }
 

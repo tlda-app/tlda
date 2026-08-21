@@ -59,48 +59,12 @@ export interface SvgDocument {
   slideInfo?: SlideInfo[]
   macros?: Record<string, string>
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown' | 'qmd'
-  diffLayout?: DiffLayout
+  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'
   targets?: TargetInfo[]  // present for multi-target projects
   // Markdown parts (notes/scratch) attached to a non-html/markdown project —
   // e.g. a LaTeX project's scratch columns. Rendered as html-page shapes on
   // their own TLDraw page, separate from this document's own `pages`.
   partPages?: SvgPage[]
-}
-
-export interface DiffHighlight {
-  x: number
-  y: number
-  w: number
-  h: number
-  side: 'current' | 'old'
-  currentPage: number  // which diff pair this belongs to (1-indexed)
-}
-
-export interface DiffArrow {
-  startX: number; startY: number
-  endX: number; endY: number
-  oldHighlightIdx: number
-  currentHighlightIdx: number
-}
-
-export interface DiffChange {
-  currentPage: number
-  oldPages: number[]
-}
-
-export interface DiffLayout {
-  oldPageIndices: Set<number>
-  highlights: DiffHighlight[]
-  arrows: DiffArrow[]
-  changes: DiffChange[]
-}
-
-export interface DiffData {
-  pages: SvgPage[]
-  highlights: DiffHighlight[]
-  arrows: DiffArrow[]
-  changes: DiffChange[]
 }
 
 // Re-export Box for convenience

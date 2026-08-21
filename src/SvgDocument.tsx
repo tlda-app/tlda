@@ -113,14 +113,12 @@ import { setDraftMode } from './annotationVisibility'
 import { AnnotationViewer } from './overlays/AnnotationViewer'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
-import { setupPulseForDiffLayout } from './diffHelpers'
 import { openInEditor } from './texsync'
 import { setupSvgEditor, anchorIdToLabel, type ReloadResult } from './editorSetup'
 import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useCameraLink } from './hooks/useCameraLink'
 import { getCameraLinked } from './cameraLink'
-import { useDiffToggle } from './hooks/useDiffToggle'
 import { useProofToggle } from './hooks/useProofToggle'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
@@ -278,7 +276,6 @@ const INLINE_ASSETS = {
 interface SvgDocumentEditorProps {
   document: SvgDocument
   roomId: string
-  diffConfig?: { basePath: string }
   initialCamera?: { x: number; y: number; z: number; page?: string }
   classroomMarking?: boolean
   classroomGrading?: Omit<ClassroomGradingSurfaceProps, 'editor' | 'submissionShapeId' | 'solutionShapeId'>
@@ -411,7 +408,7 @@ function EmergencyDumpRescue({ editor, documentName }: { editor: Editor; documen
   )
 }
 
-export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera, classroomMarking = false, classroomGrading, onEditorMount }: SvgDocumentEditorProps) {
+export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, onEditorMount }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
 
@@ -457,15 +454,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     if (role === 'presenter') broadcastPresenter(true)
     setDraftMode(role === 'viewer')
   }, [role, isPresentation])
-
-  const {
-    diffMode, diffLoading, toggleDiff,
-    diffDataRef, diffModeRef, toggleDiffRef,
-    hasDiffToggle, hasDiffBuiltin, setDiffFetchSeq,
-  } = useDiffToggle({
-    editorRef, document, diffConfig,
-    shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef, focusChangeRef,
-  })
 
   const {
     proofMode, proofLoading, toggleProof,
@@ -566,7 +554,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
 
   useYjsSignals({
     editorRef, editorMounted, document,
-    diffDataRef, setDiffFetchSeq,
     proofDataRef, setProofDataReady, setProofFetchSeq,
     panelsLocalRef,
     setScreenshotCapture,
@@ -685,70 +672,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     }, { scope: 'session' })
   }, [])
 
-  // n/p keyboard shortcuts for diff change navigation (global, not tied to ChangesTab)
-  useEffect(() => {
-    const changes = hasDiffBuiltin
-      ? document.diffLayout?.changes
-      : (diffMode ? diffDataRef.current?.changes : undefined)
-    if (!changes || changes.length === 0) return
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      if (isInputFocused()) return
-      const editor = editorRef.current
-      if (!editor) return
-      if (editor.getEditingShapeId()) return
-      if (e.key !== 'n' && e.key !== 'p') return
-
-      e.preventDefault()
-      const cam = editor.getCamera()
-      const vb = editor.getViewportScreenBounds()
-      const centerY = -cam.y + (vb.y + vb.h / 2) / cam.z
-      let closest = 0
-      let closestDist = Infinity
-      for (let i = 0; i < document.pages.length; i++) {
-        const p = document.pages[i]
-        const pageCenterY = p.bounds.y + p.bounds.h / 2
-        const dist = Math.abs(centerY - pageCenterY)
-        if (dist < closestDist) {
-          closestDist = dist
-          closest = i + 1
-        }
-      }
-      const currentPage = closest
-      const changePages = changes.map(c => c.currentPage)
-
-      let target: number | undefined
-      if (e.key === 'n') {
-        target = changePages.find(p => p > currentPage) ?? changePages[0]
-      } else {
-        target = [...changePages].reverse().find(p => p < currentPage) ?? changePages[changePages.length - 1]
-      }
-      if (target) {
-        const pageIndex = target - 1
-        if (pageIndex >= 0 && pageIndex < document.pages.length) {
-          const page = document.pages[pageIndex]
-          editor.centerOnPoint(
-            { x: page.bounds.x + page.bounds.w / 2, y: page.bounds.y },
-            { animation: { duration: 300 } }
-          )
-        }
-        focusChangeRef.current?.(target)
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [document, hasDiffBuiltin, diffMode])
-
   // n/p keyboard shortcuts for multipage HTML: switch TLDraw pages
   useEffect(() => {
     if (document.format !== 'html') return
-    // Don't conflict with diff n/p handler
-    const hasDiffChanges = hasDiffBuiltin
-      ? (document.diffLayout?.changes?.length ?? 0) > 0
-      : diffMode && (diffDataRef.current?.changes?.length ?? 0) > 0
-    if (hasDiffChanges) return
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -773,7 +699,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [document, hasDiffBuiltin, diffMode])
+  }, [document])
 
 
   const components = useMemo<TLComponents>(
@@ -796,13 +722,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     [document, projectName, isPresentation]
   )
 
-  // Pulse effect for standalone diff docs
-  useEffect(() => {
-    if (!document.diffLayout) return
-    const diff = document.diffLayout
-    setupPulseForDiffLayout(editorRef, document.name, diff, focusChangeRef)
-  }, [document])
-
   // Stable doc info — only changes when a different document loads
   const projectContextValue = useMemo(() => ({
     projectName,
@@ -821,12 +740,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
 
   // Volatile panel state — toggles, loading flags, history, etc.
   const panelContextValue = useMemo(() => ({
-    diffChanges: hasDiffBuiltin ? document.diffLayout?.changes : (diffMode ? diffDataRef.current?.changes : undefined),
-    onFocusChange: (page: number) => focusChangeRef.current?.(page),
-    diffAvailable: hasDiffToggle,
-    diffMode,
-    onToggleDiff: hasDiffToggle ? toggleDiff : undefined,
-    diffLoading,
     proofPairs: proofDataReady ? proofDataRef.current?.pairs : undefined,
     proofMode,
     onToggleProof: toggleProof,
@@ -846,7 +759,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     wholeDocumentDiffLoading,
     wholeDocumentDiffError,
     onToggleWholeDocumentDiff: shadowActiveVersion ? toggleWholeDocumentDiff : undefined,
-  }), [hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError, toggleWholeDocumentDiff])
+  }), [proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError, toggleWholeDocumentDiff])
 
   // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
   // shapes must remain visible to custom WM viewports; the HUD renders from the
@@ -1409,7 +1322,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
                 camera: { x: cam.x, y: cam.y, z: cam.z },
                 pageId: editor.getCurrentPageId(),
                 tool,
-                diffMode: diffModeRef.current,
                 proofMode: proofModeRef.current,
                 panelsLocal: panelsLocalRef.current,
               }))
@@ -1420,7 +1332,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
             try {
               const raw = localStorage.getItem(sessionKey)
               if (!raw) return null
-              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; pageId?: string; tool?: string; diffMode?: boolean; proofMode?: boolean; panelsLocal?: boolean }
+              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; pageId?: string; tool?: string; proofMode?: boolean; panelsLocal?: boolean }
             } catch { return null }
           }
 
@@ -1531,10 +1443,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
                 if (home !== 'select') {
                   editor.setCurrentTool(home)
                 }
-              }
-              // Restore diff mode if it was active
-              if (session?.diffMode && hasDiffToggle) {
-                toggleDiffRef.current()
               }
               if (session?.proofMode) {
                 toggleProofRef.current()

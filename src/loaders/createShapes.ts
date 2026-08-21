@@ -95,7 +95,7 @@ export function createSvgShapes(editor: Editor, document: SvgDocument): boolean 
           x: page.bounds.x,
           y: page.bounds.y,
           isLocked: true,
-          opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
+          opacity: 1,
           props: {
             w: page.bounds.w,
             h: page.bounds.h,
@@ -362,7 +362,7 @@ export function createImageShapes(editor: Editor, document: SvgDocument): boolea
         x: page.bounds.x,
         y: page.bounds.y,
         isLocked: true,
-        opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
+        opacity: 1,
         props: {
           w: page.bounds.w,
           h: page.bounds.h,

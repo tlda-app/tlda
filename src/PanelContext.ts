@@ -1,25 +1,19 @@
 import { createContext, type ReactNode } from 'react'
 import type { PageTextData } from './TextSelectionLayer'
-import type { DiffChange, ProofPair } from './svgDocumentLoader'
+import type { ProofPair } from './svgDocumentLoader'
 import type { BuildError, BuildWarning } from './useYjsSync'
 
 /** Stable project info — set once per project load, never changes during session. */
 export interface ProjectContextValue {
   projectName: string
   title?: string
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'
   pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
   targets?: Array<{ name: string; title: string; pages: number }>
 }
 
 /** Volatile panel state — toggles, loading flags, history slider, etc. */
 export interface PanelContextValue {
-  diffChanges?: DiffChange[]
-  onFocusChange?: (currentPage: number) => void
-  diffAvailable?: boolean
-  diffMode?: boolean
-  onToggleDiff?: () => void
-  diffLoading?: boolean
   proofPairs?: ProofPair[]
   proofMode?: boolean
   onToggleProof?: () => void

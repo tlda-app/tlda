@@ -227,19 +227,6 @@ const agentHeartbeatHandle = bus.register<AgentHeartbeatSignal>({
 export const onAgentHeartbeat = agentHeartbeatHandle.on
 
 
-// Diff review and summaries — register so callers can subscribe to changes
-const diffReviewHandle = bus.register<{ reviews: Record<number, string>; timestamp: number }>({
-  key: 'signal:diff-review',
-  ...replayConfig('signal:diff-review'),
-})
-export const onDiffReview = diffReviewHandle.on
-
-const diffSummariesHandle = bus.register<{ summaries: Record<number, string>; timestamp: number }>({
-  key: 'signal:diff-summaries',
-  ...replayConfig('signal:diff-summaries'),
-})
-export const onDiffSummaries = diffSummariesHandle.on
-
 /**
  * Write a signal via HTTP POST. Timestamp is added automatically.
  * Also caches locally and dispatches to the signal bus so own UI reacts.

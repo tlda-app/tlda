@@ -18,7 +18,6 @@ import { processRibbonHighlight, isInRibbonZone, clearLineYIndexCache, remapRibb
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
-import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
 import { getViewerId } from './useYjsSync'
 import { htmlPageReloadUrl } from './html-page-navigation-helpers'
 import { htmlIframeElements } from './htmlIframeRegistry'
@@ -544,7 +543,7 @@ export async function reloadPages(
   void refreshSvgProjectParts(editor, document)
 
   // Hot-reload is LaTeX-specific (re-fetch SVGs after rebuild)
-  if (document.format === 'png' || document.format === 'diff') return { failedPages: [] }
+  if (document.format === 'png') return { failedPages: [] }
 
   const gen = ++reloadGeneration
 
@@ -822,24 +821,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   // decides for itself which formats have parts to read.
   void refreshSvgProjectParts(editor, document)
 
-  // Set up diff layout: old page opacity, highlight overlays
-  // Check for existing diff shapes (from Yjs sync) by looking for the first highlight ID
-  const diffExtraShapeIds: TLShapeId[] = []
-  if (document.diffLayout) {
-    const firstHlId = createShapeId(`${document.name}-diff-hl-0`)
-    const hasDiffShapes = !!editor.getShape(firstHlId)
-    if (!hasDiffShapes) {
-      setupDiffOverlays(editor, document, diffExtraShapeIds)
-    }
-    // Always set up hover + review effects (work whether shapes came from creation or Yjs sync)
-    setupDiffHoverEffect(editor, document)
-    setupDiffReviewEffect(editor, document)
-  }
-
-  const shapeIds = [
-    ...document.pages.map((page) => page.shapeId),
-    ...diffExtraShapeIds,
-  ]
+  const shapeIds = document.pages.map((page) => page.shapeId)
   const shapeIdSet = new Set(shapeIds)
 
   // Don't let the user unlock the pages

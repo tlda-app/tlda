@@ -299,17 +299,3 @@ export const COLOR_HEX: Record<string, string> = {
   black: '#333',
   white: '#ccc',
 }
-
-// --- Review state helpers ---
-
-export type ReviewStatus = 'new' | 'old' | 'discuss' | null
-export type ReviewMap = Record<string, ReviewStatus>
-export type SummaryMap = Record<string, string>
-
-export const STATUS_LABELS: Array<{ key: ReviewStatus; label: string; symbol: string }> = [
-  { key: 'new', label: 'keep new', symbol: '\u25CB' },    // ○
-  { key: 'old', label: 'revert', symbol: '\u25CB' },      // ○
-  { key: 'discuss', label: 'discuss', symbol: '\u25CB' },  // ○
-]
-
-export const STATUS_FILLED = '\u25CF' // ●

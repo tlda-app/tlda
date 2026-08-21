@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
-import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
+import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, createHtmlDocumentFromPageInfo, loadHtmlDocument, loadSlidesDocument, type HtmlPageEntry } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
 import { attachAppRecordingEditor, openAppRecordingSession } from './recording/recorder'
@@ -124,24 +124,19 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'book' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd'
   // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
   renderedFormat?: 'html' | 'slides'
-  sourceDoc?: string
   members?: string[]
   buildStatus?: string
   starred?: boolean
   lastBuild?: string
   createdAt?: string
   targets?: { texBase: string; mainFile: string; pages: number }[]
+  pageInfo?: HtmlPageEntry[]
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
-
-interface DiffConfig {
-  basePath: string
-  buildStatus?: string
-}
 
 interface FleetConfigResponse {
   telemetryUrl?: unknown
@@ -157,7 +152,7 @@ type State =
   | { phase: 'loading'; message: string; roomId: string }
   | { phase: 'error'; message: string; errorType?: ErrorType }
   | { phase: 'picker'; manifest: Record<string, DocConfig> }
-  | { phase: 'svg'; document: SvgDoc; roomId: string; diffConfig?: DiffConfig }
+  | { phase: 'svg'; document: SvgDoc; roomId: string }
   | { phase: 'book'; bookName: string; members: BookMember[] }
 
 // Doc assets come from the active config's STORE (http), injected by the server.
@@ -169,11 +164,11 @@ const ASSET_BASE = STORE_HTTP
 const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
 
 // Fetch a single document config from the API — fast path for ?project=X
-async function fetchDocConfig(projectName: string): Promise<DocConfig | null> {
+async function fetchDocConfig(projectName: string, includePageInfo = false): Promise<DocConfig | null> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8000)
   try {
-    const url = `${ASSET_BASE}/api/projects/${projectName}`
+    const url = `${ASSET_BASE}/api/projects/${projectName}${includePageInfo ? '?include=page-info' : ''}`
     const resp = await fetch(url, { signal: controller.signal })
     if (resp.status === 401 || resp.status === 403) {
       throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
@@ -269,7 +264,7 @@ function DocumentApp() {
     if (projectName) {
       const roomId = `doc-${projectName}`
       setState({ phase: 'loading', message: 'Loading document...', roomId })
-      loadDocument(projectName, roomId)
+      loadDocument(projectName, roomId, undefined, true)
     } else {
       // No doc specified — show document picker or auto-load single doc
       setState({ phase: 'loading', message: 'Loading...', roomId: '' })
@@ -293,7 +288,7 @@ function DocumentApp() {
               window.history.replaceState({}, '', newUrl.toString())
               const roomId = `doc-${name}`
               setState({ phase: 'loading', message: `Loading ${name}...`, roomId })
-              loadDocument(name, roomId)
+              loadDocument(name, roomId, manifest[name])
             } else {
               setState({ phase: 'picker', manifest })
             }
@@ -307,7 +302,7 @@ function DocumentApp() {
     }
   }, [])
 
-  async function loadDocument(projectName: string, roomId: string) {
+  async function loadDocument(projectName: string, roomId: string, knownConfig?: DocConfig, includePageInfo = false) {
     // Bump generation and abort any in-flight load
     const gen = ++loadGeneration
     loadAbort?.abort()
@@ -317,7 +312,7 @@ function DocumentApp() {
     // Fast path: fetch single doc config instead of full manifest
     let config: DocConfig | null
     try {
-      config = await fetchDocConfig(projectName)
+      config = knownConfig ?? await fetchDocConfig(projectName, includePageInfo)
     } catch (e) {
       const msg = (e as Error).message
       setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
@@ -373,15 +368,19 @@ function DocumentApp() {
       const label = config.name || projectName
       setState({ phase: 'loading', message: config.buildStatus === 'building' ? `Building ${label}...` : `Waiting for ${label}...`, roomId })
       const waitForBuild = async () => {
+        let readyConfig: DocConfig | undefined
         while (gen === loadGeneration) {
           await new Promise(r => setTimeout(r, 2000))
           if (gen !== loadGeneration) return
           try {
-            const c = await fetchDocConfig(projectName)
+            const c = await fetchDocConfig(projectName, includePageInfo)
             // Pages existing is the whole condition now: the moment there is a
             // render to show, show it, rather than waiting for the build that
             // produced it to also finish reporting.
-            if (c && c.pages > 0) break
+            if (c && c.pages > 0) {
+              readyConfig = c
+              break
+            }
           } catch (e) {
             if (e instanceof Error && e.message.includes('Authentication')) {
               setState({ phase: 'error', message: e.message })
@@ -389,7 +388,7 @@ function DocumentApp() {
             }
           }
         }
-        if (gen === loadGeneration) loadDocument(projectName, roomId)
+        if (gen === loadGeneration) loadDocument(projectName, roomId, readyConfig)
       }
       waitForBuild()
       return
@@ -413,10 +412,10 @@ function DocumentApp() {
       // them: quarto renders it to a scrolling document or to a reveal deck.
       // viewFormat() reads which the build produced.
       const shownAs = viewFormat(config)
-      if (shownAs === 'diff') {
-        document = await loadDiffDocument(projectName, fullBasePath)
-      } else if (shownAs === 'html' || shownAs === 'markdown') {
-        document = await loadHtmlDocument(config.name, fullBasePath)
+      if (shownAs === 'html' || shownAs === 'markdown') {
+        document = config.pageInfo
+          ? createHtmlDocumentFromPageInfo(config.name, fullBasePath, config.pageInfo)
+          : await loadHtmlDocument(config.name, fullBasePath)
       } else if (shownAs === 'slides') {
         document = await loadSlidesDocument(config.name, fullBasePath)
       } else if (shownAs === 'png') {
@@ -449,24 +448,7 @@ function DocumentApp() {
       // the URL slug before this.
       document = { ...document, title: config.name || projectName }
 
-      // For non-diff docs, check if a matching diff doc exists (lazy manifest fetch — not on critical path)
-      let diffConfig: DiffConfig | undefined
-      if (config.format !== 'diff') {
-        try {
-          const manifest = await fetchManifest()
-          const diffEntry = Object.values(manifest).find(
-            c => c.format === 'diff' && c.sourceDoc === projectName
-          )
-          if (diffEntry) {
-            const diffBasePath = diffEntry.basePath.startsWith('/')
-              ? diffEntry.basePath.slice(1)
-              : diffEntry.basePath
-            diffConfig = { basePath: `${import.meta.env.BASE_URL || '/'}${diffBasePath}` }
-          }
-        } catch { /* diff lookup is optional — don't block on it */ }
-      }
-
-      setState({ phase: 'svg', document, roomId, diffConfig })
+      setState({ phase: 'svg', document, roomId })
     } catch (e) {
       if (signal.aborted) return  // expected abort, don't show error
       console.error('Failed to load document:', e)
@@ -552,7 +534,7 @@ function DocumentApp() {
             window.history.replaceState({}, '', newUrl.toString())
             const roomId = `doc-${key}`
             setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId })
-            loadDocument(key, roomId)
+            loadDocument(key, roomId, config)
           }} />
         </div>
       )
@@ -571,7 +553,7 @@ function DocumentApp() {
           <IdentityPicker />
           <DocumentRadio />
           <ErrorBoundary>
-            <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} initialCamera={initialCamera} onEditorMount={attachAppRecordingEditor} />
+            <SvgDocumentEditor document={state.document} roomId={state.roomId} initialCamera={initialCamera} onEditorMount={attachAppRecordingEditor} />
           </ErrorBoundary>
           <MarkingLifecycle />
         </div>

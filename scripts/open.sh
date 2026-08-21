@@ -112,27 +112,6 @@ elif [ -n "$TEX_FILE" ]; then
   fi
 fi
 
-# --- Build diff if needed ---
-
-if [ -n "$TEX_FILE" ] && [ -f "$MANIFEST" ]; then
-  HAS_DIFF=$(node -e "
-    const m = require('$MANIFEST');
-    if (m.documents['${DOC}-diff']) console.log('yes');
-  " 2>/dev/null)
-  if [ -z "$HAS_DIFF" ]; then
-    echo "Building diff (first time)..."
-    "$DIR/build-diff.sh" "$TEX_FILE" "$DOC" HEAD &
-    DIFF_PID=$!
-  fi
-fi
-
 # --- Open browser ---
 
 open "http://localhost:5173/claude-tldraw/?project=${DOC}"
-
-# --- Wait for background builds ---
-
-if [ -n "${DIFF_PID:-}" ]; then
-  echo "Diff building in background (pid $DIFF_PID)..."
-  wait "$DIFF_PID" 2>/dev/null && echo "Diff ready — reload the page to see it." || echo "Diff build failed."
-fi
