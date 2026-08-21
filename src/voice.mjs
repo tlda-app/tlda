@@ -3513,7 +3513,7 @@ async function startDeepgramMic() {
     })
     _deepgramHardFailure = null
   } catch (err) {
-    micStartPhase('get-user-media-rejected', { error: err?.name || String(err) })
+    micStartPhase('get-user-media-rejected', { error: err?.name || 'UnknownError' })
     console.error('voice: deepgram mic access failed', err)
     const failure = await classifyMicFailure(err)
     if (micAttempt !== _deepgramMicAttempt) return
@@ -3535,8 +3535,8 @@ async function startDeepgramMic() {
         setTimeout(() => startDeepgramMic(), 500)
       }
     }
+    micStartPhase('track-ended-handler-attached')
   }
-  micStartPhase('track-ended-handler-attached', { hasTrack: !!track })
 
   micStartPhase('audio-context-create')
   _deepgramContext = new AudioContext()
@@ -3561,7 +3561,7 @@ async function startDeepgramMic() {
     await _deepgramContext.audioWorklet.addModule(`${import.meta.env.BASE_URL}deepgram-capture-worklet.js`)
     micStartPhase('audio-worklet-module-loaded')
   } catch (err) {
-    micStartPhase('audio-worklet-module-rejected', { error: err?.name || String(err) })
+    micStartPhase('audio-worklet-module-rejected', { error: err?.name || 'UnknownError' })
     vlog('audioWorklet.addModule failed', { err: err?.message })
     _deepgramHardFailure = 'mic unavailable; tap to retry'
     _voiceHealthLabel = _deepgramHardFailure
