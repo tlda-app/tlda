@@ -206,7 +206,7 @@ export function parseAgentSelector(raw, scope = 'any') {
 }
 
 export function buildFleetSearchFilters(filters) {
-  const nameSel = filters.agent ?? filters.from
+  const nameSel = filters.agent ?? filters.from ?? filters.to
   const explicitId = nameSel && isExplicitFleetId(nameSel) ? nameSel : undefined
   const agentResolve = !explicitId ? filters.agentResolve : undefined
   const payload = {
@@ -245,6 +245,7 @@ export function rankSearchResults(results, query) {
 
 export function groupFleetSearchResults(results) {
   const groups = [
+    makeResultGroup('agents', 'Agents', 'Resolved agent identities matching the query'),
     makeResultGroup('conversation', 'Conversation', 'Fleet chat, reports, and delegated task messages'),
     makeResultGroup('documents', 'Documents', 'Indexed project source and document text'),
     makeResultGroup('sessions', 'Session Logs', 'Terminal and agent transcript matches'),
@@ -425,6 +426,7 @@ function makeResultGroup(id, label, detail) {
 }
 
 function searchResultGroupId(result) {
+  if (result?.type === 'project_agent') return 'agents'
   if (result?.type === 'document_content') return 'documents'
   if (result?.source === 'session') return 'sessions'
   if (result?.type === 'activity') return 'activity'
