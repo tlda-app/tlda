@@ -18,17 +18,24 @@ export const pageSpacing = PAGE_GAP
  * targets[] is always present — single-target is the N=1 case.
  * SVG URLs are flat: /docs/<project>/<texBase>-page-N.svg
  */
-export function createSvgDocumentLayout(name: string, pageCount: number, basePath: string, targets?: TargetInfo[]): SvgDocument {
+export function createSvgDocumentLayout(
+  name: string,
+  pageCount: number,
+  basePath: string,
+  targets?: TargetInfo[],
+  manifestPages?: Array<{ file: string; width: number; height: number }>,
+): SvgDocument {
   const pages: SvgPage[] = []
   const width = TARGET_WIDTH
   const height = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
   let globalIdx = 0
 
   const effectiveTargets = targets || [{ name, title: name, pages: pageCount, basePath }]
+  const pageSizes = manifestPages?.length === pageCount
+    ? manifestPages.map(page => ({ width, height: page.height * (width / page.width) }))
+    : effectiveTargets.flatMap(target => Array.from({ length: target.pages }, () => ({ width, height })))
   const pageBounds = layoutPageBounds(
-    effectiveTargets.flatMap(target =>
-      Array.from({ length: target.pages }, () => ({ width, height }))
-    ),
+    pageSizes,
     'vertical',
     pageSpacing,
   )
@@ -38,15 +45,16 @@ export function createSvgDocumentLayout(name: string, pageCount: number, basePat
       const pageId = effectiveTargets.length > 1
         ? `${name}-${target.name}-page-${i}`
         : `${name}-page-${i}`
-      const svgUrl = `${basePath}${target.name}-page-${i + 1}.svg`
+      const manifestPage = manifestPages?.[globalIdx]
+      const svgUrl = manifestPage ? `${basePath}${manifestPage.file}` : `${basePath}${target.name}-page-${i + 1}.svg`
       setPageUrl(globalIdx, svgUrl)
       pages.push({
         src: '',
         bounds: pageBounds[globalIdx],
         assetId: AssetRecordType.createId(pageId),
         shapeId: createShapeId(pageId),
-        width,
-        height,
+        width: pageSizes[globalIdx].width,
+        height: pageSizes[globalIdx].height,
         targetBasePath: basePath,
         pageInTarget: i + 1,
         targetName: target.name,
@@ -68,7 +76,12 @@ export function createSvgDocumentLayout(name: string, pageCount: number, basePat
     .catch(e => console.warn('[svg-loader] macros fetch failed:', e.message))
 
   console.log(`SVG document layout ready: ${pages.length} pages (${effectiveTargets.length} target${effectiveTargets.length > 1 ? 's' : ''})`)
-  return { name, pages, basePath, targets: effectiveTargets }
+  return {
+    name, pages, basePath, targets: effectiveTargets,
+    view: { kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: true } },
+    source: { format: 'tex', renderer: 'latex' },
+    documentFormat: 'paged',
+  }
 }
 
 /** Legacy: fetch all SVGs synchronously and return a fully-loaded document. */
@@ -197,5 +210,10 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
   }
 
   console.log(`SVG document ready (${anchorIndex.size} hyperref anchors indexed)`)
-  return { name, pages, basePath }
+  return {
+    name, pages, basePath,
+    view: { kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: true } },
+    source: { format: 'tex', renderer: 'latex' },
+    documentFormat: 'paged',
+  }
 }

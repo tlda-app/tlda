@@ -119,7 +119,7 @@ export function referencedRootsFromPaths(referenced, known) {
 
 export function sourceManifestContext(project = {}) {
   return {
-    format: project?.format || 'svg',
+    sourceFormat: project?.sourceFormat || null,
     mainFile: normalizePath(project?.mainFile || ''),
     referencedRoots: referencedRootSet(project?.referencedRoots),
   }
@@ -127,8 +127,12 @@ export function sourceManifestContext(project = {}) {
 
 export function isSourceFilePath(path, context = {}) {
   const rel = normalizePath(path)
-  if (!rel || isBuildJunkPath(rel)) return false
+  if (!rel) return false
   const ctx = sourceManifestContext(context)
+  // A PDF root is authored source for a PDF document. Other PDFs retain their
+  // existing generated-artifact treatment, especially inside TeX projects.
+  if (ctx.sourceFormat === 'pdf' && rel === ctx.mainFile) return true
+  if (isBuildJunkPath(rel)) return false
   if (rel === ctx.mainFile) return true
   // A chat reference makes a file a member whatever its extension. This is the
   // route `b4-outline.md` came in by and the one that did not exist: a Markdown
@@ -146,10 +150,10 @@ export function isSourceFilePath(path, context = {}) {
   // — and there is no reference graph that reveals the set. So everything
   // beside the document is source, except what a local render just made, which
   // only qmd can have because only qmd renders on the far side.
-  if (ctx.format === 'html' || ctx.format === 'slides') return true
-  if (ctx.format === 'qmd') return !isQuartoRenderOutput(rel, ctx.mainFile)
+  if (ctx.sourceFormat === 'html') return true
+  if (ctx.sourceFormat === 'qmd') return !isQuartoRenderOutput(rel, ctx.mainFile)
   const ext = extname(rel).toLowerCase()
-  if (ctx.format === 'markdown') return MARKDOWN_DEPENDENCY_EXTENSIONS.has(ext)
+  if (ctx.sourceFormat === 'md') return MARKDOWN_DEPENDENCY_EXTENSIONS.has(ext)
   if (!SOURCE_EXTENSIONS.has(ext)) return false
 
   return true
@@ -165,7 +169,7 @@ export function isManagedSourcePath(path, context = {}) {
   const ctx = sourceManifestContext(context)
   const lower = rel.toLowerCase()
   if (DECLARED_MANIFEST_JUNK_SUFFIXES.some(suffix => lower.endsWith(suffix) || lower.includes('_fmt.'))) return false
-  if (ctx.format === 'qmd' && isQuartoRenderOutput(rel, ctx.mainFile)) return false
+  if (ctx.sourceFormat === 'qmd' && isQuartoRenderOutput(rel, ctx.mainFile)) return false
   return true
 }
 

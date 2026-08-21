@@ -13,10 +13,11 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { createShapeId } from 'tldraw'
 import type { TLShapeId, Editor } from 'tldraw'
 import type { SvgDocument } from '../svgDocumentLoader'
-import { TARGET_WIDTH, PAGE_GAP } from '../layoutConstants'
+import { TARGET_WIDTH } from '../layoutConstants'
 import { setSvgText } from '../stores/svgTextStore'
 import { svgViewBoxStore } from '../stores'
 import { appendToken } from '../authToken'
+import { loadDocumentFromManifest, type DocumentViewManifest } from '../loaders/documentLoaderRegistry'
 
 const INBOX_GAP = 120  // gap between current doc and auto-opened docs
 const FOREIGN_DOC_OPACITY = 0.85
@@ -25,8 +26,11 @@ interface DocArrivedEvent {
   type: 'doc-arrived'
   name: string
   title: string
-  format: string
+  sourceFormat: string
+  renderer: string
+  documentFormat: string
   pages: number
+  pageFiles: string[]
   timestamp: number
 }
 
@@ -34,12 +38,6 @@ interface ForeignDoc {
   name: string
   shapeIds: TLShapeId[]
   labelId: TLShapeId
-}
-
-interface HtmlPageInfo {
-  file: string
-  width?: number
-  height?: number
 }
 
 export function useDocAutoOpen(
@@ -75,23 +73,12 @@ export function useDocAutoOpen(
       return
     }
 
-    const format = projectInfo.format || event.format
-    let htmlPages: HtmlPageInfo[] = []
-    if (format === 'markdown') {
-      try {
-        const res = await fetch(`/docs/${event.name}/page-info.json`)
-        if (!res.ok) return
-        const parsed = await res.json()
-        if (!Array.isArray(parsed)) return
-        htmlPages = parsed.filter((page): page is HtmlPageInfo => typeof page?.file === 'string')
-      } catch {
-        return
-      }
-    }
-
-    const pageCount = format === 'markdown'
-      ? htmlPages.length
-      : projectInfo.pages || event.pages || 0
+    const manifest = projectInfo.documentManifest as DocumentViewManifest | undefined
+    if (!manifest) return
+    const basePath = `/docs/${event.name}/`
+    const foreignDocument = await loadDocumentFromManifest({ name: event.name, basePath, manifest })
+    const htmlView = manifest.view.kind === 'html-pages' || manifest.view.kind === 'slides'
+    const pageCount = foreignDocument.pages.length
     if (pageCount === 0) return
 
     if (existing) {
@@ -118,16 +105,18 @@ export function useDocAutoOpen(
     const shapes: any[] = []
     for (let i = 0; i < pageCount; i++) {
       const id = createShapeId(`foreign-${event.name}-p${i + 1}`)
-      const htmlPage = htmlPages[i]
-      const width = htmlPage?.width || TARGET_WIDTH
-      const height = htmlPage?.height || document.pages[0]?.bounds.height || 1035
-      const y = format === 'markdown'
-        ? startY + htmlPages.slice(0, i).reduce((sum, page) => sum + (page.height || 1200) + PAGE_GAP, 0)
-        : startY + i * ((document.pages[0]?.bounds.height || 1035) + PAGE_GAP)
+      const foreignPage = foreignDocument.pages[i]
+      const width = foreignPage.width || TARGET_WIDTH
+      const height = foreignPage.height || document.pages[0]?.bounds.height || 1035
+      const separateCanvasPage = Boolean(foreignPage.tldrawPageId)
+      const x = separateCanvasPage ? startX : startX + foreignPage.bounds.x
+      const y = separateCanvasPage
+        ? startY + foreignDocument.pages.slice(0, i).reduce((sum, page) => sum + page.height + 32, 0)
+        : startY + foreignPage.bounds.y
       shapes.push({
         id,
-        type: (format === 'markdown' ? 'html-page' : 'svg-page') as any,
-        x: startX,
+        type: (htmlView ? 'html-page' : 'svg-page') as any,
+        x,
         y,
         isLocked: true,
         opacity: FOREIGN_DOC_OPACITY,
@@ -135,8 +124,8 @@ export function useDocAutoOpen(
         props: {
           w: width,
           h: height,
-          ...(format === 'markdown'
-            ? { url: `/docs/${event.name}/${htmlPage.file}`, source: '' }
+          ...(htmlView
+            ? { url: foreignPage.src, source: '' }
             : { pageIndex: i }),
         },
       })
@@ -169,13 +158,12 @@ export function useDocAutoOpen(
     foreignDocsRef.current.set(event.name, { name: event.name, shapeIds, labelId })
     setForeignDocNames([...foreignDocsRef.current.keys()])
 
-    if (format === 'markdown') return
+    if (htmlView || manifest.view.kind === 'image-pages') return
 
     // Fetch SVGs asynchronously — served at /docs/{name}/page-{n}.svg
-    const svgBasePath = `/docs/${event.name}/`
     for (let i = 0; i < pageCount; i++) {
       const id = shapeIds[i]
-      fetchForeignPage(event.name, i, id, svgBasePath)
+      fetchForeignPage(event.name, i, id, basePath, manifest.pages[i]?.file)
     }
   }, [editorRef, document, projectName, onReloadRequest])
 
@@ -221,9 +209,10 @@ async function fetchForeignPage(
   pageIndex: number,
   shapeId: TLShapeId,
   basePath: string,
+  pageFile?: string,
 ) {
   try {
-    const url = `${basePath}page-${pageIndex + 1}.svg`
+    const url = `${basePath}${pageFile || `page-${pageIndex + 1}.svg`}`
     const res = await fetch(url)
     if (!res.ok) return
     const svgText = await res.text()

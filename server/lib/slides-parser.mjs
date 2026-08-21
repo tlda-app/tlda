@@ -135,7 +135,7 @@ export function parseRevealSlides(html) {
 }
 
 /**
- * Generate page-info.json content for a slides project.
+ * Generate document page entries for a slides project.
  * @param {string} html - Full reveal.js HTML
  * @param {string} filename - HTML filename (e.g. "swissrollera.html")
  * @returns {Array<{file: string, width: number, height: number, title: string, slideIndex: number}>}

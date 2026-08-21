@@ -13,7 +13,7 @@ test('project listing projects indexed lifecycle fields without a per-project jo
   try {
     await initProjectStore(root)
     for (let index = 0; index < 1_000; index++) {
-      createProject({ name: `project-${String(index).padStart(4, '0')}`, mainFile: 'main.md', format: 'markdown' })
+      createProject({ name: `project-${String(index).padStart(4, '0')}`, mainFile: 'main.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
     }
 
     const started = performance.now()

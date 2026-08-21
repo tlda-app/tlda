@@ -8,6 +8,7 @@ import type { LookupData } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
 import type { SvgDocument } from '../svgDocumentLoader'
+import { usesHtmlPageShapes } from '../loaders/types'
 import { getPageRenderHash, getSvgText } from '../stores'
 import { createDocVersionReloadObserver, docVersionHashFromRecord, hasRenderedPageMismatch } from './docVersionReload'
 // @ts-ignore — vanilla JS module
@@ -16,7 +17,6 @@ import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
-import { HTML_PAGE_FORMATS } from '../../shared/document-formats.mjs'
 
 type ProjectPartMarkdownShape = TLShape & {
   props: TLShape['props'] & { url?: string }
@@ -76,7 +76,7 @@ export function useYjsSignals({
   panelsLocalRef: _panelsLocalRef,
   onReloadResult, onReloadError, setScreenshotCapture,
 }: UseYjsSignalsParams) {
-  const hasSynctex = !HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')
+  const hasSynctex = document.view.capabilities.sourceMapping && document.view.kind === 'svg-pages'
 
   // Keep a snapshot of the current lookup for scroll anchoring across rebuilds.
   // The signalBus fires synctexLookup's cache-clear listener before ours, so we
@@ -116,7 +116,7 @@ export function useYjsSignals({
     const observer = createDocVersionReloadObserver({
       readHash: () => docVersionHashFromRecord(editor.store.get('shape:doc-version--sentinel' as TLShapeId)),
       hasMismatchedRender: hash => {
-        if (document.format === 'slides' || HTML_PAGE_FORMATS.has(document.format || '')) return true
+        if (usesHtmlPageShapes(document)) return true
         return hasRenderedPageMismatch(document.pages, hash, getSvgText, getPageRenderHash)
       },
       reload: () => runFullDocumentReload(editor),

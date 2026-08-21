@@ -7,9 +7,10 @@
  * Storage: server/projects/{name}/shadow-repo/
  */
 
-import { exec as execCb } from 'child_process'
+import { exec as execCb, execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
 const _execAsyncRaw = promisify(execCb)
+const execFileAsync = promisify(execFileCb)
 const execAsync = (cmd, opts = {}) => _execAsyncRaw(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, cpSync, rmSync, symlinkSync, lstatSync, statSync } from 'fs'
@@ -357,7 +358,7 @@ export async function commitSnapshot(name) {
   }
 
   const project = await readProject(name)
-  if (project?.format === 'markdown') {
+  if (project?.sourceFormat === 'md') {
     const { stdout } = await execAsync('git ls-tree -rz --name-only HEAD', { cwd: repoDir, timeout: 10000 })
     const previousFiles = stdout.split('\0').filter(rel => rel && rel !== '.gitignore' && rel !== 'CLAUDE.md')
     const mainFile = project.mainFile || 'index.md'
@@ -899,8 +900,31 @@ export async function ensureShadowDvi(name, hash7) {
  * Throws if the page cannot be produced.
  */
 export async function buildShadowPage(name, hash7, pageNum) {
-  const { ensure, historicalCtx } = await import('./ensure.mjs')
   const project = await readProject(name)
+  if (project?.sourceFormat === 'pdf') {
+    const mainFile = project.mainFile
+    const target = basename(mainFile, '.pdf')
+    const cacheDir = join(historyDir(name), `shadow-${hash7}`)
+    const svgPath = join(cacheDir, `${target}-page-${pageNum}.svg`)
+    if (existsSync(svgPath)) return svgPath
+    const source = await checkoutSource(name, hash7)
+    try {
+      const pdfPath = join(source, mainFile)
+      if (!existsSync(pdfPath)) throw new Error(`PDF root ${mainFile} is absent at ${hash7}`)
+      const { stdout } = await execFileAsync('pdfinfo', [pdfPath], { encoding: 'utf8' })
+      const pages = Number(stdout.match(/^Pages:\s+(\d+)/m)?.[1])
+      if (!Number.isInteger(pages) || pageNum < 1 || pageNum > pages) throw new Error(`PDF page ${pageNum} is outside 1-${pages}`)
+      mkdirSync(cacheDir, { recursive: true })
+      await execFileAsync('pdftocairo', ['-svg', '-f', String(pageNum), '-l', String(pageNum), pdfPath, svgPath], {
+        maxBuffer: 50 * 1024 * 1024,
+      })
+      writeFileSync(join(cacheDir, 'meta.json'), JSON.stringify({ pages, hash7, compiledAt: Date.now() }))
+      return svgPath
+    } finally {
+      rmSync(source, { recursive: true, force: true })
+    }
+  }
+  const { ensure, historicalCtx } = await import('./ensure.mjs')
   const texBase = basename(project?.mainFile || 'main.tex', '.tex')
   const ctx = historicalCtx(name, hash7, texBase)
   return ensure(ctx, `${texBase}-page-${pageNum}.svg`)

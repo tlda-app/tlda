@@ -7,7 +7,7 @@ import type { PageTextData } from '../TextSelectionLayer'
 // Global document info for synctex anchoring
 export let currentDocumentInfo: {
   name: string
-  format?: SvgDocument['format']
+  view: DocumentView
   pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number }>
 } | null = null
 
@@ -52,6 +52,25 @@ export interface TargetInfo {
   basePath: string
 }
 
+export type DocumentViewKind = 'svg-pages' | 'html-pages' | 'slides' | 'image-pages'
+
+export interface DocumentView {
+  kind: DocumentViewKind
+  capabilities: {
+    presentation: boolean
+    sourceMapping: boolean
+    searchableText: boolean
+  }
+}
+
+export function usesHtmlPageShapes(document: Pick<SvgDocument, 'view'>) {
+  return document.view.kind === 'html-pages' || document.view.kind === 'slides'
+}
+
+export function hasSourceMapping(document: Pick<SvgDocument, 'view'>) {
+  return document.view.capabilities.sourceMapping
+}
+
 export interface SvgDocument {
   name: string
   title?: string
@@ -59,7 +78,9 @@ export interface SvgDocument {
   slideInfo?: SlideInfo[]
   macros?: Record<string, string>
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
-  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'
+  view: DocumentView
+  source: { format: string; renderer: string; root?: string }
+  documentFormat: string
   targets?: TargetInfo[]  // present for multi-target projects
   // Markdown parts (notes/scratch) attached to a non-html/markdown project —
   // e.g. a LaTeX project's scratch columns. Rendered as html-page shapes on

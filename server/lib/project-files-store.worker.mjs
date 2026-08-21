@@ -90,7 +90,7 @@ function readProjectSourceSearchEntries(project) {
     .map(row => row.path)
     .filter(file => sourceSearchFiles.has(sourceSearchExt(file)))
     .slice(0, 80)
-  return files.map((file, index) => {
+  const entries = files.map((file, index) => {
     let text = ''
     try {
       const sourcePath = resolveContainedPath(sourceRoot, file)
@@ -111,6 +111,32 @@ function readProjectSourceSearchEntries(project) {
       text,
     }
   })
+  if (project.sourceFormat !== 'pdf') return entries
+
+  const manifestPath = join(projectsDir, name, 'output', 'document-manifest.json')
+  if (!existsSync(manifestPath)) return entries
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    for (const [index, page] of (manifest.pages || []).entries()) {
+      if (!page?.textGeometry) continue
+      const geometryPath = resolveContainedPath(join(projectsDir, name, 'output'), page.textGeometry)
+      const geometry = JSON.parse(readFileSync(geometryPath, 'utf8'))
+      entries.push({
+        sourceKind: 'rendered',
+        index,
+        project: name,
+        title: project.title || name,
+        page: index + 1,
+        file: project.mainFile || null,
+        label: `${project.mainFile || name} — page ${index + 1}`,
+        anchor: null,
+        text: String(geometry.text || '').slice(0, 80_000),
+      })
+    }
+  } catch {
+    // A build may be publishing the manifest and page geometry concurrently.
+  }
+  return entries
 }
 
 // Tokenizing is ~10s per MB and, measured with phase timers, 99% of the cost of

@@ -18,7 +18,7 @@ export function SearchTab() {
 
   useEffect(() => {
     if (!ctx) return
-    if (ctx.format === 'slides') {
+    if (ctx.view.capabilities.presentation) {
       setLookupLines(null)
       setHtmlSearchIndex(null)
       return
@@ -33,7 +33,7 @@ export function SearchTab() {
         })
       }
     })
-  }, [ctx?.projectName, ctx?.format])
+  }, [ctx?.projectName, ctx?.view.capabilities.presentation])
 
   // Debounce
   useEffect(() => {

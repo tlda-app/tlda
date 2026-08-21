@@ -1,9 +1,10 @@
 import { createContext, useContext } from 'react'
+import type { DocumentViewManifest } from './loaders/documentLoaderRegistry'
 
 export interface BookMember {
   key: string       // project name (manifest key)
   name: string      // display name (from manifest)
-  format?: string
+  documentManifest?: DocumentViewManifest
   pages: number
   basePath: string
   sessionAt?: number  // timestamp of last push with session tag (for hot session)

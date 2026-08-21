@@ -9,7 +9,7 @@
  *
  * Usage as CLI:
  *   node scripts/manifest.mjs get <doc>
- *   node scripts/manifest.mjs set <doc> [--pages N] [--texFile path] [--format fmt] [--name title]
+ *   node scripts/manifest.mjs set <doc> --sourceFormat fmt --renderer name --documentFormat fmt [--pages N] [--name title]
  *   node scripts/manifest.mjs update <doc>          # recompute pages from disk
  *   node scripts/manifest.mjs list
  */
@@ -17,6 +17,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { documentAxes } from '../shared/document-formats.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -58,6 +59,9 @@ export function listDocs() {
 export function updateDoc(name, fields = {}) {
   const docs = readManifest()
   const existing = docs[name] || {}
+  if (Object.hasOwn(existing, 'format') || Object.hasOwn(fields, 'format')) {
+    throw new Error('format is not a document field; supply sourceFormat, renderer, and documentFormat')
+  }
 
   // Merge: explicit fields override, existing fields preserved
   const merged = { ...existing, ...fields }
@@ -65,7 +69,7 @@ export function updateDoc(name, fields = {}) {
   // Always recompute pages from disk unless caller explicitly set them
   // and there are no files yet (first-time build, files come later)
   if (!fields.pages || fields.pages === 0) {
-    const diskCount = countPagesOnDisk(name, merged.format)
+    const diskCount = countPagesOnDisk(name, documentAxes(merged).documentFormat)
     if (diskCount > 0) merged.pages = diskCount
   }
 
@@ -90,18 +94,21 @@ export function removeDoc(name) {
 // --- Derived fields ---
 
 function enrich(name, doc) {
+  if (Object.hasOwn(doc, 'format')) throw new Error(`Document ${name} uses the removed legacy format field`)
+  const axes = documentAxes(doc)
   return {
     ...doc,
+    ...axes,
     basePath: `/docs/${name}/`,
     // If pages is missing or 0, try to count from disk
-    pages: doc.pages || countPagesOnDisk(name, doc.format) || 0,
+    pages: doc.pages || countPagesOnDisk(name, axes.documentFormat) || 0,
   }
 }
 
-function countPagesOnDisk(name, format) {
+function countPagesOnDisk(name, documentFormat) {
   const dir = resolve(ROOT, 'public/docs', name)
   if (!existsSync(dir)) return 0
-  const ext = format === 'html' ? 'html' : 'svg'
+  const ext = documentFormat === 'html' || documentFormat === 'slides' ? 'html' : 'svg'
   try {
     return readdirSync(dir).filter(f => new RegExp(`^page-\\d+\\.${ext}$`).test(f)).length
   } catch {
@@ -124,7 +131,7 @@ if (command) {
     case 'list': {
       const docs = listDocs()
       for (const [name, doc] of Object.entries(docs)) {
-        const flags = [doc.format || 'svg', `${doc.pages}p`].join(', ')
+        const flags = [`${doc.sourceFormat}/${doc.renderer}/${doc.documentFormat}`, `${doc.pages}p`].join(', ')
         console.log(`  ${name} (${flags})`)
       }
       break

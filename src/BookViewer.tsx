@@ -8,11 +8,11 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Tldraw } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
-import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
+import { createHtmlDocumentFromPageInfo } from './svgDocumentLoader'
+import { loadDocumentFromManifest } from './loaders/documentLoaderRegistry'
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
 import type { SvgDocument } from './loaders/types'
-import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 import type { Editor } from 'tldraw'
 
 interface BookViewerProps {
@@ -33,16 +33,17 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     clearDocumentStores()
 
     try {
+      if (!member.documentManifest) throw new Error(`Book member ${member.key} has no document manifest`)
       let doc: SvgDocument
-      if (HTML_PAGE_FORMATS.has(member.format || '')) {
+      if (member.documentManifest.view.kind === 'html-pages') {
         const compareDoc = new URLSearchParams(window.location.search).get('compareDoc')
         if (compareDoc) {
           const compareBasePath = `/docs/${encodeURIComponent(compareDoc)}/`
           const [studentPages, solutionPages] = await Promise.all([
-            fetch(`${member.basePath}page-info.json`).then(response => response.json()),
-            fetch(`${compareBasePath}page-info.json`).then(response => {
+            Promise.resolve(member.documentManifest.pages),
+            fetch(`/api/projects/${encodeURIComponent(compareDoc)}`).then(response => {
               if (!response.ok) throw new Error(`Comparison document ${compareDoc} is not ready`)
-              return response.json()
+              return response.json().then(config => config.documentManifest?.pages || [])
             }),
           ])
           if (!studentPages[0] || !solutionPages[0]) throw new Error('Marked exercise documents need a rendered HTML page')
@@ -52,11 +53,10 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
           ]
           doc = createHtmlDocumentFromPageInfo(member.key, member.basePath, pair)
         } else {
-          doc = await loadHtmlDocument(member.key, member.basePath)
+          doc = await loadDocumentFromManifest({ name: member.key, basePath: member.basePath, manifest: member.documentManifest })
         }
       } else {
-        // SVG: create layout immediately, pages fetched async after editor mounts
-        doc = createSvgDocumentLayout(member.key, member.pages, member.basePath)
+        doc = await loadDocumentFromManifest({ name: member.key, basePath: member.basePath, manifest: member.documentManifest })
       }
       setDocument(doc)
     } catch (e) {
