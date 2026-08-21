@@ -11,6 +11,36 @@ import { isObservableDaemonProcessBinding } from '../agent-runtime/daemon-proces
 
 const execFileP = promisify(execFile)
 
+function commandValue(command, name) {
+  const match = String(command || '').match(new RegExp(`(?:^|[ .])${name}=(?:"([^"]+)"|'([^']+)'|([^ ]+))`))
+  return match?.[1] || match?.[2] || match?.[3] || null
+}
+
+function isCompleteProcessIdentity(agent, process) {
+  return !!agent
+    && typeof agent.id === 'string' && !!agent.id
+    && typeof agent.daemonKey === 'string' && !!agent.daemonKey
+    && typeof agent.friendly_name === 'string' && !!agent.friendly_name
+    && typeof agent.runtimeKind === 'string' && !!agent.runtimeKind
+    && agent.tmux_session === process.session
+}
+
+export async function fleetIdentityForPaneProcess({ session, pid } = {}) {
+  if (!session || !Number.isSafeInteger(pid) || pid <= 0) return null
+  const { stdout } = await execFileP('ps', ['eww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' })
+  const id = commandValue(stdout, 'FLEET_ID')
+  const daemonKey = commandValue(stdout, 'FLEET_DAEMON_KEY')
+  if (!id || !daemonKey) return null
+  return {
+    id,
+    daemonKey,
+    friendly_name: commandValue(stdout, 'FLEET_NAME'),
+    tmux_session: session,
+    runtimeKind: commandValue(stdout, 'FLEET_HARNESS'),
+    metadata: { kind: commandValue(stdout, 'FLEET_HARNESS') },
+  }
+}
+
 export function createAgentStatus({
   tmuxArgs,
   sendMsg,
@@ -18,6 +48,7 @@ export function createAgentStatus({
   getAgents,
   harnessForAgent,
   listSessions,
+  resolveProcessIdentity = fleetIdentityForPaneProcess,
   isConnected,
   daemonKey,
   daemonBootId,
@@ -148,16 +179,25 @@ export function createAgentStatus({
         }
 
         const now = Date.now()
-        const liveSessions = new Set(listed.sessions || [])
-        const results = []
-        for (const agent of getAgents().filter(agent =>
-          agent.daemonKey === daemonKey && isObservableDaemonProcessBinding(agent))) {
-          if (!liveSessions.has(agent.tmux_session)) {
-            disarmAgent(agent.id)
-            results.push({ agent_id: agent.id, status: 'hibernating', activity: 'unknown', tool: null })
-            continue
+        let liveAgents
+        try {
+          const processes = listed.processes || []
+          const identities = await Promise.all(processes.map(resolveProcessIdentity))
+          if (identities.some((agent, index) => !isCompleteProcessIdentity(agent, processes[index]))) {
+            throw new Error('a listed pane has no complete fleet process identity')
           }
-
+          liveAgents = identities.filter(agent => agent.daemonKey === daemonKey)
+          const liveIds = new Set()
+          for (const agent of liveAgents) {
+            if (liveIds.has(agent.id)) throw new Error(`duplicate live fleet identity ${agent.id}`)
+            liveIds.add(agent.id)
+          }
+        } catch (error) {
+          log?.warn?.(`agent status process identity scan failed (${reason}): ${error.message}`)
+          return
+        }
+        const results = []
+        for (const agent of liveAgents) {
           let observed = { activity: 'unknown', tool: null, busy: false }
           if (isArmed(agent.id)) observed = await inspectArmedPane(agent)
           const toolObservation = pendingTools.get(agent.id)
@@ -169,7 +209,13 @@ export function createAgentStatus({
             }
             if (pendingTools.get(agent.id) === toolObservation) pendingTools.delete(agent.id)
           }
-          results.push({ agent_id: agent.id, status: 'awake', activity: observed.activity, tool: observed.tool })
+          results.push({
+            agent_id: agent.id,
+            status: 'awake',
+            activity: observed.activity,
+            tool: observed.tool,
+            identity: { friendly_name: agent.friendly_name, runtime_kind: agent.runtimeKind },
+          })
           if (observed.busy) armedSince.set(agent.id, now)
           else if (isArmed(agent.id) && shouldDisarm(now, armedSince.get(agent.id) || 0, false, statusLingerMs)) {
             disarmAgent(agent.id)

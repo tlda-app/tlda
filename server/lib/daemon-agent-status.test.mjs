@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 
-import { applyDaemonAgentStatusBatch, validateDaemonAgentStatusBatch } from './daemon-agent-status.mjs'
+import { applyDaemonAgentStatusBatch, planDaemonAgentStatusBatch, validateDaemonAgentStatusBatch } from './daemon-agent-status.mjs'
 import { createAgentRuntimeStatusStore } from './agent-runtime-status.mjs'
+import { FleetStore } from './fleet-store.mjs'
+import { FleetStoreClient } from './fleet-store-client.mjs'
 
 const agent = { id: 'fleet:owned', route_daemon_key: 'mini:testing' }
 const omittedAgent = { id: 'fleet:omitted', route_daemon_key: 'mini:testing' }
@@ -13,6 +18,176 @@ const message = {
   snapshot_complete: true,
   agents: [{ agent_id: 'fleet:owned', status: 'awake', activity: 'thinking', tool: null }],
 }
+
+test('plans admission for an authenticated live unknown while replacing registered routed agents only', () => {
+  const live = {
+    ...message,
+    agents: [
+      { ...message.agents[0], identity: { friendly_name: 'owned', runtime_kind: 'codex' } },
+      { agent_id: 'fleet:new', status: 'awake', activity: 'idle', tool: null, identity: { friendly_name: 'new', runtime_kind: 'codex' } },
+    ],
+  }
+  assert.deepEqual(planDaemonAgentStatusBatch({
+    message: live,
+    daemonKey: 'mini:testing',
+    bootId: 7,
+    lastSequence: 1,
+    routedAgents: [agent, omittedAgent],
+    knownAgents: [agent],
+  }), {
+    sequence: 2,
+    admissions: [
+      { id: 'fleet:owned', create: false, friendly_name: 'owned', runtime_kind: 'codex' },
+      { id: 'fleet:new', create: true, friendly_name: 'new', runtime_kind: 'codex' },
+    ],
+    results: [
+      ...live.agents,
+      { agent_id: 'fleet:omitted', status: 'hibernating', activity: 'unknown', tool: null },
+    ],
+  })
+})
+
+test('does not admit a stale unknown that is absent from the authenticated live process batch', () => {
+  const live = {
+    ...message,
+    agents: [{ ...message.agents[0], identity: { friendly_name: 'owned', runtime_kind: 'codex' } }],
+  }
+  const planned = planDaemonAgentStatusBatch({
+    message: live,
+    daemonKey: 'mini:testing',
+    bootId: 7,
+    lastSequence: 1,
+    routedAgents: [agent],
+    knownAgents: [{ id: 'fleet:stale', route_daemon_key: null }, agent],
+  })
+  assert.deepEqual(planned.admissions, [
+    { id: 'fleet:owned', create: false, friendly_name: 'owned', runtime_kind: 'codex' },
+  ])
+  assert.deepEqual(planned.results, live.agents)
+})
+
+test('admission creates the authenticated live identity and routes it into the daemon roster', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tlda-status-admission-'))
+  try {
+    const store = new FleetStore(join(dir, 'fleet.db'), { taskDoc: false })
+    store.admitDaemonAgentStatusIdentities([{
+      id: 'fleet:new',
+      create: true,
+      friendly_name: 'new',
+      runtime_kind: 'codex',
+    }], 'mini:testing')
+    const routed = store.getAgentsByDaemonKey('mini:testing')
+    assert.deepEqual(routed.map(row => ({ id: row.id, name: row.friendly_name, route: row.route_daemon_key })), [
+      { id: 'fleet:new', name: 'new', route: 'mini:testing' },
+    ])
+    assert.equal(store.getAgent('fleet:stale'), null)
+    store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('admission rejects a live process claim on a human identity', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tlda-status-human-'))
+  try {
+    const store = new FleetStore(join(dir, 'fleet.db'), { taskDoc: false })
+    store.upsertAgent({ id: 'human:skip', friendly_name: 'skip', labels: [], human: true })
+    assert.throws(() => store.admitDaemonAgentStatusIdentities([{
+      id: 'human:skip', create: false, friendly_name: 'skip', runtime_kind: 'codex',
+    }], 'mini:testing'), /cannot claim human identity/)
+    assert.equal(store.getAgentDaemonRoute('human:skip'), null)
+    store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('admission deliberately revives an authenticated dead AI identity while preserving its canonical name', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tlda-status-revive-'))
+  try {
+    const store = new FleetStore(join(dir, 'fleet.db'), { taskDoc: false })
+    store.upsertAgent({ id: 'fleet:resumed', friendly_name: 'old-name', labels: [], dead: true, metadata: { kind: 'claude' } })
+    store.admitDaemonAgentStatusIdentities([{
+      id: 'fleet:resumed', create: false, friendly_name: 'resumed', runtime_kind: 'codex',
+    }], 'mini:testing')
+    const resumed = store.getAgent('fleet:resumed')
+    assert.equal(resumed.dead, false)
+    assert.equal(resumed.friendly_name, 'old-name')
+    assert.equal(resumed.metadata.kind, 'codex')
+    assert.equal(resumed.route_daemon_key, 'mini:testing')
+    store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a competing daemon cannot take an identity already claimed by another daemon', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tlda-status-claim-'))
+  try {
+    const store = new FleetStore(join(dir, 'fleet.db'), { taskDoc: false })
+    const identity = { id: 'fleet:claimed', create: true, friendly_name: 'claimed', runtime_kind: 'codex' }
+    store.admitDaemonAgentStatusIdentities([identity], 'mini:testing')
+    assert.throws(() => store.admitDaemonAgentStatusIdentities([{ ...identity, create: false }], 'mini:stable'), /already claimed/)
+    assert.equal(store.getAgentDaemonRoute('fleet:claimed').daemon_key, 'mini:testing')
+    store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a later name collision rolls back every earlier admission in the batch', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tlda-status-rollback-'))
+  try {
+    const store = new FleetStore(join(dir, 'fleet.db'), { taskDoc: false })
+    store.upsertAgent({ id: 'fleet:owner', friendly_name: 'taken', labels: [] })
+    store.upsertAgent({ id: 'fleet:collision', friendly_name: 'taken', labels: [], dead: true })
+    assert.throws(() => store.admitDaemonAgentStatusIdentities([
+      { id: 'fleet:first', create: true, friendly_name: 'first', runtime_kind: 'codex' },
+      { id: 'fleet:collision', create: false, friendly_name: 'process-name-is-not-authority', runtime_kind: 'codex' },
+    ], 'mini:testing'), /already taken/)
+    assert.equal(store.getAgent('fleet:first'), null)
+    assert.equal(store.getAgentDaemonRoute('fleet:first'), null)
+    store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('duplicate process names preserve distinct canonical names for existing live IDs', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tlda-status-duplicate-process-name-'))
+  try {
+    const store = new FleetStore(join(dir, 'fleet.db'), { taskDoc: false })
+    store.upsertAgent({ id: 'fleet:aev-1', friendly_name: 'aev-notify-canary', labels: [] })
+    store.upsertAgent({ id: 'fleet:aev-2', friendly_name: 'zev-notify-canary', labels: [] })
+    store.admitDaemonAgentStatusIdentities([
+      { id: 'fleet:aev-1', create: false, friendly_name: 'aev-notify-canary', runtime_kind: 'claude' },
+      { id: 'fleet:aev-2', create: false, friendly_name: 'aev-notify-canary', runtime_kind: 'claude' },
+    ], 'mini:testing')
+    assert.deepEqual(store.getAgentsByIds(['fleet:aev-1', 'fleet:aev-2']).map(row => row.friendly_name).sort(), [
+      'aev-notify-canary', 'zev-notify-canary',
+    ])
+    store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('worker-backed FleetStoreClient admits and returns a live process identity', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tlda-status-worker-admission-'))
+  const store = new FleetStoreClient(join(dir, 'fleet.db'), { taskDoc: false })
+  try {
+    await store.admitDaemonAgentStatusIdentities([{
+      id: 'fleet:worker-live', create: true, friendly_name: 'worker-live', runtime_kind: 'codex',
+    }], 'mini:testing')
+    const routed = await store.getAgentsByDaemonKey('mini:testing')
+    assert.deepEqual(routed.map(row => ({ id: row.id, name: row.friendly_name, route: row.route_daemon_key })), [
+      { id: 'fleet:worker-live', name: 'worker-live', route: 'mini:testing' },
+    ])
+  } finally {
+    await store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
 
 test('accepts only a newer complete batch owned by the socket daemon', () => {
   assert.deepEqual(validateDaemonAgentStatusBatch({
