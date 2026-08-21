@@ -9065,6 +9065,7 @@ async function handleDaemonWsMessage(ws, msg) {
       daemonAgentStatusSequences.set(generationKey, accepted.sequence)
       const ts = msg.ts || new Date().toISOString()
       const atMs = Date.parse(ts) || Date.now()
+      let projectionChanged = false
       for (const result of accepted.results) {
         const agentId = result?.agent_id
         const status = result?.status
@@ -9090,7 +9091,7 @@ async function handleDaemonWsMessage(ws, msg) {
             report_seq: msg.report_seq,
             liveness_generation: generation,
           })
-        } else {
+        } else if (statusChanged) {
           await markAgentNotAlive(agentId, {
             source: 'daemon-agent-status',
             reason: 'absent from daemon session inventory',
@@ -9111,12 +9112,13 @@ async function handleDaemonWsMessage(ws, msg) {
           generation,
         })
         if (statusChanged || activityChanged) {
+          projectionChanged = true
           await fleetStore.updateAgentStatus?.(agentId, status, activity, result.tool, ts)
+          broadcastEvent('agent-status', { agent: agentId, status, activity, tool: result.tool || null, ts })
         }
         if (activityChanged && activity === 'thinking') touchActivity(agentId)
-        broadcastEvent('agent-status', { agent: agentId, status, activity, tool: result.tool || null, ts })
       }
-      broadcastState()
+      if (projectionChanged) broadcastState()
     }, () => daemonConnections.get(ws._daemonKey) === ws
       && ws._daemonKey === msg.daemon_key
       && ws._bootId === msg.daemon_boot_id)
