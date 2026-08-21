@@ -35,7 +35,6 @@ test('bound working-copy event settles through the one Git proposal path', async
   const base = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
   await git(checkout, ['push', remote, `${base}:refs/tlda/source/paper`])
   const watcher = testWatcher()
-  const warnings = []
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-a', server: 'http://unused.test',
     remoteUrlFor: () => remote, quietMs: 10, watch: () => watcher,
@@ -53,6 +52,60 @@ test('bound working-copy event settles through the one Git proposal path', async
     await new Promise(resolve => setTimeout(resolve, 20))
   }
   assert.match(refs, /^refs\/tlda\/proposals\/daemon-a\/main\/[0-9a-f]{40}$/m, warnings.join('\n'))
+  await manager.closeAll()
+})
+
+test('one broken binding does not prevent a later project binding from starting', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-sync-isolation-'))
+  const brokenCheckout = join(root, 'broken-checkout')
+  const goodCheckout = join(root, 'good-checkout')
+  const goodRemote = join(root, 'good.git')
+  await git(root, ['init', '-b', 'main', brokenCheckout])
+  await git(root, ['init', '--bare', goodRemote])
+  await git(root, ['init', '-b', 'main', goodCheckout])
+  await git(goodCheckout, ['config', 'user.name', 'fixture'])
+  await git(goodCheckout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(goodCheckout, 'main.tex'), 'good\n')
+  await git(goodCheckout, ['add', '.'])
+  await git(goodCheckout, ['commit', '-m', 'good'])
+
+  const warnings = []
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-isolation', server: 'http://unused.test',
+    remoteUrlFor: project => project === 'broken' ? join(root, 'missing', 'broken.git') : goodRemote,
+    watch: () => testWatcher(),
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('broken', brokenCheckout, { documentRoots: ['main.tex'] })
+  manager.bindSource('good', goodCheckout, { documentRoots: ['main.tex'] })
+  await assert.rejects(
+    manager.sync([{ name: 'broken', mainFile: 'main.tex' }, { name: 'good', mainFile: 'main.tex' }]),
+    error => error instanceof AggregateError && error.errors.some(failure => /broken:/.test(failure.message)),
+  )
+
+  const submitted = await manager.submit('good')
+  assert.equal(submitted.status, 'SubmittedToBuildQueue')
+  await manager.closeAll()
+})
+
+test('existing tlda remote is reconciled without attempting to add it again', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-remote-reconcile-'))
+  const checkout = join(root, 'checkout')
+  const oldRemote = join(root, 'old.git')
+  const newRemote = join(root, 'new.git')
+  await git(root, ['init', '--bare', oldRemote])
+  await git(root, ['init', '--bare', newRemote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['remote', 'add', 'tlda', oldRemote])
+
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-reconcile', server: 'http://unused.test',
+    remoteUrlFor: () => newRemote, watch: () => testWatcher(),
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
+  await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  assert.equal((await git(checkout, ['remote', 'get-url', 'tlda'])).stdout.trim(), newRemote)
   await manager.closeAll()
 })
 

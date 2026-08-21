@@ -39,8 +39,9 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
 
   async function configureProjectRemote(project, sourceDir) {
     const remoteUrl = projectRemoteUrl(project)
-    try { await execFile('git', ['remote', 'set-url', 'tlda', remoteUrl], { cwd: sourceDir }) }
-    catch { await execFile('git', ['remote', 'add', 'tlda', remoteUrl], { cwd: sourceDir }) }
+    const { stdout } = await execFile('git', ['remote'], { cwd: sourceDir, encoding: 'utf8' })
+    const hasTransportRemote = stdout.split(/\r?\n/).includes('tlda')
+    await execFile('git', ['remote', hasTransportRemote ? 'set-url' : 'add', 'tlda', remoteUrl], { cwd: sourceDir })
     return remoteUrl
   }
 
@@ -163,11 +164,17 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
 
   async function sync(projects = []) {
     const byName = new Map(projects.map(project => [project.name, project]))
+    const failures = []
     for (const item of records()) {
       const project = byName.get(item.project)
       if (!project) continue
-      await start({ ...item, mainFile: project.mainFile || null })
+      try {
+        await start({ ...item, mainFile: project.mainFile || null })
+      } catch (error) {
+        failures.push(new Error(`${item.project}: ${error.message}`, { cause: error }))
+      }
     }
+    if (failures.length) throw new AggregateError(failures, `${failures.length} project Git sync binding${failures.length === 1 ? '' : 's'} failed`)
   }
 
   async function headChanged(project, revision = null) {
