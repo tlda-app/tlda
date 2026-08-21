@@ -1417,17 +1417,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   })
 
-  // --- POST /api/agent-status ---
-  router.post('/api/agent-status', async (req, res) => {
-    const { agent: rawAgent, state, tool } = req.body || {}
-    if (!rawAgent || !state) { res.status(400).send('missing agent or state'); return }
-    const agent = (await fleetStore.findAgent(rawAgent))?.id || rawAgent
-    const ts = new Date().toISOString()
-    if (fleetStore) await fleetStore.updateAgentStatus?.(agent, state, tool || null, ts)
-    broadcastEvent('agent-status', { agent, state, tool: tool || null, ts })
-    res.json({ ok: true })
-  })
-
   // --- POST /api/mark-event-read ---
   // Mark a single event read for a recipient. Used by terminal-card
   // dismissal so the dismissed card doesn't auto-pop again on reload.

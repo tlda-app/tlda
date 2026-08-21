@@ -1226,10 +1226,6 @@ export function connect() {
         }
       } else if (eventType === 'projects-updated') {
         notify('projects', data)
-      } else if (eventType === 'agent-thinking') {
-        if (data.agent) notify('thinking', data)
-      } else if (eventType === 'agent-compacting') {
-        if (data.agent) notify('compacting', data)
       } else if (eventType === 'agent-context') {
         if (data.agent) notify('context', data)
       } else if (eventType === 'agent-status') {
@@ -1326,22 +1322,12 @@ function applyAgentDelta(changed, removed, totals = null) {
   notify('agents', { type: 'agents', agents: _agents })
 }
 
-// Apply server-authoritative ephemeral state (thinking/compacting/context).
-// Shared by the connect snapshot and the agents-delta path so both stay in sync.
+// Context is the only separate ephemeral state. Runtime status and activity
+// already travel on each authoritative agent row.
 function applyFleetEphemeral(src) {
-  const serverThinking = new Set(Object.keys(src.thinking || {}))
-  const serverCompacting = new Set(Object.keys(src.compacting || {}))
-  for (const [agent, ts] of Object.entries(src.thinking || {})) {
-    notify('thinking', { agent, thinking: true, ts })
-  }
-  for (const [agent, ts] of Object.entries(src.compacting || {})) {
-    notify('compacting', { agent, compacting: true, ts })
-  }
   for (const [agent, ctx] of Object.entries(src.context || {})) {
     notify('context', { agent, percent: ctx.percent, inputTokens: ctx.inputTokens })
   }
-  notify('thinking-sync', serverThinking)
-  notify('compacting-sync', serverCompacting)
 }
 
 function updateTasks(tasks) {

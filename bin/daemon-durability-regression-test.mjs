@@ -269,12 +269,12 @@ test('CLI mint records the daemon-owned local process', () => {
   assert.doesNotMatch(bindMintSeatSource, /terminalCapability|daemonApi|sendMsg/)
 })
 
-test('daemon welcome carries no roster and restores local-binding liveness plus JSONL lifecycle', () => {
+test('daemon welcome carries no roster and refreshes authoritative status plus JSONL lifecycle', () => {
   const welcomeHandler = daemonSource.match(/if \(msg\.type === 'daemon-welcome'\) \{([\s\S]*?)\n  \}\n  if \(msg\.type === 'agent-status-events'\)/)?.[1] || ''
   const welcomePayload = serverSource.match(/type: 'daemon-welcome',([\s\S]*?)projects: projectsForDaemon\(\)/)?.[1] || ''
   assert.ok(welcomeHandler)
   assert.doesNotMatch(welcomeHandler, /msg\.agents|reconcileRoster|agentStatus\.start/)
-  assert.match(welcomeHandler, /agentLiveness\.start\(\)/)
+  assert.match(welcomeHandler, /agentStatus\.scanStatus\('daemon-welcome'\)/)
   assert.doesNotMatch(welcomeHandler, /jsonlIngestor\.startOwnerHarvester\(\)/)
   assert.match(welcomeHandler, /reconcileJsonlProcessBindings\('daemon-welcome'\)/)
   // Was registerHostedAgentRoutes() -- one agent-route per agent, re-sent on
@@ -286,7 +286,7 @@ test('daemon welcome carries no roster and restores local-binding liveness plus 
   assert.doesNotMatch(daemonSource, /onChanged: \(\) => \{\s*registerHostedAgentRoutes\(\)/)
   assert.match(welcomeHandler, /jsonlIngestor\.resumeAfterServerReady\(\)/)
   assert.doesNotMatch(welcomePayload, /agents|agent_status/)
-  assert.match(daemonSource, /getAgents: \(\) => livenessAgentsFromProcessBindings\(permissionLedger\.listProcessBindings\(\)/)
+  assert.match(daemonSource, /listSessions: \(\) => terminalRpc\.listSessions\(\)/)
   assert.match(daemonSource, /getAgents: currentJsonlBindingAgents/)
 })
 
