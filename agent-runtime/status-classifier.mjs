@@ -61,13 +61,13 @@ export function classifyPane(harnessKind, pane, prevState = null, now = 0) {
   }
 }
 
-// PURE hysteresis for the thinking activity transition. A single missed spinner frame must
+// PURE hysteresis for the agent-thinking edge. A single missed spinner frame must
 // never fabricate a turn end, so the false edge only fires after `confirm`
 // consecutive idle scans. The true edge fires immediately (status must feel live).
 //   prev      : last emitted thinking bool
 //   idleCount : consecutive non-thinking scans observed while prev was true
-// Returns { emit: true|false|null, prev, idleCount }; the scanner carries `prev`
-// in its next complete status result.
+// Returns { emit: true|false|null, prev, idleCount } — emit is the edge to send
+// (null = no change), prev/idleCount are the next state to store.
 export function decideThinkingEdge(prev, idleCount, isThinking, confirm = 2) {
   if (isThinking) {
     return { emit: prev ? null : true, prev: true, idleCount: 0 }

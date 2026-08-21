@@ -2558,6 +2558,9 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       _activeToolEnv = previous;
     }
   }
+  // Report tool_call status to dashboard (replaces pane scraping for idle detection)
+  reportStatus('tool_call', name);
+
   try {
   // ==== Registration & Identity ====
 
@@ -5810,6 +5813,28 @@ function startChannelWS({ bootstrap = false } = {}) {
     },
   });
   _channelRWS.connect();
+}
+
+// ---- Agent status reporting ----
+// Reports agent state (idle/thinking/tool_call) to the dashboard via WS.
+// No more pane scraping — status is self-reported on every tool call.
+let _lastStatusReport = 0;
+const STATUS_DEBOUNCE_MS = 2000;
+
+function reportStatus(state, toolName) {
+  if (!activeAgentId()) return;
+  const now = Date.now();
+  if (now - _lastStatusReport < STATUS_DEBOUNCE_MS) return;
+  _lastStatusReport = now;
+
+  mcpFleetTransport.ephemeral('agent-status', {
+    agentId: activeAgentId(),
+    state,
+    tool: toolName || null,
+    ts: new Date().toISOString(),
+  }, { deadlineMs: 5_000 }).catch((error) => {
+    console.error(`[fleet-transport] agent-status failed: ${error.message}`);
+  });
 }
 
 // --- Tmux session detection (for registration only) ---

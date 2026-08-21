@@ -624,7 +624,8 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
     // Playback mode: no live thinking indicators
     if (frameId && getPlaybackData(frameId)) return
 
-    let unsubStatus: (() => void) | null = null
+    let unsubThinking: (() => void) | null = null
+    let unsubSync: (() => void) | null = null
     let cancelled = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
@@ -637,18 +638,19 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
         return matchesFilter(filter, { agent: agentId, from: agentId })
       }
 
-      setThinking(new Map(getAgents()
-        .filter((agent: any) => inFilter(agent.id) && agent.runtime_status?.activity === 'thinking')
-        .map((agent: any) => [agent.id, Date.parse(agent.runtime_status?.evidence?.activity_at) || Date.now()])))
-
-      unsubStatus = subscribe('status', null, (data: any) => {
+      // The DAEMON owns the thinking transition: it reads the spinner and applies
+      // the idle hysteresis, then emits ONE clean edge. The client just reflects
+      // it — true shows, false stops showing. No client-side hold and no
+      // reconstruction from message/status events; that hold was papering over the
+      // old unreliable producer and was exactly why turn-end looked stuck.
+      unsubThinking = subscribe('thinking', null, (data: any) => {
         if (!inFilter(data.agent)) return
         setThinking(prev => {
           const has = prev.has(data.agent)
-          if (data.activity === 'thinking') {
+          if (data.thinking) {
             if (has) return prev
             const next = new Map(prev)
-            next.set(data.agent, Date.parse(data.ts) || Date.now())
+            next.set(data.agent, data.startTs || data.ts || Date.now())
             log.info('thinking-line', 'edge true', { agent: data.agent })
             return next
           }
@@ -659,11 +661,26 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
           return next
         })
       })
+
+      // Server's authoritative set — reconciles a late join or any missed edge.
+      // The daemon edge is fire-and-forget, so a client that was disconnected when
+      // an edge fired converges here.
+      unsubSync = subscribe('thinking-sync', null, (serverSet: Set<string>) => {
+        setThinking(prev => {
+          let changed = false
+          const next = new Map(prev)
+          for (const id of next.keys()) {
+            if (!serverSet.has(id)) { next.delete(id); changed = true }
+          }
+          return changed ? next : prev
+        })
+      })
     })
 
     return () => {
       cancelled = true
-      unsubStatus?.()
+      unsubThinking?.()
+      unsubSync?.()
       setThinking(new Map())
     }
   }, [filterKey])
@@ -683,35 +700,45 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
     // Playback mode: no live compacting indicators
     if (frameId && getPlaybackData(frameId)) return
 
-    let unsubStatus: (() => void) | null = null
+    let unsub: (() => void) | null = null
+    let unsubSync: (() => void) | null = null
     let cancelled = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
     ensureInit().then(() => {
-      if (cancelled) return
+      if (cancelled || !filter) return
 
       function inFilter(agentId: string): boolean {
         return matchesFilter(filter, { agent: agentId, from: agentId })
       }
 
-      setCompacting(new Map(getAgents()
-        .filter((agent: any) => inFilter(agent.id) && agent.runtime_status?.activity === 'compacting')
-        .map((agent: any) => [agent.id, Date.parse(agent.runtime_status?.evidence?.activity_at) || Date.now()])))
-
-      unsubStatus = subscribe('status', null, (data: any) => {
+      unsub = subscribe('compacting', null, (data: any) => {
         if (!inFilter(data.agent)) return
         setCompacting(prev => {
           const next = new Map(prev)
-          if (data.activity === 'compacting') next.set(data.agent, Date.parse(data.ts) || Date.now())
+          if (data.compacting) next.set(data.agent, Date.now())
           else next.delete(data.agent)
           return next
+        })
+      })
+
+      // Server state sync — clear agents not in the server's authoritative set
+      unsubSync = subscribe('compacting-sync', null, (serverSet: Set<string>) => {
+        setCompacting(prev => {
+          let changed = false
+          const next = new Map(prev)
+          for (const id of next.keys()) {
+            if (!serverSet.has(id)) { next.delete(id); changed = true }
+          }
+          return changed ? next : prev
         })
       })
     })
 
     return () => {
       cancelled = true
-      unsubStatus?.()
+      unsub?.()
+      unsubSync?.()
       setCompacting(new Map())
     }
   }, [filterKey])

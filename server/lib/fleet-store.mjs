@@ -4072,15 +4072,16 @@ export class FleetStore {
     return this.getAgent(id);
   }
 
-  updateAgentStatus(id, status, activity, tool, ts) {
+  updateAgentStatus(id, state, tool, ts) {
+    // Store status in metadata JSON blob — no schema migration needed
     const row = this._getAgent.get(id);
     if (!row) return;
     let metadata;
     try { metadata = row.metadata ? JSON.parse(row.metadata) : {}; } catch (e) { console.warn(`[fleet-store] corrupt metadata JSON for agent ${id}, resetting: ${e.message}`); metadata = {}; }
     if (typeof metadata !== 'object' || metadata === null) metadata = {};
-    metadata.status = { status, activity, tool: tool || null, ts: ts || new Date().toISOString() };
-    this.db.prepare(`UPDATE agents SET metadata = ?, last_seen = CASE WHEN ? = 'awake' THEN ? ELSE last_seen END WHERE id = ?`)
-      .run(JSON.stringify(metadata), status, new Date().toISOString(), id);
+    metadata.status = { state, tool: tool || null, ts: ts || new Date().toISOString() };
+    this.db.prepare('UPDATE agents SET metadata = ?, last_seen = ? WHERE id = ?')
+      .run(JSON.stringify(metadata), new Date().toISOString(), id);
     this._syncAgentRegistry(id);
   }
 

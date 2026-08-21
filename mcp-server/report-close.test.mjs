@@ -26,6 +26,7 @@ test('report closes through the durable fleet operation without creating a sourc
   __setFleetTransportForTest({
     ephemeral: async (operation, payload) => {
       calls.push({ operation, payload })
+      if (operation === 'agent-status') return { ok: true }
       if (operation === 'task-by-id') {
         return { task: { id: 'task-1', agent: 'fleet:report-agent', description: 'Focused task' } }
       }
@@ -46,7 +47,7 @@ test('report closes through the durable fleet operation without creating a sourc
 
   assert.equal(result.isError, undefined)
   assert.deepEqual(
-    calls.map(call => call.operation),
+    calls.map(call => call.operation).filter(operation => operation !== 'agent-status'),
     ['task-by-id', 'report-close'],
   )
   assert.match(result.content[0].text, /Report accepted\. Closed task: Focused task\./)
