@@ -52,3 +52,30 @@ test('settle submits an immutable daemon proposal and HeadChanged fetches exact 
   assert.equal(mirrored.status, 'already-applied')
   assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/applied/binding-a'])).stdout.trim(), proposal.revision)
 })
+
+test('configured document roots exclude unrelated broken TeX files', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-root-filter-'))
+  const remote = join(root, 'server.git')
+  const checkout = join(root, 'checkout')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  await git(checkout, ['remote', 'add', 'tlda', remote])
+  writeFileSync(join(checkout, 'main.tex'), '\\input{chapter}\n')
+  writeFileSync(join(checkout, 'chapter.tex'), 'included\n')
+  writeFileSync(join(checkout, 'backup.tex'), '\\input{missing}\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'base'])
+
+  const sync = createGitProjectSync({
+    sourceDir: checkout,
+    project: 'paper',
+    daemonId: 'daemon-a',
+    bindingId: 'binding-a',
+    documentRoots: ['main.tex'],
+  })
+  const proposal = await sync.editClusterSettled()
+  assert.equal(proposal.status, 'SubmittedToBuildQueue')
+  assert.deepEqual((await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'), ['chapter.tex', 'main.tex'])
+})
