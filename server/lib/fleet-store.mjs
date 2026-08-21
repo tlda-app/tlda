@@ -377,7 +377,6 @@ export class FleetStore {
     // has to run on the thread that owns the connection.
     this._serverDaemonOutbox = new ServerDaemonOutbox(this.db);
     this._closed = false;
-    this._runtimeStatusByAgent = new Map();
     this._initAgentRegistry();
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
@@ -388,6 +387,7 @@ export class FleetStore {
     this._backfillSelfSubscriptions();
     this._markMintSlotsMandatory();
     this._backfillNameHistory();
+    this._backfillRuntimeStatusHistory();
     this._listeners = []; // SSE broadcast callbacks
     this._taskDocMaterializer = options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
       ? createTaskDocMaterializer({ fleetStore: this, ...(options.taskDocOptions || {}) })
@@ -1410,9 +1410,10 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_label_history_open ON label_history(fleet_id) WHERE to_ts IS NULL;
     `);
 
-    // Retain the historical table for temporal queries, but remove its row
-    // triggers. Insertion does not prove an AI awake or a human here; those are
-    // live daemon/browser observations.
+    // Runtime routing status is also temporal state. Unlike explicit labels,
+    // it is written from the server's liveness/presence authorities through
+    // recordRuntimeState(); these triggers establish/close the initial state
+    // when an agent row is created, killed, or reanimated.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS runtime_status_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1434,8 +1435,33 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_runtime_status_history_open
         ON runtime_status_history(fleet_id) WHERE to_ts IS NULL;
 
-      DROP TRIGGER IF EXISTS runtime_status_history_ai;
-      DROP TRIGGER IF EXISTS runtime_status_history_au;
+      CREATE TRIGGER IF NOT EXISTS runtime_status_history_ai AFTER INSERT ON agents BEGIN
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
+        VALUES (
+          NEW.id,
+          CASE WHEN NEW.human = 1 THEN 'human' ELSE 'ai' END,
+          CASE WHEN NEW.human = 1 THEN 'here' ELSE 'awake' END,
+          COALESCE(NEW.registered_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          CASE WHEN NEW.human = 0 AND NEW.dead = 1 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END
+        );
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
+        SELECT NEW.id, 'ai', 'dead', strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL
+        WHERE NEW.human = 0 AND NEW.dead = 1;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS runtime_status_history_au
+      AFTER UPDATE OF dead ON agents
+      WHEN NEW.human = 0 AND NEW.dead IS NOT OLD.dead BEGIN
+        UPDATE runtime_status_history
+          SET to_ts = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE fleet_id = NEW.id AND to_ts IS NULL;
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
+        SELECT NEW.id,
+               'ai',
+               CASE WHEN NEW.dead = 1 THEN 'dead' ELSE 'awake' END,
+               strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+               NULL;
+      END;
     `);
   }
 
@@ -1658,6 +1684,24 @@ export class FleetStore {
       'lineages.friendly_name AS lineage_name',
       'route.agent_id IS NOT NULL AS route_present',
       'route.daemon_key AS route_daemon_key',
+      // The open runtime span. Without it every agent hydrated in here reads as
+      // HIBERNATING, because that is runtimeStatusForAgent's fallback when
+      // `runtime_status` is absent — and it was absent, always, since the rich
+      // status object is assembled on the main thread after these rows are
+      // handed back. Anything deriving labels in this thread therefore had
+      // `awake` matching nobody and `hibernating` matching the whole fleet.
+      // Proven live: `awake & little-ui` was refused while `hibernating &
+      // little-ui` delivered, to an agent that had been awake all night.
+      // Correlated subqueries, not a join: an agent with more than one open span
+      // would multiply its row through a LEFT JOIN, and these rows feed the
+      // registry, so one bad span would duplicate an agent everywhere. The
+      // partial index on (fleet_id) WHERE to_ts IS NULL serves these the same.
+      `(SELECT r.status FROM runtime_status_history r
+         WHERE r.fleet_id = agents.id AND r.to_ts IS NULL
+         ORDER BY r.from_ts DESC LIMIT 1) AS runtime_open_status`,
+      `(SELECT r.kind FROM runtime_status_history r
+         WHERE r.fleet_id = agents.id AND r.to_ts IS NULL
+         ORDER BY r.from_ts DESC LIMIT 1) AS runtime_open_kind`,
     ].join(', ');
     const AGENT_JOIN = `FROM agents
       LEFT JOIN lineages ON lineages.id = agents.lineage_id
@@ -3178,6 +3222,59 @@ export class FleetStore {
     if (spans > 0) console.log(`[fleet-store] name_history backfill: ${spans} spans across ${seeded.size} agents`);
   }
 
+  // The pre-migration database has no runtime timeline. Humans start `here`;
+  // AIs start `awake`. For rows that predate this table, seed that known initial
+  // state from registered_at. The server starts with zero browser connections,
+  // so any existing human's initial span closes at startup and an explicit
+  // `away` span begins there. This also closes a persisted `here` span after a
+  // server restart whose socket-close callbacks could not run.
+  //
+  // The current dead bit has no timestamp, so it is not a historical boundary:
+  // without a stored death transition, an AI's awake span remains open. Future
+  // accepted liveness observations and dead-bit writes advance the span through
+  // recordRuntimeState()/the dead trigger.
+  _backfillRuntimeStatusHistory() {
+    const now = new Date().toISOString();
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
+        SELECT a.id,
+               CASE WHEN a.human = 1 THEN 'human' ELSE 'ai' END,
+               CASE WHEN a.human = 1 THEN 'here' ELSE 'awake' END,
+               COALESCE(a.registered_at, ?),
+               NULL
+        FROM agents a
+        WHERE NOT EXISTS (
+          SELECT 1 FROM runtime_status_history h
+          WHERE h.fleet_id = a.id
+        )
+      `).run(now);
+
+      const humansHere = this.db.prepare(`
+        SELECT h.fleet_id
+        FROM runtime_status_history h
+        JOIN agents a ON a.id = h.fleet_id
+        WHERE a.human = 1
+          AND h.to_ts IS NULL
+          AND h.kind = 'human'
+          AND h.status = 'here'
+      `).all();
+      const close = this.db.prepare(`
+        UPDATE runtime_status_history
+        SET to_ts = ?
+        WHERE fleet_id = ? AND to_ts IS NULL
+      `);
+      const away = this.db.prepare(`
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
+        VALUES (?, 'human', 'away', ?, NULL)
+      `);
+      for (const row of humansHere) {
+        close.run(now, row.fleet_id);
+        away.run(row.fleet_id, now);
+      }
+    })();
+  }
+
   recordRuntimeState(id, state, timestamp = null) {
     if (!id) throw new Error('runtime state requires agent id');
     assertRuntimeState(state, `durable runtime state for ${id}`);
@@ -3639,8 +3736,12 @@ export class FleetStore {
     const unique = [...new Set((ids || []).filter(Boolean).map(String))];
     if (!unique.length) return [];
     const placeholders = unique.map(() => '?').join(', ');
-    // The same row shape getAgent returns, not a narrower one. In particular,
-    // the daemon-route join is required for ownership validation and projection.
+    // The same row shape getAgent returns, not a narrower one. This is now the
+    // batched substitute for a per-id getAgent loop in _broadcastStateNow, and
+    // the difference is not cosmetic: without runtime_open_status every agent
+    // hydrates as HIBERNATING (see AGENT_SELECT), and without the
+    // agent_daemon_routes join projectAgentDaemonRoute has no route to project,
+    // so a routed agent broadcasts as routeless.
     const rows = this.db.prepare(`
       SELECT ${this._AGENT_SELECT} ${this._AGENT_JOIN}
       WHERE agents.id IN (${placeholders})
@@ -4024,9 +4125,7 @@ export class FleetStore {
   }
 
 
-  refreshAgentLiveness(id, runtimeStatus = null) {
-    if (runtimeStatus) this._runtimeStatusByAgent.set(id, runtimeStatus);
-    else this._runtimeStatusByAgent.delete(id);
+  refreshAgentLiveness(id) {
     this._syncAgentRegistry(id);
   }
 
@@ -4269,13 +4368,36 @@ export class FleetStore {
       // authority says; the main thread applies the daemon check.
       route_present: !!row.route_present,
       route_daemon_key: row.route_daemon_key || null,
-      // Delivery uses the exact projection sent from the main thread, where
-      // daemon liveness and browser presence are observed. Durable history is
-      // never hydrated back into current routing state.
-      runtime_status: row.dead && !row.human
-        ? runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.DEAD)
-        : this._runtimeStatusByAgent.get(row.id) || null,
+      // Built from the open span, so labelsForAgent() gets a real status in this
+      // thread instead of falling through to HIBERNATING for everyone. The
+      // columns are dropped afterwards so the projected object has one shape.
+      //
+      // This is NOT the main thread's runtime_status: that one also folds in
+      // daemon liveness, which this thread cannot see, so the two can disagree
+      // for an agent whose daemon just dropped. That disagreement is worth
+      // knowing about and is much smaller than the one it replaces, which was
+      // total and inverted.
+      runtime_status: row.runtime_open_status
+        ? runtimeState(
+            row.runtime_open_kind || (row.human ? RUNTIME_KIND.HUMAN : RUNTIME_KIND.AI),
+            row.runtime_open_status,
+          )
+        : null,
+      runtime_open_status: undefined,
+      runtime_open_kind: undefined,
     }
+    // No runtime_status here. Liveness is a projection over things this thread
+    // cannot see — live WebSocket handles, daemon connections, heartbeat
+    // evidence — and it used to be stamped on via a closure injected from the
+    // main thread. That closure is why the store could not move off the event
+    // loop: a function cannot cross a worker boundary, and a worker calling
+    // back into the main thread mid-query while the main thread awaits the
+    // worker is a deadlock rather than a slow path.
+    //
+    // The agent row is what this store owns. Whoever holds the liveness
+    // evidence stamps runtime_status on the way out — see stampRuntimeStatus in
+    // fleet-store-client.mjs, which does it on the main thread where the
+    // evidence already lives.
     return baseAgent;
   }
 
