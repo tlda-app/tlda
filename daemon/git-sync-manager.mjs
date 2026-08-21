@@ -72,6 +72,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       project: item.project,
       daemonId,
       bindingId: item.bindingId,
+      remote: projectRemoteUrl(item.project),
       documentRoots: item.documentRoots || [],
       log,
       onSubmitted: event => onProposalSubmitted({ project: item.project, ...event }),
