@@ -891,6 +891,7 @@ const DASHBOARD_URL = typeof window !== 'undefined' ? window.location.origin : '
 
 export interface FleetSearchFilters {
   agent?: string       // explicit fleet id (or array) — exact match
+  agentIdentityQuery?: boolean // emit resolved identity rows for agent: selectors only
   me?: string          // current syntax user; resolves `me` in message filters
   agentQuery?: string  // typed name fragment — server resolves to ids (substring, dawn-aware)
   agentResolve?: {
@@ -924,6 +925,7 @@ export async function searchFleet(query: string, limit = 50, filters: FleetSearc
     const me = filters.me || getHumanId()
     if (me) payload.me = me
     if (filters.agent) payload.agent = filters.agent
+    if (filters.agentIdentityQuery) payload.agentIdentityQuery = true
     if (filters.agentQuery) payload.agentQuery = filters.agentQuery
     if (filters.agentResolve) payload.agentResolve = filters.agentResolve
     if (filters.naturalAgentQuery) payload.naturalAgentQuery = filters.naturalAgentQuery

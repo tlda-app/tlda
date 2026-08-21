@@ -211,6 +211,7 @@ export function buildFleetSearchFilters(filters) {
   const agentResolve = !explicitId ? filters.agentResolve : undefined
   const payload = {
     agent: explicitId,
+    agentIdentityQuery: !!filters.agent,
     agentQuery: !filters.filterExpression ? agentResolve?.fragment : undefined,
     agentResolve,
     naturalAgentQuery: filters.naturalAgentQuery,

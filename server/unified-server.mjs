@@ -7087,7 +7087,7 @@ async function dispatchFleetWsMessage(ws, msg) {
           return await fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
         }))).flat())]
       }
-      const agentIdentityQuery = !!(msg.agentResolve || msg.agentQuery || msg.agent) || naturalAgentOnly
+      const agentIdentityQuery = naturalAgentOnly || msg.agentIdentityQuery === true || msg.agentResolve?.scope === 'any'
       if (agentIdentityQuery && (!hasText || naturalAgentOnly)) {
         const agentRows = await fleetStore.getAgentsByIds(resolvedAgentIds)
         const agentById = new Map(agentRows.map(agent => [agent.id, agent]))
