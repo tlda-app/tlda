@@ -436,7 +436,6 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 const daemonConnections = new Map()         // machine_id:env_name -> ws
 const daemonAgentStatusSequences = new Map() // daemon_key\0boot_id -> last accepted complete batch
 const daemonAgentStatusApplyChains = new Map()
-const daemonAgentStatusTracedBoots = new Set()
 setBuildHeadNotifier(async (project, revision) => {
   await sourceRoomDaemon.headChanged(project, revision)
   const message = JSON.stringify({ type: 'head-changed', project, revision })
@@ -8937,9 +8936,6 @@ async function handleDaemonWsMessage(ws, msg) {
     for (const key of daemonAgentStatusSequences.keys()) {
       if (key.startsWith(`${daemonKey}\0`) && key !== activeStatusGeneration) daemonAgentStatusSequences.delete(key)
     }
-    for (const key of daemonAgentStatusTracedBoots) {
-      if (key.startsWith(`${daemonKey}\0`) && key !== activeStatusGeneration) daemonAgentStatusTracedBoots.delete(key)
-    }
     recordDaemonSourceBindings(daemonKey, source_bindings)
     traceGate1('registry-set', {
       daemon_key: daemonKey,
@@ -9054,11 +9050,6 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!fleetStore) return
     const generationKey = `${ws._daemonKey}\0${ws._bootId}`
     await applyDaemonAgentStatusBatch(daemonAgentStatusApplyChains, ws._daemonKey, async () => {
-      const traceThisGeneration = !daemonAgentStatusTracedBoots.has(generationKey)
-      if (traceThisGeneration) {
-        daemonAgentStatusTracedBoots.add(generationKey)
-        console.log(`[agent-status-apply] ${JSON.stringify({ phase: 'received', daemon_key: ws._daemonKey, boot_id: ws._bootId, report_seq: msg.report_seq, batch_size: msg.agents.length, agent_ids: msg.agents.map(row => row?.agent_id || null) })}`)
-      }
       const routedAgents = await fleetStore.getAgentsByDaemonKey(ws._daemonKey)
       const knownAgents = await fleetStore.getAgentsByIds(msg.agents.map(result => result?.agent_id).filter(Boolean))
       const accepted = planDaemonAgentStatusBatch({
@@ -9069,24 +9060,9 @@ async function handleDaemonWsMessage(ws, msg) {
         routedAgents,
         knownAgents,
       })
-      if (!accepted) {
-        if (traceThisGeneration) console.log(`[agent-status-apply] ${JSON.stringify({ phase: 'plan-rejected', daemon_key: ws._daemonKey, boot_id: ws._bootId, report_seq: msg.report_seq, routed_count: routedAgents.length, known_count: knownAgents.length })}`)
-        return
-      }
-      if (traceThisGeneration) console.log(`[agent-status-apply] ${JSON.stringify({ phase: 'planned', daemon_key: ws._daemonKey, boot_id: ws._bootId, report_seq: msg.report_seq, result_count: accepted.results.length, admission_count: accepted.admissions.length })}`)
-      let admissionResult
-      try {
-        admissionResult = await fleetStore.admitDaemonAgentStatusIdentities(accepted.admissions, ws._daemonKey)
-      } catch (error) {
-        if (traceThisGeneration) console.error(`[agent-status-apply] ${JSON.stringify({ phase: 'admission-error', daemon_key: ws._daemonKey, boot_id: ws._bootId, report_seq: msg.report_seq, error: error?.message || String(error), worker_stack: error?.workerStack || null })}`)
-        throw error
-      }
-      if (traceThisGeneration) {
-        const postRows = await fleetStore.getAgentsByIds(msg.agents.map(result => result.agent_id))
-        console.log(`[agent-status-apply] ${JSON.stringify({ phase: 'admitted', daemon_key: ws._daemonKey, boot_id: ws._bootId, report_seq: msg.report_seq, admission_result: admissionResult, current_rows: postRows.map(row => ({ id: row.id, dead: row.dead, route: row.route_daemon_key, name: row.friendly_name })) })}`)
-      }
+      if (!accepted) return
+      await fleetStore.admitDaemonAgentStatusIdentities(accepted.admissions, ws._daemonKey)
       daemonAgentStatusSequences.set(generationKey, accepted.sequence)
-      if (traceThisGeneration) console.log(`[agent-status-apply] ${JSON.stringify({ phase: 'sequence-accepted', daemon_key: ws._daemonKey, boot_id: ws._bootId, report_seq: accepted.sequence })}`)
       const ts = msg.ts || new Date().toISOString()
       const atMs = Date.parse(ts) || Date.now()
       for (const result of accepted.results) {
@@ -9141,7 +9117,6 @@ async function handleDaemonWsMessage(ws, msg) {
         broadcastEvent('agent-status', { agent: agentId, status, activity, tool: result.tool || null, ts })
       }
       broadcastState()
-      if (traceThisGeneration) console.log(`[agent-status-apply] ${JSON.stringify({ phase: 'applied', daemon_key: ws._daemonKey, boot_id: ws._bootId, report_seq: accepted.sequence, result_count: accepted.results.length })}`)
     }, () => daemonConnections.get(ws._daemonKey) === ws
       && ws._daemonKey === msg.daemon_key
       && ws._bootId === msg.daemon_boot_id)
