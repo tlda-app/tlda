@@ -41,6 +41,7 @@ export function createAgentStatus({
   const classifierState = new Map()
   const effectiveThinking = new Map()
   const prevApprovalFP = new Map()
+  const pendingTools = new Map()
   let scanInFlight = false
   let scanAgain = false
 
@@ -55,7 +56,9 @@ export function createAgentStatus({
   function armBySession(tmuxSession) {
     if (!tmuxSession) return
     for (const agent of getAgents()) {
-      if (agent.tmux_session === tmuxSession && isObservableDaemonProcessBinding(agent)) armAgent(agent.id)
+      if (agent.daemonKey === daemonKey
+        && agent.tmux_session === tmuxSession
+        && isObservableDaemonProcessBinding(agent)) armAgent(agent.id)
     }
   }
 
@@ -65,6 +68,13 @@ export function createAgentStatus({
     classifierState.delete(agentId)
     effectiveThinking.delete(agentId)
     prevApprovalFP.delete(agentId)
+    pendingTools.delete(agentId)
+  }
+
+  function noteToolActivity(agentId, tool) {
+    if (!agentId || !tool || String(tool).startsWith('_')) return
+    pendingTools.set(agentId, { tool: String(tool) })
+    armAgent(agentId)
   }
 
   function thinkingState(agentId, isThinking) {
@@ -140,7 +150,8 @@ export function createAgentStatus({
         const now = Date.now()
         const liveSessions = new Set(listed.sessions || [])
         const results = []
-        for (const agent of getAgents().filter(isObservableDaemonProcessBinding)) {
+        for (const agent of getAgents().filter(agent =>
+          agent.daemonKey === daemonKey && isObservableDaemonProcessBinding(agent))) {
           if (!liveSessions.has(agent.tmux_session)) {
             disarmAgent(agent.id)
             results.push({ agent_id: agent.id, status: 'hibernating', activity: 'unknown', tool: null })
@@ -149,6 +160,15 @@ export function createAgentStatus({
 
           let observed = { activity: 'unknown', tool: null, busy: false }
           if (isArmed(agent.id)) observed = await inspectArmedPane(agent)
+          const toolObservation = pendingTools.get(agent.id)
+          if (toolObservation) {
+            observed = {
+              activity: `tool_call:${toolObservation.tool}`,
+              tool: toolObservation.tool,
+              busy: true,
+            }
+            if (pendingTools.get(agent.id) === toolObservation) pendingTools.delete(agent.id)
+          }
           results.push({ agent_id: agent.id, status: 'awake', activity: observed.activity, tool: observed.tool })
           if (observed.busy) armedSince.set(agent.id, now)
           else if (isArmed(agent.id) && shouldDisarm(now, armedSince.get(agent.id) || 0, false, statusLingerMs)) {
@@ -187,6 +207,7 @@ export function createAgentStatus({
     armAgent,
     armBySession,
     isArmed,
+    noteToolActivity,
     scanStatus,
     start,
   }

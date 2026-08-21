@@ -8,9 +8,10 @@ function fixture({ capturePane = async () => ({ stdout: '' }) } = {}) {
   const sent = []
   let listCalls = 0
   const agents = [
-    { id: 'fleet:busy', tmux_session: 'fleet-busy', runtimeKind: 'codex', metadata: {} },
-    { id: 'fleet:idle', tmux_session: 'fleet-idle', runtimeKind: 'codex', metadata: {} },
-    { id: 'fleet:gone', tmux_session: 'fleet-gone', runtimeKind: 'codex', metadata: {} },
+    { id: 'fleet:busy', daemonKey: 'mini:testing', tmux_session: 'fleet-busy', runtimeKind: 'codex', metadata: {} },
+    { id: 'fleet:idle', daemonKey: 'mini:testing', tmux_session: 'fleet-idle', runtimeKind: 'codex', metadata: {} },
+    { id: 'fleet:gone', daemonKey: 'mini:testing', tmux_session: 'fleet-gone', runtimeKind: 'codex', metadata: {} },
+    { id: 'fleet:stable', daemonKey: 'mini:stable', tmux_session: 'fleet-stable', runtimeKind: 'codex', metadata: {} },
   ]
   const status = createAgentStatus({
     getAgents: () => agents,
@@ -66,6 +67,20 @@ test('overlapping ticks serialize list and capture work', async () => {
   await first
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(f.listCalls(), 2)
+})
+
+test('the complete batch carries the latest real tool observation', async () => {
+  const f = fixture()
+  f.status.noteToolActivity('fleet:busy', 'exec_command')
+
+  await f.status.scanStatus('tool')
+
+  assert.deepEqual(f.sent[0].agents[0], {
+    agent_id: 'fleet:busy',
+    status: 'awake',
+    activity: 'tool_call:exec_command',
+    tool: 'exec_command',
+  })
 })
 
 test('a newer complete status batch replaces a queued older tick', () => {
