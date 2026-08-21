@@ -34,8 +34,11 @@ execFileSync('git', ['commit', '-m', 'initial source'], {
 })
 
 let fileSnapshots = 0
+const documentRootPatches = []
 const http = createServer((req, res) => {
-  req.resume()
+  let rawBody = ''
+  req.setEncoding('utf8')
+  req.on('data', chunk => { rawBody += chunk })
   req.on('end', () => {
     const send = (status, body) => {
       res.writeHead(status, { 'content-type': 'application/json' })
@@ -44,6 +47,10 @@ const http = createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/api/projects/retry-project') return send(200, { name: 'retry-project', mainFile: 'main.tex', format: 'svg' })
     if (req.url?.includes('/source-room/files')) fileSnapshots++
     if (req.method === 'POST' && req.url === '/api/projects') return send(409, { error: 'already exists' })
+    if (req.method === 'PATCH' && req.url?.endsWith('/document-roots')) {
+      documentRootPatches.push(JSON.parse(rawBody))
+      return send(200, { ok: true })
+    }
     if (req.method === 'GET' && req.url === '/api/projects/linked-project') return send(200, { name: 'linked-project', mainFile: 'main.md', format: 'markdown' })
     if (req.method === 'GET' && req.url === '/api/projects/init-project') return send(200, { name: 'init-project', mainFile: 'main.md', format: 'markdown' })
     send(404, { error: `unexpected ${req.method} ${req.url}` })
@@ -131,6 +138,32 @@ try {
   assert.deepEqual(activatedLink.params.documentRoots, ['main.md'])
   assert.equal(activatedLink.params.seedBranch, 'main')
   assert.equal(activatedLink.params.seedRevision, linkHead)
+
+  const relink = spawn(process.execPath, [join(process.cwd(), 'cli/tlda.mjs'), '--env', 'test', 'project', 'link', 'retry-project', 'main.tex', '--server', server], {
+    cwd: sourceDir,
+    env: {
+      ...process.env,
+      TLDA_CONFIG_DIR: configDir,
+      TLDA_DAEMON_CONFIG_DIR: configDir,
+      TLDA_ENV: 'test',
+      TLDA_TOKEN: 'test-token',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let relinkStderr = ''
+  relink.stderr.on('data', chunk => { relinkStderr += chunk })
+  const relinkStatus = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      relink.kill('SIGTERM')
+      reject(new Error(`no-flag relink timed out\nstderr:\n${relinkStderr}`))
+    }, 15_000)
+    relink.on('error', reject)
+    relink.on('exit', code => { clearTimeout(timer); resolve(code) })
+  })
+  assert.equal(relinkStatus, 0, relinkStderr)
+  assert.deepEqual(documentRootPatches.at(-1), {
+    documentRoots: [{ path: 'main.tex', format: 'svg' }],
+  })
 
   assert.ok(lifecycleRequests.every(request => request.op === 'project-source-link'))
 } finally {
