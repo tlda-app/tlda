@@ -75,6 +75,7 @@ import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
+import { normalizeDocumentRoots } from '../shared/document-roots.mjs'
 
 // --- Argument parsing ---
 
@@ -669,6 +670,18 @@ async function cmdCreate() {
     else if (ext === 'qmd') format = 'qmd'
     if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainHint})`))
   }
+  const inferDocumentRootFormat = path => {
+    if (format) return format
+    const ext = path.toLowerCase().split('.').pop()
+    if (ext === 'md' || ext === 'markdown') return 'markdown'
+    if (ext === 'html' || ext === 'htm') return 'html'
+    if (ext === 'qmd') return 'qmd'
+    return 'svg'
+  }
+  const projectDocumentRoots = normalizeDocumentRoots(
+    documentRoots.map(path => ({ path, format: inferDocumentRootFormat(path) })),
+    { mainFile: mainArg, format: format || 'svg' },
+  )
 
   // Slides format: push HTML files, no TeX
   if (format === 'slides') {
@@ -694,7 +707,7 @@ async function cmdCreate() {
 
     // Create or update project
     try {
-      await createProjectApi({ name, title, mainFile: slidesMain || deckHtml[0], format: 'slides' })
+      await createProjectApi({ name, title, mainFile: slidesMain || deckHtml[0], format: 'slides', documentRoots: projectDocumentRoots.map(root => ({ ...root, format: 'slides' })) })
       console.log(green(`Created slides project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -726,7 +739,7 @@ async function cmdCreate() {
 
     // Create or update project
     try {
-      await createProjectApi({ name, title, format: 'html' })
+      await createProjectApi({ name, title, mainFile: mainArg || null, format: 'html', documentRoots: projectDocumentRoots.map(root => ({ ...root, format: 'html' })) })
       console.log(green(`Created HTML project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -782,7 +795,7 @@ async function cmdCreate() {
     console.log(dim(`  Main file: ${mainFile}`))
 
     try {
-      await api('POST', '/api/projects', { name, title, mainFile, format: 'qmd' })
+      await api('POST', '/api/projects', { name, title, mainFile, format: 'qmd', documentRoots: projectDocumentRoots.map(root => ({ ...root, format: 'qmd' })) })
       console.log(green(`Created Quarto project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -859,7 +872,7 @@ async function cmdCreate() {
     console.log(dim(`  Main file: ${mainFile}`))
 
     try {
-      await createProjectApi({ name, title, mainFile, format: 'markdown' })
+      await createProjectApi({ name, title, mainFile, format: 'markdown', documentRoots: projectDocumentRoots.map(root => ({ ...root, format: 'markdown' })) })
       console.log(green(`Created markdown project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -893,7 +906,7 @@ async function cmdCreate() {
 
   // Create or update project on server
   try {
-    await createProjectApi({ name, title, mainFile })
+    await createProjectApi({ name, title, mainFile, documentRoots: projectDocumentRoots })
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {

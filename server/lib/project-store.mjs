@@ -25,6 +25,7 @@ import { createSourceLifecycleStore, projectRevisionStatus } from './source-life
 import { ProjectLifecycleStatusIndex, UNKNOWN_PROJECT_LIFECYCLE_STATUS } from './project-lifecycle-status-index.mjs'
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
+import { normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 
 let projectsDir = null
 let projectFilesDb = null
@@ -92,7 +93,7 @@ export async function readProject(name) {
 // both imagined-randomization projects got a mainFile that does not exist.
 // Undeclared is a state the build tolerates; declared-and-absent is an error.
 // Readers that need a LaTeX name still fall back to `main.tex` at read time.
-export function createProject({ name, title, mainFile, format = 'svg', members }) {
+export function createProject({ name, title, mainFile, format = 'svg', members, documentRoots = null }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -107,6 +108,7 @@ export function createProject({ name, title, mainFile, format = 'svg', members }
     title: title || name,
     ...(!isBook && mainFile && { mainFile }),
     format,
+    ...(!isBook && { documentRoots: normalizeDocumentRoots(documentRoots, { mainFile, format }) }),
     ...(isBook && members && { members }),
     pages: 0,
     createdAt: new Date().toISOString(),
