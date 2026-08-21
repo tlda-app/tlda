@@ -12,6 +12,14 @@ import { createGitHttpHandler } from '../server/lib/git-http.mjs'
 import { closeProjectStore, initProjectStore, sourceLifecycleStore } from '../server/lib/project-store.mjs'
 import { createGitSyncManager } from './git-sync-manager.mjs'
 
+function sourceWatcher() {
+  const watcher = new EventEmitter()
+  watcher.add = () => {}
+  watcher.unwatch = async () => {}
+  watcher.close = async () => {}
+  return watcher
+}
+
 test('new local project initializes its remote, then materializes only by daemon Git proposal', { timeout: 60000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-project-link-git-http-'))
   const projectsDir = join(root, 'projects')
@@ -46,8 +54,7 @@ test('new local project initializes its remote, then materializes only by daemon
 
     mkdirSync(checkout)
     writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}linked\\end{document}\n')
-    const watcher = new EventEmitter()
-    watcher.close = async () => {}
+    const watcher = sourceWatcher()
     manager = createGitSyncManager({
       bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-link', server: base, token: 'secret',
       watch: () => watcher, quietMs: 10, log: { info() {}, warn() {}, error() {} },

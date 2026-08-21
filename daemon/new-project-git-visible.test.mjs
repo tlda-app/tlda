@@ -11,6 +11,14 @@ import Database from 'better-sqlite3'
 import { startServer, stopServer, unusedPort } from '../server/lib/unified-server-test-harness.mjs'
 import { createGitSyncManager } from './git-sync-manager.mjs'
 
+function sourceWatcher() {
+  const watcher = new EventEmitter()
+  watcher.add = () => {}
+  watcher.unwatch = async () => {}
+  watcher.close = async () => {}
+  return watcher
+}
+
 const execFile = promisify(execFileCb)
 const git = (cwd, args) => execFile('git', args, { cwd, encoding: 'utf8', timeout: 30_000 })
 
@@ -52,8 +60,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     assert.equal(createdResponse.status, 201, await createdResponse.text())
 
     phase = 'daemon Git manager setup'
-    const watcher = new EventEmitter()
-    watcher.close = async () => {}
+    const watcher = sourceWatcher()
     manager = createGitSyncManager({
       bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-git-visible', server: base,
       token: 'fixture-token',
@@ -155,8 +162,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     await git(peerCheckout, ['remote', 'add', 'tlda', peerRemote.toString()])
     await git(peerCheckout, ['fetch', '--no-tags', 'tlda', `+refs/tlda/source/${project}:refs/tlda/fetched/${project}`])
     await git(peerCheckout, ['checkout', '-B', 'main', `refs/tlda/fetched/${project}`])
-    const peerWatcher = new EventEmitter()
-    peerWatcher.close = async () => {}
+    const peerWatcher = sourceWatcher()
     peerManager = createGitSyncManager({
       bindingsFile: join(root, 'peer-bindings.json'), daemonId: 'daemon-peer', server: base,
       token: 'fixture-token', watch: () => peerWatcher, quietMs: 10,
@@ -206,8 +212,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
       body: JSON.stringify({ name: remoteProject, title: 'Remote-visible paper', mainFile: 'README.md', format: 'markdown' }),
     })
     assert.equal(remoteCreated.status, 201, await remoteCreated.text())
-    const remoteWatcher = new EventEmitter()
-    remoteWatcher.close = async () => {}
+    const remoteWatcher = sourceWatcher()
     remoteManager = createGitSyncManager({
       bindingsFile: join(root, 'remote-bindings.json'), daemonId: 'daemon-remote', server: base,
       token: 'fixture-token', remoteCheckoutsRoot: join(root, 'remote-checkouts'),
@@ -325,8 +330,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     server = await startServer({ port, projectsDir, fleetDb })
     assert.deepEqual(readQueueRow(resolvedProject.sourceRevision), durableResolutionRow, 'restart must not rotate or duplicate completed work')
 
-    const restartedWatcher = new EventEmitter()
-    restartedWatcher.close = async () => {}
+    const restartedWatcher = sourceWatcher()
     remoteManager = createGitSyncManager({
       bindingsFile: join(root, 'remote-bindings.json'), daemonId: 'daemon-remote', server: base,
       token: 'fixture-token', remoteCheckoutsRoot: join(root, 'remote-checkouts'),

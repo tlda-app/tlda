@@ -78,9 +78,28 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       log,
       onEditClusterSettled: () => runtime.cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
     })
+    const watchedMembers = new Set()
+    let watcher
+    async function refreshWatchedMembers() {
+      const next = new Set((await sync.members()).map(file => path.join(item.sourceDir, file)))
+      const added = [...next].filter(file => !watchedMembers.has(file))
+      const removed = [...watchedMembers].filter(file => !next.has(file))
+      if (added.length) watcher.add(added)
+      if (removed.length) await watcher.unwatch(removed)
+      watchedMembers.clear()
+      for (const file of next) watchedMembers.add(file)
+    }
     const cluster = createEditClusterDebouncer({
       sourceDir: item.sourceDir,
-      onSettled: () => sync.editClusterSettled().catch(error => log.warn(`${item.project}: proposal failed: ${error.message}`)),
+      onSettled: async () => {
+        try {
+          await sync.editClusterSettled()
+          await refreshWatchedMembers()
+        } catch (error) {
+          // Keep the watcher live after a rejected proposal so a later member edit can repair it.
+          log.warn(`${item.project}: proposal failed: ${error.message}`)
+        }
+      },
     })
     const remoteBridge = item.remote ? createRemoteGitBridge({
       sourceDir: item.sourceDir,
@@ -88,24 +107,21 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       onRemoteSettled: () => cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
       log,
     }) : null
-    const watcher = watch(item.sourceDir, {
+    watcher = watch([], {
       ignoreInitial: true,
       persistent: true,
-      ignored: file => {
-        const rel = path.relative(item.sourceDir, file)
-        return rel.split(path.sep).some(part => part === '.git' || /^\.tlda-(?:build|cache|output|status|staging)$/.test(part))
-      },
     })
-    for (const event of ['add', 'change', 'unlink', 'addDir', 'unlinkDir']) watcher.on(event, file => cluster.note(file))
+    for (const event of ['add', 'change', 'unlink']) watcher.on(event, file => cluster.note(file))
     watcher.on('error', error => log.warn(`${item.project}: source watcher failed: ${error.message}`))
     const remoteTimer = remoteBridge ? setInterval(
       () => remoteBridge.poll().catch(error => log.warn(`${item.project}: remote Git poll failed: ${error.message}`)),
       Math.max(15, Number(item.pollSeconds) || 60) * 1000,
     ) : null
     remoteTimer?.unref?.()
-    runtime = { item, sync, cluster, watcher, remoteBridge, remoteTimer }
+    runtime = { item, sync, cluster, watcher, remoteBridge, remoteTimer, refreshWatchedMembers }
     runtimes.set(item.project, runtime)
     await sync.recover()
+    await refreshWatchedMembers()
     if (remoteBridge) await remoteBridge.poll()
     return runtime
   }
@@ -159,6 +175,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       () => runtime.sync.headChanged(revision),
       async () => Boolean((await execFile('git', ['status', '--porcelain', '-z'], { cwd: item.sourceDir, encoding: 'utf8' })).stdout),
     )
+    await runtime.refreshWatchedMembers()
     if (result?.ok && runtime.remoteBridge && revision) await runtime.remoteBridge.publish(revision)
     return result
   }
@@ -174,7 +191,9 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
     const runtime = await start(item)
-    return runtime.sync.editClusterSettled()
+    const result = await runtime.sync.editClusterSettled()
+    await runtime.refreshWatchedMembers()
+    return result
   }
 
   function sourceFileForAbsolutePath(filePath) {

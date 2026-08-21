@@ -8,6 +8,16 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { createGitSyncManager } from './git-sync-manager.mjs'
 
+function testWatcher() {
+  const watcher = new EventEmitter()
+  watcher.added = []
+  watcher.removed = []
+  watcher.add = paths => watcher.added.push(...paths)
+  watcher.unwatch = async paths => watcher.removed.push(...paths)
+  watcher.close = async () => {}
+  return watcher
+}
+
 const execFile = promisify(execFileCb)
 const git = (cwd, args) => execFile('git', args, { cwd, encoding: 'utf8', timeout: 30000 })
 
@@ -24,8 +34,7 @@ test('bound working-copy event settles through the one Git proposal path', async
   await git(checkout, ['commit', '-m', 'base'])
   const base = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
   await git(checkout, ['push', remote, `${base}:refs/tlda/source/paper`])
-  const watcher = new EventEmitter()
-  watcher.close = async () => {}
+  const watcher = testWatcher()
   const warnings = []
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-a', server: 'http://unused.test',
@@ -58,8 +67,7 @@ test('initial project link submits the existing checkout through the ordinary pr
   writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}linked\\end{document}\n')
   await git(checkout, ['add', 'main.tex'])
   await git(checkout, ['commit', '-m', 'existing local paper'])
-  const watcher = new EventEmitter()
-  watcher.close = async () => {}
+  const watcher = testWatcher()
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-link', server: 'http://unused.test',
     remoteUrlFor: () => remote, quietMs: 10, watch: () => watcher,
@@ -71,5 +79,17 @@ test('initial project link submits the existing checkout through the ordinary pr
   assert.equal(submitted.status, 'SubmittedToBuildQueue')
   assert.match(submitted.proposalRef, /^refs\/tlda\/proposals\/daemon-link\/main\/[0-9a-f]{40}$/)
   assert.equal((await git(remote, ['rev-parse', submitted.proposalRef])).stdout.trim(), submitted.revision)
+  assert.deepEqual(watcher.added, [join(checkout, 'main.tex')])
+
+  writeFileSync(join(checkout, 'child.tex'), 'included\n')
+  writeFileSync(join(checkout, 'unrelated.txt'), 'not a project member\n')
+  writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}\\input{child}\\end{document}\n')
+  watcher.emit('change', join(checkout, 'main.tex'))
+  const deadline = Date.now() + 30000
+  while (Date.now() < deadline && !watcher.added.includes(join(checkout, 'child.tex'))) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  assert.deepEqual(watcher.added, [join(checkout, 'main.tex'), join(checkout, 'child.tex')])
+  assert.equal(watcher.added.includes(join(checkout, 'unrelated.txt')), false)
   await manager.closeAll()
 })

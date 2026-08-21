@@ -251,12 +251,19 @@ export function createGitProjectSync({
     return { ok: true, status: 'current', revision: applied || fetched || local }
   }
 
+  async function members() {
+    const revision = await rev(localRef) || await rev(appliedRef) || await rev(fetchedRef)
+    if (!revision) return []
+    return (await git(['ls-tree', '-r', '--name-only', revision])).stdout.split('\n').filter(Boolean)
+  }
+
   return {
     refs: { localRef, appliedRef, sharedRef, fetchedRef },
     editClusterSettled: () => serialized(settle),
     headChanged: revision => serialized(() => headChanged(revision)),
     mirrorArrived: revision => serialized(() => mirrorArrived(revision)),
     recover: () => serialized(recover),
+    members: () => serialized(members),
     fetchHead,
     pushRevision,
   }
