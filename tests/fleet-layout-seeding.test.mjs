@@ -61,3 +61,60 @@ test('four-chat layout leaves remaining panels empty only when distinct conversa
     [],
   ])
 })
+
+test('layout changes preserve current targets and fill only added chats', () => {
+  const filters = defaultFleetLayoutChatFilters({
+    agents: [
+      { id: 'fleet:self', friendly_name: 'skip', human: true },
+      { id: 'fleet:alpha', friendly_name: 'alpha' },
+      { id: 'fleet:beta', friendly_name: 'beta' },
+      { id: 'fleet:gamma', friendly_name: 'gamma' },
+    ],
+    events: [
+      { id: 1, type: 'chat', timestamp: '2026-08-11T10:00:00Z', from: 'fleet:self', recipients: ['fleet:gamma'] },
+    ],
+    humanId: 'fleet:self',
+    humanName: 'skip',
+    panelCount: 3,
+    existingFilters: [filterFor('alpha'), filterFor('beta')],
+  })
+
+  assert.deepEqual(filters, [filterFor('alpha'), filterFor('beta'), filterFor('gamma')])
+})
+
+test('reducing chat count keeps the current targets most recently messaged by the human', () => {
+  const filters = defaultFleetLayoutChatFilters({
+    agents: [
+      { id: 'fleet:self', friendly_name: 'skip', human: true },
+      { id: 'fleet:alpha', friendly_name: 'alpha' },
+      { id: 'fleet:beta', friendly_name: 'beta' },
+      { id: 'fleet:gamma', friendly_name: 'gamma' },
+    ],
+    events: [
+      { id: 1, type: 'chat', timestamp: '2026-08-11T10:00:00Z', from: 'fleet:self', recipients: ['fleet:alpha'] },
+      { id: 2, type: 'chat', timestamp: '2026-08-11T10:02:00Z', from: 'fleet:self', recipients: ['fleet:gamma'] },
+      { id: 3, type: 'chat', timestamp: '2026-08-11T10:01:00Z', from: 'fleet:self', recipients: ['fleet:beta'] },
+    ],
+    humanId: 'fleet:self',
+    humanName: 'skip',
+    panelCount: 2,
+    existingFilters: [filterFor('alpha'), filterFor('beta'), filterFor('gamma')],
+  })
+
+  assert.deepEqual(filters, [filterFor('gamma'), filterFor('beta')])
+})
+
+test('deleted targets are not carried into a new layout', () => {
+  const filters = defaultFleetLayoutChatFilters({
+    agents: [
+      { id: 'fleet:self', friendly_name: 'skip', human: true },
+      { id: 'fleet:alpha', friendly_name: 'alpha' },
+    ],
+    humanId: 'fleet:self',
+    humanName: 'skip',
+    panelCount: 1,
+    existingFilters: [filterFor('gone')],
+  })
+
+  assert.deepEqual(filters, [filterFor('alpha')])
+})

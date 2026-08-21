@@ -28,6 +28,7 @@ import {
 } from './fleet-layout-context'
 import { laneDy, layoutOffset } from './fleet-layout-geometry'
 import { planFleetLayoutShapes, type FleetLayoutVariant } from './fleet-layout-plan'
+import type { FleetChatFilter } from './fleet-layout-seeding'
 import {
   enterFleetLayoutMode,
   syncFleetLayoutSelectionViewport,
@@ -730,6 +731,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
   }
 
   const existing = editor.getCurrentPageShapes().filter(s => isFleetShapeForOwnerKey(s, myId, myDevice))
+  const existingChatFilters = existing
+    .filter(shape => String(shape.type) === 'fleet-chat')
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    .map(shape => (shape.props as { filter?: FleetChatFilter }).filter || [])
   try {
     editor.run(() => {
       if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
@@ -758,6 +763,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       myDevice,
       docBounds,
       events,
+      existingChatFilters,
       makeSlotId: slot => layoutSlotId(myId, myDevice, slot),
     }))
     editor.createShapes(layoutPlan.shapes as any)

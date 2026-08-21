@@ -4,7 +4,7 @@ import { isCanvasPageShape, isDocumentPageShape } from './document-pages'
 import { CANONICAL_FLOW_LEAD, laneDy, layoutOffset } from './fleet-layout-geometry'
 import { crossAxis, documentFlowAxis, type Axis } from './document-flow-axis'
 import type { FleetLayoutPlanInput, FleetLayoutVariant } from './fleet-layout-plan'
-import { defaultFleetLayoutChatFilters } from './fleet-layout-seeding'
+import { defaultFleetLayoutChatFilters, type FleetChatFilter } from './fleet-layout-seeding'
 import { adaptiveInnerColumnWidth, currentVisibleViewportSize, projectedDocumentSpan, singleChatViewportPanelSize } from './fleet-layout-sizing'
 import { fleetLayoutDx } from './fleet-layout-offset-policy'
 
@@ -50,6 +50,7 @@ export function buildFleetLayoutPlanInput({
   myDevice,
   docBounds,
   events,
+  existingChatFilters,
   makeSlotId,
   viewport,
 }: {
@@ -61,6 +62,7 @@ export function buildFleetLayoutPlanInput({
   myDevice: string
   docBounds: DocumentPageBounds
   events?: any[]
+  existingChatFilters?: FleetChatFilter[]
   makeSlotId: (slot: string) => string
   viewport?: FleetLayoutViewportBounds
 }): FleetLayoutPlanInput {
@@ -71,6 +73,7 @@ export function buildFleetLayoutPlanInput({
     humanId: myId,
     humanName: myName,
     panelCount,
+    existingFilters: existingChatFilters,
   })
 
   const vp = viewport ?? currentVisibleViewportSize() ?? editor.getViewportScreenBounds()
