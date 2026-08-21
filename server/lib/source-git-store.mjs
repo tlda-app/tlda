@@ -51,7 +51,7 @@ function run(command, args, { input = null, env = process.env } = {}) {
 // git refnames forbid a set of characters outright. Percent-encode them rather
 // than rejecting: a name we cannot express as a ref would otherwise be a
 // project that cannot sync, which is the wrong way round.
-function encodeRefComponent(name) {
+export function encodeRefComponent(name) {
   const encoded = String(name).replace(/[\x00-\x20\x7f~^:?*[\\%]/g, ch =>
     `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`)
   if (encoded.includes('..') || encoded.endsWith('.lock') || encoded.startsWith('.') || encoded.endsWith('/')) {
@@ -510,6 +510,7 @@ export function createSourceGitStore({ gitDir }) {
   }
 
   return {
+    gitDir,
     acceptRevision,
     readManifest,
     readRevisionFile,

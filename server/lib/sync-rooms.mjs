@@ -968,6 +968,14 @@ export async function updateShape(docName, shapeId, updater) {
   })
 }
 
+/** Atomically create or update a shape in a room. */
+export async function upsertShape(docName, shapeId, updater) {
+  const room = await getOrCreateRoom(docName)
+  room.storage.transaction((txn) => {
+    txn.set(shapeId, updater(txn.get(shapeId) || null))
+  })
+}
+
 /**
  * Get a single record from a room by ID.
  * @param {string} docName

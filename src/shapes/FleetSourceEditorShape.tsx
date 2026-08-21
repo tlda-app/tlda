@@ -886,7 +886,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     // writes the blob. Only the changed file travels: every other path in the
     // manifest is carried forward by reference from the current revision, which
     // is what keeps an edit's payload the size of the edit.
-    const res = await fetch(projectApiPath(doc.projectName, '/source-snapshot'), {
+    const res = await fetch(projectApiPath(doc.projectName, '/source-room/files'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

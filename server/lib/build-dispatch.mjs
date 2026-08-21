@@ -1,169 +1,250 @@
-// Server-side build dispatcher. Replaces the inline `await runBuild(...)` calls.
-// The server NEVER runs the build itself — it delegates to a BuildTransport (off
-// the event loop), relays the worker's side-effects to the live rooms, and
-// coalesces/serializes per project so rapid saves collapse to one build.
-
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
-import { updateProject, getProjectsDir, listProjects, sourceLifecycleStore } from './project-store.mjs'
+import { updateProject, getProjectsDir, listProjects, aggregateBookToc, sourceLifecycleStore, projectDir } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { loadServerConfig } from '../../shared/config.mjs'
 import { ForkTransport } from './build-transport.mjs'
 import { createBuildQueue } from './build-queue.mjs'
-import { mirrorShadow } from './build-runner.mjs'
+import { BuildQueueStore } from './build-queue-store.mjs'
+import { listProposalRefs } from './git-proposals.mjs'
 
-// The real server-side side-effect functions, keyed the way the worker reports
-// them. A build that runs in the worker calls these here, in the server process.
 async function patchShape(docName, shapeId, propsPatch) {
   try {
-    await updateShape(docName, shapeId, (cur) => ({
-      ...cur,
-      props: { ...(cur.props || {}), ...(propsPatch || {}) },
+    await updateShape(docName, shapeId, current => ({
+      ...current,
+      props: { ...(current.props || {}), ...(propsPatch || {}) },
     }))
-  } catch (e) {
-    if (!/not found/i.test(e?.message || '')) throw e
+  } catch (error) {
+    if (!/not found/i.test(error?.message || '')) throw error
     await putShape(docName, {
-      id: shapeId,
-      typeName: 'shape',
-      type: 'doc-version',
-      x: 0,
-      y: 0,
-      rotation: 0,
-      index: 'a0',
-      parentId: 'page:page',
-      isLocked: true,
-      opacity: 0,
-      meta: {},
+      id: shapeId, typeName: 'shape', type: 'doc-version', x: 0, y: 0,
+      rotation: 0, index: 'a0', parentId: 'page:page', isLocked: true,
+      opacity: 0, meta: {},
       props: {
-        w: 1,
-        h: 1,
-        commitHash: 'unknown',
-        timestamp: Date.now(),
-        buildReadyAt: Date.now(),
-        warningsJson: '',
-        errorsJson: '',
-        ...(propsPatch || {}),
+        w: 1, h: 1, commitHash: 'unknown', timestamp: Date.now(),
+        buildReadyAt: Date.now(), warningsJson: '', errorsJson: '', ...(propsPatch || {}),
       },
     })
   }
 }
 
-const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, mirrorShadow }
-
-export async function recordBuildResult(name, sourceRevision, acceptSeq, state, result = null) {
-  if (!sourceRevision) return null
-  const lifecycle = await sourceLifecycleStore(name)
-  const current = lifecycle.readRevisionLifecycle(name, sourceRevision)
-  if (!current) throw new Error(`Cannot record build result for unknown source revision ${sourceRevision}`)
-  if (current.acceptSeq !== acceptSeq) throw new Error(`Build acceptSeq ${acceptSeq} does not match ${current.acceptSeq}`)
-  if (state === 'build_failed' && current.version?.state === 'versioned' && current.mirror?.state === 'mirror_failed') {
-    return lifecycle.recordRevisionPhase(name, sourceRevision, 'build', 'built', {
-      ok: true,
-      terminalPhase: 'mirror',
-      workerError: result?.error || null,
-    })
+async function regenerateBookTocs(name) {
+  for (const project of await listProjects()) {
+    if (project.format === 'book' && Array.isArray(project.members) && project.members.includes(name)) {
+      aggregateBookToc(project.name, project.members)
+    }
   }
-  const terminal = lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
-  // The build says nothing about the mirror any more: mirroring is driven by
-  // the accept, so a build that never ran has not "not reached" it -- it may
-  // already have happened. Writing a phase this path does not own would race
-  // the accept mirror and, being synchronous, would usually win.
-  if (state !== 'built') {
-    return lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'not_reached', { buildState: state })
-  }
-  const completed = lifecycle.readRevisionLifecycle(name, sourceRevision)
-  if (completed.version?.state === 'pending') {
-    lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'version_failed', { error: 'build completed without version disposition' })
-  }
-  return terminal
 }
 
-export async function recordRevisionPhase(name, sourceRevision, phase, state, result = null) {
-  if (!sourceRevision) return null
-  return (await sourceLifecycleStore(name)).recordRevisionPhase(name, sourceRevision, phase, state, result)
+const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, regenerateBookTocs }
+const publicationLocks = new Map()
+
+function serializedPublication(name, operation) {
+  const previous = publicationLocks.get(name) || Promise.resolve()
+  const current = previous.then(operation, operation)
+  const tracked = current.finally(() => {
+    if (publicationLocks.get(name) === tracked) publicationLocks.delete(name)
+  })
+  publicationLocks.set(name, tracked)
+  return current
 }
 
-SINKS.recordBuildResult = recordBuildResult
-SINKS.recordRevisionPhase = recordRevisionPhase
+function moveAside(live, transaction, name) {
+  const held = join(transaction, `old-${name}`)
+  if (existsSync(live)) renameSync(live, held)
+  return held
+}
 
-/**
- * Create a bound dispatcher instance. Transport is injected so the coalescing
- * logic is independently testable with a fake transport. Production callers use
- * the module-level exports which bind the configured transport at load time.
- */
+function restoreAside(live, held) {
+  if (!existsSync(held)) return
+  if (existsSync(live)) rmSync(live, { recursive: true, force: true })
+  renameSync(held, live)
+}
+
+export async function publishBuildInstance(name, sourceRevision, acceptSeq, instanceProject, reports = [], reportSinks = SINKS) {
+  return serializedPublication(name, async () => {
+    const lifecycle = await sourceLifecycleStore(name)
+    const git = await lifecycle.gitRepository()
+    const expectedHead = await git.head(name)
+    if (expectedHead && !await git.isAncestor(expectedHead, sourceRevision)) {
+      return { published: false, stale: true, sourceRevision, currentHead: expectedHead }
+    }
+
+    const liveProject = projectDir(name)
+    const transaction = join(liveProject, `.build-publish-${randomUUID()}`)
+    const stagedOutput = join(transaction, 'new-output')
+    const stagedCache = join(transaction, 'new-build-cache')
+    mkdirSync(transaction, { recursive: true })
+    cpSync(join(instanceProject, 'output'), stagedOutput, { recursive: true })
+    cpSync(join(instanceProject, 'source'), join(transaction, 'new-source'), { recursive: true })
+    if (existsSync(join(instanceProject, 'build-cache'))) cpSync(join(instanceProject, 'build-cache'), stagedCache, { recursive: true })
+    for (const file of ['build.log', 'latex.log']) {
+      if (existsSync(join(instanceProject, file))) cpSync(join(instanceProject, file), join(transaction, `new-${file}`))
+    }
+    writeFileSync(join(transaction, 'publication.json'), JSON.stringify({
+      version: 1, project: name, expectedHead, sourceRevision,
+    }))
+
+    const old = {}
+    let headMoved = false
+    try {
+      const currentHead = await git.head(name)
+      if (currentHead !== expectedHead || (currentHead && !await git.isAncestor(currentHead, sourceRevision))) {
+        return { published: false, stale: true, sourceRevision, currentHead }
+      }
+      for (const item of ['source', 'output', 'build-cache', 'build.log', 'latex.log']) {
+        old[item] = moveAside(join(liveProject, item), transaction, item)
+        const staged = join(transaction, `new-${item}`)
+        if (existsSync(staged)) renameSync(staged, join(liveProject, item))
+      }
+      await git.advanceHead(name, sourceRevision, expectedHead)
+      headMoved = true
+
+      // These reports were produced against this immutable instance. Apply
+      // them only after the same revision owns both published artifacts and
+      // the shared head. Old source-lifecycle/mirror reports are not a second
+      // queue or source authority and are deliberately not replayed.
+      for (const report of reports) {
+        if (['publishBuildInstance', 'recordBuildResult', 'mirrorShadow'].includes(report.method)) continue
+        const sink = reportSinks[report.method]
+        if (sink) await sink(...(report.args || []))
+      }
+      lifecycle.recordRevisionAdmission(name, sourceRevision, acceptSeq)
+      lifecycle.recordRevisionPhase(name, sourceRevision, 'build', 'built', { ok: true })
+      return { published: true, sourceRevision, previousHead: expectedHead }
+    } catch (error) {
+      if (!headMoved) {
+        for (const item of ['source', 'output', 'build-cache', 'build.log', 'latex.log']) {
+          restoreAside(join(liveProject, item), old[item])
+        }
+      }
+      throw error
+    } finally {
+      // A process crash leaves this directory and its marker. Startup recovery
+      // uses the Git ref to choose the only honest side before removing it.
+      rmSync(transaction, { recursive: true, force: true })
+    }
+  })
+}
+
+export async function recoverBuildPublications() {
+  for (const project of await listProjects()) {
+    const liveProject = projectDir(project.name)
+    for (const entry of readdirSync(liveProject, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith('.build-publish-')) continue
+      const transaction = join(liveProject, entry.name)
+      const markerPath = join(transaction, 'publication.json')
+      if (!existsSync(markerPath)) continue
+      const marker = JSON.parse(readFileSync(markerPath, 'utf8'))
+      const git = await (await sourceLifecycleStore(project.name)).gitRepository()
+      const head = await git.head(project.name)
+      if (head !== marker.sourceRevision) {
+        for (const item of ['source', 'output', 'build-cache', 'build.log', 'latex.log']) {
+          restoreAside(join(liveProject, item), join(transaction, `old-${item}`))
+        }
+      }
+      rmSync(transaction, { recursive: true, force: true })
+    }
+  }
+}
+
+export function createDispatcherWithOptions(transport, options = {}) {
+  const sinks = { ...SINKS, ...(options.sinks || {}) }
+  let queue
+  queue = createBuildQueue({
+    transport,
+    getProjectsDir,
+    store: options.store || new BuildQueueStore(options.storePath || ':memory:'),
+    serializeProject: serializedPublication,
+    async getCurrentHead(name) {
+      return (await (await sourceLifecycleStore(name)).gitRepository()).head(name)
+    },
+    async isAncestor(ancestor, descendant, name) {
+      return (await sourceLifecycleStore(name)).isAncestor(ancestor, descendant)
+    },
+    random: options.random || Math.random,
+    async relayMessage(name, message, job) {
+      if (message?.t === 'report') return null
+      if (message?.t !== 'rpc') return null
+      if (message.m === 'recordRevisionPhase') return null
+      if (message.m === 'recordBuildResult') {
+        const [name, sourceRevision, _acceptSeq, state, result] = message.a || []
+        const lifecycle = await sourceLifecycleStore(name)
+        return lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
+      }
+      if (message.m === 'publishBuildInstance') {
+        const result = await publishBuildInstance(...(message.a || []), sinks)
+        if (!result.published) throw new Error(`stale build ${job.sourceRevision} cannot publish over ${result.currentHead || 'no head'}`)
+        await queue.publishedHeadChanged(name, job.sourceRevision)
+        await options.notifyHeadChanged?.(name, job.sourceRevision)
+        return result
+      }
+      const sink = sinks[message.m]
+      if (!sink) throw new Error(`unknown build worker RPC: ${message.m}`)
+      return sink(...(message.a || []))
+    },
+  }, options)
+  return queue
+}
+
 export function createDispatcher(transport) {
   return createDispatcherWithOptions(transport)
 }
 
-export function createDispatcherWithOptions(transport, options = {}) {
-  const sinks = options.sinks || SINKS
-  const queue = createBuildQueue({
-    transport,
-    getProjectsDir,
-    relayMessage(name, msg) {
-      if (msg?.t === 'report') {
-        return Promise.resolve()
-          .then(() => sinks[msg.m]?.(...(msg.a || [])))
-          .catch((e) => {
-          // One side-effect failure must not hide worker exit/completion from waiters.
-          console.error(`[build-dispatch] relay ${msg.m} for ${name} failed: ${e.message}`)
-          })
-      }
-      if (msg?.t === 'rpc') {
-        const sink = sinks[msg.m]
-        if (!sink) throw new Error(`unknown build worker RPC: ${msg.m}`)
-        return Promise.resolve().then(() => sink(...(msg.a || [])))
-      }
-    },
-    recordDisposition(job, state, result) {
-      return sinks.recordBuildResult(job.name, job.sourceRevision, job.acceptSeq, state, result)
-    },
-  }, options)
+let headNotifier = null
+let activeDispatcher = null
 
-  async function dispatchBuild(name, { kind = 'build', sourceRevision = null, acceptSeq = null } = {}) {
-    if (sourceRevision) {
-      const lifecycle = await sourceLifecycleStore(name)
-      const current = lifecycle.readRevisionLifecycle(name, sourceRevision)
-      if (!current) throw new Error(`Cannot lease build for unknown source revision ${sourceRevision}`)
-      lifecycle.recordRevisionPhase(name, sourceRevision, 'build', 'leased', {
-        acceptSeq,
-        leasedAt: new Date().toISOString(),
-      })
-    }
-    return queue.dispatchBuild(name, { kind, sourceRevision, acceptSeq })
-  }
-
-  return { ...queue, dispatchBuild }
+export function setBuildHeadNotifier(notifier) {
+  headNotifier = typeof notifier === 'function' ? notifier : null
 }
 
-// The server always forks the local worker. Only real queue settings remain
-// configurable in server.yaml.
-const _config = loadServerConfig()
-const _default = createDispatcherWithOptions(ForkTransport, {
-  maxConcurrency: _config.buildMaxConcurrency,
-  priority: _config.buildPriority,
-})
+export function initBuildDispatcher() {
+  if (activeDispatcher) return activeDispatcher
+  const config = loadServerConfig()
+  activeDispatcher = createDispatcherWithOptions(ForkTransport, {
+    maxConcurrency: config.buildMaxConcurrency,
+    priority: config.buildPriority,
+    storePath: join(getProjectsDir(), '.build-queue.sqlite'),
+    notifyHeadChanged: (...args) => headNotifier?.(...args),
+  })
+  return activeDispatcher
+}
 
-export const { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding, isBuildKindPending } = _default
+function dispatcher() { return activeDispatcher || initBuildDispatcher() }
 
-export async function resumeDurableBuildIntents({ dispatch = dispatchBuild } = {}) {
-  const resumed = []
+async function recordAdmission(project, row) {
+  return (await sourceLifecycleStore(project)).recordRevisionAdmission(project, row.revision, row.id)
+}
+
+export async function admitProposal(submission) {
+  const row = await dispatcher().admitBuild(submission.project, submission)
+  await recordAdmission(submission.project, row)
+  return row
+}
+export const killBuild = name => dispatcher().killBuild(name)
+export const killAllDispatchedBuilds = () => dispatcher().killAllDispatchedBuilds()
+export const isBuilding = name => dispatcher().isBuilding(name)
+export const isBuildKindPending = (name, kind) => dispatcher().isBuildKindPending(name, kind)
+
+export async function recoverProposalBuilds() {
+  const queue = dispatcher()
   for (const project of await listProjects()) {
-    const lifecycle = await sourceLifecycleStore(project.name)
-    for (const revision of lifecycle.listRevisionLifecycles(project.name)) {
-      if (!['pending', 'leased'].includes(revision.build?.state)) continue
-      resumed.push({ project: project.name, sourceRevision: revision.sourceRevision, acceptSeq: revision.acceptSeq })
-      void dispatch(project.name, {
-        sourceRevision: revision.sourceRevision,
-        acceptSeq: revision.acceptSeq,
-      }).catch(error => {
-        recordBuildResult(project.name, revision.sourceRevision, revision.acceptSeq, 'build_failed', {
-          error: error?.message || String(error),
-          resumed: true,
-        }).catch(recordError => {
-          console.error(`[build-dispatch] resumed build disposition failed for ${project.name}: ${recordError.message}`)
-        })
-      })
+    const git = await (await sourceLifecycleStore(project.name)).gitRepository()
+    for (const proposal of await listProposalRefs(git.gitDir)) {
+      const row = await queue.admitBuild(project.name, proposal)
+      await recordAdmission(project.name, row)
     }
   }
-  return resumed
+  await queue.recover()
 }

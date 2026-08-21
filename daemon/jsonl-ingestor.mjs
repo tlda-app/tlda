@@ -766,7 +766,7 @@ export function createJsonlIngestor({
   }
 
   // Edit attribution: remember which agent most recently Edited/Wrote each file
-  // (by canonical absolute path), so a source-change can be attributed to the
+  // (by canonical absolute path), so a proposal can be attributed to the
   // agent whose edit triggered the build. Keyed by realpath where resolvable.
   /** @type {Map<string, { agentId: string, ts: number }>} absPath → editor */
   const _lastEditor = new Map()

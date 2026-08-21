@@ -45,7 +45,7 @@ const { homedir, hostname } = os
 import { createHash, randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
-import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
+import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, getRwToken, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
@@ -63,12 +63,14 @@ import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, projectDir as getProjectDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
 import { projectRevisionStatus } from './lib/source-lifecycle.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner, staleSourceSyncEntries } from './lib/source-sync-conflicts.mjs'
-import { createSourceRoomDaemon } from './lib/source-room-daemon.mjs'
+import { createSourceRoomDaemon, sourceRoomDaemonKey } from './lib/source-room-daemon.mjs'
+import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
-import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
-import projectRoutes, { acceptSourceSnapshot, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
+import { admitProposal, initBuildDispatcher, killAllDispatchedBuilds, recoverBuildPublications, recoverProposalBuilds, setBuildHeadNotifier } from './lib/build-dispatch.mjs'
+import { createGitHttpHandler } from './lib/git-http.mjs'
+import projectRoutes from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -222,12 +224,27 @@ function recordJsonlIndexBgFailure(source, entries, e) {
   recordServerPerfEvent('jsonl-index-bg-fail', { source, entries: (entries || []).length, sessions, error: e?.message || String(e) })
 }
 
+const sourceRoomGitManagers = new Map()
+function sourceRoomGitManager(project) {
+  let manager = sourceRoomGitManagers.get(project)
+  if (manager) return manager
+  manager = createGitSyncManager({
+    bindingsFile: join(getProjectDir(project), '.source-room', 'git-bindings.json'),
+    daemonId: sourceRoomDaemonKey(project),
+    server: `http://127.0.0.1:${PORT}`,
+    token: process.env.TLDA_TOKEN_RW || getRwToken() || 'source-room-local',
+    remoteUrlFor: name => new URL(`/git/${encodeURIComponent(name)}`, `http://127.0.0.1:${PORT}`),
+  })
+  sourceRoomGitManagers.set(project, manager)
+  return manager
+}
+
 const sourceRoomDaemon = createSourceRoomDaemon({
   projectDir: getProjectDir,
   readProject,
   sourceLifecycleStore,
   readClientSourceManifest,
-  acceptSourceSnapshot,
+  gitSyncManagerForProject: sourceRoomGitManager,
   recordHeldEdit: recordSourceSyncRefusal,
   clearHeldEdit: clearSourceSyncRefusal,
 })
@@ -268,7 +285,7 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 // Initialize stores
 await initProjectStore(PROJECTS_DIR)
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
-await resumeDurableBuildIntents()
+initBuildDispatcher()
 
 // Fleet store (SQLite-backed agent registry + chat).
 // TLDA_FLEET_DB overrides the default path — used by integration tests
@@ -412,6 +429,16 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 // Daemon connections — keyed by machine_id:env_name. Each value is the live WS
 // for that daemon config lane. Used for RPC routing and agent updates.
 const daemonConnections = new Map()         // machine_id:env_name -> ws
+setBuildHeadNotifier(async (project, revision) => {
+  await sourceRoomDaemon.headChanged(project, revision)
+  const message = JSON.stringify({ type: 'head-changed', project, revision })
+  for (const ws of daemonConnections.values()) {
+    if (ws.readyState !== 1) continue
+    try { ws.send(message) } catch {
+      // The disconnected daemon receives the same head on its next hello.
+    }
+  }
+})
 const SOURCE_BINDING_REGISTRY_PATH = process.env.TLDA_SOURCE_BINDING_REGISTRY_PATH
   || join(CONFIG_DIR, 'server-source-bindings.json')
 
@@ -1575,108 +1602,6 @@ const mirrorShadowViaDaemon = createShadowMirrorRpcHandler({
 })
 
 setShadowMirrorHandler(mirrorShadowViaDaemon)
-
-// The same sender, driven by an accepted revision rather than by a finished
-// build. This is what makes the author's checkout follow the paper: their work
-// is committed because the server accepted it, not because a build later
-// succeeded. Nothing here is a second mirror — it is the one mirror, reached
-// from the event that actually means "there is new work to preserve".
-setAcceptedRevisionMirrorHandler(mirrorShadowViaDaemon)
-
-setSourceBindingTargetProvider(sourceBindingsForProject)
-
-const handleAcceptedSourceMutation = async ({ sourceDaemonKey, ...message }) => {
-  if (!message.resumeOnly) {
-    const roomResult = await sourceRoomDaemon.applyAcceptedSourceMutation({ sourceDaemonKey, ...message })
-    if (Array.isArray(roomResult?.conflicted) && roomResult.conflicted.length > 0) {
-      await recordSourceSyncConflicts(message.project, roomResult.conflicted.map(file => ({
-        file,
-        owner: sourceConflictOwner({ daemonKey: `source-room:${message.project}` }),
-        source: 'source-room',
-      })))
-    }
-    if (Array.isArray(roomResult?.applied) && roomResult.applied.length > 0) {
-      await clearSourceSyncConflicts(message.project, roomResult.applied, { daemonKey: `source-room:${message.project}` })
-    }
-  }
-  const lifecycle = await sourceLifecycleStore(message.project)
-  const revisionLifecycle = lifecycle.readRevisionLifecycle(message.project, message.sourceRevision)
-  const targets = Object.entries(revisionLifecycle?.replicas || {})
-    .filter(([, replica]) => replica.state === 'pending')
-    .filter(([, replica]) => !message.daemonKeyFilter || replica.daemonKey === message.daemonKeyFilter)
-    .map(([bindingId, replica]) => ({
-      bindingId,
-      daemonKey: replica.daemonKey,
-      command: replica.command,
-    }))
-  if (targets.length === 0) return
-  const settled = await Promise.allSettled(targets.map(target => {
-    if (!daemonConnections.has(target.daemonKey)) {
-      return Promise.resolve({ target, offline: true, result: null })
-    }
-    return sendDaemonDurable(target.daemonKey, 'apply-source-update', target.command, {
-      requestId: `materialize:${target.bindingId}:${message.sourceRevision}`,
-      totalDeadlineMs: 5000,
-      timeoutMs: 2000,
-    }).then(result => ({ target, offline: false, result }))
-  }))
-  const failed = []
-  const cleanByOwner = []
-  const conflicts = []
-  for (let i = 0; i < settled.length; i++) {
-    const outcome = settled[i]
-    if (outcome.status === 'rejected') {
-      lifecycle.recordReplicaResult(message.project, message.sourceRevision, targets[i].bindingId, 'pending', {
-        error: outcome.reason?.message || String(outcome.reason),
-        transport: 'delivery-failed',
-      })
-      failed.push(`${targets[i].bindingId} (${outcome.reason?.message || outcome.reason})`)
-      continue
-    }
-    if (outcome.value.offline) {
-      lifecycle.recordReplicaResult(message.project, message.sourceRevision, outcome.value.target.bindingId, 'pending', {
-        transport: 'offline',
-        daemonKey: outcome.value.target.daemonKey,
-      })
-      continue
-    }
-    const owner = sourceConflictOwner({ daemonKey: outcome.value.target.daemonKey })
-    const result = outcome.value.result || {}
-    lifecycle.recordReplicaResult(
-      message.project,
-      message.sourceRevision,
-      outcome.value.target.bindingId,
-      result.ok === true && result.materializedRevision === message.sourceRevision
-        ? 'materialized'
-        : result.reason === 'project-not-watched' || result.reason === 'binding-not-watched'
-          ? 'pending'
-          : Array.isArray(result.conflicted) && result.conflicted.length > 0
-            ? 'conflicted'
-            : 'failed',
-      result,
-    )
-    if (Array.isArray(result.conflicted) && result.conflicted.length > 0) {
-      conflicts.push(...result.conflicted.map(file => ({
-        file,
-        owner,
-        source: 'accepted-source-update',
-      })))
-    }
-    if (Array.isArray(result.applied) && result.applied.length > 0) {
-      cleanByOwner.push({ owner, files: result.applied })
-    }
-    if (result?.ok === false && result?.reason !== 'project-not-watched') {
-      failed.push(`${outcome.value.target.bindingId} (${result?.reason || 'declined'})`)
-    }
-  }
-  for (const clean of cleanByOwner) await clearSourceSyncConflicts(message.project, clean.files, clean.owner)
-  if (conflicts.length > 0) await recordSourceSyncConflicts(message.project, conflicts)
-  if (failed.length > 0) {
-    console.error(`[source-sync] accepted source update for ${message.project} did not reach all linked checkouts: ${failed.join(', ')}`)
-  }
-}
-setAcceptedSourceMutationHandler(handleAcceptedSourceMutation)
-setPendingSourceReplicaHandler(handleAcceptedSourceMutation)
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
@@ -3309,7 +3234,7 @@ onGlobalEvent(async (event) => {
     }
 
     // Address the card to the agent whose edit triggered this build (resolved by
-    // the daemon at source-change time — robust, no time-window cross-reference)
+    // the daemon at proposal time — robust, no time-window cross-reference)
     // plus any monitor subscribers. recentDocAgents was dropped: it required an
     // exact abspath+window match against build files and resolved empty in
     // practice, so build cards were never created at all.
@@ -3666,6 +3591,14 @@ initAuth()
 
 // Express app
 const app = express()
+
+app.use(createGitHttpHandler({
+  validateToken,
+  async repositoryForProject(project) {
+    return (await sourceLifecycleStore(project)).gitRepository()
+  },
+  admitProposal,
+}))
 
 app.use(express.json({ limit: '50mb' }))
 
@@ -5144,13 +5077,16 @@ app.use('/docs', (req, res, next) => {
 
 app.locals.fleetStore = fleetStore
 app.locals.sendDaemonEphemeral = sendDaemonEphemeral
+app.locals.sourceRoomDaemon = sourceRoomDaemon
 
 
 app.use('/api/projects', projectRoutes)
 // Constructed here, not at import: a module-level router opened its database
 // as a side effect of being imported, which made any tool or test that touched
 // the module open one too — including several at once, which SQLite refuses.
-app.use('/api/classroom', createClassroomRouter())
+app.use('/api/classroom', createClassroomRouter({
+  submitSubmissionSource: (project, payload) => sourceRoomDaemon.submitFiles(project, payload),
+}))
 
 // Handwriting recognition (MyScript proxy)
 import recognizeRoutes from './routes/recognize.mjs'
@@ -5628,7 +5564,7 @@ server.on('upgrade', async (req, socket, head) => {
   }
 
   // /ws/fleet-daemon — fleet daemon connection. Owned by bin/fleet-daemon.mjs.
-  // The daemon pushes activity-event / terminal-chat / source-change
+  // The daemon pushes activity-event / terminal-chat
   // messages and (Phase 2) handles RPC requests routed by machine_id.
   if (url.pathname === '/ws/fleet-daemon') {
     const remoteAddr = req.socket.remoteAddress
@@ -9015,7 +8951,6 @@ fs.watchFile(QUALIFICATIONS_FILE, { interval: 5000 }, () => {
 //   - daemon-hello       initial identification
 //   - activity-event     tool_use / text block extracted from JSONL
 //   - terminal-chat      user-typed line in an agent's terminal
-//   - source-change      project source file change
 //
 // Phase 1 message types (server → daemon):
 //   - daemon-welcome     agents + projects to watch
@@ -9035,26 +8970,7 @@ const {
   serverDaemonOutboxInflight,
   fleetStore,
   socketCanAcceptMore,
-  replayProcessedDaemonMessage: async (ws, msg) => {
-    if (msg?.type !== 'source-change') return
-    const deliveryId = daemonOutboxId(msg)
-    if (!msg.project || !deliveryId) throw new Error('processed source-change is missing project or delivery id')
-    const operation = (await sourceLifecycleStore(msg.project)).readOperationByDeliveryId(msg.project, deliveryId)
-    if (!operation?.terminalResult) {
-      const error = new Error(`processed source-change ${deliveryId} has no terminal source operation`)
-      error.permanent = true
-      throw error
-    }
-    const result = operation.terminalResult
-    ws.send(JSON.stringify({
-      type: 'source-change-result',
-      requestId: result.requestId || msg.requestId,
-      project: msg.project,
-      ...result,
-      httpStatus: result.httpStatus || 200,
-      status: result.lifecycleStatus || result.status || (result.ok ? 'accepted' : 'error'),
-    }))
-  },
+  replayProcessedDaemonMessage: async () => {},
 })
 
 // Set (or clear, with syncError=null) the mirror/shadow sync-failure state on a
@@ -9184,24 +9100,14 @@ async function handleDaemonWsMessage(ws, msg) {
       traceGate1('welcome-sent', { daemon_key: daemonKey, boot_id, connection_attempt_id: ws._connectionAttemptId, ws_session_id: ws._wsSessionId, ok: false, error: e.message })
       return
     }
+    for (const projectRow of await listProjects()) {
+      const git = await (await sourceLifecycleStore(projectRow.name)).gitRepository()
+      const revision = await git.head(projectRow.name)
+      if (revision) ws.send(JSON.stringify({ type: 'head-changed', project: projectRow.name, revision }))
+    }
     await refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
-    void Promise.all((await listProjects()).map(async projectRow => {
-      const project = projectRow.name
-      const lifecycle = await sourceLifecycleStore(project)
-      for (const revision of lifecycle.listRevisionLifecycles(project)) {
-        const hasPendingTarget = Object.values(revision.replicas || {})
-          .some(replica => replica.state === 'pending' && replica.daemonKey === daemonKey)
-        if (!hasPendingTarget) continue
-        await handleAcceptedSourceMutation({
-          project,
-          sourceRevision: revision.sourceRevision,
-          resumeOnly: true,
-          daemonKeyFilter: daemonKey,
-        })
-      }
-    })).catch(error => console.error(`[source-sync] pending replica resume failed for ${daemonKey}: ${error.message}`))
     daemonWelcomeSeenAt.set(daemonKey, Date.now())
     if (daemonConnections.get(daemonKey) !== ws) {
       console.error(`[fleet-daemon] routability invariant failed after welcome setup: daemon=${daemonKey}`)
@@ -9781,129 +9687,6 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'source-change') {
-    const { project, files, deletedFiles, sourceManifest, editedBy, editOperation, editOperations, expectedRevision, requestId, sourceBindingId } = msg
-    const deliveryId = daemonOutboxId(msg)
-    if (typeof requestId !== 'string' || !requestId.trim()) {
-      ws.send(JSON.stringify({ type: 'source-change-result', requestId, project, ok: false, httpStatus: 400, status: 'invalid-request', error: 'requestId is required' }))
-      return
-    }
-    if (!project) return
-    if (deliveryId) {
-      const replay = (await sourceLifecycleStore(project)).readOperationByDeliveryId(project, deliveryId)?.terminalResult
-      if (replay) {
-        ws.send(JSON.stringify({
-          type: 'source-change-result',
-          project,
-          ...replay,
-          // The row this answers, echoed back so the daemon can settle its
-          // delivery without consulting correlation state. It cannot: this
-          // branch answers with the STORED operation's requestId, and the
-          // daemon clears `pending` on every reconnect, so a replayed result
-          // routinely names a requestId the daemon no longer holds and is
-          // dropped. The deliveryId is the outbox row's own identity and
-          // survives both.
-          deliveryId,
-          requestId: replay.requestId || requestId,
-          httpStatus: replay.httpStatus || 200,
-          status: replay.lifecycleStatus || replay.status || (replay.ok ? 'accepted' : 'error'),
-        }))
-        return
-      }
-    }
-    const authenticatedBinding = sourceBindingForDaemon(sourceBindingId, ws._daemonKey)
-    if (!authenticatedBinding || authenticatedBinding.project !== project) {
-      ws.send(JSON.stringify({
-        type: 'source-change-result', requestId, project, ok: false, httpStatus: 403,
-        status: 'invalid-source-binding', error: 'sourceBindingId is not registered to this daemon and project',
-      }))
-      return
-    }
-    if (await readProject(project)) {
-      await updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
-    }
-    // Hand off to the same accept used by POST /api/projects/:name/source-snapshot.
-    let replied = false
-    try {
-      // `crashAt` replaces the old `transactionTest`. The two boundary names
-      // map -- `after-terminal-result` directly, `after-source-mutation` onto
-      // `after-accept`, which is the same place: the revision is durable and
-      // the effects have not run.
-      //
-      // **The kill semantics do NOT transfer, and that is not fixed here.** The
-      // old hooks called `process.kill(pid, 'SIGKILL')`; `acceptSourceSnapshot`
-      // RETURNS `{status: 599, simulatedCrash: true}` instead of dying. So a
-      // test that asserted recovery after real process death does not go red
-      // when it is repointed -- it passes while testing something weaker.
-      // `durable-source-acceptance` owes a decision about whether its window is
-      // still its window. Deciding it here would be repointing a death test
-      // onto a return value.
-      const crashBoundary = process.env.TLDA_DEV_SERVER === '1'
-        ? process.env.TLDA_TEST_SOURCE_CRASH_BOUNDARY
-        : null
-      const crashAt = crashBoundary === 'after-source-mutation'
-        ? 'after-accept'
-        : crashBoundary === 'after-terminal-result'
-          ? 'after-terminal-result'
-          : null
-      // **Hand the accept this object whole; never trim it to what
-      // `acceptSourceSnapshot` destructures.** Its destructure names only what
-      // the accept uses itself -- the payload is passed on intact to
-      // `acceptUnderOperationJournal` (which spreads it into
-      // `prepareOperation`, where `deliveryId`, `editOperation` and
-      // `editOperations` are read) and to `sourceConflictOwner` (which reads
-      // `sourceMachineId` and `sourceEnvName`). Enumerating against the
-      // destructure list would drop five fields silently while every grep for
-      // them still succeeded. See projects.mjs:2585.
-      //
-      // `deletedFiles` is deliberately not read by the accept: removal is
-      // expressed by leaving the manifest, and the sender guarantees the
-      // omission -- daemon/source-sync.mjs:1406 deletes each path from
-      // `authorityManifest` before the manifest is built from it, because a
-      // path in both is refused whole. It stays in the payload because
-      // trimming this object is the failure above.
-      const { status: httpStatus, body } = await acceptSourceSnapshot(project, {
-        files,
-        deletedFiles,
-        sourceManifest,
-        editedBy,
-        editOperation,
-        editOperations,
-        expectedRevision,
-        requestId,
-        deliveryId,
-        sourceBindingId: sourceBindingId || null,
-        sourceDaemonKey: ws._daemonKey || null,
-        sourceMachineId: ws._machineId || null,
-        sourceEnvName: ws._envName || null,
-      }, { crashAt })
-      // The accept returns `{status, body}` where the old push returned one
-      // flat object. Reading it flat leaves `ok` and the lifecycle status
-      // undefined, so the ternary below falls through to `'error'` on every
-      // successful accept -- a green push reported to the daemon as a failure.
-      const { status: lifecycleStatus, ...payload } = body
-      const durablePayload = body.sourceOperationResult || payload
-      // deliveryId travels on every reply for the same reason it does on the
-      // replay above: it is the only identifier in this exchange that both
-      // sides still agree on after a reconnect. It is carried through the
-      // accept's new `{status, body}` shape rather than lost with the old flat
-      // one -- the shape changed, the reason for the field did not.
-      const reply = { type: 'source-change-result', requestId, project, deliveryId, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (body.ok ? 'accepted' : 'error') }
-      ws.send(JSON.stringify(reply))
-      replied = true
-      if (!body.ok) {
-        console.error(`[fleet-daemon] source-change ${project}: ${body.error || 'unknown'}`)
-      }
-    } catch (e) {
-      console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)
-      if (!replied) {
-        const reply = { type: 'source-change-result', requestId, project, ok: false, httpStatus: 500, status: 'error', error: e.message }
-        ws.send(JSON.stringify(reply))
-      }
-    }
-    return
-  }
-
   if (type === 'daemon-warning') {
     const { project, message, severity } = msg
     const baseText = project ? `⚠️ daemon sync error on **${project}**: ${message}` : `⚠️ daemon warning: ${message}`
@@ -10092,9 +9875,8 @@ process.on('unhandledRejection', (err) => {
   console.log(`[config] active="${cfg.name}" database=${cfg.database.http} store=${cfg.store.http} license=${cfg.licenseKey ? 'set' : 'none'}`)
 }
 
-// Finish journal recovery before accepting a daemon redelivery. Starting the
-// listener first lets the startup recovery and the source-change handler race
-// over the same snapshot directory after a process crash.
+await recoverBuildPublications()
+await recoverProposalBuilds()
 
 server.listen(PORT, HOST, () => {
   const proto = useTls ? 'https' : 'http'

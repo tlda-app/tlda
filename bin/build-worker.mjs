@@ -8,13 +8,14 @@
 // server process where the live rooms actually are. See setBuildReporter.
 
 import { runBuild, finalizeBuildVersion, setBuildReporter } from '../server/lib/build-runner.mjs'
-import { initProjectStore, readProject, projectDir } from '../server/lib/project-store.mjs'
+import { initProjectStore, readProject, projectDir, sourceLifecycleStore, setProjectPathOverride } from '../server/lib/project-store.mjs'
 import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
 import { missingDeclaredMainFile, missingMainFileMessage } from '../server/lib/build-decision.mjs'
 import { setPriority, constants as osConstants } from 'node:os'
-import { writeFileSync } from 'node:fs'
+import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { materializeBuildInstance } from '../server/lib/build-instance.mjs'
 
 const BUILD_PRIORITY = Number(process.env.TLDA_BUILD_PRIORITY ?? 10)
 if (Number.isFinite(BUILD_PRIORITY)) {
@@ -69,29 +70,23 @@ function callParent(method, args, { timeoutMs = PARENT_RPC_TIMEOUT_MS } = {}) {
   })
 }
 
-// Route side-effects back to the parent. Chatty/progress effects are queued
-// reports. Finalizer-critical effects return acknowledged RPC promises so the
-// build can own completion across the worker/server boundary.
+// A build instance stages every externally visible side effect. The parent
+// applies them only after it authorizes and publishes this exact revision.
+const stagedReports = []
+const stageReport = (method, args) => {
+  stagedReports.push({ method, args })
+  return Promise.resolve(method === 'writeSentinel' ? { skipped: false } : null)
+}
 setBuildReporter({
-  broadcastSignal: (room, signal, payload) => sendReport('broadcastSignal', [room, signal, payload]),
-  putShape:        (docName, shape)        => sendReport('putShape',        [docName, shape]),
-  patchShape:      (docName, shapeId, propsPatch) => sendReport('patchShape', [docName, shapeId, propsPatch]),
-  writeSentinel:   (docName, propsPatch)   => callParent('writeSentinel',   [docName, propsPatch]),
-  emitGlobalEvent: (type, payload)         => sendReport('emitGlobalEvent', [type, payload]),
-  // Deliberately fire-and-forget, and it must stay that way until the relay
-  // chain is bounded. Making it an acknowledged RPC on 2026-08-17 looked right
-  // -- the terminal write of buildStatus/lastBuild/lastBuildSuccess raced the
-  // worker's exit and was being lost -- but the parent serializes every relay
-  // through one promise chain, and mirrorShadow awaits a sender chosen to retry
-  // rather than time out. So one unreachable daemon already wedged a finalize;
-  // awaiting here made the FIRST statement of every subsequent build wait on
-  // that same blocked chain, and builds stopped starting at all: worker alive,
-  // ~3s CPU, not one line in build.log. Bounding callParent and the mirror
-  // fan-out is the fix; until then a lost status write is far cheaper than a
-  // build that never begins.
-  updateProject:   (name, patch)           => sendReport('updateProject',   [name, patch]),
-  mirrorShadow:    (name, hash, sourceRevision, acceptSeq) => callParent('mirrorShadow', [name, hash, sourceRevision, acceptSeq]),
-  recordRevisionPhase: (name, sourceRevision, phase, state, result) => callParent('recordRevisionPhase', [name, sourceRevision, phase, state, result]),
+  regenerateBookTocs: (name) => stageReport('regenerateBookTocs', [name]),
+  broadcastSignal: (room, signal, payload) => stageReport('broadcastSignal', [room, signal, payload]),
+  putShape:        (docName, shape)        => stageReport('putShape', [docName, shape]),
+  patchShape:      (docName, shapeId, propsPatch) => stageReport('patchShape', [docName, shapeId, propsPatch]),
+  writeSentinel:   (docName, propsPatch)   => stageReport('writeSentinel', [docName, propsPatch]),
+  emitGlobalEvent: (type, payload)         => stageReport('emitGlobalEvent', [type, payload]),
+  updateProject:   (name, patch)           => stageReport('updateProject', [name, patch]),
+  mirrorShadow:    (name, hash, sourceRevision, acceptSeq) => stageReport('mirrorShadow', [name, hash, sourceRevision, acceptSeq]),
+  recordRevisionPhase: (name, sourceRevision, phase, state, result) => stageReport('recordRevisionPhase', [name, sourceRevision, phase, state, result]),
 })
 
 process.on('message', async (msg) => {
@@ -104,11 +99,19 @@ process.on('message', async (msg) => {
     return
   }
   if (msg?.t !== 'build') return
+  let instanceRoot = null
   try {
     // This process has its own project-store module instance — point it at the
     // same projects dir the server uses, or path resolution (sourceDir/outputDir)
     // would be null.
     if (msg.projectsDir) await initProjectStore(msg.projectsDir)
+    if (!msg.sourceRevision) throw new Error(`build worker for ${msg.name} requires an immutable source revision`)
+    const lifecycle = await sourceLifecycleStore(msg.name)
+    const liveProject = projectDir(msg.name)
+    const instance = await materializeBuildInstance({ name: msg.name, sourceRevision: msg.sourceRevision, lifecycle, seedProject: liveProject })
+    instanceRoot = instance.root
+    const instanceProject = instance.project
+    setProjectPathOverride(msg.name, instanceProject)
     if (msg.kind === 'parts') {
       await buildProjectPartsView(msg.name)
     } else {
@@ -144,9 +147,10 @@ process.on('message', async (msg) => {
         await runBuild(msg.name, { sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
       }
     }
+    await callParent('publishBuildInstance', [msg.name, msg.sourceRevision, msg.acceptSeq, instanceProject, stagedReports])
     await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, 'built', { ok: true }])
     process.send?.({ t: 'done', ok: true })
-    process.exit(0)
+    setImmediate(() => process.exit(0))
   } catch (e) {
     try {
       await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, 'build_failed', { ok: false, error: e?.message || String(e) }])
@@ -154,7 +158,17 @@ process.on('message', async (msg) => {
       e.message = `${e?.message || String(e)}; build disposition persistence failed: ${recordError?.message || recordError}`
     }
     process.send?.({ t: 'done', ok: false, error: e?.message || String(e) })
-    process.exit(1)
+    setImmediate(() => process.exit(1))
+  } finally {
+    if (instanceRoot) {
+      setProjectPathOverride(msg.name, null)
+      try {
+        rmSync(instanceRoot, { recursive: true, force: true })
+      } catch (cleanupError) {
+        // Cleanup failure must not replace the build's already-recorded disposition.
+        console.error(`[build-worker] failed to remove private instance ${instanceRoot}: ${cleanupError?.message || cleanupError}`)
+      }
+    }
   }
 })
 

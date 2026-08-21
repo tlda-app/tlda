@@ -207,20 +207,13 @@ export function TocTab({ query = '' }: { query?: string }) {
       }
       const contentB64 = btoa(unescape(encodeURIComponent(text)))
       const files = [{ path: 'content.md', content: contentB64, encoding: 'base64' }]
-      const authorityRes = await fetch(`/api/projects/${slug}/source-authority`)
-      if (!authorityRes.ok) throw new Error('Failed to read source authority')
-      const sourceAuthority = await authorityRes.json()
-      // The JSON sibling of `/source-bundle`. A browser has no repository and no
-      // git objects, so it cannot propose a bundle; it hands over the bytes and
-      // the server writes the blob. Same accept, same fast-forward rule against
-      // `expectedRevision`, same post-accept effects — only the carrier differs.
-      await fetch(`/api/projects/${slug}/source-snapshot`, {
+      // Browser edits enter through the server-owned source-room checkout.
+      await fetch(`/api/projects/${slug}/source-room/files`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           files,
           sourceManifest: normalizeSourceManifest(files.map(file => file.path), { format: 'markdown', mainFile: 'content.md' }),
-          expectedRevision: sourceAuthority.currentRevision,
         }),
       })
       const patchRes = await fetch(`/api/projects/${book.bookName}/members`, {

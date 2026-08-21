@@ -68,9 +68,9 @@ function inPage(fn, { timeoutMs = 600_000 } = {}) {
 }
 
 async function currentRevision() {
-  const res = await fetch(api('/source-authority'))
-  assert.ok(res.ok, `could not read the source authority: ${res.status}`)
-  return (await res.json()).currentRevision
+  const res = await fetch(api('/source-head'))
+  assert.ok(res.ok, `could not read the source head: ${res.status}`)
+  return (await res.json()).revision
 }
 
 async function serverText() {
@@ -87,7 +87,7 @@ async function serverText() {
  * stories above are unchanged: what this exercises is still a second machine
  * pushing to the file you have open. */
 async function alicePushes(content, expectedRevision) {
-  const res = await fetch(api('/source-snapshot'), {
+  const res = await fetch(api('/source-room/files'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

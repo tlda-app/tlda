@@ -27,6 +27,12 @@ import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 
 let projectsDir = null
 let projectFilesDb = null
+const projectPathOverrides = new Map()
+
+export function setProjectPathOverride(name, root = null) {
+  if (root) projectPathOverrides.set(name, root)
+  else projectPathOverrides.delete(name)
+}
 
 export async function initProjectStore(dir) {
   if (projectFilesDb) await projectFilesDb.close()
@@ -358,15 +364,15 @@ export async function deleteProject(name) {
 }
 
 export function projectDir(name) {
-  return join(projectsDir, name)
+  return projectPathOverrides.get(name) || join(projectsDir, name)
 }
 
 export function sourceDir(name) {
-  return join(projectsDir, name, 'source')
+  return join(projectDir(name), 'source')
 }
 
 export function outputDir(name) {
-  return join(projectsDir, name, 'output')
+  return join(projectDir(name), 'output')
 }
 
 // Dormant authority store for the lifecycle rollout. Current ingress paths do

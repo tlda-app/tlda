@@ -1,255 +1,219 @@
+import { BuildQueueStore } from './build-queue-store.mjs'
+
 export function createBuildQueue({
   transport,
   getProjectsDir,
   relayMessage,
   recordDisposition = async () => {},
-  logError = (name, e) => console.error(`[build-dispatch] worker error for ${name}: ${e.message}`),
+  getCurrentHead = async () => null,
+  isAncestor = async (ancestor, descendant) => ancestor === descendant,
+  random = Math.random,
+  store = new BuildQueueStore(),
+  serializeProject = async (_project, operation) => operation(),
+  logError = (name, error) => console.error(`[build-queue] worker error for ${name}: ${error.message}`),
 }, options = {}) {
-  // **`k >= 2` is a correctness bound, not a throughput preference** (§10.2b).
-  //
-  // At `k = 1` the only slot is the contested one, so a collaborator with
-  // finished, buildable work never gets to run it while someone upstream keeps
-  // typing and keeps reclaiming the slot on an older `waitingSince`. At `k >= 2`
-  // their build runs concurrently and promotes normally, and the typist simply
-  // never wins with unsettled work.
-  //
-  // So the DEFAULT is 2. `server.yaml` can still say otherwise — including 1,
-  // which is a decision somebody is allowed to make and this does not prevent —
-  // but an unset value must not silently be the starving case. It was: nothing
-  // supplies a default, `buildMaxConcurrency` ships commented out, and
-  // `Number(undefined || 1)` is 1.
   const configured = Number(options.maxConcurrency)
   const maxConcurrency = Number.isFinite(configured) && configured >= 1 ? configured : 2
   const buildPriority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 10
-  const _inFlight = new Map() // jobKey(name, kind) -> { handle, waiters }
-  const _queued = new Map()   // jobKey(name, kind) -> { name, kind, waiters }
-  const _pending = new Map()  // jobKey(name, kind) -> latest queued rebuild behind the in-flight job
-  let _activeCount = 0
+  const running = new Map()
+  let activeCount = 0
+  let transitions = Promise.resolve()
 
-  function jobKey(name, kind = 'build') {
-    return `${name}\0${kind}`
+  function transition(operation) {
+    const current = transitions.then(operation, operation)
+    transitions = current.catch(() => {})
+    return current
   }
 
-  function matchingKeys(map, name) {
-    const prefix = `${name}\0`
-    return [...map.keys()].filter(key => key.startsWith(prefix))
+  const jobFromRow = row => ({
+    id: row.id,
+    acceptSeq: row.id,
+    name: row.project,
+    kind: row.kind,
+    sourceRevision: row.revision,
+    daemonId: row.daemon_id,
+    branch: row.branch,
+    integerPriority: row.integer_priority,
+    fractionalPriority: row.fractional_priority,
+    priority: row.priority,
+    startedOnce: row.started_once === 1,
+  })
+
+  async function settle(row, state, result = null) {
+    const terminal = state === 'complete' ? 'complete' : state === 'failed' ? 'failed' : 'killed'
+    const saved = store.settle(row.id, terminal, result?.reason || result?.error || null)
+    if (!saved) return
+    await recordDisposition(jobFromRow(saved), terminal, result)
   }
 
-  async function dispatchBuild(name, { kind = 'build', sourceRevision = null, acceptSeq = null } = {}) {
-    const key = jobKey(name, kind)
-    if (_inFlight.has(key)) {
-      const displaced = _pending.get(key)
-      if (displaced?.sourceRevision && displaced.sourceRevision !== sourceRevision) {
-        await recordDisposition(displaced, 'superseded', { bySourceRevision: sourceRevision, byAcceptSeq: acceptSeq })
+  async function thinPending(project = null) {
+    const pending = store.list('pending', project)
+    const remove = new Set()
+    for (const ancestor of pending) {
+      for (const descendant of pending) {
+        if (ancestor.id === descendant.id || ancestor.project !== descendant.project) continue
+        if (await isAncestor(ancestor.revision, descendant.revision, ancestor.project)) {
+          remove.add(ancestor.id)
+          break
+        }
       }
-      return new Promise((resolve, reject) => {
-        const pending = _pending.get(key) || { name, kind, waiters: [] }
-        pending.kind = kind
-        pending.sourceRevision = sourceRevision
-        pending.acceptSeq = acceptSeq
-        pending.waiters.push({ resolve, reject })
-        _pending.set(key, pending)
-      })
     }
-
-    if (_queued.has(key)) {
-      const displaced = _queued.get(key)
-      if (displaced?.sourceRevision && displaced.sourceRevision !== sourceRevision) {
-        await recordDisposition(displaced, 'superseded', { bySourceRevision: sourceRevision, byAcceptSeq: acceptSeq })
-      }
-      return new Promise((resolve, reject) => {
-      const queued = _queued.get(key)
-      queued.kind = kind
-      queued.sourceRevision = sourceRevision
-      queued.acceptSeq = acceptSeq
-        queued.waiters.push({ resolve, reject })
-      })
-    }
-
-    return new Promise((resolve, reject) => {
-      _enqueue({ name, kind, sourceRevision, acceptSeq, waiters: [{ resolve, reject }] })
-    })
-  }
-
-  function _enqueue(job) {
-    if (_activeCount < maxConcurrency) {
-      _runWorker(job)
-    } else {
-      _queued.set(jobKey(job.name, job.kind), job)
+    for (const row of pending) {
+      if (!remove.has(row.id)) continue
+      await settle(row, 'killed', { reason: 'superseded', byPendingDescendant: true, thinned: true })
     }
   }
 
-  function _drainQueue() {
-    while (_activeCount < maxConcurrency && _queued.size > 0) {
-      const [key, job] = _queued.entries().next().value
-      _queued.delete(key)
-      _runWorker(job)
+  async function killNeedingRebase(project, head) {
+    for (const row of store.list().filter(candidate => (
+      candidate.project === project && ['pending', 'running'].includes(candidate.state)
+    ))) {
+      if (head && await isAncestor(head, row.revision, project)) continue
+      if (!head) continue
+      if (row.state === 'pending') await settle(row, 'killed', { reason: 'needs-rebase', pending: true })
+      else running.get(row.id)?.cancel('needs-rebase')
     }
   }
 
-  function _resolveWaiters(waiters) {
-    for (const waiter of waiters || []) {
-      waiter.resolve()
+  async function drain() {
+    while (activeCount < maxConcurrency) {
+      const pending = store.list('pending')
+      if (!pending.length) break
+      const row = store.start(pending[0].id)
+      if (!row) continue
+      start(row)
     }
   }
 
-  // A build that failed must reach the caller that asked for it. Cancellation
-  // is not failure and still resolves — killBuild is somebody deliberately
-  // stopping a build, and turning that into a rejection nobody catches would
-  // take down the server on a routine action.
-  function _rejectWaiters(waiters, error) {
-    for (const waiter of waiters || []) {
-      waiter.reject(error)
-    }
-  }
-
-  function _runWorker(job) {
-    const { name, kind } = job
-    const key = jobKey(name, kind)
-    let relays = Promise.resolve()
-    // The worker's own verdict on the build. It sends `{t: 'done', ok, error}`
-    // as its last act; nothing used to read it, so a build that threw resolved
-    // its waiters exactly like one that succeeded and dispatchBuild() never
-    // rejected for any failure at all. Every caller's .catch() was dead code —
-    // including the one in the push route that sets buildStatus: 'error'. A qmd
-    // render that died on a missing R package left buildStatus 'none', no
-    // build.log, and nothing in the server log.
+  function start(row) {
+    const job = jobFromRow(row)
     let workerFailure = null
-    // Closure state, not a field on the _inFlight entry: killAllDispatchedBuilds
-    // clears that map before the workers have exited, so an entry read from it
-    // in onExit is already gone.
     let cancelled = false
-    function relay(msg, channel) {
-      if (msg?.t === 'done' && msg.ok === false) {
-        workerFailure = new Error(msg.error || `build worker for ${name} failed`)
-      }
-      // IPC preserves message order; serialize server effects as well so a
-      // sentinel write completes before the reload that follows it.
+    let relays = Promise.resolve()
+    activeCount += 1
+
+    function relay(message, channel) {
+      if (message?.t === 'done' && message.ok === false) workerFailure = new Error(message.error || `build worker for ${job.name} failed`)
       relays = relays.then(async () => {
-        if (msg?.t === 'rpc') {
+        if (message?.t === 'rpc') {
           try {
-            const result = await relayMessage?.(name, msg)
-            channel?.send?.({ t: 'rpc-result', id: msg.id, ok: true, result })
-          } catch (e) {
-            channel?.send?.({ t: 'rpc-result', id: msg.id, ok: false, error: e?.message || String(e) })
+            const result = await relayMessage?.(job.name, message, job)
+            channel?.send?.({ t: 'rpc-result', id: message.id, ok: true, result })
+          } catch (error) {
+            channel?.send?.({ t: 'rpc-result', id: message.id, ok: false, error: error?.message || String(error) })
           }
           return
         }
-        await relayMessage?.(name, msg)
-      }).catch((e) => logError(name, e))
+        await relayMessage?.(job.name, message, job)
+      }).catch(error => logError(job.name, error))
     }
-    function onError(e) { logError(name, e) }
 
     async function onExit(code) {
       await relays
-      _activeCount = Math.max(0, _activeCount - 1)
-      _inFlight.delete(key)
-
-      // A worker that dies without reporting — OOM, a segfault in a native
-      // module, an uncaught throw outside the handler — is a failed build too,
-      // and it is the case with the least evidence anywhere else. Killed
-      // workers exit on a signal with a null code, and a cancelled build is
-      // deliberate rather than failed, so neither becomes a rejection.
-      if (!workerFailure && !cancelled && code) {
-        workerFailure = new Error(`build worker for ${name} exited with code ${code}`)
-      }
-
-      if (job.sourceRevision) {
-        try {
-          await recordDisposition(
-            job,
-            cancelled ? 'cancelled' : (workerFailure ? 'build_failed' : 'built'),
-            workerFailure ? { error: workerFailure.message, exitCode: code } : { exitCode: code },
-          )
-        } catch (error) {
-          workerFailure ||= new Error(`build disposition persistence failed: ${error?.message || error}`)
-          logError(name, workerFailure)
-        }
-      }
-
-      if (_pending.has(key)) {
-        // A rebuild is already queued behind this one, so these waiters are
-        // waiting on that build's outcome now, not this one's. Carry them
-        // forward whether or not this attempt failed.
-        const pending = _pending.get(key)
-        _pending.delete(key)
-        pending.waiters = [...(job.waiters || []), ...(pending.waiters || [])]
-        _queued.set(key, pending)
-      } else if (workerFailure) {
-        _rejectWaiters(job.waiters, workerFailure)
-      } else {
-        _resolveWaiters(job.waiters)
-      }
-
-      _drainQueue()
+      if (!running.delete(row.id)) return
+      activeCount = Math.max(0, activeCount - 1)
+      if (!workerFailure && !cancelled && code) workerFailure = new Error(`build worker for ${job.name} exited with code ${code}`)
+      const completion = transition(async () => {
+        await settle(
+          row,
+          cancelled ? 'killed' : workerFailure ? 'failed' : 'complete',
+          workerFailure
+            ? { error: workerFailure.message, exitCode: code }
+            : cancelled
+              ? { reason: job.cancelReason || 'cancelled', exitCode: code }
+              : { exitCode: code },
+        )
+        await drain()
+      })
+      await completion
     }
 
-    _activeCount++
-    const handle = transport.start(
-      {
-        name,
-        kind,
-        sourceRevision: job.sourceRevision,
-        acceptSeq: job.acceptSeq,
-        projectsDir: getProjectsDir(),
-        priority: buildPriority,
-      },
-      { onMessage: relay, onError, onExit },
-    )
-    _inFlight.set(key, {
+    const handle = transport.start({
+      ...job,
+      projectsDir: getProjectsDir(),
+      osPriority: buildPriority,
+    }, { onMessage: relay, onError: error => logError(job.name, error), onExit })
+    running.set(row.id, {
+      ...job,
       handle,
-      waiters: job.waiters,
-      // Cancelling goes through here so the worker's exit is known to be
-      // deliberate. Reaching past it to handle.cancel() makes a killed build
-      // look like a crashed one.
-      cancel() { cancelled = true; handle.cancel() },
+      cancel(reason = 'cancelled') {
+        cancelled = true
+        job.cancelReason = reason
+        handle.cancel()
+      },
     })
   }
 
-  async function killBuild(name) {
-    for (const key of matchingKeys(_queued, name)) {
-      const queued = _queued.get(key)
-      _queued.delete(key)
-      if (queued?.sourceRevision) await recordDisposition(queued, 'cancelled', { queued: true })
-      _resolveWaiters(queued.waiters)
-    }
-    for (const key of matchingKeys(_pending, name)) {
-      const pending = _pending.get(key)
-      if (pending?.sourceRevision) await recordDisposition(pending, 'cancelled', { pending: true })
-      if (pending) _resolveWaiters(pending.waiters)
-      _pending.delete(key)
-    }
-    for (const key of matchingKeys(_inFlight, name)) {
-      _inFlight.get(key)?.cancel()
-    }
+  function admitBuild(project, { revision, daemonId, branch = 'main', kind = 'build' }) {
+    let admittedRow
+    const admission = transition(async () => {
+      if (!project || !revision || !daemonId || !branch) throw new Error('project, revision, daemonId, and branch are required')
+      admittedRow = await serializeProject(project, async () => {
+        const existing = store.get(project, revision)
+        if (existing) return existing
+        const fractionalPriority = random()
+        if (!(fractionalPriority >= 0 && fractionalPriority < 1)) throw new Error('build queue random source must return a value in [0, 1)')
+        const head = await getCurrentHead(project)
+        const valid = !head || await isAncestor(head, revision, project)
+        return store.admit({
+          project, revision, daemonId, branch, kind, fractionalPriority,
+          state: valid ? 'pending' : 'killed',
+          reason: valid ? null : 'needs-rebase',
+        }).row
+      })
+      if (['complete', 'failed', 'killed'].includes(admittedRow.state)) return
+      await thinPending(project)
+      await drain()
+    })
+    return admission.then(() => admittedRow)
+  }
+
+  async function publishedHeadChanged(project, head) {
+    return transition(async () => {
+      await killNeedingRebase(project, head)
+      await thinPending(project)
+      await drain()
+    })
+  }
+
+  async function recover() {
+    return transition(() => drain())
+  }
+
+  async function killBuild(project) {
+    return transition(async () => {
+      for (const row of store.list('pending', project)) await settle(row, 'killed', { reason: 'cancelled', pending: true })
+      for (const job of running.values()) if (job.name === project) job.cancel()
+    })
   }
 
   async function killAllDispatchedBuilds() {
-    for (const queued of _queued.values()) {
-      if (queued.sourceRevision) await recordDisposition(queued, 'cancelled', { queued: true })
-      _resolveWaiters(queued.waiters)
-    }
-    for (const pending of _pending.values()) {
-      if (pending.sourceRevision) await recordDisposition(pending, 'cancelled', { pending: true })
-      _resolveWaiters(pending.waiters)
-    }
-    for (const running of _inFlight.values()) running.cancel()
-    _inFlight.clear()
-    _queued.clear()
-    _pending.clear()
-    _activeCount = 0
+    return transition(async () => {
+      for (const row of store.list('pending')) await settle(row, 'killed', { reason: 'cancelled', pending: true })
+      for (const job of running.values()) job.cancel()
+    })
   }
 
-  function isBuilding(name) {
-    return matchingKeys(_inFlight, name).length > 0 ||
-      matchingKeys(_queued, name).length > 0 ||
-      matchingKeys(_pending, name).length > 0
-  }
+  const isBuilding = project => store.list().some(row => row.project === project && ['pending', 'running'].includes(row.state))
+  const isBuildKindPending = (project, kind = 'build') => store.list().some(row => (
+    row.project === project && row.kind === kind && ['pending', 'running'].includes(row.state)
+  ))
+  const inspect = () => ({
+    pending: store.list('pending').map(jobFromRow),
+    running: store.list('running').map(jobFromRow),
+    ring: store.ring(),
+    all: store.list().map(jobFromRow),
+  })
 
-  function isBuildKindPending(name, kind = 'build') {
-    const key = jobKey(name, kind)
-    return _inFlight.has(key) || _queued.has(key) || _pending.has(key)
+  return {
+    admitBuild,
+    publishedHeadChanged,
+    recover,
+    killBuild,
+    killAllDispatchedBuilds,
+    isBuilding,
+    isBuildKindPending,
+    inspect,
+    store,
   }
-
-  return { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding, isBuildKindPending }
 }

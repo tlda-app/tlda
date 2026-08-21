@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto'
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { dirname, join } from 'path'
+import { dirname, isAbsolute, join } from 'path'
 import { spawnSync } from 'child_process'
 import * as Y from 'yjs'
 
@@ -108,7 +108,7 @@ export function createSourceRoomDaemon({
   readProject,
   sourceLifecycleStore,
   readClientSourceManifest,
-  acceptSourceSnapshot,
+  gitSyncManagerForProject,
   // How the room says it is holding an edit that never reached the paper, and
   // that it has stopped. Injected like everything else this file touches: the
   // room tests stand up their own project store, so importing the real
@@ -119,16 +119,10 @@ export function createSourceRoomDaemon({
   pushDelayMs = 250,
   log = console,
 }) {
-  // **Loud, because the rename makes an old stub inert rather than wrong.**
-  // This used to take `processProjectPush`, and every caller that still passes
-  // that key would otherwise hand over a stub nothing reads — the room would
-  // fall through to whatever the real accept does, against a store the test
-  // never set up, while the test looked wired. That is the reconstruction
-  // hazard this repo names: a dependency assembled from named keys silently
-  // drops the one nobody renamed.
-  if (typeof acceptSourceSnapshot !== 'function') {
-    throw new Error('createSourceRoomDaemon requires acceptSourceSnapshot (it previously took processProjectPush)')
+  if (typeof gitSyncManagerForProject !== 'function') {
+    throw new Error('createSourceRoomDaemon requires gitSyncManagerForProject')
   }
+
   const rooms = new Map()
 
   function roomKey(project, filePath) {
@@ -149,10 +143,15 @@ export function createSourceRoomDaemon({
 
   async function createRoom(project, filePath) {
     const paths = roomPaths(project, filePath)
+    const projectRecord = await readProject(project)
+    const gitSync = gitSyncManagerForProject(project)
+    gitSync.bindSource(project, join(paths.root, 'working'), { mainFile: projectRecord?.mainFile || null })
+    await gitSync.sync(projectRecord ? [projectRecord] : [])
     const snapshot = readJson(paths.snapshot)
     const state = snapshot || readJson(paths.state) || {}
     const lifecycle = await sourceLifecycleStore(project)
-    const authority = await lifecycle.readAuthority()
+    const currentRevision = await (await lifecycle.gitRepository()).head(project)
+    if (currentRevision) await gitSync.headChanged(project, currentRevision)
     const ydoc = new Y.Doc()
     const ytext = ydoc.getText('source')
     if (typeof snapshot?.yjs === 'string') {
@@ -172,7 +171,7 @@ export function createSourceRoomDaemon({
       ydoc,
       ytext,
       clients: new Set(),
-      heldRevision: state.heldRevision || authority.currentRevision || null,
+      heldRevision: state.heldRevision || currentRevision || null,
       sourceManifest: Array.isArray(state.sourceManifest) ? state.sourceManifest : null,
       submission: state.submission || null,
       queued: state.submission?.state === 'dirty',
@@ -341,73 +340,11 @@ export function createSourceRoomDaemon({
       submission.sourceManifest = sourceManifest
       room.sourceManifest = sourceManifest
       persistRoom(room)
-      // The room runs in-process with the lifecycle store, so it calls the
-      // accept directly rather than manufacturing a request for the server to
-      // send itself. It sends ONE file with a whole-project manifest; the
-      // accept carries every other path forward by reference, which is what
-      // makes a per-keystroke checkpoint cost one blob instead of the project.
-      const response = await acceptSourceSnapshot(room.project, {
-        files: [{ path: room.filePath, content: submission.content }],
-        sourceManifest,
-        editedBy: sourceRoomDaemonKey(room.project),
-        // **The echo guard.** `applyAcceptedSourceMutation` skips a message
-        // whose origin is a source room, so the room does not re-apply its own
-        // edit to itself. The fan-out only sees that origin if the accept
-        // carries it, and dropping this field in the repoint would have fed the
-        // room's own checkpoint straight back into the room.
-        sourceDaemonKey: sourceRoomDaemonKey(room.project),
-        requestId: submission.requestId,
-        expectedRevision: submission.expectedRevision,
-      })
-      // Named rather than spread wholesale: the branches below read
-      // `lifecycleStatus`, `authority.currentRevision` and `status`-as-HTTP,
-      // and the new shape spells the first two differently. Mapping them here
-      // keeps the conflict handling -- which is what puts merge markers in
-      // front of the person -- reading the fields it was written against.
-      const result = {
-        ...response.body,
-        status: response.status,
-        lifecycleStatus: response.body.status ?? null,
-        authority: { currentRevision: response.body.currentRevision ?? response.body.sourceRevision ?? null },
-      }
-      if (result.ok) {
-        if (typeof result.sourceRevision === 'string') room.heldRevision = result.sourceRevision
-        room.submission = null
-        room.blocked = hasConflictMarkers(room.ytext.toString())
-        persistRoom(room)
-        await noteRoomIsClear(room)
-        broadcast(room, { type: 'status', status: 'synced', sourceRevision: room.heldRevision, building: Boolean(result.building) })
-        if (room.queued || room.ytext.toString() !== submission.content) {
-          room.submission = newSubmission(room)
-          persistRoom(room)
-          await flushRoom(room)
-        }
-        return
-      }
-      const merged = conflictTextFor(result, room.filePath)
-      if (isTerminalBlockedResult(result) || merged) {
-        if (typeof result.authority?.currentRevision === 'string') room.heldRevision = result.authority.currentRevision
-        submission.state = 'blocked'
-        submission.lastError = result.error || 'source conflict'
-        room.blocked = true
-        if (merged) replaceYText(room.ytext, merged)
-        persistRoom(room)
-        await noteRoomIsHolding(room, submission.lastError)
-        broadcast(room, {
-          type: 'status',
-          status: merged || result.lifecycleStatus === 'stale-base' ? 'conflict' : 'blocked',
-          sourceRevision: room.heldRevision,
-          error: submission.lastError,
-        })
-        return
-      }
-      await scheduleRetry(room, result.error || `source room push failed with ${result.status}`)
-      broadcast(room, {
-        type: 'status',
-        status: 'error',
-        sourceRevision: room.heldRevision,
-        error: result.error || `source room push failed with ${result.status}`,
-      })
+      const gitSync = gitSyncManagerForProject(room.project)
+      gitSync.queuePaths(room.project, [room.filePath])
+      submission.state = 'queued'
+      persistRoom(room)
+      broadcast(room, { type: 'status', status: 'queued', sourceRevision: room.heldRevision, building: true })
     } catch (error) {
       await scheduleRetry(room, error?.message || String(error))
       broadcast(room, {
@@ -506,10 +443,53 @@ export function createSourceRoomDaemon({
     })
   }
 
+  async function headChanged(project, revision) {
+    const result = await gitSyncManagerForProject(project).headChanged(project, revision)
+    for (const room of rooms.values()) {
+      if (room.project !== project) continue
+      room.heldRevision = revision
+      room.submission = null
+      room.queued = false
+      persistRoom(room)
+      await noteRoomIsClear(room)
+      broadcast(room, { type: 'status', status: 'synced', sourceRevision: revision, building: false })
+    }
+    return result
+  }
+
+  async function submitFiles(project, payload = {}) {
+    const projectRecord = await readProject(project)
+    if (!projectRecord) return { status: 404, body: { ok: false, error: 'Project not found' } }
+    const root = join(projectDir(project), '.source-room', 'working')
+    const gitSync = gitSyncManagerForProject(project)
+    gitSync.bindSource(project, root, { mainFile: projectRecord.mainFile || null })
+    await gitSync.sync([projectRecord])
+    const paths = []
+    for (const file of payload.files || []) {
+      if (typeof file?.path !== 'string' || !file.path || isAbsolute(file.path) || file.path.split(/[\\/]/).includes('..')) {
+        throw new Error(`invalid source-room path: ${file?.path || '<missing>'}`)
+      }
+      const target = join(root, file.path)
+      atomicWrite(target, Buffer.from(file.content || '', file.encoding === 'base64' ? 'base64' : 'utf8'))
+      paths.push(file.path)
+    }
+    for (const filePath of payload.deletedFiles || []) {
+      if (typeof filePath !== 'string' || !filePath || isAbsolute(filePath) || filePath.split(/[\\/]/).includes('..')) {
+        throw new Error(`invalid source-room path: ${filePath || '<missing>'}`)
+      }
+      rmSync(join(root, filePath), { force: true })
+      paths.push(filePath)
+    }
+    gitSync.queuePaths(project, paths)
+    return { status: 202, body: { ok: true, status: 'queued' } }
+  }
+
   return {
     getRoom,
     handleSocket,
     applyAcceptedSourceMutation,
+    headChanged,
+    submitFiles,
     flushRoom,
     closeAll() {
       for (const room of rooms.values()) {

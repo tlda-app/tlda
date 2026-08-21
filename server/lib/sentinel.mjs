@@ -1,4 +1,4 @@
-import { putShape, updateShape } from './sync-rooms.mjs'
+import { upsertShape } from './sync-rooms.mjs'
 
 export const DOC_VERSION_SENTINEL_ID = 'shape:doc-version--sentinel'
 
@@ -91,19 +91,12 @@ export function buildSentinelShape(cur, patch) {
  * It preserves stable status fields unless the patch explicitly changes them
  * and drops stale writes that would move the sentinel behind a newer build.
  */
-export async function writeSentinel(docName, patch, io = { updateShape, putShape }) {
+export async function writeSentinel(docName, patch, io = { upsertShape }) {
   let skipped = false
-  try {
-    await io.updateShape(docName, DOC_VERSION_SENTINEL_ID, (cur) => {
-      const result = buildSentinelShape(cur, patch)
-      skipped = result.skipped
-      return result.shape
-    })
-  } catch (e) {
-    if (!/not found/i.test(e?.message || '')) throw e
-    const result = buildSentinelShape(null, patch)
+  await io.upsertShape(docName, DOC_VERSION_SENTINEL_ID, (cur) => {
+    const result = buildSentinelShape(cur, patch)
     skipped = result.skipped
-    if (!skipped) await io.putShape(docName, result.shape)
-  }
+    return result.shape
+  })
   return { skipped }
 }

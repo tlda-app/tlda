@@ -5,7 +5,7 @@ process entrypoint and wiring layer: config, singleton lock, WebSocket
 lifecycle, module construction, and RPC/event routing.
 
 - `source-sync.mjs`: project/source watcher. Owns source bindings, dependency
-  scans, chokidar source watchers, connect pushes, and source-change messages.
+  scans, chokidar source watchers, Git proposal refs, and accepted-head mirrors.
 - `jsonl-ingestor.mjs`: transcript/session ingestion. Owns cursor persistence,
   session identity, owner harvesting, live JSONL tails, search backfill jobs,
   qualification/edit tracking, and edit attribution for source-sync.

@@ -131,6 +131,7 @@ test('an edit to the handout after the freeze is not blamed on the student', asy
         store,
         resolvePrincipal: () => ({ role: 'student', studentId: 'ada', courseId: 'qtm285' }),
         resolveTemplateSource,
+        submitSubmissionSource: async () => ({ status: 200, body: { ok: true } }),
       }))
       const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)) })
       try {

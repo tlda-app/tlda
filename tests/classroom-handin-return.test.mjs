@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { strFromU8, unzipSync, zipSync } from 'fflate'
 import { ClassroomStore } from '../server/lib/classroom-store.mjs'
-import { closeProjectStore, initProjectStore, readProject, sourceDir } from '../server/lib/project-store.mjs'
+import { closeProjectStore, initProjectStore, readProject, sourceDir, updateProject, writeSourceFileAsync } from '../server/lib/project-store.mjs'
 import { createClassroomRouter } from '../server/routes/classroom.mjs'
 
 test('a common-layer student uses the real hand-in, gradebook, marking, return, and export wire', async () => {
@@ -35,9 +35,13 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
             ? { role: 'student', studentId: 'grace', courseId: 'qtm285', layerScope: 'student' }
           : null
     },
-    dispatchSubmissionBuild: async contentRef => {
+    submitSubmissionSource: async (contentRef, snapshot) => {
+      for (const file of snapshot.files) {
+        await writeSourceFileAsync(contentRef, file.path, Buffer.from(file.content, 'base64'))
+      }
       builds.push(contentRef)
-      if (buildError) throw buildError
+      if (buildError) setImmediate(() => updateProject(contentRef, { buildStatus: 'error' }))
+      return { status: 200, body: { ok: true } }
     },
   }))
   const server = await new Promise(resolve => {

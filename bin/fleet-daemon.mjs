@@ -9,9 +9,9 @@
  *      bytes, and push activity-event + terminal-chat messages over
  *      WebSocket to the server.
  *
- *   2. Document source watching - chokidar watches each tlda project's
- *      sourceDir; on file change, push a source-change message
- *      containing the file content. The server runs the build.
+ *   2. Document source watching - chokidar watches each tlda project's Git
+ *      checkout; a settled edit cluster is committed and pushed as an
+ *      immutable proposal ref. Accepted heads arrive through HeadChanged.
  *
  * What it does NOT do:
  *   - No SQLite. The server owns the fleet store.
@@ -94,11 +94,8 @@ import {
   decideTerminalWatchExit,
   unlinkPidfileIfOwnPid,
 } from '../agent-runtime/daemon-guards.mjs'
-import { createSourceSync } from '../daemon/source-sync.mjs'
-import { createSourceProposal } from '../daemon/source-proposal.mjs'
-import { createSourcePush } from '../daemon/source-push.mjs'
+import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
-import { sourceFilesFromApiResponse } from '../shared/source-manifest.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
 import {
   createJsonlProcessBindingReconciler,
@@ -116,8 +113,6 @@ import { createAgentLiveness, livenessAgentsFromProcessBindings } from '../daemo
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
-import { createGitSourceManager } from '../daemon/git-source.mjs'
-import { createSourceChangeAckGate } from '../daemon/source-change-ack-gate.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
@@ -535,34 +530,12 @@ jsonlBindingReconciler = createJsonlProcessBindingReconciler({
 })
 
 // ---------- source watching ----------
-const sourceSync = createSourceSync({
-  sourceBindingsFile: SOURCE_BINDINGS_FILE,
-  log,
-  sendMsg,
-  isConnected: () => !!_rws?.connected,
-  resolveEditor: jsonlIngestor.resolveEditor,
-  sourceChangeSettleDeadlineMs: getSourceChangeSettleDeadlineMs(),
-  editOperationStore,
-  verifyOutbox: id => daemonOutbox?.get(id),
-  // Source changes are proposed as commits over HTTP rather than sent as file
-  // contents over the socket. `TOKEN` is the rw token, which is what
-  // `requireRw` on the endpoint wants.
-  createSourcePushFor: ({ sourceDir, project }) => createSourcePush({
-    proposal: createSourceProposal({ sourceDir, project, log }),
-    project,
-    server: SERVER,
-    token: TOKEN,
-    // Identifies the machine this push came from, so the fan-out does not send
-    // it back here and materialize over the file its author is still editing.
-    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
-    log,
-  }),
-})
-
-const gitSources = createGitSourceManager({
-  stateFile: path.join(CONFIG_DIR, `git-sources${DAEMON_STATE_SUFFIX}.json`),
-  sourcesRoot: path.join(CONFIG_DIR, `git-source-checkouts${DAEMON_STATE_SUFFIX}`),
-  queuePaths: (project, paths) => sourceSync.queuePaths(project, paths),
+const sourceSync = createGitSyncManager({
+  bindingsFile: SOURCE_BINDINGS_FILE,
+  daemonId: `${MACHINE_ID}:${ACTIVE_ENV}`,
+  server: SERVER,
+  token: TOKEN,
+  remoteCheckoutsRoot: path.join(CONFIG_DIR, `git-source-checkouts${DAEMON_STATE_SUFFIX}`),
   log,
 })
 
@@ -599,11 +572,11 @@ function reportInvalidProjectSourceOwners(ownerMap) {
   })
 }
 
-function applyProjectWorldOwnership(reason, { authoritativeRevisions = false } = {}) {
+function applyProjectWorldOwnership(reason) {
   const projectSourceOwners = readProjectSourceEnvironmentOwners(PROJECT_WORLDS_FILE)
   reportInvalidProjectSourceOwners(projectSourceOwners)
   projects = serverProjects.filter(project => projectBelongsToEnvironment(project, ACTIVE_ENV, projectSourceOwners))
-  sourceSync.sync(projects, { authoritativeRevisions })
+  sourceSync.sync(projects).catch(error => log.error(`project Git sync failed (${reason}): ${error.message}`))
   log.info(`project ownership applied (${reason}): ${projects.length}/${serverProjects.length} projects in ${ACTIVE_ENV}`)
 }
 
@@ -612,16 +585,7 @@ async function loadLocallyBoundProjects() {
   for (const name of sourceSync.boundProjectNames()) {
     try {
       const encodedName = encodeURIComponent(name)
-      const [project, sourceFiles, sourceAuthority] = await Promise.all([
-        daemonApi('GET', `/api/projects/${encodedName}`),
-        daemonApi('GET', `/api/projects/${encodedName}/files`),
-        daemonApi('GET', `/api/projects/${encodedName}/source-authority`),
-      ])
-      loaded.push({
-        ...project,
-        sourceRevision: sourceAuthority.currentRevision,
-        sourceManifest: sourceFilesFromApiResponse(sourceFiles),
-      })
+      loaded.push(await daemonApi('GET', `/api/projects/${encodedName}`))
     } catch (error) {
       sendMsg({
         type: 'daemon-warning',
@@ -664,8 +628,6 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     return { linked: false, alreadyLinked: status.alreadyLinked, sourceDir: status.sourceDir }
   }
 
-  if (!status.alreadyLinked) await offerShadowHistory({ project, sourceDir })
-
   const result = sourceSync.bindSource(project, sourceDir, { kind, remote, mirrorMode })
   try {
     const registration = await sendMsgWithReply({
@@ -678,61 +640,29 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     throw new Error(`${project} was not linked: its source binding could not be registered (${error.message})`)
   }
   serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
+  await sourceSync.sync([projectMetadata])
+  const submission = await sourceSync.submit(project)
   applyProjectWorldOwnership('local-source-link')
-  return result
+  return { ...result, submission }
 }
 
 async function rpcLinkGitSource(params) {
-  return gitSources.link(params)
+  const prepared = await sourceSync.prepareRemote(params)
+  const metadata = await daemonApi('GET', `/api/projects/${encodeURIComponent(params.project)}`)
+  const linked = await rpcLinkProjectSource({ ...prepared, projectMetadata: metadata })
+  await sourceSync.pollRemote(params.project)
+  return linked
 }
 
 async function rpcActivateGitSource({ project }) {
-  const item = gitSources.record(project)
-  if (!item) throw new Error(`Project "${project}" has no Git source`)
-  const metadata = await daemonApi('GET', `/api/projects/${encodeURIComponent(project)}`)
-  await rpcLinkProjectSource({ project, sourceDir: item.sourceDir, projectMetadata: metadata,
-    kind: 'git', remote: item.remote, mirrorMode: item.mirrorMode })
-  return gitSources.activate({ project })
+  return sourceSync.pollRemote(project)
 }
 
 function rpcUnlinkGitSource({ project, remote }) {
-  const item = gitSources.record(project)
-  if (item) rpcUnlinkProjectSource({ project, sourceDir: item.sourceDir })
-  return gitSources.unlink({ project, remote })
-}
-
-// Hand this project's mirrored history to the server it is being linked to, and
-// do not return until the server says it holds it.
-//
-// The confirmation has to come from the adoption itself. The daemon transport
-// acknowledges every envelope it accepts — including one whose type no handler
-// claims, which is how this feature shipped broken for two days — so an ACK
-// proves delivery of bytes and nothing about whether a shadow repo now exists.
-// `sendMsgWithReply` resolves only on `{ id, result }` from the handler, and we
-// require the version count the server read back off its own disk AFTER
-// adopting. A reply is the outcome of the thing that produced the state; the
-// count is the state.
-async function offerShadowHistory({ project, sourceDir }) {
-  const exported = await shadowMirror.exportShadowBundle({ project, sourceDir })
-  if (exported.empty) return  // never built here — an ordinary state, nothing to carry
-
-  const hash7 = exported.head.slice(0, 7)
-  let reply
-  try {
-    reply = await sendMsgWithReply({
-      type: 'adopt-shadow-history',
-      project,
-      head: exported.head,
-      bundleBase64: exported.bundleBase64,
-      machine_id: MACHINE_ID,
-    }, { timeoutMs: 120000 })
-  } catch (e) {
-    throw new Error(`${project} was not linked: its ${hash7} history could not be delivered (${e.message})`)
-  }
-  if (!reply?.ok || !(reply.versions > 0)) {
-    throw new Error(`${project} was not linked: the server did not confirm its ${hash7} history (${JSON.stringify(reply)})`)
-  }
-  log.info(`delivered ${project}@${hash7} history to the server — ${reply.versions} version(s)`)
+  const item = sourceSync.bindingRecords().find(record => record.project === project)
+  if (!item) return { unlinked: false, alreadyUnlinked: true }
+  if (remote && item.remote !== remote) throw new Error(`Project "${project}" is linked to ${item.remote}, not ${remote}`)
+  return rpcUnlinkProjectSource({ project, sourceDir: item.sourceDir })
 }
 
 function rpcUnlinkProjectSource({ project, sourceDir }) {
@@ -753,7 +683,6 @@ const localArtifacts = createLocalArtifacts({
 const shadowMirror = createShadowMirror({
   getSourceDir: project => sourceSync.getSourceDir(project),
   log,
-  afterMirror: update => gitSources.publishAccepted(update),
 })
 
 // Bots are independent, launchd-owned services configured in bots.yaml — the
@@ -1374,7 +1303,6 @@ machineRpc.register({
   ...localArtifacts.handlers,
   'mirror-shadow-ref': shadowMirror.mirrorShadowRef,
   'export-shadow-bundle': shadowMirror.exportShadowBundle,
-  'apply-source-update': params => sourceSync.applyAcceptedSourceUpdate(params),
 })
 
 function startLocalLifecycleRpc() {
@@ -1406,7 +1334,7 @@ function startLocalLifecycleRpc() {
           'git-source-link': rpcLinkGitSource,
           'git-source-activate': rpcActivateGitSource,
           'git-source-unlink': rpcUnlinkGitSource,
-          'git-source-sync': ({ project }) => gitSources.poll(project),
+          'git-source-sync': ({ project }) => sourceSync.pollRemote(project),
         }
         const handler = handlers[op]
         if (!handler) throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
@@ -1449,7 +1377,6 @@ function startLocalLifecycleRpc() {
 }
 
 startLocalLifecycleRpc()
-gitSources.resume()
 
 async function handleRpc(msg) {
   return daemonOperationContext.run(msg.fleet_operation || null, () => machineRpc.handleRpc(msg))
@@ -1468,13 +1395,6 @@ const daemonDelivery = new DaemonDeliveryRuntime({
   inflightDeadlineMs: getOutboxInflightDeadlineMs(),
   flushByteBudget: getOutboxFlushByteBudget(),
   activityDeliveryCounters: daemonActivityDeliveryCounters,
-  beforeSend: message => { if (message?.type === 'source-change') sourceSync.restoreDurableSourceChange(message) },
-  ackGate: createSourceChangeAckGate({ editOperationStore, outbox: daemonOutbox }),
-  onDeadLetter: (payload, outboxId) => {
-    if (payload?.type !== 'source-change') return
-    const ids = (payload.editOperations || (payload.editOperation ? [{ operation: payload.editOperation }] : [])).map(record => record.operation?.operation_id).filter(Boolean)
-    editOperationStore.applyDisposition({ outboxId, kind: 'quarantined', operationIds: ids, reason: 'transport-dead-letter' })
-  },
 })
 
 function migrateLegacyDeadLetters() {
@@ -1748,24 +1668,8 @@ function applyAgentStatusEvents(events = []) {
 
 async function handleServerMessage(msg, wsAttemptId) {
   if (machineRpc.handleReply(msg)) return
-  if (msg.type === 'source-change-result') {
-    sourceSync.handleSourceChangeResult(msg)
-    // A refusal is an answer, so it settles the delivery — and it settles by
-    // deliveryId, NOT by requestId, because that is the only identifier both
-    // sides still agree on after a reconnect. handleSourceChangeResult above
-    // returns early for a requestId it has no pending entry for, and `pending`
-    // is cleared wholesale on every reconnect, so keying this on the request
-    // would make it inert on exactly the long-lived rows it exists for.
-    //
-    // Without it a refused row is re-offered on every inflight deadline and
-    // refused again: bregman at 13:39Z had 35 pending source-change rows,
-    // ~105 attempts each, `last_error: null` on all of them.
-    //
-    // Only refusals. An accepted push settles through handleAck, where the
-    // ackGate is doing its real job of not dropping an unresolved edit.
-    if (msg.ok === false && msg.deliveryId) {
-      daemonDelivery.settleRefused(msg.deliveryId, msg.error || msg.status || 'refused')
-    }
+  if (msg.type === 'head-changed' || msg.type === 'HeadChanged') {
+    await sourceSync.headChanged(msg.project, msg.revision || msg.sourceRevision || null)
     return
   }
   if (msg.type === 'project-metadata-changed') {
@@ -1795,19 +1699,16 @@ async function handleServerMessage(msg, wsAttemptId) {
     })
     _serverReady = true
     serverProjects = await loadLocallyBoundProjects()
-    // beginReconnect first: applyProjectWorldOwnership calls sourceSync.sync,
-    // which seeds each project's current revision. Anything still in flight on
-    // the dead socket has to be folded into the queue before that seed lands,
-    // and re-sent after it.
-    sourceSync.beginReconnect()
-    applyProjectWorldOwnership('daemon-welcome', { authoritativeRevisions: true })
-    sourceSync.finishReconnect()
-    sourceSync.recoverRetries()
+    applyProjectWorldOwnership('daemon-welcome')
+    for (const project of msg.projects || msg.project_heads || []) {
+      const name = project.name || project.project
+      const revision = project.sourceRevision || project.revision || project.head || null
+      if (name && revision) await sourceSync.headChanged(name, revision)
+    }
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     log.info(`connected work received: ${projects.length} projects`)
     daemonDelivery.noteReady()
     sendActivityDeliveryMetrics('daemon-welcome')
-    sourceSync.flushPending()
     await reconcileJsonlProcessBindings('daemon-welcome')
     sendDaemonRoster('daemon-welcome')
     jsonlIngestor.resumeAfterServerReady()
