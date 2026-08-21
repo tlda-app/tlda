@@ -25,6 +25,7 @@ export type { HtmlPageEntry } from './loaders/htmlLoader'
 
 // Slides loader (Quarto reveal.js decks)
 export { loadSlidesDocument } from './loaders/slidesLoader'
+export { createSlidesDocumentFromPageInfo } from './loaders/slidesLoader'
 
 // Image loader (vestigial PNG format)
 export { loadImageDocument } from './loaders/imageLoader'

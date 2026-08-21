@@ -4,6 +4,22 @@ import { documentAxes } from '../../shared/document-formats.mjs'
 
 export const DOCUMENT_MANIFEST_FILE = 'document-manifest.json'
 
+function viewDescriptor(manifest, pages) {
+  const extension = pages[0]?.file?.split('.').pop()?.toLowerCase()
+  const kind = extension === 'html' && manifest.document?.format === 'slides' ? 'slides'
+    : extension === 'html' ? 'html-pages'
+      : extension === 'png' ? 'image-pages'
+        : 'svg-pages'
+  return {
+    kind,
+    capabilities: {
+      presentation: manifest.document?.format === 'slides',
+      sourceMapping: (manifest.sourceMapping || 'none') !== 'none',
+      searchableText: pages.some(page => Boolean(page.textGeometry)),
+    },
+  }
+}
+
 function relativeArtifact(value, field) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} must be a non-empty relative path`)
   const normalized = value.replace(/\\/g, '/').replace(/^\.\//, '')
@@ -28,7 +44,7 @@ export function normalizeDocumentManifest(manifest) {
       ...(page.textGeometry ? { textGeometry: relativeArtifact(page.textGeometry, `pages[${index}].textGeometry`) } : {}),
     }
   })
-  return {
+  const normalized = {
     ...manifest,
     source: { ...(manifest.source || {}) },
     document: { ...(manifest.document || {}) },
@@ -36,6 +52,7 @@ export function normalizeDocumentManifest(manifest) {
     assets: Array.isArray(manifest.assets) ? manifest.assets.map((asset, index) => relativeArtifact(asset, `assets[${index}]`)) : [],
     sourceMapping: manifest.sourceMapping || 'none',
   }
+  return { ...normalized, view: viewDescriptor(normalized, pages) }
 }
 
 export function createDocumentManifest(project, pages, options = {}) {

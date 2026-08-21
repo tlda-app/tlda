@@ -22,17 +22,25 @@ assets, optional searchable-text geometry, and the available source-mapping
 mode. `page-info.json` remains a compatibility projection for the existing HTML
 and slide readers while they move to the common manifest.
 
-Format adapters return one build result containing that manifest plus optional
-targets and compatibility projections. The common finalizer alone publishes
-the manifest, records the authoritative axes and page metadata, marks the build
-successful, and signals viewer reload. An adapter cannot report success or
-reload viewers independently.
+Renderer adapters are registered in `server/lib/build-adapter-registry.mjs`.
+Each returns one `BuildResult`; `buildDocument()` is the sole completion
+boundary that records the version disposition, publishes the manifest and
+project state, signals reload, and reports success. The worker and build
+decision code ask the registry and contain no format switch.
+
+The manifest's `view.kind` and capabilities are the client contract. Direct
+open and foreign auto-open both call the registry in
+`src/loaders/documentLoaderRegistry.ts`; neither reconstructs a loader choice
+from project source or renderer fields. Thus a new artifact kind adds one
+builder registration and, only if the artifact kind itself is new, one loader
+registration.
 
 The combinations currently implemented are:
 
 | source | renderer | document | display artifact | source mapping |
 | --- | --- | --- | --- | --- |
 | TeX | LaTeX | paged | lazy SVG pages | SyncTeX |
+| TeX | LaTeX | slides | lazy SVG pages | SyncTeX |
 | Markdown | Markdown | HTML | rendered HTML | page/source |
 | QMD | Quarto | HTML | rendered HTML | page/source |
 | QMD | Quarto | slides | RevealJS slide pages | none |

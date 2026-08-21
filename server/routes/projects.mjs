@@ -358,12 +358,10 @@ router.get('/:name', requireRead, async (req, res) => {
 
   let pageInfo
   let documentManifest
-  if (req.query.include === 'page-info') {
-    try {
-      documentManifest = readDocumentManifest(getOutputDir(req.params.name)) || undefined
-    } catch {
-      documentManifest = undefined
-    }
+  try {
+    documentManifest = readDocumentManifest(getOutputDir(req.params.name)) || undefined
+  } catch {
+    documentManifest = undefined
   }
   if (req.query.include === 'page-info' && ['html', 'slides'].includes(project.documentFormat)) {
     try {

@@ -1,27 +1,16 @@
 /**
- * Format-specific build logic for non-SVG project formats.
+ * Identity-renderer adapter implementations.
  *
- * Each builder: copies source → output, generates page-info.json,
- * updates project metadata, signals reload to viewers.
+ * Each function returns a BuildResult. Publication and all success side
+ * effects belong to buildDocument().
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
 import { join, basename } from 'path'
 import { sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
-import { getBuildReporter } from './build-runner.mjs'
 import { generateSlidesPageInfo } from './slides-parser.mjs'
-import { buildMarkdownDocument } from './build-markdown.mjs'
-import { buildQmdDocument } from './build-qmd.mjs'
-import { buildPdfDocument } from './build-pdf.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
 import { createDocumentManifest } from './document-manifest.mjs'
-import { finalizeDocumentBuild } from './document-build-finalizer.mjs'
-
-export { finalizeDocumentBuild } from './document-build-finalizer.mjs'
-
-async function runDocumentBuilder(name, adapter) {
-  return finalizeDocumentBuild(name, await adapter(name, (message) => console.log(message)), getBuildReporter())
-}
 
 /**
  * Declare paper scope for the formats whose project IS a rendered document.
@@ -48,18 +37,6 @@ async function writeSourceScope(name, srcDir) {
     join(getOutputDir(name), 'relevant-files.json'),
     JSON.stringify({ generated_at: new Date().toISOString(), files }, null, 2),
   )
-}
-
-export async function buildMarkdown(name) {
-  return runDocumentBuilder(name, buildMarkdownDocument)
-}
-
-export async function buildQmd(name) {
-  return runDocumentBuilder(name, buildQmdDocument)
-}
-
-export async function buildPdf(name) {
-  return runDocumentBuilder(name, buildPdfDocument)
 }
 
 export async function buildHtmlDocument(name) {
@@ -109,10 +86,6 @@ export async function buildHtmlDocument(name) {
   return { manifest, writePageInfo: true }
 }
 
-export async function buildHtml(name) {
-  return runDocumentBuilder(name, buildHtmlDocument)
-}
-
 export async function buildSlidesDocument(name) {
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -136,8 +109,4 @@ export async function buildSlidesDocument(name) {
   await writeSourceScope(name, srcDir)
   console.log(`[slides] ${name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
   return { manifest, writePageInfo: true }
-}
-
-export async function buildSlides(name) {
-  return runDocumentBuilder(name, buildSlidesDocument)
 }

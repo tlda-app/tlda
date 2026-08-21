@@ -6,7 +6,8 @@ import test from 'node:test'
 
 import { setBuildReporter } from './build-runner.mjs'
 import { createDocumentManifest } from './document-manifest.mjs'
-import { buildHtml, buildHtmlDocument, buildSlides, buildSlidesDocument, finalizeDocumentBuild } from './format-builders.mjs'
+import { buildHtmlDocument, buildSlidesDocument } from './format-builders.mjs'
+import { finalizeDocumentBuild } from './document-build-finalizer.mjs'
 import { closeProjectStore, createProject, initProjectStore } from './project-store.mjs'
 
 test('the common finalizer owns manifest publication, project metadata, and reload', async () => {
@@ -60,9 +61,10 @@ test('format adapters cannot publish common build side effects themselves', () =
   }
   assert.doesNotMatch(buildHtmlDocument.toString(), /finalizeDocumentBuild|updateProject|broadcastSignal/)
   assert.doesNotMatch(buildSlidesDocument.toString(), /finalizeDocumentBuild|updateProject|broadcastSignal/)
-  assert.match(buildHtml.toString(), /runDocumentBuilder/)
-  assert.match(buildSlides.toString(), /runDocumentBuilder/)
   const texSource = readFileSync(join(import.meta.dirname, 'build-runner.mjs'), 'utf8')
-  assert.match(texSource, /finalizeDocumentBuild\(name, documentBuildResult, _reporter\)/)
+  assert.doesNotMatch(texSource, /finalizeDocumentBuild\(/)
   assert.doesNotMatch(texSource, /writeDocumentManifest\(/)
+  const boundary = readFileSync(join(import.meta.dirname, 'build-document.mjs'), 'utf8')
+  assert.match(boundary, /await versioner/)
+  assert.match(boundary, /await finalizer/)
 })
