@@ -5,15 +5,14 @@
  * doc-version sentinel shape (errorsJson) in the Yjs store. NOT a fire-and-forget
  * signal — a build's error status is a stable property that must survive
  * reconnect/restart, so it lives in convergent Yjs state and the badge reads it
- * reactively. Same interaction as the warning pill: badge with count → click to
- * expand a clickable list; each error with a line opens in the editor. Persists
- * until the next build writes a clean (error-free) sentinel.
+ * reactively. Errors with source locations retarget subscribed document viewers
+ * without opening an editor or changing the layout. Persists until the next
+ * build writes a clean (error-free) sentinel.
  */
 import { useState, useEffect, useRef, useContext } from 'react'
 import { useEditor } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
 import { ProjectContext } from '../PanelContext'
-import { openInEditor } from '../texsync'
 import { showBuildErrorInReferenceDocviews } from '../docviewReference'
 import type { BuildError } from '../useYjsSync'
 import './BuildErrorPill.css'
@@ -74,7 +73,6 @@ export function BuildErrorPill() {
                 className={'build-error-item' + (hasLine ? ' clickable' : '')}
                 onClick={hasLine && doc ? () => {
                   void showBuildErrorInReferenceDocviews(editor, doc.projectName, err)
-                  void openInEditor(doc.projectName, err.file || '', err.line!)
                 } : undefined}
               >
                 {hasLine && <span className="build-error-loc">{(err.file || '').split('/').pop()}:{err.line}</span>}
