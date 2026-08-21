@@ -95,6 +95,17 @@ function asFleetEvent(event: Record<string, unknown>): FleetEvent {
       if (buffer.store.has(previousId)) storesToRekey.push(buffer.store)
     }
   }
+  // The server echo can win the race with optimistic reconciliation. A store
+  // then holds the accepted db row and this optimistic row under its temporary
+  // key. Remove both while the optimistic object still has its old id. If its
+  // id is mutated first, remove(previousId) removes the accepted row from the
+  // ordered view and strands the optimistic row beside its later db upsert.
+  for (const store of storesToRekey) {
+    store.bulk(() => {
+      store.remove(id)
+      store.remove(previousId!)
+    })
+  }
   eventIds.set(event, id)
   Object.defineProperty(event, 'id', {
     value: id,
@@ -104,10 +115,7 @@ function asFleetEvent(event: Record<string, unknown>): FleetEvent {
   })
   const fleetEvent = event as FleetEvent
   for (const store of storesToRekey) {
-    store.bulk(() => {
-      store.remove(previousId!)
-      store.upsert(fleetEvent)
-    })
+    store.upsert(fleetEvent)
   }
   return fleetEvent
 }

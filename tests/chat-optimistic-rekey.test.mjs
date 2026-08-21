@@ -21,6 +21,7 @@ test('temp-to-db reconciliation preserves the sender panel row', async () => {
     getFilteredFleetEvents,
     upsertFleetEvent,
     upsertLocalEventIntoBuffer,
+    applyFilterEvents,
   } = await import('../src/fleet/fleet-data.ts')
   globalThis.setInterval = realSetInterval
   const bufferKey = 'chat:test-optimistic-rekey'
@@ -39,6 +40,16 @@ test('temp-to-db reconciliation preserves the sender panel row', async () => {
     upsertFleetEvent(event)
     upsertLocalEventIntoBuffer(bufferKey, event)
     assert.equal(getFilteredFleetEvents(null, opts).length, 1)
+
+    // The accepted echo can reach the subscription before the durable reply
+    // binds the optimistic row to that same database id.
+    applyFilterEvents(bufferKey, [{
+      _dbId: 2005058,
+      type: 'chat',
+      from: 'fleet:skip',
+      text: 'persist through reconciliation',
+      timestamp: new Date(Date.now() - 1000).toISOString(),
+    }])
 
     event._dbId = 2005058
     delete event._tempId
