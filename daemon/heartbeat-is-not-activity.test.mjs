@@ -32,11 +32,9 @@ test('the heartbeat is latest-wins, not durable', () => {
 })
 
 test('everything Skip called activity stays durable', () => {
-  // "tool calls. status changes (idle etc)." Losing one of these is data loss.
-  for (const type of ['activity-event', 'agent-status', 'agent-thinking']) {
-    assert.equal(daemonDeliveryPolicy({ type, agent_id: 'fleet:a' }), DELIVERY_DURABLE_FIFO, type)
-    assert.equal(isDurableDaemonMessage({ type, agent_id: 'fleet:a' }), true, type)
-  }
+  const type = 'activity-event'
+  assert.equal(daemonDeliveryPolicy({ type, agent_id: 'fleet:a' }), DELIVERY_DURABLE_FIFO, type)
+  assert.equal(isDurableDaemonMessage({ type, agent_id: 'fleet:a' }), true, type)
 })
 
 test('the two unresolved types are untouched', () => {

@@ -24,6 +24,12 @@ export function createAgentRuntimeStatusStore({
     return evidenceByAgent.get(agentId) || null
   }
 
+  function aliveAgentIds() {
+    return [...evidenceByAgent.entries()]
+      .filter(([, evidence]) => evidence?.liveness === LIVENESS.ALIVE)
+      .map(([agentId]) => agentId)
+  }
+
   function update(agentId, patch = {}, { notify = true } = {}) {
     if (!agentId) return null
     const previous = evidenceByAgent.get(agentId) || {}
@@ -149,6 +155,7 @@ export function createAgentRuntimeStatusStore({
 
   return {
     evidenceFor,
+    aliveAgentIds,
     update,
     markAlive,
     markNotAlive,
@@ -169,7 +176,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     liveness_source: evidence?.liveness_source || null,
     liveness_reason: evidence?.liveness_reason || null,
     liveness_at: evidence?.liveness_at || null,
-    activity: evidence?.activity || metadata.status?.state || 'unknown',
+    activity: evidence?.activity || metadata.status?.activity || 'unknown',
     activity_tool: evidence?.activity_tool || metadata.status?.tool || null,
     activity_at: evidence?.activity_at || metadata.status?.ts || null,
     activity_health: metadata.activityHealth || null,

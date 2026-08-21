@@ -499,17 +499,9 @@ Respond helpfully. If they want you to review a specific agent, use search and r
 
 # ---- Event loop ----
 
-def heartbeat_loop():
-    while True:
-        time.sleep(30)
-        try:
-            fleet_post("/api/agent-status", {"agent": FLEET_ID, "state": "idle"})
-        except: pass
-
 def watch_ws(agents_map):
     global _ws_conn
     import websocket
-    threading.Thread(target=heartbeat_loop, daemon=True).start()
     ws_url = f"ws://{FLEET_HOST}:{FLEET_PORT}/ws/fleet"
     greeted = False
 
