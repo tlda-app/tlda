@@ -17,7 +17,7 @@ import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extr
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
-import { formatDisplayTimestamp, displayZoneOptions } from '../shared/display-time.mjs';
+import { displayZoneOptions } from '../shared/display-time.mjs';
 import { loadServerConfig } from '../shared/config.mjs';
 import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
@@ -434,8 +434,6 @@ const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 // --- tlda integration ---
 import { CONFIG_DIR, getRwToken, getServerUrl, getFleetServerUrl } from '../shared/config.mjs';
 import { projectForCwd } from '../shared/project-for-cwd.mjs';
-import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
-import { reportDocName, postReportDoc } from './report-doc-post.mjs';
 const TLDA_SERVER = getServerUrl();
 const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
 // Fleet/event ops (chat, register, my-task, store-agents, roll-call,
@@ -3531,11 +3529,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       const summaryHash = crypto.createHash('sha256').update(String(summary)).digest('hex').slice(0, 16);
       const reportTaskId = targetTaskId || task.id;
       const operationId = args.operation_id || `${activeAgentId()}:mcp-report:${reportTaskId}:${closeRequested ? 'close' : 'report'}:${summaryHash}`;
-      const friendlyName = process.env.FLEET_NAME || activeAgentId().slice(0, 8);
-
-      const docName = reportDocName(reportTaskId);
-      let tldaMsg = '';
-
       let data;
       try {
         data = await mcpFleetTransport.durable('report-close', {
@@ -3553,24 +3546,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
 
       const taskDescription = data?.task_description || task?.description || reportTaskId;
       const closeCompleted = closeRequested && Boolean(data?.close_event_id);
-      const reportStatus = closeCompleted ? 'closed' : 'reported';
-      const reportContent = `# ${taskDescription}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${formatDisplayTimestamp(Date.now())}\n\n---\n\n${summary}`;
-
-      try {
-        await postReportDoc({
-          reportTaskId,
-          taskDescription,
-          reportContent,
-          cwd: cwd || process.env.PWD || '/tmp',
-          session: CLAUDE_SESSION,
-          fetchImpl: _sharedFetch,
-          server: activeStoreServerUrl(),
-        });
-        tldaMsg = `\n📄 Report pushed to tlda as **${docName}** [${reportStatus}]`;
-        logEvent({ type: 'report_share', agent: activeAgentId(), doc: docName, task_id: reportTaskId, status: reportStatus });
-      } catch (e) {
-        tldaMsg = `\n⚠ Report share to tlda failed (${e.message}) — report recorded in chat.`;
-      }
 
       if (closeCompleted) logEvent({ type: 'task_done', agent: activeAgentId(), task_id: reportTaskId, description: taskDescription });
       logEvent({ type: 'report', agent: activeAgentId(), task_id: reportTaskId, summary });
@@ -3582,7 +3557,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
           : closeRequested
             ? `Report accepted; task remains open: the close request was not accepted.`
           : `Report accepted for task: ${taskDescription}.`;
-      msg += tldaMsg;
       msg += lintAdvisory;
       if (closeCompleted) msg += '\n\nKeep working or use timer() — you\'ll see 📬 when the next task arrives.';
       return { content: [{ type: 'text', text: msg }] };

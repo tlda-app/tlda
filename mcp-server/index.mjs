@@ -46,7 +46,6 @@ import { harnessFromEnv } from './lib/harness-adapters.mjs';
 import { getFleetServerUrl, getServerUrl, DEFAULT_PORT } from '../shared/config.mjs'
 import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
 import { uploadFileToServer } from '../shared/chat-file-processing.mjs'
-import { pushMcpSourceFiles } from './source-push-orchestration.mjs'
 
 const TLDA_TOKEN = resolveToken();
 const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {};
@@ -2209,31 +2208,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'push',
-      description: 'Push source files to a tlda project and optionally trigger a build. Files are read from the local filesystem.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          project: { type: 'string', description: 'Project name in tlda' },
-          files: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                path: { type: 'string', description: 'File path relative to project root' },
-                content: { type: 'string', description: 'File content. If omitted, reads from local filesystem.' },
-                localPath: { type: 'string', description: 'Local filesystem path to read from (alternative to content)' },
-              },
-              required: ['path'],
-            },
-            description: 'Files to push',
-          },
-          build: { type: 'boolean', description: 'Trigger build after push. Default: true' },
-        },
-        required: ['project', 'files'],
-      },
-    },
-    {
       name: 'lookup_theorem',
       description: 'Look up any labeled item in a tlda project — theorems, lemmas, equations, sections, figures, etc. Query by number ("4.3", "B.2") or label ("thm:rate-main", "eq:modulus-as-dual", "sec:intro"). Returns label, type, number, page, source line, and title.',
       inputSchema: {
@@ -3249,82 +3223,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         viewerInfo,
       ].filter(Boolean).join('\n');
       return { content: [{ type: 'text', text: summary }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'push') {
-    const { project, files: fileSpecs, build = true } = args;
-    if (!project || !fileSpecs) return { content: [{ type: 'text', text: 'project and files are required.' }], isError: true };
-    try {
-      const files = [];
-      for (const spec of fileSpecs) {
-        let content = spec.content;
-        if (!content && spec.localPath) {
-          try { content = fs.readFileSync(spec.localPath, 'utf8'); } catch (e) {
-            return { content: [{ type: 'text', text: `Cannot read ${spec.localPath}: ${e.message}` }], isError: true };
-          }
-        }
-        if (!content) return { content: [{ type: 'text', text: `No content for ${spec.path} — provide content or localPath.` }], isError: true };
-        files.push({ path: spec.path, content });
-      }
-      await pushMcpSourceFiles({
-        project,
-        files,
-        session: process.env.CLAUDE_SESSION,
-        editedBy: process.env.FLEET_ID,
-        serverFetch,
-      });
-
-      // Shadow-branch commit (best-effort)
-      try {
-        const projectConfigPath = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', project, 'project.json');
-        const cfg = JSON.parse(fs.readFileSync(projectConfigPath, 'utf8'));
-        const sourceDir = cfg.sourceDir;
-        if (sourceDir && fs.existsSync(path.join(sourceDir, '.git'))) {
-          const branch = `shadow/${project}`;
-          const timestamp = new Date().toISOString();
-          const msg = `auto: ${timestamp} via push`;
-          execSync('git add -A', { cwd: sourceDir, stdio: 'pipe' });
-          const tree = execSync('git write-tree', { cwd: sourceDir, stdio: 'pipe' }).toString().trim();
-          let parentArgs = [];
-          try {
-            const showRef = execSync(`git show-ref refs/heads/${branch}`, { cwd: sourceDir, stdio: 'pipe' }).toString().trim();
-            if (showRef) parentArgs = ['-p', showRef.split(' ')[0]];
-          } catch {}
-          const commitArgs = ['git', 'commit-tree', tree, ...parentArgs, '-m', `"${msg}"`].join(' ');
-          const commit = execSync(commitArgs, { cwd: sourceDir, stdio: 'pipe' }).toString().trim();
-          execSync(`git update-ref refs/heads/${branch} ${commit}`, { cwd: sourceDir, stdio: 'pipe' });
-          execSync('git reset', { cwd: sourceDir, stdio: 'pipe' });
-          process.stderr.write(`[tlda] shadow commit ${commit.slice(0, 8)} on ${branch}\n`);
-        }
-      } catch (e) {
-        process.stderr.write(`[tlda] shadow commit failed for "${project}": ${e.message}\n`);
-      }
-
-      let buildMsg = '';
-      if (build) {
-        try {
-          await serverFetch(`/api/projects/${project}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-          buildMsg = ' Build triggered.';
-          const pollInterval = setInterval(async () => {
-            try {
-              const status = await serverFetch(`/api/projects/${project}/build/status`);
-              if (status.phase === 'idle' || status.status === 'complete' || status.status === 'error') {
-                clearInterval(pollInterval);
-                process.stderr.write(`[tlda] push build ${status.status !== 'error' ? 'success' : 'failed'} for "${project}"\n`);
-              }
-            } catch (e) {
-              process.stderr.write(`[tlda] push poll failed: ${e.message}\n`);
-            }
-          }, 3000);
-          setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000);
-        } catch (e) {
-          buildMsg = ` Build trigger failed: ${e.message}`;
-        }
-      }
-      return { content: [{ type: 'text', text: `Pushed ${files.length} file(s) to "${project}".${buildMsg}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
     }
