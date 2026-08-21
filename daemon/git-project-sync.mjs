@@ -197,7 +197,14 @@ export function createGitProjectSync({
   }
 
   async function fetchHead(expected = null) {
-    await git(['fetch', '--no-tags', remote, `+${sharedRef}:${fetchedRef}`])
+    try {
+      await git(['fetch', '--no-tags', remote, `+${sharedRef}:${fetchedRef}`])
+    } catch (error) {
+      const output = `${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`
+      if (!output.includes(`couldn't find remote ref ${sharedRef}`)) throw error
+      await git(['update-ref', '-d', fetchedRef])
+      return null
+    }
     const revision = await rev(fetchedRef)
     if (!revision) throw new Error(`${project}: shared head was not fetched`)
     if (expected && revision !== expected) log.info?.(`${project}: announced ${expected.slice(0, 7)}, fetched ${revision.slice(0, 7)}`)
@@ -248,6 +255,7 @@ export function createGitProjectSync({
 
   async function headChanged(revision = null) {
     const fetched = await fetchHead(revision)
+    if (!fetched) return { ok: true, status: 'no-shared-head', revision: null }
     return mirrorArrived(fetched)
   }
 

@@ -79,3 +79,30 @@ test('configured document roots exclude unrelated broken TeX files', async () =>
   assert.equal(proposal.status, 'SubmittedToBuildQueue')
   assert.deepEqual((await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'), ['chapter.tex', 'main.tex'])
 })
+
+test('missing canonical source ref is pre-first-acceptance, while other fetch failures remain errors', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-missing-shared-'))
+  const remote = join(root, 'server.git')
+  const checkout = join(root, 'checkout')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  await git(checkout, ['remote', 'add', 'tlda', remote])
+  writeFileSync(join(checkout, 'main.tex'), 'paper\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'paper'])
+
+  const sync = createGitProjectSync({ sourceDir: checkout, project: 'paper', daemonId: 'mini-testing', bindingId: 'binding-a' })
+  assert.deepEqual(await sync.headChanged(), { ok: true, status: 'no-shared-head', revision: null })
+
+  const denied = Object.assign(new Error('authentication failed'), { stderr: 'fatal: Authentication failed' })
+  const broken = createGitProjectSync({
+    sourceDir: checkout,
+    project: 'paper',
+    daemonId: 'mini-testing',
+    bindingId: 'binding-a',
+    runGit: async () => { throw denied },
+  })
+  await assert.rejects(broken.headChanged(), /authentication failed/)
+})
