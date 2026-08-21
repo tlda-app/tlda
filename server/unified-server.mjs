@@ -4774,7 +4774,7 @@ app.use('/docs', (req, res, next) => {
     try {
       const project = await readProject(name)
       if (project) {
-        const { listDocumentColumns, listProjectPartColumns, markdownDocumentColumnForOutputFile } = await import('./lib/document-columns.mjs')
+        const { listDocumentColumns, listProjectPartColumns, markdownDocumentColumnForOutputFile, markdownProjectRootColumn } = await import('./lib/document-columns.mjs')
         const { renderMarkdownColumnHtml } = await import('./lib/build-markdown.mjs')
         // Markdown-format projects: main file + parts (existing behavior).
         // Any other format: its markdown PARTS still render through this same
@@ -4783,7 +4783,13 @@ app.use('/docs', (req, res, next) => {
         const srcDir = join(PROJECTS_DIR, name, 'source')
         const columns = project.format === 'markdown'
           ? await listDocumentColumns(name, { project, srcDir })
-          : await listProjectPartColumns(name, { srcDir })
+          : [
+              ...await listProjectPartColumns(name, { srcDir }),
+              ...(await Promise.all((project.documentRoots || [])
+                .filter(root => root?.format === 'markdown')
+                .map(root => markdownProjectRootColumn(name, root.path, { srcDir }))))
+                .filter(Boolean),
+            ]
         // Falling through to the project source is what keeps a linked document
         // reachable now that it is no longer one of this document's pages. "Is
         // this a page of the open document" and "can this project render this
