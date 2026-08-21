@@ -145,31 +145,30 @@ export function createBuildQueue({
   }
 
   function admitBuild(project, { revision, daemonId, branch = 'main', kind = 'build' }, { retryTerminal = false } = {}) {
-    let admittedRow
-    const admission = transition(async () => {
-      if (!project || !revision || !daemonId || !branch) throw new Error('project, revision, daemonId, and branch are required')
-      admittedRow = await serializeProject(project, async () => {
-        let existing = store.get(project, revision)
-        if (existing && retryTerminal && ['complete', 'failed', 'killed'].includes(existing.state)) {
-          store.removeTerminalRevision(project, revision)
-          existing = null
-        }
-        if (existing) return existing
+    if (!project || !revision || !daemonId || !branch) return Promise.reject(new Error('project, revision, daemonId, and branch are required'))
+    return serializeProject(project, () => transition(async () => {
+      let admittedRow = store.get(project, revision)
+      if (admittedRow && retryTerminal && ['complete', 'failed', 'killed'].includes(admittedRow.state)) {
+        store.removeTerminalRevision(project, revision)
+        admittedRow = null
+      }
+      if (!admittedRow) {
         const fractionalPriority = random()
         if (!(fractionalPriority >= 0 && fractionalPriority < 1)) throw new Error('build queue random source must return a value in [0, 1)')
         const head = await getCurrentHead(project)
         const valid = !head || await isAncestor(head, revision, project)
-        return store.admit({
+        admittedRow = store.admit({
           project, revision, daemonId, branch, kind, fractionalPriority,
           state: valid ? 'pending' : 'killed',
           reason: valid ? null : 'needs-rebase',
         }).row
-      })
-      if (['complete', 'failed', 'killed'].includes(admittedRow.state)) return
-      await thinPending(project)
-      await drain()
-    })
-    return admission.then(() => admittedRow)
+      }
+      if (!['complete', 'failed', 'killed'].includes(admittedRow.state)) {
+        await thinPending(project)
+        await drain()
+      }
+      return admittedRow
+    }))
   }
 
   async function publishedHeadChanged(project, head) {
