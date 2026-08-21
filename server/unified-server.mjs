@@ -5495,6 +5495,8 @@ server.on('upgrade', async (req, socket, head) => {
         remotePort,
       })
       let daemonMessageChain = Promise.resolve()
+      let sourceBindingsChain = Promise.resolve()
+      const sourceProposalChains = new Map()
       ws.on('message', (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
@@ -5503,8 +5505,20 @@ server.on('upgrade', async (req, socket, head) => {
             onHandlerError: e => console.error('[daemon-ws] handler error:', e?.message),
           })
         }
-        if (msg.type === 'source-bindings-set' || msg.type === 'source-proposal-admit') {
-          void dispatch().catch(e => console.error('[daemon-ws] dispatch error:', e?.message || e))
+        if (msg.type === 'source-bindings-set') {
+          sourceBindingsChain = sourceBindingsChain.then(dispatch)
+            .catch(e => console.error('[daemon-ws] dispatch error:', e?.message || e))
+          return
+        }
+        if (msg.type === 'source-proposal-admit') {
+          const project = String(msg.project || '')
+          const previous = sourceProposalChains.get(project) || Promise.resolve()
+          const current = previous.then(dispatch)
+            .catch(e => console.error('[daemon-ws] dispatch error:', e?.message || e))
+          sourceProposalChains.set(project, current)
+          void current.finally(() => {
+            if (sourceProposalChains.get(project) === current) sourceProposalChains.delete(project)
+          })
           return
         }
         daemonMessageChain = daemonMessageChain.then(dispatch)
