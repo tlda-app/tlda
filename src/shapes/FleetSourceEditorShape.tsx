@@ -239,6 +239,22 @@ type TrackedSourceAnchor = {
   anchored: boolean
 }
 
+type DocumentVersion = {
+  remote: string
+  branch: string
+  commit: string
+  selected: boolean
+  writable: boolean
+}
+
+function documentVersionKey(version: DocumentVersion) {
+  return `${version.remote}\0${version.branch}\0${version.commit}`
+}
+
+function documentVersionLabel(version: DocumentVersion) {
+  return `${version.remote}/${version.branch} @${version.commit.slice(0, 7)}`
+}
+
 function canShowSourceCursorLaser(anchor: TrackedSourceAnchor | null | undefined) {
   return anchor?.source === 'synctex' && anchor.anchored && anchor.line != null
 }
@@ -493,6 +509,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const saveSeqRef = useRef(0)
   const secondarySaveSeqRef = useRef(0)
   const [file, setFile] = useState(() => normalizeFile(shape.props.file))
+  const [documentVersions, setDocumentVersions] = useState<DocumentVersion[]>([])
+  const [activeDocumentVersion, setActiveDocumentVersion] = useState<DocumentVersion | null>(null)
+  const [versionPickerBusy, setVersionPickerBusy] = useState(false)
   const [sourceSplit, setSourceSplit] = useState<SourceSplit | null>(null)
   const [trackedAnchor, setTrackedAnchor] = useState(() => ({
     file: normalizeFile(shape.props.file),
@@ -612,6 +631,42 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   useEffect(() => {
     sourceFilesRef.current = null
     sourceFilesPromiseRef.current = null
+    setActiveDocumentVersion(null)
+  }, [doc?.projectName])
+
+  useEffect(() => {
+    if (!doc?.projectName) return
+    let cancelled = false
+    void fetch(projectApiPath(doc.projectName, '/remotes?fetch=true'))
+      .then(async res => {
+        if (!res.ok) throw new Error(`remotes ${res.status}`)
+        const payload = await res.json()
+        const versions = Array.isArray(payload?.remotes)
+          ? payload.remotes.flatMap((remote: any) => Array.isArray(remote?.branches)
+              ? remote.branches.flatMap((branch: any) => (
+                  typeof remote?.name === 'string'
+                  && typeof branch?.name === 'string'
+                  && typeof branch?.commit === 'string'
+                    ? [{
+                        remote: remote.name,
+                        branch: branch.name,
+                        commit: branch.commit,
+                        selected: branch.selected === true,
+                        writable: branch.writable === true || remote.writable === true,
+                      }]
+                    : []
+                ))
+              : [])
+          : []
+        if (!cancelled) {
+          setDocumentVersions(versions)
+          setActiveDocumentVersion(current => current ?? versions.find(version => version.selected) ?? null)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDocumentVersions([])
+      })
+    return () => { cancelled = true }
   }, [doc?.projectName])
 
   const pdfSpansToCanvasMark = (spans: SourceCursorPdfSpan[], sourceLine: number): SourceCursorLaserMark | null => {
@@ -1079,6 +1134,49 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       setStatusText(`Loading ${file}...`)
       try {
         const sourcePath = await resolveSourceFilePath(file)
+        if (activeDocumentVersion && !activeDocumentVersion.writable) {
+          const query = `?revision=${encodeURIComponent(activeDocumentVersion.commit)}`
+          const response = await fetch(projectApiPath(doc!.projectName, `/source/${encodeURIComponent(sourcePath)}${query}`))
+          if (!response.ok) throw new Error(`source ${response.status}`)
+          const text = await response.text()
+          if (cancelled || !cmHostRef.current) return
+
+          cmKeydownCleanupRef.current?.()
+          cmKeydownCleanupRef.current = null
+          cmPanelCleanupRef.current?.()
+          cmPanelCleanupRef.current = null
+          cmViewRef.current?.destroy()
+          fullSourceRef.current = text
+          savedTextRef.current = text
+          loadedSourceRevisionRef.current = response.headers.get('X-TLDA-Source-Revision')
+          const sourceWindow = sourceWindowForText(text, Math.max(1, Number(trackedAnchor.line || shape.props.line || 1)))
+          sourceWindowRef.current = sourceWindow
+          const view = new EditorView({
+            parent: cmHostRef.current,
+            state: EditorState.create({
+              doc: text,
+              extensions: [
+                lineNumbers(),
+                latex(),
+                EditorState.readOnly.of(true),
+                EditorView.editable.of(false),
+                EditorView.lineWrapping,
+                sourceEditorTheme,
+              ],
+            }),
+          })
+          cmViewRef.current = view
+          setVimModeState('')
+          setStatus('ready')
+          setStatusText(`${documentVersionLabel(activeDocumentVersion)} · view only`)
+          const targetLine = Math.max(1, Math.min(sourceWindow.targetLine, view.state.doc.lines))
+          const line = view.state.doc.line(targetLine)
+          view.dispatch({
+            selection: { anchor: line.from },
+            effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
+          })
+          return
+        }
         const ydoc = new Y.Doc()
         const ytext = ydoc.getText('source')
         const socket = new WebSocket(sourceSyncPath(doc!.projectName, sourcePath))
@@ -1320,7 +1418,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 	      cmViewRef.current?.destroy()
       cmViewRef.current = null
     }
-  }, [doc?.projectName, file, useVim])
+  }, [doc?.projectName, file, useVim, activeDocumentVersion?.remote, activeDocumentVersion?.branch, activeDocumentVersion?.commit, activeDocumentVersion?.writable])
 
 	  useEffect(() => {
 	    const view = cmViewRef.current
@@ -1544,13 +1642,53 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     writeTimerRef.current = null
     void writeSource(currentText, seq)
   }
+  const chooseDocumentVersion = async (value: string) => {
+    if (status === 'dirty' || status === 'syncing' || versionPickerBusy) return
+    if (!value) {
+      setActiveDocumentVersion(null)
+      return
+    }
+    const version = documentVersions.find(candidate => documentVersionKey(candidate) === value)
+    if (!version || !doc?.projectName) return
+    if (!version.writable) {
+      setActiveDocumentVersion(version)
+      return
+    }
+    cmViewRef.current?.contentDOM.blur()
+    voiceSessionRef.current = null
+    if (voiceUpdateRef.current) clearVoiceAccumulator(voiceUpdateRef.current)
+    setVersionPickerBusy(true)
+    setStatus('loading')
+    setStatusText(`Opening ${documentVersionLabel(version)}...`)
+    try {
+      const response = await fetch(projectApiPath(doc.projectName, '/remotes'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'checkout',
+          name: version.remote,
+          branch: version.branch,
+          revision: version.commit,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload?.ok === false) throw new Error(payload?.error || `checkout ${response.status}`)
+      setActiveDocumentVersion(version)
+    } catch (error: unknown) {
+      setStatus('error')
+      setStatusText(error instanceof Error ? error.message : 'Could not open document version')
+    } finally {
+      setVersionPickerBusy(false)
+    }
+  }
   const showStatusBar = status === 'dirty' || status === 'syncing'
   const reserveStatusBar = useVim || showStatusBar
+  const showVersionPicker = documentVersions.length > 0
 
 	  return (
 	    <div
 	      ref={containerRef}
-	      className={`fleet-shape fleet-source-editor fleet-chat-shape${reserveStatusBar ? ' fleet-source-editor-with-status' : ''}`}
+	      className={`fleet-shape fleet-source-editor fleet-chat-shape${reserveStatusBar ? ' fleet-source-editor-with-status' : ''}${showVersionPicker ? ' fleet-source-editor-with-version-picker' : ''}${versionPickerBusy ? ' fleet-source-editor-version-busy' : ''}`}
       style={{ width: shape.props.w, height: shape.props.h, ...styleVars }}
       onPointerDown={handlePointerDown}
       onPointerMove={stopEventPropagation}
@@ -1558,6 +1696,23 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       onWheel={handleWheel}
     >
       <FleetPanelButtonGroup editor={editor} shape={shape} />
+      {showVersionPicker && (
+        <label className="fleet-source-editor-version-picker" onPointerDown={stopEventPropagation}>
+          <select
+            aria-label="Document version"
+            value={activeDocumentVersion ? documentVersionKey(activeDocumentVersion) : ''}
+            disabled={status === 'dirty' || status === 'syncing' || versionPickerBusy}
+            onChange={(event) => { void chooseDocumentVersion(event.currentTarget.value) }}
+          >
+            <option value="">Current document</option>
+            {documentVersions.map(version => (
+              <option key={documentVersionKey(version)} value={documentVersionKey(version)}>
+                {documentVersionLabel(version)}{version.writable ? '' : ' · view only'}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {currentFileConflicted && (
         <div className="fleet-source-editor-conflict" onPointerDown={stopEventPropagation}>
           <button type="button" onClick={() => applyConflictSide('ours')} disabled={!sourceHasConflictMarkers && !conflictMergeActive}>ours</button>

@@ -4409,9 +4409,38 @@ body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: ca
   cursor: default;
   opacity: var(--fleet-dim-alpha-45, 0.45);
 }
+.fleet-source-editor-version-picker {
+  position: absolute;
+  left: 8px;
+  top: 6px;
+  z-index: 3;
+  pointer-events: all;
+  opacity: var(--ui-tone-dormant);
+  transition: opacity 0.2s;
+}
+.fleet-source-editor-version-picker:hover,
+.fleet-source-editor-version-picker:focus-within {
+  opacity: var(--ui-tone-active);
+}
+.fleet-source-editor-version-picker select {
+  max-width: min(300px, calc(100% - 16px));
+  border: 0;
+  border-radius: 0;
+  padding: 2px 18px 2px 4px;
+  background: var(--glass-bg, rgba(0,0,0,0.35));
+  color: var(--text-dim, #8888a0);
+  font: calc(var(--fleet-base-font, 11px) * 0.909091)/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
+}
 .fleet-source-editor-body {
   position: absolute;
   inset: 0;
+}
+.fleet-source-editor-with-version-picker .fleet-source-editor-body {
+  top: 28px;
+}
+.fleet-source-editor-version-busy .fleet-source-editor-body {
+  pointer-events: none;
+  opacity: var(--ui-tone-dormant);
 }
 .fleet-source-editor-with-status .fleet-source-editor-body {
   bottom: 20px;
