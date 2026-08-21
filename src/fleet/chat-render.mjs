@@ -79,7 +79,7 @@ function chipifyMarkdownApiFileLinks(html) {
     const file = markdownApiFileLink(href)
     if (!file) return match
     const label = stripTags(labelHtml) || file.path.split('/').pop() || file.path
-    return `<span class="ref-chip ref-chip-doc" data-path="${esc(file.path)}" data-url="${esc(file.url)}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${esc(label)}</span>`
+    return `<span class="ref-chip ref-chip-doc" data-path="${esc(file.path)}" data-url="${esc(file.url)}"><span class="ref-chip-doc-icon">📄</span>${esc(label)}</span>`
   })
 }
 
@@ -186,7 +186,7 @@ function attachmentTokenHtml(message, inlineAttachments, idx) {
     const pathAttr = ` data-path="${esc(projectRef?.path || att.path || '')}"`
     const titleAttr = projectRef ? ` title="Project version ${esc(projectRef.version)} for this message"` : ''
     return {
-      html: `<span class="ref-chip ref-chip-doc"${pathAttr}${urlAttr}${projectAttrs}${titleAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}${projectVersionChipHtml(projectRef)}</span>`,
+      html: `<span class="ref-chip ref-chip-doc"${pathAttr}${urlAttr}${projectAttrs}${titleAttr}><span class="ref-chip-doc-icon">${icon}</span>${name}${projectVersionChipHtml(projectRef)}</span>`,
       pending: false,
     }
   }
@@ -751,7 +751,7 @@ export function renderChatLine(m, ctx) {
       const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
       const pathAttr = a.path ? ` data-path="${esc(a.path)}"` : ''
       const titleAttr = label ? ` data-title="${esc(label)}"` : ''
-      return `<span class="ref-chip ref-chip-doc"${pathAttr} data-url="${esc(fileUrl)}"${titleAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(label)}</span>`
+      return `<span class="ref-chip ref-chip-doc"${pathAttr} data-url="${esc(fileUrl)}"${titleAttr}><span class="ref-chip-doc-icon">${icon}</span>${esc(label)}</span>`
     }
     const agentId = (a.source || '').split(':')[1] || ''
     const agentName = agentId ? agentLabel(agentId) : ''
@@ -873,7 +873,7 @@ export function renderChatLine(m, ctx) {
     // at send time; it is what actually opens. Path stays as the provenance label
     // and as the fallback for a message sent before uploads existed.
     const _urlAttr = _src.url ? ` data-url="${esc(String(_src.url))}"` : ''
-    sourceChipHtml = ` <span class="ref-chip ref-chip-doc src-chip" data-path="${esc(String(_src.file))}"${_urlAttr}${_sectionAttr} title="${_title}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${_fileName}${_sectionHtml}</span>`
+    sourceChipHtml = ` <span class="ref-chip ref-chip-doc src-chip" data-path="${esc(String(_src.file))}"${_urlAttr}${_sectionAttr} title="${_title}"><span class="ref-chip-doc-icon">📄</span>${_fileName}${_sectionHtml}</span>`
   }
   // Amend version stepper (V{n} ◀▶) — present only on a message that's been
   // amended (folded by FleetChatShape, which sets m._amendStepper).
