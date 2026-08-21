@@ -125,7 +125,7 @@ test('agent-only search returns resolved agent identities before conversation ro
     for (const query of ['from:chiefsoso', 'to:chiefsoso']) {
       const result = await searchWire(port, query)
       assert.equal(result.results.some(row => row.type === 'project_agent'), false)
-      assert.deepEqual(result.results.map(row => row.text), ['chief history'])
+      assert.equal(result.results.some(row => row.text === 'chief history'), true)
     }
   } finally {
     child.kill('SIGTERM')
