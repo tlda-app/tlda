@@ -7018,10 +7018,14 @@ async function dispatchFleetWsMessage(ws, msg) {
       // fleet ids it refers to — substring over current + historical names,
       // dawn-aware. An empty match yields an impossible id (an empty result set),
       // NOT an unfiltered search.
-      if (msg.agentQuery) {
-        const ids = await fleetStore.resolveAgentQuery(msg.agentQuery);
-        if (!ids.length) unresolvedNames.add(msg.agentQuery)
+      let resolvedAgentIds = []
+      if (msg.agent) resolvedAgentIds = (Array.isArray(msg.agent) ? msg.agent : [msg.agent]).filter(Boolean)
+      if (msg.agentQuery || msg.agentResolve) {
+        const selector = msg.agentResolve || { fragment: msg.agentQuery }
+        const ids = await fleetStore.resolveAgentSelector(selector)
+        if (!ids.length) unresolvedNames.add(selector.fragment)
         searchAgent = ids.length ? ids : [noMatch];
+        resolvedAgentIds = ids
       }
       const hasText = (msg.query || '').trim().length > 0;
       let results = await fleetStore.searchAll(msg.query || '', {
@@ -7073,6 +7077,44 @@ async function dispatchFleetWsMessage(ws, msg) {
           if (await matchesMessageNode(messageFilter, row)) filtered.push(row)
         }
         results = filtered
+        if (!resolvedAgentIds.length) resolvedAgentIds = [...await collectPrefilterIds(messageFilter)]
+      }
+      const naturalAgentOnly = !!(msg.naturalAgentQueries?.length || msg.naturalAgentQuery) && !msg.naturalTextQuery && !msg.filterExpression
+      if (naturalAgentOnly && !resolvedAgentIds.length) {
+        const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
+        resolvedAgentIds = [...new Set((await Promise.all(naturalQueries.map(async query => {
+          if (String(query || '').trim() === 'me') return [currentSearchActor()]
+          return await fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
+        }))).flat())]
+      }
+      const agentIdentityQuery = !!(msg.agentResolve || msg.agentQuery || msg.agent) || naturalAgentOnly
+      if (agentIdentityQuery && (!hasText || naturalAgentOnly)) {
+        const agentRows = await fleetStore.getAgentsByIds(resolvedAgentIds)
+        const agentById = new Map(agentRows.map(agent => [agent.id, agent]))
+        const agentResults = resolvedAgentIds
+          .map(id => agentById.get(id))
+          .filter(Boolean)
+          .map(agent => ({
+            source: 'fleet',
+            type: 'project_agent',
+            id: agent.id,
+            agentId: agent.id,
+            from: agent.id,
+            to: null,
+            agentName: agent.friendly_name || null,
+            agentNameNow: agent.friendly_name || null,
+            prettyName: agent.pretty_name || null,
+            friendly_name: agent.friendly_name || null,
+            timestamp: agent.last_seen || agent.registered_at || '',
+            latest_relevant_at: agent.last_seen || agent.registered_at || '',
+            text: '',
+            snippet: '',
+            cwd: agent.cwd || null,
+            latest_activity: { source: 'agent', type: 'agent', summary: '' },
+            status: { dead: !!agent.dead, last_seen: agent.last_seen || null, last_active: agent.last_active || null },
+            thread: { agent: agent.id, query: `thread(agent: "${agent.id}")` },
+          }))
+        results = [...agentResults, ...results]
       }
       if (hasText && !msg.historyOnly && !msg.eventOnly) {
         const documentRows = await searchProjectContent(msg.query || '', {

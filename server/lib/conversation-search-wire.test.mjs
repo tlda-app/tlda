@@ -67,6 +67,7 @@ async function searchWire(port, rawQuery, { limit = 50, as = {}, me = 'fleet:cal
       id: 1,
       type: 'fleet-search',
       query: parsed.query,
+      ...filters,
       filterExpression: filters.filterExpression,
       limit,
       me,
@@ -81,6 +82,52 @@ async function searchWire(port, rawQuery, { limit = 50, as = {}, me = 'fleet:cal
     ws.close()
   }
 }
+
+test('agent-only search returns resolved agent identities before conversation rows', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-agent-search-results-'))
+  const dbPath = join(dir, 'fleet.db')
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  try {
+    await store.upsertAgent({ id: 'fleet:chief', friendly_name: 'chiefsoso', dead: false })
+    await store.upsertAgent({ id: 'fleet:caller', friendly_name: 'caller', dead: false, human: true })
+    insertEvent(store, {
+      type: 'chat',
+      timestamp: '2026-08-14T10:00:00.000Z',
+      from: 'fleet:chief',
+      to: 'fleet:caller',
+      text: 'chief history',
+    })
+  } finally {
+    store.close()
+  }
+
+  const port = await unusedPort()
+  const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
+    cwd: join(import.meta.dirname, '..', '..'),
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      PROJECTS_DIR: join(dir, 'projects'),
+      TLDA_FLEET_DB: dbPath,
+      TLDA_DEV_SERVER: '1',
+      TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  try {
+    await waitForServer(child)
+    for (const query of ['chiefsoso', 'agent:chiefsoso~1', 'agent:fleet:chief']) {
+      const result = await searchWire(port, query)
+      assert.equal(result.results[0].type, 'project_agent')
+      assert.equal(result.results[0].agentId, 'fleet:chief')
+    }
+  } finally {
+    child.kill('SIGTERM')
+    await new Promise(resolve => child.once('exit', resolve))
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('A <> B search wire returns only messages actually sent between A and B', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-conversation-search-wire-'))
