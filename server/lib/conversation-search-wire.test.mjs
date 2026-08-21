@@ -97,6 +97,13 @@ test('agent-only search returns resolved agent identities before conversation ro
       to: 'fleet:caller',
       text: 'chief history',
     })
+    insertEvent(store, {
+      type: 'chat',
+      timestamp: '2026-08-14T10:01:00.000Z',
+      from: 'fleet:caller',
+      to: 'fleet:chief',
+      text: 'caller history',
+    })
   } finally {
     store.close()
   }
@@ -122,10 +129,13 @@ test('agent-only search returns resolved agent identities before conversation ro
       assert.equal(result.results[0].type, 'project_agent')
       assert.equal(result.results[0].agentId, 'fleet:chief')
     }
-    for (const query of ['from:chiefsoso history', 'to:chiefsoso history']) {
+    for (const [query, expectedText] of [
+      ['from:chiefsoso history', 'chief history'],
+      ['to:chiefsoso history', 'caller history'],
+    ]) {
       const result = await searchWire(port, query)
       assert.equal(result.results.some(row => row.type === 'project_agent'), false)
-      assert.deepEqual(result.results.map(row => row.text), ['chief history'])
+      assert.deepEqual(result.results.map(row => row.text), [expectedText])
     }
   } finally {
     child.kill('SIGTERM')
