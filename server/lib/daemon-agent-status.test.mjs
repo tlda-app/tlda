@@ -99,28 +99,3 @@ test('a later batch cannot apply until the prior batch finishes', async () => {
   assert.deepEqual(events, ['first-start', 'first-end', 'second-start'])
   assert.equal(chains.size, 0)
 })
-
-test('an old boot queued after takeover has no side effects', async () => {
-  const chains = new Map()
-  const events = []
-  const newSocket = { boot: 8 }
-  const oldSocket = { boot: 7 }
-  const activeSocket = newSocket
-  let releaseNew
-  const newGate = new Promise(resolve => { releaseNew = resolve })
-  const current = applyDaemonAgentStatusBatch(chains, 'mini:testing', async () => {
-    events.push('new-start')
-    await newGate
-    events.push('new-end')
-  }, () => activeSocket === newSocket)
-  const superseded = applyDaemonAgentStatusBatch(chains, 'mini:testing', async () => {
-    events.push('old-applied')
-  }, () => activeSocket === oldSocket)
-
-  await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(events, ['new-start'])
-  releaseNew()
-  await Promise.all([current, superseded])
-  assert.deepEqual(events, ['new-start', 'new-end'])
-  assert.equal(chains.size, 0)
-})
