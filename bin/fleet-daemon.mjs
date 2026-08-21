@@ -786,7 +786,7 @@ terminalRpc = createTerminalRpc({
   resolveAgentRoute,
   onArmAgent: agentStatus.armAgent,
   onArmBySession: agentStatus.armBySession,
-  onEmitAgentStatus: agentStatus.emitAgentStatus,
+  onSessionInventoryChanged: reason => agentStatus.scanStatus(reason),
   onPlanModeSeen: promptPlan.scheduleCheckForPlanModePrompt,
   onPlanModeGone: promptPlan.clearPlanMode,
   hasPlanMode: promptPlan.hasPlanMode,

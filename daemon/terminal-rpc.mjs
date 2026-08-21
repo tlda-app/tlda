@@ -59,7 +59,7 @@ export function createTerminalRpc({
   ptyModuleImpl = null,
   onArmAgent,
   onArmBySession,
-  onEmitAgentStatus,
+  onSessionInventoryChanged,
   onPlanModeSeen,
   onPlanModeGone,
   hasPlanMode,
@@ -69,6 +69,9 @@ export function createTerminalRpc({
   terminalInputAllowed = false,
   execFileImpl = execFileP,
 }) {
+  if (typeof onSessionInventoryChanged !== 'function') {
+    throw new Error('createTerminalRpc requires onSessionInventoryChanged')
+  }
   const TMUX_ARGS = tmuxArgs || []
   const TERMINAL_SIZE_POLL_MS = terminalSizePollMs || 5000
   const terminalWatchPtys = new Map()
@@ -403,9 +406,9 @@ export function createTerminalRpc({
   }
 
   async function rpcKillSession(args = {}) {
-    const { tmuxSession, agentId, unavailable, reason } = resolveTerminalEndpoint(args, { allowUnavailable: true })
+    const { tmuxSession, unavailable, reason } = resolveTerminalEndpoint(args, { allowUnavailable: true })
     if (unavailable) {
-      if (agentId) onEmitAgentStatus(agentId, 'hibernating')
+      await onSessionInventoryChanged('kill-session-unavailable')
       return { ok: true, already_unavailable: true, reason }
     }
     checkSession(tmuxSession)
@@ -413,12 +416,12 @@ export function createTerminalRpc({
       await tmux('kill-session', '-t', tmuxSession)
     } catch (e) {
       if (!tmuxSessionAlreadyGone(e)) throw e
-      if (agentId) onEmitAgentStatus(agentId, 'hibernating')
       alivenessCache.set(tmuxSession, false)
+      await onSessionInventoryChanged('kill-session-already-absent')
       return { ok: true, already_unavailable: true, reason: 'tmux session already absent' }
     }
-    if (agentId) onEmitAgentStatus(agentId, 'hibernating')
     alivenessCache.set(tmuxSession, false)
+    await onSessionInventoryChanged('kill-session')
     return { ok: true }
   }
 
