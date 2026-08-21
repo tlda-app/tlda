@@ -323,6 +323,7 @@ export function createAgentLauncher({
           requester,
           spawnerPermissionSet: compilePermissionGrant(grantConfig, spawnerGrant.permissionGrant, { cwd: resolvedCwd, project: projectForGrant }),
           spawnerPermissionProfile: permissionGrantProfileName(spawnerGrant.permissionGrant),
+          spawnerPermissionGrant: spawnerGrant.permissionGrant,
           model: launchModel,
           kind: sessionId ? kind : launchKind,
           modelCap: launchModelSpec?.cap || null,

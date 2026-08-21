@@ -385,6 +385,7 @@ export function resolveSpawnGrant({
   permissionRequest,
   spawnerPermissionSet: explicitSpawnerPermissionSet,
   spawnerPermissionProfile = null,
+  spawnerPermissionGrant = null,
   model,
   kind,
   modelCap,
@@ -428,6 +429,7 @@ export function resolveSpawnGrant({
     modelPermissionProfile,
     modelPermissionSet,
     spawnerPermissionProfile: configuredSpawnerProfile,
+    spawnerPermissionGrant,
     spawnerPermissionSet,
     permissionSet,
     config,
@@ -481,6 +483,7 @@ function resolvedPermissionGrantIdentity({
   modelPermissionProfile,
   modelPermissionSet,
   spawnerPermissionProfile,
+  spawnerPermissionGrant,
   spawnerPermissionSet,
   permissionSet,
   config,
@@ -520,6 +523,7 @@ function resolvedPermissionGrantIdentity({
     requestedProfile,
     modelPermissionProfile,
     spawnerPermissionProfile,
+    spawnerPermissionGrant,
   })
   if (intersection) return { permissionGrant: intersection, clampedBy: clampedBy || { by: 'profile intersection', byProfile: null } }
 
@@ -530,11 +534,13 @@ function structuredPermissionIntersection({
   requestedProfile,
   modelPermissionProfile,
   spawnerPermissionProfile,
+  spawnerPermissionGrant,
 } = {}) {
   const profiles = [
     requestedProfile,
     modelPermissionProfile,
     spawnerPermissionProfile,
+    ...(permissionGrantIntersection(spawnerPermissionGrant)?.profiles || []),
   ].map((name) => String(name || '').trim()).filter(Boolean)
   const uniqueProfiles = [...new Set(profiles)]
   if (uniqueProfiles.length < 2) return null

@@ -128,7 +128,7 @@ process.on('message', async (msg) => {
         // to any sink, and the report below is fire-and-forget IPC racing
         // process.exit. The file is what `tlda project status` prints.
         writeFileSync(join(projectDir(msg.name), 'build.log'), `[build] ${message}\n`)
-        sendReport('updateProject', [msg.name, { buildStatus: 'error' }])
+        await callParent('updateProject', [msg.name, { buildStatus: 'error', pages: 0 }])
         throw new Error(message)
       }
 

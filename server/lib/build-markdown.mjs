@@ -859,7 +859,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     source = readFileSync(srcFile, 'utf8')
   } catch (e) {
     addLog(`[markdown] Error reading source: ${e.message}`)
-    await reporter.updateProject(name, { buildStatus: 'error' })
+    await reporter.updateProject(name, { buildStatus: 'error', pages: 0 })
     return
   }
 
