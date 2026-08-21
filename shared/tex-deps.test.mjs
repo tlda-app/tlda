@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -33,5 +33,19 @@ test('local class and package dependencies are followed transitively', t => {
 
   const closure = scanTexDependencyClosure('main.tex', dir)
   assert.deepEqual(closure.files, ['first.sty', 'local.cls', 'main.tex', 'second.sty'])
+  assert.deepEqual(closure.missing, [])
+})
+
+test('references in an included file may resolve from the project root', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-tex-deps-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(join(dir, 'main.tex'), String.raw`\input{sections/body}`)
+  mkdirSync(join(dir, 'sections'))
+  mkdirSync(join(dir, 'figures'))
+  writeFileSync(join(dir, 'sections/body.tex'), String.raw`\includegraphics{figures/result}`)
+  writeFileSync(join(dir, 'figures/result.pdf'), '')
+
+  const closure = scanTexDependencyClosure('main.tex', dir)
+  assert.deepEqual(closure.files, ['figures/result.pdf', 'main.tex', 'sections/body.tex'])
   assert.deepEqual(closure.missing, [])
 })
