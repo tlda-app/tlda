@@ -21,6 +21,7 @@
     "@tldraw/utils": "5.2.0",
     "@tldraw/validate": "5.2.0",
     "better-sqlite3": "^12.8.0",
+    "chokidar": "^5.0.0",
     "express": "^5.2.1",
     "fflate": "^0.8.3",
     "katex": "^0.16.22",
