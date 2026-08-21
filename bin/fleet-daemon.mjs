@@ -544,6 +544,7 @@ const sourceSync = createGitSyncManager({
   onProposalSubmitted: async ({ project, revision, proposalRef }) => {
     const admitted = await sendMsgWithReply({ type: 'source-proposal-admit', project, revision, ref: proposalRef })
     if (!admitted?.ok) throw new Error(`${project}: server did not confirm proposal admission`)
+    log.info(`${project}: proposal admission confirmed id=${admitted.submissionId} state=${admitted.state} started_once=${admitted.startedOnce} lifecycle_present=${admitted.lifecyclePresent} reason=${admitted.terminalReason || 'none'}`)
   },
 })
 
