@@ -75,7 +75,6 @@ import projectRoutes from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
-import { reapZombieSockets } from './lib/ws-zombie-reaper.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
@@ -818,24 +817,26 @@ function findMachineForAddress(addr) {
 }
 
 async function reapZombies() {
-  const result = await reapZombieSockets({
-    trackedWs: _trackedWs,
-    thresholdMs: ZOMBIE_THRESHOLD_MS,
-    findMachine: findMachineForAddress,
-    killOrphan: (machineId, ws) => sendDaemonDurable(machineId, 'kill-orphan-chromium', {
-      port: ws._wsRemotePort,
-      addr: normalizeAddr(ws._wsRemoteAddr),
-    }),
-    log: ({ ws, idleMs, outcome, result, error }) => {
-      const idleMin = Math.round(idleMs / 60000)
-      console.log(`[reaper]   zombie ${ws._wsKind} doc=${ws._wsDocName || '-'} session=${ws._wsSessionId} addr=${ws._wsRemoteAddr}:${ws._wsRemotePort} idle=${idleMin}m`)
-      if (outcome === 'no-daemon') console.log(`[reaper]   no daemon for ${ws._wsRemoteAddr}; skipping kill`)
-      else if (outcome === 'killed') console.log(`[reaper]   killed pid=${result.pid} binary=${result.binary || '(playwright)'} for session=${ws._wsSessionId}`)
-      else if (outcome === 'no-kill') console.log(`[reaper]   no kill: ${result?.reason || 'unknown'}`)
-      else console.log(`[reaper]   kill RPC failed: ${error.message}`)
-    },
-  })
-  if (result.zombieCount === 0) {
+  const now = Date.now()
+  const zombies = []
+  let activeCount = 0
+  for (const ws of _trackedWs) {
+    if (ws.readyState !== 1) continue
+    const idleMs = now - ws._wsLastInputAt
+    if (idleMs > ZOMBIE_THRESHOLD_MS) {
+      zombies.push({
+        kind: ws._wsKind,
+        doc: ws._wsDocName,
+        sessionId: ws._wsSessionId,
+        addr: ws._wsRemoteAddr,
+        port: ws._wsRemotePort,
+        idleMs,
+      })
+    } else {
+      activeCount++
+    }
+  }
+  if (zombies.length === 0) {
     const byKind = {}
     for (const ws of _trackedWs) {
       if (ws.readyState !== 1) continue
@@ -846,19 +847,35 @@ async function reapZombies() {
       byKind[k].maxIdleS = Math.max(byKind[k].maxIdleS, Math.round(idleMs / 1000))
     }
     const summary = Object.entries(byKind).map(([k, v]) => `${k}:${v.count}(max-idle=${v.maxIdleS}s)`).join(' ')
-    console.log(`[reaper] sweep: ${result.activeCount} active, 0 zombies — ${summary}`)
+    console.log(`[reaper] sweep: ${activeCount} active, 0 zombies — ${summary}`)
     return
   }
-  console.log(`[reaper] sweep: ${result.activeCount} active WS, ${result.zombieCount} zombie WS`)
+  console.log(`[reaper] sweep: ${activeCount} active WS, ${zombies.length} zombie WS`)
+  for (const z of zombies) {
+    const idleMin = Math.round(z.idleMs / 60000)
+    console.log(`[reaper]   zombie ${z.kind} doc=${z.doc || '-'} session=${z.sessionId} addr=${z.addr}:${z.port} idle=${idleMin}m`)
+    const machineId = findMachineForAddress(z.addr)
+    if (!machineId) {
+      console.log(`[reaper]   no daemon for ${z.addr}; skipping kill`)
+      continue
+    }
+    try {
+      const r = await sendDaemonDurable(machineId, 'kill-orphan-chromium', {
+        port: z.port,
+        addr: normalizeAddr(z.addr),
+      })
+      if (r?.killed) {
+        console.log(`[reaper]   killed pid=${r.pid} binary=${r.binary || '(playwright)'} for session=${z.sessionId}`)
+      } else {
+        console.log(`[reaper]   no kill: ${r?.reason || 'unknown'}`)
+      }
+    } catch (e) {
+      console.log(`[reaper]   kill RPC failed: ${e.message}`)
+    }
+  }
 }
 
-let reaperSweepInFlight = false
-setInterval(async () => {
-  if (reaperSweepInFlight) return
-  reaperSweepInFlight = true
-  try { await reapZombies() }
-  finally { reaperSweepInFlight = false }
-}, REAPER_INTERVAL_MS).unref()
+setInterval(reapZombies, REAPER_INTERVAL_MS).unref()
 
 // --- WebSocket heartbeat ---
 // Detect half-open connections (laptop sleep, network change) that TCP won't
