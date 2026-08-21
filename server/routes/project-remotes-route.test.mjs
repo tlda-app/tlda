@@ -27,6 +27,7 @@ test('remote routes expose token writeability and keep revision reads inside the
   await git(checkout, ['commit', '-m', 'fixture'])
   const revision = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
   const remotes = createGitRemotes({ sourceDir: checkout })
+  const daemonCalls = []
 
   const app = express()
   app.use(express.json())
@@ -34,9 +35,11 @@ test('remote routes expose token writeability and keep revision reads inside the
     req.authLevel = req.headers.authorization === 'Bearer read-token' ? 'read' : 'rw'
     next()
   })
-  app.locals.sendProjectSourceDaemon = async (_project, _operation, params) => {
+  app.locals.sendProjectSourceDaemon = async (project, daemonOperation, params) => {
+    daemonCalls.push({ project, daemonOperation, params })
     if (params.operation === 'list') return []
     if (params.operation === 'read-file') return remotes.readFile(params.revision, params.file)
+    if (params.operation === 'push') return { ok: true }
     throw new Error('unexpected operation')
   }
   app.use('/api/projects', projectRoutes)
@@ -55,6 +58,18 @@ test('remote routes expose token writeability and keep revision reads inside the
     assert.equal(readList.writable, false)
     const rwList = await fetch(`${base}/fixture/remotes`, { headers: { authorization: 'Bearer rw-token' } }).then(response => response.json())
     assert.equal(rwList.writable, true)
+
+    const push = await fetch(`${base}/fixture/remotes`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer rw-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ project: 'other-project', operation: 'push', name: 'origin', branch: 'main' }),
+    })
+    assert.equal(push.status, 200)
+    assert.deepEqual(daemonCalls.at(-1), {
+      project: 'fixture',
+      daemonOperation: 'project-git-remote',
+      params: { project: 'fixture', operation: 'push', name: 'origin', branch: 'main' },
+    })
 
     const inside = await fetch(`${base}/fixture/source/main.md?revision=${revision}`)
     assert.equal(inside.status, 200)

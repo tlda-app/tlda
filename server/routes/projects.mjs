@@ -769,7 +769,11 @@ router.post('/:name/remotes', requireRw, async (req, res) => {
     return res.status(400).json({ error: 'operation must be add, pull, push, or checkout' })
   }
   try {
-    const result = await send(req.params.name, 'project-git-remote', { operation, ...req.body })
+    const result = await send(req.params.name, 'project-git-remote', {
+      ...req.body,
+      project: req.params.name,
+      operation,
+    })
     res.json({ ok: true, project: req.params.name, operation, result })
   } catch (error) {
     res.status(409).json({ ok: false, error: error.message })

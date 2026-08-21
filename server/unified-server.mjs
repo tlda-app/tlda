@@ -507,7 +507,7 @@ async function sendProjectSourceDaemon(project, operation, params = {}) {
   for (const binding of bindings) {
     if (!daemonConnections.has(binding.daemonKey)) continue
     try {
-      return await sendDaemonEphemeral(binding.daemonKey, operation, { project, ...params }, { timeoutMs: 120000 })
+      return await sendDaemonEphemeral(binding.daemonKey, operation, { ...params, project }, { timeoutMs: 120000 })
     } catch (error) {
       failures.push(`${binding.daemonKey}: ${error.message}`)
     }
