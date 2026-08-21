@@ -139,17 +139,18 @@ then receives a merge conflict to resolve locally.
 
 ## Document formats
 
-tlda supports authored LaTeX, Markdown, and Quarto source, plus already-rendered
-HTML documents and RevealJS slide decks. A file argument ending in `.md`,
-`.qmd`, `.html`, or `.htm` selects its format automatically. LaTeX remains the
-default for `.tex` files and repository paths.
+tlda supports authored LaTeX, Markdown, and Quarto source, native PDF roots,
+plus already-rendered HTML documents and RevealJS slide decks. A file argument
+ending in `.md`, `.qmd`, `.pdf`, `.html`, or `.htm` selects its format
+automatically. LaTeX remains the default for `.tex` files and repository paths.
 
 | source | what tlda does | link it |
 | --- | --- | --- |
 | LaTeX (`.tex`) | Builds the paper with `latexmk`, converts its pages to SVG, and retains SyncTeX source positions. | `tlda project link paper paper.tex` |
 | Markdown (`.md`) | Renders the authored Markdown and the local Markdown documents and assets it links to. | `tlda project link notes notes.md` |
 | Quarto (`.qmd`) | Sends the source directory to the server and runs Quarto there. An HTML document becomes a scrolling page; a RevealJS result becomes individual interactive slides. | `tlda project link report report.qmd` |
-| Rendered HTML | Copies a rendered HTML site or book and its assets without running its source renderer. Top-level HTML files become document pages unless the artifact supplies `page-info.json`. | `tlda project link book index.html --format html` |
+| PDF (`.pdf`) | Preserves the PDF as versioned source, extracts paged display and searchable text, and keeps annotations in page coordinates. Source-line mapping is unavailable. | `tlda project link book book.pdf` |
+| Rendered HTML | Copies a rendered HTML site or book and its assets without running its source renderer. Top-level HTML files become document pages unless the artifact supplies `tlda-manifest.json`. | `tlda project link book index.html --format html` |
 | Rendered RevealJS | Copies an already-rendered deck and its assets, then lays its interactive slides from left to right on the canvas. | `tlda project link talk index.html --format slides` |
 
 For a Quarto project, the server needs `quarto` on `PATH`. It uses the document's

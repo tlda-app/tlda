@@ -2,11 +2,11 @@ import type { Editor, TLShapeId } from 'tldraw'
 import { htmlSourceLineAnchorAtCanvasY, htmlSourceLineCanvasPosition, type HtmlSourceLineAnchor } from './htmlSourceAnchors'
 import { getSourceAnchor, canvasToPdf, pdfToCanvas, resolvAnchor, type SourceAnchor } from './synctexAnchor'
 import { unanchoredSourceLocation, type SourceLocationReason } from './sourceLocation'
-import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
+import type { DocumentView } from './loaders/types'
 
 export type AnchorDocument = {
   name: string
-  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'
+  view: DocumentView
   pages: Parameters<typeof canvasToPdf>[2]
 }
 
@@ -75,14 +75,15 @@ export async function annotationSourceAnchorAtCanvasPoint(
   // What the annotation is placed ON decides which source it anchors to, not
   // what the project as a whole is. A LaTeX project's Markdown parts are
   // html-page shapes living on their own TLDraw page, so branching on
-  // `document.format` sent every note on those pages down the synctex path and
+  // project-level render identity sent every note on those pages down the synctex path and
   // measured their coordinates against the PDF page boxes — a different page in
   // a different coordinate space. That yields no anchor, or a main.tex line the
   // note is nowhere near.
   const htmlPage = htmlPageAtCanvasPoint(editor, x, y)
   if (htmlPage) return htmlSourceLineAnchorAtCanvasY(htmlPage.shape, htmlPage.bounds, y)
 
-  if (HTML_PAGE_FORMATS.has(document.format || '')) return null
+  if (document.view.kind === 'html-pages' || document.view.kind === 'slides') return null
+  if (!document.view.capabilities.sourceMapping) return unanchoredSourceLocation('source-unavailable')
 
   const pdfPos = canvasToPdf(x, y, document.pages)
   if (!pdfPos) return null

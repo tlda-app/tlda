@@ -52,7 +52,8 @@ import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths,
 import historyRoutes from './history.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
-import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
+import { documentAxes } from '../../shared/document-formats.mjs'
+import { readDocumentManifest } from '../lib/document-manifest.mjs'
 import { gitBlobId } from '../../shared/git-blob-id.mjs'
 import { writeSentinel } from '../lib/sentinel.mjs'
 import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
@@ -91,13 +92,6 @@ async function mapWithConcurrency(items, concurrency, mapper) {
   }))
   return results
 }
-
-// Formats that already write their own page-info.json via their own build
-// pipeline (server/lib/format-builders.mjs) — writing a parts-only one would
-// clobber it. Everything else (svg, png, ...) has no page-info.json of
-// its own, so a project's parts get one. The viewer needs the same fact to
-// know whether a page-info.json it fetches is parts or the document's own
-// pages, so the set lives in shared/ rather than here.
 
 function sameOrigin(a, b) {
   try {
@@ -328,15 +322,18 @@ router.get('/archived', requireRead, async (req, res) => {
 // Create project
 router.post('/', requireRw, async (req, res) => {
   try {
-    const { name, title, mainFile, format, members } = req.body
+    const { name, title, mainFile, members, sourceFormat, renderer, documentFormat, pages, pageFiles } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
     }
-    if (format === 'book' && (!members || !Array.isArray(members) || members.length === 0)) {
+    if (Object.hasOwn(req.body, 'format')) return res.status(400).json({ error: 'format is not a project field; supply the three document axes' })
+    if (!sourceFormat || !renderer || !documentFormat) return res.status(400).json({ error: 'sourceFormat, renderer, and documentFormat are required' })
+    if (pageFiles !== undefined && (!Array.isArray(pageFiles) || pageFiles.some(file => typeof file !== 'string'))) return res.status(400).json({ error: 'pageFiles must be an array of strings' })
+    if (documentFormat === 'book' && (!members || !Array.isArray(members) || members.length === 0)) {
       return res.status(400).json({ error: 'book format requires a non-empty members array' })
     }
-    const project = createProject({ name, title, mainFile, format, members })
+    const project = createProject({ name, title, mainFile, members, sourceFormat, renderer, documentFormat, pages, pageFiles })
     await (await sourceLifecycleStore(project.name)).gitRepository()
     emitGlobalEvent('project-changed', { name: project.name })
     res.status(201).json(project)
@@ -352,27 +349,25 @@ router.get('/:name', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  let pageInfo
-  if (req.query.include === 'page-info' && FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
-    try {
-      pageInfo = JSON.parse(await readFile(join(getOutputDir(req.params.name), 'page-info.json'), 'utf8'))
-    } catch {
-      pageInfo = undefined
-    }
+  let documentManifest
+  try {
+    documentManifest = readDocumentManifest(getOutputDir(req.params.name)) || undefined
+  } catch {
+    documentManifest = undefined
   }
-
   const durableStatus = projectRevisionStatus((await sourceLifecycleStore(req.params.name)).listRevisionLifecycles(req.params.name))
   // The chat-reference seed of project membership. This is the payload the
   // watcher already reads its source context from, so the roots arrive by the
   // channel that already carries mainFile rather than a second call.
   res.json({
     ...project,
+    ...documentAxes(project),
     buildStatus: durableStatus.status,
     buildPhase: durableStatus.phase,
     sourceRevision: durableStatus.sourceRevision,
     acceptSeq: durableStatus.acceptSeq,
     referencedSourcePaths: await referencedSourcePaths(req.params.name).catch(() => []),
-    ...(pageInfo && { pageInfo }),
+    ...(documentManifest && { documentManifest }),
   })
 })
 
@@ -631,11 +626,11 @@ router.patch('/:name/members', requireRw, async (req, res) => {
     const project = await readProject(req.params.name)
     if (!project) return res.status(404).json({ error: 'Project not found' })
     // 400 on a non-book project. The `/push` branch that carries `members`
-    // today is guarded on `format === 'book'` and FALLS THROUGH to a normal
+    // today is guarded on `documentFormat === 'book'` and FALLS THROUGH to a normal
     // source push when it is not -- so a members array sent to a non-book
     // project silently becomes a file push with an empty file list. This is
     // the error behaviour of new code, not a change to shipped behaviour.
-    if (project.format !== 'book') {
+    if (project.documentFormat !== 'book') {
       return res.status(400).json({ error: 'members can only be replaced on a book project' })
     }
     try {

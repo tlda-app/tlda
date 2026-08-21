@@ -8,6 +8,7 @@ import {
 } from 'tldraw'
 import { getFormatConfig, homeTool, doubleTapTools } from '../formatConfig'
 import { getStoredScheme } from '../hooks/useFleetTheme'
+import type { DocumentView } from '../loaders/types'
 
 export function BrowseToolbarItem() {
   const tools = useTools()
@@ -60,13 +61,13 @@ const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: co
  * Reads double-tap targets from FormatConfig positions 1-3 (the three tools
  * after the home tool). Double-tapping the current tool returns to position 0.
  */
-export function ToolToggleZones({ format }: { format?: string }) {
+export function ToolToggleZones({ view }: { view: DocumentView }) {
   const editor = useEditor()
   const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
   const [currentTool, setCurrentTool] = useState(editor.getCurrentToolId())
   const [highlightColor, setHighlightColor] = useState('#c77cff')
   const lastTapRef = useRef<{ tool: string; time: number }>({ tool: '', time: 0 })
-  const fmt = getFormatConfig(format)
+  const fmt = getFormatConfig(view)
   const home = homeTool(fmt)
   const zoneTools = doubleTapTools(fmt)
 
@@ -140,7 +141,7 @@ export function DesktopHighlighterZone() {
   return null
 }
 
-export function PenHelperButtons(_: { format?: string }) {
+export function PenHelperButtons(_: { view: DocumentView }) {
   // The old ToolToggleZones (pen-mode zones) and DesktopHighlighterZone
   // are gone — the HighlighterSlider is the only tool-picker UI now,
   // mounted in InFrontOfTheCanvas. Pen-mode no longer needs special UI.

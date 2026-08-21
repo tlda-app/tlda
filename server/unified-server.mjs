@@ -49,7 +49,8 @@ import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, getRwToken, hasTls, loadSe
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
-import { viewFormat } from '../shared/document-formats.mjs'
+import { documentAxes } from '../shared/document-formats.mjs'
+import { readDocumentManifest } from './lib/document-manifest.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
@@ -4607,7 +4608,7 @@ app.use('/docs', async (req, res, next) => {
   if (!filePath.endsWith('.html')) {
     try {
       const project = await readProject(name)
-      if (project?.format === 'html') {
+      if (project?.sourceFormat === 'html') {
         const access = classroomStore.solutionDocumentAccess(name, null)
         if (access.restricted) {
           return requireRead(req, res, async error => {
@@ -4687,11 +4688,11 @@ app.use('/docs', (req, res, next) => {
   if (filePath === '_combined.html') {
     try {
       const outputDir = join(PROJECTS_DIR, name, 'output')
-      const pageInfoPath = join(outputDir, 'page-info.json')
       const project = await readProject(name)
-      if (project && await docPathExists(pageInfoPath)) {
-        if (project.format === 'html') {
-          const pageInfo = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))
+      const documentManifest = readDocumentManifest(outputDir)
+      if (project && documentManifest) {
+        if (project.sourceFormat === 'html') {
+          const pageInfo = documentManifest.pages
           // Find chapter list: either from first entry's chapters field, or all entries
           const chapters = pageInfo[0]?.chapters || pageInfo.map(e => ({ file: e.file, title: e.title }))
           // Use head from first chapter
@@ -4781,7 +4782,7 @@ app.use('/docs', (req, res, next) => {
         // markdown renderer — the parent project's own format only owns its
         // own main document, not its parts.
         const srcDir = join(PROJECTS_DIR, name, 'source')
-        const columns = project.format === 'markdown'
+        const columns = project.sourceFormat === 'md'
           ? await listDocumentColumns(name, { project, srcDir })
           : await listProjectPartColumns(name, { srcDir })
         // Falling through to the project source is what keeps a linked document
@@ -4790,7 +4791,7 @@ app.use('/docs', (req, res, next) => {
         // markdown file" are different questions; only the first one is a page
         // list, and answering both from it is what made linked files chapters.
         const column = columns.find(c => c.file === filePath)
-          || (project.format === 'markdown'
+          || (project.sourceFormat === 'md'
             ? await markdownDocumentColumnForOutputFile(name, filePath, { srcDir })
             : null)
         if (column) {
@@ -4849,7 +4850,7 @@ app.use('/docs', (req, res, next) => {
           const chapterTitle = column.title || await memberTitle(name)
           let prev = null, next = null
           for (const p of await listProjects()) {
-            if (p.format !== 'book') continue
+            if (p.documentFormat !== 'book') continue
             const members = p.members || []
             const idx = members.indexOf(name)
             if (idx === -1) continue
@@ -4879,15 +4880,15 @@ app.use('/docs', (req, res, next) => {
         if (project) {
           // A .qmd is served as whatever quarto rendered it to, which is the
           // difference between the reveal bridge and the html one.
-          const shownAs = viewFormat(project)
-          if (shownAs === 'slides') {
+          const documentManifest = readDocumentManifest(join(PROJECTS_DIR, name, 'output'))
+          if (documentManifest?.view.capabilities.presentation) {
             // Slides format: inject the reveal.js bridge script
             const html = await fs.promises.readFile(projectPath, 'utf8')
             const injected = injectSlidesBridge(html)
             res.type('html').send(injected)
             return
           }
-          if (shownAs === 'markdown') {
+          if (project.sourceFormat === 'md') {
             // Markdown: bridge already injected at build time; inject chapter title + prev/next at serve time.
             const html = await fs.promises.readFile(projectPath, 'utf8')
 
@@ -4906,7 +4907,7 @@ app.use('/docs', (req, res, next) => {
             // Find which book contains this member and compute prev/next
             let prev = null, next = null
             for (const p of await listProjects()) {
-              if (p.format !== 'book') continue
+              if (p.documentFormat !== 'book') continue
               const members = p.members || []
               const idx = members.indexOf(name)
               if (idx === -1) continue
@@ -4923,7 +4924,7 @@ app.use('/docs', (req, res, next) => {
           // format's serve-time treatment: the same bridge, the same chapter
           // title, the same prev/next. The difference between them is which
           // machine ran quarto, and that is settled by build time.
-          if (shownAs === 'html') {
+          if (documentManifest?.view.kind === 'html-pages') {
             const html = await fs.promises.readFile(projectPath, 'utf8')
             // Look up chapter title and compute "Chapter N" numbering within parts
             let chapterTitle = ''
@@ -4931,8 +4932,7 @@ app.use('/docs', (req, res, next) => {
             let navPrev = null
             let navNext = null
             try {
-              const pageInfoPath = join(PROJECTS_DIR, name, 'output', 'page-info.json')
-              const pageInfo = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))
+              const pageInfo = documentManifest.pages
               const idx = pageInfo.findIndex(p => p.file === filePath)
               isFirstPage = idx === 0
               // Compute prev/next chapter titles for navigation
@@ -8650,7 +8650,7 @@ async function getLatexProjectDirs() {
   try {
     const projects = await listProjects()
     return projects
-      .filter(p => p.format === 'svg' && p.sourceDir)
+      .filter(p => p.sourceFormat === 'tex' && p.renderer === 'latex' && p.sourceDir)
       .map(p => p.sourceDir.endsWith('/') ? p.sourceDir : p.sourceDir + '/')
   } catch {
     return []
@@ -9603,10 +9603,11 @@ async function generateManifest() {
           const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
           if (project.archived) continue
           const durableStatus = projectRevisionStatus((await sourceLifecycleStore(name)).listRevisionLifecycles(name))
+          const documentManifest = readDocumentManifest(join(PROJECTS_DIR, name, 'output')) || undefined
           documents[name] = {
             name: project.title || project.name || name,
             pages: project.pages || 0,
-            format: project.format || 'svg',
+            ...documentAxes(project),
             ...(project.members && { members: project.members }),
             ...(durableStatus.status !== 'success' && { buildStatus: durableStatus.status }),
             ...(project.session && { session: project.session, sessionAt: project.sessionAt }),
@@ -9614,6 +9615,7 @@ async function generateManifest() {
             ...(project.lastBuild && { lastBuild: project.lastBuild }),
             ...(project.starred && { starred: true }),
             autoSync: project.autoSync !== false,
+            ...(documentManifest && { documentManifest }),
           }
         } catch (e) {
           console.error(`[manifest] Failed to read ${projectJsonPath}:`, e.message)

@@ -8,7 +8,7 @@
  * render on, so the render has to happen where the build happens.
  *
  * The output contract is the one every other format already meets: HTML files
- * plus a page-info.json listing them. src/loaders/htmlLoader.ts does not care
+ * plus a document manifest listing them. src/loaders/htmlLoader.ts does not care
  * how the HTML was produced, which is why this is a new builder rather than a
  * new rendering path inside an existing one.
  */
@@ -20,9 +20,10 @@ import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
 
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
-import { getBuildReporter } from './build-runner.mjs'
 import { buildPerSlideDocuments } from './slides-parser.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
+import { extractPdfArtifacts } from './build-pdf.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -239,7 +240,6 @@ async function writeSourceScope(name, srcDir, outDir) {
 }
 
 export async function buildQmdDocument(name, addLog = console.log) {
-  const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
 
@@ -248,8 +248,7 @@ export async function buildQmdDocument(name, addLog = console.log) {
 
   if (!existsSync(join(srcDir, mainFile))) {
     addLog(`[qmd] main file not found: ${mainFile}`)
-    await reporter.updateProject(name, { buildStatus: 'error' })
-    return
+    throw new Error(`QMD main file not found: ${mainFile}`)
   }
 
   const quarto = await resolveQuarto()
@@ -273,30 +272,42 @@ export async function buildQmdDocument(name, addLog = console.log) {
       const path = join(outDir, page.file)
       writeFileSync(path, stampFigureUrls(readFileSync(path, 'utf8')))
     }
-    writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(renderedProject.pageInfo, null, 2))
+    const manifest = createDocumentManifest({
+      ...project,
+      sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'html', mainFile,
+    }, renderedProject.pageInfo, { sourceMapping: 'page-source', view: {
+      kind: 'html-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false },
+    } })
     await writeSourceScope(name, srcDir, outDir)
-    await reporter.updateProject(name, {
-      buildStatus: 'success',
-      pages: renderedProject.pageInfo.length,
-      renderedFormat: 'html',
-      lastBuild: new Date().toISOString(),
-    })
-    reporter.broadcastSignal(`doc-${name}`, 'signal:reload', {
-      pages: renderedProject.pageInfo.length,
-      timestamp: Date.now(),
-    })
     addLog(`[qmd] ${name}: rendered tlda project with ${renderedProject.pageInfo.length} pages`)
-    return
+    return { manifest, regenerateBookTocs: true }
   }
 
   const outputFile = qmdOutputFileForSource(mainFile)
   const renderedPath = join(outDir, outputFile)
+  const pdfOutputFile = outputFile.replace(/\.html$/i, '.pdf')
+  const renderedPdfPath = join(outDir, pdfOutputFile)
+  if (!existsSync(renderedPath) && existsSync(renderedPdfPath)) {
+    const manifest = await extractPdfArtifacts({
+      pdfPath: renderedPdfPath,
+      outDir,
+      target: mainFile.split('/').pop().replace(/\.qmd$/i, ''),
+      project: { ...project, sourceFormat: 'qmd', renderer: 'quarto', documentFormat: 'paged', mainFile },
+      outputPdf: pdfOutputFile,
+    })
+    await writeSourceScope(name, srcDir, outDir)
+    addLog(`[qmd] ${name}: rendered ${mainFile} → ${pdfOutputFile}`)
+    return {
+      manifest,
+      targets: [{ texBase: mainFile.split('/').pop().replace(/\.qmd$/i, ''), mainFile, pages: manifest.pages.length }],
+      regenerateBookTocs: true,
+    }
+  }
   if (!existsSync(renderedPath)) {
     // Quarto exited 0 without producing the file expected — almost always a
     // `format:` in the header that is not html. Name the file that is missing.
     addLog(`[qmd] render produced no ${outputFile}`)
-    await reporter.updateProject(name, { buildStatus: 'error' })
-    return
+    throw new Error(`QMD render produced no ${outputFile}`)
   }
 
   const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
@@ -333,15 +344,18 @@ export async function buildQmdDocument(name, addLog = console.log) {
       source: { type: 'project-source', format: 'qmd', file: mainFile },
     }]
   }
-  writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
+  const manifest = createDocumentManifest({
+    ...project,
+    sourceFormat: 'qmd', renderer: 'quarto', documentFormat: isDeck ? 'slides' : 'html', mainFile,
+  }, pageInfo, { sourceMapping: isDeck ? 'none' : 'page-source', view: {
+    kind: isDeck ? 'slides' : 'html-pages',
+    capabilities: { presentation: isDeck, sourceMapping: !isDeck, searchableText: false },
+  } })
 
   await writeSourceScope(name, srcDir, outDir)
-  await reporter.updateProject(name, {
-    buildStatus: 'success',
-    pages: pageInfo.length,
-    renderedFormat: isDeck ? 'slides' : 'html',
-    lastBuild: new Date().toISOString(),
-  })
-  reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: Date.now() })
   addLog(`[qmd] ${name}: rendered ${mainFile} → ${outputFile}`)
+  return {
+    manifest,
+    regenerateBookTocs: true,
+  }
 }

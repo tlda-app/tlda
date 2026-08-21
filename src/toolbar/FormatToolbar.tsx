@@ -11,10 +11,11 @@ import {
   preventDefault,
 } from 'tldraw'
 import { getFormatConfig } from '../formatConfig'
+import type { DocumentView } from '../loaders/types'
 
-export function FormatToolbar({ format }: { format?: string }) {
+export function FormatToolbar({ view }: { view: DocumentView }) {
   const tools = useTools()
-  const fmt = getFormatConfig(format)
+  const fmt = getFormatConfig(view)
 
   return (
     <DefaultToolbar

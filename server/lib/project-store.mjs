@@ -36,12 +36,25 @@ export function setProjectPathOverride(name, root = null) {
   else projectPathOverrides.delete(name)
 }
 
+function assertStoredProjectAxes(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const projectPath = join(dir, entry.name, 'project.json')
+    if (!existsSync(projectPath)) continue
+    let project
+    try { project = JSON.parse(readFileSync(projectPath, 'utf8')) } catch { continue }
+    if (project.sourceFormat && project.renderer && project.documentFormat && !Object.hasOwn(project, 'format')) continue
+    throw new Error(`Project ${entry.name} uses the removed legacy format field`)
+  }
+}
+
 export async function initProjectStore(dir) {
   if (projectFilesDb) await projectFilesDb.close()
   projectLifecycleStatusIndex?.close()
   projectLifecycleStatusIndex = null
   projectsDir = dir
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  assertStoredProjectAxes(dir)
   projectFilesDb = new ProjectFilesStoreClient(dir)
   await projectFilesDb.ready()
   projectLifecycleStatusIndex = new ProjectLifecycleStatusIndex(dir)
@@ -92,7 +105,7 @@ export async function readProject(name) {
 // both imagined-randomization projects got a mainFile that does not exist.
 // Undeclared is a state the build tolerates; declared-and-absent is an error.
 // Readers that need a LaTeX name still fall back to `main.tex` at read time.
-export function createProject({ name, title, mainFile, format = 'svg', members }) {
+export function createProject({ name, title, mainFile, members, sourceFormat, renderer, documentFormat, pages = 0, pageFiles, ...unsupported }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -101,14 +114,20 @@ export function createProject({ name, title, mainFile, format = 'svg', members }
   mkdirSync(join(dir, 'source'), { recursive: true })
   mkdirSync(join(dir, 'output'), { recursive: true })
 
-  const isBook = format === 'book'
+  if (Object.hasOwn(unsupported, 'format')) throw new Error('format is not a project field; supply the three document axes')
+  if (!sourceFormat || !renderer || !documentFormat) throw new Error('sourceFormat, renderer, and documentFormat are required')
+  const axes = { sourceFormat, renderer, documentFormat }
+  const isBook = documentFormat === 'book'
   const project = {
     name,
     title: title || name,
     ...(!isBook && mainFile && { mainFile }),
-    format,
+    sourceFormat: axes.sourceFormat,
+    renderer: axes.renderer,
+    documentFormat: axes.documentFormat,
     ...(isBook && members && { members }),
-    pages: 0,
+    pages,
+    ...(Array.isArray(pageFiles) && { pageFiles }),
     createdAt: new Date().toISOString(),
     lastBuild: null,
     buildStatus: isBook ? 'success' : 'none',  // books don't need builds
@@ -325,7 +344,7 @@ export async function removeProjectSourceRecovery(name, id) {
 export async function addBookMember(bookName, memberName) {
   let book = await readProject(bookName)
   if (!book) {
-    book = createProject({ name: bookName, title: bookName, format: 'book', members: [memberName] })
+    book = createProject({ name: bookName, title: bookName, sourceFormat: 'book', renderer: 'identity', documentFormat: 'book', members: [memberName] })
   } else {
     const members = Array.from(new Set([...(book.members || []), memberName]))
     book = await updateProject(bookName, { members })

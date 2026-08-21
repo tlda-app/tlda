@@ -189,6 +189,7 @@ export async function ensureProject(projectName) {
 
   await Promise.all([
     readJson(projectName, 'lookup.json'),
+    readJson(projectName, 'document-manifest.json'),
     readManifest(),
   ])
 }

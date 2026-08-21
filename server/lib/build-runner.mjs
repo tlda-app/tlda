@@ -65,6 +65,8 @@ import { clearSynctexCache } from './synctex-query.mjs'
 import { generateWordSynctexSourceTree } from './word-synctex.mjs'
 import { bibliographyRunReason } from './build-bibliography-decision.mjs'
 import { projectRevisionStatus } from './source-lifecycle.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
+import { documentTransport } from '../../shared/document-transport.mjs'
 
 // --- Side-effect reporter ----------------------------------------------------
 // Everything in the build that reaches the live server — client broadcasts
@@ -76,7 +78,7 @@ import { projectRevisionStatus } from './source-lifecycle.mjs'
 const _directReporter = {
   regenerateBookTocs: async (name) => {
     for (const project of await listProjects()) {
-      if (project.format === 'book' && Array.isArray(project.members) && project.members.includes(name)) {
+      if (project.documentFormat === 'book' && Array.isArray(project.members) && project.members.includes(name)) {
         aggregateBookToc(project.name, project.members)
       }
     }
@@ -1597,10 +1599,15 @@ export async function emitDocArrived(name) {
     if (updated && durableStatus.status === 'success') {
       _reporter.emitGlobalEvent('doc-arrived', {
         name, title: updated.title || name,
-        format: updated.format, pages: updated.pages || 0,
+        ...documentTransport(updated),
       })
     }
   } catch {}
+}
+
+export function completeBuildSuccess(name, { elapsed, pages } = {}) {
+  signalBuildProgress(name, 'done', `${elapsed}s`)
+  emitBuildComplete(name, { status: 'success', elapsed, pages: pages ?? 0, errors: [] })
 }
 
 /**
@@ -1786,7 +1793,7 @@ export async function finalizeBuildVersion({
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
-export async function runBuild(name, { sourceRevision = null, acceptSeq = null } = {}) {
+export async function runBuild(name, { sourceRevision = null, acceptSeq = null, view } = {}) {
   // Serialize builds per project: wait for any in-flight build to finish before starting.
   while (_buildLocks.has(name)) {
     // Kill the running build so we don't wait for it to complete naturally.
@@ -1804,7 +1811,7 @@ export async function runBuild(name, { sourceRevision = null, acceptSeq = null }
   const previousActiveBuild = activeBuilds.get(name)
 
   try {
-    return await _runBuildInner(name, { sourceRevision, acceptSeq })
+    return await _runBuildInner(name, { sourceRevision, acceptSeq, view })
   } catch (e) {
     // _runBuildInner marks the project building before validating its inputs.
     // Its own catch starts later, after the active-build record is created, so
@@ -1825,7 +1832,7 @@ export async function runBuild(name, { sourceRevision = null, acceptSeq = null }
   }
 }
 
-async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } = {}) {
+async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null, view } = {}) {
   // Increment version so any in-flight mirror callbacks from previous builds
   // can detect they've been superseded and skip.
 
@@ -1971,16 +1978,7 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
         // 'success' is the honest description of the published state, not a
         // claim about this discarded build. The per-project lock in runBuild
         // means no other build can be mid-flight to contradict it.
-        try { await _reporter.updateProject(name, { buildStatus: 'success' }) }
-        catch (e) {
-          // Report, don't rethrow: this build is already being discarded, and
-          // throwing here would route it into the failure path and publish a
-          // 'failed' status over a project whose artifacts are fine. The status
-          // is descriptive, the discard is the decision, and the discard has
-          // already succeeded by the time we get here.
-          console.error(`[build:${name}] failed to restore status after discard: ${e.message}`)
-        }
-        return
+        return { disposition: 'superseded' }
       }
       status.phase = 'converting'
       const dviFile = join(tBuildDir, `${tBase}.dvi`)
@@ -2053,16 +2051,19 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
     // Total pages across all targets — what the viewer reports as project.pages.
     const expectedPages = totalPages
 
-    // Store the target shape before finalization. `targets` always reflects the
-    // viewer doesn't have to special-case single-target — it just renders
-    // a one-element list.
+    const manifestPages = targetMeta.flatMap(target => Array.from({ length: target.expectedPages }, (_, index) => ({
+      file: `${target.texBase}-page-${index + 1}.svg`,
+      width: 612,
+      height: 792,
+      source: { type: 'project-source', format: 'tex', file: target.mainFile },
+    })))
+    const documentBuildResult = { manifest: createDocumentManifest({
+      ...project,
+    }, manifestPages, { sourceMapping: 'synctex', view }),
+    targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
+    recordLastBuildSuccess: true }
+
     const lastBuildSuccess = (await readProject(name))?.lastBuildSuccess || null
-    await _reporter.updateProject(name, {
-      pages: expectedPages,
-      buildStatus: 'finalizing',
-      lastBuild: new Date().toISOString(),
-      targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
-    })
     clearSynctexCache(name)
 
     // Touch build.stamp — staleness counterpart to source.stamp. Replaces
@@ -2092,46 +2093,27 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
       ctx.addLog(`shadow bootstrap from project repo skipped (non-fatal): ${e.message}`)
     })
 
-    try {
-      await finalizeBuildVersion({
-        name,
-        ctx,
-        projDir,
-        expectedPages,
-        svgsReadyAt,
-        buildErrSnapshot,
-        buildWarnSnapshot,
-        sourceRevision,
-        acceptSeq,
-        lastBuildSuccess,
-      })
-    } catch (e) {
-      ctx.addLog(`build publish/finalize failed: ${e.message}`)
-      await _reporter.updateProject(name, { buildStatus: 'finalize-failed' })
-      signalBuildProgress(name, 'failed', `publish failed: ${e.message}`)
-      emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), pages: expectedPages ?? 0, errors: [e.message] })
-      throw e
-    }
-
-    signalReload(name, null)
-
-    await _reporter.updateProject(name, {
-      buildStatus: 'success',
-      lastBuild: new Date().toISOString(),
-      lastBuildSuccess: new Date().toISOString(),
-    })
-
     const totalElapsed = elapsed()
-    ctx.addLog(`Build complete in ${totalElapsed}s`)
-    signalBuildProgress(name, 'done', `${totalElapsed}s`)
-    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
+    ctx.addLog(`Build adapter finished in ${totalElapsed}s`)
 
     status.building = false
     status.phase = 'done'
     status.completedAt = new Date().toISOString()
 
     writeFileSync(join(projDir, 'build.log'), log.join('\n'))
-    return status
+    return {
+      ...documentBuildResult,
+      version: {
+        ctx,
+        projDir,
+        expectedPages,
+        svgsReadyAt,
+        buildErrSnapshot,
+        buildWarnSnapshot,
+        lastBuildSuccess,
+      },
+      completion: { elapsed: totalElapsed, pages: expectedPages },
+    }
   } catch (e) {
     ctx.addLog(`BUILD FAILED: ${e.message}`)
     status.building = false
