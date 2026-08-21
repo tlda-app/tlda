@@ -728,42 +728,18 @@ async function refreshRuntimeRoutesForDaemon(daemonKey) {
 }
 
 
-// ─── Process reaper — zombie WebSocket detection ────────────────────
-// Agents leave wakes of playwright chromium windows pointed at our
-// /sync/<doc> and /ws/fleet endpoints. A "zombie" is a connection with
-// no client→server message for ZOMBIE_THRESHOLD_MS. Server pushes don't
-// count (we only attach an inbound listener); WebSocket ping/pong frames
-// don't surface as 'message' events. Once detected, we ask the daemon
-// on the chromium's machine to kill the orphan chromium PID (verified
-// by binary path — only the playwright cache, never the user's real
-// Google Chrome).
+// Every accepted WebSocket is tracked until its ordinary close/error event.
+// The heartbeat below terminates transport connections that stop answering
+// trusted pings. Browser process and session ownership stays on the client
+// machine; the server does not inspect or kill client processes.
 const _trackedWs = new Set()
-// Defaults are 10-min idle / 60-s sweep. Override via env for tests (no
-// production behavior change — these are plain timing knobs, not feature
-// gates).
-const ZOMBIE_THRESHOLD_MS = parseInt(process.env.REAPER_ZOMBIE_MS, 10) || 10 * 60 * 1000
-const REAPER_INTERVAL_MS = parseInt(process.env.REAPER_INTERVAL_MS, 10) || 60 * 1000
-
-// The tldraw sync client sends `{"type":"ping"}` every 5s as an
-// application-level keepalive. We must NOT count those as real input or
-// no /sync/ WS would ever look idle.
-function isSyncHeartbeat(raw) {
-  if (typeof raw === 'string') {
-    if (raw.length > 30) return false
-    return raw.includes('"ping"')
-  }
-  if (!raw || raw.length > 30) return false
-  return raw.toString('utf8', 0, Math.min(raw.length, 30)).includes('"ping"')
-}
 
 function trackWs(ws, meta) {
   ws._wsKind = meta.kind            // 'sync' | 'fleet'
   ws._wsDocName = meta.docName || null
   ws._wsSessionId = meta.sessionId
   ws._wsRemoteAddr = meta.remoteAddr
-  ws._wsRemotePort = meta.remotePort
   ws._wsConnectedAt = Date.now()
-  ws._wsLastInputAt = Date.now()
   // Liveness is client evidence, never an artefact of when the server happened
   // to run its heartbeat sweep. A stalled event loop can delay a whole sweep.
   ws._wsLastPongAt = Date.now()
@@ -776,16 +752,9 @@ function trackWs(ws, meta) {
   })
   ws.on('pong', () => { ws._wsLastPongAt = Date.now() })
   _trackedWs.add(ws)
-  if (meta.kind === 'sync') {
-    ws.on('message', (raw) => {
-      if (isSyncHeartbeat(raw)) return
-      ws._wsLastInputAt = Date.now()
-    })
-  } else {
+  if (meta.kind !== 'sync') {
     ws.on('message', () => {
-      const now = Date.now()
-      ws._wsLastInputAt = now
-      if (ws._wsKind === 'fleet') ws._wsLastPongAt = now
+      if (ws._wsKind === 'fleet') ws._wsLastPongAt = Date.now()
     })
   }
   const cleanup = () => {
@@ -800,82 +769,6 @@ function trackWs(ws, meta) {
   ws.on('close', cleanup)
   ws.on('error', cleanup)
 }
-
-function normalizeAddr(a) {
-  if (!a) return a
-  if (a.startsWith('::ffff:')) return a.slice(7)  // IPv6-mapped IPv4
-  if (a === '::1') return '127.0.0.1'             // IPv6 loopback
-  return a
-}
-
-function findMachineForAddress(addr) {
-  const norm = normalizeAddr(addr)
-  for (const [daemonKey, dws] of daemonConnections) {
-    if (normalizeAddr(dws._remoteAddr) === norm) return daemonKey
-  }
-  return null
-}
-
-async function reapZombies() {
-  const now = Date.now()
-  const zombies = []
-  let activeCount = 0
-  for (const ws of _trackedWs) {
-    if (ws.readyState !== 1) continue
-    const idleMs = now - ws._wsLastInputAt
-    if (idleMs > ZOMBIE_THRESHOLD_MS) {
-      zombies.push({
-        kind: ws._wsKind,
-        doc: ws._wsDocName,
-        sessionId: ws._wsSessionId,
-        addr: ws._wsRemoteAddr,
-        port: ws._wsRemotePort,
-        idleMs,
-      })
-    } else {
-      activeCount++
-    }
-  }
-  if (zombies.length === 0) {
-    const byKind = {}
-    for (const ws of _trackedWs) {
-      if (ws.readyState !== 1) continue
-      const idleMs = now - ws._wsLastInputAt
-      const k = ws._wsKind || 'unknown'
-      if (!byKind[k]) byKind[k] = { count: 0, maxIdleS: 0 }
-      byKind[k].count++
-      byKind[k].maxIdleS = Math.max(byKind[k].maxIdleS, Math.round(idleMs / 1000))
-    }
-    const summary = Object.entries(byKind).map(([k, v]) => `${k}:${v.count}(max-idle=${v.maxIdleS}s)`).join(' ')
-    console.log(`[reaper] sweep: ${activeCount} active, 0 zombies — ${summary}`)
-    return
-  }
-  console.log(`[reaper] sweep: ${activeCount} active WS, ${zombies.length} zombie WS`)
-  for (const z of zombies) {
-    const idleMin = Math.round(z.idleMs / 60000)
-    console.log(`[reaper]   zombie ${z.kind} doc=${z.doc || '-'} session=${z.sessionId} addr=${z.addr}:${z.port} idle=${idleMin}m`)
-    const machineId = findMachineForAddress(z.addr)
-    if (!machineId) {
-      console.log(`[reaper]   no daemon for ${z.addr}; skipping kill`)
-      continue
-    }
-    try {
-      const r = await sendDaemonDurable(machineId, 'kill-orphan-chromium', {
-        port: z.port,
-        addr: normalizeAddr(z.addr),
-      })
-      if (r?.killed) {
-        console.log(`[reaper]   killed pid=${r.pid} binary=${r.binary || '(playwright)'} for session=${z.sessionId}`)
-      } else {
-        console.log(`[reaper]   no kill: ${r?.reason || 'unknown'}`)
-      }
-    } catch (e) {
-      console.log(`[reaper]   kill RPC failed: ${e.message}`)
-    }
-  }
-}
-
-setInterval(reapZombies, REAPER_INTERVAL_MS).unref()
 
 // --- WebSocket heartbeat ---
 // Detect half-open connections (laptop sleep, network change) that TCP won't
