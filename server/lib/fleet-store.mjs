@@ -377,7 +377,6 @@ export class FleetStore {
     // has to run on the thread that owns the connection.
     this._serverDaemonOutbox = new ServerDaemonOutbox(this.db);
     this._closed = false;
-    this._runtimeStatusByAgent = new Map();
     this._initAgentRegistry();
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
@@ -2495,19 +2494,17 @@ export class FleetStore {
     else this._aliveAgentRegistry.upsert(agent);
   }
 
-  _agentRegistryViewKey(filter, from) {
-    return `fleet-recipient:${filter || '<all>'}:from:${from || ''}`;
-  }
-
-  resolveChatRecipients(filterAst, { from = null, filter = '' } = {}) {
+  resolveChatRecipients(filterAst, { from = null, filter = '', runtimeProjections = {} } = {}) {
     this._ensureAgentRegistryLoaded();
+    const projectedAgents = this._aliveAgentRegistry.all().map(agent => ({
+      ...agent,
+      runtime_status: runtimeProjections[agent.id] || agent.runtime_status || null,
+    }));
     const literal = astLiteral(filterAst);
     if (literal) {
-      const found = new Map();
-      const byId = this._aliveAgentRegistry.get(literal);
-      if (byId) found.set(byId.id, byId);
-      for (const a of this._aliveAgentByName.get(literal)) found.set(a.id, a);
-      for (const a of this._aliveAgentByLabel.get(literal)) found.set(a.id, a);
+      const found = new Map(projectedAgents
+        .filter(agent => labelsForAgent(agent).includes(literal))
+        .map(agent => [agent.id, agent]));
       // Addressing one agent by name or id, and the registries have nothing.
       //
       // The registries are built from _getAliveAgents, which excludes rows still
@@ -2534,11 +2531,10 @@ export class FleetStore {
         .map(a => a.id);
     }
 
-    const view = this._aliveAgentRegistry.view(
-      a => a.id !== from && evalExpr(filterAst, labelsForAgent(a)),
-      { key: this._agentRegistryViewKey(filter, from), compare: compareAgentsForRoster }
-    );
-    return view.list.map(a => a.id);
+    return projectedAgents
+      .filter(agent => agent.id !== from && evalExpr(filterAst, labelsForAgent(agent)))
+      .sort(compareAgentsForRoster)
+      .map(agent => agent.id);
   }
 
   // ---- Agent state management ----
@@ -4024,12 +4020,6 @@ export class FleetStore {
   }
 
 
-  refreshAgentLiveness(id, runtimeStatus = null) {
-    if (runtimeStatus) this._runtimeStatusByAgent.set(id, runtimeStatus);
-    else this._runtimeStatusByAgent.delete(id);
-    this._syncAgentRegistry(id);
-  }
-
   // ---- Lineage management ----
 
   getOrCreateLineage(friendlyName) {
@@ -4269,12 +4259,9 @@ export class FleetStore {
       // authority says; the main thread applies the daemon check.
       route_present: !!row.route_present,
       route_daemon_key: row.route_daemon_key || null,
-      // Delivery uses the exact projection sent from the main thread, where
-      // daemon liveness and browser presence are observed. Durable history is
-      // never hydrated back into current routing state.
       runtime_status: row.dead && !row.human
         ? runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.DEAD)
-        : this._runtimeStatusByAgent.get(row.id) || null,
+        : null,
     }
     return baseAgent;
   }
