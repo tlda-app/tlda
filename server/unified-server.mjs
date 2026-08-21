@@ -4878,7 +4878,7 @@ app.use('/docs', (req, res, next) => {
           const chapterTitle = column.title || await memberTitle(name)
           let prev = null, next = null
           for (const p of await listProjects()) {
-            if (p.format !== 'book') continue
+            if (p.documentFormat !== 'book') continue
             const members = p.members || []
             const idx = members.indexOf(name)
             if (idx === -1) continue
@@ -4935,7 +4935,7 @@ app.use('/docs', (req, res, next) => {
             // Find which book contains this member and compute prev/next
             let prev = null, next = null
             for (const p of await listProjects()) {
-              if (p.format !== 'book') continue
+              if (p.documentFormat !== 'book') continue
               const members = p.members || []
               const idx = members.indexOf(name)
               if (idx === -1) continue
@@ -8733,7 +8733,7 @@ async function getLatexProjectDirs() {
   try {
     const projects = await listProjects()
     return projects
-      .filter(p => p.format === 'svg' && p.sourceDir)
+      .filter(p => p.sourceFormat === 'tex' && p.renderer === 'latex' && p.sourceDir)
       .map(p => p.sourceDir.endsWith('/') ? p.sourceDir : p.sourceDir + '/')
   } catch {
     return []
@@ -9730,7 +9730,6 @@ async function generateManifest() {
           documents[name] = {
             name: project.title || project.name || name,
             pages: project.pages || 0,
-            format: project.format || 'svg',
             ...documentAxes(project),
             ...(project.members && { members: project.members }),
             ...(durableStatus.status !== 'success' && { buildStatus: durableStatus.status }),

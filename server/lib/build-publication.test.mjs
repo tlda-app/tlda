@@ -25,7 +25,7 @@ test('publication advances the shared head monotonically and a late ancestor pub
   const name = 'paper'
   try {
     await initProjectStore(root)
-    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    createProject({ name, mainFile: 'main.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
     const lifecycle = await sourceLifecycleStore(name, { context: { referencedRoots: ['main.md'] } })
     const git = await lifecycle.gitRepository()
     const oldRevision = await git.acceptRevision({
@@ -72,7 +72,7 @@ test('first publication installs public source and records its authoritative rev
   const name = 'new-paper'
   try {
     await initProjectStore(root)
-    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    createProject({ name, mainFile: 'main.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
     const lifecycle = await sourceLifecycleStore(name)
     const git = await lifecycle.gitRepository()
     const revision = await git.acceptRevision({

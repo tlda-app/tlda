@@ -53,7 +53,7 @@ test('native PDF extraction preserves the PDF and creates display and searchable
 
   const manifest = await extractPdfArtifacts({
     pdfPath, outDir, target: 'book', outputPdf: 'book.pdf',
-    project: { format: 'pdf', sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged', mainFile: 'book.pdf' },
+    project: { sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged', mainFile: 'book.pdf' },
   })
 
   assert.equal(manifest.pages.length, 1)
@@ -72,14 +72,14 @@ test('project search reads native PDF text geometry from the common manifest', a
   const outDir = join(projectDir, 'output')
   mkdirSync(projectDir, { recursive: true })
   writeFileSync(join(projectDir, 'project.json'), JSON.stringify({
-    name: 'book', title: 'Searchable PDF', mainFile: 'book.pdf', format: 'pdf',
+    name: 'book', title: 'Searchable PDF', mainFile: 'book.pdf',
     sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged',
   }))
   const pdfPath = join(root, 'book.pdf')
   writeFileSync(pdfPath, minimalPdf('Geometry search needle'))
   const manifest = await extractPdfArtifacts({
     pdfPath, outDir, target: 'book', outputPdf: 'book.pdf',
-    project: { format: 'pdf', sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged', mainFile: 'book.pdf' },
+    project: { sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged', mainFile: 'book.pdf' },
   })
   writeDocumentManifest(outDir, manifest)
 

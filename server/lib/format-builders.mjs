@@ -14,30 +14,13 @@ import { buildMarkdownDocument } from './build-markdown.mjs'
 import { buildQmdDocument } from './build-qmd.mjs'
 import { buildPdfDocument } from './build-pdf.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
-import { createDocumentManifest, writeDocumentManifest } from './document-manifest.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
+import { finalizeDocumentBuild } from './document-build-finalizer.mjs'
 
-export async function finalizeDocumentBuild(name, result) {
-  if (!result?.manifest) throw new Error(`Document builder for ${name} returned no manifest`)
-  const reporter = getBuildReporter()
-  const manifest = writeDocumentManifest(getOutputDir(name), result.manifest, { writePageInfo: result.writePageInfo === true })
-  const builtAt = new Date().toISOString()
-  await reporter.updateProject(name, {
-    sourceFormat: manifest.source.format,
-    renderer: manifest.source.renderer,
-    documentFormat: manifest.document.format,
-    buildStatus: 'success',
-    pages: manifest.pages.length,
-    lastBuild: builtAt,
-    ...(result.renderedFormat && { renderedFormat: result.renderedFormat }),
-    ...(result.targets && { targets: result.targets }),
-  })
-  reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: manifest.pages.length, timestamp: Date.parse(builtAt) })
-  if (result.regenerateBookTocs) await reporter.regenerateBookTocs(name)
-  return manifest
-}
+export { finalizeDocumentBuild } from './document-build-finalizer.mjs'
 
 async function runDocumentBuilder(name, adapter) {
-  return finalizeDocumentBuild(name, await adapter(name, (message) => console.log(message)))
+  return finalizeDocumentBuild(name, await adapter(name, (message) => console.log(message)), getBuildReporter())
 }
 
 /**

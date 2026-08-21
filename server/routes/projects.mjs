@@ -329,15 +329,18 @@ router.get('/archived', requireRead, async (req, res) => {
 // Create project
 router.post('/', requireRw, async (req, res) => {
   try {
-    const { name, title, mainFile, format, members, sourceFormat, renderer, documentFormat } = req.body
+    const { name, title, mainFile, members, sourceFormat, renderer, documentFormat, pages, pageFiles } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
     }
-    if (format === 'book' && (!members || !Array.isArray(members) || members.length === 0)) {
+    if (Object.hasOwn(req.body, 'format')) return res.status(400).json({ error: 'format is not a project field; supply the three document axes' })
+    if (!sourceFormat || !renderer || !documentFormat) return res.status(400).json({ error: 'sourceFormat, renderer, and documentFormat are required' })
+    if (pageFiles !== undefined && (!Array.isArray(pageFiles) || pageFiles.some(file => typeof file !== 'string'))) return res.status(400).json({ error: 'pageFiles must be an array of strings' })
+    if (documentFormat === 'book' && (!members || !Array.isArray(members) || members.length === 0)) {
       return res.status(400).json({ error: 'book format requires a non-empty members array' })
     }
-    const project = createProject({ name, title, mainFile, format, members, sourceFormat, renderer, documentFormat })
+    const project = createProject({ name, title, mainFile, members, sourceFormat, renderer, documentFormat, pages, pageFiles })
     await (await sourceLifecycleStore(project.name)).gitRepository()
     emitGlobalEvent('project-changed', { name: project.name })
     res.status(201).json(project)
@@ -642,11 +645,11 @@ router.patch('/:name/members', requireRw, async (req, res) => {
     const project = await readProject(req.params.name)
     if (!project) return res.status(404).json({ error: 'Project not found' })
     // 400 on a non-book project. The `/push` branch that carries `members`
-    // today is guarded on `format === 'book'` and FALLS THROUGH to a normal
+    // today is guarded on `documentFormat === 'book'` and FALLS THROUGH to a normal
     // source push when it is not -- so a members array sent to a non-book
     // project silently becomes a file push with an empty file list. This is
     // the error behaviour of new code, not a change to shipped behaviour.
-    if (project.format !== 'book') {
+    if (project.documentFormat !== 'book') {
       return res.status(400).json({ error: 'members can only be replaced on a book project' })
     }
     try {

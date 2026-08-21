@@ -199,7 +199,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       const createRes = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: slug, title, format: 'markdown', mainFile: 'content.md' }),
+        body: JSON.stringify({ name: slug, title, mainFile: 'content.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' }),
       })
       if (!createRes.ok) {
         const err = await createRes.json().catch(() => ({}))

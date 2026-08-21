@@ -124,10 +124,9 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd' | 'pdf'
-  sourceFormat?: 'tex' | 'md' | 'qmd' | 'html' | 'pdf' | 'png' | 'book'
-  renderer?: 'latex' | 'markdown' | 'quarto' | 'identity'
-  documentFormat?: 'paged' | 'html' | 'slides' | 'book'
+  sourceFormat: 'tex' | 'md' | 'qmd' | 'html' | 'pdf' | 'png' | 'book'
+  renderer: 'latex' | 'markdown' | 'quarto' | 'identity'
+  documentFormat: 'paged' | 'html' | 'slides' | 'book'
   // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
   renderedFormat?: 'html' | 'slides' | 'paged'
   members?: string[]
@@ -329,7 +328,7 @@ function DocumentApp() {
     if (gen !== loadGeneration) return  // superseded
 
     // Book format: needs full manifest to resolve member docs
-    if (config?.format === 'book' && config.members) {
+    if (config?.documentFormat === 'book' && config.members) {
       let manifest: Record<string, DocConfig>
       try {
         manifest = await fetchManifest()
@@ -346,7 +345,7 @@ function DocumentApp() {
           return {
             key,
             name: memberConfig.name || key,
-            format: memberConfig.format,
+            format: viewFormat(memberConfig),
             pages: memberConfig.pages,
             basePath: memberConfig.basePath,
             ...((memberConfig as any).sessionAt && { sessionAt: (memberConfig as any).sessionAt }),
@@ -455,7 +454,7 @@ function DocumentApp() {
           manifestPages = (await response.json()).pages
         }
         document = createSvgDocumentLayout(projectName, config.pages, fullBasePath, targets, manifestPages)
-        if (extractedPaged) document = { ...document, format: 'pdf' }
+        if (extractedPaged) document = { ...document, format: 'pdf' as const }
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch
@@ -954,7 +953,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 
   const bookMembers = new Set<string>()
   for (const config of Object.values(manifest)) {
-    if (config.format === 'book' && config.members) {
+    if (config.documentFormat === 'book' && config.members) {
       for (const m of config.members) bookMembers.add(m)
     }
   }
@@ -1243,7 +1242,9 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
           pages: 1,
           basePath: `${ASSET_BASE}/docs/${key}/`,
           mainFile: 'notes.md',
-          format: 'markdown',
+          sourceFormat: 'md',
+          renderer: 'markdown',
+          documentFormat: 'html',
           starred: archivedProject.starred,
         },
       }))
@@ -1286,7 +1287,9 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
             pages: 1,
             basePath: `${ASSET_BASE}/docs/${key}/`,
             mainFile: 'notes.md',
-            format: 'markdown',
+            sourceFormat: 'md',
+            renderer: 'markdown',
+            documentFormat: 'html',
             starred: true,
           },
         }))

@@ -9,12 +9,12 @@ A tlda document has three independent axes:
 | document format | `paged`, `html`, `slides` | viewer and interaction model |
 
 These are stored as `sourceFormat`, `renderer`, and `documentFormat`, and they
-are authoritative at runtime. On project-store startup, records that predate
-the split are migrated once from `format` and QMD's `renderedFormat`, then
-persisted. `format` is accepted only at that migration boundary and at legacy
-project-creation callers; it is not the runtime routing authority.
-Native PDF projects store only the three axes; they do not introduce a `pdf`
-project type in the compatibility field.
+are authoritative at runtime. Runtime startup rejects records without all
+three axes or with the removed `format` field. Convert an old store explicitly
+with `node scripts/migrate-document-axes-v1.mjs <projects-dir>` before starting
+the server. The command journals every before/after record, resumes an
+interrupted conversion, and supports `--recover`; project creation and runtime
+reads have no legacy path.
 
 Every builder writes `output/document-manifest.json`. It identifies the source
 root and renderer, the document format, ordered display pages with dimensions,

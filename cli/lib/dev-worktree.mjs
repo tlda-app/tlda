@@ -799,7 +799,8 @@ async function seedScratchProject(base, branch) {
     } catch (e) { console.error(`  scratch project: ${path} threw ${e?.message || e}`); return null }
   }
   const created = await post('/api/projects', {
-    name, title: `Scratch (${branch})`, mainFile: 'main.md', format: 'markdown',
+    name, title: `Scratch (${branch})`, mainFile: 'main.md',
+    sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html',
   })
   if (!created) return null
   const pushed = await post(`/api/projects/${name}/source-room/files`, {

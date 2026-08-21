@@ -36,7 +36,7 @@ test('authenticated Git HTTP admits one immutable proposal without moving shared
   let server
   try {
     await initProjectStore(join(root, 'projects'))
-    createProject({ name: project, mainFile: 'main.tex', format: 'svg' })
+    createProject({ name: project, mainFile: 'main.tex', sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
     const lifecycle = await sourceLifecycleStore(project)
     const sourceGit = await lifecycle.gitRepository()
     const sharedHead = await sourceGit.acceptRevision({

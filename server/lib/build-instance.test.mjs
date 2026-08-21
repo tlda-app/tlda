@@ -12,7 +12,7 @@ test('concurrent same-project instances read immutable revisions and cannot shar
   const instances = []
   try {
     await initProjectStore(root)
-    createProject({ name: 'paper', mainFile: 'main.md', format: 'markdown' })
+    createProject({ name: 'paper', mainFile: 'main.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' })
     const lifecycle = await sourceLifecycleStore('paper', { context: { referencedRoots: ['main.md'] } })
     const old = await lifecycle.bootstrap({
       expectedRevision: null,

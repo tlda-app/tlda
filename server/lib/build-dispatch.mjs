@@ -41,7 +41,7 @@ async function patchShape(docName, shapeId, propsPatch) {
 
 async function regenerateBookTocs(name) {
   for (const project of await listProjects()) {
-    if (project.format === 'book' && Array.isArray(project.members) && project.members.includes(name)) {
+    if (project.documentFormat === 'book' && Array.isArray(project.members) && project.members.includes(name)) {
       aggregateBookToc(project.name, project.members)
     }
   }

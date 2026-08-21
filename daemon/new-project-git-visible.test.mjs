@@ -55,7 +55,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     phase = 'project creation'
     const createdResponse = await fetch(`${base}/api/projects`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project, name: project, title: 'Git-visible paper', mainFile: 'README.md', format: 'markdown' }),
+      body: JSON.stringify({ project, name: project, title: 'Git-visible paper', mainFile: 'README.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' }),
     })
     assert.equal(createdResponse.status, 201, await createdResponse.text())
 
@@ -89,7 +89,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     phase = 'document manifest'
     const manifest = await fetch(`${base}/docs/manifest.json`).then(response => response.json())
     assert.deepEqual(manifest.documents[project], {
-      name: 'Git-visible paper', pages: 1, format: 'markdown',
+      name: 'Git-visible paper', pages: 1, sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html',
       sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html',
       createdAt: projectView.createdAt, lastBuild: projectView.lastBuild, autoSync: true,
     })
@@ -210,7 +210,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     await git(externalSeed, ['push', 'origin', 'main'])
     const remoteCreated = await fetch(`${base}/api/projects`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: remoteProject, title: 'Remote-visible paper', mainFile: 'README.md', format: 'markdown' }),
+      body: JSON.stringify({ name: remoteProject, title: 'Remote-visible paper', mainFile: 'README.md', sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html' }),
     })
     assert.equal(remoteCreated.status, 201, await remoteCreated.text())
     const remoteWatcher = sourceWatcher()
