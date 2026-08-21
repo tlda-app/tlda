@@ -35,7 +35,9 @@ test('common manifest validates artifact paths and carries declared view capabil
   const manifest = createDocumentManifest(
     { sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html', mainFile: 'notes.md' },
     [{ file: 'notes.html', width: 800, height: 1000 }],
-    { sourceMapping: 'page-source', viewKind: 'html-pages' },
+    { sourceMapping: 'page-source', view: {
+      kind: 'html-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false },
+    } },
   )
   writeDocumentManifest(outDir, manifest)
   assert.equal(existsSync(join(outDir, 'document-manifest.json')), true)

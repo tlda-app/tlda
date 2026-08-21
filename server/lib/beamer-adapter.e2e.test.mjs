@@ -22,7 +22,7 @@ test('real Beamer uses the LaTeX adapter and produces a slides manifest over SVG
       name: 'beamer', mainFile: 'main.tex',
       sourceFormat: 'tex', renderer: 'latex', documentFormat: 'slides',
     })
-    assert.equal(buildAdapterFor(project).id, 'latex')
+    assert.equal(buildAdapterFor(project).id, 'latex-slides')
     writeFileSync(join(sourceDir('beamer'), 'main.tex'), String.raw`\documentclass{beamer}
 \begin{document}
 \begin{frame}{One}First slide\end{frame}
@@ -33,7 +33,7 @@ test('real Beamer uses the LaTeX adapter and produces a slides manifest over SVG
     const result = await buildDocument(project, { name: 'beamer', reporter: getBuildReporter() }, {
       versioner: async () => { versioned = true },
     })
-    assert.equal(result.adapter, 'latex')
+    assert.equal(result.adapter, 'latex-slides')
     assert.equal(versioned, true)
     assert.equal(result.manifest.document.format, 'slides')
     assert.equal(result.manifest.view.kind, 'svg-pages')

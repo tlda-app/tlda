@@ -76,7 +76,9 @@ export async function buildHtmlDocument(name) {
 
   const manifest = createDocumentManifest({
     format: 'html', sourceFormat: 'html', renderer: 'identity', documentFormat: 'html',
-  }, pageInfo, { sourceMapping: pageInfo.some(page => page.source) ? 'page-source' : 'none', viewKind: 'html-pages' })
+  }, pageInfo, { sourceMapping: pageInfo.some(page => page.source) ? 'page-source' : 'none', view: {
+    kind: 'html-pages', capabilities: { presentation: false, sourceMapping: pageInfo.some(page => page.source), searchableText: false },
+  } })
 
   await writeSourceScope(name, srcDir)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
@@ -101,7 +103,9 @@ export async function buildSlidesDocument(name) {
   const manifest = createDocumentManifest({
     format: 'slides', sourceFormat: 'html', renderer: 'identity', documentFormat: 'slides',
     mainFile: htmlFiles[0],
-  }, pageInfo, { sourceMapping: 'none', viewKind: 'slides' })
+  }, pageInfo, { sourceMapping: 'none', view: {
+    kind: 'slides', capabilities: { presentation: true, sourceMapping: false, searchableText: false },
+  } })
 
   await writeSourceScope(name, srcDir)
   console.log(`[slides] ${name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)

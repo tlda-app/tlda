@@ -896,7 +896,9 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   const manifest = createDocumentManifest({
     ...project,
     sourceFormat: 'md', renderer: 'markdown', documentFormat: 'html',
-  }, pageInfo, { sourceMapping: 'page-source', viewKind: 'html-pages' })
+  }, pageInfo, { sourceMapping: 'page-source', view: {
+    kind: 'html-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false },
+  } })
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
   addLog(`[markdown] ${name}: indexed ${pageInfo.length} column${pageInfo.length === 1 ? '' : 's'}`)

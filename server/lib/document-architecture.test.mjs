@@ -5,7 +5,7 @@ import { buildDocument } from './build-document.mjs'
 
 test('PDF and Beamer resolve through the document build registry', () => {
   assert.equal(buildAdapterFor({ sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged' }).id, 'native-pdf')
-  assert.equal(buildAdapterFor({ sourceFormat: 'tex', renderer: 'latex', documentFormat: 'slides' }).id, 'latex')
+  assert.equal(buildAdapterFor({ sourceFormat: 'tex', renderer: 'latex', documentFormat: 'slides' }).id, 'latex-slides')
   assert.ok(registeredBuildAdapters().some(adapter => adapter.renderer === 'latex'))
 })
 

@@ -6,7 +6,12 @@ import { buildHtmlDocument, buildSlidesDocument } from './format-builders.mjs'
 import { documentAxes } from '../../shared/document-formats.mjs'
 
 const adapters = [
-  { id: 'latex', renderer: 'latex', build: (context) => runBuild(context.name, context), relevantFiles: true },
+  { id: 'latex-slides', renderer: 'latex', documentFormat: 'slides', view: {
+    kind: 'svg-pages', capabilities: { presentation: true, sourceMapping: true, searchableText: false },
+  }, build: (context) => runBuild(context.name, context), relevantFiles: true },
+  { id: 'latex', renderer: 'latex', documentFormat: 'paged', view: {
+    kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false },
+  }, build: (context) => runBuild(context.name, context), relevantFiles: true },
   { id: 'markdown', renderer: 'markdown', build: (context) => buildMarkdownDocument(context.name, context.log) },
   { id: 'quarto', renderer: 'quarto', build: (context) => buildQmdDocument(context.name, context.log) },
   { id: 'native-pdf', renderer: 'identity', sourceFormat: 'pdf', build: (context) => buildPdfDocument(context.name, context.log) },
