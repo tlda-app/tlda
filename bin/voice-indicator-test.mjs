@@ -77,6 +77,8 @@ for (const phase of micStartPhases) {
 }
 assert.match(voiceSource, /vlog\('mic native start phase', \{\s+micAttempt,\s+phase,/)
 assert.doesNotMatch(voiceSource, /micStartPhase\([^\n]*deviceId|micStartPhase\([^\n]*label/)
+assert.doesNotMatch(voiceSource, /micStartPhase\([^\n]*String\(err\)/)
+assert.match(voiceSource, /if \(track\) \{[\s\S]*?track\.onended = \(\) => \{[\s\S]*?\n    \}\n    micStartPhase\('track-ended-handler-attached'\)\n  \}/)
 assert.doesNotMatch(voiceSource, /retainVoiceTextareaValue|retention-check/)
 assert.doesNotMatch(voiceSource, /hardResetVoice\(\{ keepDeepgramMic: true \}\)/)
 assert.match(voiceSource, /if \(msg\.type === 'utterance_end'\) \{[\s\S]*?_dgLastFinalAt = 0\s+return\s+\}/)
