@@ -15,6 +15,50 @@ export type FleetNudgeGridGuide = {
 
 export type FleetNudgeTakenLine = { axis: 'x' | 'y'; line: number } | null
 
+export type FleetNudgeGridFeature = 'left' | 'right' | 'top' | 'bottom'
+
+export type FleetNudgeGridMatch = FleetNudgeGridGuide & {
+  delta: number
+  feature: FleetNudgeGridFeature
+}
+
+const FEATURES_BY_AXIS = {
+  x: ['left', 'right'],
+  y: ['top', 'bottom'],
+} as const satisfies Record<'x' | 'y', readonly FleetNudgeGridFeature[]>
+
+/** Keep only guides that at least one currently moving edge can take. */
+export function fleetNudgeGuidesForFeatures(
+  guides: FleetNudgeGridGuide[],
+  live: ReadonlySet<FleetNudgeGridFeature>,
+): FleetNudgeGridGuide[] {
+  const xIsLive = live.has('left') || live.has('right')
+  const yIsLive = live.has('top') || live.has('bottom')
+  return guides.filter(guide => guide.axis === 'x' ? xIsLive : yIsLive)
+}
+
+/** Find the closest moving edge to any of the supplied guide lines. */
+export function closestFleetNudgeGuide(
+  dragged: FleetNudgeGridRect,
+  guides: FleetNudgeGridGuide[],
+  axis: 'x' | 'y',
+  live: ReadonlySet<FleetNudgeGridFeature>,
+): FleetNudgeGridMatch | null {
+  let closest: FleetNudgeGridMatch | null = null
+  for (const guide of guides) {
+    if (guide.axis !== axis) continue
+    for (const feature of FEATURES_BY_AXIS[axis]) {
+      if (!live.has(feature)) continue
+      const match = { ...guide, feature, delta: guide.line - dragged[feature] }
+      // Preserve the existing release behavior: an edge already on a line does
+      // not hold the pointer there, while either edge approaching it can take it.
+      if (match.delta === 0) continue
+      if (closest === null || Math.abs(match.delta) < Math.abs(closest.delta)) closest = match
+    }
+  }
+  return closest
+}
+
 function overlapSize(a0: number, a1: number, b0: number, b1: number): number {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0))
 }

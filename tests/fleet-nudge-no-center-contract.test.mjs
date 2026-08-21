@@ -4,15 +4,11 @@ import test from 'node:test'
 
 const source = await readFile(new URL('../src/shapes/fleet-utils.ts', import.meta.url), 'utf8')
 
-test('translate matcher offers only left/right and top/bottom alignment', () => {
+test('translate matcher offers every drawn guide to left/right and top/bottom only', () => {
   const matcher = source.slice(source.indexOf('function closestFleetPanelNudge'), source.indexOf('/** The guide is the taken match'))
-  assert.match(matcher, /candidate\.left, 'left'/)
-  assert.match(matcher, /candidate\.right, 'right'/)
-  assert.match(matcher, /candidate\.top, 'top'/)
-  assert.match(matcher, /candidate\.bottom, 'bottom'/)
+  assert.match(matcher, /closestFleetNudgeGuide/)
+  assert.match(matcher, /grid/)
   assert.doesNotMatch(matcher, /centerX|centerY/)
-  assert.match(matcher, /horizontalGaps/)
-  assert.match(matcher, /verticalGaps/)
 })
 
 test('resize exposes only the grabbed edges and never doubles a center pull', () => {
