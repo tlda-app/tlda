@@ -205,7 +205,7 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Attach a source to a project. <source> is either a local file/repository path or a Git URL.\n  Local paths and Git-backed sources are owned by this machine daemon.\n  An existing different binding is refused until it is explicitly unlinked.\n\n  Examples:\n    tlda project link paper path/to/paper.tex\n    tlda project link talk path/to/talk.qmd --format slides\n    tlda project link paper https://git.overleaf.com/project-id --main paper.tex --token "$OVERLEAF_TOKEN"\n\n  Remote options: --token TOKEN, --poll SECONDS (default 60; minimum 15), --mirror-mode auto-merge|fast-forward.',
+  link:    'tlda project link <name> <root> [root ...] [--version <branch>@<commit>] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Attach the current Git working copy to a project. Positional paths are document roots; each root and its include graph seed project history. --version selects the branch and endpoint (default: the checked-out branch at HEAD).\n  An existing different binding is refused until it is explicitly unlinked.\n\n  Example:\n    tlda project link survival arXiv_v2.tex supplement.tex --version master@a457016\n\n  A Git URL remains valid as the single source argument for a remote-backed project. Remote options: --main FILE, --token TOKEN, --poll SECONDS (default 60; minimum 15), --mirror-mode auto-merge|fast-forward.',
   unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local path or Git URL currently linked to the project.\n  The source must match the existing binding.',
   init:    'tlda project init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda project link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, a git repo with an initial commit,\n           then registers and pushes the requested main file to the tlda server.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
@@ -234,7 +234,7 @@ const VALUE_FLAGS = new Set([
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'name', 'kind',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'poll', 'config',
-  'label', 'plist', 'only',
+  'label', 'plist', 'only', 'version',
   'course', 'course-title', 'assignment', 'assignment-title', 'due',
   'handout', 'solutions', 'solutions-version',
 ])
@@ -282,6 +282,15 @@ function getPositional(index) {
     pos++
   }
   return null
+}
+
+function getPositionals() {
+  const values = []
+  for (let index = 0; ; index++) {
+    const value = getPositional(index)
+    if (value == null) return values
+    values.push(value)
+  }
 }
 
 // Per-command --help
@@ -580,29 +589,55 @@ async function cmdScratch() {
 
 async function cmdCreate() {
   const name = getPositional(0)
-  const source = getPositional(1)
-  if (!name || !source) { console.error('Usage: tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown|qmd]'); process.exit(1) }
+  const rootArgs = getPositionals().slice(1)
+  if (!name || rootArgs.length === 0) { console.error('Usage: tlda project link <name> <root> [root ...] [--version <branch>@<commit>]'); process.exit(1) }
 
   let format = getFlag('format') || null
-  const sourcePath = resolve(source)
-  if (!existsSync(sourcePath)) {
-    console.error(red(`Source does not exist: ${sourcePath}`))
+  let dir = resolve('.')
+  let repoRoot
+  try {
+    repoRoot = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+  } catch {
+    console.error(red(`Refusing to link ${dir}`))
+    console.error(red('  — tlda project link requires the current working copy to be an existing Git repository.'))
     process.exit(1)
   }
-  const sourceStats = statSync(sourcePath)
-  let dir = sourceStats.isDirectory() ? sourcePath : dirname(sourcePath)
-  let mainArg = getFlag('main')
-  if (!sourceStats.isDirectory()) mainArg = basename(sourcePath)
+  const documentRoots = rootArgs.map(root => relative(repoRoot, resolve(dir, root)).replace(/\\/g, '/'))
+  if (documentRoots.some(root => !root || root === '..' || root.startsWith('../'))) {
+    console.error(red('Every document root must be inside the current Git working copy.'))
+    process.exit(1)
+  }
+  dir = repoRoot
+  let mainArg = getFlag('main') || documentRoots[0]
   const title = getFlag('title') || name
+  const version = getFlag('version')
+  let seedBranch = null
+  let seedRevision = 'HEAD'
+  if (version) {
+    const split = version.lastIndexOf('@')
+    if (split <= 0 || split === version.length - 1) {
+      console.error(red('--version must be <branch>@<commit>.'))
+      process.exit(1)
+    }
+    seedBranch = version.slice(0, split)
+    seedRevision = version.slice(split + 1)
+  }
 
   const bindLocalSource = async () => {
     const binding = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir })
     if (binding.alreadyLinked) console.log(dim(`Project "${name}" is already linked to ${dir}.`))
     return binding.alreadyLinked
   }
-  const activateLocalSource = async () => {
+  const activateLocalSource = async (defaultRoots = []) => {
     const projectMetadata = await api('GET', `/api/projects/${name}`)
-    return callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, projectMetadata })
+    return callLocalDaemonLifecycle('project-source-link', {
+      project: name,
+      sourceDir: dir,
+      projectMetadata,
+      seedBranch,
+      seedRevision,
+      documentRoots: documentRoots.length ? documentRoots : defaultRoots,
+    })
   }
 
   // Infer the format from the file argument when --format is omitted. Without
@@ -651,7 +686,7 @@ async function cmdCreate() {
         throw e
       }
     }
-    const linked = await activateLocalSource()
+    const linked = await activateLocalSource([slidesMain || deckHtml[0]])
 
     if (artifact.missing.length > 0) {
       console.warn(yellow(`  Warning: ${artifact.missing.length} referenced local asset(s) were not found.`))
@@ -683,7 +718,7 @@ async function cmdCreate() {
         throw e
       }
     }
-    const linked = await activateLocalSource()
+    const linked = await activateLocalSource(mainArg ? [mainArg] : [])
 
     // Collect all files from the directory (HTML, CSS, JS, fonts, images, site_libs)
     const allFiles = []
@@ -739,7 +774,7 @@ async function cmdCreate() {
         throw e
       }
     }
-    const linked = await activateLocalSource()
+    const linked = await activateLocalSource([mainFile])
 
     // A .qmd renders against its whole directory — _quarto.yml, _extensions/,
     // data files, images — and there is no reference graph to walk before the
@@ -816,7 +851,7 @@ async function cmdCreate() {
         throw e
       }
     }
-    const linked = await activateLocalSource()
+    const linked = await activateLocalSource([mainFile])
 
     const closure = scanMarkdownDependencyClosure(mainFile, dir)
     const linkedCount = Math.max(0, closure.markdown.length - 1)
@@ -830,28 +865,6 @@ async function cmdCreate() {
     const server = getServer()
     console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
     return
-  }
-
-  // `doc link` attaches an existing Git working copy. The source collector is
-  // deliberately repository-aware: it skips `.git`, build products, and
-  // non-source files, so the repository root is safe and is the canonical
-  // local project directory watched by the daemon.
-  let repoRoot
-  try {
-    repoRoot = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
-  } catch {
-    console.error(red(`Refusing to link ${dir}`))
-    console.error(red('  — tlda project link requires an existing Git repository.'))
-    process.exit(1)
-  }
-  if (realpathSync(repoRoot) !== realpathSync(dir)) {
-    if (sourceStats.isDirectory()) {
-      console.error(red(`Refusing to link ${dir}`))
-      console.error(red(`  — use the Git repository root: ${repoRoot}`))
-      process.exit(1)
-    }
-    mainArg = relative(repoRoot, sourcePath)
-    dir = repoRoot
   }
 
   const mainFile = mainArg || findMainTex(dir)
@@ -872,7 +885,7 @@ async function cmdCreate() {
       throw e
     }
   }
-  const linked = await activateLocalSource()
+  const linked = await activateLocalSource([mainFile])
   console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
 
   const server = getServer()
@@ -952,10 +965,19 @@ async function cmdLinkRemote(gitUrl) {
   const title = getFlag('title')
   const pollSeconds = Number(getFlag('poll') || '60') || 60
   const mirrorMode = getFlag('mirror-mode') || 'auto-merge'
+  const version = getFlag('version')
+  let seedBranch = null
+  let seedRevision = 'HEAD'
+  if (version) {
+    const split = version.lastIndexOf('@')
+    if (split <= 0 || split === version.length - 1) throw new Error('--version must be <branch>@<commit>')
+    seedBranch = version.slice(0, split)
+    seedRevision = version.slice(split + 1)
+  }
 
   console.log(`Linking ${name} ← ${gitUrl}${mainFile ? ` (main: ${mainFile})` : ''}…`)
   const result = await callLocalDaemonLifecycle('git-source-link',
-    { project: name, remote: gitUrl, token, mirrorMode, pollSeconds },
+    { project: name, remote: gitUrl, token, mirrorMode, pollSeconds, seedBranch, seedRevision, documentRoots: mainFile ? [mainFile] : [] },
     { timeoutMs: 300000 })
   if (result.alreadyLinked) {
     console.log(dim(`Project "${name}" is already linked to ${gitUrl}.`))

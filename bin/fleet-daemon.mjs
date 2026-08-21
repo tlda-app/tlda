@@ -619,13 +619,26 @@ async function loadLocallyBoundProjects() {
 // failed link leaves nothing behind. A link that half-succeeds and leaves the
 // paper starting from version one is the old broken behaviour wearing a success
 // message.
-async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null }) {
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = [] }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
 
   const status = sourceSync.bindingStatus(project, sourceDir)
   if (projectMetadata?.name !== project) {
     // Nothing to adopt into yet. Report, do not write.
     return { linked: false, alreadyLinked: status.alreadyLinked, sourceDir: status.sourceDir }
+  }
+
+  if (!status.alreadyLinked) {
+    const history = await shadowMirror.exportShadowBundle({ project, sourceDir, seedBranch, seedRevision, documentRoots })
+    if (!history.empty) {
+      const adopted = await sendMsgWithReply({
+        type: 'adopt-shadow-history',
+        project,
+        head: history.head,
+        bundleBase64: history.bundleBase64,
+      })
+      if (!adopted?.ok) throw new Error(`${project} was not linked: the server did not confirm its history`)
+    }
   }
 
   const result = sourceSync.bindSource(project, sourceDir, { kind, remote, mirrorMode })
@@ -649,7 +662,7 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
 async function rpcLinkGitSource(params) {
   const prepared = await sourceSync.prepareRemote(params)
   const metadata = await daemonApi('GET', `/api/projects/${encodeURIComponent(params.project)}`)
-  const linked = await rpcLinkProjectSource({ ...prepared, projectMetadata: metadata })
+  const linked = await rpcLinkProjectSource({ ...params, ...prepared, projectMetadata: metadata })
   await sourceSync.pollRemote(params.project)
   return linked
 }

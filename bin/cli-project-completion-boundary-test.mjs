@@ -25,6 +25,13 @@ environments:
       licenseKey: ""
 `)
 writeFileSync(join(sourceDir, 'main.tex'), '\\documentclass{article}\\begin{document}test\\end{document}\n')
+execFileSync('git', ['init', '-b', 'main'], { cwd: sourceDir, stdio: 'ignore' })
+execFileSync('git', ['add', 'main.tex'], { cwd: sourceDir, stdio: 'ignore' })
+execFileSync('git', ['commit', '-m', 'initial source'], {
+  cwd: sourceDir,
+  stdio: 'ignore',
+  env: { ...process.env, GIT_AUTHOR_NAME: 'tlda', GIT_COMMITTER_NAME: 'tlda', GIT_AUTHOR_EMAIL: 'tlda@localhost', GIT_COMMITTER_EMAIL: 'tlda@localhost' },
+})
 
 let fileSnapshots = 0
 const http = createServer((req, res) => {
@@ -86,7 +93,14 @@ try {
   assert.match(stdout, /Source pushed/)
 
   writeFileSync(join(sourceDir, 'main.md'), '# resumed link\n')
-  const linked = spawn(process.execPath, [join(process.cwd(), 'cli/tlda.mjs'), '--env', 'test', 'project', 'link', 'linked-project', join(sourceDir, 'main.md'), '--format', 'markdown', '--server', server], {
+  execFileSync('git', ['add', 'main.md'], { cwd: sourceDir, stdio: 'ignore' })
+  execFileSync('git', ['commit', '-m', 'add markdown root'], {
+    cwd: sourceDir,
+    stdio: 'ignore',
+    env: { ...process.env, GIT_AUTHOR_NAME: 'tlda', GIT_COMMITTER_NAME: 'tlda', GIT_AUTHOR_EMAIL: 'tlda@localhost', GIT_COMMITTER_EMAIL: 'tlda@localhost' },
+  })
+  const linkHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceDir, encoding: 'utf8' }).trim()
+  const linked = spawn(process.execPath, [join(process.cwd(), 'cli/tlda.mjs'), '--env', 'test', 'project', 'link', 'linked-project', 'main.md', '--version', `main@${linkHead}`, '--format', 'markdown', '--server', server], {
     cwd: sourceDir,
     env: {
       ...process.env,
@@ -113,6 +127,10 @@ try {
   assert.equal(fileSnapshots, 0)
   assert.match(linkedStdout, /already linked/)
   assert.match(linkedStdout, /Submitted 1234567 through the daemon Git remote/)
+  const activatedLink = lifecycleRequests.find(request => request.params?.projectMetadata?.name === 'linked-project')
+  assert.deepEqual(activatedLink.params.documentRoots, ['main.md'])
+  assert.equal(activatedLink.params.seedBranch, 'main')
+  assert.equal(activatedLink.params.seedRevision, linkHead)
 
   const initDir = join(root, 'init-project')
   mkdirSync(initDir)

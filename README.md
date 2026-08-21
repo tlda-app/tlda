@@ -504,12 +504,14 @@ npm install -g github:tlda-app/tlda
 
 ### Start tlda and link the paper
 
-Start the server and one daemon on the host. Then link the paper's main file.
+Start the server and one daemon on the host. Then, from the paper's Git working
+copy, link its document root.
 
 ```bash
 tlda server start
 tlda daemon start
-tlda project link my-paper /path/to/paper/paper.tex
+cd /path/to/paper
+tlda project link my-paper paper.tex
 ```
 
 The linked working copy submits source changes to the server, and tlda rebuilds

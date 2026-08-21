@@ -65,11 +65,26 @@ flowchart LR
 The intermediate server copy and shadow repository are implementation details;
 you do not create or manage them separately.
 
-Link a local checkout by passing its main file or repository root:
+From an existing Git working copy, pass its document root or roots:
 
 ```sh
-tlda project link eiv-paper /path/to/eiv-paper/least-squares.tex
+cd /path/to/eiv-paper
+tlda project link eiv-paper least-squares.tex
 ```
+
+Linking seeds the version wheel from the current working copy's Git history. By
+default the seed ends at the checked-out branch's `HEAD`. Positional paths are
+document roots. Use `--version branch@commit` to choose another endpoint:
+
+```sh
+tlda project link eiv-paper least-squares.tex supplement.tex \
+  --version revisions@0b77278
+```
+
+Only each root and the files it includes are retained in the seeded history.
+Unrelated files and commits that changed only those files do not become document
+versions. If the checkout already contains mirrored tlda history, that history
+is carried instead.
 
 The local path belongs only to this machine's daemon binding. The daemon watches
 the checkout and sends revision-checked source transactions to the server.
@@ -77,7 +92,8 @@ For Markdown, pass the document itself. tlda infers the format from the `.md`
 extension and includes the local Markdown files and assets it links to:
 
 ```sh
-tlda project link proof-notes /path/to/notes/README.md
+cd /path/to/notes
+tlda project link proof-notes README.md
 ```
 
 If your paper is on Overleaf, copy its Git URL and link it directly with your
@@ -129,11 +145,11 @@ default for `.tex` files and repository paths.
 
 | source | what tlda does | link it |
 | --- | --- | --- |
-| LaTeX (`.tex`) | Builds the paper with `latexmk`, converts its pages to SVG, and retains SyncTeX source positions. | `tlda project link paper /path/to/repo/paper.tex` |
-| Markdown (`.md`) | Renders the authored Markdown and the local Markdown documents and assets it links to. | `tlda project link notes /path/to/notes.md` |
-| Quarto (`.qmd`) | Sends the source directory to the server and runs Quarto there. An HTML document becomes a scrolling page; a RevealJS result becomes individual interactive slides. | `tlda project link report /path/to/report.qmd` |
-| Rendered HTML | Copies a rendered HTML site or book and its assets without running its source renderer. Top-level HTML files become document pages unless the artifact supplies `page-info.json`. | `tlda project link book /path/to/rendered-book --format html` |
-| Rendered RevealJS | Copies an already-rendered deck and its assets, then lays its interactive slides from left to right on the canvas. | `tlda project link talk /path/to/rendered-talk --format slides` |
+| LaTeX (`.tex`) | Builds the paper with `latexmk`, converts its pages to SVG, and retains SyncTeX source positions. | `tlda project link paper paper.tex` |
+| Markdown (`.md`) | Renders the authored Markdown and the local Markdown documents and assets it links to. | `tlda project link notes notes.md` |
+| Quarto (`.qmd`) | Sends the source directory to the server and runs Quarto there. An HTML document becomes a scrolling page; a RevealJS result becomes individual interactive slides. | `tlda project link report report.qmd` |
+| Rendered HTML | Copies a rendered HTML site or book and its assets without running its source renderer. Top-level HTML files become document pages unless the artifact supplies `page-info.json`. | `tlda project link book index.html --format html` |
+| Rendered RevealJS | Copies an already-rendered deck and its assets, then lays its interactive slides from left to right on the canvas. | `tlda project link talk index.html --format slides` |
 
 For a Quarto project, the server needs `quarto` on `PATH`. It uses the document's
 own output format rather than overriding it. A project with `renv.lock` also

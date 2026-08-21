@@ -3,6 +3,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
+import { scanTexDependencyClosure } from '../shared/tex-deps.mjs'
+import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -104,7 +106,7 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
    * no shadow history: a paper that has never been built has none, and that is
    * an ordinary state, not a failure.
    */
-  async function exportShadowBundle({ project, sourceDir: explicitSourceDir = null }) {
+  async function exportShadowBundle({ project, sourceDir: explicitSourceDir = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = [] }) {
     if (!project) throw new Error('missing project')
     // The caller may name the directory instead of letting us resolve it. A link
     // offers this history BEFORE it writes the binding — so that a failed offer
@@ -117,9 +119,7 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
       const { stdout } = await execFileP('git', ['rev-parse', '--verify', SHADOW_HEAD_REF], { cwd: sourceDir, timeout: 5000 })
       head = stdout.trim()
     } catch {
-      // No mirrored history in this working copy — the ref is absent until the
-      // first build mirrors one down.
-      return { ok: true, empty: true, project, sourceDir }
+      return exportProjectHistoryBundle({ project, sourceDir, seedBranch, seedRevision, documentRoots, log })
     }
     if (!/^[0-9a-f]{40}$/i.test(head)) return { ok: true, empty: true, project, sourceDir }
 
@@ -148,6 +148,63 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
   }
 
   return { mirrorShadowRef, exportShadowBundle }
+}
+
+export async function exportProjectHistoryBundle({ project, sourceDir, seedBranch = null, seedRevision = 'HEAD', documentRoots = [], log = console }) {
+  const roots = [...new Set(documentRoots.map(value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '')).filter(Boolean))]
+  if (!roots.length) return { ok: true, empty: true, project, sourceDir }
+
+  const { stdout: seedOut } = await execFileP('git', ['rev-parse', '--verify', `${seedRevision}^{commit}`], { cwd: sourceDir, timeout: 5000 })
+  const seed = seedOut.trim()
+  if (seedBranch) {
+    const { stdout: branchOut } = await execFileP('git', ['rev-parse', '--verify', `${seedBranch}^{commit}`], { cwd: sourceDir, timeout: 5000 })
+    const branch = branchOut.trim()
+    try {
+      await execFileP('git', ['merge-base', '--is-ancestor', seed, branch], { cwd: sourceDir, timeout: 5000 })
+    } catch {
+      throw new Error(`${project}: ${seedRevision} is not on branch ${seedBranch}`)
+    }
+  }
+  const workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `tlda-history-seed-${project}-`))
+  const treeDir = path.join(workDir, 'tree')
+  const filteredDir = path.join(workDir, 'filtered')
+  const archivePath = path.join(workDir, 'tree.tar')
+  const bundlePath = path.join(workDir, 'history.bundle')
+  try {
+    await fs.promises.mkdir(treeDir)
+    await execFileP('git', ['archive', '--format=tar', `--output=${archivePath}`, seed], { cwd: sourceDir, timeout: 60000 })
+    await execFileP('tar', ['-xf', archivePath, '-C', treeDir], { timeout: 30000 })
+
+    const members = new Set()
+    for (const root of roots) {
+      const closure = /\.tex$/i.test(root)
+        ? scanTexDependencyClosure(root, treeDir)
+        : /\.(?:md|markdown|qmd)$/i.test(root)
+          ? scanMarkdownDependencyClosure(root, treeDir)
+          : { files: [root], missing: fs.existsSync(path.join(treeDir, root)) ? [] : [{ path: root }] }
+      if (closure.missing.length) {
+        throw new Error(`${project}: ${root} has missing dependencies at ${seed.slice(0, 7)}: ${closure.missing.map(item => item.path).join(', ')}`)
+      }
+      for (const file of closure.files) members.add(file)
+    }
+
+    await execFileP('git', ['clone', '--no-local', '--no-checkout', '--', sourceDir, filteredDir], { timeout: 120000 })
+    const refs = (await execFileP('git', ['for-each-ref', '--format=%(refname)'], { cwd: filteredDir, timeout: 10000 })).stdout.split('\n').filter(Boolean)
+    for (const ref of refs) await execFileP('git', ['update-ref', '-d', ref], { cwd: filteredDir, timeout: 5000 })
+    await execFileP('git', ['update-ref', 'refs/heads/main', seed], { cwd: filteredDir, timeout: 5000 })
+    await execFileP('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: filteredDir, timeout: 5000 })
+    const filterArgs = [...members].sort().flatMap(file => ['--path', file])
+    await execFileP('git-filter-repo', [...filterArgs, '--force'], { cwd: filteredDir, timeout: 600000 })
+    const { stdout: headOut } = await execFileP('git', ['rev-parse', '--verify', 'HEAD^{commit}'], { cwd: filteredDir, timeout: 5000 })
+    const head = headOut.trim()
+    await execFileP('git', ['update-ref', SHADOW_HEAD_REF, head], { cwd: filteredDir, timeout: 5000 })
+    await execFileP('git', ['bundle', 'create', bundlePath, SHADOW_HEAD_REF], { cwd: filteredDir, timeout: 120000 })
+    const bundleBase64 = fs.readFileSync(bundlePath).toString('base64')
+    log.info(`exported ${project}@${head.slice(0, 7)} project history from ${seed.slice(0, 7)} (${members.size} member(s))`)
+    return { ok: true, empty: false, project, sourceDir, head, seed, roots, members: [...members].sort(), bundleBase64 }
+  } finally {
+    await fs.promises.rm(workDir, { recursive: true, force: true })
+  }
 }
 
 async function preserveAuthorCommit({ sourceDir, project, hash, sourceScope, log, beforeUpdateRef = null }) {
