@@ -194,6 +194,15 @@ export function createBuildQueue({
     })
   }
 
+  async function removeProject(project) {
+    return transition(async () => {
+      for (const job of running.values()) if (job.name === project) job.cancel('project-deleted')
+      const removed = store.removeProject(project)
+      await drain()
+      return removed
+    })
+  }
+
   const isBuilding = project => store.list().some(row => row.project === project && ['pending', 'running'].includes(row.state))
   const isBuildKindPending = (project, kind = 'build') => store.list().some(row => (
     row.project === project && row.kind === kind && ['pending', 'running'].includes(row.state)
@@ -211,6 +220,7 @@ export function createBuildQueue({
     recover,
     killBuild,
     killAllDispatchedBuilds,
+    removeProject,
     isBuilding,
     isBuildKindPending,
     inspect,

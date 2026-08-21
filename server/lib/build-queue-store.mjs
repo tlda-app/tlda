@@ -49,6 +49,24 @@ export class BuildQueueStore {
     return this.db.prepare('SELECT * FROM build_submissions ORDER BY id').all()
   }
 
+  removeProject(project) {
+    return this.db.transaction(() => {
+      const daemonIds = this.db.prepare('SELECT DISTINCT daemon_id FROM build_submissions WHERE project = ?')
+        .all(project).map(row => row.daemon_id)
+      const removed = this.db.prepare('DELETE FROM build_submissions WHERE project = ?').run(project).changes
+      const removeUnusedRingEntry = this.db.prepare(`
+        DELETE FROM build_ring
+        WHERE daemon_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM build_submissions
+            WHERE daemon_id = ? AND state IN ('pending','running')
+          )
+      `)
+      for (const daemonId of daemonIds) removeUnusedRingEntry.run(daemonId, daemonId)
+      return removed
+    })()
+  }
+
   ring() {
     return new Map(this.db.prepare('SELECT daemon_id, position FROM build_ring ORDER BY position DESC').all()
       .map(row => [row.daemon_id, row.position]))

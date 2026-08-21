@@ -22,7 +22,7 @@ import { join, basename, dirname, resolve } from 'path'
 import { promisify } from 'util'
 import { requireRead, requireRecordingPrivateRead, requireRw } from '../lib/auth.mjs'
 import {
-  createProject, readProject, updateProject, listProjects, deleteProject,
+  createProject, readProject, updateProject, listProjects,
   readProjectMeta,
   listSourceFiles, hashSourceFiles, readSourceFileAsync, writeSourceFileAsync, deleteSourceFileAsync, readBuildLogAsync, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarningsAsync, addBookMember, getProjectsDir, projectDir as getProjectDir,
@@ -34,6 +34,7 @@ import {
   sourceLifecycleStore,
   checkpointProjectPartWritebackOffloop,
 } from '../lib/project-store.mjs'
+import { deleteProjectAndBuildSubmissions } from '../lib/build-dispatch.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
@@ -592,7 +593,7 @@ router.patch('/:name/auto-sync', requireRw, async (req, res) => {
 // Delete project
 router.delete('/:name', requireRw, async (req, res) => {
   try {
-    await deleteProject(req.params.name)
+    await deleteProjectAndBuildSubmissions(req.params.name)
     res.json({ ok: true })
   } catch (e) {
     res.status(404).json({ error: e.message })

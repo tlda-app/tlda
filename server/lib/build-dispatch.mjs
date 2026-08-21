@@ -11,7 +11,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
-import { updateProject, getProjectsDir, listProjects, aggregateBookToc, sourceLifecycleStore, projectDir } from './project-store.mjs'
+import { updateProject, getProjectsDir, listProjects, aggregateBookToc, sourceLifecycleStore, projectDir, deleteProject } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { loadServerConfig } from '../../shared/config.mjs'
 import { ForkTransport } from './build-transport.mjs'
@@ -236,6 +236,11 @@ export const killBuild = name => dispatcher().killBuild(name)
 export const killAllDispatchedBuilds = () => dispatcher().killAllDispatchedBuilds()
 export const isBuilding = name => dispatcher().isBuilding(name)
 export const isBuildKindPending = (name, kind) => dispatcher().isBuildKindPending(name, kind)
+
+export async function deleteProjectAndBuildSubmissions(name, queue = dispatcher()) {
+  await queue.removeProject(name)
+  await deleteProject(name)
+}
 
 export async function recoverProposalBuilds() {
   const queue = dispatcher()
