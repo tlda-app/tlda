@@ -586,9 +586,6 @@ function traceGate1(stage, detail) {
 // Runtime status truth. Positive process evidence remains true until the daemon
 // explicitly reports absence/death. A missing heartbeat, a daemon disconnect,
 // or copied route state does not fabricate hibernation.
-const _aliveAgents = new Set()              // Set<agent_id>
-const _aliveSince = new Map()               // agent_id -> first ms in current alive run
-
 const runtimeStatusStore = createAgentRuntimeStatusStore({
   onChange: agentId => {
     // Not awaited, and these three are the only refreshes treated this way.
@@ -635,13 +632,7 @@ const humanPresence = createHumanPresenceTracker({
 // computation. `liveEvidenceIds` is the agents for which the daemon/process has
 // supplied positive evidence without a later explicit negative observation.
 function rosterCountInputs() {
-  const liveEvidenceIds = []
-  for (const agentId of _aliveAgents) {
-    const evidence = runtimeStatusStore.evidenceFor(agentId)
-    if (evidence?.liveness !== 'alive') continue
-    liveEvidenceIds.push(agentId)
-  }
-  return { liveEvidenceIds, humanHereIds: humanPresence.hereIds() }
+  return { liveEvidenceIds: runtimeStatusStore.aliveAgentIds(), humanHereIds: humanPresence.hereIds() }
 }
 
 function isReservedShellAgent(agent) {
@@ -649,13 +640,13 @@ function isReservedShellAgent(agent) {
 }
 
 function markAgentAlive(agentId, now = Date.now(), detail = {}) {
-  const wasAlive = _aliveAgents.has(agentId)
+  const wasAlive = runtimeStatusStore.evidenceFor(agentId)?.liveness === 'alive'
   const evidence = runtimeStatusStore.markAlive(agentId, detail.source || 'server-positive-evidence', { ...detail, atMs: now })
   if (evidence?.liveness !== 'alive') return
-  fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.AWAKE }, evidence.liveness_at)
-    .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
-  if (!wasAlive || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
-  _aliveAgents.add(agentId)
+  if (!wasAlive) {
+    fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.AWAKE }, evidence.liveness_at)
+      .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
+  }
   if (!wasAlive) {
     // Fire-and-forget for the reason given where onChange does the same.
     fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
@@ -666,20 +657,21 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
 }
 
 function markAgentNotAlive(agentId, detail = {}) {
-  const wasAlive = _aliveAgents.has(agentId)
+  const previousLiveness = runtimeStatusStore.evidenceFor(agentId)?.liveness
+  const wasAlive = previousLiveness === 'alive'
   const evidence = detail.unknown
     ? runtimeStatusStore.markUnknown(agentId, detail.source || 'runtime-unknown', detail)
     : runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
   if (evidence?.liveness === 'alive') return Promise.resolve(false)
   if (detail.unknown) return Promise.resolve(false)
-  const durableWrite = fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: detail.status || RUNTIME_STATUS.HIBERNATING }, evidence.liveness_at)
+  const durableWrite = previousLiveness === evidence.liveness
+    ? Promise.resolve()
+    : fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: detail.status || RUNTIME_STATUS.HIBERNATING }, evidence.liveness_at)
   // Most observation callers are fire-and-forget; lifecycle callers await the
   // original promise below so a failed durable transition cannot acknowledge
   // success. This side catch keeps ignored observation writes from becoming
   // unhandled rejections without weakening the awaited result.
   durableWrite.catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
-  _aliveAgents.delete(agentId)
-  _aliveSince.delete(agentId)
   clearSourceEditsForAgent(agentId)
   clearEphemeralState(agentId)
   // Fire-and-forget for the reason given where onChange does the same.
@@ -1823,11 +1815,6 @@ const mailboxLibrarian = new MailboxLibrarian({
     // (Skip 7/22)
   },
 })
-// Server-authoritative thinking/compacting state.
-// Populated from agent-thinking / agent-compacting events, included in
-// broadcastState() so state pushes never wipe client indicators.
-const _thinkingState = new Map()   // agentId → timestamp (ms)
-const _compactingState = new Map() // agentId → timestamp (ms)
 const _contextState = new Map()    // agentId → { percent, inputTokens }
 const _lastActivityAt = new Map()  // agentId → timestamp (ms) — last real activity (thinking, tool call, chat)
 const _viewingContext = new Map()   // agentId → { doc, page, sourceLine, ... , updatedAt }
@@ -1842,12 +1829,9 @@ function touchActivity(agentId) {
 }
 
 // ---- Turn-end synthetic event ----
-// An agent's "turn" ends when it transitions thinking → idle. The transient
-// `agent-thinking` indicator is fire-and-forget (a disconnected subscriber
-// misses the edge), so we ALSO persist a synthetic `turn_ended` row in the
-// events DB for subscribers.
-// The true→false edge is deduped upstream by _thinkingState, so this fires
-// exactly once per turn.
+// An agent's "turn" ends when the authoritative daemon status result moves it
+// from thinking to another activity, so we also persist a synthetic
+// `turn_ended` row for subscribers.
 async function emitTurnEnded(agentId, startedAtMs) {
   if (!fleetStore || !agentId) return
   // Only real agents have turns — skip humans/bots (Skip, todd, tlda, …).
@@ -1893,15 +1877,14 @@ async function emitTurnEnded(agentId, startedAtMs) {
 async function getTrustedIdleSeconds() {
   const now = Date.now()
   const result = {}
-  const candidates = [..._aliveAgents]
+  const candidates = runtimeStatusStore.aliveAgentIds()
   if (!candidates.length) return result
   for (const agent of await fleetStore.getAgentsByIds(candidates)) {
     if (!agent || agent.dead || agent.human || agent.metadata?.shell) continue
     const agentId = agent.id
     const runtime = runtimeStatusStore.project(agent)
     if (runtime.status !== 'awake') continue
-    if (_thinkingState.has(agentId)) continue
-    if (_compactingState.has(agentId)) continue
+    if (runtime.activity === 'thinking' || runtime.activity === 'compacting') continue
     const aliveSince = Number(runtimeStatusStore.evidenceFor(agentId)?.alive_since_ms)
     if (!Number.isFinite(aliveSince)) continue
     // Idle baseline = last REAL activity, or — if we've recorded none this
@@ -1935,10 +1918,7 @@ function _queueBroadcastAgents(agentUpdates = null) {
 
 function _agentWithEphemeralState(agent, subscriptionsByOwner) {
   if (!agent) return null
-  const withCapabilities = agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)
-  if (_thinkingState.has(agent.id)) return { ...withCapabilities, status: 'thinking' }
-  if (_compactingState.has(agent.id)) return { ...withCapabilities, status: 'compacting' }
-  return withCapabilities
+  return agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)
 }
 
 // async because building the delta reads each changed agent through the store.
@@ -1992,8 +1972,6 @@ async function _broadcastStateNow() {
       // client page receiving this delta.
       ...(pendingIds.length ? { agentTotals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) } : {}),
       task_delta: await fleetStore.consumeTaskChanges?.() || { changed: [], removed: [], overflow: false },
-      thinking: Object.fromEntries(_thinkingState),
-      compacting: Object.fromEntries(_compactingState),
       context: Object.fromEntries(_contextState),
     },
   })
@@ -5040,8 +5018,6 @@ app.use('/api/livekit', livekitRoutes)
 
 // ---------- Fleet API (embedded) ----------
 function clearEphemeralState(agentId) {
-  _thinkingState.delete(agentId)
-  _compactingState.delete(agentId)
   _contextState.delete(agentId)
 }
 const fleetRouter = createFleetRouter({
@@ -6740,14 +6716,7 @@ async function dispatchFleetWsMessage(ws, msg) {
       const storedAgent = await fleetStore.projectAgentDaemonRoute?.(stored) || stored
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       void fleetStore.share?.({ type: 'login', agent_id: loginAgentId, from: loginAgentId, to: loginAgentId, text: `${agent.friendly_name || loginAgentId} logged in` })
-      markAgentAlive(loginAgentId, Date.now(), { source: 'agent-login' })
       touchActivity(loginAgentId)
-      spawnLibrarian.observeLiveness({
-        type: 'agent-liveness',
-        agent_id: loginAgentId,
-        state: 'alive',
-        ts: now,
-      })
       spawnLibrarian.observeLogin(await fleetStore.getAgent?.(loginAgentId) || agent)
       broadcastState(storedAgent)
       return
@@ -7922,55 +7891,10 @@ async function dispatchFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'agent-thinking') {
-    if (msg.thinking) {
-      _thinkingState.set(msg.agentId, Date.now())
-      touchActivity(msg.agentId)
-    } else {
-      // thinking → idle edge is a turn end. _thinkingState holds the start ts
-      // and dedupes: only the first false after a true reaches emitTurnEnded.
-      const startedAt = _thinkingState.get(msg.agentId)
-      _thinkingState.delete(msg.agentId)
-      if (startedAt !== undefined) await emitTurnEnded(msg.agentId, startedAt)
-    }
-    broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
-    reply({ ok: true })
-    return
-  }
-
-  if (type === 'agent-compacting') {
-    if (msg.compacting) {
-      _compactingState.set(msg.agentId, Date.now())
-    } else {
-      _compactingState.delete(msg.agentId)
-    }
-    broadcastEvent('agent-compacting', { agent: msg.agentId, compacting: !!msg.compacting })
-    reply({ ok: true })
-    return
-  }
-
   if (type === 'agent-context') {
     if (msg.agentId != null && msg.contextPercent != null) {
       _contextState.set(msg.agentId, { percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
       broadcastEvent('agent-context', { agent: msg.agentId, percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
-    }
-    reply({ ok: true })
-    return
-  }
-
-  if (type === 'agent-status') {
-    const { agentId, state, tool, ts } = msg
-    if (agentId && state && fleetStore) {
-      await fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
-      // Pane-status classification is a DISPLAY feed (thinking/idle/...), not a
-      // liveness authority. It used to also publish alive/not-alive and fought
-      // the daemon's process-observation liveness for the same fact — the
-      // 7/17 classifier-vs-liveness flapping. Skip's order: delete the
-      // duplicate publisher, don't referee it. Liveness truth comes from
-      // agent-liveness (process observation) and login only.
-      runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
-      broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
-      broadcastState()
     }
     reply({ ok: true })
     return
@@ -9118,110 +9042,59 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'agent-status') {
-    const { agentId, state, tool, ts } = msg
-    if (!agentId || !state || !fleetStore) return
-    await fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
-    const atMs = Date.parse(ts) || Date.now()
-    if (state === 'hibernating') {
-      markAgentNotAlive(agentId, {
-        source: 'daemon-agent-status',
-        reason: 'daemon pane is no longer observable',
-        atMs,
-        daemon_key: ws._daemonKey,
-        daemon_boot_id: ws._bootId,
-      })
-    } else {
-      markAgentAlive(agentId, atMs, {
-        source: 'daemon-agent-status',
-        daemon_key: ws._daemonKey,
-        daemon_boot_id: ws._bootId,
-      })
-    }
-    runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
-    broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
-    broadcastState()
-    return
-  }
-
-  // The daemon describes what is RUNNING on its box; we replace what we had.
-  // Present means running, absent means hibernating. No diff is sent and none is
-  // needed — see docs/fleet-design-rules.md, "Liveness protocol".
-  //
-  // Status and activity events also prove a process exists. This snapshot is
-  // the authoritative complete observation that can explicitly move an agent
-  // back to hibernating when the daemon says it is absent.
-  if (type === 'agent-liveness-snapshot') {
     if (!fleetStore) return
-    // Message integrity: this socket's daemon speaks for itself only.
     if (!msg.daemon_key || msg.daemon_boot_id == null || msg.report_seq == null) return
     if (msg.daemon_key !== ws._daemonKey || msg.daemon_boot_id !== ws._bootId) return
-
-    const reportedTs = msg.ts || new Date().toISOString()
-    const atMs = Date.parse(reportedTs) || Date.now()
-    const reported = [...new Set((msg.running_agent_ids || []).filter(id => typeof id === 'string' && id))]
-    const reportedAbsent = msg.snapshot_complete === true
-      ? [...new Set((msg.absent_agent_ids || []).filter(id => typeof id === 'string' && id))]
-      : []
-
-    const running = new Set(reported)
-    const absent = new Set(reportedAbsent)
-
-    for (const id of running) {
-      spawnLibrarian.observeLiveness({ type, agent_id: id, state: 'alive', ts: reportedTs })
-      markAgentAlive(id, atMs, {
-        source: 'daemon-running-process-snapshot',
-        reason: msg.report_reason || msg.reason,
+    if (msg.snapshot_complete !== true || !Array.isArray(msg.agents)) return
+    const ts = msg.ts || new Date().toISOString()
+    const atMs = Date.parse(ts) || Date.now()
+    for (const result of msg.agents || []) {
+      const agentId = result?.agent_id
+      const status = result?.status
+      const activity = result?.activity || 'unknown'
+      if (!agentId || !['awake', 'hibernating'].includes(status)) continue
+      const previous = runtimeStatusStore.evidenceFor(agentId)
+      const previousStatus = previous?.liveness === 'alive'
+        ? 'awake'
+        : previous?.liveness === 'dead' || previous?.liveness === 'wedged' ? 'hibernating' : null
+      const statusChanged = previousStatus !== status
+      const activityChanged = previous?.activity !== activity || (previous?.activity_tool || null) !== (result.tool || null)
+      const generation = {
         daemon_key: msg.daemon_key,
         daemon_boot_id: msg.daemon_boot_id,
         report_seq: msg.report_seq,
-      })
-    }
-    // Gone from the box. Mark liveness only. The durable daemon route is the
-    // wake/respawn route; deleting it here strands hibernating agents.
-    for (const id of absent) {
-      if (running.has(id)) continue
-      spawnLibrarian.observeLiveness({
-        type, agent_id: id, state: 'dead', reason: 'absent from daemon running-process snapshot', ts: reportedTs,
-      })
-      markAgentNotAlive(id, {
-        source: 'daemon-running-process-snapshot',
-        reason: 'absent from daemon running-process snapshot',
-        atMs,
-        daemon_key: msg.daemon_key,
-        daemon_boot_id: msg.daemon_boot_id,
-        report_seq: msg.report_seq,
-      })
-      await fleetStore.retirePendingShell?.(id)
-    }
-    broadcastState()
-    return
-  }
-
-  if (type === 'agent-liveness') {
-    const { agent_id, state, pid, reason, ts } = msg
-    if (!agent_id || !state) return
-    spawnLibrarian.observeLiveness({ type, agent_id, state, pid, reason, ts })
-    if (state === 'alive') {
-      // Liveness ≠ activity (see the batch handler above): this is a 30s "process
-      // exists" ping, not real work, so it must not reset the idle clock. Real
-      // activity is recorded by agent-activity / agent-thinking / chat.
-      markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
-        source: 'daemon-agent-liveness',
-        reason,
-        pid,
-        daemon_key: ws._daemonKey,
-        daemon_boot_id: ws._bootId,
-      })
-    } else if (state === 'dead' || state === 'wedged') {
-      markAgentNotAlive(agent_id, {
-        source: 'daemon-agent-liveness',
-        state,
-        reason,
-        pid,
-        atMs: Date.parse(ts) || Date.now(),
-        daemon_key: ws._daemonKey,
-        daemon_boot_id: ws._bootId,
-      })
+        agent_id: agentId,
+      }
+      if (status === 'awake') {
+        markAgentAlive(agentId, atMs, {
+          source: 'daemon-agent-status',
+          reason: msg.reason,
+          daemon_key: msg.daemon_key,
+          daemon_boot_id: msg.daemon_boot_id,
+          report_seq: msg.report_seq,
+          liveness_generation: generation,
+        })
+      } else {
+        await markAgentNotAlive(agentId, {
+          source: 'daemon-agent-status',
+          reason: 'absent from daemon session inventory',
+          atMs,
+          daemon_key: msg.daemon_key,
+          daemon_boot_id: msg.daemon_boot_id,
+          report_seq: msg.report_seq,
+          liveness_generation: generation,
+        })
+        await fleetStore.retirePendingShell?.(agentId)
+      }
+      if (previous?.activity === 'thinking' && activity !== 'thinking') {
+        await emitTurnEnded(agentId, previous.activity_at_ms)
+      }
+      if (activityChanged) runtimeStatusStore.updateActivity(agentId, activity, { tool: result.tool, atMs })
+      if (statusChanged || activityChanged) {
+        await fleetStore.updateAgentStatus?.(agentId, status, activity, result.tool, ts)
+      }
+      if (activityChanged && activity === 'thinking') touchActivity(agentId)
+      broadcastEvent('agent-status', { agent: agentId, status, activity, tool: result.tool || null, ts })
     }
     broadcastState()
     return
@@ -9231,11 +9104,6 @@ async function handleDaemonWsMessage(ws, msg) {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
-    markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
-      source: 'agent-activity',
-      daemon_key: ws._daemonKey,
-      daemon_boot_id: ws._bootId,
-    })
     touchActivity(agent_id)
     if (fleetStore?.updateHeartbeat) {
       await fleetStore.updateHeartbeat(agent_id)
@@ -9263,15 +9131,6 @@ async function handleDaemonWsMessage(ws, msg) {
     const serverReceivedAtMs = Date.now()
     const { agent_id, tool, arg, input } = msg
     if (!agent_id) return
-    markAgentAlive(agent_id, Date.parse(msg.ts) || serverReceivedAtMs, {
-      source: 'daemon-activity-event',
-      daemon_key: ws._daemonKey,
-      daemon_boot_id: ws._bootId,
-    })
-    runtimeStatusStore.updateActivity(agent_id, tool ? `tool_call:${tool}` : 'activity', {
-      tool,
-      atMs: Date.parse(msg.ts) || serverReceivedAtMs,
-    })
     const sourceEditActivity = recordSourceEditActivity(msg)
     serverActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.SERVER_ACCEPTED, msg, 1, {
       type: 'activity-event',
@@ -9615,34 +9474,6 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!entry) return // unknown / already-timed-out RPC
     if (msg.error) entry.reject(rpcReplyError(msg))
     else entry.resolve(msg.result)
-    return
-  }
-
-  if (type === 'agent-thinking') {
-    if (msg.agentId) {
-      if (msg.thinking) {
-        _thinkingState.set(msg.agentId, Date.now())
-        touchActivity(msg.agentId)
-      } else {
-        // thinking → idle edge = turn end (see emitTurnEnded; deduped by _thinkingState).
-        const startedAt = _thinkingState.get(msg.agentId)
-        _thinkingState.delete(msg.agentId)
-        if (startedAt !== undefined) await emitTurnEnded(msg.agentId, startedAt)
-      }
-      broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
-    }
-    return
-  }
-
-  if (type === 'agent-compacting') {
-    if (msg.agentId) {
-      if (msg.compacting) {
-        _compactingState.set(msg.agentId, Date.now())
-      } else {
-        _compactingState.delete(msg.agentId)
-      }
-      broadcastEvent('agent-compacting', { agent: msg.agentId, compacting: !!msg.compacting })
-    }
     return
   }
 

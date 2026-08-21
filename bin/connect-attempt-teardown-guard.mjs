@@ -151,7 +151,7 @@ if (start === -1) {
   // failure this whole file exists to prevent.
   const TEARDOWN = [
     'teardownWatchers(',
-    'agentLiveness.stop()',
+    'alivenessCache.clear()',
     '_serverReady = false',
     'ACTIVITY_DELIVERY_STAGES.DAEMON_WS_DISCONNECTED',
   ]

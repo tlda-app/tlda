@@ -86,7 +86,6 @@ function installTransportStub({ persistedPreamble = null, failMetadataReads = 0 
         }))
       }
       if (operation === 'resolve-chat-recipients') return { recipients: ['fleet:skip'] }
-      if (operation === 'agent-status') return { ok: true }
       throw new Error(`unexpected ephemeral operation ${operation}`)
     },
     durable: async (operation, payload) => {

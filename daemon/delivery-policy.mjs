@@ -9,10 +9,7 @@ const DURABLE_TYPES = new Set([
   // name is the only thing it shares with activity-event.
   'agent-route',
   'daemon-roster',
-  'agent-compacting',
   'agent-context',
-  'agent-status',
-  'agent-thinking',
   'daemon-warning',
   'jsonl-index',
   'native-task-event',
@@ -29,11 +26,9 @@ const EPHEMERAL_FIFO_TYPES = new Set([
 ])
 
 const LATEST_WINS_TYPES = new Set([
-  'agent-liveness',
-  // A snapshot is a complete description of what is running right now, so a
-  // newer one wholly supersedes an older one — queueing stale snapshots behind a
-  // reconnect would replay a past state over the present one.
-  'agent-liveness-snapshot',
+  // The status batch is a complete description of every bound agent on this
+  // daemon, so a newer tick wholly supersedes an older one.
+  'agent-status',
   'terminal-size',
   // A heartbeat, not activity. Skip: "a heartbeat is not activity", and on the
   // rest: "we dont drop activity dude" -- a lost activity event is data loss,

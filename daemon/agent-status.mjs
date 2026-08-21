@@ -17,58 +17,29 @@ export function createAgentStatus({
   log,
   getAgents,
   harnessForAgent,
+  listSessions,
   isConnected,
-  // Required, from daemon.yaml `statusScanSeconds` via getStatusScanMs(). No env
-  // var and no hardcoded default: a silent `|| 5000` is the generic-config
-  // fallback pattern this codebase is removing, and it hid the polling cadence
-  // from the one place operators look.
-  //
-  // BEFORE YOU LOWER THIS — measure what it multiplies. Two commands run per
-  // scan and they cost very differently:
-  //
-  //   tmux list-sessions   ~18ms   ONCE for the whole box, flat in agent count
-  //   tmux capture-pane    ~18ms   PER ARMED AGENT, and run serially below
-  //
-  // Measured on the Mini, 2026-07-25, 13 live sessions: list-sessions 18.0ms
-  // (min 15.2, max 25.7, n=30); capture-pane across all 13 took 234.9ms serial,
-  // 77.2ms if issued in parallel — which this loop does not do.
-  //
-  // So the poll's cost is dominated by capture-pane and scales with the number
-  // of ARMED agents, not with the roster. Serially, 13 armed agents cost:
-  //
-  //   at 5s    4.70% of a core   ← the cadence this replaced (the old `|| 5000`)
-  //   at 3s    7.83%             1.7x today
-  //   at 2.5s  9.40%             2.0x today
-  //
-  // Anchor on 5s: that is what the box has actually been paying. (Do not compare
-  // against the 30s liveness batch — that was a different timer, now deleted, and
-  // measuring against it makes a 2x change look like 12x.)
-  //
-  // Going parallel buys ~3x. This is the enumerate-per-agent pattern
-  // (docs/fleet-design-rules.md) — list-sessions answers a question for the whole
-  // box in one command, capture-pane asks it once per agent.
-  //
-  // The daemon is not the only cost either: applying liveness on the SERVER has
-  // its own per-report cost that scales with roster size. That is a different
-  // machine and a different mechanism — neither number answers the other.
+  daemonKey,
+  daemonBootId,
   statusScanMs,
   statusLingerMs = parseInt(process.env.TLDA_STATUS_LINGER_MS, 10) || 30_000,
   idleConfirmScans = 2,
   setIntervalFn = setInterval,
-  capturePane = (tmuxSession) => execFileP('tmux',
+  capturePane = tmuxSession => execFileP('tmux',
     [...(tmuxArgs || []), 'capture-pane', '-t', exactTmuxWindowTarget(tmuxSession), '-p', '-S', `-${THINKING_SCAN_LINES}`],
     { timeout: 3000, encoding: 'utf8' }),
-}) {
+} = {}) {
   if (!Number.isFinite(statusScanMs) || statusScanMs <= 0) {
     throw new Error(`createAgentStatus requires statusScanMs (got ${JSON.stringify(statusScanMs)}) — set statusScanSeconds in daemon.yaml`)
   }
+  if (typeof listSessions !== 'function') throw new Error('createAgentStatus requires listSessions')
+
   let statusScanInterval = null
+  let reportSeq = 0
   const armedSince = new Map()
   const idleScans = new Map()
   const classifierState = new Map()
-  const prevThinking = new Map()
-  const prevCompacting = new Map()
-  const prevAgentStatus = new Map()
+  const effectiveThinking = new Map()
   const prevApprovalFP = new Map()
   let scanInFlight = false
   let scanAgain = false
@@ -81,66 +52,41 @@ export function createAgentStatus({
     if (agentId) armedSince.set(agentId, Date.now())
   }
 
-  function armBySession(tmux_session) {
-    if (!tmux_session) return
+  function armBySession(tmuxSession) {
+    if (!tmuxSession) return
     for (const agent of getAgents()) {
-      if (agent.tmux_session !== tmux_session) continue
-      if (isObservableDaemonProcessBinding(agent)) armAgent(agent.id)
+      if (agent.tmux_session === tmuxSession && isObservableDaemonProcessBinding(agent)) armAgent(agent.id)
     }
   }
 
-  function emitAgentStatus(agentId, state, tool = null) {
-    if (!agentId || !state) return
-    if (prevAgentStatus.get(agentId) === state) return
-    prevAgentStatus.set(agentId, state)
-    log?.info?.(`agent status transition: agent=${agentId} state=${state}`)
-    sendMsg({ type: 'agent-status', agentId, state, tool, ts: new Date().toISOString() })
-  }
-
   function disarmAgent(agentId) {
-    if (prevThinking.get(agentId) === true) sendMsg({ type: 'agent-thinking', agentId, thinking: false })
-    if (prevCompacting.get(agentId) === true) sendMsg({ type: 'agent-compacting', agentId, compacting: false })
     armedSince.delete(agentId)
     idleScans.delete(agentId)
     classifierState.delete(agentId)
-    prevThinking.delete(agentId)
-    prevCompacting.delete(agentId)
+    effectiveThinking.delete(agentId)
     prevApprovalFP.delete(agentId)
   }
 
-  function emitThinkingEdge(agentId, isThinking) {
+  function thinkingState(agentId, isThinking) {
     const decision = decideThinkingEdge(
-      prevThinking.get(agentId) === true,
+      effectiveThinking.get(agentId) === true,
       idleScans.get(agentId) || 0,
       isThinking,
       idleConfirmScans,
     )
-    prevThinking.set(agentId, decision.prev)
+    effectiveThinking.set(agentId, decision.prev)
     if (decision.idleCount) idleScans.set(agentId, decision.idleCount)
     else idleScans.delete(agentId)
-    if (decision.emit !== null) sendMsg({ type: 'agent-thinking', agentId, thinking: decision.emit })
     return decision.prev
   }
 
-  function emitCompactingEdge(agentId, isCompacting) {
-    if (isCompacting !== (prevCompacting.get(agentId) === true)) {
-      prevCompacting.set(agentId, isCompacting)
-      sendMsg({ type: 'agent-compacting', agentId, compacting: isCompacting })
-    }
-    return isCompacting
-  }
-
-  async function scanAgentPaneStatus(agent) {
+  async function inspectArmedPane(agent) {
     let pane
     try {
-      const { stdout } = await capturePane(agent.tmux_session)
-      pane = stdout
+      pane = (await capturePane(agent.tmux_session)).stdout
     } catch {
-      const effectiveThinking = emitThinkingEdge(agent.id, false)
-      const effectiveCompacting = emitCompactingEdge(agent.id, false)
-      if (!effectiveThinking && !effectiveCompacting) emitAgentStatus(agent.id, 'hibernating')
       disarmAgent(agent.id)
-      return { busy: false }
+      return { activity: 'unknown', tool: null, busy: false }
     }
 
     const classified = classifyPane(
@@ -152,17 +98,14 @@ export function createAgentStatus({
     if (classified.state) classifierState.set(agent.id, classified.state)
     else classifierState.delete(agent.id)
 
-    const effectiveThinking = emitThinkingEdge(agent.id, classified.thinking)
-    const effectiveCompacting = emitCompactingEdge(agent.id, classified.compacting)
-
-    const statusState = classified.approval
+    const thinking = thinkingState(agent.id, classified.thinking)
+    const activity = classified.approval
       ? 'needs_terminal_attention'
-      : effectiveCompacting
+      : classified.compacting
         ? 'compacting'
-        : effectiveThinking
+        : thinking
           ? 'thinking'
           : 'idle'
-    emitAgentStatus(agent.id, statusState)
 
     if (classified.approval) {
       if (classified.approvalFp !== prevApprovalFP.get(agent.id)) {
@@ -172,58 +115,79 @@ export function createAgentStatus({
     } else {
       prevApprovalFP.delete(agent.id)
     }
-    return { busy: classified.thinking || classified.compacting }
+
+    return { activity, tool: null, busy: classified.thinking || classified.compacting }
   }
 
-  async function scanArmedStatus() {
+  async function scanStatus(reason = 'periodic-status-scan') {
     if (scanInFlight) {
       scanAgain = true
       return
     }
     if (!isConnected()) return
-    if (!armedSince.size) return
     scanInFlight = true
     try {
       do {
         scanAgain = false
+        let listed
+        try {
+          listed = await listSessions()
+        } catch (error) {
+          log?.warn?.(`agent status session list failed (${reason}): ${error.message}`)
+          return
+        }
+
         const now = Date.now()
-        const agents = getAgents()
-        for (const agentId of [...armedSince.keys()]) {
-          const agent = agents.find(a => a.id === agentId)
-          if (!isObservableDaemonProcessBinding(agent)) {
-            disarmAgent(agentId)
+        const liveSessions = new Set(listed.sessions || [])
+        const results = []
+        for (const agent of getAgents().filter(isObservableDaemonProcessBinding)) {
+          if (!liveSessions.has(agent.tmux_session)) {
+            disarmAgent(agent.id)
+            results.push({ agent_id: agent.id, status: 'hibernating', activity: 'unknown', tool: null })
             continue
           }
-          let busy = false
-          try { ({ busy } = await scanAgentPaneStatus(agent)) } catch { busy = false }
-          if (busy) {
-            armedSince.set(agentId, now)
-          } else if (shouldDisarm(now, armedSince.get(agentId) || 0, false, statusLingerMs)) {
-            disarmAgent(agentId)
+
+          let observed = { activity: 'unknown', tool: null, busy: false }
+          if (isArmed(agent.id)) observed = await inspectArmedPane(agent)
+          results.push({ agent_id: agent.id, status: 'awake', activity: observed.activity, tool: observed.tool })
+          if (observed.busy) armedSince.set(agent.id, now)
+          else if (isArmed(agent.id) && shouldDisarm(now, armedSince.get(agent.id) || 0, false, statusLingerMs)) {
+            disarmAgent(agent.id)
           }
         }
-      } while (scanAgain && isConnected() && armedSince.size)
+
+        reportSeq += 1
+        const ts = new Date().toISOString()
+        sendMsg({
+          type: 'agent-status',
+          agents: results,
+          snapshot_complete: true,
+          daemon_key: daemonKey,
+          daemon_boot_id: daemonBootId,
+          report_seq: reportSeq,
+          reason,
+          ts,
+        })
+      } while (scanAgain && isConnected())
     } finally {
       scanInFlight = false
-      if (scanAgain && isConnected() && armedSince.size) {
-        void scanArmedStatus()
-      }
+      if (scanAgain && isConnected()) void scanStatus(reason)
     }
   }
 
   function start() {
-    if (statusScanInterval) return
-    log?.info?.('agent status watcher sync: armed=0')
-    statusScanInterval = setIntervalFn(scanArmedStatus, statusScanMs)
+    const initialScan = scanStatus('status-watcher-start')
+    if (statusScanInterval) return initialScan
+    statusScanInterval = setIntervalFn(() => { void scanStatus() }, statusScanMs)
     statusScanInterval?.unref?.()
+    return initialScan
   }
 
   return {
     armAgent,
     armBySession,
-    emitAgentStatus,
     isArmed,
-    scanArmedStatus,
+    scanStatus,
     start,
   }
 }
