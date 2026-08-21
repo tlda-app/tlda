@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { useEditor, useValue, type Editor } from 'tldraw'
 import { CanvasClipPanel } from '../CanvasClipPanel'
 import { ProjectContext } from '../PanelContext'
@@ -18,12 +18,7 @@ import {
   spatialMapActivationSource,
   zoomToSpatialWorld,
 } from '../spatialDocumentWorld'
-import {
-  getSpatialWorldUi,
-  hoverSpatialWorldNode,
-  selectSpatialWorldNode,
-  subscribeSpatialWorldUi,
-} from '../spatialDocumentWorldUi'
+import { selectSpatialWorldNode } from '../spatialDocumentWorldUi'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 import { readingPositionStore } from '../readingPositionStore'
 import { isProjectMapShape } from './project-map-shape-predicate'
@@ -38,8 +33,8 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     [editor, project?.projectName, project?.title],
   )
   const zoom = useValue('project-tab-zoom', () => editor.getZoomLevel(), [editor])
-  const ui = useSyncExternalStore(subscribeSpatialWorldUi, getSpatialWorldUi)
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([])
+  const [selectedOutputFile, setSelectedOutputFile] = useState<string | null>(null)
   useEffect(() => {
     if (!project?.projectName) return
     let active = true
@@ -51,17 +46,8 @@ export function ProjectTab({ query = '' }: { query?: string }) {
       .catch(() => { if (active) setProjectDocuments([]) })
     return () => { active = false }
   }, [project?.projectName])
-  const placedOutputFiles = new Set(nodes.map(node => node.documentRef.path).filter(Boolean))
-  // The main document is represented by the primary spatial node. Every root
-  // that is not already represented by a spatial node remains selectable here.
-  const unplacedDocuments = projectDocuments.filter(document =>
-    !placedOutputFiles.has(document.outputFile)
-  )
   const normalizedQuery = query.trim().toLowerCase()
-  const visibleNodes = nodes.filter(node =>
-    !normalizedQuery || node.title.toLowerCase().includes(normalizedQuery)
-  )
-  const visibleUnplacedDocuments = unplacedDocuments.filter(document =>
+  const visibleProjectDocuments = projectDocuments.filter(document =>
     !normalizedQuery || document.title.toLowerCase().includes(normalizedQuery)
   )
 
@@ -102,6 +88,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
 
   const activateUnplaced = useCallback(async (document: ProjectDocument) => {
     if (!project?.projectName) return
+    setSelectedOutputFile(document.outputFile)
     if (document.format === 'svg') {
       const targetName = document.outputFile.replace(/-page-1\.svg$/i, '')
       let pageOffset = 0
@@ -117,6 +104,11 @@ export function ProjectTab({ query = '' }: { query?: string }) {
         }
         pageOffset += target.pages
       }
+      return
+    }
+    const placed = nodes.find(node => node.documentRef.path === document.outputFile)
+    if (placed) {
+      activate(placed.id)
       return
     }
     const source = currentSpatialDocument(editor, nodes)
@@ -163,7 +155,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
       editor.getCamera(),
       readingPositionStore(project.projectName),
     )
-  }, [editor, nodes, project?.projectName, project?.title])
+  }, [activate, editor, nodes, project?.projectName, project?.title])
 
   return (
     <div className="doc-panel-content project-tab">
@@ -173,29 +165,12 @@ export function ProjectTab({ query = '' }: { query?: string }) {
         returning={zoom <= SPATIAL_MAP_ZOOM && !!getSavedSpatialMapView(editor)}
         onNavigate={toggleMap}
       />
-      {visibleNodes.length === 0 && visibleUnplacedDocuments.length === 0 && <div className="panel-empty">No documents found</div>}
-      {visibleNodes.map(node => {
-        const active = ui.hoveredNodeId === node.id || ui.selectedNodeId === node.id
-        return (
-          <button
-            type="button"
-            key={node.id}
-            className={`project-document-row${active ? ' active' : ''}`}
-            onPointerEnter={() => hoverSpatialWorldNode(node.id)}
-            onPointerLeave={() => hoverSpatialWorldNode(null)}
-            onFocus={() => hoverSpatialWorldNode(node.id)}
-            onBlur={() => hoverSpatialWorldNode(null)}
-            onClick={() => activate(node.id)}
-          >
-            {node.title}
-          </button>
-        )
-      })}
-      {visibleUnplacedDocuments.map(document => (
+      {visibleProjectDocuments.length === 0 && <div className="panel-empty">No documents found</div>}
+      {visibleProjectDocuments.map(document => (
         <button
           type="button"
-          key={document.outputFile}
-          className="project-document-row"
+          key={document.sourceFile}
+          className={`project-document-row${selectedOutputFile === document.outputFile ? ' active' : ''}`}
           onClick={() => void activateUnplaced(document)}
         >
           {document.title}
