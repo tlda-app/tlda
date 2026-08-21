@@ -756,13 +756,13 @@ export async function extractBuildErrors(name) {
   if (!project) return { errors: [], warnings: [] }
 
   // latex.log is preserved by build-runner after latexmk runs
-  const logPath = join(projectsDir, name, 'latex.log')
+  const logPath = join(projectDir(name), 'latex.log')
   const logText = await readTextOrNull(logPath)
   if (logText === null) return { errors: [], warnings: [] }
   const result = parseLatexErrors(logText)
 
   // Enrich errors with source context (±2 lines around the error)
-  const srcDir = join(projectsDir, name, 'source')
+  const srcDir = sourceDir(name)
   const mainFile = project.mainFile || null
   for (const err of result.errors) {
     if (!err.line) continue
