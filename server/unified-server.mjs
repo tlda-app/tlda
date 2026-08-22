@@ -5883,6 +5883,26 @@ function acknowledgeMcpWakeNotification(ackId, agentId) {
   return true
 }
 
+// Step 2 of the notification proposal: a refusal is not silence.
+//
+// The MCP has several ways to receive a notice and decline to surface it — the
+// sender is the recipient, the notice already arrived by terminal, the harness
+// kind is unhandled, the channel simply returned false. Every one of them used
+// to reach the server as `mcp-ack-timeout`, indistinguishable from a wedged
+// process, because the only thing that could resolve the wait was success and
+// the only other outcome was the clock.
+//
+// So `mcp-ack-timeout` was a bucket of five states wearing the name of one, and
+// step 3's symptom vocabulary would have inherited that — reporting "this agent
+// is not responding" to a daemon about an agent that answered immediately and
+// said no. A refusal is not a liveness fault and must not provoke a remedy.
+function refuseMcpWakeNotification(ackId, agentId, reason) {
+  const pending = _pendingMcpWakeAcks.get(ackId)
+  if (!pending || pending.agentId !== agentId) return false
+  pending.resolve({ ok: false, refused: true, reason: reason || 'unspecified' })
+  return true
+}
+
 async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}) {
   if (!nudgeText) return { ok: false, reason: 'no-notification-text' }
   const sockets = openFleetSocketsForAgent(agent.id)
@@ -5959,7 +5979,10 @@ async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}
       trace_id: traceId,
       component: 'server',
       operation: 'wake.mcp-notify',
-      status: result.ok ? 'acknowledged' : 'fallback',
+      // A refusal gets its own status. It is not `acknowledged` — the notice was
+      // not surfaced — and it is not `fallback`, because there is nothing wrong
+      // with this agent to fall back about.
+      status: result.ok ? 'acknowledged' : result.refused ? 'refused' : 'fallback',
       detail: { agent: agent.id, ack_id: ackId, reason: result.reason || null },
     })
   }
@@ -8084,6 +8107,16 @@ async function dispatchFleetWsMessage(ws, msg) {
     const ackId = msg.ack_id
     if (!agentId || !ackId) { error('channel-notification-ack requires agent and ack_id'); return }
     if (ws._tldaAgentId !== agentId) { error('channel-notification-ack agent does not match this connection'); return }
+    // `acknowledged: false` is a nack — the MCP received the notice and declined
+    // to surface it, and said so. Distinguished from an absent ack, which is the
+    // clock running out on a process that may be wedged. Same call, same id, one
+    // field: an MCP that does not know about nacks still sends the old shape and
+    // is read as an ack, exactly as before.
+    if (msg.acknowledged === false) {
+      const refused = refuseMcpWakeNotification(ackId, agentId, msg.reason)
+      reply({ ok: true, acknowledged: false, refused })
+      return
+    }
     const acknowledged = acknowledgeMcpWakeNotification(ackId, agentId)
     reply({ ok: true, acknowledged })
     return
