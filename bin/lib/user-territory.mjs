@@ -2,10 +2,11 @@
  * User territory: the Git state in a person's own checkout that belongs to the
  * person and not to tlda.
  *
- * Skip's rule is that the app does not touch it — "the app DOES NOT TOUCH MAIN
- * EVER." This module makes that checkable as one thing rather than as a handful
- * of ad-hoc assertions, so every path that runs against a real checkout (the
- * shadow mirror, `project link`, settle) can be held to the same standard.
+ * The rule, relayed rather than quoted: app/daemon never touches the person's
+ * branch; an explicitly user-invoked relay owns merge-to-main and push. This
+ * module makes that checkable as one thing rather than as a handful of ad-hoc
+ * assertions, so every path that runs against a real checkout (the shadow
+ * mirror, `project link`, settle) can be held to the same standard.
  *
  * What is IN user territory:
  *   - every branch ref under refs/heads/, and where HEAD points
