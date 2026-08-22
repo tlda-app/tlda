@@ -5766,7 +5766,7 @@ function startChannelWS({ bootstrap = false } = {}) {
       const reconnect = _channelHasOpened;
       _channelHasOpened = true;
       if (activeAgentId()) setTimeout(_flushUnread, 500).unref?.();
-      if (!activeAgentId() || !reconnect) return;
+      if (!activeAgentId()) return;
       const loginBody = {
         agent_id: activeAgentId(),
         session_id: currentTransportSessionId() || undefined,
@@ -5778,7 +5778,7 @@ function startChannelWS({ bootstrap = false } = {}) {
       mcpFleetTransport.durable('login', loginBody)
         ?.then(() => flushFleetTransport({ limit: 100 }))
         ?.catch(e => process.stderr.write(`[fleet-channel] re-login/flush failed: ${e.message}\n`));
-      process.stderr.write(`[fleet-channel] re-logged-in ${activeAgentId()}\n`);
+      process.stderr.write(`[fleet-channel] ${reconnect ? 're-' : ''}logged-in ${activeAgentId()}\n`);
     },
     onActivity: () => {
       resetWsRequestIdleTimers(_wsPending);
