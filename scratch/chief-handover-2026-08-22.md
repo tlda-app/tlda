@@ -114,6 +114,37 @@ removal, and it is a decision rather than a chore.
 starting a 157-row triage instead of them would be the substitution this file
 already warns about twice.
 
+## Memory leak: five hours measured, no leak found — in the wrong condition
+
+Skip reported a frontend memory leak. Read-only CDP against his own tab,
+**123 samples over five hours, zero unreachable**:
+
+```
+quarter   listeners min   median    max      heapUsed min   median
+Q1                 1087     3384   7422              16.9     19.5
+Q4                 1087     4764   9333              17.7     22.0
+```
+
+**The floor does not rise.** The listener minimum is 1087 in the first quarter
+and 1087 in the last, recurring as late as 16:31 — and the heap floor is flat at
+~17 MB throughout. Medians and peaks climb; the baseline does not. **Everything
+allocated is being reclaimed, which is the opposite of a leak** — a leak has a
+rising floor, and this has a flat floor under growing peaks.
+
+**The growing peaks are still real** and are consistent with the per-agent
+`dangerouslySetInnerHTML` teardown: listener churn between roughly 1,100 and
+9,300 with the DOM completely static.
+
+**And the caveat that matters more than the result: `nodes` was 1941 on all 123
+samples and `documents` was 2.** The DOM never changed, so his tab sat idle at
+the root with no project open for the entire window. **This is a firm negative
+about a condition that is not the one he reported it in.** Treat it as "not
+reproduced idle", never as "there is no leak" — it is one measurement away from
+being a rigorous result about nobody.
+
+A second watch is running to catch his next working session, which is the only
+window in which this can be established either way.
+
 ## The one process lesson worth carrying
 
 Three false zeros tonight: `roster(cwd:)`, which is empty for every agent; a
