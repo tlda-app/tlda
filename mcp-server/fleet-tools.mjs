@@ -1697,12 +1697,12 @@ export function getFleetTools() {
     // ---- Fleet Operations ----
     {
       name: 'roster',
-      description: "Fleet roster: whole-fleet awake/hibernating/dead totals plus a row per agent (name, status, last-seen, model, cwd, current activity). Passive read — reads the registry, wakes no one. Filter to a slice with a filter expression (the same one chat uses) so you don't pull the whole fleet: e.g. awake agents, a label, a name, cwd:<path>, or model:<model>.",
+      description: "Fleet roster: whole-fleet awake/hibernating/dead totals plus a row per agent (name, status, last-seen, model, current activity). Passive read — reads the registry, wakes no one. Filter to a slice with a filter expression (the same one chat uses) so you don't pull the whole fleet: e.g. awake agents, a label, a name, or model:<model>.",
       inputSchema: {
         type: 'object',
         properties: {
           filter: {
-            description: 'Optional filter expression to scope rows: `|` = or, `&` = and, `!` = not, parens group. Tokens are the `awake`/`hibernating` pseudo-labels, agent names, ids, explicit labels, `cwd:<path>`, and `model:<model>`. Examples: "awake" = awake agents; "awake & pickup" = awake AND labelled pickup; "model:gpt-5.5"; "cwd:/Users/skip/work/tlda"; "awake & !goose" = awake but not goose. Omit to list all agents.',
+            description: 'Optional filter expression to scope rows: `|` = or, `&` = and, `!` = not, parens group. Tokens are the `awake`/`hibernating` pseudo-labels, agent names, ids, explicit labels, and `model:<model>`. Examples: "awake" = awake agents; "awake & pickup" = awake AND labelled pickup; "model:gpt-5.5"; "awake & !goose" = awake but not goose. Omit to list all agents.',
             type: 'string',
           },
           limit: { description: 'Max rows to return (default 50, max 500). Totals are always whole-fleet regardless of limit.', type: 'number' },
@@ -5035,11 +5035,9 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const modelSummary = formatCountSummary(data.summary?.models);
       const statusSummary = formatCountSummary(data.summary?.inbox_statuses);
       const channelSummary = formatCountSummary(data.summary?.delivery_channels);
-      const cwdSummary = formatCountSummary(data.summary?.working_dirs);
       if (modelSummary) summaryLines.push(`Models: ${modelSummary}`);
       if (statusSummary) summaryLines.push(`Inbox statuses: ${statusSummary}`);
       if (channelSummary) summaryLines.push(`Delivery channels: ${channelSummary}`);
-      if (cwdSummary) summaryLines.push(`Working dirs: ${cwdSummary}`);
       const summaryText = summaryLines.length ? `\n${summaryLines.join('\n')}` : '';
 
       if (rows.length === 0) {
@@ -5058,7 +5056,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         const seen = a.last_seen_ago_s == null ? 'never' : a.last_seen_ago_s < 90 ? `${a.last_seen_ago_s}s` : a.last_seen_ago_s < 5400 ? `${Math.round(a.last_seen_ago_s / 60)}m` : `${Math.round(a.last_seen_ago_s / 3600)}h`;
         const act = a.activity ? `${a.activity}${a.tool ? `:${a.tool}` : ''}` : '';
         const health = formatActivityHealthStatus(a.activity_health, { idleText: act });
-        return { name: a.name, status: a.status, seen, inbox: a.inbox_status || '', delivery: a.delivery_channel || '', model: a.model || '', cwd: a.cwd || '', act: health || act };
+        return { name: a.name, status: a.status, seen, inbox: a.inbox_status || '', delivery: a.delivery_channel || '', model: a.model || '', act: health || act };
       };
       const f = rows.map(fmt);
       const w = (k) => Math.max(k.length, ...f.map(r => String(r[k]).length));
@@ -5067,9 +5065,9 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const wc = w('delivery');
       const wm = w('model');
       const lines = f.map(r =>
-        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.inbox.padEnd(wi)}  ${r.delivery.padEnd(wc)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
+        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.inbox.padEnd(wi)}  ${r.delivery.padEnd(wc)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}`.trimEnd()
       );
-      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'delivery'.padEnd(wc)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
+      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'delivery'.padEnd(wc)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}`.trimEnd();
       // The page, said at the end as well as in the scope hint above. This is the
       // surface the fleet-table incident came through: 500 rows of 2154 read as
       // the whole fleet, and "zero dead agents" reported from it.
