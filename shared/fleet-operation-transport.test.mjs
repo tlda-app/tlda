@@ -44,3 +44,22 @@ test('keyed durable retry rejects changed payload under the same operation ident
     /payload changed/
   )
 })
+
+test('a synchronous keyed adapter failure does not poison later reuse', async () => {
+  let calls = 0
+  const transport = createFleetOperationTransport({
+    sendEphemeral: () => assert.fail('ephemeral send not expected'),
+    sendDurable: (_operation, payload) => {
+      calls++
+      if (calls === 1) throw new Error('sync adapter failed')
+      return { ok: true, payload }
+    },
+  })
+  await assert.rejects(
+    Promise.resolve().then(() => transport.durable('login', { agent_id: 'fleet:first' }, { coalesceKey: 'channel' })),
+    /sync adapter failed/
+  )
+  const result = await transport.durable('login', { agent_id: 'fleet:second' }, { coalesceKey: 'channel' })
+  assert.equal(calls, 2)
+  assert.deepEqual(result.payload, { agent_id: 'fleet:second' })
+})
