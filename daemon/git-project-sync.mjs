@@ -278,21 +278,13 @@ export function createGitProjectSync({
     const conflicts = await unresolved()
     if (conflicts.length) return { ok: false, status: 'conflicted', conflicted: conflicts }
     const fetched = await rev(fetchedRef)
-    const applied = await rev(appliedRef)
     const local = await rev(localRef)
-    if (local && fetched && !(await isAncestor(local, fetched)) && !(await isAncestor(fetched, local))) {
-      // Diverged: local holds work the shared head does not, and the shared head
-      // holds work local does not. Resubmitting local here would propose it OVER
-      // the accepted revision and move the shared head backwards, losing an edit
-      // that was already accepted.
-      //
-      // Parking is the same answer headChanged gives. The accepted revision stays
-      // reachable at the fetched ref, local stays authoritative in the checkout,
-      // and the person reconciles the two. Nothing is merged and nothing is lost.
-      return { ok: true, status: 'diverged', revision: fetched, localRevision: local }
-    }
     if (local && (!fetched || !(await isAncestor(local, fetched)))) return pushRevision(local)
-    return { ok: true, status: 'current', revision: applied || fetched || local }
+    // Not `applied || fetched || local`. Every write to refs/tlda/applied/<binding>
+    // was inside the accept path, so it never advances again — reporting it as the
+    // current revision would report a fossil. Existing values are left alone on
+    // disk: stopped writing, did not remove.
+    return { ok: true, status: 'current', revision: local || fetched }
   }
 
   async function members() {
@@ -302,7 +294,10 @@ export function createGitProjectSync({
   }
 
   return {
-    refs: { localRef, appliedRef, sharedRef, fetchedRef },
+    // appliedRef is not exported. Nothing writes it any more, so publishing the
+    // name invites a reader that would be reading a fossil. The refs themselves
+    // stay on disk in people's checkouts, untouched.
+    refs: { localRef, sharedRef, fetchedRef },
     editClusterSettled: () => serialized(settle),
     submitCurrent: options => serialized(() => submitCurrent(options)),
     headChanged: revision => serialized(() => headChanged(revision)),

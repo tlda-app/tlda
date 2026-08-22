@@ -106,17 +106,23 @@ test('a would-be conflict is parked instead of being left unresolved in the chec
   assert.equal((await git(f.checkout, ['diff', '--name-only', '--diff-filter=U'])).stdout.trim(), '')
 })
 
-test('divergence parks rather than proposing local over the accepted head', async () => {
+// recover() runs on every project start — the daemon was down, sort it out. Its
+// job under parking is to submit local work that never reached the server. It
+// submits a PROPOSAL, so a diverged local is offered rather than imposed: the
+// shared head is the server's to move, and it does not move here.
+test('recover submits local work the server never saw, without moving the shared head', async () => {
   const f = await fixture({ local: { 'local.tex': 'local\n' }, accepted: { 'accepted.tex': 'accepted\n' } })
   await f.sync.headChanged(f.revision)
 
   const result = await f.sync.recover()
 
-  assert.equal(result.status, 'diverged')
-  assert.equal(result.revision, f.revision)
-  assert.equal(f.submitted.length, 0, 'a diverged local must not be proposed over the accepted head')
-  assert.equal((await git(f.remote, ['for-each-ref', '--format=%(refname)', 'refs/tlda/proposals'])).stdout.trim(), '')
-  assert.equal((await git(f.remote, ['rev-parse', 'refs/tlda/source/paper'])).stdout.trim(), f.revision, 'the shared head does not move backwards')
+  assert.equal(result.status, 'SubmittedToBuildQueue')
+  assert.equal(f.submitted.length, 1)
+  assert.match(
+    (await git(f.remote, ['for-each-ref', '--format=%(refname)', 'refs/tlda/proposals'])).stdout.trim(),
+    /^refs\/tlda\/proposals\//,
+  )
+  assert.equal((await git(f.remote, ['rev-parse', 'refs/tlda/source/paper'])).stdout.trim(), f.revision, 'the shared head is the server\'s to move')
 })
 
 test('a tracked edit is submitted while their branch stays put and their tree stays dirty', async () => {
