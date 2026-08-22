@@ -76,7 +76,6 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       documentRoots: item.documentRoots || [],
       log,
       onSubmitted: event => onProposalSubmitted({ project: item.project, ...event }),
-      onEditClusterSettled: () => runtime.cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
     })
     const watchedMembers = new Set()
     let watcher
