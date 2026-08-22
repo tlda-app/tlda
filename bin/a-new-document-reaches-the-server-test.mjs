@@ -86,6 +86,13 @@ function makeSync(sourceDir, remote, documentRoots) {
     branch: 'main',
     remote,
     documentRoots,
+    // This whole file is about a document THE APP created, in the app's own
+    // bound working tree, where there is no person and nothing stages anything.
+    // Without this the fixture is a person's checkout, where a new unstaged file
+    // not being submitted is the accepted trade rather than a defect — so the
+    // verdict line below would be measuring the right thing and calling it by
+    // the wrong name. On a branch with no such option this is inert.
+    appOwnedWorkingTree: true,
     log: { info: () => {}, warn: () => {}, error: () => {} },
     onSubmitted: event => submitted.push(event),
   })
