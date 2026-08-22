@@ -164,6 +164,16 @@ test('missing canonical source ref is pre-first-acceptance, while other fetch fa
   await assert.rejects(broken.headChanged(), /authentication failed/)
 })
 
+// bin/settle-does-not-echo-a-proposal-test.mjs covers `equal-tree` too, from the
+// tester's side. Both are deliberate and neither is duplication: that one is the
+// independent-authorship proof and additionally asserts the REMOTE, so a push
+// that pushed and forgot to fire onSubmitted would not satisfy it. This one runs
+// inside `node --test` with the rest of the suite, which is where a future
+// regression actually gets caught — a standalone harness in bin/ only runs when
+// someone remembers it. Neither is red on main: the equal-tree line is
+// byte-identical on both branches and only its line number moved, so these are
+// coverage for live code that had none, not violations.
+//
 // Under parking, this comparison is the ONLY thing standing between a settle and
 // a proposal duplicating what the server already accepted. It used to be covered
 // by 'accepted mirror with no local difference produces no proposal echo', whose
