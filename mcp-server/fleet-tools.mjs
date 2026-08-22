@@ -1839,15 +1839,15 @@ export function getFleetTools() {
     // ---- Report Gate ----
     {
       name: 'subscription',
-      description: 'List, create, or remove persisted server-side notification subscriptions. Listing is not gated — you may list any agent\'s subscriptions. Creating and removing for another agent is a small coordination fence, not a security boundary.',
+      description: 'List, create, change the policy of, or remove persisted server-side notification subscriptions. Listing is not gated — you may list any agent\'s subscriptions. Creating, changing, and removing for another agent is a small coordination fence, not a security boundary. A mandatory row (the `to:me` slot every agent is minted with) cannot be removed; `policy` is how you turn it down to `hold`.',
       inputSchema: {
         type: 'object',
         properties: {
-          operation: { type: 'string', enum: ['list', 'create', 'remove'], description: 'Defaults to list when omitted.' },
+          operation: { type: 'string', enum: ['list', 'create', 'policy', 'remove'], description: 'Defaults to list when omitted.' },
           query: { type: 'string', description: 'For create: fleet label expression or "doc:<name>".' },
-          policy: { type: 'string', description: 'For create: immediate, batch(spec), or hold. Defaults to immediate.' },
+          policy: { type: 'string', description: 'For create and policy: immediate, batch(spec), or hold. Defaults to immediate on create.' },
           target: { type: 'string', description: 'Target agent. Defaults to this agent. Listing another agent is always allowed; creating or removing for one expects authority over it or contact with it.' },
-          id: { type: 'number', description: 'For remove: persisted subscription id.' },
+          id: { type: 'number', description: 'For policy and remove: persisted subscription id.' },
         },
       },
     },
@@ -5127,6 +5127,17 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         });
         if (data?.error) return { content: [{ type: 'text', text: `subscription create failed: ${data.error}` }], isError: true };
         return { content: [{ type: 'text', text: `Subscribed #${data.subscription_id} for ${data.owner}: ${data.query} (${data.notification_policy}).` }] };
+      }
+      if (operation === 'policy') {
+        if (args.id == null) return { content: [{ type: 'text', text: 'subscription policy requires id.' }], isError: true };
+        if (!args.policy) return { content: [{ type: 'text', text: 'subscription policy requires policy.' }], isError: true };
+        const data = await mcpFleetTransport.durable('subscription-policy', {
+          caller: activeAgentId(),
+          subscription_id: args.id,
+          notification_policy: args.policy,
+        });
+        if (data?.error) return { content: [{ type: 'text', text: `subscription policy failed: ${data.error}` }], isError: true };
+        return { content: [{ type: 'text', text: `#${data.subscription_id} ${data.query} is now ${data.notification_policy}.` }] };
       }
       if (operation === 'remove') {
         if (args.id == null) return { content: [{ type: 'text', text: 'subscription remove requires id.' }], isError: true };
