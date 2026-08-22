@@ -49,18 +49,27 @@ async function initRepo(dir) {
   await git(dir, ['config', 'user.email', 'fixture@example.test'])
 }
 
-async function setup(root, label, { mainContent }) {
+async function setup(root, label, { mainContent, baseCommit = true }) {
   const checkout = path.join(root, `checkout-${label}`)
   const remote = path.join(root, `remote-${label}`)
   await fs.promises.mkdir(checkout)
   await fs.promises.mkdir(remote)
   await initRepo(checkout)
   await initRepo(remote)
-  // A bound working tree that already has a tracked document in it, which is
+  // With baseCommit, a bound working tree that already has a tracked document —
   // the state after the first successful round trip.
-  await fs.promises.writeFile(path.join(checkout, 'main.tex'), mainContent)
-  await git(checkout, ['add', 'main.tex'])
-  await git(checkout, ['commit', '-m', 'the paper so far'])
+  //
+  // Without it, what `ensureRepo()` actually leaves behind: `git init -b main`
+  // plus user config, no add, no commit, nothing tracked, HEAD unborn. That is
+  // the state of a source room's working tree on FIRST use, and no fixture any
+  // of us wrote had that shape — every one committed a base first, because that
+  // is how people picture a repository. The bind sites are the only place this
+  // occurs and it is the case that matters.
+  if (baseCommit) {
+    await fs.promises.writeFile(path.join(checkout, 'main.tex'), mainContent)
+    await git(checkout, ['add', 'main.tex'])
+    await git(checkout, ['commit', '-m', 'the paper so far'])
+  }
   await fs.promises.writeFile(path.join(remote, 'seed'), 'x')
   await git(remote, ['add', 'seed'])
   await git(remote, ['commit', '-m', 'seed'])
@@ -92,9 +101,9 @@ async function revisionContains(remote, revision, file) {
   }
 }
 
-async function shape({ root, label, title, mainContent, newFile, newContent, documentRoots }) {
+async function shape({ root, label, title, mainContent, newFile, newContent, documentRoots, baseCommit = true }) {
   console.log(`\nSHAPE ${label}: ${title}`)
-  const { checkout, remote } = await setup(root, label, { mainContent })
+  const { checkout, remote } = await setup(root, label, { mainContent, baseCommit })
   const { sync, submitted } = makeSync(checkout, remote, documentRoots)
 
   // The app creates a document, exactly as atomicWrite does: it writes the file
@@ -105,7 +114,9 @@ async function shape({ root, label, title, mainContent, newFile, newContent, doc
   // or nothing below is about the thing being tested.
   const onDisk = fs.existsSync(path.join(checkout, newFile))
   const tracked = (await git(checkout, ['ls-files', '--', newFile])).stdout.trim() !== ''
+  const head = (await git(checkout, ['rev-parse', 'HEAD']).then(r => r.stdout.trim()).catch(() => null)) || '(unborn)'
   console.log(`  ${newFile} written by the app: on disk=${onDisk}, tracked=${tracked}`)
+  console.log(`  HEAD: ${head}`)
   if (!onDisk || tracked) {
     console.log('  FIXTURE NOT CAPABLE: the file is not an untracked app-written document.')
     return { label, capable: false, reached: null, note: 'fixture wrong' }
@@ -159,6 +170,17 @@ async function main() {
       newFile: 'chapter2.tex',
       newContent: 'a chapter the app created\n',
       documentRoots: ['main.tex'],
+    }))
+
+    results.push(await shape({
+      root,
+      label: 'C',
+      title: 'a fresh source room — nothing tracked, HEAD unborn, exactly what ensureRepo leaves',
+      baseCommit: false,
+      mainContent: null,
+      newFile: 'chapter1.tex',
+      newContent: 'the first document, created in the browser\n',
+      documentRoots: [],
     }))
 
     console.log('\n' + '='.repeat(72))
