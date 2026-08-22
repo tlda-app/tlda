@@ -78,6 +78,51 @@ export function createFleetOperationTransport({
   if (typeof sendEphemeral !== 'function') {
     throw new TypeError(`${name} transport requires sendEphemeral`)
   }
+  const coalescedDurable = new Map()
+
+  function sendCoalescedDurable(operation, payload, options) {
+    const key = String(options.coalesceKey || '').trim()
+    if (!key) return send(operation, payload, { ...options, mode: FLEET_DELIVERY.DURABLE })
+    const mapKey = `${operation}\0${key}`
+    const payloadJson = JSON.stringify(payload)
+    let state = coalescedDurable.get(mapKey)
+    if (state) {
+      if (state.payloadJson !== payloadJson) {
+        throw new Error(`${name} transport coalesced durable ${operation} payload changed for key ${key}`)
+      }
+      if (state.inFlight) return state.inFlight
+    } else {
+      const envelopeContext = { operation, payload, mode: FLEET_DELIVERY.DURABLE, options }
+      const envelope = options.envelope || createFleetOperationEnvelope({
+        operation,
+        mode: FLEET_DELIVERY.DURABLE,
+        operationId: options.operationId,
+        sender: options.sender ?? resolveSender?.(envelopeContext) ?? null,
+        destination: options.destination ?? resolveDestination?.(envelopeContext) ?? null,
+        createdAt: options.createdAt,
+        attempt: options.attempt,
+        parentOperationId: options.parentOperationId,
+        name,
+      })
+      state = { envelope, payloadJson, inFlight: null }
+      coalescedDurable.set(mapKey, state)
+    }
+    const attempt = Promise.resolve(send(operation, payload, {
+      ...options,
+      mode: FLEET_DELIVERY.DURABLE,
+      operationId: state.envelope.operation_id,
+      envelope: state.envelope,
+    }))
+    state.inFlight = attempt
+    attempt.then(result => {
+      if (state.inFlight !== attempt) return
+      state.inFlight = null
+      if (!result?.queued) coalescedDurable.delete(mapKey)
+    }, () => {
+      if (state.inFlight === attempt) coalescedDurable.delete(mapKey)
+    })
+    return attempt
+  }
 
   function send(operation, payload = {}, options = {}) {
     const op = requireOperation(operation)
@@ -158,7 +203,9 @@ export function createFleetOperationTransport({
   return Object.freeze({
     send,
     durable(operation, payload = {}, options = {}) {
-      return send(operation, payload, { ...options, mode: FLEET_DELIVERY.DURABLE })
+      return options.coalesceKey
+        ? sendCoalescedDurable(operation, payload, options)
+        : send(operation, payload, { ...options, mode: FLEET_DELIVERY.DURABLE })
     },
     ephemeral(operation, payload = {}, options = {}) {
       return send(operation, payload, { ...options, mode: FLEET_DELIVERY.EPHEMERAL })
