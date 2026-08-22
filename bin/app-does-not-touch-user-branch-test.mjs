@@ -27,9 +27,14 @@
  * The negative control runs first. A red test whose fixture never reached the
  * code is indistinguishable from a red test that found something, so the control
  * establishes that the snapshot reports "unchanged" when nothing ran. There is a
- * positive control too, on the input side: each scenario asserts that the path
- * actually reached its merge, because every early return in `mirrorArrived`
- * leaves user territory alone and would read as a pass.
+ * positive control too, on the input side: each scenario asserts that the fetch
+ * really delivered the revision, because a path that never ran leaves user
+ * territory alone and would otherwise read as a pass.
+ *
+ * The scenarios drive `headChanged()`, the entry point the daemon calls. An
+ * earlier version drove `mirrorArrived()` directly; when the accept path is
+ * deleted that function does not exist and the harness errors instead of
+ * reporting, which is not the same as passing.
  *
  * Run:  node bin/app-does-not-touch-user-branch-test.mjs
  */
@@ -45,6 +50,12 @@ import { snapshotUserTerritory, diffUserTerritory, fetchedHistoryIsAncestry } fr
 const execFileP = promisify(execFileCb)
 
 const PROJECT = 'fixture-paper'
+const SHARED_REF = `refs/tlda/source/${PROJECT}`
+const FETCHED_REF = `refs/tlda/fetched/${PROJECT}`
+
+async function gitOrNull(cwd, args) {
+  try { return (await git(cwd, args)).stdout.trim() } catch { return null }
+}
 
 async function git(cwd, args) {
   return execFileP('git', args, { cwd, timeout: 120000, maxBuffer: 64 * 1024 * 1024 })
@@ -81,32 +92,30 @@ async function makeUserCheckout(root, label, { dirty = false } = {}) {
 }
 
 /**
- * The server's accepted revision, as a commit reachable in the person's
- * repository — which is where `fetchHead()` puts it before `mirrorArrived()`
- * runs. Fetched over a real remote, so the object arrives the way it does in
- * production rather than being constructed in place.
+ * A remote the daemon can really fetch from. `fetchHead()` asks for
+ * `refs/tlda/source/<project>`, so the fixture publishes the accepted revision
+ * under exactly that ref rather than under a branch.
  */
-async function makeFetchedRevision(root, label, files) {
+async function makeRemote(root, label, files) {
   const server = await fs.promises.mkdtemp(path.join(root, `server-${label}-`))
   await initRepo(server)
   for (const [rel, content] of Object.entries(files)) await write(path.join(server, rel), content)
   await git(server, ['add', '-A'])
   await git(server, ['commit', '-m', 'server accepted a revision'])
   const { stdout } = await git(server, ['rev-parse', 'HEAD'])
-  return { dir: server, revision: stdout.trim() }
+  const revision = stdout.trim()
+  await git(server, ['update-ref', SHARED_REF, revision])
+  return { dir: server, revision }
 }
 
-async function fetchInto(userDir, serverDir, revision) {
-  await git(userDir, ['fetch', '--no-tags', serverDir, `+${revision}:refs/tlda/fetched/${PROJECT}`])
-}
-
-function makeSync(sourceDir) {
+function makeSync(sourceDir, remote) {
   return createGitProjectSync({
     sourceDir,
     project: PROJECT,
     daemonId: 'fixture-daemon',
     bindingId: 'fixture-binding',
     branch: 'main',
+    remote,
     log: { info: () => {}, warn: () => {}, error: () => {} },
   })
 }
@@ -124,22 +133,29 @@ function report(violations) {
  * Run one scenario and say what happened to the person's repository.
  * Returns true when the app wrote something it does not own.
  */
-async function scenario({ root, label, title, dirty = false, serverFiles, expectStatus }) {
+async function scenario({ root, label, title, dirty = false, serverFiles }) {
   console.log(`\nSCENARIO ${label}: ${title}`)
   const user = await makeUserCheckout(root, label, { dirty })
-  const { dir: server, revision } = await makeFetchedRevision(root, label, serverFiles)
-  await fetchInto(user, server, revision)
+  const { dir: server, revision } = await makeRemote(root, label, serverFiles)
+
+  // Capability control, part one: the fetched ref must not exist yet, or reading
+  // it afterward says nothing about this run.
+  const fetchedBefore = await gitOrNull(user, ['rev-parse', '--verify', FETCHED_REF])
 
   const before = await snapshotUserTerritory(user)
   console.log(`  the person stands on ${before.symbolicHead} at ${before.head}`)
   console.log(`  the server's accepted revision is ${revision}`)
 
-  const result = await makeSync(user).mirrorArrived(revision)
-  console.log(`  mirrorArrived returned status=${result.status} ok=${result.ok}`)
+  // headChanged() is the entry point the daemon calls, and the only one that
+  // survives both contracts. Driving mirrorArrived() directly, as this test used
+  // to, cannot run at all once the accept path is deleted — the harness errors
+  // rather than reporting, which is not the same as passing.
+  const result = await makeSync(user, server).headChanged(revision)
+  console.log(`  headChanged returned status=${result.status} ok=${result.ok}`)
 
   // The territory measurement is unconditional. An earlier version of this test
-  // returned here when the status was unexpected, and so never looked at the
-  // checkout — which hid real writes behind a fixture note.
+  // returned before it when the status was unexpected, and so never looked at
+  // the checkout — which hid real writes behind a fixture note.
   const after = await snapshotUserTerritory(user)
   const violations = diffUserTerritory(before, after)
   report(violations)
@@ -147,13 +163,16 @@ async function scenario({ root, label, title, dirty = false, serverFiles, expect
   const ancestry = await fetchedHistoryIsAncestry(user, revision, 'HEAD')
   console.log(`  fetched server history is ancestry of the person's HEAD: ${ancestry}`)
 
-  // Positive control on the input side, reported separately: every early return
-  // in mirrorArrived reaches less of the path, so a scenario that finds nothing
-  // and also did not reach its exit has established nothing either way.
-  const reached = result.status === expectStatus
-  if (!reached) console.log(`  NOTE: expected to exit at status=${expectStatus}, exited at ${result.status}`)
+  // Capability control, part two, and it is deliberately contract-independent:
+  // the fetch either delivered the revision into the checkout or it did not.
+  // Keying this on an expected status instead would make the control assert
+  // whichever contract is in force, so it would go quiet on the branch it most
+  // needs to speak up about.
+  const fetchedAfter = await gitOrNull(user, ['rev-parse', '--verify', FETCHED_REF])
+  const capable = fetchedBefore === null && fetchedAfter === revision
+  console.log(`  the fetch ran and delivered the revision: ${capable}`)
 
-  return { label, reached, failed: violations.length > 0 || ancestry, violations, ancestry, status: result.status }
+  return { label, capable, failed: violations.length > 0 || ancestry, violations, ancestry, status: result.status }
 }
 
 async function main() {
@@ -162,7 +181,7 @@ async function main() {
   let unreached = false
   try {
     // --- Negative control: the sync path is never invoked. --------------------
-    console.log('NEGATIVE CONTROL: same fixture, mirrorArrived never invoked')
+    console.log('NEGATIVE CONTROL: same fixture, the sync path never invoked')
     const control = await makeUserCheckout(root, 'control')
     const controlBefore = await snapshotUserTerritory(control)
     // Read-only work only. Nothing here may write, and that is the point.
@@ -182,49 +201,41 @@ async function main() {
       await scenario({
         root,
         label: 'A',
-        title: 'the merge succeeds — server history joins the person\'s branch',
-        // Disjoint paths, so an unrelated-histories merge resolves cleanly.
+        title: 'an arrival that would merge cleanly — disjoint paths',
         serverFiles: { 'appendix.tex': 'a section only the server has\n' },
-        expectStatus: 'merged',
       }),
       await scenario({
         root,
         label: 'B',
-        title: 'the merge conflicts — the merge is left in progress in their checkout',
-        // Same path, different content, so the same merge cannot resolve.
+        title: 'an arrival that would conflict — same path, different content',
         serverFiles: { 'main.tex': 'what the server thinks the paper says\n' },
-        expectStatus: 'conflicted',
       }),
       await scenario({
         root,
         label: 'C',
-        title: 'the person had uncommitted work — line 219 commits it before anything else',
+        title: 'the person had uncommitted work when the arrival landed',
         dirty: true,
         serverFiles: { 'appendix.tex': 'a section only the server has\n' },
-        // With a dirty checkout the path never reaches the merge: commitSettledTree
-        // parents the new commit on the fetched ref, so the ancestry test at line
-        // 229 then passes and the function reports the revision already applied.
-        expectStatus: 'already-applied',
       }),
     ]
 
     failed = scenarios.some(s => s.failed)
-    unreached = scenarios.some(s => !s.reached)
+    unreached = scenarios.some(s => !s.capable)
 
     console.log('\n' + '='.repeat(72))
     for (const s of scenarios) {
-      console.log(`  ${s.label}: ${s.failed ? 'WROTE USER TERRITORY' : 'left it alone'} (exited at ${s.status}${s.reached ? '' : ', not the expected exit'})`)
+      console.log(`  ${s.label}: ${s.failed ? 'WROTE USER TERRITORY' : 'left it alone'} (status ${s.status}${s.capable ? '' : ', FETCH DID NOT DELIVER'})`)
     }
     if (failed) {
-      // A write is a finding whether or not every scenario took the exit it was
-      // built for. An unreached exit only weakens a scenario that found nothing.
+      // A write is a finding whether or not every fixture was shown capable. An
+      // undelivered fetch only weakens a scenario that found nothing.
       console.log('\nFAIL: the app wrote into territory the person owns.')
       console.log('Rule (relayed, not quoted): app/daemon never touches main; an explicitly')
       console.log('user-invoked relay owns merge-to-main and push.')
     } else if (unreached) {
-      console.log('\nINCONCLUSIVE: a fixture found nothing and also did not reach its exit.')
+      console.log('\nINCONCLUSIVE: a fixture found nothing and its fetch never delivered.')
     } else {
-      console.log('\nPASS: mirrorArrived left user territory alone in every scenario.')
+      console.log('\nPASS: the arrival path left user territory alone in every scenario.')
     }
   } finally {
     await fs.promises.rm(root, { recursive: true, force: true })
