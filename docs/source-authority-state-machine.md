@@ -534,8 +534,9 @@ The implementation is checked at the same boundaries:
   reconciliation-required.
 - `bin/source-change-correlation-test.mjs`: one in-flight submission, queue
   merging, bounded retry, blocking, and reconnect behavior.
-- `bin/source-conflict-delivery-test.mjs`: stale-base conflicts and automatic
-  retry stopping.
+- ~~`bin/source-conflict-delivery-test.mjs`: stale-base conflicts and automatic
+  retry stopping.~~ **Deleted in `672ba4d90`.** Stale-base conflicts and
+  automatic retry stopping have no named check here since; see the note below.
 - `bin/source-server-update-apply-test.mjs`: a clean accepted server edit reaches
   a linked checkout, while a watcher-observed pending local edit is refused and
   reported with the local file left byte-identical.
@@ -579,21 +580,50 @@ covered by `bin/shadow-mirror-rpc-adapter-test.mjs`.
 
 **And it does not cross the accept.** It calls `mirror.mirrorShadowRef(...)`
 itself, with a payload it built. So it exercises the receiver and never the
-trigger — which is why it is green while no push has ever produced one of these
-commits. It is a true statement about what the daemon does when it is asked, and
-no evidence that anything asks. Whatever restores the caller has to be proven by
-something that starts at a push.
+trigger: it is a true statement about what the daemon does when it is asked, and
+no evidence that anything asks.
 
-**Known red, and not from this work:** `bin/shadow-mirror-rpc-adapter-test.mjs`
-fails on `main`. It expects the RPC params without `sourceRevision` and
-`acceptSeq`, which the adapter has been sending for some time. Verified on
-2026-08-18 by running `main`'s own copy of the module and the test in isolation.
+**It also does not currently run.** Line 66 calls `lifecycle.readAuthority()`,
+and **`readAuthority` has no definition anywhere in the tree** — a rename that
+reached its callers and never its definition; `bin/source-restart-mid-edit-test.mjs`
+records the intended name as `state()`. Executed 2026-08-22 on `main`:
+`TypeError: lifecycle.readAuthority is not a function`, thrown before the first
+assertion. **Twelve files call it**, eleven of them tests and one of them
+`bin/repair-source-replica-target.mjs`, which is a repair tool rather than a
+test.
 
-**`bin/source-conflict-delivery-test.mjs` is green as of 2026-08-18.** This
-section described it as red since `cf6e30cf0` and needing an update to the
-current contract. Somebody did that and the note outlived the repair — the same
-failure as the unreachable gate above, pointing the other way, and worse in one
-respect: a stale red hides a real one.
+So the file named for proving a commit-per-push fails to cover it for two
+independent reasons: it cannot reach the trigger by construction, and at present
+it cannot reach its assertions at all. **The list above is a list of intended
+checks, not of passing ones** — `bin/source-lifecycle-authority-test.mjs` is red
+too, from a different cause, failing at import on a missing `classifyThreeWay`
+export. Neither was known to be red before 2026-08-22, and both are named here
+as things that check the implementation.
+
+**A test's colour is not a property you can read off its code**, any more than
+invocation can be read off a call graph. Both failures in this section came from
+believing a file did what it was named for. Run it.
+
+**Both colour notes this section carried were wrong, in opposite directions, and
+each had outlived its subject.** Re-run on `main`, 2026-08-22:
+
+- `bin/shadow-mirror-rpc-adapter-test.mjs` was recorded here as **known red**,
+  expecting RPC params without `sourceRevision` and `acceptSeq`. It **passes.**
+  Somebody repaired it and the note outlived the repair — and a stale red is the
+  worse direction, because it hides a real one.
+- `bin/source-conflict-delivery-test.mjs` was recorded here as **green as of
+  2026-08-18**. **The file does not exist.** It was deleted in `672ba4d90`, "Cut
+  daemon source sync over to Git proposals". This section named it twice, once
+  as a check on stale-base conflicts and once as a colour, for a file that had
+  been gone the whole time. The nearest live successor is
+  `bin/a-conflicted-checkout-reports-synced-test.mjs`, which is not the same
+  check and is not asserted here to be one.
+
+**So a colour written into this document is worth nothing after the day it was
+written**, and neither is a filename. Both entries above read as current, both
+were checkable in one command, and nobody ran either. When you cite a check
+here, run it that day and date the result — or cite it as an intended check and
+say you did not run it.
 
 **There is a second live gate, for versioning rather than for conflicts:** the
 author's checkout gains a commit for work they did that never built. Start from
