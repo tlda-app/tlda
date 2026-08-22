@@ -405,11 +405,18 @@ export function createTerminalRpc({
     }
   }
 
+  // Two different things used to answer `already_unavailable: true`, and only one
+  // of them means the agent is down. An unresolved terminal — no ledger row for
+  // this agent on this daemon, or a row with no tmux/session recorded — means
+  // this daemon did nothing and knows nothing: the process is very likely still
+  // running. A tmux session that is already gone means the agent really is down.
+  // Callers that mark an agent hibernating on the strength of this reply need to
+  // tell those apart, so the unresolved case says so in its own field.
   async function rpcKillSession(args = {}) {
     const { tmuxSession, unavailable, reason } = resolveTerminalEndpoint(args, { allowUnavailable: true })
     if (unavailable) {
       await onSessionInventoryChanged('kill-session-unavailable')
-      return { ok: true, already_unavailable: true, reason }
+      return { ok: true, already_unavailable: true, terminal_unresolved: true, reason }
     }
     checkSession(tmuxSession)
     try {

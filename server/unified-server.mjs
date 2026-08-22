@@ -8133,6 +8133,23 @@ async function dispatchFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
+      // `ok` alone does not mean the session was killed: kill-session answers ok
+      // when the daemon has no terminal binding for this agent, having done
+      // nothing at all. Replying success to that leaves the caller believing the
+      // agent went down — the process keeps running and re-announces as awake,
+      // so the caller re-hibernates it every idle period forever, each round
+      // reported as a success. Measured 2026-08-22 on testing: three agents
+      // whose tmux sessions had been up 18-25h were "hibernated" at 00:03 and
+      // again at 00:23, tmux session_created never changing, while an agent with
+      // a ledger row hibernated correctly in the same sweep.
+      //
+      // Nothing is written here on either branch: an unresolved terminal is an
+      // error, and a real kill is published by the daemon's own inventory. The
+      // server does not author the status either way.
+      if (result?.terminal_unresolved) {
+        error(`${seat.daemon_key} has no terminal binding for ${agent.friendly_name || agent.id}; nothing was hibernated`)
+        return
+      }
       await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'native parent session hibernated' })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
