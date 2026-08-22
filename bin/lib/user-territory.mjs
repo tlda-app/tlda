@@ -163,6 +163,25 @@ export function diffUserTerritory(before, after) {
   return violations
 }
 
+/**
+ * Did history the app fetched from the server become ancestry of the branch the
+ * person is standing on?
+ *
+ * This is a different question from "did the ref move", and a sharper one. A
+ * branch can move for reasons that are the person's own; a branch that descends
+ * from a commit only the server had can only have got there one way. `true` here
+ * means server history is in the person's own history now, permanently, and
+ * removing it is a rewrite of their branch rather than an undo.
+ */
+export async function fetchedHistoryIsAncestry(dir, fetchedRevision, commitish = 'HEAD') {
+  try {
+    await git(dir, ['merge-base', '--is-ancestor', fetchedRevision, commitish])
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function assertUserTerritoryUnchanged(before, after, label) {
   const violations = diffUserTerritory(before, after)
   if (violations.length === 0) return
