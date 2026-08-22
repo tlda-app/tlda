@@ -62,6 +62,63 @@ test('global event history remains bounded by the recency index with a large unr
   assert.ok(elapsedMs < 250, `global event history took ${elapsedMs.toFixed(1)}ms`);
 }));
 
+// The session half of the same stall. Measured on the live box before this
+// index existed: 21.2s to return 20 rows out of 816,736, because the plan was
+// SCAN + USE TEMP B-TREE FOR ORDER BY and the temp b-tree carried s.text.
+//
+// The assertion that matters is the plan, not the clock: a timing bound on a
+// 20k-row fixture passes on a full scan too, and CI machines vary. The plan is
+// what stops being true if someone drops the index or reshapes the query.
+test('global session history walks the recency index instead of sorting the table', () => withStore(store => {
+  store.db.exec('CREATE INDEX IF NOT EXISTS idx_session_entries_ts ON session_entries(timestamp DESC)');
+  for (let i = 0; i < 20_000; i++) {
+    const timestamp = new Date(Date.parse('2026-08-01T00:00:00.000Z') + i * 60_000).toISOString();
+    insertSessionEntry(store, {
+      agentId: `fleet:${i % 50}`,
+      sessionId: `session-${i % 200}`,
+      role: i % 2 ? 'assistant' : 'user',
+      timestamp,
+      text: `entry ${i}`,
+    });
+  }
+
+  const rows = store.searchAll('', { historyOnly: true, limit: 20 });
+  assert.equal(rows.length, 20);
+  assert.deepEqual(rows.map(row => row.timestamp), [...rows.map(row => row.timestamp)].sort().reverse());
+
+  const plan = store.db.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
+           substr(s.text, 1, 120) as snippet, 0 as fts_rank
+    FROM session_entries s
+    ORDER BY s.timestamp DESC LIMIT ?
+  `).all(20).map(row => row.detail).join(' / ');
+  assert.match(plan, /idx_session_entries_ts/, `plan was: ${plan}`);
+  assert.doesNotMatch(plan, /TEMP B-TREE/, `plan was: ${plan}`);
+}));
+
+// While the index does not yet exist, the query must still answer. This is the
+// reason no INDEXED BY hint was added: `INDEXED BY <missing index>` is a hard
+// SQLite error, measured on the live database as "no such index", so a hint
+// would have turned the window before the out-of-band build completes into an
+// outage instead of the slow-but-correct read it is.
+test('global session history still answers before the out-of-band index is built', () => withStore(store => {
+  store.db.exec('DROP INDEX IF EXISTS idx_session_entries_ts');
+  for (let i = 0; i < 500; i++) {
+    insertSessionEntry(store, {
+      agentId: 'fleet:a',
+      sessionId: `session-${i}`,
+      role: 'user',
+      timestamp: new Date(Date.parse('2026-08-01T00:00:00.000Z') + i * 60_000).toISOString(),
+      text: `entry ${i}`,
+    });
+  }
+
+  const rows = store.searchAll('', { historyOnly: true, limit: 20 });
+  assert.equal(rows.length, 20);
+  assert.deepEqual(rows.map(row => row.timestamp), [...rows.map(row => row.timestamp)].sort().reverse());
+}));
+
 test('default search returns naming chat for original failing query ahead of activity echoes', () => withStore(store => {
   insertEvent(store, {
     type: 'chat',

@@ -367,6 +367,14 @@ export class FleetStore {
     // roughly 250x the checkpoint target — before being truncated by hand.
     this.db.pragma('wal_autocheckpoint = 1000');
     this.db.pragma('journal_size_limit = 67108864');
+    // This connection is normally the only one, so it never contends. The one
+    // exception is bin/build-session-history-index.mjs, which takes the write
+    // lock for the tens of seconds a CREATE INDEX over session_entries costs on
+    // a 10.6GB file. better-sqlite3 defaults to a 5s busy timeout, so without
+    // this a write landing during that build throws SQLITE_BUSY instead of
+    // waiting for a lock it is going to get. Reads are unaffected either way —
+    // WAL readers do not block on a writer.
+    this.db.pragma('busy_timeout = 120000');
     this._createTables();
     this._prepareStatements();
     // Two delivery ledgers that are nothing but tables in this database. They
