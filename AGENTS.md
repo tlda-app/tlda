@@ -1846,6 +1846,12 @@ the picked commit's files by hand.
   which are the record, and where the namespace rule is enforced. Read it before
   changing anything about names, labels, runtime status, or the three history
   tables.
+- [Notifications and liveness](docs/notifications-and-liveness.md) is the system
+  design for how a message reaches an agent and what happens when it does not:
+  wake against notify, server → MCP → channel as the only delivery path, the
+  daemon's two liveness jobs, and the ack timeout that belongs in `server.yaml`.
+  Read it before changing anything about notification delivery, wake, or the
+  server's back-off to a daemon.
 - [Hosting tlda](docs/hosting.md) covers serving and network boundaries.
 - [Fly deployment](docs/live-deploy.md) is the live release runbook.
 - [Reclaiming space in fleet.db](docs/fleet-db-vacuum-runbook.md) is the
