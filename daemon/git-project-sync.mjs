@@ -248,6 +248,17 @@ export function createGitProjectSync({
     const fetched = await rev(fetchedRef)
     const applied = await rev(appliedRef)
     const local = await rev(localRef)
+    if (local && fetched && !(await isAncestor(local, fetched)) && !(await isAncestor(fetched, local))) {
+      // Diverged: local holds work the shared head does not, and the shared head
+      // holds work local does not. Resubmitting local here would propose it OVER
+      // the accepted revision and move the shared head backwards, losing an edit
+      // that was already accepted.
+      //
+      // Parking is the same answer headChanged gives. The accepted revision stays
+      // reachable at the fetched ref, local stays authoritative in the checkout,
+      // and the person reconciles the two. Nothing is merged and nothing is lost.
+      return { ok: true, status: 'diverged', revision: fetched, localRevision: local }
+    }
     if (local && (!fetched || !(await isAncestor(local, fetched)))) return pushRevision(local)
     return { ok: true, status: 'current', revision: applied || fetched || local }
   }
