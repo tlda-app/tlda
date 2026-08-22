@@ -7,6 +7,7 @@ import { scanTexDependencyClosure } from '../shared/tex-deps.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 
 const execFile = promisify(execFileCb)
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
 export function safeRefPart(value) {
   const part = String(value || '').replace(/[^A-Za-z0-9._-]+/g, '-')
@@ -118,7 +119,13 @@ export function createGitProjectSync({
         await git(['update-index', '--add', '--cacheinfo', `${match[1]},${match[2]},${match[3]}`], { env })
       }
       const tree = (await git(['write-tree'], { env })).stdout.trim()
-      const parent = await rev(localRef) || await rev(fetchedRef) || await rev(appliedRef)
+      // Fetched server history is never proposal ancestry. This chain used to
+      // fall through to the fetched and applied refs, so on a FIRST sync — when
+      // localRef does not exist yet — the app's own project commit was parented
+      // on the server's revision, with no merge involved anywhere. A first
+      // revision with no local ancestor is a root commit instead; the person's
+      // own workingCommit is already a parent candidate below.
+      const parent = await rev(localRef)
       if (parent && (await git(['rev-parse', `${parent}^{tree}`])).stdout.trim() === tree) return { commit: parent, tree, roots, members: [...members], changed: false }
       const args = ['commit-tree', tree, '-m', 'tlda project revision']
       const remoteParent = await rev('refs/tlda/remote/observed')
@@ -143,24 +150,49 @@ export function createGitProjectSync({
     }
   }
 
+  // `git commit -a` names WHICH FILES, not where the commit goes. It selects
+  // tracked modifications and deletions plus whatever is already staged — and it
+  // also moves HEAD and the branch, which is the person's to move.
+  //
+  // So we compose that same selection in a temporary GIT_INDEX_FILE and write a
+  // commit object with `commit-tree`. Their real index is never written, their
+  // branch never advances, and their tree stays dirty until they commit it
+  // themselves. This is the shape `filteredProjectCommit` above already uses.
+  //
+  // The person's index is the starting point rather than HEAD, so paths they have
+  // already staged are carried exactly as `commit -a` would carry them.
+  async function settledCommit() {
+    const head = await rev('HEAD')
+    const indexPath = path.resolve(sourceDir, (await git(['rev-parse', '--git-path', 'index'])).stdout.trim())
+    const tmpIndex = path.join(os.tmpdir(), `tlda-settle-${projectPart}-${process.pid}-${Date.now()}.index`)
+    try {
+      if (fs.existsSync(indexPath)) await fs.promises.copyFile(indexPath, tmpIndex)
+      const env = { ...process.env, GIT_INDEX_FILE: tmpIndex }
+      // `-u` is the untracked exclusion: `add -A -- .` swept every untracked file
+      // in the checkout — scratch files, editor droppings, anything they had not
+      // chosen to track — into the commit and into their index besides. The cost
+      // is stated rather than discovered: a NEW file is not submitted until the
+      // author `git add`s it.
+      await git(['add', '-u', '--', '.'], { env })
+      const tree = (await git(['write-tree'], { env })).stdout.trim()
+      if (head && (await git(['rev-parse', `${head}^{tree}`])).stdout.trim() === tree) return head
+      if (!head && tree === EMPTY_TREE) return null
+      const args = ['commit-tree', tree, '-m', 'tlda settled edit cluster']
+      if (head) args.push('-p', head)
+      return (await git(args)).stdout.trim()
+    } finally {
+      await fs.promises.rm(tmpIndex, { force: true })
+    }
+  }
+
   async function commitSettledTree() {
     const conflicts = await unresolved()
     if (conflicts.length) return { ok: false, status: 'conflicted', conflicted: conflicts }
-    // A merge the PERSON started is theirs to finish. `commit -a` during one would
-    // conclude it on their behalf, so we stand off and say so.
+    // A merge the PERSON started is theirs to finish, and MERGE_HEAD is theirs too.
     if (await rev('MERGE_HEAD')) return { ok: false, status: 'merge-in-progress' }
-    // Tracked changes only. `add -A -- .` swept every untracked file in the
-    // checkout into the commit — scratch files, editor droppings, anything they
-    // had not chosen to track — and staged them in their index besides.
-    //
-    // The cost is stated rather than discovered: a NEW file is not submitted
-    // until the author `git add`s it. That is the deliberate trade, in the
-    // direction of doing less to a repository the app does not own.
-    const tracked = (await git(['diff', 'HEAD', '--name-only', '-z'])).stdout
-    if (tracked) await git(['commit', '-a', '-m', 'tlda settled edit cluster'])
-    const head = await rev('HEAD')
-    if (!head) return { ok: false, status: 'empty-checkout' }
-    const filtered = await filteredProjectCommit(head)
+    const settled = await settledCommit()
+    if (!settled) return { ok: false, status: 'empty-checkout' }
+    const filtered = await filteredProjectCommit(settled)
     await git(['update-ref', localRef, filtered.commit])
     return { ok: true, revision: filtered.commit, changed: filtered.changed, roots: filtered.roots, members: filtered.members }
   }
