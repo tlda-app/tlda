@@ -96,7 +96,7 @@ import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-mo
 import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { writeCandidateClip } from './lib/recording-publication.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
-import { unroutedNativeDescendantIds } from './lib/native-subagent-lifecycle.mjs'
+import { reconcileUnroutedNativeDescendantLiveness } from './lib/native-subagent-lifecycle.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -654,7 +654,7 @@ function markAgentNotAlive(agentId, detail = {}) {
     : runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
   if (evidence?.liveness === 'alive') return Promise.resolve(false)
   if (detail.unknown) return Promise.resolve(false)
-  const durableWrite = previousLiveness === evidence.liveness
+  const durableWrite = detail.durableRecorded || previousLiveness === evidence.liveness
     ? Promise.resolve()
     : fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: detail.status || RUNTIME_STATUS.HIBERNATING }, evidence.liveness_at)
   // Most observation callers are fire-and-forget; lifecycle callers await the
@@ -677,25 +677,48 @@ function markAgentNotAlive(agentId, detail = {}) {
 // therefore DERIVED from its parent's — which makes it a projection of an
 // authoritative fact, not a fact this server observed.
 //
-// That distinction is why this is not called from a request handler.
-// `route_present: false` does not prove death; it proves the agent is
-// unroutable, and an operation intending to hibernate a parent is not evidence
-// about anything underneath it. Call this only where the PARENT's status was
-// established by the daemon, and pass that transition's own
-// `liveness_generation` through, so a derived row is traceable to the
-// authoritative observation it came from.
+// That distinction is why no request handler calls this. `route_present: false`
+// does not prove death; it proves the agent is unroutable, and an operation
+// intending to hibernate or restart a parent is not evidence about anything
+// underneath it. The one caller is the accepted daemon status batch, which is
+// where a parent's liveness is actually established — so every derived row
+// carries that batch's own generation and is traceable to the observation it
+// came from.
+//
+// It takes the whole set of parents the batch reported as not awake, not just
+// the ones that CHANGED, and that is load-bearing rather than tidy. An unrouted
+// descendant is never in a daemon's inventory and never in a complete batch's
+// fill-in, which only covers agents routed to that daemon
+// (`validateDaemonAgentStatusBatch`). So an inherited inconsistency — parent
+// already hibernating, unrouted child still awake — is reached by no transition
+// and would otherwise never be reconciled by anything. Reading every not-awake
+// parent each batch is what closes it, and it costs one alive-set read because
+// the steady-state write set is empty.
 //
 // Each write is awaited: a caller that acknowledges a lifecycle transition must
 // not report success over descendant writes that have not landed.
-async function markUnroutedNativeDescendantsNotAlive(parentAgentId, detail = {}) {
-  const descendantIds = unroutedNativeDescendantIds(await fleetStore.getAliveAgents(), parentAgentId)
-  for (const descendantId of descendantIds) {
-    await markAgentNotAlive(descendantId, {
-      ...detail,
-      source: detail.source || 'native-parent-not-alive',
-      reason: detail.reason || `native parent ${parentAgentId} is not alive`,
-    })
-  }
+async function reconcileUnroutedNativeDescendants(parentAgentIds, detail = {}) {
+  if (!parentAgentIds?.length) return false
+  const alive = await fleetStore.getAliveAgents()
+  return reconcileUnroutedNativeDescendantLiveness({
+    agents: alive,
+    parentAgentIds,
+    livenessFor: descendantId => runtimeStatusStore.evidenceFor(descendantId)?.liveness,
+    writeDurable: ({ descendantId }) => fleetStore.recordRuntimeState(
+      descendantId,
+      { kind: RUNTIME_KIND.AI, status: detail.status || RUNTIME_STATUS.HIBERNATING },
+      Number.isFinite(detail.atMs) ? new Date(detail.atMs).toISOString() : null,
+    ),
+    markRuntime: ({ descendantId, parentAgentId }) => markAgentNotAlive(descendantId, {
+        ...detail,
+        durableRecorded: true,
+        source: detail.source || 'native-parent-not-alive',
+        reason: `native parent ${parentAgentId} is not alive`,
+        liveness_generation: detail.liveness_generation
+          ? { ...detail.liveness_generation, agent_id: parentAgentId }
+          : undefined,
+      }),
+  })
 }
 
 function recordExplicitCheckAliveLiveness(liveness) {
@@ -8130,7 +8153,10 @@ async function dispatchFleetWsMessage(ws, msg) {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       await markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session', status: RUNTIME_STATUS.DEAD })
       await fleetStore.markDead(agent.id)
-      await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-kill-session', reason: 'native parent session killed' })
+      // Killing the parent ends its native subagents too, but this handler has
+      // not observed that — it has observed that it asked. The daemon's next
+      // status batch establishes the parent's liveness and reconciles them from
+      // it, with provenance.
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
       broadcastState()
@@ -8201,7 +8227,11 @@ async function dispatchFleetWsMessage(ws, msg) {
     try {
       await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       await markAgentNotAlive(agent.id, { source: 'ws-restart-agent-mcp', reason: 'operator restarted MCP' })
-      await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-restart-agent-mcp', reason: 'native parent MCP restarted' })
+      // A restart kills the session and wakes it again, so the native subagents
+      // under the old process are gone and the new one starts with none. That
+      // needs no continuity modelling and no pre-write here: the kill and the
+      // wake each produce a daemon status batch, and the descendants are
+      // reconciled from whichever one establishes the parent as not awake.
       const result = await runWakeRouteLifecycle({
         agentId: agent.id,
         agent,
@@ -9166,9 +9196,11 @@ async function handleDaemonWsMessage(ws, msg) {
       const ts = msg.ts || new Date().toISOString()
       const atMs = Date.parse(ts) || Date.now()
       let projectionChanged = false
+      const notAwakeParentIds = []
       for (const result of accepted.results) {
         const agentId = result?.agent_id
         const status = result?.status
+        if (agentId && status !== 'awake') notAwakeParentIds.push(agentId)
         const activity = result?.activity || 'unknown'
         const previous = runtimeStatusStore.evidenceFor(agentId)
         const previousStatus = previous?.liveness === 'alive'
@@ -9201,20 +9233,6 @@ async function handleDaemonWsMessage(ws, msg) {
             report_seq: msg.report_seq,
             liveness_generation: generation,
           })
-          // The parent's status was just established by the daemon. Its native
-          // subagents have no session of their own to be absent from, so this is
-          // the authoritative transition they are derived from — and it carries
-          // the same generation, so a derived row points at the observation
-          // behind it.
-          await markUnroutedNativeDescendantsNotAlive(agentId, {
-            source: 'daemon-agent-status',
-            reason: `native parent ${agentId} absent from daemon session inventory`,
-            atMs,
-            daemon_key: msg.daemon_key,
-            daemon_boot_id: msg.daemon_boot_id,
-            report_seq: msg.report_seq,
-            liveness_generation: generation,
-          })
           await fleetStore.retirePendingShell?.(agentId)
         }
         if (previous?.activity === 'thinking' && activity !== 'thinking') {
@@ -9232,7 +9250,23 @@ async function handleDaemonWsMessage(ws, msg) {
         }
         if (activityChanged && activity === 'thinking') touchActivity(agentId)
       }
-      if (projectionChanged) broadcastState()
+      // Once per accepted batch, over every parent this daemon reports as not
+      // awake — including the ones that did not change, which is the only thing
+      // that reconciles a descendant left awake under an already-hibernating
+      // parent. See reconcileUnroutedNativeDescendants.
+      const descendantsChanged = await reconcileUnroutedNativeDescendants(notAwakeParentIds, {
+        source: 'daemon-agent-status',
+        atMs,
+        daemon_key: msg.daemon_key,
+        daemon_boot_id: msg.daemon_boot_id,
+        report_seq: msg.report_seq,
+        liveness_generation: {
+          daemon_key: msg.daemon_key,
+          daemon_boot_id: msg.daemon_boot_id,
+          report_seq: msg.report_seq,
+        },
+      })
+      if (projectionChanged || descendantsChanged) broadcastState()
     }, () => daemonConnections.get(ws._daemonKey) === ws
       && ws._daemonKey === msg.daemon_key
       && ws._bootId === msg.daemon_boot_id)
