@@ -1972,7 +1972,16 @@ export class FleetStore {
 
     // Only the direct addressees are unread-by-default in the message case.
     // Channel notifications are only previews.
-    const startsUnread = event.unread !== false && (event.type === 'chat' || event.type === 'delegate');
+    //
+    // `amend` is in this set because an amend is the message its recipients are
+    // now reading. Excluded here, an amend could never be unread for anyone, so
+    // it never appeared in an inbox and nothing could notify on it — an agent
+    // that answered Skip by amending its own earlier message left his screen
+    // unchanged and his inbox empty while it sat there having answered. Callers
+    // that amend for a reason other than a new body — attachment
+    // materialization, which re-emits the same text — pass `unread: false` and
+    // stay silent.
+    const startsUnread = event.unread !== false && (event.type === 'chat' || event.type === 'delegate' || event.type === 'amend');
     const recipientRows = new Map();
     for (const id of addressed) recipientRows.set(id, startsUnread ? 0 : 1);
     // Written before returning so callers that immediately retract can operate
@@ -4010,6 +4019,7 @@ export class FleetStore {
     this.retireTasksForGoneAgent(id, 'agent marked dead');
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
+    this._bustSubscriptionTapCache();
   }
 
   retirePendingShell(id) {
@@ -4038,7 +4048,20 @@ export class FleetStore {
     })();
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
+    this._bustSubscriptionTapCache();
     return this.getAgent(id);
+  }
+
+  // The resolvable-subscription cache is the answer to a query that JOINs
+  // `agents ... AND a.dead = 0`, so it is a function of the agents table as much
+  // as of the subscriptions table — but only subscription writes ever busted it.
+  // A reanimated agent whose row was absent when the cache was last built stayed
+  // absent: every message to it resolved `no_direct_subscription` and no wake was
+  // requested, until some unrelated agent's mint happened to write a subscription
+  // row and rebuild the cache. That is the on-and-off — whether an agent gets
+  // notified depended on the order of two events nobody was watching.
+  _bustSubscriptionTapCache() {
+    this._resolvableSubscriptionWiretapCache = null;
   }
 
   async renameAgentFriendlyName(id, friendlyName, { actorId = null, reason = 'rename', prettyName = undefined } = {}) {
@@ -4843,6 +4866,21 @@ export class FleetStore {
     const byOwner = {};
     for (const row of rows) (byOwner[row.owner] ||= []).push(row);
     return byOwner;
+  }
+
+  // The remedy the mandatory-row trigger has always named and nothing
+  // implemented. `trg_subscriptions_mandatory_undeletable` refuses a delete with
+  // "set its policy to hold instead", and there was no way to set a policy at
+  // all — `subscribe` inserts, `unsubscribe` ends the row, and nothing in
+  // between. So a mandatory `to:me` was not merely undeletable, it was
+  // unchangeable, and an agent asked to stop notifying on everyone else's mail
+  // could do neither half.
+  setSubscriptionPolicy(subscriptionId, notificationPolicy) {
+    const changed = this.db
+      .prepare('UPDATE subscriptions SET notification_policy = ? WHERE subscription_id = ?')
+      .run(notificationPolicy, subscriptionId).changes > 0;
+    if (changed) this._bustSubscriptionTapCache();
+    return changed ? this.getSubscription(subscriptionId) : null;
   }
 
   // Ending is idempotent by construction: the UPDATE carries `ended_at IS NULL`,

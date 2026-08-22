@@ -7315,9 +7315,55 @@ async function dispatchFleetWsMessage(ws, msg) {
       to: orig.recipients,
       text,
       metadata: meta,
-      unread: false,
+      unread: true,
     }, { notify: false }))
     const amendId = Number(inserted.id)
+
+    // An amend notifies. It used to insert silently and broadcast, so the only
+    // thing that ever moved was the version stepper on a message already sitting
+    // in the scrollback — nothing arrived, nothing badged, no inbox changed. An
+    // agent answered Skip that way at 06:10:41 on 2026-08-22 and he spent the
+    // next twenty minutes believing it had not replied.
+    //
+    // There is no read-state condition on this and there cannot be: nothing in
+    // this app records whether a message was read, so "notify only if they had
+    // already read it" is unimplementable. Skip: "nobody know if iv e read a
+    // fucking message". A typo fix costing one notification is nothing next to
+    // an answer costing twenty minutes of silence.
+    //
+    // Delivery is decided by the same machinery a chat uses, not a second path
+    // beside it — so an agent that has set its own subscription to `hold` stays
+    // held for amends too. The envelope is the original's resolved recipient
+    // list: an amend is addressed to exactly the agents that received the
+    // message it corrects. That makes `to:me` match on id, and it is narrower
+    // than the original address for a label-based subscription, which is the
+    // honest reading — the amend goes to those specific agents, not to whatever
+    // the label means now.
+    const amendRecipients = (orig.recipients || []).filter(id => id && id !== from)
+    const amendWakes = []
+    if (amendRecipients.length) {
+      let amendAst = null
+      try { amendAst = parseFilter(amendRecipients.join(' | ')) } catch { amendAst = null }
+      const nowMs = Date.parse(ts) || Date.now()
+      for (const to of amendRecipients) {
+        const recipientAgent = await fleetStore.getAgent?.(to)
+        if (recipientAgent && !recipientAgent.human && to !== SERVER_OWNER_ID) {
+          if (recipientAgent.metadata?.shell) continue
+          const hasOpenDirectChannel = hasOpenFleetSocketForAgent(to)
+          const daemonRoute = await fleetStore.getAgentDaemonRoute?.(to)
+          // A routeless mailbox is accepted mail that can never be delivered.
+          if (!hasOpenDirectChannel && !daemonRoute) continue
+          if (recipientAgent.parent_agent_id && !hasOpenDirectChannel && !daemonRoute) continue
+        }
+        const matches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat', amendAst) || []
+        const direct = matches.find(m => m.direct)
+        if (!direct) continue
+        const decision = decideSubscriptionDelivery({ policy: direct.notification_policy, priority: 'normal', now: nowMs })
+        if (decision?.delivery !== 'notified') continue
+        amendWakes.push({ to, text: await chatWakeText(text, to, from) })
+      }
+    }
+
     reply({ ok: true, event_id: orig.id, amend_id: amendId })
     // Broadcast the amend event; the client folds it into the original message.
     broadcastEvent('fleet-event', {
@@ -7329,6 +7375,9 @@ async function dispatchFleetWsMessage(ws, msg) {
       text,
       metadata: meta,
     })
+    for (const wake of amendWakes) {
+      await requestWake(wake.to, wake.text, from, null, { sourceEventId: amendId, priority: 'normal' })
+    }
     return
   }
 
@@ -8543,6 +8592,37 @@ async function dispatchFleetWsMessage(ws, msg) {
     // surface rather than Skip's. One question, one answer, both surfaces.
     const held = (await fleetStore.getSubscriptionsByOwner(target.id)) || []
     reply(agentWithSubscriptions(target, { [target.id]: held }).subscriptions)
+    return
+  }
+
+  // Change a subscription's notification policy. This is the third verb the
+  // subscription surface always implied and never had: you could add a row and
+  // delete a row, and a mandatory row can be neither — the delete trigger says
+  // "set its policy to hold instead" and there was nothing that set a policy.
+  // Skip asked to stop being notified about everyone else's mail; `to:me` is
+  // mandatory, so until now the answer was that it could not be done.
+  if (type === 'subscription-policy') {
+    const { caller: callerQuery, subscription_id: subscriptionId, notification_policy: policy } = msg
+    if (!callerQuery || !subscriptionId || !policy) { error('missing caller, subscription_id, or notification_policy'); return }
+    const caller = await fleetStore.findAgent?.(callerQuery)
+    const subscription = await fleetStore.getSubscription(subscriptionId)
+    if (!caller || !subscription) { error('caller or subscription not found'); return }
+    // Input validation, not authorization — the same three shapes `subscribe`
+    // accepts, checked by the same code, so the two verbs cannot drift apart.
+    if (policy !== 'immediate' && policy !== 'hold' && !/^batch\(.+\)$/.test(policy)) {
+      error('notification_policy must be immediate, hold, or batch(spec)'); return
+    }
+    const bareBatchNumber = batchUnitMissing(policy)
+    if (bareBatchNumber) {
+      error(`${bareBatchNumber} what? A batch window needs a unit — batch(${bareBatchNumber}s), batch(${bareBatchNumber}m), or batch(${bareBatchNumber}h).`); return
+    }
+    if (/^batch\(.+\)$/.test(policy) && !decideSubscriptionDelivery({ policy })) {
+      error('unsupported batch notification_policy; use a duration like batch(5m), batch(30s), or batch(1h)'); return
+    }
+    const updated = await fleetStore.setSubscriptionPolicy(subscription.subscription_id, policy)
+    if (!updated) { error(`subscription ${subscription.subscription_id} not found`); return }
+    broadcastState(subscription.owner)
+    reply(updated)
     return
   }
 

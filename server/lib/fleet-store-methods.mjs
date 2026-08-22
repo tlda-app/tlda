@@ -171,6 +171,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'setFleetPref',
   'setQaAgentIds',
   'setQaConfig',
+  'setSubscriptionPolicy',
   'share',
   'signQaReport',
   'submitQaReport',
