@@ -595,15 +595,22 @@ test('an MCP channel ACK prevents redundant daemon wake', async () => {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let recipientWs
+  let firstRecipientWs
   let senderWs
   try {
     await waitForServer(child)
-    recipientWs = await openFleetWs(port)
-    await request(recipientWs, 1, 'login', {
+    const login = {
+      operation_id: 'mcp-ack-success-login',
       agent_id: 'fleet:recipient',
       machine_id: 'mini',
       env_name: 'testing',
-    })
+    }
+    firstRecipientWs = await openFleetWs(port)
+    await request(firstRecipientWs, 'first-recipient-login', 'login', login)
+    firstRecipientWs.close()
+
+    recipientWs = await openFleetWs(port)
+    await request(recipientWs, 'replayed-recipient-login', 'login', login)
     recipientWs.on('message', raw => {
       const frame = JSON.parse(String(raw))
       const ackId = frame.data?.metadata?.wake_ack_id
@@ -634,6 +641,7 @@ test('an MCP channel ACK prevents redundant daemon wake', async () => {
       'wake.request:agent-channel-acked',
     ])
   } finally {
+    firstRecipientWs?.close()
     recipientWs?.close()
     senderWs?.close()
     child.kill('SIGTERM')
