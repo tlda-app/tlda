@@ -172,12 +172,28 @@ interleave into a half-applied state and the loser fails loudly rather than
 landing last and winning.
 
 **Accepting a push commits it, and that commit is mirrored into the author's
-checkout.** That is what versions their work: nothing has to remember to do it
-afterwards. Mirroring is driven by the accept and **not by a build** — the
-previous arrangement put the only mirror call in the tail of a successful build,
-so a paper that failed to build was a paper whose author's disk was never
-committed, and on 2026-08-18 that left three hours of somebody's prose living
-only in a working directory.
+checkout.** That is what versions their work, it is driven by the accept and not
+by a build, and nothing has to remember to do it afterwards. That is the
+specified behaviour.
+
+**It is not what currently happens, and this document said it was.**
+`mirrorShadow` in `server/lib/build-runner.mjs` is the only function that builds
+a shadow bundle and hands it to the daemon, and **nothing calls it.** Moving the
+mirror off the build tail removed the one caller; no accept-side caller replaced
+it. So the author's checkout gains no commit on any push, whether or not the
+build succeeds.
+
+Measured 2026-08-22 on a throwaway project with real shadow history: three
+edit → push → build cycles produced **zero preservation commits and zero shadow
+tags**, while the author's branch moved only by their own commits.
+
+**Wiring proves reachability; it does not prove invocation**, and this path is
+the case that separates them. Every hop exists and every registration runs —
+`setShadowMirrorHandler` at server start, `mirror-shadow-ref` registered on the
+daemon, `mirrorShadowRef` calling `preserveAuthorCommit`. Reading the call graph
+from either end reports the feature healthy, because reachability is all a call
+graph can see. Only running it, or looking for the commits it should have
+produced, says otherwise. **Do not re-verify this section from the call graph.**
 
 Three consequences that are easy to get wrong:
 
@@ -199,9 +215,10 @@ Three consequences that are easy to get wrong:
 
 ### What the mirror does to a checkout someone is writing in
 
-The mirror compare-and-swaps the author's real branch, and driving it from the
-accept makes it fire far more often than a build did, so this is load-bearing
-rather than incidental:
+The mirror compare-and-swaps the author's real branch, so what it does to a
+checkout somebody is working in is load-bearing rather than incidental. This is
+the contract it must honour when it runs; per the section above it is not
+currently reached at all:
 
 | in the checkout | what happens |
 | --- | --- |
@@ -556,11 +573,16 @@ Added 2026-08-18 with the move to commits:
   `SyncErrorPill`, and does **not** throw — a push must not be rejected because
   a laptop is asleep.
 
-`a-commit-per-accepted-push` crosses the accept producing a bundle, the bundle
-format, and the daemon receiver applying it to a real repository. It does not
-cross the WebSocket: the accept path hands the same payload to the same
-`mirror-shadow-ref` sender the build path used, and that transport is covered by
-`bin/shadow-mirror-rpc-adapter-test.mjs`.
+`a-commit-per-accepted-push` crosses the bundle format and the daemon receiver
+applying it to a real repository. It does not cross the WebSocket, which is
+covered by `bin/shadow-mirror-rpc-adapter-test.mjs`.
+
+**And it does not cross the accept.** It calls `mirror.mirrorShadowRef(...)`
+itself, with a payload it built. So it exercises the receiver and never the
+trigger — which is why it is green while no push has ever produced one of these
+commits. It is a true statement about what the daemon does when it is asked, and
+no evidence that anything asks. Whatever restores the caller has to be proven by
+something that starts at a push.
 
 **Known red, and not from this work:** `bin/shadow-mirror-rpc-adapter-test.mjs`
 fails on `main`. It expects the RPC params without `sourceRevision` and
