@@ -3,7 +3,14 @@
 /**
  * The app does not touch the branch the person is standing on.
  *
- * Skip, verbatim: "the app DOES NOT TOUCH MAIN EVER."
+ * Rule (relayed, not quoted): app/daemon never touches main; an explicitly
+ * user-invoked relay owns merge-to-main and push.
+ *
+ * An earlier version of this file carried an all-caps sentence attributed to
+ * Skip verbatim. It is not in the record as his typing — it reached the lane
+ * through a brief that labelled it a quotation, and a message sent from his seat
+ * is not evidence of authorship, because his seat carries other agents' text.
+ * The substance is not in question; the attribution was.
  *
  * This exercises the real sync path — `createGitProjectSync(...).mirrorArrived`
  * from `daemon/git-project-sync.mjs`, the function that runs when the server
@@ -212,7 +219,8 @@ async function main() {
       // A write is a finding whether or not every scenario took the exit it was
       // built for. An unreached exit only weakens a scenario that found nothing.
       console.log('\nFAIL: the app wrote into territory the person owns.')
-      console.log('Skip: "the app DOES NOT TOUCH MAIN EVER."')
+      console.log('Rule (relayed, not quoted): app/daemon never touches main; an explicitly')
+      console.log('user-invoked relay owns merge-to-main and push.')
     } else if (unreached) {
       console.log('\nINCONCLUSIVE: a fixture found nothing and also did not reach its exit.')
     } else {
