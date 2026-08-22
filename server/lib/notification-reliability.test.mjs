@@ -34,8 +34,12 @@ const directMatches = (store) => store
 
 // The resolvable-subscription cache answers a query joined against `agents ...
 // dead = 0`, so a lifecycle change makes it wrong. Only subscription writes ever
-// busted it, so whether a reanimated agent got notified depended on whether some
-// unrelated mint had happened to rebuild the cache since.
+// busted it. The fault is the INTERLEAVING, not the lifecycle change: the cache
+// has to be rebuilt while the flag is in the other state. Run either sequence
+// without that step and nothing goes wrong at all, which is why this was
+// invisible and why it presented as intermittent.
+//
+// Both directions are broken, and they are two different bugs.
 test('a reanimated agent is a delivery target again immediately', async () => {
   await withStore(store => {
     assert.equal(directMatches(store).length, 1, 'control: a live agent resolves its own subscription')
@@ -45,6 +49,26 @@ test('a reanimated agent is a delivery target again immediately', async () => {
 
     store.markAlive('fleet:alice')
     assert.equal(directMatches(store).length, 1, 'reanimate must restore delivery without a second write')
+  })
+})
+
+// The other direction, and the worse one. A dead agent resolving as a live
+// delivery target is a message accepted for a recipient whose route cannot
+// exist — AGENTS.md §"A mailbox is not proof of reachability". It is not a
+// missed notification, it is mail that reports itself deliverable and can never
+// be delivered, and nothing downstream can tell the difference.
+//
+// This needs its own test because the reanimate case above cannot catch it: it
+// kills BEFORE the cache is rebuilt, so its `dead` assertion passes on a stale
+// cache for the wrong reason.
+test('a killed agent stops being a delivery target immediately', async () => {
+  await withStore(store => {
+    assert.equal(directMatches(store).length, 1, 'control: alive and resolvable, cache warm')
+    store.markDead('fleet:alice')
+    assert.equal(
+      directMatches(store).length, 0,
+      'a dead agent must not resolve as a delivery target — that is accepted mail to a route that cannot exist',
+    )
   })
 })
 
