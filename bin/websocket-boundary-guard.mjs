@@ -151,6 +151,16 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'Reanimate authority over the daemon socket -- the wire is the thing under test. Endpoint: /ws/fleet-daemon.',
   },
+  'server/lib/hibernate-session-authority-wire.test.mjs': {
+    count: 2,
+    category: 'tooling',
+    reason: 'Hibernation authority wire test joins a real daemon and fleet client to prove the request crosses /ws/fleet, reaches /ws/fleet-daemon, and returns without a server-authored status write. Endpoints: /ws/fleet and /ws/fleet-daemon.',
+  },
+  'server/lib/native-descendant-authority-wire.test.mjs': {
+    count: 2,
+    category: 'tooling',
+    reason: 'Native-descendant authority wire test joins a real daemon and fleet client to prove parent lifecycle changes arrive only through daemon status after a fleet request. Endpoints: /ws/fleet and /ws/fleet-daemon.',
+  },
   'server/lib/manual-preamble-edit-wire.test.mjs': {
     count: 1,
     category: 'tooling',
