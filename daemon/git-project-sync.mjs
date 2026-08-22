@@ -173,7 +173,16 @@ export function createGitProjectSync({
       // chosen to track — into the commit and into their index besides. The cost
       // is stated rather than discovered: a NEW file is not submitted until the
       // author `git add`s it.
-      await git(['add', '-u', '--', '.'], { env })
+      // No `-- .` pathspec. In a repository with nothing tracked, `git add -u -- .`
+      // fails the pathspec outright — "did not match any file(s) known to git",
+      // exit 128 — while bare `git add -u` exits 0 and stages nothing, which is
+      // what lets the EMPTY_TREE guard below produce an honest refusal.
+      //
+      // That matters because settle's throw is caught at git-sync-manager.mjs:97
+      // and logged at warn, so the crash is silent. And a repository with no
+      // commits is an ordinary state here, not an error: it is what ensureRepo()
+      // leaves behind, and what a person's freshly `git init`ed checkout is.
+      await git(['add', '-u'], { env })
       const tree = (await git(['write-tree'], { env })).stdout.trim()
       if (head && (await git(['rev-parse', `${head}^{tree}`])).stdout.trim() === tree) return head
       if (!head && tree === EMPTY_TREE) return null
