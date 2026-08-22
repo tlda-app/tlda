@@ -2651,7 +2651,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       }
     }
     const overlappingChannelLogin = !nativeBinding && _channelLoginAgentId === shellId
-      ? _channelLoginInFlight
+      ? resumeChannelLoginClaim()
       : null;
     const serverResult = await (overlappingChannelLogin
       || sendFleetRequestAttempt('login', loginBody, { deadlineMs: 5000 }))?.catch(e => ({ error: e.message }));
@@ -5602,6 +5602,40 @@ export function __setFleetTransportForTest(transport) {
 let _channelHasOpened = false;
 let _channelLoginInFlight = null;
 let _channelLoginAgentId = null;
+let _channelLoginOperationId = null;
+
+function trackChannelLoginClaim(promise, { agentId, operationId }) {
+  _channelLoginAgentId = agentId;
+  _channelLoginOperationId = operationId;
+  _channelLoginInFlight = promise;
+  const settle = (result, failed = false) => {
+    if (_channelLoginInFlight !== promise) return result;
+    _channelLoginInFlight = null;
+    if (failed || !result?.queued) {
+      _channelLoginAgentId = null;
+      _channelLoginOperationId = null;
+    }
+    return result;
+  };
+  promise?.then(result => settle(result), error => {
+    settle(null, true);
+    return error;
+  });
+  return promise;
+}
+
+function resumeChannelLoginClaim() {
+  if (_channelLoginInFlight) return _channelLoginInFlight;
+  if (!_channelLoginAgentId || !_channelLoginOperationId) return null;
+  return trackChannelLoginClaim(
+    flushFleetTransport({
+      operationId: _channelLoginOperationId,
+      agentId: _channelLoginAgentId,
+      deadlineMs: FLEET_DURABLE_SEND_DEADLINE_MS,
+    }),
+    { agentId: _channelLoginAgentId, operationId: _channelLoginOperationId },
+  );
+}
 
 const _deliveredChannelIds = new Set();
 const CHANNEL_DEDUP_TTL_MS = 60_000;
@@ -5773,6 +5807,10 @@ function startChannelWS({ bootstrap = false } = {}) {
       _channelHasOpened = true;
       if (activeAgentId()) setTimeout(_flushUnread, 500).unref?.();
       if (!activeAgentId()) return;
+      if (_channelLoginAgentId === activeAgentId() && resumeChannelLoginClaim()) {
+        process.stderr.write(`[fleet-channel] resuming login ${activeAgentId()}\n`);
+        return;
+      }
       const route = loginRouteFields();
       const loginBody = {
         agent_id: activeAgentId(),
@@ -5786,18 +5824,12 @@ function startChannelWS({ bootstrap = false } = {}) {
         metadata: { kind: harnessFromEnv().kind },
       };
       const loginAgentId = activeAgentId();
-      const loginPromise = mcpFleetTransport.durable('login', loginBody);
-      _channelLoginAgentId = loginAgentId;
-      _channelLoginInFlight = loginPromise;
+      const loginOperationId = `${loginAgentId}:mcp-channel-login:${crypto.randomUUID()}`;
+      const loginPromise = mcpFleetTransport.durable('login', loginBody, { operationId: loginOperationId });
+      trackChannelLoginClaim(loginPromise, { agentId: loginAgentId, operationId: loginOperationId });
       loginPromise
         ?.then(() => flushFleetTransport({ limit: 100 }))
         ?.catch(e => process.stderr.write(`[fleet-channel] re-login/flush failed: ${e.message}\n`));
-      const clearLoginInFlight = () => {
-        if (_channelLoginInFlight !== loginPromise) return;
-        _channelLoginInFlight = null;
-        _channelLoginAgentId = null;
-      };
-      loginPromise?.then(clearLoginInFlight, clearLoginInFlight);
       process.stderr.write(`[fleet-channel] ${reconnect ? 're-' : ''}logged-in ${activeAgentId()}\n`);
     },
     onActivity: () => {

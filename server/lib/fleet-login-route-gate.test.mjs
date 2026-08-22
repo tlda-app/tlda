@@ -188,3 +188,52 @@ test('agent login writes the daemon route projection from the login proof', asyn
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('an ACK-loss login replay claims the replacement socket without a second lifecycle', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-login-ack-loss-'))
+  const dbPath = join(dir, 'fleet.db')
+  const now = new Date().toISOString()
+  let store = new FleetStore(dbPath, { taskDoc: false })
+  await store.upsertAgent({
+    id: 'fleet:recipient', friendly_name: 'recipient', labels: [],
+    registered_at: now, last_seen: now, metadata: { shell: true },
+  })
+  store.close()
+
+  const port = await unusedPort()
+  const child = startServer(dir, dbPath, port)
+  let first
+  let replacement
+  try {
+    await waitForServer(child)
+    const login = {
+      type: 'login', operation_id: 'channel-login-ack-loss',
+      agent_id: 'fleet:recipient', machine_id: 'mini', env_name: 'testing',
+      metadata: { kind: 'codex' },
+    }
+    first = await openFleetWs(port)
+    assert.equal((await request(first, 'first-login', login.type, login)).ok, true)
+    first.close()
+
+    replacement = await openFleetWs(port)
+    assert.equal((await request(replacement, 'replayed-login', login.type, login)).ok, true)
+    const ack = await request(replacement, 'replacement-claim-proof', 'channel-notification-ack', {
+      agent: 'fleet:recipient', ack_id: 'not-pending',
+    })
+    assert.deepEqual(ack, { ok: true, acknowledged: false })
+  } finally {
+    first?.close()
+    replacement?.close()
+    child.kill('SIGTERM')
+    await new Promise(resolve => child.once('exit', resolve))
+  }
+
+  try {
+    store = new FleetStore(dbPath, { taskDoc: false })
+    const logins = store.db.prepare("SELECT COUNT(*) c FROM events WHERE type = 'login'").get().c
+    assert.equal(logins, 1)
+  } finally {
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
