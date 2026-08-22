@@ -324,3 +324,29 @@ directory, so `ms-playwright/daemon/ud-*` profiles accumulate permanently. Measu
 
 Same shape as the entry above — a cleanup that cleans something other than what its name
 implies — and in a place no pref-key or disk-usage search surfaces.
+
+## `roster`'s `cwd` column and `cwd:<path>` filter — always empty, always zero
+
+**What the name says:** the agent's working directory, and a filter selecting the agents sitting
+in a given directory.
+
+**What it does:** the `cwd` column is empty for **every** agent, so `cwd:<path>` matches nothing,
+always. It is not that the path has to be written a particular way — the field the filter reads is
+never populated, so the filter cannot return a non-empty result for any input.
+
+**Where the working directory actually lives:** the agent's login marker. `tlda agent list` prints
+it and is correct — measured the same minute the filter returned zero, it showed the real path for
+the same agent whose `roster` row was blank.
+
+**The cost, 2026-08-22.** A chief was about to switch the branch of `/Users/skip/work/tlda`, which
+every `tlda` invocation on this box runs. As the safety check it ran
+`roster(filter: "awake & cwd:/Users/skip/work/tlda")`, got **0 matched**, and reported to its
+advocate that no awake agent had that checkout as cwd. Two agents did: the advocate itself, spawned
+into that directory twenty minutes earlier, and **the chief running the query.** The switch was
+harmless because the tree was clean, but the all-clear was worthless.
+
+**This is the positive-control rule in the form that is hardest to see.** The query named a real
+directory, returned a well-formed empty result, and the agent it was protecting against was the one
+asking. Before trusting a zero from this filter — or any filter — run it against something you
+*know* is there. Your own row is free and it is the control: if `cwd:` cannot find you, it cannot
+find anyone.
