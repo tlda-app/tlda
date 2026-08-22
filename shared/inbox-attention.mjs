@@ -72,13 +72,20 @@ export function batchUnitMissing(policy) {
   return bare ? bare[1] : null
 }
 
-export function parseBatchWindowMs(policy, { defaultMs = DEFAULT_SUBSCRIPTION_BATCH_MS } = {}) {
-  const match = String(policy || '').trim().match(/^batch\((.+)\)$/i)
-  if (!match) return null
-  const spec = match[1].trim().toLowerCase()
-  if (!spec) return null
-  if (spec === 'default') return defaultMs
-  const duration = spec.match(/^(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$/)
+// The unit-bearing duration grammar, on its own so there is one of it.
+//
+// It was inlined in `parseBatchWindowMs` and is now also what `server.yaml`'s
+// `notifications.ackTimeout` accepts. Two parsers for one notation is how the
+// unit rule ends up enforced in one place and not the other — and the rule is
+// the point: the unit is part of the value, so a bare `5` is an error rather
+// than a default in some unit the reader has to guess.
+//
+// Returns null for anything it does not recognise, including a bare number.
+// Callers decide whether that is an error; this does not guess.
+export function parseDurationMs(spec) {
+  const s = String(spec ?? '').trim().toLowerCase()
+  if (!s) return null
+  const duration = s.match(/^(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$/)
   if (!duration) return null
   const value = Number(duration[1])
   if (!Number.isFinite(value) || value <= 0) return null
@@ -89,6 +96,15 @@ export function parseBatchWindowMs(policy, { defaultMs = DEFAULT_SUBSCRIPTION_BA
         : 60 * 1000
   const ms = Math.round(value * scale)
   return Number.isFinite(ms) && ms > 0 ? ms : null
+}
+
+export function parseBatchWindowMs(policy, { defaultMs = DEFAULT_SUBSCRIPTION_BATCH_MS } = {}) {
+  const match = String(policy || '').trim().match(/^batch\((.+)\)$/i)
+  if (!match) return null
+  const spec = match[1].trim().toLowerCase()
+  if (!spec) return null
+  if (spec === 'default') return defaultMs
+  return parseDurationMs(spec)
 }
 
 export function decideSubscriptionDelivery({ policy, priority, now = Date.now() } = {}) {
