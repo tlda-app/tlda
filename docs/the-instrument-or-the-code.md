@@ -17,7 +17,7 @@ wasted hour: it is that a false finding sends somebody to *fix* a working path.
 There, a name lies about what code does. Here, a measurement lies about what the
 system did — and unlike a name, it lies in a form that looks like evidence.
 
-## The four shapes
+## The shapes
 
 ### 1. A bound set against a quiet box
 
@@ -121,6 +121,34 @@ errno, a port in use, a cleanup — rather than of the thing under test.**
 
 **The check:** read *which* assertion failed before believing the exit code. If
 none did, the finding is about teardown and belongs nowhere near the subject.
+
+### 6. A true number that cannot see the thing you are asking about
+
+**`%CPU` cannot detect a blocked event loop, because the most common way to block
+one costs no CPU at all.**
+
+- **2026-08-22** — chasing multi-minute `login()` and `chat()` hangs, I measured
+  the MCP process at **4.5 seconds of CPU across 30 minutes** and concluded it
+  was not compute-bound but waiting on I/O. The measurement was correct and the
+  inference was wrong. The process was blocked in `execFileSync` — **96
+  synchronous `git` spawns**, each costing 0.3–2.7s of *wall* time for ~0.01s of
+  CPU. The event loop was fully blocked the entire time and the process looked
+  idle, because **spawn latency is not computation.**
+
+**The tell: "not compute-bound" and "not blocked" are different claims, and only
+the first one `%CPU` can support.** Anything that blocks on a syscall — a
+synchronous spawn, `readFileSync` on a slow volume, a sync SQLite write — is
+invisible to it and produces exactly the reading a genuinely idle process does.
+
+**The check:** `sample <pid>` and read the stack. `notify-ship` got the answer in
+one shot that way — 179 of 179 samples showing `Builtins_ArrayFilter →
+SyncProcessRunner::Spawn → uv__io_poll`, which names both the blocking call *and*
+the loop it sits in. `%CPU` was never going to say that, however many times it
+was read.
+
+**This is the same failure as shape 2 one level down** — a true number about the
+wrong subject — with the extra trap that here the number *is* about the right
+process. It answers "is it computing", and the question was "is it stuck".
 
 ## The standing check, in one line
 
