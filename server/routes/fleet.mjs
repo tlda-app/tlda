@@ -221,9 +221,19 @@ export function filteredFleetRosterPage(roster, {
   limit = 50,
   cursor = null,
 } = {}) {
-  const ordered = roster
+  // Compute the sort keys once per row. The live roster is large enough that
+  // recomputing runtime category and parsing last_seen inside O(n log n)
+  // comparator calls is visible server-loop work on every roster request.
+  const orderedEntries = roster
     .filter(a => evalExpr(filterAst, labelsForRow(a)))
-    .sort(compareFleetRosterRows)
+    .map(row => ({
+      row,
+      rank: fleetRosterRank(row),
+      lastSeenMs: Date.parse(row.last_seen || 0) || 0,
+      id: String(row.id || ''),
+    }))
+    .sort((x, y) => x.rank - y.rank || y.lastSeenMs - x.lastSeenMs || y.id.localeCompare(x.id))
+  const ordered = orderedEntries.map(entry => entry.row)
   let start = 0
   if (cursor) {
     let decoded
@@ -234,10 +244,10 @@ export function filteredFleetRosterPage(roster, {
       error.code = 'INVALID_CURSOR'
       throw error
     }
-    start = ordered.findIndex(a =>
-      fleetRosterRank(a) === decoded.rank
-        && a.last_seen === decoded.lastSeen
-        && a.id === decoded.id
+    start = orderedEntries.findIndex(entry =>
+      entry.rank === decoded.rank
+        && entry.row.last_seen === decoded.lastSeen
+        && entry.row.id === decoded.id
     )
     if (start < 0) {
       const error = new Error('invalid fleet roster cursor')
@@ -247,10 +257,11 @@ export function filteredFleetRosterPage(roster, {
     start += 1
   }
   const page = ordered.slice(start, start + limit)
+  const tailEntry = orderedEntries[start + page.length - 1]
   const tail = page[page.length - 1]
   const nextCursor = start + limit < ordered.length && tail
     ? Buffer.from(JSON.stringify({
-        rank: fleetRosterRank(tail),
+        rank: tailEntry.rank,
         lastSeen: tail.last_seen,
         id: tail.id,
       })).toString('base64url')
