@@ -47,6 +47,26 @@ causal table by reading cherry-picked branch tips as a sequence.
   agent reads it as the box being down.
 - **Deploy authority** for the notification branch and the `COPY` fix.
 
+## `npm test` leaves servers running, and that poisons every later run
+
+Running the full suite on 2026-08-22 left a `server/unified-server.mjs
+--i-am-tlda-cli` alive at **69.6% CPU, eleven minutes old, holding its port**,
+while box load went 5.07 → 7.96 and live store writes stalled past 120 s. A
+second stray of the same shape, at 89% CPU and two days old, was killed at 06:00
+the same morning.
+
+**This is a mechanism, not a nuisance.** A suite that orphans servers means every
+subsequent run — and every gate anyone builds on it — is measured against a box
+that already has a server on it. That is the likeliest reason nobody trusts this
+suite, and it is fixable.
+
+**It also invalidated my own measurement, which is the warning.** That run
+reported ~60 failing files; I then "controlled" them against the deployed sha in
+a worktree **while the orphan was still up**, and reported 7 of 8 as pre-existing.
+Two contaminated readings compared with each other. **The 60 is not established
+and neither is the control.** A clean-box run — no orphans, quiet fleet, one pass
+— is the cheapest thing that would settle either.
+
 ## The one process lesson worth carrying
 
 Three false zeros tonight: `roster(cwd:)`, which is empty for every agent; a
