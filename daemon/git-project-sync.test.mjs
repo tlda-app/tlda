@@ -74,8 +74,11 @@ test('settle submits an immutable daemon proposal and HeadChanged fetches exact 
   await git(remote, ['update-ref', 'refs/tlda/source/paper', proposal.revision, base])
   const mirrored = await sync.headChanged(proposal.revision)
   assert.equal(arrived.at(-1).revision, proposal.revision)
-  assert.equal(mirrored.status, 'already-applied')
-  assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/applied/binding-a'])).stdout.trim(), proposal.revision)
+  // The accepted head is parked, not applied. It is reachable at the fetched ref
+  // and the applied ref stays where it was, because nothing advances it now.
+  assert.equal(mirrored.status, 'observed')
+  assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/fetched/paper'])).stdout.trim(), proposal.revision)
+  assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/applied/binding-a'])).stdout.trim(), base)
 })
 
 test('configured document roots exclude unrelated broken TeX files', async () => {

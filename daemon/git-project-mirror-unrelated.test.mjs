@@ -41,45 +41,127 @@ async function fixture({ local = null, accepted = null } = {}) {
     await git(checkout, ['commit', '-m', 'local author change'])
   }
   await git(checkout, ['update-ref', 'refs/tlda/project/paper', (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()])
-  const settled = []
   const submitted = []
+  const calls = []
   const sync = createGitProjectSync({
     sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a',
-    onEditClusterSettled: event => settled.push(event), onSubmitted: event => submitted.push(event),
+    onSubmitted: event => submitted.push(event),
+    runGit: (args, options = {}) => {
+      calls.push(args)
+      return execFile('git', args, { cwd: options.cwd || checkout, encoding: 'utf8', timeout: 30000, ...options })
+    },
   })
-  return { root, remote, checkout, applied, revision, sync, settled, submitted }
+  return { root, remote, checkout, applied, revision, sync, submitted, calls }
 }
 
-test('unrelated author history cleanly combines accepted and local trees and replay is inert', async () => {
+// Everything the app must not disturb, in one value: where their branch points,
+// the exact bytes of their index, the bytes of every tracked file, and whether a
+// merge of their own is in progress. Comparing two of these is the territory
+// assertion — a diff anywhere in it is the app having written their repository.
+async function checkoutSnapshot(checkout) {
+  const gitPath = value => value.startsWith('/') ? value : join(checkout, value)
+  const indexPath = gitPath((await git(checkout, ['rev-parse', '--git-path', 'index'])).stdout.trim())
+  const mergeHeadPath = gitPath((await git(checkout, ['rev-parse', '--git-path', 'MERGE_HEAD'])).stdout.trim())
+  const tracked = (await git(checkout, ['ls-files', '-z'])).stdout.split('\0').filter(Boolean)
+  return {
+    head: (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim(),
+    branch: (await git(checkout, ['symbolic-ref', 'HEAD'])).stdout.trim(),
+    index: readFileSync(indexPath),
+    files: Object.fromEntries([...new Set(tracked)].map(file => [file, readFileSync(join(checkout, file))])),
+    mergeHead: existsSync(mergeHeadPath) ? readFileSync(mergeHeadPath) : null,
+  }
+}
+
+test('accepted history unrelated to the checkout is parked, never adopted or merged', async () => {
   const f = await fixture({ local: { 'local.tex': 'local\n' }, accepted: { 'accepted.tex': 'accepted\n' } })
-  const first = await f.sync.headChanged(f.revision)
-  assert.equal(first.status, 'merged')
-  assert.equal(readFileSync(join(f.checkout, 'local.tex'), 'utf8'), 'local\n')
-  assert.equal(readFileSync(join(f.checkout, 'accepted.tex'), 'utf8'), 'accepted\n')
-  assert.equal((await git(f.checkout, ['rev-parse', 'refs/tlda/applied/binding-a'])).stdout.trim(), f.revision)
-  assert.equal(f.settled.length, 1)
-  const replay = await f.sync.headChanged(f.revision)
-  assert.equal(replay.status, 'already-applied')
-  assert.equal(f.settled.length, 1)
-})
+  const before = await checkoutSnapshot(f.checkout)
+  const callStart = f.calls.length
 
-test('unrelated author conflict stays in the checkout and withholds applied/proposal state', async () => {
-  const f = await fixture({ local: { 'main.tex': 'ours\n' }, accepted: { 'main.tex': 'theirs\n' } })
   const result = await f.sync.headChanged(f.revision)
-  assert.equal(result.status, 'conflicted')
-  assert.deepEqual(result.conflicted, ['main.tex'])
-  assert.match(readFileSync(join(f.checkout, 'main.tex'), 'utf8'), /<<<<<<< HEAD[\s\S]*ours[\s\S]*=======[\s\S]*theirs[\s\S]*>>>>>>>/)
+
+  assert.deepEqual(result, { ok: true, status: 'observed', revision: f.revision })
+  assert.deepEqual(await checkoutSnapshot(f.checkout), before)
+  assert.equal(existsSync(join(f.checkout, 'accepted.tex')), false, 'the server file must not appear in the checkout')
+  // The accepted revision is reachable, which is the whole obligation.
+  assert.equal((await git(f.checkout, ['rev-parse', 'refs/tlda/fetched/paper'])).stdout.trim(), f.revision)
+  // Nothing advanced the applied ref, because nothing applied anything.
   assert.equal((await git(f.checkout, ['rev-parse', 'refs/tlda/applied/binding-a'])).stdout.trim(), f.applied)
-  assert.equal(f.settled.length, 0)
-  assert.equal((await git(f.remote, ['for-each-ref', '--format=%(refname)', 'refs/tlda/proposals'])).stdout.trim(), '')
+  const used = f.calls.slice(callStart).map(args => args[0])
+  for (const forbidden of ['merge', 'checkout', 'commit', 'add', 'update-index', 'read-tree', 'reset']) {
+    assert.equal(used.includes(forbidden), false, `git ${forbidden} must not run on the person's checkout`)
+  }
+  assert.equal(f.calls.slice(callStart).some(args => args[0] === 'update-ref' && !/^refs\/tlda\//.test(args[1])), false)
 })
 
-test('accepted mirror with no local difference produces no proposal echo', async () => {
-  const f = await fixture({ accepted: { 'accepted.tex': 'accepted\n' } })
-  assert.equal((await f.sync.headChanged(f.revision)).status, 'merged')
-  const settled = await f.sync.editClusterSettled()
-  assert.equal(settled.status, 'equal-tree')
-  assert.equal(f.submitted.length, 0)
-  assert.equal((await git(f.remote, ['for-each-ref', '--format=%(refname)', 'refs/tlda/proposals'])).stdout.trim(), '')
+test('a would-be conflict is parked instead of being left unresolved in the checkout', async () => {
+  const f = await fixture({ local: { 'main.tex': 'ours\n' }, accepted: { 'main.tex': 'theirs\n' } })
+  const before = await checkoutSnapshot(f.checkout)
+
+  const result = await f.sync.headChanged(f.revision)
+
+  assert.deepEqual(result, { ok: true, status: 'observed', revision: f.revision })
+  assert.deepEqual(await checkoutSnapshot(f.checkout), before)
+  assert.equal(readFileSync(join(f.checkout, 'main.tex'), 'utf8'), 'ours\n', 'their file keeps their bytes')
   assert.equal(existsSync(join(f.checkout, '.git', 'MERGE_HEAD')), false)
+  assert.equal((await git(f.checkout, ['diff', '--name-only', '--diff-filter=U'])).stdout.trim(), '')
+})
+
+test('divergence parks rather than proposing local over the accepted head', async () => {
+  const f = await fixture({ local: { 'local.tex': 'local\n' }, accepted: { 'accepted.tex': 'accepted\n' } })
+  await f.sync.headChanged(f.revision)
+
+  const result = await f.sync.recover()
+
+  assert.equal(result.status, 'diverged')
+  assert.equal(result.revision, f.revision)
+  assert.equal(f.submitted.length, 0, 'a diverged local must not be proposed over the accepted head')
+  assert.equal((await git(f.remote, ['for-each-ref', '--format=%(refname)', 'refs/tlda/proposals'])).stdout.trim(), '')
+  assert.equal((await git(f.remote, ['rev-parse', 'refs/tlda/source/paper'])).stdout.trim(), f.revision, 'the shared head does not move backwards')
+})
+
+test('a tracked edit is committed and submitted from the local repository', async () => {
+  const f = await fixture()
+  const before = (await git(f.checkout, ['rev-parse', 'HEAD'])).stdout.trim()
+  writeFileSync(join(f.checkout, 'main.tex'), 'tracked edit\n')
+
+  const result = await f.sync.editClusterSettled()
+
+  assert.equal(result.status, 'SubmittedToBuildQueue')
+  assert.notEqual((await git(f.checkout, ['rev-parse', 'HEAD'])).stdout.trim(), before)
+  assert.equal((await git(f.checkout, ['show', 'HEAD:main.tex'])).stdout, 'tracked edit\n')
+  assert.equal((await git(f.remote, ['show', `${result.revision}:main.tex`])).stdout, 'tracked edit\n')
+})
+
+test('an untracked file is not swept into the commit or into their index', async () => {
+  const f = await fixture()
+  writeFileSync(join(f.checkout, 'main.tex'), 'tracked edit\n')
+  writeFileSync(join(f.checkout, 'scratch.txt'), 'mine, not the project\n')
+
+  const result = await f.sync.editClusterSettled()
+
+  assert.equal(result.status, 'SubmittedToBuildQueue')
+  assert.equal((await git(f.checkout, ['show', 'HEAD:main.tex'])).stdout, 'tracked edit\n')
+  await assert.rejects(git(f.checkout, ['cat-file', '-e', 'HEAD:scratch.txt']), 'the untracked file must not be committed')
+  assert.equal((await git(f.checkout, ['ls-files', '--', 'scratch.txt'])).stdout.trim(), '', 'the untracked file must not be staged')
+  assert.equal(readFileSync(join(f.checkout, 'scratch.txt'), 'utf8'), 'mine, not the project\n')
+})
+
+test('settle refuses and preserves a merge the person started themselves', async () => {
+  const f = await fixture()
+  await git(f.checkout, ['checkout', '-b', 'user-merge'])
+  writeFileSync(join(f.checkout, 'merged.tex'), 'user branch\n')
+  await git(f.checkout, ['add', 'merged.tex'])
+  await git(f.checkout, ['commit', '-m', 'user branch'])
+  await git(f.checkout, ['checkout', 'main'])
+  writeFileSync(join(f.checkout, 'main.tex'), 'main side\n')
+  await git(f.checkout, ['commit', '-a', '-m', 'main side'])
+  await git(f.checkout, ['merge', '--no-commit', '--no-ff', 'user-merge'])
+  const before = await checkoutSnapshot(f.checkout)
+  assert.notEqual(before.mergeHead, null)
+  const callStart = f.calls.length
+
+  assert.deepEqual(await f.sync.editClusterSettled(), { ok: false, status: 'merge-in-progress' })
+
+  assert.deepEqual(await checkoutSnapshot(f.checkout), before)
+  assert.equal(f.calls.slice(callStart).some(args => args[0] === 'commit'), false)
 })
