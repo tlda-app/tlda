@@ -324,3 +324,45 @@ directory, so `ms-playwright/daemon/ud-*` profiles accumulate permanently. Measu
 
 Same shape as the entry above — a cleanup that cleans something other than what its name
 implies — and in a place no pref-key or disk-usage search surfaces.
+
+## `projectForCwd` — `shared/project-for-cwd.mjs:33`
+
+**What the name says:** look up which project a directory belongs to. A map read.
+
+**What it does:** up to **97 synchronous `git` process spawns**, blocking the caller's event
+loop for the whole time. `gitRootFor` is `execFileSync('git', …)` with no memoisation, and it is
+called from inside an `Array.filter` callback — once per entry in
+`source-bindings.<env>.json`, which had **96** entries on testing when this was measured. Measured on
+the mini 2026-08-22: a single spawn costs **0.33–2.68s of wall time for ~0.01s of CPU**, so the
+call ran for **minutes**. That is what "agents cannot log in to the server" was: `login()` calls
+it through `loginRouteFields()`, and `chat()` reaches it through `getAgentDoc()` whenever the
+macro cache is cold.
+
+`ea126fe91`'s successor memoises the lookup **per invocation**, so the 96 spawns become one. The
+name still understates the cost — it is two `git` spawns, not a map read, and it is synchronous.
+
+**And the deeper defect the memo hides, which is the reason this entry exists rather than just a
+commit message.** The function reads each binding's value as a path — `resolve(String(dir))` at
+`:41`. **Not one of them is a path.** They are objects:
+
+Measured with `node`, which is the only instrument that answers this — Python's `str()` on a
+dict gives a per-object repr and reports the values as all-distinct, which is the opposite
+conclusion:
+
+```
+entries: 95            (the file changes as projects link and unlink; it was 96 an hour earlier)
+value keys:            ['bindingId', 'project', 'sourceDir']
+values that are plain strings:  0
+distinct String(value): 1  ->  ["[object Object]"]
+```
+
+**Every entry, whatever the count that day, stringifies to the same `[object Object]`.** So the
+containment test at `:51` can never match, and `gitRootFor` is handed the same nonexistent
+directory once per entry. **`projectForCwd` cannot return anything but `null` on this machine,
+and has not.** The file's shape and its only consumer
+disagree; the memo makes that fast rather than correct.
+
+**Fixing it is a behaviour change, not a cleanup.** Reading `sourceDir` turns project attribution
+on login from always-`null` into actually-computed, which changes what agents report about where
+they are — visibility, and Skip's call. Held on 2026-08-22 for that reason, not because it is
+hard. Delete this paragraph in the commit that fixes it.

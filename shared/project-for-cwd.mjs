@@ -59,8 +59,24 @@ export function projectForCwd(cwd, { configDir, envName } = {}) {
   // Here the question is which project the repository is, so the binding
   // nearest its root wins — the opposite of the containment case, and what
   // makes a worktree answer the same project its checkout does.
+  //
+  // `gitRootFor` spawns `git` SYNCHRONOUSLY, so calling it from inside the
+  // filter blocks this process's event loop once per binding. Measured on the
+  // mini on 2026-08-22: one spawn costs 0.33-2.68s of wall time for ~0.01s of
+  // CPU, and the testing bindings file has 96 entries — so login blocked for
+  // minutes, which is what "agents cannot log in" was. Distinct directories are
+  // far fewer than entries, so resolve each directory once per call.
+  //
+  // Deliberately scoped to this invocation rather than a module-level cache:
+  // there is nothing to invalidate and no way for it to go stale, and the
+  // redundant work is all inside one loop.
+  const rootByDir = new Map()
+  const rootOf = (dir) => {
+    if (!rootByDir.has(dir)) rootByDir.set(dir, gitRootFor(dir))
+    return rootByDir.get(dir)
+  }
   const inRepo = entries
-    .filter(([, dir]) => gitRootFor(dir) === root)
+    .filter(([, dir]) => rootOf(dir) === root)
     .sort(([nameA, dirA], [nameB, dirB]) => dirA.length - dirB.length || nameA.localeCompare(nameB))
   return inRepo[0]?.[0] || null
 }
