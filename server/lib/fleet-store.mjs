@@ -6071,6 +6071,11 @@ export class FleetStore {
         if (eFilter) { eClauses.push(`(${eFilter.sql})`); eParams.push(...eFilter.params); }
         eParams.push(effectiveHistoryMode ? limit : candidateLimit);
         const eventWhere = eClauses.length ? `WHERE ${eClauses.join(' AND ')}` : '';
+        // A global history read still has type/time clauses. Those clauses made
+        // SQLite choose a full scan + sort on the live corpus (61.1s for 20
+        // rows) instead of walking the existing recency index. Agent-scoped
+        // reads retain their dedicated sender/recipient plans.
+        const eventHistoryIndex = effectiveHistoryMode && !hasAgent && !eFilter ? 'INDEXED BY idx_events_ts' : '';
         const searchTable = explicitActivitySearch ? 'activity_events_fts' : 'events_fts';
         const snippetCol = effectiveHistoryMode ? 'substr(e.text, 1, 120) as snippet' : `snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet`;
         const hasEventPreFilter = !effectiveHistoryMode && eClauses.length > 0;
@@ -6078,7 +6083,7 @@ export class FleetStore {
         SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.text, e.metadata, e.agent_id,
                (SELECT json_group_array(agent_id) FROM recipients WHERE event_id = e.id) as "to_json",
                ${snippetCol}, 0 as fts_rank
-        FROM events e
+        FROM events e ${eventHistoryIndex}
         ${eventWhere}
         ORDER BY e.timestamp DESC LIMIT ?
       ` : hasEventPreFilter ? `

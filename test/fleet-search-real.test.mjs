@@ -48,6 +48,20 @@ function insertSessionEntry(store, entry) {
   `).run(entry);
 }
 
+test('global event history remains bounded by the recency index with a large unrelated corpus', () => withStore(store => {
+  for (let i = 0; i < 20_000; i++) {
+    const timestamp = new Date(Date.parse('2026-08-01T00:00:00.000Z') + i * 60_000).toISOString();
+    insertEvent(store, { type: 'chat', timestamp, from: 'fleet:a', to: 'fleet:b', text: `event ${i}` });
+  }
+
+  const started = performance.now();
+  const rows = store.searchAll('', { historyOnly: true, eventOnly: true, limit: 20 });
+  const elapsedMs = performance.now() - started;
+  assert.equal(rows.length, 20);
+  assert.deepEqual(rows.map(row => row.timestamp), [...rows.map(row => row.timestamp)].sort().reverse());
+  assert.ok(elapsedMs < 250, `global event history took ${elapsedMs.toFixed(1)}ms`);
+}));
+
 test('default search returns naming chat for original failing query ahead of activity echoes', () => withStore(store => {
   insertEvent(store, {
     type: 'chat',
