@@ -895,12 +895,23 @@ export class FleetStore {
     if (!wiretapCols.some(c => c.name === 'ended_at')) {
       this.db.exec("ALTER TABLE wiretaps ADD COLUMN ended_at TEXT");
     }
+    // Dropped rather than left to `IF NOT EXISTS`, because the thing being
+    // changed IS the message body: an existing database keeps whatever text the
+    // trigger was created with, so editing the string above without this is
+    // inert everywhere it matters and correct only on a fresh db. Both messages
+    // used to end "set its policy to hold instead" and name no way to do it —
+    // there was no way; nothing in this codebase set a subscription's policy
+    // until `subscription(operation: "policy")`. A remedy nobody can act on
+    // reads as the reader's failure to find it, and it cost a chief of staff an
+    // evening on 2026-08-22.
+    this.db.exec('DROP TRIGGER IF EXISTS trg_subscriptions_mandatory_undeletable');
+    this.db.exec('DROP TRIGGER IF EXISTS trg_subscriptions_mandatory_unendable');
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS trg_subscriptions_mandatory_undeletable
       BEFORE DELETE ON subscriptions
       WHEN OLD.mandatory = 1
       BEGIN
-        SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — set its policy to hold instead');
+        SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — subscription(operation: "policy", id, policy: "hold") instead');
       END;
     `);
     // The delete trigger above is now the guard on a path nothing takes, so on
@@ -913,7 +924,7 @@ export class FleetStore {
       BEFORE UPDATE OF ended_at ON subscriptions
       WHEN OLD.mandatory = 1 AND OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
       BEGIN
-        SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — set its policy to hold instead');
+        SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — subscription(operation: "policy", id, policy: "hold") instead');
       END;
     `);
     this.db.exec(`
