@@ -25,6 +25,29 @@ import { log } from '../logger.ts'
 
 // --- Pure helpers (copied from utils.mjs) ---
 
+// Element ids for rendered cards, derived from what the card contains rather
+// than drawn at random.
+//
+// These strings are written into the chat panel with `dangerouslySetInnerHTML`,
+// and React only touches the DOM when the string it is handed differs from the
+// last one. A random id made every re-render differ, so any render that missed
+// the group cache destroyed and rebuilt the row's subtree — discarding the
+// activity card, its expand state and its mount stamp — while the content it
+// displayed was identical.
+//
+// Nothing looks these ids up: no `getElementById`, no `for=`, and the fold
+// toggle finds its own card with `closest()`. They only have to be stable and
+// distinct between different cards.
+function stableId(prefix, ...parts) {
+  let hash = 0x811c9dc5
+  const source = parts.join('\u0000')
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return `${prefix}-${hash.toString(36).padStart(6, '0').slice(-6)}`
+}
+
 export function esc(s) {
   if (s == null) return ''
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
@@ -614,7 +637,7 @@ export function renderEditDiff(input, ctx, opts = {}) {
   const { langFromFilePath, highlightSyntax } = ctx
   // propose_edit names its target `file`; the Edit tool uses `file_path`.
   const filePath = input.file_path || input.file || ''
-  const uid = 'diff-' + Math.random().toString(36).slice(2, 8)
+  const uid = stableId('diff', filePath, input.old_string || '', input.new_string || '', input.diff || '')
   const isTeX = filePath && /\.tex$/i.test(filePath)
   const lang = !isTeX ? langFromFilePath(filePath) : ''
   const renderSide = (str) => {
@@ -802,7 +825,7 @@ export function renderCodeCard(toolName, input, ctx) {
       const shouldFold = h > 0 && lines.length > h
       const foldStyle = shouldFold ? ` style="max-height:${(h * 1.4).toFixed(1)}em"` : ''
       const name = filePath.split('/').pop() || 'file.tex'
-      const uid = 'tex-write-' + Math.random().toString(36).slice(2, 8)
+      const uid = stableId('tex-write', filePath, content)
       const toggleHtml = shouldFold
         ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('.diff-tex');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');p.style.maxHeight='';e.textContent='collapse'}else{p.classList.add('code-collapsed');p.style.maxHeight='${(h * 1.4).toFixed(1)}em';e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
         : ''
@@ -954,7 +977,7 @@ export function renderActivityGroup(group, ctx) {
   if (currentTools.length) segments.push({ type: 'tools', items: currentTools })
 
   let lineNum = 1
-  const detailHtml = segments.map(seg => {
+  const detailHtml = segments.map((seg, segIndex) => {
     if (seg.type === 'text') {
       const t = seg.item
       const fullText = (t._text || '')
@@ -1067,7 +1090,7 @@ export function renderActivityGroup(group, ctx) {
         + codeCardHtml
         + prettyHtml
     }).join('')
-    const cardId = 'tr-' + Math.random().toString(36).slice(2, 8)
+    const cardId = stableId('tr', group[0]?._dbId ?? group[0]?._tempId ?? group[0]?.timestamp ?? '', segIndex)
     return `<div class="tool-run-card" data-card-id="${cardId}">
       <div class="tool-run-body">${toolLines}</div>
     </div>`
