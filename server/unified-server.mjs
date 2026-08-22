@@ -7339,6 +7339,11 @@ async function dispatchFleetWsMessage(ws, msg) {
     // than the original address for a label-based subscription, which is the
     // honest reading — the amend goes to those specific agents, not to whatever
     // the label means now.
+    // An amend gets its own trace, for the same reason a chat has one: without
+    // it the wake is unobservable in the control plane, and "did the
+    // notification go out" is answerable only by watching a pane. A silent
+    // notification path with no trace is how this defect survived.
+    const amendTraceId = msg.trace_id || createTraceId('amend')
     const amendRecipients = (orig.recipients || []).filter(id => id && id !== from)
     const amendWakes = []
     if (amendRecipients.length) {
@@ -7376,7 +7381,7 @@ async function dispatchFleetWsMessage(ws, msg) {
       metadata: meta,
     })
     for (const wake of amendWakes) {
-      await requestWake(wake.to, wake.text, from, null, { sourceEventId: amendId, priority: 'normal' })
+      await requestWake(wake.to, wake.text, from, amendTraceId, { sourceEventId: amendId, priority: 'normal' })
     }
     return
   }
