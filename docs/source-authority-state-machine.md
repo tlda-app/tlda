@@ -1,8 +1,134 @@
-# Source authority and linked-checkout synchronization
+# Source synchronization: authority, linked checkouts, and merge
 
 The server owns the accepted source revision. A linked checkout is a peer:
 its daemon submits local changes against the last accepted revision and applies
 accepted changes from other peers. There is no last-writer-wins fallback.
+
+## What a person does with this
+
+This is one system seen from several places. Work reaches the accepted revision
+by one of three routes, and leaves it by a fourth:
+
+| where a person edits | how their work reaches the accepted revision |
+| --- | --- |
+| a linked local checkout | their daemon submits the file when they save |
+| the browser source editor | the room checkpoints the text |
+| a linked Git remote — Overleaf or any other | its daemon submits like any other checkout |
+
+**They get it back out with `tlda merge`**, specified in the next section. Three
+ways in, one way out.
+
+Two rules hold everywhere below, and a person can rely on them without reading
+the mechanism:
+
+- **Nothing overwrites a file somebody is editing.** Every path here either
+  applies to a clean file or refuses and reports, leaving the file byte-identical
+  to what its owner wrote. Where that has been broken it is recorded as a known
+  gap rather than described as working.
+- **The server never resolves anything.** It accepts, refuses, and reports. All
+  resolution happens on a box with a person or an agent on it. This is the same
+  rule as [the notification design](notifications-and-liveness.md), one system
+  over: the server reports, it never remedies.
+
+## Getting the work back out: the merge operation
+
+`tlda merge` takes the version history tlda has accumulated for a project and
+lands it on a real branch — the author's own repository, or a linked remote such
+as Overleaf.
+
+**It is one module with two call sites**, the CLI and the server, rather than two
+implementations. A second copy is how the two ends come to disagree about what a
+merge is, and the server's copy is the one nobody watches.
+
+### Why it is a replay and not a merge
+
+The shadow repository is built by cloning the project repo and running
+`git-filter-repo --path <scope> --force` (`server/lib/shadow-repo.mjs`, in the
+`projectRepoPath` branch of the builder). `filter-repo` rewrites every commit to
+contain only the scoped paths, and rewriting a commit changes its sha. So **the
+shadow shares no commit identity with the project repo.** The builder says so
+itself, a few lines below, explaining why it removes the origin remote:
+
+> the project repo is not upstream of the shadow
+
+Nothing in the shadow can merge back by git identity. It can only be re-applied
+as content. `tlda merge` therefore **replays**: `git format-patch` on the shadow
+side, `git am` on the target. Author, date and message survive, so the target
+gains one commit per real change rather than a single commit standing for all of
+them.
+
+The filter is a plain `--path` with no rename, so the shadow keeps the project's
+original paths and patches apply where they belong with no translation.
+
+New shas on the target side are expected and are not a problem to be solved.
+Commits are matched by `git patch-id` — a hash of the normalised diff, identical
+for two commits that make the same change whatever their shas. The technique is
+already in this tree, in `bin/branch-landed.mjs`, for the same reason: `main` is
+assembled by cherry-pick, so shas differ there too.
+
+### Marching forward, not all at once
+
+`am` applies patches in sequence and stops at the first one that conflicts,
+leaving `--continue`, `--skip` and `--abort`. **That is the required behaviour,
+not an implementation detail to work around.**
+
+Stopped at patch N, the conflict is attached to *that* patch, carrying its
+message and its author. Collapsed into one diff, a person gets a conflict against
+a blob and no way to tell which change caused it.
+
+### The two modes
+
+| mode | what it does | who runs it |
+| --- | --- | --- |
+| `--ff-only` | plays the whole sequence atomically — every patch applies, or the target branch does not move at all | the server, unattended |
+| default | plays patches until one needs a human decision, then stops with that conflict in the working tree | a person or an agent, on a box |
+
+**`--ff-only` must apply to a scratch ref and move the real ref only on
+success.** `am` is not atomic: fail on patch five and patches one through four
+are already on the branch. Without the scratch ref, "atomic" quietly means a
+half-applied branch — the one state the server must never be able to reach.
+
+### What the server does when it cannot fast-forward
+
+- **Fast-forward** → the server applies it. Nothing to resolve, safe unattended.
+- **Not fast-forward** → the server stops and says so, and hands the branch off:
+  *take this branch, run `tlda merge` without `--ff-only` on your box, resolve
+  it, and submit the finished branch back.* The server then fast-forwards what
+  comes back.
+
+The property this buys is the reason for the rule: **the server can never be in
+a conflicted or half-merged git state.** There is nothing for it to wedge in and
+nothing anyone has to go clean up on it.
+
+**What comes back to the server is a finished branch, never a half-applied
+merge.** A paused `am` lives in `.git/rebase-apply` on the box that paused it and
+is not transportable.
+
+### Every participant is a real process with git behind it
+
+`tlda merge` shells out to `git`. That settles something outside this document:
+the browser editor's daemon has to be a real process on a box with a git binary,
+not something living in the page. The rule that forces it is the existing one —
+every editor is a participant with a daemon — so it is decided once, for all
+participants, rather than per surface.
+
+### Open — not settled, and not for an implementer to choose
+
+- **What the operation reads.** Whether `tlda merge` replays from
+  `refs/tlda/shadow/HEAD` in the local checkout, which the daemon already
+  maintains, or fetches the shadow from the server.
+- **Whether the pairing is recorded or recomputed.** `patch-id` recomputes it for
+  nothing; an `am` trailer carrying the shadow sha records it. Both were raised;
+  neither was chosen.
+- **The patch range.** What `format-patch` takes as its base on the second and
+  subsequent merge of the same project.
+- **Direct-to-Overleaf.** Fast-forwarding straight from the server to a linked
+  remote was described as conditional on how the project is configured. That
+  configuration surface is not specified.
+- **Who is told when the server cannot fast-forward.** The hand-off above names
+  no recipient. §"Outbound linked-checkout changes" records the same open
+  question for rejected pushes and rules there that who receives a notification
+  is a product decision rather than a sync one.
 
 ## A revision is a commit, and accepting is committing
 
