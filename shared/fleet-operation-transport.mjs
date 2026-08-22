@@ -107,12 +107,18 @@ export function createFleetOperationTransport({
       state = { envelope, payloadJson, inFlight: null }
       coalescedDurable.set(mapKey, state)
     }
-    const attempt = Promise.resolve(send(operation, payload, {
-      ...options,
-      mode: FLEET_DELIVERY.DURABLE,
-      operationId: state.envelope.operation_id,
-      envelope: state.envelope,
-    }))
+    let attempt
+    try {
+      attempt = Promise.resolve(send(operation, payload, {
+        ...options,
+        mode: FLEET_DELIVERY.DURABLE,
+        operationId: state.envelope.operation_id,
+        envelope: state.envelope,
+      }))
+    } catch (error) {
+      if (coalescedDurable.get(mapKey) === state) coalescedDurable.delete(mapKey)
+      throw error
+    }
     state.inFlight = attempt
     attempt.then(result => {
       if (state.inFlight !== attempt) return
