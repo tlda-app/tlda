@@ -44,12 +44,12 @@ import os from 'os'
 const { homedir, hostname } = os
 import { createHash, randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { lookup as mimeLookup } from 'mime-types'
 import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, getRwToken, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat } from '../shared/document-formats.mjs'
+import { resolveLocalImage } from '../shared/local-image.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
@@ -4456,17 +4456,15 @@ app.post('/api/items', async (req, res) => {
 })
 
 // ---------- Local image serving ----------
-// Serves local filesystem images for math notes (paths starting with / or ~)
+// Serves local filesystem images for math notes (paths starting with / or ~).
+// What counts as servable is decided in shared/local-image.mjs, which the dev
+// server's twin of this route shares — see that file for the residual it leaves.
 app.get('/api/local-image', requireRead, async (req, res) => {
-  const { path: filePath } = req.query
-  if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'Missing path' })
-  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
-  if (!expanded.startsWith('/')) return res.status(400).json({ error: 'Path must be absolute' })
-  if (!existsSync(expanded)) return res.status(404).json({ error: 'Not found' })
-  const mimeType = mimeLookup(expanded) || 'application/octet-stream'
-  res.set('Content-Type', mimeType)
+  const resolved = resolveLocalImage(req.query.path)
+  if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error })
+  res.set('Content-Type', resolved.mimeType)
   res.set('Cache-Control', 'public, max-age=3600')
-  res.sendFile(resolve(expanded), { dotfiles: 'allow' })
+  res.sendFile(resolved.path, { dotfiles: 'allow' })
 })
 
 // ---------- Fleet action HTTP routes ----------
