@@ -29,9 +29,19 @@ import { dirname, join } from 'node:path'
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
 const source = readFileSync(join(repo, 'server/routes/projects.mjs'), 'utf8')
 
+// Anchor on the function first. Searching for the catch block from a -1 finds
+// the first catch block in the file, so every assertion below would then run
+// against an unrelated region and the failure would name the log line rather
+// than the missing function.
+const fn = source.indexOf('async function mirrorAcceptedRevision')
+assert.ok(
+  fn >= 0,
+  'mirrorAcceptedRevision is gone from server/routes/projects.mjs — the accept no longer mirrors',
+)
+
 // The catch block that handles a failed mirror, to the end of the function.
-const start = source.indexOf('} catch (error) {', source.indexOf('async function mirrorAcceptedRevision'))
-assert.ok(start > 0, 'mirror failure catch block not found — did the path move?')
+const start = source.indexOf('} catch (error) {', fn)
+assert.ok(start > fn, 'mirror failure catch block not found — did the path move?')
 const end = source.indexOf('[mirror]', start)
 assert.ok(end > start, 'mirror failure log not found — did the path move?')
 const block = source.slice(start, end)
