@@ -134,6 +134,17 @@ async function cell({ root, shape, appOwned, title, mainContent, newFile, newCon
   console.log(`  new file in submitted revision: ${newReached}`)
   if (baseCommit) console.log(`  OTHER tracked file (preface.tex) reached: ${otherReached}`)
 
+  // Shape D writes no new file at all — the \input points at something that has
+  // never existed. There is nothing that could "reach the server", so asserting
+  // arrival would fail forever, in both columns and after any repair. What (c)
+  // owes here is that the broken reference is skipped and the checkpoint still
+  // completes carrying everything else.
+  if (!writeNewFile) {
+    const ok = otherReached === true
+    console.log(`  expected: settle completes and other files reach  →  ${ok ? 'ok' : 'FAILED'}`)
+    return { label, shape, appOwned, capable: true, ok, outcome: `${result.status}:${otherReached}`, why: ok ? null : 'a broken reference stopped the rest of the build reaching the server' }
+  }
+
   if (appOwned) {
     // Nobody there to stage. The app's own document must reach the server.
     const ok = newReached
@@ -175,7 +186,10 @@ async function main() {
       results.push(await cell({
         root, shape: 'B', appOwned,
         title: 'new file \\input by a tracked root',
-        mainContent: 'the paper\n\\input{chapter2}\n',
+        // preface is \input too, so it is inside main.tex's closure. Without
+        // that, documentRoots: ['main.tex'] excludes it legitimately and the
+        // "other files reached" assertion tests nothing.
+        mainContent: 'the paper\n\\input{preface}\n\\input{chapter2}\n',
         newFile: 'chapter2.tex',
         newContent: 'a chapter\n',
         documentRoots: ['main.tex'],
@@ -198,7 +212,7 @@ async function main() {
     results.push(await cell({
       root, shape: 'D', appOwned: true,
       title: '\\input of a file that does not exist at all — broken reference',
-      mainContent: 'the paper\n\\input{nowhere}\n',
+      mainContent: 'the paper\n\\input{preface}\n\\input{nowhere}\n',
       newFile: 'unused.tex',
       newContent: 'x\n',
       documentRoots: ['main.tex'],
