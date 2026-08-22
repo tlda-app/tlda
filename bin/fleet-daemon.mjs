@@ -749,6 +749,37 @@ async function rpcKick({ agent_id }) {
   return { ok: true, signal: file }
 }
 
+// Step 3 of the notification proposal. The server tells this daemon what it
+// observed on its own socket to one of our agents' MCPs — "this is your machine,
+// look into it". It carries no remedy and no text to deliver, which is the whole
+// point: choosing the remedy is this daemon's job and delivering the
+// notification is nobody's job but the channel's.
+//
+// **It deliberately does not act yet, and that is not an oversight.** The
+// existing sideband — wake carrying `notify_text` into the pane — is still live
+// and is only removed in step 5. If this handler also woke or restarted, every
+// unacknowledged notice would provoke two remedies at once, and the second one
+// would be restarting agents that are running perfectly well. So while both
+// paths exist, this one records and the old one acts; when step 5 removes the
+// old one, the remedy moves here, and the symptom vocabulary it needs is already
+// arriving and already correct.
+//
+// Recording it is worth having on its own: until now the equivalent fact
+// (`notification_failure`) rode on a wake payload and its only consumer wrote a
+// single log line, so nothing anywhere could answer "how often does this
+// happen, and to whom".
+async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }) {
+  if (!agent_id) throw new Error('missing agent_id')
+  if (!symptom) throw new Error('missing symptom')
+  log.warn(`[notification-symptom] ${agent_id}: ${symptom}` +
+    `${observed_at ? ` observed_at=${observed_at}` : ''}` +
+    `${detail?.reason ? ` reason=${detail.reason}` : ''}` +
+    `${detail?.deadline_ms ? ` deadline_ms=${detail.deadline_ms}` : ''}`)
+  // Acknowledged as received and understood. `acted: false` says which of the
+  // two this is, so the server's record does not read as a remedy having run.
+  return { ok: true, agent_id, symptom, recorded: true, acted: false }
+}
+
 const agentStatus = createAgentStatus({
   tmuxArgs: TMUX_ARGS,
   sendMsg,
@@ -1321,6 +1352,7 @@ machineRpc.register({
     jsonlIngestor.nativeSubagentRouteForToolUse(parent_agent_id, tool_use_id),
   ...terminalRpc.handlers,
   'kick': rpcKick,
+  'notification-symptom': rpcNotificationSymptom,
   ...agentLauncher.handlers,
   'mint': rpcMint,
   'wake': rpcWake,
