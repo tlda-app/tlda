@@ -17,6 +17,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,7 +25,20 @@ import test from 'node:test'
 
 const CANARY = 'CANARY-LOCAL-IMAGE-MIME-BOUNDARY'
 const READ_TOKEN = 'probe-read-token'
-const PORT = 5217
+
+// A fixed port collides with whatever else this machine is running. Ask the OS
+// for a free one: this test's sibling hit EADDRINUSE on its first run doing it
+// the other way, and a flake in a boundary test reads as the boundary failing.
+function freePort() {
+  return new Promise((resolvePromise, reject) => {
+    const probe = createServer()
+    probe.on('error', reject)
+    probe.listen(0, () => {
+      const { port } = probe.address()
+      probe.close(() => resolvePromise(port))
+    })
+  })
+}
 
 // A 1x1 transparent PNG. Small enough to inline, real enough that `mime-types`
 // and the server both treat it as the image it is.
@@ -33,7 +47,7 @@ const PNG_1X1 = Buffer.from(
   'base64',
 )
 
-function writeFixtureConfig(dir) {
+function writeFixtureConfig(dir, PORT) {
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'server.yaml'), 'tokenGating: true\ntokensFromEnvironmentOnly: true\n')
   writeFileSync(join(dir, 'daemon.yaml'), [
@@ -86,7 +100,8 @@ test('/api/local-image serves images and refuses everything else', { timeout: 18
   writeFileSync(canaryPath, `# Not an image\n\n${CANARY}\n`)
   writeFileSync(imagePath, PNG_1X1)
 
-  writeFixtureConfig(join(scratch, 'config'))
+  const PORT = await freePort()
+  writeFixtureConfig(join(scratch, 'config'), PORT)
   mkdirSync(join(scratch, 'projects'), { recursive: true })
 
   const started = await startServer(root, {
