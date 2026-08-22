@@ -300,6 +300,15 @@ COPY bin/feelings-export.mjs ./bin/feelings-export.mjs
 COPY bin/build-worker.mjs ./bin/build-worker.mjs
 COPY bin/git-proposal-hook.mjs ./bin/git-proposal-hook.mjs
 
+# Session-history index builder: unified-server spawns `node
+# bin/build-session-history-index.mjs` from its listen callback. Same failure as
+# the build worker above and quieter, because the spawn is deliberately
+# fire-and-forget — without this line the child dies with ERR_MODULE_NOT_FOUND,
+# the server stays healthy, and the only symptom is that global session history
+# goes on taking ~25s forever. Measured on the deployed box at 027d5d940, where
+# the call site shipped and this file did not.
+COPY bin/build-session-history-index.mjs ./bin/build-session-history-index.mjs
+
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), Skip's tldraw license
 # allows self-hosting — so SPA + API + WS become ONE same-origin server, dropping
