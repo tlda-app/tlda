@@ -4,6 +4,30 @@ The server owns the accepted source revision. A linked checkout is a peer:
 its daemon submits local changes against the last accepted revision and applies
 accepted changes from other peers. There is no last-writer-wins fallback.
 
+## How to read this document
+
+**This document is in two registers, and they are marked.** An audit on
+2026-08-22 checked 58 of its claims about code: every section written from a
+measurement held, and **every false statement was in a section written from
+reading the source.** So the registers are kept apart rather than blended:
+
+- **Specified** — what the system must do. This is the design, and it is true of
+  the design whether or not any code implements it. Most of this document is
+  this.
+- **Observed** — what the code did when somebody ran it, with **the date and the
+  command that established it.** Nothing is written in this register from
+  reading the source, because reading the source is what produced every wrong
+  claim here.
+
+**A section with no observation says so.** Absence of a measurement is reported,
+never filled in by inspection. Where the two registers disagree, that gap is the
+most useful thing on the page and is stated in the section it belongs to rather
+than collected into a footnote.
+
+**Do not "verify" this document by reading code.** Two distinct failures here
+came from exactly that — a call graph that proves reachability read as proof of
+invocation, and a test file read as passing. Run it, or mark it unestablished.
+
 ## What a person does with this
 
 This is one system seen from several places. Work reaches the accepted revision
@@ -31,6 +55,19 @@ the mechanism:
   over: the server reports, it never remedies.
 
 ## Getting the work back out: the merge operation
+
+> **SPECIFIED, NOT BUILT. `tlda merge` does not exist.** There is no `merge`
+> subcommand, and `format-patch` and `git am` appear nowhere in `cli/`,
+> `server/` or `daemon/` — measured 2026-08-22:
+> `grep -rn "format-patch\|git am " --include='*.mjs' cli/ server/ daemon/`
+> returns **0**. Every sentence in this section is in the **specified** register
+> and describes behaviour to be written. **Nothing here has ever run.**
+>
+> This warning is at the top because the section is otherwise written in the
+> present indicative, which is how a specification reads and also how a
+> description of working code reads. Without this, someone greps for `tlda
+> merge`, finds nothing, and concludes it was deleted — the wrong-account
+> failure this document has already produced twice.
 
 `tlda merge` takes the version history tlda has accumulated for a project and
 lands it on a real branch — the author's own repository, or a linked remote such
@@ -178,14 +215,29 @@ specified behaviour.
 
 **It is not what currently happens, and this document said it was.**
 `mirrorShadow` in `server/lib/build-runner.mjs` is the only function that builds
-a shadow bundle and hands it to the daemon, and **nothing calls it.** Moving the
-mirror off the build tail removed the one caller; no accept-side caller replaced
-it. So the author's checkout gains no commit on any push, whether or not the
-build succeeds.
+a shadow bundle and hands it to the daemon, and **nothing calls it.** So the
+author's checkout gains no commit on any push, whether or not the build
+succeeds.
 
 Measured 2026-08-22 on a throwaway project with real shadow history: three
 edit → push → build cycles produced **zero preservation commits and zero shadow
 tags**, while the author's branch moved only by their own commits.
+
+**And this is a regression, not something never built** — which matters, because
+the first instinct on finding no caller is to conclude the feature was never
+finished and to design it afresh. Both commits are ancestors of `main`:
+
+| | |
+| --- | --- |
+| `68cd40874`, 2026-08-19 | *"Call the mirror from the accept, because nothing called it at all"* — adds `mirrorAcceptedRevision` to the push route and `bin/an-accept-that-actually-mirrors-test.mjs` to prove it |
+| `f6d0f9089`, 2026-08-20 | *"Delete parallel server source authority"* — removes 1,135 lines from `server/routes/projects.mjs`, and the caller with them |
+
+`mirrorAcceptedRevision` and the test that guarded it are both **absent from
+`main`** (measured 2026-08-22, `git show main:server/routes/projects.mjs |
+grep -n mirrorAcceptedRevision`, no hits, positive control on the same read
+returning 35). **So this exact fault was found and repaired once, and a deletion
+a day later reintroduced it and took its regression test out at the same time.**
+Whoever restores the call should restore that test with it.
 
 **Wiring proves reachability; it does not prove invocation**, and this path is
 the case that separates them. Every hop exists and every registration runs —
@@ -250,6 +302,32 @@ out of bregman's HEAD. The accepted revision is the head, so the new path cannot
 be stale by construction, and anything newer arrives with the next accept.
 
 ### A refused push is something its author can look at
+
+> **SPECIFIED. The ref is never written, so none of this reaches an author
+> today.** `markRefused` is defined at `server/lib/source-git-store.mjs:557` and
+> **that line is its only occurrence in the tree** — measured 2026-08-22,
+> `git grep -n "markRefused" main`, one hit, against a positive control on a
+> sibling query in the same file returning 11. Nothing calls it, so
+> `refs/tlda/refused/<project>` is never advanced. The daemon-side write to
+> `refs/tlda/refused/HEAD` exists in `daemon/shadow-mirror.mjs`, and it sits
+> behind the same dead trigger as everything else in that file — see the section
+> above. The rest of this section is the specified behaviour.
+
+**This is the second instance of one shape, which makes it a class rather than a
+coincidence.** In both, a complete and correct receiver is reachable from a
+registered entry point, and no caller ever enters it:
+
+| feature | receiver | missing trigger |
+| --- | --- | --- |
+| commit-per-accepted-push | `preserveAuthorCommit`, via `mirrorShadowRef` | `mirrorShadow` has no caller |
+| refused push readable by its author | `moveRef('refused', …)` | `markRefused` has no caller |
+
+**Both read as working from the source and from the call graph**, because every
+part that exists is correct and connected. What is missing is not a defect in
+any function; it is a function nobody calls. **A grep finds what is present and
+can never find what is absent** — so for anything in this document, the check is
+whether a real push produces the effect, not whether the code to produce it
+exists.
 
 `submit` commits the incoming snapshot **before** it tests staleness, so a
 refused push has always been a real commit and nothing about it was ever lost.
@@ -527,16 +605,47 @@ After a successful apply, the daemon advances to the accepted `sourceRevision`.
 
 ## Executable checks
 
-The implementation is checked at the same boundaries:
+> **Status measured 2026-08-22 against `main`**, by `git cat-file -e main:<path>`
+> for existence and by running each file that exists. **Of the eight checks this
+> section named, six are not on `main` and the two that are, fail.** The list
+> below is what these boundaries are *meant* to be checked by. It is not a
+> statement that anything is checked today, and it was one before this was
+> measured.
+>
+> Do not read a name here as coverage. Several of these files were deleted
+> months of commits ago while still listed, which is how the two dead triggers
+> above went unnoticed: the checks that would have caught them were named,
+> absent, and never run.
+
+| named check | on `main`? | result |
+| --- | --- | --- |
+| `bin/source-lifecycle-authority-test.mjs` | yes | **red** — fails at import, no `classifyThreeWay` export from `server/lib/source-lifecycle.mjs` |
+| `bin/a-commit-per-accepted-push-test.mjs` | yes | **red** — `TypeError: lifecycle.readAuthority is not a function` |
+| `bin/mirror-failure-visible-test.mjs` | yes | **red** — and its assertion is the finding: *"mirrorAcceptedRevision is gone from server/routes/projects.mjs — the accept no longer mirrors"* |
+| `bin/source-change-correlation-test.mjs` | **no** | absent |
+| `bin/source-conflict-delivery-test.mjs` | **no** | deleted in `672ba4d90` |
+| `bin/source-server-update-apply-test.mjs` | **no** | absent |
+| `bin/an-unanswered-source-push-releases-the-project-test.mjs` | **no** | absent |
+| `bin/an-edit-made-before-a-restart-is-still-pushed-test.mjs` | **no** | absent |
+| `bin/a-refusal-that-left-no-trace-test.mjs` | **no** | absent |
+| `bin/an-edit-that-reached-nowhere-test.mjs` | **no** | absent |
+| `server/lib/push-base-means-content.test.mjs` | **no** | absent |
+
+**`bin/mirror-failure-visible-test.mjs` is the one to fix first**, and it costs
+nothing to see why: it is red, on `main`, and the string it prints names the
+missing caller. It was already watching for this exact regression and its alarm
+has been going off into an empty room.
+
+What each was for, kept because the behaviour still has to be checked by
+something:
 
 - `bin/source-lifecycle-authority-test.mjs`: authority bootstrap,
   compare-and-set acceptance, stale-base evidence, and
   reconciliation-required.
 - `bin/source-change-correlation-test.mjs`: one in-flight submission, queue
   merging, bounded retry, blocking, and reconnect behavior.
-- ~~`bin/source-conflict-delivery-test.mjs`: stale-base conflicts and automatic
-  retry stopping.~~ **Deleted in `672ba4d90`.** Stale-base conflicts and
-  automatic retry stopping have no named check here since; see the note below.
+- `bin/source-conflict-delivery-test.mjs`: stale-base conflicts and automatic
+  retry stopping.
 - `bin/source-server-update-apply-test.mjs`: a clean accepted server edit reaches
   a linked checkout, while a watcher-observed pending local edit is refused and
   reported with the local file left byte-identical.
@@ -562,7 +671,8 @@ Until 2026-08-18 this gate read *"the linked checkout must contain both sides as
 conflict markers."* No implementation could have passed it since `cf6e30cf0`,
 and nothing complained.
 
-Added 2026-08-18 with the move to commits:
+The two added 2026-08-18 with the move to commits, both **red** per the table
+above:
 
 - `bin/a-commit-per-accepted-push-test.mjs`: accepting a push commits the
   author's checkout with no build involved, one commit per push, and the second
