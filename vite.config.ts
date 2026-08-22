@@ -4,8 +4,9 @@ import { execSync } from 'child_process'
 import { createReadStream, existsSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
-import { lookup as mimeLookup } from 'mime-types'
 import { resolveConfig } from './shared/config.mjs'
+// @ts-ignore — vanilla JS module
+import { resolveLocalImage } from './shared/local-image.mjs'
 
 const tlsDir = join(homedir(), '.config/tlda')
 const tlsCert = join(tlsDir, 'localhost+2.pem')
@@ -106,7 +107,10 @@ function readAppBuildInfo() {
   }
 }
 
-// Dev-only plugin: serve local filesystem images for math notes
+// Dev-only twin of the server's `/api/local-image` route. It has no read check
+// and never had one, so before the shared decision below it was an unauthenticated
+// arbitrary-absolute-path read on every `tlda-dev serve`. What is servable is
+// decided in one place, shared with the production route.
 const localImagePlugin = {
   name: 'local-image',
   configureServer(server: any) {
@@ -114,12 +118,11 @@ const localImagePlugin = {
       const url = new URL(req.url, 'http://localhost')
       const filePath = decodeURIComponent(url.searchParams.get('path') || '')
       if (!filePath) return next()
-      const expanded = filePath.startsWith('~/') ? resolve(homedir(), filePath.slice(2)) : filePath
-      if (!expanded.startsWith('/') || !existsSync(expanded)) { res.statusCode = 404; res.end('Not found'); return }
-      const mimeType = mimeLookup(expanded) || 'application/octet-stream'
-      res.setHeader('Content-Type', mimeType)
+      const resolved = resolveLocalImage(filePath)
+      if (!resolved.ok) { res.statusCode = resolved.status; res.end(resolved.error); return }
+      res.setHeader('Content-Type', resolved.mimeType)
       res.setHeader('Cache-Control', 'public, max-age=3600')
-      createReadStream(expanded).pipe(res)
+      createReadStream(resolved.path).pipe(res)
     })
   },
 }
