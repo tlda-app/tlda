@@ -67,6 +67,28 @@ Two contaminated readings compared with each other. **The 60 is not established
 and neither is the control.** A clean-box run — no orphans, quiet fleet, one pass
 — is the cheapest thing that would settle either.
 
+## Git notes do not travel, so they are a convenience and not a record
+
+Two commits on `main` — `afbf452f9` and `d60d18573` — carry notes correcting
+statements in their own messages that have since decayed. **`refs/notes/commits`
+is not pushed and does not travel on clone, fetch or pull without explicit
+refspec configuration.** So a reader in any other checkout sees the decayed
+messages and no note.
+
+The durable versions are in the tree and do travel: `docs/naming-errata.md`, and
+the docstring at the head of `bin/a-conflicted-checkout-reports-synced-test.mjs`
+naming the three shas. **Treat the notes as a courtesy to whoever reads on this
+box; treat the committed prose as the record.**
+
+**And the generalisation, which is the better half:** *preservation is a
+reference, not an instruction.* "Do not delete this branch" is a prohibition on a
+future action, and the commit it protected was already unreachable while that
+sentence was being written. **A rule about what people must not do cannot protect
+something no ref points at — only a ref can.** Same shape as `dead` being a flag
+somebody sets rather than a state inferred: the guarantee has to be represented,
+not observed. That is why `4821035a1` survives — it was tagged before it was
+discussed.
+
 ## The one process lesson worth carrying
 
 Three false zeros tonight: `roster(cwd:)`, which is empty for every agent; a
