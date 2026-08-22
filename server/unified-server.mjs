@@ -1023,6 +1023,26 @@ function formatAwayDuration(ms) {
   return 'less than a minute'
 }
 
+// Below this, an agent was not away — it reconnected. `last_seen` is advanced by
+// heartbeats while an agent runs, so a genuine hibernation leaves it stale by the
+// length of the hibernation, while an MCP restart leaves it seconds old. Without
+// this gate every reconnect would be met with "You were hibernating for less than
+// a minute", which is both false and the kind of noise that teaches agents to
+// stop reading their own login output.
+//
+// It is the same threshold `formatAwayDuration` already uses to give up and say
+// "less than a minute" — deliberately, so the notice can never print that phrase
+// in the hibernating case. One number, one meaning.
+const RETURN_NOTICE_MIN_AWAY_MS = 60_000
+
+function agentReturnNoticeIfAway(agent) {
+  if (agent?.metadata?.shell) return null
+  const sinceMs = agentAwaySinceMs(agent)
+  if (!sinceMs) return null
+  if (Date.now() - sinceMs < RETURN_NOTICE_MIN_AWAY_MS) return null
+  return agentReturnNotice(agent)
+}
+
 function agentReturnNotice(agent, status = 'hibernating', { reanimated = false } = {}) {
   const sinceMs = agentAwaySinceMs(agent)
   const duration = sinceMs ? formatAwayDuration(Date.now() - sinceMs) : 'an unknown amount of time'
@@ -1146,6 +1166,17 @@ async function reanimateAgent(agentQuery) {
   const nextSeat = await waitForAgentDaemonRoute(before.id)
   if (!nextSeat?.daemon_key) throw new Error(`reanimate for ${before.id} did not establish a daemon route`)
   const noticeText = agentReturnNotice(before, 'dead', { reanimated: true })
+  // Step 1: park it where login will hand it over. The reanimated agent's own
+  // login is the delivery, and unlike the broadcast below it actually arrives —
+  // §S1 established that `sendWakeNudge` emits a `channel-notification` with no
+  // `wake_ack_id`, which every MCP drops, so the retry, the backoff, the route
+  // refresh and the final throw underneath are all machinery around a message
+  // that has never been delivered.
+  //
+  // The old path is left running rather than removed: deleting it is step 5 and
+  // it is not mine. Two attempts at the same notice is the correct state to be
+  // in while the replacement is proven and the original is still there.
+  await fleetStore.updateAgentMeta?.(before.id, { pendingReturnNotice: noticeText })
   try {
     await sendReanimateNoticeWithRetry(before.id, revived, nextSeat, noticeText)
   } catch (e) {
@@ -6815,6 +6846,22 @@ async function dispatchFleetWsMessage(ws, msg) {
         return
       }
       humanPresence.detach(ws)
+      // Step 1 of the notification proposal: login is where the return notice
+      // is handed over, because login is where the server hands an agent
+      // everything else it missed. Until now the notice rode on the daemon's
+      // wake payload, which is the second delivery route the design removes —
+      // and the reanimate variant of it never arrived at all (§S1: it was
+      // broadcast without a `wake_ack_id`, and every MCP drops such a frame).
+      //
+      // Computed from `existing`, before the upsert below sets `last_seen` to
+      // now — after that the away duration is zero and the notice says nothing.
+      //
+      // A reanimate notice was parked for this agent and is handed over
+      // whatever the timings; otherwise the notice is emitted only if the agent
+      // was genuinely away — see `agentReturnNoticeIfAway`, which also excludes
+      // a freshly minted shell that has never run.
+      const pendingReanimateNotice = existing.metadata?.pendingReturnNotice || null
+      const returnNotice = pendingReanimateNotice || agentReturnNoticeIfAway(existing)
       const now = new Date().toISOString()
       const agent = {
         ...existing,
@@ -6832,13 +6879,22 @@ async function dispatchFleetWsMessage(ws, msg) {
       if (agent.metadata?.shell) {
         agent.metadata = { ...agent.metadata, shell: null }
       }
+      // Handed over, so it is no longer pending. Clearing it here rather than
+      // tracking delivery is deliberate: this is mail, not a liveness flag, and
+      // the failure modes are asymmetric. A login that dies after replying
+      // repeats the notice next time, which is harmless; keeping it until
+      // something confirmed receipt would be a second delivery-state machine of
+      // exactly the kind this design exists to remove.
+      if (pendingReanimateNotice) {
+        agent.metadata = { ...(agent.metadata || {}), pendingReturnNotice: null }
+      }
       await fleetStore.setAgentDaemonRoute(loginAgentId, routeProof.daemon_key)
       await fleetStore.upsertAgent(agent)
       agentFleetConnections.set(loginAgentId, ws)
       ws._tldaAgentId = loginAgentId
       const stored = await fleetStore.getAgent?.(loginAgentId) || agent
       const storedAgent = await fleetStore.projectAgentDaemonRoute?.(stored) || stored
-      reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
+      reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null, ...(returnNotice ? { return_notice: returnNotice } : {}) })
       void fleetStore.share?.({ type: 'login', agent_id: loginAgentId, from: loginAgentId, to: loginAgentId, text: `${agent.friendly_name || loginAgentId} logged in` })
       touchActivity(loginAgentId)
       spawnLibrarian.observeLogin(await fleetStore.getAgent?.(loginAgentId) || agent)
