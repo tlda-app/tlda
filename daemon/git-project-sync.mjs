@@ -98,7 +98,33 @@ export function createGitProjectSync({
           }
           missing.push(...closure.missing)
         }
-        if (missing.length) throw new Error(`${project}: ${candidate} has missing dependencies: ${missing.map(item => item.path).join(', ')}`)
+        // A missing dependency does not abort the checkpoint. shadow-mirror.mjs:148
+        // makes this exact call in this repository already, and the reasoning is
+        // written out there: "Throwing there aborts the whole checkpoint, so every
+        // OTHER file in the build loses its preservation commit too, permanently
+        // and on every build. … Skipping is strictly safer than throwing."
+        //
+        // The same shape reaches here by a different route. Under tracked-only
+        // staging, a file the author has written and not yet staged is absent from
+        // the settled tree and therefore missing — so throwing would stop the whole
+        // project submitting anything, on this settle and on every settle after,
+        // because nothing ever stages it. The catch at git-sync-manager.mjs:97
+        // logs at warn, so a person would get no other trace.
+        //
+        // The closure is scanned against `extracted`, a materialisation of the
+        // settled tree, so existence is checked against `sourceDir` — the real
+        // working tree — which is the only thing that tells the two cases apart.
+        // Both skip. They are logged differently because they send a reader
+        // looking in different places.
+        //
+        // A path that is not there is simply not in the closure. There is no
+        // deletion to record: this function computes a closure, where
+        // shadow-mirror was building a commit over a known path set.
+        for (const item of missing) {
+          log.info?.(fs.existsSync(path.join(sourceDir, item.path))
+            ? `${project}: ${candidate} references ${item.path}, which is present but untracked — it joins the revision once it is staged`
+            : `${project}: ${candidate} references ${item.path}, which is not in the project — leaving it out of the revision`)
+        }
         closures.set(candidate, files)
       }
       const pulled = new Set()
