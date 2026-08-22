@@ -252,3 +252,75 @@ whole-project push, which is how passages get deleted. That is the failure
 **Not renamed because the string is stored in existing manifests and payloads**
 rather than only passed between functions. A rename is a data migration; the
 entry costs nothing and stops the next person inheriting it.
+
+## `fleetStoreQueue.waitMaxMs` / `waitMeanMs` — `server/lib/fleet-store-client.mjs`
+
+**What the name says:** how long a call waited in the queue in front of the single-threaded
+store worker.
+
+**What it measures:** enqueue to settle. `performance.now() - waiter.queuedAt` in
+`_recordSettled` (`:190–201`), where `queuedAt` is stamped at enqueue (`:168`) and
+`_recordSettled` runs when the call resolves. **It includes the call's own execution time.**
+Total latency, not time-behind-someone-else.
+
+**The cost, already paid.** `getAliveAgents waitMaxMs 24,979 ms` was read as *`getAliveAgents`
+waited 25 seconds behind a slow query*. It is equally consistent with *`getAliveAgents` itself
+took 25 seconds* — a different defect with a different owner. On 2026-08-22 a chief of staff
+built a hypothesis on the first reading and staffed against it.
+
+**The property is useful once you know it,** which is why this is an entry and not a rename.
+Because the number includes execution, a method's recorded maximum is a **lower bound on the
+longest it has ever run** — so a call whose maximum is 15.1 s cannot have held the worker for
+25 s. That test is how `searchAll` was excluded as the blocker for the three largest stalls in
+the same session.
+
+**Also misleading:** the doc comment above `queueStats()` (`:203–213`) describes `oldestWaitMs`
+as *"how long the one at the head has been waiting"* — correct for `oldestWaitMs`, and it reads
+as though it governs `waitMaxMs` too. It does not. `oldestWaitMs` and `depth` are live and
+correctly named.
+
+**Repaired by renaming to `latencyMaxMs`/`latencyMeanMs`**, not by changing the measurement.
+
+## `fleetStoreQueue.maxDepth` — `server/lib/fleet-store-client.mjs:186`
+
+`if (this._pending.size > q.maxDepth) q.maxDepth = this._pending.size` runs inside
+`_recordQueued`, so depth is **sampled only when a call is enqueued**, never on settle.
+`_pending` holds calls waiting *or running*.
+
+Two consequences. It is a lifetime high-water mark that **never resets** — like `waitMaxMs`,
+so it cannot fall to evidence a fix, and after a restart it sits at the worst moment since boot
+forever. And it is blind between enqueues: if the worker blocks while nothing new arrives, the
+depth during that block is never sampled.
+
+**It is sound as an upper bound**, which is the one thing it is good for — every enqueue
+samples, so no moment's depth exceeded the lifetime maximum.
+
+## `resource-cleanup.mjs` — a footprint cap, not a reclaimer
+
+**What the name says:** something that reclaims disk.
+
+**What it does:** caps one consumer's footprint. `:206` is the entire eviction decision —
+
+```js
+for (const entry of measured.sort((a, b) => a.mtimeMs - b.mtimeMs)) {
+  if (retainedBytes <= budgetBytes) break
+```
+
+`budgetBytes` is `DEFAULT_WORKTREE_NODE_MODULES_BUDGET_BYTES = 50 * 1024 ** 3` (`:11`);
+`retainedBytes` is the summed size of `node_modules` under `/Users/skip/worktrees` only.
+**`df` is never called. Free space appears nowhere in the module.** So the loop breaks on its
+first iteration whenever worktree `node_modules` total is under 50 GiB, correctly, at any
+free-space value including zero. A full volume is not a state it can perceive.
+
+**The cost, 2026-08-22.** The volume reached zero with the fleet unable to run any command.
+Several agents and a chief spent hours on *"why is the reclaimer not reclaiming"* before anyone
+read the module. It was never a disk-pressure reclaimer; nobody had checked.
+
+## `createPlaywrightPoolCleanup` — reaps processes, never their profiles
+
+Reaps idle browser **processes** on `emptyIdleMs`/`unhealthyIdleMs`. It never deletes a user-data
+directory, so `ms-playwright/daemon/ud-*` profiles accumulate permanently. Measured 2026-08-22:
+19 stale profiles, oldest from June, **2.65 GiB**, with no browser process running.
+
+Same shape as the entry above — a cleanup that cleans something other than what its name
+implies — and in a place no pref-key or disk-usage search surfaces.
