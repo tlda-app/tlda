@@ -23,6 +23,16 @@ export function createGitProjectSync({
   remote = 'tlda',
   branch = 'main',
   documentRoots = [],
+  // True for a working tree the APP owns — `.source-room/working`, created by
+  // ensureRepo() and written by the source room. There is no person in it, so
+  // nothing stages what the app writes there and settle must stage it itself.
+  // False, and default, for a person's own checkout, which is what every
+  // territory rule in this file is about.
+  //
+  // Ownership is a property of the directory, and this object is the one bound
+  // to the directory, so the fact lives here. The manager forwards it from the
+  // binding record; there is no second encoding.
+  appOwnedWorkingTree = false,
   log = console,
   onSubmitted = () => {},
   onWrongHead = () => {},
@@ -208,7 +218,15 @@ export function createGitProjectSync({
       // and logged at warn, so the crash is silent. And a repository with no
       // commits is an ordinary state here, not an error: it is what ensureRepo()
       // leaves behind, and what a person's freshly `git init`ed checkout is.
-      await git(['add', '-u'], { env })
+      // In a working tree the app owns there is no author to stage anything, so
+      // `-A`. Getting this wrong in the direction of `-u` everywhere loses a
+      // document created in the browser: nothing there is ever tracked, so the
+      // settle produces no commit and the document reaches the store never.
+      //
+      // `-A` here is not a hole in the territory rule. That rule is about a
+      // repository someone else owns; this branch only runs where the app is the
+      // only writer.
+      await git(['add', appOwnedWorkingTree ? '-A' : '-u'], { env })
       const tree = (await git(['write-tree'], { env })).stdout.trim()
       if (head && (await git(['rev-parse', `${head}^{tree}`])).stdout.trim() === tree) return head
       if (!head && tree === EMPTY_TREE) return null
