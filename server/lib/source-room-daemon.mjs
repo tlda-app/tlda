@@ -145,7 +145,7 @@ export function createSourceRoomDaemon({
     const paths = roomPaths(project, filePath)
     const projectRecord = await readProject(project)
     const gitSync = gitSyncManagerForProject(project)
-    gitSync.bindSource(project, join(paths.root, 'working'), { mainFile: projectRecord?.mainFile || null })
+    gitSync.bindSource(project, join(paths.root, 'working'), { mainFile: projectRecord?.mainFile || null, appOwnedWorkingTree: true })
     await gitSync.sync(projectRecord ? [projectRecord] : [])
     const snapshot = readJson(paths.snapshot)
     const state = snapshot || readJson(paths.state) || {}
@@ -482,7 +482,7 @@ export function createSourceRoomDaemon({
     if (!projectRecord) return { status: 404, body: { ok: false, error: 'Project not found' } }
     const root = join(projectDir(project), '.source-room', 'working')
     const gitSync = gitSyncManagerForProject(project)
-    gitSync.bindSource(project, root, { mainFile: projectRecord.mainFile || null })
+    gitSync.bindSource(project, root, { mainFile: projectRecord.mainFile || null, appOwnedWorkingTree: true })
     await gitSync.sync([projectRecord])
     const paths = []
     for (const file of payload.files || []) {

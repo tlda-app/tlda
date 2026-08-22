@@ -206,3 +206,48 @@ test('a settle whose tree already equals the shared head submits no proposal', a
     'and none reached the remote',
   )
 })
+
+// The other branch of the missing-dependency skip. A reference to a file that
+// does not exist anywhere is a defect in the document, not an unstaged file —
+// and the two are logged differently for that reason. Both must skip: neither
+// may stop the project submitting. The revision that results will not build,
+// which is correct and is not asserted against here.
+test('a reference to a file that does not exist skips without stopping the settle', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-broken-ref-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'remote.git')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'main.tex'), 'chapter one\n')
+  writeFileSync(join(checkout, 'chapter2.tex'), 'chapter two\n')
+  await git(checkout, ['add', 'main.tex', 'chapter2.tex'])
+  await git(checkout, ['commit', '-m', 'the author writes their paper'])
+  // Tracked, committed, and now pointing at BOTH a real chapter and a file that
+  // is nowhere: not on disk, not in the index, not in HEAD. chapter2 has to be
+  // \input too, or it is not in the closure and its presence in the revision
+  // would prove nothing.
+  writeFileSync(join(checkout, 'main.tex'), 'chapter one\n\\input{chapter2}\n\\input{nowhere}\n')
+
+  const submitted = []
+  const sync = createGitProjectSync({
+    sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a',
+    branch: 'main', remote, documentRoots: ['main.tex'],
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    onSubmitted: event => submitted.push(event),
+  })
+
+  const settled = await sync.editClusterSettled()
+
+  // The positive half is the contract. "nowhere.tex is absent" is also what a
+  // completely broken repair produces; "chapter2.tex still reached the server"
+  // is not.
+  assert.equal(settled.status, 'SubmittedToBuildQueue', 'a broken reference must not stop the settle')
+  assert.equal(submitted.length, 1)
+  assert.deepEqual(
+    (await git(remote, ['ls-tree', '-r', '--name-only', settled.revision])).stdout.trim().split('\n').sort(),
+    ['chapter2.tex', 'main.tex'],
+    'every other file in the build still reached the server',
+  )
+})
