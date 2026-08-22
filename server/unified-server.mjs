@@ -1117,7 +1117,11 @@ async function reanimateAgent(agentQuery) {
   broadcastState(before.id)
   let spawnResult
   try {
-    spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: before.id })
+    // Bounded for the same reason as the drain's wake below: this is the same
+    // unbounded 'wake' RPC, and an unanswered one here hangs the reanimate
+    // request rather than the fleet-wide drain. The report names the drain; the
+    // defect is the operation, and it has two call sites.
+    spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: before.id }, wakeRpcOptions())
     if (!spawnResult?.ok) {
       throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
     }
@@ -1520,6 +1524,29 @@ function sendDaemonDurable(machineId, operation, params = {}, rpcOptions = {}) {
 // daemon's own serialized git work, and that is what the budget has to cover.
 const MIRROR_ATTEMPT_TIMEOUT_MS = Number(process.env.TLDA_MIRROR_ATTEMPT_TIMEOUT_MS) || 60000
 const MIRROR_TOTAL_DEADLINE_MS = Number(process.env.TLDA_MIRROR_TOTAL_DEADLINE_MS) || 150000
+
+// A wake RPC had no attempt timeout and no total deadline: `sendDaemonDurable`
+// passed no rpcOptions, so `startWsRequest` set no timer at all and the call was
+// bounded only by the socket closing. A daemon that holds its socket open and
+// never answers therefore parks `drainWakeQueue` forever — and because the drain
+// is guarded by `_wakeDraining` and called unawaited, one silent daemon stops
+// every notification in the fleet. That is the shape of the 2026-08-01
+// eighteen-hour outage, reached by a route the guard there does not cover.
+//
+// It is also why the existing retry machinery was unreachable: a retry needs a
+// bounded attempt to retry *after*. Same defect and same function as the mirror
+// timeouts above, which is where these are sized from.
+//
+// Sized to what a wake legitimately takes, not to the payload. The daemon may
+// spawn a process and wait for a harness prompt — `wakeNotifyReadyTimeoutMs` is
+// 90s on its own — so an attempt ceiling below that would abort work that was
+// going to succeed, which is the mistake the mirror comment above records.
+const WAKE_ATTEMPT_TIMEOUT_MS = Number(process.env.TLDA_WAKE_ATTEMPT_TIMEOUT_MS) || 120000
+const WAKE_TOTAL_DEADLINE_MS = Number(process.env.TLDA_WAKE_TOTAL_DEADLINE_MS) || 300000
+const wakeRpcOptions = () => ({
+  attemptTimeoutMs: WAKE_ATTEMPT_TIMEOUT_MS,
+  totalDeadlineMs: WAKE_TOTAL_DEADLINE_MS,
+})
 
 const mirrorShadowViaDaemon = createShadowMirrorRpcHandler({
   readProject,
@@ -6072,6 +6099,25 @@ async function drainWakeQueue() {
     }
     const seat = await fleetStore?.getAgentDaemonRoute?.(agentId)
     if (!seat) {
+      // The queue entry is already deleted above, so this `continue` is a
+      // permanent drop, not a deferral — and it was the only branch here that
+      // wrote nothing. Every neighbour records why it stopped; this one left no
+      // evidence that a notification had ever existed, which makes a routeless
+      // agent indistinguishable from an agent nobody wrote to.
+      //
+      // Recording it is also the default answer to the design's open point 4
+      // (what the server does with no daemon to report to). It is not a
+      // fallback: nothing is retried, nothing is delivered another way. The
+      // symptom is written down and the wake stops here.
+      if (traceId) {
+        controlPlaneTraces.append({
+          trace_id: traceId,
+          component: 'server',
+          operation: 'wake.defer',
+          status: 'no-route',
+          detail: { agent: agentId },
+        })
+      }
       continue
     }
     const daemonKey = seat.daemon_key
@@ -6089,6 +6135,7 @@ async function drainWakeQueue() {
         notificationFailure,
         traceId,
         sendDaemonDurable,
+        rpcOptions: wakeRpcOptions(),
         appendControlTrace: (event) => controlPlaneTraces.append(event),
         getAgentDaemonRoute: (id) => fleetStore.getAgentDaemonRoute(id),
         insertWakeLifecycleEvent: async () => {

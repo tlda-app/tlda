@@ -31,6 +31,12 @@ export async function runWakeRouteLifecycle({
   notificationFailure = null,
   traceId = null,
   sendDaemonDurable,
+  // Bounds for the wake RPC itself. Defaulted to `null` rather than to a number
+  // so this module states no policy about how long a wake may take — that
+  // belongs to the caller that knows the deployment. A caller passing nothing
+  // gets the old unbounded behaviour, which is a bug at the call site and
+  // visible there rather than hidden behind a default here.
+  rpcOptions = null,
   appendControlTrace = () => {},
   getAgentDaemonRoute,
   insertWakeLifecycleEvent = async () => {},
@@ -61,7 +67,9 @@ export async function runWakeRouteLifecycle({
     if (notifyDelayMs != null) wakePayload.notify_delay_ms = notifyDelayMs
     if (notifyReadyTimeoutMs != null) wakePayload.notify_ready_timeout_ms = notifyReadyTimeoutMs
   }
-  const spawnResult = await sendDaemonDurable(daemonKey, 'wake', wakePayload)
+  const spawnResult = rpcOptions
+    ? await sendDaemonDurable(daemonKey, 'wake', wakePayload, rpcOptions)
+    : await sendDaemonDurable(daemonKey, 'wake', wakePayload)
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }
