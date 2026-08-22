@@ -2681,10 +2681,17 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     const agent = serverResult.agent || {};
     const friendly = agent.friendly_name || shellId;
     ledger.upsertAgent(shellId, CLAUDE_SESSION, cwd, friendly);
+    // The return notice, handed over here because login is where the server
+    // hands an agent what it missed. It used to ride on the daemon's wake
+    // payload — the second delivery route the design removes — and in the
+    // reanimate case it was emitted as a `channel-notification` with no
+    // `wake_ack_id`, which this very file drops, so it never arrived at all.
+    const returnNotice = typeof serverResult.return_notice === 'string' ? serverResult.return_notice.trim() : '';
     const msg = [
       localMarker({ fleet_id: shellId, friendly_name: friendly }),
       `Logged in ${shellId}.`,
       `Your name: "${friendly}" — other agents and the user know you by this name.`,
+      ...(returnNotice ? ['', returnNotice] : []),
       '',
       'After login: call inbox() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.',
       'When you see 📬 as input, call inbox() — it means you have a new task or message.',
