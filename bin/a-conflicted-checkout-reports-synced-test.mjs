@@ -3,7 +3,20 @@
 /**
  * A conflicted checkout is announced as `synced`.
  *
- * Two things, both red on `main`:
+ * Two things, both red at `e2545ebea` — the baseline this was written against,
+ * named as a sha because `main` has since moved and now carries the repair. Run
+ * against today's `main` both are green, and the honest conclusion available
+ * from that alone is that there was never anything to fix. The three shas that
+ * stay true: green at `e2545ebea`, red at `4821035a1`, green at `b0fba4946`.
+ *
+ * S IS RETIRED AS A GATE AND KEPT AS EVIDENCE. `d60d18573` — "Park accepted
+ * revisions instead of writing the person's checkout" — removed its premise: no
+ * arrival conflicts a checkout any more, so there is no conflicted outcome to
+ * compare a clean one against. From that commit onward S reports
+ * `FIXTURE NOT CAPABLE` and exits 2. That is the harness declining to give a
+ * verdict, not a pass and not a failure, and it is why this file is kept rather
+ * than deleted: it is the record of what the broadcast did when a conflicted
+ * arrival was still reachable.
  *
  * W. THE WIRE. `headChanged()` -> `fetchHead()` -> `mirrorArrived()` in
  *    `daemon/git-project-sync.mjs`, with the fetch really happening over a
