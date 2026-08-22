@@ -5988,6 +5988,81 @@ async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}
   }
   return result
 }
+// The symptom vocabulary, taken from the states `attemptMcpWakeNotification`
+// already distinguishes rather than invented. Each is a fact about the server's
+// own socket and nothing else — no claim about processes, which are the
+// daemon's business and not the server's to model.
+const NOTIFICATION_SYMPTOM_BY_REASON = {
+  'no-open-mcp-socket': 'no-channel',
+  'mcp-socket-closed': 'channel-closed',
+  // Every send threw: there were sockets and none of them took the bytes. That
+  // is the socket being gone, observed one layer down.
+  'mcp-send-failed': 'channel-closed',
+  'mcp-ack-timeout': 'channel-silent',
+}
+
+// `no-notification-text` is deliberately absent: nothing was sent, so nothing
+// was observed, and there is no symptom to report.
+function notificationSymptomFor(mcpDelivery) {
+  if (mcpDelivery?.refused) return 'channel-refused'
+  return NOTIFICATION_SYMPTOM_BY_REASON[mcpDelivery?.reason] || null
+}
+
+async function reportNotificationSymptom(agent, mcpDelivery, traceId = null) {
+  const symptom = notificationSymptomFor(mcpDelivery)
+  if (!symptom) return
+  const observedAt = new Date().toISOString()
+  const route = await fleetStore.getAgentDaemonRoute?.(agent.id)
+  const daemonKey = route?.daemon_key || null
+  // Open point 4: what the server does when it has no daemon to report to. It
+  // records the symptom and stops. Not a fallback — nothing is retried and
+  // nothing is delivered another way — and the record is what keeps the removal
+  // of the second path from producing silence.
+  if (!daemonKey) {
+    if (traceId) {
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'notification.symptom',
+        status: 'no-daemon-route',
+        detail: { agent: agent.id, symptom, observed_at: observedAt },
+      })
+    }
+    return
+  }
+  if (traceId) {
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'notification.symptom',
+      status: 'reported',
+      detail: { agent: agent.id, symptom, daemon: daemonKey, observed_at: observedAt },
+    })
+  }
+  try {
+    await sendDaemonDurable(daemonKey, 'notification-symptom', {
+      agent_id: agent.id,
+      symptom,
+      observed_at: observedAt,
+      detail: { channel: 'mcp', reason: mcpDelivery?.reason || null, deadline_ms: WAKE_MCP_ACK_DEADLINE_MS },
+    }, wakeRpcOptions())
+  } catch (e) {
+    // Reporting is best-effort by construction. Every daemon action this could
+    // provoke is idempotent, so a lost report costs a round of convergence and
+    // nothing else — which is exactly why the server keeps no memory of having
+    // sent it and does not retry here.
+    if (traceId) {
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'notification.symptom',
+        status: 'report-failed',
+        detail: { agent: agent.id, symptom, daemon: daemonKey, error: e?.message || String(e) },
+      })
+    }
+  }
+}
+
 async function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
   const agent = await fleetStore.getAgent(agentId)
   if (!agent) return { ok: false, delivered: false, skipped: true, reason: 'missing-agent' }
@@ -6030,6 +6105,14 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
     reason: mcpDelivery.reason || 'not-acknowledged',
     deadline_ms: WAKE_MCP_ACK_DEADLINE_MS,
   }
+  // Step 3: report the symptom to the agent's daemon. What the server observed
+  // on its own socket, with no remedy attached and no text to deliver — "this is
+  // your machine, look into it" is the whole message.
+  //
+  // Fire-and-forget on purpose: nothing downstream waits on it and nothing
+  // decides anything from its result. It is a report, and a report that fails to
+  // arrive must not change what the notification path does.
+  void reportNotificationSymptom(agent, mcpDelivery, traceId)
   if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
     const breaker = _wakeBreaker.get(agentId)
     if (traceId) {
