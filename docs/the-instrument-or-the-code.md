@@ -74,6 +74,15 @@ the same characters.** Neither errors. Both answer.
   batched. Named imports bind at module load, so the patch could not have been
   observed. The real count was one per file.
 
+- **2026-08-22** — a raw `login` sent over `/ws/fleet` to prove the server was
+  hanging got **no reply in 25 seconds**, while the socket streamed broadcasts
+  the whole time. That reads as *the server accepts logins and never answers
+  them*, which was about to be reported. The correlation field is `id`; the
+  probe used `request_id`. Re-sent with `id`, the same server answered the same
+  login in **322ms**. The field is set in `_sendWSOnce` — find it there rather
+  than guessing, and note that a request with an unknown correlation key is not
+  rejected, it is simply never matched, so the socket stays healthy and silent.
+
 **The check — a positive control, and it is one command.** Run the same query
 against something you *know* is there. If that also comes back empty, the
 instrument is broken rather than the world.
