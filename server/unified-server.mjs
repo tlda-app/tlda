@@ -6756,7 +6756,9 @@ async function dispatchFleetWsMessage(ws, msg) {
         last_seen: now,
         dead: false,
         human: false,
-        is_manager: !!manager,
+        // Login also claims the persistent notification channel. A channel
+        // claim carries no role authority, so omission preserves the seat.
+        is_manager: manager === undefined ? !!existing.is_manager : !!manager,
         metadata: (metadata || existing.metadata || kind)
           ? { ...(existing.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
           : null,

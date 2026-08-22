@@ -93,6 +93,19 @@ test('agent login requires daemon route proof before clearing a shell', async ()
     await waitForServer(child)
     ws = await openFleetWs(port)
 
+    const filtered = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet?agent=${encodeURIComponent('fleet:recipient')}`, { rejectUnauthorized: false })
+    await new Promise((resolve, reject) => {
+      filtered.once('open', resolve)
+      filtered.once('error', reject)
+    })
+    await assert.rejects(
+      request(filtered, 'query-filter-is-not-auth', 'channel-notification-ack', {
+        agent: 'fleet:recipient', ack_id: 'untrusted-query-param',
+      }),
+      /agent does not match this connection/
+    )
+    filtered.close()
+
     await assert.rejects(
       request(ws, 1, 'login', { agent_id: 'fleet:recipient' }),
       /requires daemon route information/
@@ -123,10 +136,12 @@ test('agent login writes the daemon route projection from the login proof', asyn
     id: 'fleet:recipient',
     friendly_name: 'recipient',
     labels: [],
+    is_manager: true,
     registered_at: now,
     last_seen: now,
     metadata: { shell: true },
   })
+  store.updateAgentStatus('fleet:recipient', 'awake', 'thinking', 'review', now)
   store.close()
 
   const port = await unusedPort()
@@ -149,6 +164,9 @@ test('agent login writes the daemon route projection from the login proof', asyn
     // projected reply carries the joined key, which is what routing uses.
     assert.equal(result.agent.route_daemon_key, 'mini:testing')
     assert.equal(result.agent.metadata.shell, undefined)
+    assert.equal(result.agent.is_manager, true)
+    assert.equal(result.agent.metadata.status.status, 'awake')
+    assert.equal(result.agent.metadata.status.activity, 'thinking')
   } finally {
     ws?.close()
     child.kill('SIGTERM')
@@ -161,7 +179,10 @@ test('agent login writes the daemon route projection from the login proof', asyn
       agent_id: 'fleet:recipient',
       daemon_key: 'mini:testing',
     })
-    assert.equal((await store.getAgent('fleet:recipient')).metadata.shell, undefined)
+    const agent = await store.getAgent('fleet:recipient')
+    assert.equal(agent.metadata.shell, undefined)
+    assert.equal(agent.is_manager, true)
+    assert.equal(agent.metadata.status.status, 'awake')
   } finally {
     store.close()
     rmSync(dir, { recursive: true, force: true })

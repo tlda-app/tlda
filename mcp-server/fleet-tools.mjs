@@ -2650,7 +2650,11 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         await new Promise(r => setTimeout(r, 50));
       }
     }
-    const serverResult = await sendFleetRequestAttempt('login', loginBody, { deadlineMs: 5000 })?.catch(e => ({ error: e.message }));
+    const overlappingChannelLogin = !nativeBinding && _channelLoginAgentId === shellId
+      ? _channelLoginInFlight
+      : null;
+    const serverResult = await (overlappingChannelLogin
+      || sendFleetRequestAttempt('login', loginBody, { deadlineMs: 5000 }))?.catch(e => ({ error: e.message }));
     if (!serverResult) {
       return { content: [{ type: 'text', text: [
         localMarker({}),
@@ -5596,6 +5600,8 @@ export function __setFleetTransportForTest(transport) {
 }
 
 let _channelHasOpened = false;
+let _channelLoginInFlight = null;
+let _channelLoginAgentId = null;
 
 const _deliveredChannelIds = new Set();
 const CHANNEL_DEDUP_TTL_MS = 60_000;
@@ -5767,17 +5773,31 @@ function startChannelWS({ bootstrap = false } = {}) {
       _channelHasOpened = true;
       if (activeAgentId()) setTimeout(_flushUnread, 500).unref?.();
       if (!activeAgentId()) return;
+      const route = loginRouteFields();
       const loginBody = {
         agent_id: activeAgentId(),
         session_id: currentTransportSessionId() || undefined,
-        tmux_session: _tmuxSession || undefined,
-        cwd: getAgentCwd() || process.cwd(),
-        machine_id: process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0],
-        env_name: getActiveEnvName(),
+        tmux_session: route.detectedTmux || undefined,
+        cwd: route.cwd || undefined,
+        project: route.project,
+        machine_id: route.machineId,
+        env_name: route.envName,
+        daemon_key: route.daemonKey || undefined,
+        metadata: { kind: harnessFromEnv().kind },
       };
-      mcpFleetTransport.durable('login', loginBody)
+      const loginAgentId = activeAgentId();
+      const loginPromise = mcpFleetTransport.durable('login', loginBody);
+      _channelLoginAgentId = loginAgentId;
+      _channelLoginInFlight = loginPromise;
+      loginPromise
         ?.then(() => flushFleetTransport({ limit: 100 }))
         ?.catch(e => process.stderr.write(`[fleet-channel] re-login/flush failed: ${e.message}\n`));
+      const clearLoginInFlight = () => {
+        if (_channelLoginInFlight !== loginPromise) return;
+        _channelLoginInFlight = null;
+        _channelLoginAgentId = null;
+      };
+      loginPromise?.then(clearLoginInFlight, clearLoginInFlight);
       process.stderr.write(`[fleet-channel] ${reconnect ? 're-' : ''}logged-in ${activeAgentId()}\n`);
     },
     onActivity: () => {

@@ -10,6 +10,7 @@ const configDir = mkdtempSync(path.join(os.tmpdir(), 'tlda-initial-channel-login
 mkdirSync(path.join(configDir, '.claude'), { recursive: true })
 const fleetId = 'fleet:initial-channel-login'
 const seen = []
+const connectionLogins = []
 
 const server = http.createServer((_req, res) => {
   res.writeHead(404)
@@ -20,15 +21,21 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
 })
 wss.on('connection', ws => {
+  const logins = []
+  connectionLogins.push(logins)
   ws.on('message', raw => {
     const message = JSON.parse(String(raw))
     seen.push(message)
+    if (message.type === 'login') logins.push(message)
     ws.send(JSON.stringify({
       id: message.id,
       result: message.type === 'login'
         ? { ok: true, agent: { id: fleetId, friendly_name: 'initial-channel-login' } }
         : { ok: true },
     }))
+    if (message.type === 'login' && connectionLogins.length === 1) {
+      setTimeout(() => ws.close(), 50)
+    }
   })
 })
 
@@ -53,11 +60,13 @@ delete process.env.CODEX_THREAD_ID
 try {
   const { initFleet } = await import('../mcp-server/fleet-tools.mjs')
   initFleet({})
-  const deadline = Date.now() + 2_000
-  while (!seen.length && Date.now() < deadline) {
+  const deadline = Date.now() + 5_000
+  while (connectionLogins.length < 2 && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 20))
   }
-  assert.equal(seen.length, 1, 'first channel open should authenticate without a tool call')
+  assert.equal(connectionLogins.length, 2, 'channel should reconnect after the first socket closes')
+  assert.deepEqual(connectionLogins.map(logins => logins.length), [1, 1],
+    'each first-open/reconnect socket should have exactly one login lifecycle')
   assert.equal(seen[0].type, 'login')
   assert.equal(seen[0].agent_id, fleetId)
   assert.equal(seen[0].env_name, 'test')

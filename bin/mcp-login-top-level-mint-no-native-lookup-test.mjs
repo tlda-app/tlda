@@ -28,10 +28,11 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
 })
 wss.on('connection', ws => {
-  ws.on('message', raw => {
+  ws.on('message', async raw => {
     const message = JSON.parse(String(raw))
     seen.push(message)
     if (message.type === 'login') {
+      await new Promise(resolve => setTimeout(resolve, 50))
       ws.send(JSON.stringify({
         id: message.id,
         result: { ok: true, agent: { id: fleetId, friendly_name: 'top-level-login' } },
@@ -70,6 +71,8 @@ try {
   const loginMessage = seen.find(message => message.type === 'login')
   assert.ok(loginMessage, 'expected a login websocket message')
   assert.equal(loginMessage.agent_id, fleetId)
+  assert.equal(seen.filter(message => message.type === 'login').length, 1,
+    'an explicit login overlapping the first-open claim must share that lifecycle')
   console.log('PASS: pre-login top-level fleet mint logs in through explicit identity without native-child lookup')
 } finally {
   for (const client of wss.clients) client.close()
