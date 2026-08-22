@@ -163,3 +163,46 @@ test('missing canonical source ref is pre-first-acceptance, while other fetch fa
   })
   await assert.rejects(broken.headChanged(), /authentication failed/)
 })
+
+// Under parking, this comparison is the ONLY thing standing between a settle and
+// a proposal duplicating what the server already accepted. It used to be covered
+// by 'accepted mirror with no local difference produces no proposal echo', whose
+// premise was that headChanged returned 'merged' — so the merge made the trees
+// equal by construction and the branch was reached for free. Nothing makes them
+// equal now, which is exactly why the branch matters more and needs its own test.
+test('a settle whose tree already equals the shared head submits no proposal', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-equal-tree-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'remote')
+  for (const dir of [checkout, remote]) {
+    await git(root, ['init', '-b', 'main', dir])
+    await git(dir, ['config', 'user.name', 'fixture'])
+    await git(dir, ['config', 'user.email', 'fixture@example.test'])
+    // Identical bytes, independent histories: the person's tree already says what
+    // the server accepted, without either side descending from the other.
+    writeFileSync(join(dir, 'main.tex'), 'same bytes\n')
+    await git(dir, ['add', 'main.tex'])
+    await git(dir, ['commit', '-m', 'paper'])
+  }
+  const revision = (await git(remote, ['rev-parse', 'HEAD'])).stdout.trim()
+  await git(remote, ['update-ref', 'refs/tlda/source/paper', revision])
+
+  const submitted = []
+  const sync = createGitProjectSync({
+    sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a',
+    branch: 'main', remote, documentRoots: ['main.tex'],
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    onSubmitted: event => submitted.push(event),
+  })
+
+  assert.deepEqual(await sync.headChanged(revision), { ok: true, status: 'observed', revision })
+
+  const settled = await sync.editClusterSettled()
+
+  assert.equal(settled.status, 'equal-tree', 'the trees are equal, so there is nothing to propose')
+  assert.equal(submitted.length, 0, 'no proposal may duplicate what the server already accepted')
+  assert.equal(
+    (await git(remote, ['for-each-ref', '--format=%(refname)', 'refs/tlda/proposals'])).stdout.trim(), '',
+    'and none reached the remote',
+  )
+})
