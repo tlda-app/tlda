@@ -7,7 +7,6 @@ import { scanTexDependencyClosure } from '../shared/tex-deps.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 
 const execFile = promisify(execFileCb)
-const ZERO = '0000000000000000000000000000000000000000'
 
 export function safeRefPart(value) {
   const part = String(value || '').replace(/[^A-Za-z0-9._-]+/g, '-')
@@ -27,7 +26,6 @@ export function createGitProjectSync({
   onSubmitted = () => {},
   onWrongHead = () => {},
   onMirrorArrived = () => {},
-  onEditClusterSettled = () => {},
   runGit = null,
 } = {}) {
   if (!sourceDir || !project || !daemonId || !bindingId) throw new Error('sourceDir, project, daemonId, and bindingId are required')
@@ -148,9 +146,18 @@ export function createGitProjectSync({
   async function commitSettledTree() {
     const conflicts = await unresolved()
     if (conflicts.length) return { ok: false, status: 'conflicted', conflicted: conflicts }
-    await git(['add', '-A', '--', '.'])
-    const staged = (await git(['diff', '--cached', '--name-only', '-z'])).stdout
-    if (staged) await git(['commit', '-m', 'tlda settled edit cluster'])
+    // A merge the PERSON started is theirs to finish. `commit -a` during one would
+    // conclude it on their behalf, so we stand off and say so.
+    if (await rev('MERGE_HEAD')) return { ok: false, status: 'merge-in-progress' }
+    // Tracked changes only. `add -A -- .` swept every untracked file in the
+    // checkout into the commit — scratch files, editor droppings, anything they
+    // had not chosen to track — and staged them in their index besides.
+    //
+    // The cost is stated rather than discovered: a NEW file is not submitted
+    // until the author `git add`s it. That is the deliberate trade, in the
+    // direction of doing less to a repository the app does not own.
+    const tracked = (await git(['diff', 'HEAD', '--name-only', '-z'])).stdout
+    if (tracked) await git(['commit', '-a', '-m', 'tlda settled edit cluster'])
     const head = await rev('HEAD')
     if (!head) return { ok: false, status: 'empty-checkout' }
     const filtered = await filteredProjectCommit(head)
@@ -212,51 +219,21 @@ export function createGitProjectSync({
     return revision
   }
 
-  async function mirrorArrived(revision) {
-    const conflicts = await unresolved()
-    if (conflicts.length) return { ok: false, status: 'conflicted', conflicted: conflicts }
-    const dirty = (await git(['status', '--porcelain', '-z'])).stdout
-    if (dirty) await commitSettledTree()
-    const local = await rev(localRef) || await rev('HEAD')
-    const applied = await rev(appliedRef)
-    if (applied === revision) return { ok: true, status: 'already-applied', revision }
-    if (!local) {
-      await git(['checkout', '--force', '-B', branch, revision])
-      await git(['update-ref', localRef, revision])
-      await git(['update-ref', appliedRef, revision, applied || ZERO])
-      return { ok: true, status: 'applied', revision, localRevision: revision }
-    }
-    if (local && await isAncestor(revision, local)) {
-      await git(['update-ref', appliedRef, revision, applied || ZERO])
-      return { ok: true, status: 'already-applied', revision }
-    }
-    const checkoutHead = await rev('HEAD')
-    if (applied && !(await isAncestor(applied, revision))) {
-      throw new Error(`${project}: accepted revision ${revision} does not descend from applied base ${applied}`)
-    }
-    if (applied && checkoutHead && !(await isAncestor(applied, checkoutHead))) {
-      const checkoutTree = (await git(['rev-parse', `${checkoutHead}^{tree}`])).stdout.trim()
-      const bridge = (await git(['commit-tree', checkoutTree, '-p', checkoutHead, '-p', applied, '-m', 'tlda attach applied mirror base'])).stdout.trim()
-      await git(['update-ref', 'HEAD', bridge, checkoutHead])
-    }
-    try {
-      await git(['merge', '--no-edit', ...(applied ? [] : ['--allow-unrelated-histories']), revision])
-    } catch (error) {
-      const held = await unresolved()
-      if (!held.length) throw error
-      return { ok: false, status: 'conflicted', conflicted: held, revision }
-    }
-    const merged = await commitSettledTree()
-    if (!merged.ok) return merged
-    await git(['update-ref', appliedRef, revision, applied || ZERO])
-    await onEditClusterSettled({ project, revision: merged.revision, cause: 'clean-mirror-merge' })
-    return { ok: true, status: 'merged', revision, localRevision: merged.revision }
-  }
-
+  // The accepted revision is PARKED, not applied. `fetchHead` has already put it
+  // at `refs/tlda/fetched/<project>`, which is app territory and reachable, and
+  // that is the whole obligation: the person can see it, diff it, and merge it
+  // with their own git whenever they choose to.
+  //
+  // What used to happen here instead: the person's dirty tree was committed
+  // unasked, `checkout --force -B <branch>` moved and checked out their branch, a
+  // synthetic bridge commit was written onto their HEAD, and fetched server
+  // history was merged into their checkout — which left an unresolved merge in
+  // it whenever the two diverged. Local is authoritative. Divergence is theirs to
+  // resolve, and it does not stop the project working.
   async function headChanged(revision = null) {
     const fetched = await fetchHead(revision)
     if (!fetched) return { ok: true, status: 'no-shared-head', revision: null }
-    return mirrorArrived(fetched)
+    return { ok: true, status: 'observed', revision: fetched }
   }
 
   function serialized(fn) {
@@ -270,7 +247,6 @@ export function createGitProjectSync({
     if (conflicts.length) return { ok: false, status: 'conflicted', conflicted: conflicts }
     const fetched = await rev(fetchedRef)
     const applied = await rev(appliedRef)
-    if (fetched && fetched !== applied) return mirrorArrived(fetched)
     const local = await rev(localRef)
     if (local && (!fetched || !(await isAncestor(local, fetched)))) return pushRevision(local)
     return { ok: true, status: 'current', revision: applied || fetched || local }
@@ -287,7 +263,6 @@ export function createGitProjectSync({
     editClusterSettled: () => serialized(settle),
     submitCurrent: options => serialized(() => submitCurrent(options)),
     headChanged: revision => serialized(() => headChanged(revision)),
-    mirrorArrived: revision => serialized(() => mirrorArrived(revision)),
     recover: () => serialized(recover),
     members: () => serialized(members),
     fetchHead,
