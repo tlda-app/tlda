@@ -89,6 +89,31 @@ somebody sets rather than a state inferred: the guarantee has to be represented,
 not observed. That is why `4821035a1` survives — it was tagged before it was
 discussed.
 
+## 157 open tasks, and seven of them are addressed to Skip
+
+Counted 2026-08-22: **157 open tasks**, the large majority stale against
+hibernating agents — 30 to 165 hours old, several duplicated across seats
+("Manage tlda app priorities" appears three times against three different
+agents from the same hour).
+
+**Seven are assigned to `fleet:skip` and have been pending 165 hours**: choose
+Homework 0 guidance location, review course development publication flow, choose
+LMS assignment delivery, review Part 1 / Part 2 course sequence, review
+enrichment breather, and a classroom scope update. **Each is a decision somebody
+put in his queue and nobody has pursued in a week.** That is the database form of
+the thing `AGENTS.md` forbids in a status list — a row that records him as the
+holdup for something never actually put to him.
+
+**Do not mass-close or delete any of this.** The tool's own advice is
+"delete/archive/redelegate", and hard-deleting task rows is a recorded defect in
+this repo, not a cleanup — `success_criteria`, `blocked_by`, `metadata` and the
+timestamps have no other copy. Whatever the remedy is, it is marking, not
+removal, and it is a decision rather than a chore.
+
+**Left as a finding.** It is not one of the three things he asked for, and
+starting a 157-row triage instead of them would be the substitution this file
+already warns about twice.
+
 ## The one process lesson worth carrying
 
 Three false zeros tonight: `roster(cwd:)`, which is empty for every agent; a
