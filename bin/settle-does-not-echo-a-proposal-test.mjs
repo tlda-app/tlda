@@ -24,6 +24,18 @@
  * rule in this lane is that a test written by whoever changed the behaviour
  * proves less, and this gap was found by reading tests the implementer rewrote.
  *
+ * `daemon/git-project-sync.test.mjs` ALSO covers `equal-tree`, written from the
+ * implementer's side and running inside the `node --test` suite. **Both are
+ * deliberate and neither is duplication.** They do different jobs: that one is
+ * where a future regression actually gets caught, because the suite runs on its
+ * own; this one is the independent-authorship proof, and it additionally asserts
+ * the remote rather than only the `onSubmitted` callback. Do not delete either
+ * as redundant.
+ *
+ * They were written four minutes apart, neither author having seen the other's,
+ * and both pass — which is a mutual check nobody designed. If `equal-tree` were
+ * ambiguous about what it should do, that is where it would have shown.
+ *
  * Run:  node bin/settle-does-not-echo-a-proposal-test.mjs
  */
 
