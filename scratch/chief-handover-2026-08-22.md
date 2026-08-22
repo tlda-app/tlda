@@ -142,8 +142,15 @@ about a condition that is not the one he reported it in.** Treat it as "not
 reproduced idle", never as "there is no leak" — it is one measurement away from
 being a rigorous result about nobody.
 
-A second watch is running to catch his next working session, which is the only
-window in which this can be established either way.
+**A second watch was started and has since been killed — nothing is watching
+now.** The rig is `heap-watch.mjs` in this session's scratchpad: read-only CDP
+over the `air-agent` tunnel on `localhost:9223`, re-resolving the tab each sample
+so it survives reloads. Run it during a session in which he is actually working;
+an idle tab produces the clean negative above and settles nothing.
+
+**Do not read a flat result from an idle tab as "no leak."** Check `nodes` first —
+if it is constant across every sample, the page never did anything and the
+measurement is about a condition he did not report.
 
 ## The one process lesson worth carrying
 
