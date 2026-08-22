@@ -24,6 +24,8 @@
  * Turn a namespace up to debug/info to capture its diagnostics when you need them.
  */
 
+import { setCrashSessionId } from './crashBeacon'
+
 type Level = 'debug' | 'info' | 'warn' | 'error' | 'off'
 
 const LEVEL_ORDER: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 3, off: 4 }
@@ -78,6 +80,18 @@ const _session = (() => {
   }
   return Math.random().toString(36).slice(2, 10)
 })()
+
+// Handed to the crash beacon so it stamps the SAME id rather than minting its
+// own. A crash is only useful next to what the tab was doing when it died, and
+// that join is this string. There are already two session-id spaces in the
+// client log; a third, appearing only on the lines that matter most, would make
+// the crash the one event nothing could be correlated with.
+//
+// PUSHED, not pulled, and the direction is the point: the beacon is the first
+// import in `main.tsx` and must import nothing, because this very module reads
+// `localStorage` and `window.location.search` unguarded a few lines above and
+// throws in a sandboxed iframe or with cookies blocked. See `crashBeacon.ts`.
+setCrashSessionId(_session)
 
 // Logs go to the server that served this SPA (same-origin, relative). That's the
 // instance you're actually debugging, and every tlda server has /api/log — so
