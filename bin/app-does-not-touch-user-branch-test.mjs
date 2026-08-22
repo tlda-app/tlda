@@ -60,14 +60,16 @@ async function write(file, content) {
  * uncommitted edit on disk, and an untracked file of their own that has nothing
  * to do with the paper.
  */
-async function makeUserCheckout(root, label) {
+async function makeUserCheckout(root, label, { dirty = false } = {}) {
   const dir = await fs.promises.mkdtemp(path.join(root, `user-${label}-`))
   await initRepo(dir)
   await write(path.join(dir, 'main.tex'), 'the authoritative work, already local\n')
   await git(dir, ['add', 'main.tex'])
   await git(dir, ['commit', '-m', 'the author writes their paper'])
-  await write(path.join(dir, 'main.tex'), 'the authoritative work, already local, still being typed\n')
-  await write(path.join(dir, 'scratch-notes.txt'), 'my own file, nothing to do with the paper\n')
+  if (dirty) {
+    await write(path.join(dir, 'main.tex'), 'the authoritative work, already local, still being typed\n')
+    await write(path.join(dir, 'scratch-notes.txt'), 'my own file, nothing to do with the paper\n')
+  }
   return dir
 }
 
@@ -115,9 +117,9 @@ function report(violations) {
  * Run one scenario and say what happened to the person's repository.
  * Returns true when the app wrote something it does not own.
  */
-async function scenario({ root, label, title, serverFiles, expectStatus }) {
+async function scenario({ root, label, title, dirty = false, serverFiles, expectStatus }) {
   console.log(`\nSCENARIO ${label}: ${title}`)
-  const user = await makeUserCheckout(root, label)
+  const user = await makeUserCheckout(root, label, { dirty })
   const { dir: server, revision } = await makeFetchedRevision(root, label, serverFiles)
   await fetchInto(user, server, revision)
 
@@ -128,15 +130,9 @@ async function scenario({ root, label, title, serverFiles, expectStatus }) {
   const result = await makeSync(user).mirrorArrived(revision)
   console.log(`  mirrorArrived returned status=${result.status} ok=${result.ok}`)
 
-  // Positive control on the input: every early return in mirrorArrived leaves
-  // the checkout alone, so a run that never reached the merge would report a
-  // clean pass while measuring nothing.
-  if (result.status !== expectStatus) {
-    console.log(`  FIXTURE DID NOT REACH THE PATH: expected status=${expectStatus}, got ${result.status}`)
-    console.log('  Nothing in this scenario is a finding about the app.')
-    return { reached: false, failed: false }
-  }
-
+  // The territory measurement is unconditional. An earlier version of this test
+  // returned here when the status was unexpected, and so never looked at the
+  // checkout — which hid real writes behind a fixture note.
   const after = await snapshotUserTerritory(user)
   const violations = diffUserTerritory(before, after)
   report(violations)
@@ -144,8 +140,13 @@ async function scenario({ root, label, title, serverFiles, expectStatus }) {
   const ancestry = await fetchedHistoryIsAncestry(user, revision, 'HEAD')
   console.log(`  fetched server history is ancestry of the person's HEAD: ${ancestry}`)
 
-  const failed = violations.length > 0 || ancestry
-  return { reached: true, failed, violations, ancestry }
+  // Positive control on the input side, reported separately: every early return
+  // in mirrorArrived reaches less of the path, so a scenario that finds nothing
+  // and also did not reach its exit has established nothing either way.
+  const reached = result.status === expectStatus
+  if (!reached) console.log(`  NOTE: expected to exit at status=${expectStatus}, exited at ${result.status}`)
+
+  return { label, reached, failed: violations.length > 0 || ancestry, violations, ancestry, status: result.status }
 }
 
 async function main() {
@@ -187,24 +188,40 @@ async function main() {
         serverFiles: { 'main.tex': 'what the server thinks the paper says\n' },
         expectStatus: 'conflicted',
       }),
+      await scenario({
+        root,
+        label: 'C',
+        title: 'the person had uncommitted work — line 219 commits it before anything else',
+        dirty: true,
+        serverFiles: { 'appendix.tex': 'a section only the server has\n' },
+        // With a dirty checkout the path never reaches the merge: commitSettledTree
+        // parents the new commit on the fetched ref, so the ancestry test at line
+        // 229 then passes and the function reports the revision already applied.
+        expectStatus: 'already-applied',
+      }),
     ]
 
     failed = scenarios.some(s => s.failed)
     unreached = scenarios.some(s => !s.reached)
 
     console.log('\n' + '='.repeat(72))
-    if (unreached) {
-      console.log('INCONCLUSIVE: a fixture did not reach the path it was built to exercise.')
-    } else if (failed) {
-      console.log('FAIL: the app wrote into territory the person owns.')
+    for (const s of scenarios) {
+      console.log(`  ${s.label}: ${s.failed ? 'WROTE USER TERRITORY' : 'left it alone'} (exited at ${s.status}${s.reached ? '' : ', not the expected exit'})`)
+    }
+    if (failed) {
+      // A write is a finding whether or not every scenario took the exit it was
+      // built for. An unreached exit only weakens a scenario that found nothing.
+      console.log('\nFAIL: the app wrote into territory the person owns.')
       console.log('Skip: "the app DOES NOT TOUCH MAIN EVER."')
+    } else if (unreached) {
+      console.log('\nINCONCLUSIVE: a fixture found nothing and also did not reach its exit.')
     } else {
-      console.log('PASS: mirrorArrived left user territory alone in both scenarios.')
+      console.log('\nPASS: mirrorArrived left user territory alone in every scenario.')
     }
   } finally {
     await fs.promises.rm(root, { recursive: true, force: true })
   }
-  process.exit(unreached ? 2 : failed ? 1 : 0)
+  process.exit(failed ? 1 : unreached ? 2 : 0)
 }
 
 main().catch((e) => {
