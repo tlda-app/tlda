@@ -119,31 +119,56 @@ test('divergence parks rather than proposing local over the accepted head', asyn
   assert.equal((await git(f.remote, ['rev-parse', 'refs/tlda/source/paper'])).stdout.trim(), f.revision, 'the shared head does not move backwards')
 })
 
-test('a tracked edit is committed and submitted from the local repository', async () => {
+test('a tracked edit is submitted while their branch stays put and their tree stays dirty', async () => {
   const f = await fixture()
-  const before = (await git(f.checkout, ['rev-parse', 'HEAD'])).stdout.trim()
+  const before = await checkoutSnapshot(f.checkout)
   writeFileSync(join(f.checkout, 'main.tex'), 'tracked edit\n')
 
   const result = await f.sync.editClusterSettled()
 
   assert.equal(result.status, 'SubmittedToBuildQueue')
-  assert.notEqual((await git(f.checkout, ['rev-parse', 'HEAD'])).stdout.trim(), before)
-  assert.equal((await git(f.checkout, ['show', 'HEAD:main.tex'])).stdout, 'tracked edit\n')
   assert.equal((await git(f.remote, ['show', `${result.revision}:main.tex`])).stdout, 'tracked edit\n')
+  // The edit reached the server. Nothing of theirs moved to get it there: their
+  // branch still points where it did, their index is byte-identical, and the
+  // edit is still an uncommitted modification for them to commit when they like.
+  const after = await checkoutSnapshot(f.checkout)
+  assert.equal(after.head, before.head, 'their branch must not advance from settle')
+  assert.equal(after.branch, before.branch)
+  assert.deepEqual(after.index, before.index, 'their index must not be written')
+  assert.equal((await git(f.checkout, ['show', 'HEAD:main.tex'])).stdout, 'base\n')
+  assert.equal((await git(f.checkout, ['diff', '--name-only'])).stdout.trim(), 'main.tex', 'their tree stays dirty')
+  assert.equal((await git(f.checkout, ['rev-parse', 'refs/tlda/project/paper'])).stdout.trim(), result.revision)
 })
 
-test('an untracked file is not swept into the commit or into their index', async () => {
+test('an untracked file is not swept into the submitted revision or their index', async () => {
   const f = await fixture()
+  const before = await checkoutSnapshot(f.checkout)
   writeFileSync(join(f.checkout, 'main.tex'), 'tracked edit\n')
   writeFileSync(join(f.checkout, 'scratch.txt'), 'mine, not the project\n')
 
   const result = await f.sync.editClusterSettled()
 
   assert.equal(result.status, 'SubmittedToBuildQueue')
-  assert.equal((await git(f.checkout, ['show', 'HEAD:main.tex'])).stdout, 'tracked edit\n')
-  await assert.rejects(git(f.checkout, ['cat-file', '-e', 'HEAD:scratch.txt']), 'the untracked file must not be committed')
+  assert.equal((await git(f.remote, ['show', `${result.revision}:main.tex`])).stdout, 'tracked edit\n')
+  await assert.rejects(git(f.remote, ['cat-file', '-e', `${result.revision}:scratch.txt`]), 'the untracked file must not be submitted')
   assert.equal((await git(f.checkout, ['ls-files', '--', 'scratch.txt'])).stdout.trim(), '', 'the untracked file must not be staged')
+  assert.deepEqual((await checkoutSnapshot(f.checkout)).index, before.index)
   assert.equal(readFileSync(join(f.checkout, 'scratch.txt'), 'utf8'), 'mine, not the project\n')
+})
+
+test('a path the person already staged is carried, as commit -a would carry it', async () => {
+  const f = await fixture()
+  writeFileSync(join(f.checkout, 'main.tex'), 'staged by them\n')
+  await git(f.checkout, ['add', 'main.tex'])
+  const before = await checkoutSnapshot(f.checkout)
+
+  const result = await f.sync.editClusterSettled()
+
+  assert.equal(result.status, 'SubmittedToBuildQueue')
+  assert.equal((await git(f.remote, ['show', `${result.revision}:main.tex`])).stdout, 'staged by them\n')
+  const after = await checkoutSnapshot(f.checkout)
+  assert.equal(after.head, before.head)
+  assert.deepEqual(after.index, before.index, 'their staged path stays staged, unchanged')
 })
 
 test('settle refuses and preserves a merge the person started themselves', async () => {
