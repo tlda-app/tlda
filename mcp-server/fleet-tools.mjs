@@ -5699,6 +5699,31 @@ async function acknowledgeWakeChannelNotice(agentId, wakeAckId) {
   }
 }
 
+// Step 2: say no out loud.
+//
+// Every path below that declines a notice used to just return. The server could
+// not tell that from a process that had stopped answering, so it started a
+// remedy — waking, or typing into the pane — for an agent that was fine and had
+// simply decided this particular notice was not for it. Answering costs one
+// message and removes an entire class of false liveness fault.
+async function refuseWakeChannelNotice(agentId, wakeAckId, reason) {
+  if (!agentId || !wakeAckId) return false;
+  try {
+    await mcpFleetTransport.ephemeral('channel-notification-ack', {
+      agent: agentId,
+      ack_id: wakeAckId,
+      acknowledged: false,
+      reason,
+    }, { deadlineMs: 1000 });
+    return true;
+  } catch (e) {
+    // A nack that does not arrive leaves the server where it already was — the
+    // ack deadline. No worse than before, so this never escalates.
+    process.stderr.write(`[fleet-channel] channel notification nack failed: ${e.message}\n`);
+    return false;
+  }
+}
+
 async function _flushUnread() {
   return;
 }
@@ -5724,12 +5749,23 @@ async function handleChannelMessage(msg) {
   if (!isDirectTarget && !isWiretapTarget) return;
 
   const fromId = data.from || data.from_id || '';
+  const pendingAckId = data.metadata?.wake_ack_id || null;
+  // The refusals. Each one answers rather than going quiet; see
+  // `refuseWakeChannelNotice`. `shouldDeliverChannelTurn` is not among them —
+  // for a channel-notification it returns false only when there is no ack id,
+  // so there is nothing waiting on an answer.
   if (!shouldDeliverChannelTurn({ eventType, data, fromId, isDirectTarget })) return;
-  if (fromId === agentId) return;
-  if (data.metadata?.via === 'terminal') return;
+  if (fromId === agentId) {
+    await refuseWakeChannelNotice(agentId, pendingAckId, 'sender-is-recipient');
+    return;
+  }
+  if (data.metadata?.via === 'terminal') {
+    await refuseWakeChannelNotice(agentId, pendingAckId, 'already-delivered-by-terminal');
+    return;
+  }
 
   const eventId = channelEventId(msg, data);
-  const wakeAckId = data.metadata?.wake_ack_id || null;
+  const wakeAckId = pendingAckId;
   const dedupe = classifyChannelNoticeDedupe({
     eventId,
     deliveredIds: _deliveredChannelIds,
@@ -5753,15 +5789,36 @@ async function handleChannelMessage(msg) {
     const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
     content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} task from ${fromLabel}: ${previewForChannel(data.description || data.text || '')} — ${inboxCallText('see it')}`;
   }
-  if (!content) return;
+  if (!content) {
+    await refuseWakeChannelNotice(agentId, wakeAckId, 'no-content');
+    return;
+  }
 
-  const delivered = await deliverChannelNotice(content, {
-    event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
-    from: fromId,
-  });
+  // `deliverChannelNotice` throws on an unhandled harness kind, which used to
+  // take the whole handler down before anything could answer — the server then
+  // waited out its deadline and concluded the process was wedged, when in fact
+  // the process was running and structurally unable to surface this. That is a
+  // configuration fault and it now says which.
+  let delivered = false;
+  let deliveryError = null;
+  try {
+    delivered = await deliverChannelNotice(content, {
+      event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
+      from: fromId,
+    });
+  } catch (e) {
+    deliveryError = e;
+  }
   if (delivered && wakeAckId && isDirectTarget) {
     await acknowledgeWakeChannelNotice(agentId, wakeAckId);
+  } else if (!delivered && wakeAckId && isDirectTarget) {
+    await refuseWakeChannelNotice(
+      agentId,
+      wakeAckId,
+      deliveryError ? `channel-error: ${deliveryError.message}` : 'channel-declined',
+    );
   }
+  if (deliveryError) throw deliveryError;
   if (delivered && eventId) {
     _deliveredChannelIds.add(eventId);
     setTimeout(() => _deliveredChannelIds.delete(eventId), CHANNEL_DEDUP_TTL_MS).unref?.();
