@@ -212,6 +212,26 @@ export function createSourceRoomDaemon({
       working,
       updatedAt: new Date().toISOString(),
     }
+    // ORDER IS LOAD-BEARING: `working` is written LAST, after `snapshot` and
+    // `yjs`. Those two are exactly what `createRoom` checks before it falls back
+    // to hydrating from the lifecycle store — so writing `working` third makes it
+    // impossible, through this function, for `working` to exist while both of its
+    // guards are absent. That state is the destructive one: a room created there
+    // hydrates empty and this line then writes the empty string over the file.
+    //
+    // And `working` is not a projection anyone can reorder freely. It is the git
+    // working tree bound by `bindSource` above — `git init -b main` runs in it and
+    // `git add -A -- .` sweeps it into the revision that is pushed to
+    // `refs/tlda/source/<project>`. Emptying it here empties what gets accepted.
+    //
+    // So do not group the two `atomicJson` calls, and do not move the cheap write
+    // first. Both read as tidying a list of flushes; both reopen the hole, and no
+    // test would catch it, because the state only occurs in fixtures.
+    //
+    // What this ordering does NOT defend: git materialises files into the same
+    // directory without any line here naming it, so a `working` that git created
+    // is not covered by the argument above. That case is open and unmeasured.
+    //
     // This snapshot is the canonical room record. The yjs/working/state files
     // remain readable projections for existing tools and older room records.
     atomicJson(room.paths.snapshot, state)
