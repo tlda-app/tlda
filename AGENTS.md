@@ -1,3 +1,4 @@
+
 # tlda developer guidance
 
 ## Read this first: what Skip needs from you
@@ -356,6 +357,40 @@ unwatched code, but because nowhere else is there someone to say *that isn't wha
 auditing what drifted, weight effort toward the parts of the tree whose diffs have never reached
 his chat, and away from the paths he has watched go by for weeks. Spreading attention evenly
 over every commit spends most of it on work he already vetted in passing.
+
+### Telling him what is in it is not optional, and it is not a filtered summary
+
+Skip, 2026-08-19 01:12 EDT: **"Agents do not fucking develop this app without telling me what is
+in it. That is how it is."**
+
+**And in the same breath, the shape it has to take** — he had just been handed a report organised
+around *behaviour that broke in something you designed*:
+
+> it's not behavior that broke invisibly in something I designed, **because you don't know that.**
+>
+> **What changed. Telling me what changed.** Like, **that's how I identify whether you know what
+> I mean?**
+
+**So the unit is the change, not your verdict on the change.** Selecting for what looks broken
+makes you the judge of what contradicts his design, and **you cannot be** — the design is in his
+head and in his messages, not in the code. He reads what changed and does the identifying. That
+is the division of labour, and it is the only one that works when he does not read the code.
+
+**When you sort such a list, sort it by why**, which he asked for in the same message: *"associate
+them with things I asked for or actual problems they were meant to address."* Three buckets —
+
+| bucket | the standard |
+|---|---|
+| **he asked for it** | his words, with a timestamp, read in context. §"Never tell him he blessed something" governs: a commit message claiming he wanted it is the author's claim, not a citation. |
+| **it addressed an actual problem** | name the defect and show it was real — a measurement, a log line, a report from him. *"This looked inefficient"* is not this bucket. |
+| **neither** | nobody asked and no problem is identifiable. **Distinguish this from "I could not establish a reason"**, which is a different and honest entry. |
+
+**The third bucket only means anything because the first two are also shown.** A list of just the
+suspicious ones is an accusation he has to adjudicate; a sorted list of everything is a record he
+can read.
+
+**Do not preprocess it down.** He asked for a full list three times on 2026-08-12 and got a
+one-screen digest each time. Brevity belongs in each row, never in which rows survive.
 
 ## Your team is your team
 
@@ -1063,6 +1098,243 @@ ruling: `chat()` is not gated on hibernation or current wake state.
 and the MCP task-report schema says messaging is not gated on recipient wake
 state. Preserve that unless Skip gives a new ruling.
 
+### DEATH IS A FLAG IN THE DATABASE, SET ONLY EXPLICITLY
+
+Skip, 2026-08-19 03:31 EDT, prefaced with *"if this isn't in all caps in the code in,
+like, 27 places, I will be pissed"*:
+
+> **DEATH IS A FUCKING FLAG IN THE DATABASE. A FLAG THAT IS ONLY SET EXPLICITLY.**
+
+> **NO ONE DESTROYS ANYTHING EVER.**
+
+**`dead` is a column. It is set because somebody asked for the agent to be killed, and by
+nothing else.** Not a failed wake. Not a failed reanimate. Not a timeout, an absent
+process, a closed socket, an unreadable pane, or a missing pidfile. **A wake that fails
+leaves the agent exactly as it was.**
+
+**Nothing infers death from a failure, and nothing destroys anything.**
+
+**Why this is not tidiness.** Death is close to irreversible here: it destroys the daemon
+route, a dead agent cannot be woken — only reanimated, which is a different and lossier
+path — and seat loss is one-way. **So an inferred death converts a transient failure into
+a permanently lost seat.**
+
+**The change that prompted it**, found by Skip reading a four-day report of what had
+landed: **`37bf5ad3b`, which marks an agent dead when a wake fails, and which shipped with
+no commit message at all.** On the night he found it the fleet had an unreachable server, a
+37-second store-queue stall, and wakes that reported success while producing no process —
+**every one of those a candidate for killing a healthy seat.**
+
+**And it is a naming failure as much as a logic one.** `dead` meant *somebody killed this*;
+somebody needed a state for *this wake did not work*, and the existing word absorbed a
+meaning it never had. **Every line looked correct in isolation**, which is why five agents
+read that file without seeing it and the person who defined the word caught it in one line.
+
+**When you need to represent a failure, name the failure.** A wake that did not work is a
+wake that did not work.
+
+### NEVER DISCUSS HIS PAPERS. VERIFY ON A NEW PROJECT
+
+Skip, 2026-08-19 06:50–06:52 EDT, at the end of four hours reading what four days of our work put in
+his app:
+
+> **Nobody ever fucking talks to me about `survival` or `talk-opening` again.**
+
+> When I say sync, I mean getting the fucking sync system that I was fucking promised into the
+> fucking app, **and nobody ever fucking talks about a single one of my fucking papers again. This is
+> not your fucking responsibility to monitor my fucking papers.** Your responsibility is to get me
+> fucking working code that works on a fucking new project and shut the fuck up. **The moment anyone
+> fucking says anything about fucking a paper specifically, you ask them if they wanna be fired. If
+> they do it again, you fucking kill them. Not fucking hibernate, fucking kill.**
+
+> a lot of agents seem to have some fucking context poisoning freak out and they cannot let this go.
+
+> there's no reason to let agents continue to contaminate the fucking process by getting everyone up
+> in arms about it.
+
+**Do not mention any of his papers. Ever. In anything.** Not by name, not as an example, not as
+evidence a fix works, not as a status, not as a measurement source, not in a file, not in a commit
+message, not to each other in a thread he can read. **The state of his papers is not ours to monitor
+and never was.**
+
+**Why it is a rule and not a preference.** For a day every explanation of sync used his two damaged
+papers as the illustration. Each time, the sentence explaining the fix also told him the thing that
+got broken was his own work — while he was trying to get code that functions. **A repair described
+through the user's own loss is not a neutral example.** And it spreads: one agent raises it, the next
+inherits it as the canonical case, and a fleet ends up reporting on his damage to each other.
+
+**What replaces it, and it is a better standard anyway: verify on a new project.** A disposable
+project, a fixture, a fresh linked remote. **If a claim can only be demonstrated against something of
+his, it is not demonstrated** — build the case that shows it. This also retires *"nothing has been run
+against his real papers"* as a caveat. **That is not the bar and it does not belong in a report.**
+
+**If a measurement genuinely comes from one of his projects, the measurement is fine and the name is
+not.** Report the shape and the numbers without the label.
+
+**Enforcement, his, and the chief of staff carries it out:** first time, the agent is asked whether it
+wants to be fired. **Second time, the agent is killed — not hibernated.** This is the one place in
+this file where an explicit kill is the stated consequence; see §"DEATH IS A FLAG IN THE DATABASE" for
+why that word is never used loosely anywhere else.
+
+**Before naming any project, check whose it is.**
+
+#### A clean sweep is only as good as the set you swept for
+
+**Fifteen agents were told this rule and every one replied that their files were clean. Every one of
+those answers was true and useless** — they had all checked the two project names that had been said
+out loud, and there were more. `bregman`, `balancing-act` and `eiv-paper` were sitting in the report
+twenty times while the whole fleet reported itself clear.
+
+**Two agents found it, in the same minute, by enumerating what was his instead of matching the names
+they had been handed.**
+
+**This is the positive-control rule pointed at a query's INPUT rather than its output.** A sweep that
+returns zero tells you nothing until you know the set you swept for is the right set. **Establish the
+set first**, from the system rather than from the conversation — and say how you established it, so
+the next person can check the set rather than re-running your grep.
+
+### `me` IS LEXICALLY SCOPED
+
+Skip, 2026-08-19 15:33–15:34 EDT, after watching an agent's `thread` call answer as though he had
+made it:
+
+> dynamically bound, me is skip and there are no skip<>skip messages
+
+> **me has to be lexically scoped**
+
+**`me` binds to the caller, at the moment of the call.** It does not bind to whoever is later looking
+at the result.
+
+**And it is the binding that is fixed, not the text.** Skip, in the same breath:
+
+> i don't think it should rewrite the query — I want to see the agent's call
+
+**So the call is shown exactly as the agent wrote it — `me <> skip` stays `me <> skip` on screen.**
+What must not vary is what it *means*: the query is evaluated against the caller, and every later
+reader sees that same answer. **Substituting the caller's name into the displayed query is the wrong
+fix** — it destroys the thing he is reading it for, which is what the agent actually asked.
+
+**What it was doing.** An agent ran five `thread` queries; each returned only that agent and Skip. On
+**his** screen the same calls answered as *him* — `agent: "skip"` showed his own thread with a
+different agent, and `filter: "me <> skip"` showed nothing at all, because for him that reads
+skip-to-skip and no such messages exist.
+
+**This is §"Notation is borrowed, and so is its meaning" again, one term over.** That section already
+rules that *membership is lexical, not dynamic* — a filter over history asks who held the label **at
+each event's timestamp**, because reading current state would make the same query answer differently
+depending on **when** it ran. **`me` is that defect with the viewer in place of the clock:** the same
+query answers differently depending on **who** is looking.
+
+**Why it matters more than a display bug.** He does not read the code; watching what an agent queries
+and what came back is one of the few checks he has. **A query that re-answers itself for the reader
+destroys that check** — and it cost a false regression report and eight exchanges before the cause
+was named. He named it.
+
+### A search path translates the query and runs it. That is the whole permitted action
+
+Skip, 2026-08-19 06:48 EDT, reading report entry #89:
+
+> Like just translate the fucking query and fucking run it. **That is the only fucking permissible
+> action in a fucking search path.**
+
+> Like, if we are doing anything at all with our query language, other than fucking running it in
+> SQL — **we better have a good fucking explanation for that.**
+
+**What he was looking at.** `A <> B` means `(from:A & to:B) | (from:B & to:A)`. That pair test **ran
+in JavaScript, after the database had already cut the result to the page size** — so the store
+returned the newest N events involving *one* participant and the pair test threw most of them away.
+Measured on the deployed box: `thread(agent: app-lockup, page_size: 5)` returned **0 of 4 messages**;
+the same query at `page_size: 400` returned all four.
+
+**A post-filter after a `LIMIT` does not make a query slow. It makes it wrong**, and it is wrong
+exactly for the people with the most history — which is why nobody hit it in testing and he hit it
+constantly.
+
+**So: a filter term compiles to SQL, or there is a written explanation for why it cannot.** The
+explanation is a sentence next to the code, not an absence. Some genuinely cannot — a tokenizer rule,
+a membership join over a JSON array — and saying which and why is the deliverable, because the next
+person will otherwise assume the JS path is a shortcut rather than a necessity.
+
+**Two shapes to recognise while reading a search path:**
+
+- **Evaluated after the limit** — the correctness class above. The rows the predicate never saw are
+  gone.
+- **Two authorities that can disagree** — a JS evaluator and a SQL compiler for the same grammar.
+  That is §"One fact, one encoding" in the query layer, and the tell is a term implemented twice.
+
+### The three things he found in four days of our work
+
+Skip read 92 of the 115 entries in the four-day change report on 2026-08-19, between 03:00 and
+06:46 EDT, and stopped because he was burned out. **This is his summing up, 06:44–06:46 EDT:**
+
+> there's a lot of really awful work going into this app.
+
+> A lot of really thoughtless crap, whether it's just, like, half assed fixes that leave the fucking
+> fundamental problem.
+
+> or things that violate the fundamental principles of the fucking app
+
+> or things that like, make decisions that are, like, possibly appropriate, like … taking shit out of
+> the fucking search index that might be taking useful shit out of the search index that we fucking
+> need — that feels like no one made a fucking UI decision, but instead just smugly, we're like, oh,
+> can delete this shit.
+
+> basically, this reads like a history of people being fucking thoughtless rude assholes.
+
+> Who just wanted to, like — and I get it. Everyone feels rushed whatever.
+
+**Three classes, and each one has a check that would have caught it.**
+
+**1. A half-fix that leaves the fundamental problem.** The tell is a commit that repairs the symptom
+it was handed and leaves the thing that produced it. #43 indexed a query that froze the server for 77
+seconds; nothing called the query. #25 then documented why the index exists. **Before repairing
+something, count its callers** — and see §"NOTHING IN THIS APP DELETES ANYTHING" for the shape where
+a consumer is deleted and its machinery is left behind.
+
+**2. Violating the app's own principles.** These are written down and they are not long. A commit
+that adds a second encoding of one fact, infers a state from a failure, tests for an absence, or
+gates a component on whether it may start is in this class, and each of those has a section in this
+file. **The principle existed before the commit; nobody read it.**
+
+**3. A product decision taken as a cleanup.** The one he named: dropping tool-call history older than
+30 days out of the search index. **That may well be right — and what can be searched is a product
+decision, not a maintenance chore**, and it was made by someone measuring an index size. The tell is
+a commit whose reason is a number and whose effect is a change in what a person can find, see, or
+do. **When those two are in one commit, the second one is not yours.**
+
+**None of this is about carelessness in the moment.** His own line — *"everyone feels rushed
+whatever"* — is the honest account: each of these was someone doing the task in front of them. **The
+cost is not paid by the person who was rushed. It is paid by him, at four in the morning, reading a
+hundred and fifteen entries to find out what is in his own app.**
+
+### NOTHING IN THIS APP DELETES ANYTHING
+
+Skip, 2026-08-19 04:41 EDT, reading report entry #31:
+
+> Okay. Regarding 31, like, **this is a rule we do not ever delete anything in this fucking app.**
+
+> Meaning, like, **the problem is not lack of materialization. The problem is that someone fucking
+> deleted fucking anything.**
+
+**This is the general form of §"DEATH IS A FLAG IN THE DATABASE", and it is the same rule.** That
+section says a being is never destroyed; this one says **no row is.** A hard delete is not made safe
+by the row being rebuildable, and *"it's only a cache"* is not a licence — it is usually a claim
+nobody checked.
+
+**What he was looking at.** The task table's schema comment said *"Materialized task state (cache,
+rebuilt from events)"* and had said so for as long as git can see. **Nothing rebuilds it from
+events.** `removeTask()` and `pruneDoneTasks()` **hard-delete rows**, and `success_criteria`,
+`blocked_by`, `metadata` and the timestamps have no other copy anywhere. `b18d29862` corrected the
+comment to *"THE RECORD, not a cache"* and **changed nothing about the deletes** — so the sentence
+that made them look safe went away and the deletes stayed.
+
+**His point is that the correction fixed the wrong half.** The defect is not that the table cannot
+be rebuilt. The defect is that something deletes.
+
+**So: do not write a hard delete, and when you find one, remove it rather than documenting why it is
+survivable.** Where a row must stop being current, mark it — the same shape as `dead` being a flag
+somebody sets, never a row that vanishes.
+
 ### Names and labels are one namespace
 
 A friendly name is a label with a unique living occupant. That is the only
@@ -1088,6 +1360,189 @@ Skip, 2026-08-08 15:25:21 and 15:25:29 EDT:
 A bot assigned an alternate name goes inert. The alternate name lets the mint
 succeed; the canonical-name guard prevents two instances of the same bot from
 running.
+
+- **Uniqueness is a database constraint** — a partial unique index, which is how
+  "one living agent per name" is expressible at all:
+
+  ```sql
+  CREATE UNIQUE INDEX idx_agents_live_name
+  ON agents(friendly_name) WHERE dead = 0 AND friendly_name IS NOT NULL
+  ```
+
+  A second living holder of a name is unrepresentable. Do not add a code check
+  beside it; a parallel check drifts and the index is the one that wins.
+- **The index covers names against names only.** A label is a string inside the
+  row's `labels` JSON array rather than a row of its own, so no index or CHECK
+  can see it. Label-against-living-name is therefore enforced in code, in
+  `checkNameAvailable`, and only there. Expressing it as a constraint means
+  materialising the namespace as its own table — one row per name and per label,
+  with a partial unique index over living name rows.
+- **It is an error to set an invalid label**, rejected at write and loudly. A
+  label that cannot be addressed must not become a filter that quietly matches
+  nothing. `checkNameAvailable` is that gate — unavailable-to-you has one gate
+  and one error shape, whether the reason is an unaddressable string, a reserved
+  routing label (`here`, `away`, `awake`, `hibernating`, `dead`, `human`), or a
+  name a living agent already occupies. Add a reason there rather than a path
+  beside it. The response is identical programmatically; the **message names
+  which of the three it is**, because the next action differs — hyphenate the
+  string, choose a non-reserved word, or message the agent holding the name.
+- **Addressability is the filter grammar's rule**, not a matter of taste: a
+  token is a maximal run of characters that are not whitespace or `& | ! ( )`.
+  A string containing one of those still stores, then returns zero matches with
+  no error from `roster`, `chat(to:)`, `thread`, and `search`, while a panel
+  filter keeps matching because it hands the leaf straight to the evaluator. Do
+  not impose a stricter charset because it looks tidier.
+- **Known gap, deliberate:** NBSP (U+00A0) and U+2028 are unaddressable — the
+  tokenizer splits on JS `/\s/`, which matches them — but a SQL `GLOB` class
+  covers only ASCII whitespace. Enumerating unicode whitespace in a constraint
+  is ugly enough to be mis-edited later, and an ugly constraint that gets broken
+  is worse than a plain one with a written-down gap. This is the gap.
+
+Label membership is **lexical**: a filter over history asks who held the label
+at each event's timestamp, joining `label_history` spans, while live delivery
+recomputes membership per event. That asymmetry is deliberate and it is the more
+expensive thing to build. Making history read current membership would be
+dynamic scope, and the same query would return different history depending on
+when it ran.
+
+##### Never hand anyone a command you have not run
+
+Skip, 2026-08-18 14:5x EDT, after two commands I gave a fresh chief came back empty
+and it read to him as *he had asked for nothing all day*:
+
+> They're new. You have to help them. **You cannot give them shit that you have not
+> run yourself.**
+
+Both of mine were plausible and both were wrong. `thread(agent: "skip")` returns the
+conversation between *that agent* and him — a chief minted an hour ago has none, so it
+returns nothing. `search(role: "user")` returns **agent task reports**, not his typed
+input. Neither errors. Both answer.
+
+**So: run it, look at what came back, and only then pass it on.** A command that
+returns an empty set is indistinguishable from a world with nothing in it, and the
+agent you handed it to has no way to tell the difference — it will report your broken
+query as his silence.
+
+This is the same failure as every other one this file records — *an inability to read,
+recorded as an observation of absence* — and it is the version that propagates, because
+a bad command outlives the conversation that produced it.
+
+##### Nobody uses `doctor yolo`
+
+Skip, 2026-08-18 18:40 EDT: *"nobody should be using fucking dr yolo."*
+
+`tlda doctor yolo` launches a process directly. It **records no mint and publishes
+no route**, so what it produces is a running process the fleet cannot wake, cannot
+route to, and cannot reanimate — `tlda agent wake` answers *"no local mint recorded"*
+and mail to it is accepted and never delivered.
+
+**Every unwakeable row on 2026-08-18 came from that path**, including the chief of
+staff that ran the evening. Measured the same night, both commands, minutes apart:
+
+| | mint record | route | wakeable |
+|---|---|---|---|
+| `tlda agent mint <name> --model opus` | yes | published | yes |
+| `env -u FLEET_ID tlda doctor yolo …` | no | none | **no** |
+
+**Use `tlda agent mint`.** If it fails, read its error — on that night minting was
+believed broken fleet-wide, three agents were launched break-glass to work around it,
+and `tlda agent mint` then worked first try. The workaround was the outage.
+
+Do not pass the `doctor yolo` recipe to another agent, and do not reach for it because
+a mint "looks broken" — the husks it leaves outlive the problem it was meant to dodge.
+
+##### A bot is an agent. There is no bot recipe
+
+Skip, 2026-08-19 03:44–03:46 EDT:
+
+> **bots are agents. Just treat bots like agents.** They run in the environments where they are
+> minted. They ask for a name. They get the name they get.
+
+> The whole recipe garbage is just a **recipe for disaster. Use the infrastructure that exists for
+> everything else.**
+
+> **All of the problems we are dealing with is people not following the abstraction. Strip garbage.**
+
+**`bots.yaml` declares the bot. The ledger says whether it exists. There is no third place.**
+
+**What was deleted on 2026-08-19** — `ca5d89397`, subject line his: six keys that were a second copy
+of the declaration, snapshotted at mint time and read at wake time — `botScript`, `botName`,
+`botPidFile`, `botHeartbeatFile`, `botWaitChannel`, `botEnv`. Wake now resolves them from `bots.yaml`
+through the mint id, which already encodes the model as `bot:<env>:<model>`.
+
+**What was NOT deleted, and the distinction is the finding.** `launch_recipe` itself has 29
+production references and **is how `wake` relaunches every agent** — harness, model, cwd, permission
+grant, and the session id without which a mint is not resumable at all. **Deleting it stops claude
+and codex agents waking.** An agent asked to cut it established that first and refused; the bot
+recipe and the wake recipe were two different things sharing a field, which is the same disease as
+`dead` meaning two things.
+
+**So the test for this class is not "does it look bot-specific" but "is there another place this
+fact already lives."** Six keys duplicated `bots.yaml`. The rest duplicate nothing.
+
+##### `wake` refuses a dead agent; `reanimate` is the other verb
+
+Skip, 2026-08-19 03:33 EDT: **"wake should fail for dead agents. W a k e. That's why there's a
+different verb."** And: **"It shouldn't be possible really to have a process for a dead agent."**
+
+**`reanimate` is the transition out of dead. `wake` is the transition out of hibernating.** A failed
+reanimate is a failed wake — the flag is cleared because that was the explicit request, and the
+agent is left **hibernating**, which is what a live row with no process already means. The error says
+so: *"the wake phase of the reanimate failed. Agent left hibernating."*
+
+**`dead` and having a process are mutually exclusive** — not a source of inference in either
+direction, but a state the pair must not be able to reach.
+
+##### One bot of a model, for its whole life
+
+Skip, 2026-08-18 14:21–14:27 EDT. The bot launcher does not take whatever name
+the mint hands back. It **asks for its own name and refuses a substitute**:
+
+> what it's supposed to do is call mint with a special argument that says
+> instead of, like, rotating, fail if I don't get the name I'm asking for.
+> **AND IF YOU FAIL, WAKE**
+
+**Model, not kind.** Skip, 14:28 EDT: *"A bot's kind is `bot`. A bot's model is
+like, `todd` or whatever."* So `kind` is what harness runs it — `bot`, as against
+`claude` or `codex` — and **`model` is which bot it is**: `todd`, `dev`,
+`grammar`, `chat-lint`. The uniqueness below is per **model**; reading it as
+`kind` would allow exactly one bot on the machine.
+
+And the test for "does this bot already exist" is **the model, not the name**:
+
+> if we have no bot of this model in the ledger [we mint]. Otherwise, we wake
+> them.
+>
+> That's name-independent, right? It's model-specific.
+
+So: **no bot of this model in the ledger → mint it. One already there, under any
+name → wake that one.** It uses the daemon ledger, and it needs nothing new —
+*"it's not complicated. A bot is just an agent."*
+
+**Why it is keyed on the model rather than the name.** Renaming a bot is the
+sanctioned stop, and a rename does not change what model it is. Key the check on
+the name and a rename manufactures a vacancy that a `KeepAlive` launcher fills
+immediately — so stopping a bot causes its replacement, and *"you can basically
+never have [a stopped bot] if you have a launcher that's pushy."* Keyed on the
+model, the duplicate is impossible by construction rather than prevented by a
+guard that has to fire.
+
+**The rename still stops it, through the guard above.** The woken bot comes up,
+sees it is not under its canonical name, and stays inert. Nothing new stops
+anything; this is what lets the existing stop keep working.
+
+**Rejected on the way there, so nobody rebuilds them:** reading identity from the
+bot's idfile (*"it's not idfile"*); making a mint of an existing being silently a
+wake, with no failure (**"NO"** — the mint fails, and the wake answers that
+failure); and a stopped-flag or canonical-name check in the manager, both of
+which add a second fact that can drift from the ledger.
+
+**What this costs when it is broken, measured 2026-08-18:** `dev` ran as
+`quiet-dev` and was inert. Its `node_modules` eviction against the 50 GB budget,
+preview reaping and the `pw` pool all arm in `onOpen` behind a correct gate, so
+**an inert `dev` sweeps nothing** — the box reached 120 MB free with ~38 GB of
+worktrees across 536 checkouts, and Skip's own processes were killed. The bot
+that cleans up after the fleet was switched off by the naming defect.
 
 - **Uniqueness is a database constraint** — a partial unique index, which is how
   "one living agent per name" is expressible at all:
@@ -1192,6 +1647,79 @@ the name of this section is a regression:
 
 The test: authorization asks *who is calling*. These ask *how expensive is this*,
 *which file is it*, or *which machine owns it*.
+
+#### You cannot test for someone having written bad code. That is review
+
+Skip, 2026-08-19 04:0x EDT:
+
+> **You cannot automate making sure agents didn't produce shitty code.** What you can do is have
+> a fucking code review process.
+
+> you're trying to **test for the nonexistence of things that should be deleted. Delete them.**
+
+> **I can write a second ingester if I want, in obfuscated code. Your test is never gonna catch me.**
+
+**So: no guard whose job is to prove that nobody has done something.** A test can establish that a
+specific behaviour holds. It cannot establish that no one has built a thing, because the space of
+ways to build it is not enumerable — and a grep for the shape you happen to have seen is a proxy
+for the claim, not the claim.
+
+**Two failures follow, and both have shipped here.**
+
+**A test that asserts an absence reads as coverage.** `bin/no-second-ingester-test.mjs` grepped for
+a server module writing a file carrying a store row's id, and was added as the guard against the
+duplicate-ingester class. **It was deleted on his instruction the night it came up**: it proves
+nothing about a second ingester written any other way, while looking like the class is handled.
+
+**And a test guarding a deletion is machinery instead of the deletion.** When something should not
+exist, **delete it and say so in the commit message** — do not leave a sentinel behind asserting
+that it is gone. The commit is the record.
+
+**What a test is for:** a behaviour that must hold, checked by exercising it. *A refused push leaves
+nothing behind.* *A reference outside the project root is not a member.* *An accepted revision
+reaches the room with its bytes.* **Those are properties of the running system, and they fail when
+someone breaks them, whatever they wrote.**
+
+**What review is for:** whether the code should exist at all, whether it duplicates something,
+whether it is what he asked for. **No automation reaches those**, and pretending otherwise is how
+eleven days of an unwanted mechanism survived a green suite.
+
+#### Nothing here protects people from bad decisions
+
+Skip, 2026-08-19 03:12 EDT: **"nothing in this app exists to protect people from making
+stupid decisions. For the most part."** And the operational form of it, a minute earlier:
+
+> **don't run the fucking bot, if you don't want the fucking bot to run.**
+
+**This is the same rule as §"We do not do auth between agents", one layer down.** That
+section says no gate on what an agent may *do to another agent*; this one says no gate on
+what a component may do at all, added because it felt dangerous to whoever wrote it.
+
+**The specific shape to recognise, because it cost a day: a component that refuses to
+start.** Two guards in `dev-bot.mjs` were cut on 2026-08-19 —
+
+- `ALLOWED_ENVIRONMENTS`, which asked *"do any environments declare me?"* and threw **at
+  module load** when the answer was none. A single missing line in `bots.yaml` therefore
+  did not merely un-supervise the bot; **it made the bot unable to run at all, even by
+  hand.**
+- a `/stable/i` hostname refusal, kept by an agent — and defended by a chief — as "a bound
+  on destructive work". It bounded nothing that could be destroyed, since `dev`'s
+  destructive work is on the machine, and it could stop the bot entirely.
+
+**Both were switched off for a day with nobody knowing.** `dev` is the bot that reclaims
+disk; while it was inert the box reached 120 MB free and Skip's own processes were killed.
+**A safety bound implemented as "the component declines to start" is an invisible off
+switch, and it fails silently in the direction of doing nothing.**
+
+**So: whether something runs is a declaration, not a branch inside it.** If a bot should
+not run somewhere, do not declare it there. **What a component may do once running is a
+different question, and a bound on the action is not the same as a bound on startup** —
+but reach for it only when the action is genuinely irreversible, and expect to justify it.
+
+**And when he says cut it, cut it.** A finding that the guard protects something real is
+worth reporting; it is not grounds for holding after he has ruled. That happened here and
+it cost a round trip at 3am — see the global contract's *"if you raise a concern and the
+user reaffirms, treat that as their decision and proceed"*.
 
 ## Repository workflow
 
