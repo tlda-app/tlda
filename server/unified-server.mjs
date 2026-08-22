@@ -9867,4 +9867,30 @@ server.listen(PORT, HOST, () => {
   } else {
     console.log(`  Viewer SPA: not built (run: npm run build)`)
   }
+
+  // Out-of-band index build. Spawned AFTER the port is open, in its own process
+  // so it neither delays boot nor occupies the single FleetStore worker queue —
+  // on a 10.6 GB fleet.db this takes tens of seconds. It exits in milliseconds
+  // once the index exists, so every subsequent boot pays a sqlite_master read.
+  // See bin/build-session-history-index.mjs for the crash and locking argument.
+  try {
+    const builder = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'build-session-history-index.mjs')
+    // dbPath mirrors TLDA_FLEET_DB, which is often unset; the builder then
+    // resolves the same default FleetStore does rather than being handed
+    // `undefined` as an argument.
+    const builderArgs = fleetStore.dbPath ? [builder, fleetStore.dbPath] : [builder]
+    const child = cpSpawn(process.execPath, builderArgs, {
+      detached: true,
+      stdio: ['ignore', 'inherit', 'inherit'],
+    })
+    child.unref()
+    child.on('error', err => console.error('[session-history-index] spawn failed:', err.message))
+  } catch (err) {
+    // Reported, not rethrown: this is a query-speed optimisation running after
+    // the port is already open. If it cannot be spawned the server is fully
+    // functional and global session history is merely as slow as it was
+    // before, so failing the boot over it would trade a slow query for an
+    // outage.
+    console.error('[session-history-index] spawn failed:', err.message)
+  }
 })
