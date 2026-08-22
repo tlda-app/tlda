@@ -672,10 +672,25 @@ function markAgentNotAlive(agentId, detail = {}) {
 // kill or hibernate had already succeeded, so the caller was told the action
 // failed when it had happened. todd announced seventy false corrections that way
 // on 7/31.
+// A native subagent has no tmux session of its own, so it never appears in a
+// daemon's session inventory and cannot be observed directly. Its liveness is
+// therefore DERIVED from its parent's — which makes it a projection of an
+// authoritative fact, not a fact this server observed.
+//
+// That distinction is why this is not called from a request handler.
+// `route_present: false` does not prove death; it proves the agent is
+// unroutable, and an operation intending to hibernate a parent is not evidence
+// about anything underneath it. Call this only where the PARENT's status was
+// established by the daemon, and pass that transition's own
+// `liveness_generation` through, so a derived row is traceable to the
+// authoritative observation it came from.
+//
+// Each write is awaited: a caller that acknowledges a lifecycle transition must
+// not report success over descendant writes that have not landed.
 async function markUnroutedNativeDescendantsNotAlive(parentAgentId, detail = {}) {
   const descendantIds = unroutedNativeDescendantIds(await fleetStore.getAliveAgents(), parentAgentId)
   for (const descendantId of descendantIds) {
-    markAgentNotAlive(descendantId, {
+    await markAgentNotAlive(descendantId, {
       ...detail,
       source: detail.source || 'native-parent-not-alive',
       reason: detail.reason || `native parent ${parentAgentId} is not alive`,
@@ -8143,14 +8158,15 @@ async function dispatchFleetWsMessage(ws, msg) {
       // again at 00:23, tmux session_created never changing, while an agent with
       // a ledger row hibernated correctly in the same sweep.
       //
-      // Nothing is written here on either branch: an unresolved terminal is an
-      // error, and a real kill is published by the daemon's own inventory. The
-      // server does not author the status either way.
+      // No runtime status is written here on either branch. An unresolved
+      // terminal is an error. A real kill is published by the daemon's own
+      // inventory, and the native descendants underneath it are projected from
+      // that same authoritative transition — not from this handler, which knows
+      // only that it asked.
       if (result?.terminal_unresolved) {
         error(`${seat.daemon_key} has no terminal binding for ${agent.friendly_name || agent.id}; nothing was hibernated`)
         return
       }
-      await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'native parent session hibernated' })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
@@ -9179,6 +9195,20 @@ async function handleDaemonWsMessage(ws, msg) {
           await markAgentNotAlive(agentId, {
             source: 'daemon-agent-status',
             reason: 'absent from daemon session inventory',
+            atMs,
+            daemon_key: msg.daemon_key,
+            daemon_boot_id: msg.daemon_boot_id,
+            report_seq: msg.report_seq,
+            liveness_generation: generation,
+          })
+          // The parent's status was just established by the daemon. Its native
+          // subagents have no session of their own to be absent from, so this is
+          // the authoritative transition they are derived from — and it carries
+          // the same generation, so a derived row points at the observation
+          // behind it.
+          await markUnroutedNativeDescendantsNotAlive(agentId, {
+            source: 'daemon-agent-status',
+            reason: `native parent ${agentId} absent from daemon session inventory`,
             atMs,
             daemon_key: msg.daemon_key,
             daemon_boot_id: msg.daemon_boot_id,
