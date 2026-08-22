@@ -112,6 +112,30 @@ not something living in the page. The rule that forces it is the existing one �
 every editor is a participant with a daemon — so it is decided once, for all
 participants, rather than per surface.
 
+### Where each rule above comes from
+
+This section was specified from one conversation, 2026-08-22 14:30–14:53 EDT.
+Every normative statement traces to a message in it, and the three that do not
+come from Skip directly are marked **inferred** rather than presented as his.
+
+| rule | source |
+| --- | --- |
+| replay the patches one by one onto a clean copy of the target, then merge | Skip, 14:33:57 |
+| the operation is `git am` | Skip, 14:46:31 |
+| new shas are fine; what matters is that commits are matchable | Skip, 14:36:34 |
+| matching is by `patch-id` | **inferred.** Skip said "matchable via tagging pretty fucking simply" (14:36:34); `patch-id` was proposed to him at 14:38:14 as getting it for free, and he moved on without choosing between them. See the open point below. |
+| marching forward, not all at once | Skip, 14:47:18 |
+| `--ff-only` plays the whole sequence atomically; the default plays until a merge is required, stops, and is called again after resolution | Skip, 14:47:45 |
+| `--ff-only` applies to a scratch ref | Skip, 14:49:03 — "Yes. Scratch ref. Of course" |
+| one operation, in the CLI and usable on the server | Skip, 14:41:10 |
+| one module with two call sites rather than two copies | **inferred.** Put to him at 14:41:41; he did not respond to that point specifically. |
+| the server runs `--ff-only`; on failure it hands the branch off, an agent resolves it on a box and submits the finished branch, and the server fast-forwards that | Skip, 14:43:16 |
+| the server can therefore never hold a conflicted or half-merged git state | **inferred** as the consequence, stated at 14:44:10; Skip endorsed the scratch-ref half of it at 14:49:03 |
+| a paused `am` is not transportable, so what comes back is a finished branch | put to him at 14:47:50; Skip, 14:48:18 — "Oh, yeah. Of course." |
+| the browser editor is another box with a daemon | Skip, 14:44:59 |
+| the operation shells out to `git`, so every participant's daemon is a real process | Skip, 14:46:18 and 14:46:31 |
+| Overleaf reached either through the author's own repository or directly when configured that way | Skip, 14:41:10 |
+
 ### Open — not settled, and not for an implementer to choose
 
 - **What the operation reads.** Whether `tlda merge` replays from
