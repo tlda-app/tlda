@@ -204,6 +204,8 @@ test('an ACK-loss login replay claims the replacement socket without a second li
   const child = startServer(dir, dbPath, port)
   let first
   let replacement
+  let missingRoute
+  let wrongRoute
   try {
     await waitForServer(child)
     const login = {
@@ -215,6 +217,32 @@ test('an ACK-loss login replay claims the replacement socket without a second li
     assert.equal((await request(first, 'first-login', login.type, login)).ok, true)
     first.close()
 
+    missingRoute = await openFleetWs(port)
+    await assert.rejects(
+      request(missingRoute, 'missing-route-replay', login.type, {
+        type: 'login', operation_id: login.operation_id, agent_id: login.agent_id,
+      }),
+      /does not match the completed claim/
+    )
+    await assert.rejects(
+      request(missingRoute, 'missing-route-ack', 'channel-notification-ack', {
+        agent: 'fleet:recipient', ack_id: 'not-pending',
+      }),
+      /agent does not match this connection/
+    )
+
+    wrongRoute = await openFleetWs(port)
+    await assert.rejects(
+      request(wrongRoute, 'wrong-route-replay', login.type, { ...login, env_name: 'stable' }),
+      /does not match the completed claim/
+    )
+    await assert.rejects(
+      request(wrongRoute, 'wrong-route-ack', 'channel-notification-ack', {
+        agent: 'fleet:recipient', ack_id: 'not-pending',
+      }),
+      /agent does not match this connection/
+    )
+
     replacement = await openFleetWs(port)
     assert.equal((await request(replacement, 'replayed-login', login.type, login)).ok, true)
     const ack = await request(replacement, 'replacement-claim-proof', 'channel-notification-ack', {
@@ -223,6 +251,8 @@ test('an ACK-loss login replay claims the replacement socket without a second li
     assert.deepEqual(ack, { ok: true, acknowledged: false })
   } finally {
     first?.close()
+    missingRoute?.close()
+    wrongRoute?.close()
     replacement?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))

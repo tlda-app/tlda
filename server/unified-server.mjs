@@ -6295,6 +6295,19 @@ async function dispatchFleetWsMessage(ws, msg) {
         // the old one. The operation envelope was matched above, so this is the
         // same authenticated claim, not trust in the query parameter.
         if (type === 'login' && msg.agent_id && previous.payload?.agent?.id === msg.agent_id) {
+          let replayRoute
+          try {
+            replayRoute = loginDaemonRouteProof(msg)
+          } catch (e) {
+            sendFleetResponseFrame(ws, { id, error: { message: e.message || String(e) } })
+            msg._fleetReplied = true
+            return
+          }
+          if (!replayRoute?.daemon_key || replayRoute.daemon_key !== previous.payload.agent.route_daemon_key) {
+            sendFleetResponseFrame(ws, { id, error: { message: 'login replay daemon route does not match the completed claim' } })
+            msg._fleetReplied = true
+            return
+          }
           agentFleetConnections.set(msg.agent_id, ws)
           ws._tldaAgentId = msg.agent_id
         }
