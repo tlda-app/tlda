@@ -6290,6 +6290,14 @@ async function dispatchFleetWsMessage(ws, msg) {
         return
       }
       if (previous?.kind === 'result') {
+        // A durable login replay after an ACK-loss reconnect must claim the new
+        // socket even though the logical login lifecycle already completed on
+        // the old one. The operation envelope was matched above, so this is the
+        // same authenticated claim, not trust in the query parameter.
+        if (type === 'login' && msg.agent_id && previous.payload?.agent?.id === msg.agent_id) {
+          agentFleetConnections.set(msg.agent_id, ws)
+          ws._tldaAgentId = msg.agent_id
+        }
         sendFleetResponseFrame(ws, { id, result: previous.payload })
         msg._fleetReplied = true
         return
