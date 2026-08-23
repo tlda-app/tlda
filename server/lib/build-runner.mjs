@@ -327,19 +327,177 @@ function generateStubPdfs(buildDir, addLog) {
 
 /** Recursively find .svg files in a directory (skipping node_modules, hidden dirs). */
 function findSvgFigures(dir) {
+  return findFiguresByExtension(dir, ['.svg'])
+}
+
+/** Recursively find figures with any of `exts` (skipping node_modules, hidden dirs). */
+function findFiguresByExtension(dir, exts) {
   const results = []
   try {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
       const full = join(dir, entry.name)
       if (entry.isDirectory()) {
-        results.push(...findSvgFigures(full))
-      } else if (entry.name.endsWith('.svg')) {
+        results.push(...findFiguresByExtension(full, exts))
+      } else if (exts.some(e => entry.name.toLowerCase().endsWith(e))) {
         results.push(full)
       }
     }
-  } catch (e) { console.warn(`[build] SVG figure discovery I/O error in ${dir}: ${e.message}`) }
+  } catch (e) {
+    // Discovery is advisory: a directory we cannot read yields no sidecars, and
+    // LaTeX then reports the figure it could not size. Throwing here would fail
+    // the whole build over one unreadable subdirectory, which is worse than the
+    // error the author already gets. Pre-existing behaviour, kept deliberately.
+    console.warn(`[build] figure discovery I/O error in ${dir}: ${e.message}`)
+  }
   return results
+}
+
+// ─── Bounding boxes for figures LaTeX cannot measure in DVI mode ─────────────
+//
+// DVI-mode `latex` can read an EPS bounding box and nothing else, so a PNG, a
+// JPEG or a PDF include fails with "Cannot determine size of graphic". The
+// existing SVG path solves this by writing a `.bb` sidecar and declaring
+// `\DeclareGraphicsRule{.pdf}{eps}{.bb}{}`; these readers extend the same
+// mechanism to the formats an author actually ships.
+//
+// THE UNIT IS bp (PostScript big points, 1/72 inch), because that is what a
+// `%%BoundingBox` means. Pixels are not bp, so a raster needs a resolution to
+// convert, and the honest source for that is the file's own metadata:
+//   - PNG  — the pHYs chunk, when present.
+//   - JPEG — the JFIF APP0 density fields, when present.
+// WHEN ABSENT WE ASSUME 72 dpi, which makes one pixel one bp. That is the
+// conventional default and it is a choice, not a measurement: a 300-dpi
+// screenshot with no pHYs will come out four times too large on the page. The
+// author's `[width=...]` overrides it in every case, which is why this is a
+// reasonable default rather than a correctness problem.
+
+const BP_PER_INCH = 72
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
+/** PNG size in bp, from IHDR dimensions and the pHYs resolution when present. */
+export function pngBoundingBox(buf) {
+  if (buf.length < 24 || !buf.subarray(0, 8).equals(PNG_SIGNATURE)) return null
+  // IHDR is required to be the first chunk: 8-byte signature, 4-byte length,
+  // 4-byte type, then width and height as big-endian uint32.
+  const wpx = buf.readUInt32BE(16)
+  const hpx = buf.readUInt32BE(20)
+  if (!wpx || !hpx) return null
+  let dpiX = 72, dpiY = 72
+  for (let off = 8; off + 12 <= buf.length;) {
+    const len = buf.readUInt32BE(off)
+    const type = buf.subarray(off + 4, off + 8).toString('latin1')
+    if (type === 'IDAT' || type === 'IEND') break   // past the metadata chunks
+    if (type === 'pHYs' && len === 9 && off + 8 + 9 <= buf.length) {
+      // pHYs unit 1 is metres; unit 0 means "aspect ratio only", no real
+      // resolution, so it is ignored and the 72 dpi default stands.
+      if (buf[off + 8 + 8] === 1) {
+        const ppmX = buf.readUInt32BE(off + 8)
+        const ppmY = buf.readUInt32BE(off + 12)
+        if (ppmX > 0 && ppmY > 0) { dpiX = ppmX * 0.0254; dpiY = ppmY * 0.0254 }
+      }
+      break
+    }
+    off += 12 + len
+  }
+  return { w: wpx * BP_PER_INCH / dpiX, h: hpx * BP_PER_INCH / dpiY }
+}
+
+/** JPEG size in bp, by walking segment markers to a start-of-frame. */
+export function jpegBoundingBox(buf) {
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null
+  let dpiX = 72, dpiY = 72
+  let off = 2
+  while (off + 4 <= buf.length) {
+    if (buf[off] !== 0xff) { off++; continue }      // resynchronise on fill bytes
+    const marker = buf[off + 1]
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { off += 2; continue }
+    const len = buf.readUInt16BE(off + 2)
+    if (len < 2) return null
+    // APP0/JFIF carries the density this file claims.
+    if (marker === 0xe0 && buf.subarray(off + 4, off + 9).toString('latin1') === 'JFIF\0') {
+      const units = buf[off + 11]
+      const xd = buf.readUInt16BE(off + 12)
+      const yd = buf.readUInt16BE(off + 14)
+      if (xd > 0 && yd > 0) {
+        if (units === 1) { dpiX = xd; dpiY = yd }                      // dots per inch
+        else if (units === 2) { dpiX = xd * 2.54; dpiY = yd * 2.54 }   // dots per cm
+      }
+    }
+    // SOF0..SOF15 carry the frame dimensions. DHT/JPG/DAC are not frames.
+    const isSof = marker >= 0xc0 && marker <= 0xcf
+      && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+    if (isSof) {
+      const hpx = buf.readUInt16BE(off + 5)
+      const wpx = buf.readUInt16BE(off + 7)
+      if (!wpx || !hpx) return null
+      return { w: wpx * BP_PER_INCH / dpiX, h: hpx * BP_PER_INCH / dpiY }
+    }
+    if (marker === 0xda) break                       // start of scan: no frame found
+    off += 2 + len
+  }
+  return null
+}
+
+/**
+ * PDF size in bp, from the first /MediaBox.
+ *
+ * A real PDF is already in bp and already carries its box, so it is READ rather
+ * than stubbed. The stub path above exists because *cairo SVG output* had
+ * MediaBoxes LaTeX could not use; that reason does not extend to a PDF an author
+ * drew themselves, and overwriting one with a stub would destroy the figure.
+ */
+export function pdfBoundingBox(buf) {
+  if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') return null
+  // latin1 keeps byte offsets intact through binary streams.
+  const m = buf.toString('latin1').match(/\/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/)
+  if (!m) return null
+  const w = parseFloat(m[3]) - parseFloat(m[1])
+  const h = parseFloat(m[4]) - parseFloat(m[2])
+  if (!(w > 0) || !(h > 0)) return null
+  return { w, h }
+}
+
+export function figureBoundingBox(path, buf) {
+  const ext = path.slice(path.lastIndexOf('.')).toLowerCase()
+  if (ext === '.png') return pngBoundingBox(buf)
+  if (ext === '.jpg' || ext === '.jpeg') return jpegBoundingBox(buf)
+  if (ext === '.pdf') return pdfBoundingBox(buf)
+  return null
+}
+
+/**
+ * Write `.bb` sidecars for PNG, JPEG and real PDF figures.
+ *
+ * Runs alongside generateStubPdfs, which owns the SVG case. A PDF that sits
+ * beside a same-named SVG is skipped: that PDF is the stub the SVG path just
+ * wrote, and its `.bb` came with it.
+ *
+ * NOTE the sidecar name drops the extension, so `foo.png` and `foo.pdf` in one
+ * directory both map to `foo.bb`. That ambiguity is inherited from the existing
+ * SVG rule rather than introduced here — `\DeclareGraphicsRule` keys on the
+ * extension of the include, but the sidecar it reads does not carry one.
+ */
+function generateRasterBoundingBoxes(buildDir, addLog) {
+  let count = 0
+  for (const figPath of findFiguresByExtension(buildDir, ['.png', '.jpg', '.jpeg', '.pdf'])) {
+    const bbPath = figPath.replace(/\.[^.]+$/, '.bb')
+    if (figPath.toLowerCase().endsWith('.pdf') && existsSync(figPath.replace(/\.[^.]+$/, '.svg'))) continue
+    let box
+    try {
+      box = figureBoundingBox(figPath, readFileSync(figPath))
+    } catch (e) {
+      console.warn(`[build] could not read figure ${figPath}: ${e.message}`)
+      continue
+    }
+    // No box is not an error: an unreadable or exotic file simply keeps the
+    // behaviour it has today, which is LaTeX reporting it cannot be sized.
+    if (!box) continue
+    writeFileSync(bbPath, `%%BoundingBox: 0 0 ${Math.ceil(box.w)} ${Math.ceil(box.h)}\n`
+      + `%%HiResBoundingBox: 0.0 0.0 ${box.w} ${box.h}\n`)
+    count++
+  }
+  if (count > 0) addLog(`Generated ${count} .bb file(s) for raster/PDF figures`)
 }
 
 // ─── Build state management ──────────────────────────────────────────────────
@@ -420,7 +578,13 @@ export function killAllBuilds() {
 // DeclareGraphicsRule tells dvips driver (used by pdflatex --output-format=dvi)
 // to read bounding box for .pdf files from the .bb companion file we generate.
 // Without this, dvips falls back to width×width square placeholders.
-const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}\\AddToHook{package/graphicx/after}{\\DeclareGraphicsRule{.pdf}{eps}{.bb}{}}'
+//
+// The same rule is declared for .png/.jpg/.jpeg because DVI-mode latex cannot
+// read a raster's dimensions either — without it, every non-SVG figure fails
+// the build outright with "Cannot determine size of graphic". The sidecars come
+// from generateRasterBoundingBoxes; a figure with no readable box gets no
+// sidecar and fails exactly as it does today.
+const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}\\AddToHook{package/graphicx/after}{\\DeclareGraphicsRule{.pdf}{eps}{.bb}{}\\DeclareGraphicsRule{.png}{eps}{.bb}{}\\DeclareGraphicsRule{.jpg}{eps}{.bb}{}\\DeclareGraphicsRule{.jpeg}{eps}{.bb}{}}'
 
 /**
  * Extract preamble from a .tex file (everything before \begin{document}).
@@ -544,6 +708,11 @@ async function compileLaTeX(ctx) {
   // Do NOT use dvipdfmx driver — it requires .xbb files, causing corrupt DVI.
   generateStubPdfs(texDir, addLog)
   if (texDir !== srcDir) generateStubPdfs(srcDir, addLog)
+  // Rasters and author-drawn PDFs get a .bb the same way, so a document whose
+  // figures are not SVG can be sized at all. Runs after the stub pass so a
+  // stub PDF's own .bb is already on disk and is not recomputed.
+  generateRasterBoundingBoxes(texDir, addLog)
+  if (texDir !== srcDir) generateRasterBoundingBoxes(srcDir, addLog)
 
   // Try to use precompiled preamble format
   const fmtBase = await ensureFormat(ctx)
