@@ -222,3 +222,45 @@ rename manufactures a vacancy and a hibernating holder blocks the mint forever �
 which is this file. Not done tonight: it is code in `~/work/tlda-bots`, whose
 working copy IS the deployment, and 3am is the wrong time to edit a supervisor by
 hand.
+
+## Two explanations for the rotation, both measured dead — 2026-08-23 07:47Z
+
+**Do not re-run these. Both were plausible, both were checked, both are wrong.**
+
+**Dead hypothesis 1: a ghost row holds the canonical name.** This is what the
+top of this file assumes and it was told to Skip twice. Measured against the live
+fleet table:
+
+```
+todd      no live row at all
+teacher   no live row at all
+grammar   hibernating row exists
+nobody    hibernating row exists
+chat-lint hibernating row exists
+```
+
+**`todd` and `teacher` were never occupied**, so a ghost cannot be why those two
+rotate. Killing ghosts is therefore not sufficient, and may not be necessary.
+
+**Dead hypothesis 2: a living agent holds the name as a LABEL.** `AGENTS.md`
+§"Names and labels are one namespace" makes this the natural next guess — a label
+lives in the row's `labels` JSON, no index can see it, and `checkNameAvailable`
+enforces it in code. Searched every living row's `labels`:
+
+```
+todd 0 · grammar 0 · nobody 0 · chat-lint 0 · dev 0 · debt 0
+teacher 1  ->  teacher-prior (hibernating)
+```
+
+**So the mechanism is real and it accounts for exactly one name.** `teacher` is
+genuinely blocked this way. The other four are blocked by nothing either check
+can see.
+
+**What that leaves, unexplored:** the mint path itself, a non-live row the
+availability check still consults, or state outside this table. **Nobody has a
+live hypothesis. Do not write one down as though we do** — two confident stories
+have already been told to Skip and withdrawn.
+
+**And 99 junk rows were cleared this session** (probes, husks, launch shells,
+`agent-XXXX`) — the bots kept rotating throughout, which is itself evidence
+against hypothesis 1.
