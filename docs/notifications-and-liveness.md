@@ -354,11 +354,15 @@ implementer's to infer.
    return are both defensible, and they are not both defensible at once for two
    verbs that do the same thing.
 
-   **Not established, and deliberately not asserted here:** whether `delegate`
-   attempts a notification for a *live* recipient at all. Only one `delegate`
-   trace existed in the buffer at the time and it was the probe's, so this cannot
-   distinguish a guard that fires on `dead` from a verb that never notifies
-   anyone.
+   **Since established, by the control that was missing: `delegate` does notify a
+   live recipient.** A delegation to an awake agent holding an MCP socket arrived
+   as a **tagged** `channel-notification`, unprompted — the recipient confirmed it
+   had not called `inbox()` for forty-five minutes, so it was delivery and not a
+   row it happened to read, and the tag places it on the channel rather than the
+   send-keys path. **So the asymmetry is gated on the recipient being unreachable,
+   not a verb that never notifies.** What that control does *not* establish is the
+   hop before the tag: whether the server reached that MCP directly or something
+   relayed it.
 
 6. **A reserved shell that never logged in can end up `dead` while its stored
    metadata still reads `hibernating`.** Observed on that same fixture:
