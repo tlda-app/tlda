@@ -125,13 +125,16 @@ async function withFleet({ withRecipientSocket = true, loginKind = 'claude', res
     daemonWs = await openDaemon(port, rpcs)
     if (withRecipientSocket) {
       recipientWs = await openFleetWs(port)
-      // `kind` is what marks this socket as an MCP. The recipient in these
-      // tests is standing in for one, so it says so — a login without a kind is
-      // a bot-shaped client and is deliberately not a notification target.
+      // `kind` is what marks this socket as an MCP, and it is sent NESTED under
+      // `metadata` because that is where the real MCP puts it — `loginBody` in
+      // mcp-server/fleet-tools.mjs carries `metadata: { kind }` and no top-level
+      // `kind` at all. An earlier version of this harness sent it top-level,
+      // which the server also accepts, so the test passed while exercising a path
+      // production never takes.
       await request(recipientWs, 'r-login', 'login', {
         operation_id: 'symptom-login', agent_id: 'fleet:recipient',
         machine_id: 'mini', env_name: 'testing',
-        ...(loginKind ? { kind: loginKind } : {}),
+        ...(loginKind ? { metadata: { kind: loginKind } } : {}),
       })
       recipientWs.on('message', raw => {
         const frame = JSON.parse(String(raw))
@@ -245,4 +248,39 @@ test('the same fixture with an MCP kind does reach the channel', async () => {
     assert.equal(hit.params.symptom, 'channel-silent',
       'a declared MCP socket must be notified and then time out, not be skipped')
   })
+})
+
+// `dev` does not log in with no kind — it logs in with `kind: "bot"`, read from
+// its live agent row on 2026-08-22. So this is the actual production value, not
+// a stand-in for one, and it is excluded because the gate is an allow-list over
+// the harness table rather than a list of things to skip.
+test('the kind a bot really sends is not a notification target', async () => {
+  await withFleet({ loginKind: 'bot', responder: () => {} }, async (ws, rpcs) => {
+    await sendChat(ws, 2, 'kind-bot-recipient')
+    const hit = await waitForSymptom(rpcs)
+    assert.ok(hit, `expected a symptom. Ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`)
+    assert.equal(hit.params.symptom, 'no-channel',
+      'kind "bot" is not in the harness table, so it is not an MCP and must not be notified')
+  })
+})
+
+// The gate is derived from `shared/harness.ts` rather than a literal list, and
+// this is what that buys: a harness added there is eligible without anyone
+// remembering to update the server. The failure direction if it fell behind is
+// SILENCE — no notification and no error — so it is worth a test that fails when
+// the two drift apart.
+test('every declared harness is a notification target', async () => {
+  const { HARNESS } = await import('../../shared/harness.ts')
+  const kinds = Object.keys(HARNESS)
+  assert.ok(kinds.length >= 3, `expected the harness table to be populated, got ${JSON.stringify(kinds)}`)
+  assert.ok(!kinds.includes('bot'), 'a bot is not a harness with an MCP; if this fails the gate stops excluding bots')
+  for (const kind of kinds) {
+    await withFleet({ loginKind: kind, responder: () => {} }, async (ws, rpcs) => {
+      await sendChat(ws, 2, `harness-${kind}`)
+      const hit = await waitForSymptom(rpcs)
+      assert.ok(hit, `${kind}: expected a symptom. Ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`)
+      assert.equal(hit.params.symptom, 'channel-silent',
+        `${kind} is a declared harness, so its socket must be notified rather than skipped`)
+    })
+  }
 })
