@@ -58,6 +58,12 @@ convincing shape on this page, because nothing about the number looks wrong.
   current. (See [Naming errata](naming-errata.md) §`~/.config/tlda/<bot>.<env>.log`,
   which is a different lie about the same files.)
 
+**The check:** before reading a process's environment, establish *which process*.
+A workaround usually runs alongside the thing being fixed and will happily answer
+the question you meant to ask about the other one. Discriminate by parentage or
+start time — a supervised process is a fresh pid whose parent is the supervisor,
+not `init`. For a file, read its mtime before its contents.
+
 **2026-08-23 — the same shape with a file instead of a process, four times in one
 night.** Each person read a real file, reasoned correctly about it, and was
 describing a copy that does not run:
@@ -79,12 +85,6 @@ and count production callers of the entry point before changing it — with a
 known-live sibling as the control. On 2026-08-22 that check was the only thing
 that stopped a fix landing in a module nothing calls, where every test would have
 gone green.
-
-**The check:** before reading a process's environment, establish *which process*.
-A workaround usually runs alongside the thing being fixed and will happily answer
-the question you meant to ask about the other one. Discriminate by parentage or
-start time — a supervised process is a fresh pid whose parent is the supervisor,
-not `init`. For a file, read its mtime before its contents.
 
 ### 3. A zero from a query that cannot return anything else
 
