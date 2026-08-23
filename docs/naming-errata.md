@@ -476,3 +476,39 @@ marker itself.
 **Do not "fix" this by making the sender stop substituting.** The placeholder is
 what keeps the path and the uploaded artifact associated. The gap is the
 agent-side fallback, and possibly the materialization behind it.
+
+## `part` — it is a document
+
+**A "part" is a document.** Specifically: the markdown the app copies for itself
+when someone opens a file from chat, so it can render that file as a column on
+the canvas. Nothing about it is a fragment of anything.
+
+Skip, 2026-08-23, on being told the word for the first time after an hour of
+being handed it: *"instead of saying doc, like we say, you just like decided to
+give it a different name to be confusing."* He had asked, plainly, **"what the
+fuck are parts"** — he designed this app and did not recognise the noun, which
+is the whole finding.
+
+**The app already had the word.** `documentRoots`, the `documents` array from
+`GET /:name/files`, the document on the canvas. `parts` is a second noun for the
+same object, with its own manifest (`.tlda/parts.json`), its own lister
+(`listProjectPartColumns`), its own route family (`/:name/parts`), and its own
+root resolver (`projectPartsRoot`).
+
+**The cost was not aesthetic, and it is why this entry is worth its length.**
+Every one of a person's open documents was being destroyed on every build for an
+unknown length of time — see the commit that moved `projectPartsRoot` out of
+`sourceDir`. That defect was legible as *"parts are cleared when the source
+directory is replaced,"* which reads like internal bookkeeping and provoked
+nobody. Said in the app's own vocabulary it is *"opening a document deletes it
+at the next build,"* which nobody would have left alone. **The second noun is
+what made a catastrophe read as a detail.**
+
+**Not renamed here, deliberately.** A rename crosses `projectPartsRoot`, the
+parts routes, the manifest key, the materializer and the column lister, and it
+is a live path. This entry exists so the next reader knows the two words name one
+thing; renaming is a product decision and is Skip's.
+
+**Related, same shape:** the manifest at `.tlda/parts.json` is *the record* of
+which documents exist for a project, not a cache — nothing rebuilds it. Reading
+it as a cache is what made deleting it look survivable.
