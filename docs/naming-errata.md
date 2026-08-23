@@ -406,3 +406,39 @@ taken as a maintenance chore.
 **If you are about to add a third:** don't. Import one of these two, and if neither will do,
 fix the one that is closest rather than growing the set. Delete this entry in the commit that
 unifies them.
+
+---
+
+## `\includegraphics{fig.svg}` — the one include form an SVG figure does not accept
+
+**An SVG figure is included as `fig.pdf`, or extensionless where the extension list allows
+it. Writing `fig.svg` — the name of the file that actually exists — is the form that fails.**
+
+The build compiles to DVI, and DVI-mode `latex` can read only an EPS bounding box, so every
+format needs a `\DeclareGraphicsRule` mapping it to the `.bb` sidecar. `PRETEX` in
+`server/lib/build-runner.mjs` declares one for `.pdf`, `.png`, `.jpg` and `.jpeg`. **There is
+no rule for `.svg`**, so the include fails with `Cannot determine size of graphic … (no
+BoundingBox)`.
+
+The SVG path works by a redirection that hides this: `generateStubPdfs` writes `fig.pdf` and
+`fig.bb` next to `fig.svg`, the document includes the *stub PDF's* name, and
+`patch-svg-images.mjs` then swaps the real `fig.svg` back in — the `Using SVG fallback` line
+in the build log. So the author writes the name of a file they never created, and the name of
+the file they did create is the one that errors.
+
+Measured 2026-08-22 on a throwaway project, same source, three include forms:
+
+| include | result |
+|---|---|
+| `figures/vector` | `File not found` — `.pdf` is not in the extension search list |
+| `figures/vector.svg` | `Cannot determine size of graphic` |
+| `figures/vector.pdf` | builds, and renders the real SVG |
+
+**This is pre-existing and not a regression** — it fails identically before and after the
+raster-figure work of `a23a8bb9b`, which added the three raster rules and deliberately left
+`.svg` alone.
+
+**Fixing it is one line** — `\DeclareGraphicsRule{.svg}{eps}{.bb}{}` in `PRETEX` — because
+the sidecar `generateStubPdfs` already writes is exactly what that rule would read. It was
+not done because it changes an existing, working path and nothing in front of us needed it.
+Delete this entry in the commit that adds the rule.

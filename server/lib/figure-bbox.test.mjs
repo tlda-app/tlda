@@ -133,3 +133,56 @@ test('unreadable input yields no box rather than a wrong one', () => {
   assert.equal(pdfBoundingBox(Buffer.from('%PDF-1.4 no mediabox here')), null)
   assert.equal(pngBoundingBox(makePng(0, 10)), null, 'a zero dimension is not a size')
 })
+
+// ─── The stem collision is announced, because it is otherwise silent ─────────
+//
+// `foo.png` and `foo.pdf` in one directory both map to `foo.bb`, so one of them
+// silently sizes the other. The build still succeeds; the only symptom is a
+// figure at the wrong size. These assert the build log names the winner.
+
+import { mkdtempSync, writeFileSync as write, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { generateRasterBoundingBoxes } from './build-runner.mjs'
+
+function withFixture(files, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-bbtest-'))
+  try {
+    for (const [name, buf] of Object.entries(files)) write(join(dir, name), buf)
+    const logs = []
+    generateRasterBoundingBoxes(dir, m => logs.push(m))
+    return fn(logs, dir)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('two figures sharing a stem are named in the build log', () => {
+  withFixture({ 'fig.png': makePng(300, 200), 'fig.pdf': makePdf(0, 0, 216, 144) }, logs => {
+    const collision = logs.find(l => l.includes('share the stem'))
+    assert.ok(collision, `expected a collision log, got: ${JSON.stringify(logs)}`)
+    assert.match(collision, /"fig"/)
+    assert.match(collision, /fig\.(png|pdf) overwrites/)
+  })
+})
+
+test('distinct stems produce no collision log', () => {
+  // The control: this warning must not fire on an ordinary figure directory,
+  // or it becomes noise and stops being read.
+  withFixture({ 'a.png': makePng(10, 10), 'b.pdf': makePdf(0, 0, 20, 20) }, logs => {
+    assert.equal(logs.find(l => l.includes('share the stem')), undefined)
+    assert.ok(logs.some(l => l.includes('Generated 2 .bb')), JSON.stringify(logs))
+  })
+})
+
+test('a stub PDF beside its SVG is skipped, so it is not a collision', () => {
+  // The SVG path writes fig.pdf and fig.bb from fig.svg. Treating that pair as
+  // a collision would warn on every SVG figure in the project.
+  withFixture({
+    'fig.svg': Buffer.from('<svg viewBox="0 0 100 50"></svg>'),
+    'fig.pdf': makePdf(0, 0, 100, 50),
+    'fig.png': makePng(80, 40),
+  }, logs => {
+    assert.equal(logs.find(l => l.includes('share the stem')), undefined, JSON.stringify(logs))
+  })
+})

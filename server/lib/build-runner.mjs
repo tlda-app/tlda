@@ -477,9 +477,16 @@ export function figureBoundingBox(path, buf) {
  * directory both map to `foo.bb`. That ambiguity is inherited from the existing
  * SVG rule rather than introduced here — `\DeclareGraphicsRule` keys on the
  * extension of the include, but the sidecar it reads does not carry one.
+ *
+ * A source PNG beside an exported PDF of the same figure is an ordinary thing in
+ * a paper directory, so this WILL happen to somebody, and the symptom is a build
+ * that succeeds with one figure the wrong size — which nobody reads as a bug in
+ * the sizing code. So the last writer is named in the build log rather than left
+ * to be rediscovered: a comment does not reach the person it happens to.
  */
-function generateRasterBoundingBoxes(buildDir, addLog) {
+export function generateRasterBoundingBoxes(buildDir, addLog) {
   let count = 0
+  const writtenBy = new Map()   // .bb path → the figure that wrote it
   for (const figPath of findFiguresByExtension(buildDir, ['.png', '.jpg', '.jpeg', '.pdf'])) {
     const bbPath = figPath.replace(/\.[^.]+$/, '.bb')
     if (figPath.toLowerCase().endsWith('.pdf') && existsSync(figPath.replace(/\.[^.]+$/, '.svg'))) continue
@@ -493,6 +500,13 @@ function generateRasterBoundingBoxes(buildDir, addLog) {
     // No box is not an error: an unreadable or exotic file simply keeps the
     // behaviour it has today, which is LaTeX reporting it cannot be sized.
     if (!box) continue
+    const previous = writtenBy.get(bbPath)
+    if (previous) {
+      addLog(`Two figures share the stem "${basename(bbPath, '.bb')}" in ${dirname(bbPath)}: `
+        + `${basename(figPath)} overwrites the bounding box from ${basename(previous)}. `
+        + `Both are sized from ${basename(figPath)} — rename one if they differ.`)
+    }
+    writtenBy.set(bbPath, figPath)
     writeFileSync(bbPath, `%%BoundingBox: 0 0 ${Math.ceil(box.w)} ${Math.ceil(box.h)}\n`
       + `%%HiResBoundingBox: 0.0 0.0 ${box.w} ${box.h}\n`)
     count++
