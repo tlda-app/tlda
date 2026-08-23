@@ -159,3 +159,36 @@ its own as a possible wake loop of the same family as the `debt` one above.
 
 **Deliberately not acted on.** Poking bot supervision at 2am to chase a helper bot
 is how the `debt` loop got three husks made while someone tried to fix it.
+
+## The bot manager is dead and launchd does not know — 2026-08-23 06:10Z
+
+This supersedes the todd correlation above: todd did not stop on its own.
+
+```
+last bot-manager.log line        2026-08-23T04:56:22Z   (73 minutes before this)
+ps for a bot-manager process     none      (control: 4 fleet-daemon processes found)
+launchctl list | grep            not listed
+launchctl print gui/<uid>/com.tlda.bot-manager
+                                 state = running,  runs = 3
+```
+
+**launchd believes the job is up. There is no process.** That is why the daemon
+restart at 05:33Z did not bring it back — nothing was watching for it to be gone.
+
+**Its last logged action was `dev:testing: no live process — starting` /
+`already in the ledger — waking bot:testing:dev` at 04:56:22Z, which is the same
+minute the wake-key remedy bug killed `dev` and one other agent.** So a causal
+link is plausible and **is not established** — the manager may have died of that,
+or alongside it. Do not repeat this as cause.
+
+**Consequence:** nothing supervises any bot. The bots themselves are still up —
+`todd:stable` (1d16h), `grammar` (3d), `dev-bot` — and note `dev-bot`'s process is
+only ~31 minutes old, restarted at ~05:38Z with the manager already dead. **That
+was the new `ensure-process` remedy doing the manager's job off a `no-channel`
+symptom**, which is the spec working, and it is also why this went unnoticed.
+
+**The remedy is `launchctl kickstart -k gui/<uid>/com.tlda.bot-manager`, and it was
+deliberately NOT run**, at 02:10 local, on a box that took an hour to come down
+from load 15. Restarting the supervisor is what re-mints bots, and a name-keyed
+re-mint is the loop documented at the top of this file. Worth doing awake, with
+`bots.yaml` checked first.
