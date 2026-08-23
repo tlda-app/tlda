@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -63,6 +63,78 @@ test('publication advances the shared head monotonically and a late ancestor pub
     rmSync(root, { recursive: true, force: true })
     rmSync(oldRoot, { recursive: true, force: true })
     rmSync(newRoot, { recursive: true, force: true })
+  }
+})
+
+// A build whose changed files are outside the tree the render reads never runs
+// the render, so its instance has the EMPTY `output/` that
+// materializeBuildInstance creates. Publishing that instance with the default
+// item set copies the empty directory over the live one and blanks the
+// document — and takes `relevant-files.json` with it, so the NEXT push reads
+// `no-relevant-files-yet`, renders, and puts everything back. That self-repair
+// is what would have made this intermittent instead of obvious.
+//
+// The second half of this test is the counterfactual: it does the same publish
+// with the default set and asserts the destruction actually happens, so the
+// first half cannot pass for a reason other than the one claimed.
+test('a source-only publication advances the head without touching the published render', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-source-only-'))
+  const builtRoot = mkdtempSync(join(tmpdir(), 'tlda-build-so-built-'))
+  const skippedRoot = mkdtempSync(join(tmpdir(), 'tlda-build-so-skipped-'))
+  const wipeRoot = mkdtempSync(join(tmpdir(), 'tlda-build-so-wipe-'))
+  const name = 'paper'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    const lifecycle = await sourceLifecycleStore(name)
+    const git = await lifecycle.gitRepository()
+
+    const rendered = await git.acceptRevision({
+      project: name, files: [{ path: 'main.md', content: 'rendered source' }], message: 'rendered',
+    })
+    await publishBuildInstance(name, rendered, 1, instance(builtRoot, name, 'the render'), [])
+    assert.equal(readFileSync(join(root, name, 'output', 'artifact.txt'), 'utf8'), 'the render')
+
+    // The next revision changes only a file the render never reads.
+    const notes = await git.acceptRevision({
+      project: name,
+      parent: rendered,
+      files: [{ path: 'main.md', content: 'rendered source' }, { path: 'notes.md', content: 'unread' }],
+      message: 'edit outside the tree',
+    })
+    // No render ran, so the instance carries source and an empty output.
+    const skipped = join(skippedRoot, name)
+    mkdirSync(join(skipped, 'source'), { recursive: true })
+    mkdirSync(join(skipped, 'output'), { recursive: true })
+    writeFileSync(join(skipped, 'source', 'main.md'), 'rendered source')
+    writeFileSync(join(skipped, 'source', 'notes.md'), 'unread')
+
+    const result = await publishBuildInstance(name, notes, 2, skipped, [], ['source'])
+    assert.equal(result.published, true)
+    assert.equal(await git.head(name), notes, 'the head must advance or the push is stranded')
+    assert.equal(readFileSync(join(root, name, 'source', 'notes.md'), 'utf8'), 'unread',
+      'the pushed file must reach the live source tree')
+    assert.equal(readFileSync(join(root, name, 'output', 'artifact.txt'), 'utf8'), 'the render',
+      'the published render must survive a build that did not render')
+    assert.equal(lifecycle.listRevisionLifecycles(name).find(item => item.sourceRevision === notes)?.build?.state,
+      'not_required', 'a revision that did not render must not record itself as built')
+
+    // Counterfactual: the same publication with the default item set is exactly
+    // the bug, and it must still be reachable — otherwise the assertion above
+    // proves nothing about which argument saved the render.
+    const wiped = join(wipeRoot, name)
+    mkdirSync(join(wiped, 'source'), { recursive: true })
+    mkdirSync(join(wiped, 'output'), { recursive: true })
+    writeFileSync(join(wiped, 'source', 'main.md'), 'rendered source')
+    const after = await git.acceptRevision({
+      project: name, parent: notes, files: [{ path: 'main.md', content: 'rendered source' }], message: 'default set',
+    })
+    await publishBuildInstance(name, after, 3, wiped, [])
+    assert.equal(existsSync(join(root, name, 'output', 'artifact.txt')), false,
+      'the default item set replaces output wholesale — if this stops being true the test above is vacuous')
+  } finally {
+    await closeProjectStore()
+    for (const dir of [root, builtRoot, skippedRoot, wipeRoot]) rmSync(dir, { recursive: true, force: true })
   }
 })
 

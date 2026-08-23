@@ -110,7 +110,19 @@ export function publishBuildDiagnostics(name, instanceProject) {
   return { copied }
 }
 
-export async function publishBuildInstance(name, sourceRevision, acceptSeq, instanceProject, reports = [], reportSinks = SINKS) {
+/**
+ * @param {string[]} replacedItems — which of `PUBLISH_REPLACED_ITEMS` this
+ *   publication swaps. A build that rendered replaces all of them. A build whose
+ *   changed files were outside the tree the render reads never produced an
+ *   `output/`, so it passes `['source']`: the source and the head advance, and
+ *   the last good render stays published.
+ *
+ *   Seeding the previous render into the instance so this function could copy it
+ *   back out was the alternative, and it is worse — a build instance would be
+ *   pretending a build happened, which is the one thing this repository is most
+ *   careful not to let a word do.
+ */
+export async function publishBuildInstance(name, sourceRevision, acceptSeq, instanceProject, reports = [], replacedItems = PUBLISH_REPLACED_ITEMS, reportSinks = SINKS) {
   return serializedPublication(name, async () => {
     const lifecycle = await sourceLifecycleStore(name)
     const git = await lifecycle.gitRepository()
@@ -121,14 +133,19 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
 
     const liveProject = projectDir(name)
     const transaction = join(liveProject, `.build-publish-${randomUUID()}`)
-    const stagedOutput = join(transaction, 'new-output')
-    const stagedCache = join(transaction, 'new-build-cache')
     mkdirSync(transaction, { recursive: true })
-    cpSync(join(instanceProject, 'output'), stagedOutput, { recursive: true })
-    cpSync(join(instanceProject, 'source'), join(transaction, 'new-source'), { recursive: true })
-    if (existsSync(join(instanceProject, 'build-cache'))) cpSync(join(instanceProject, 'build-cache'), stagedCache, { recursive: true })
-    for (const file of ['build.log', 'latex.log']) {
-      if (existsSync(join(instanceProject, file))) cpSync(join(instanceProject, file), join(transaction, `new-${file}`))
+    for (const item of replacedItems) {
+      const from = join(instanceProject, item)
+      // An absent item is normal and is not the same as an empty one: a build
+      // that produced no `latex.log` clears the stale one, which is why the swap
+      // below moves every item aside whether or not it was staged here.
+      // `source` is the exception — swapping it for nothing deletes the
+      // project's source, so its absence stops the publication instead.
+      if (!existsSync(from)) {
+        if (item === 'source') throw new Error(`build instance for ${name} has no source to publish`)
+        continue
+      }
+      cpSync(from, join(transaction, `new-${item}`), { recursive: true })
     }
     writeFileSync(join(transaction, 'publication.json'), JSON.stringify({
       version: 1, project: name, expectedHead, sourceRevision,
@@ -141,7 +158,7 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
       if (currentHead !== expectedHead || (currentHead && !await git.isAncestor(currentHead, sourceRevision))) {
         return { published: false, stale: true, sourceRevision, currentHead }
       }
-      for (const item of PUBLISH_REPLACED_ITEMS) {
+      for (const item of replacedItems) {
         old[item] = moveAside(join(liveProject, item), transaction, item)
         const staged = join(transaction, `new-${item}`)
         if (existsSync(staged)) renameSync(staged, join(liveProject, item))
@@ -159,7 +176,13 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
         if (sink) await sink(...(report.args || []))
       }
       lifecycle.recordRevisionAdmission(name, sourceRevision, acceptSeq)
-      lifecycle.recordRevisionPhase(name, sourceRevision, 'build', 'built', { ok: true })
+      // The replaced set is the record of what this build produced, so it is
+      // also the honest answer to which phase to write: no `output` means
+      // nothing rendered, which is `not_required` rather than `built`.
+      // `projectRevisionStatus` already reads that state; nothing has been able
+      // to produce it since the accept path was rewritten.
+      const rendered = replacedItems.includes('output')
+      lifecycle.recordRevisionPhase(name, sourceRevision, 'build', rendered ? 'built' : 'not_required', { ok: true })
       return { published: true, sourceRevision, previousHead: expectedHead }
     } catch (error) {
       if (!headMoved) {
@@ -228,7 +251,13 @@ export function createDispatcherWithOptions(transport, options = {}) {
         return publishBuildDiagnostics(...(message.a || []))
       }
       if (message.m === 'publishBuildInstance') {
-        const result = await publishBuildInstance(...(message.a || []), sinks)
+        // Destructured rather than spread: `sinks` has to stay the last
+        // argument, and a spread makes that depend on the worker's arity.
+        const [pName, pRevision, pAcceptSeq, pInstance, pReports, pReplaced] = message.a || []
+        // IPC is JSON, so an omitted set arrives as `null` rather than
+        // `undefined` and would never reach the signature's default.
+        const result = await publishBuildInstance(
+          pName, pRevision, pAcceptSeq, pInstance, pReports, pReplaced || PUBLISH_REPLACED_ITEMS, sinks)
         if (!result.published) throw new Error(`stale build ${job.sourceRevision} cannot publish over ${result.currentHead || 'no head'}`)
         await queue.publishedHeadChanged(name, job.sourceRevision)
         await options.notifyHeadChanged?.(name, job.sourceRevision)

@@ -11,7 +11,7 @@ import { runBuild, finalizeBuildVersion, setBuildReporter } from '../server/lib/
 import { initProjectStore, readProject, projectDir, sourceLifecycleStore, setProjectPathOverride } from '../server/lib/project-store.mjs'
 import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
-import { missingDeclaredMainFile, missingMainFileMessage } from '../server/lib/build-decision.mjs'
+import { missingDeclaredMainFile, missingMainFileMessage, shouldBuildOnPush } from '../server/lib/build-decision.mjs'
 import { setPriority, constants as osConstants } from 'node:os'
 import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -89,6 +89,46 @@ setBuildReporter({
   recordRevisionPhase: (name, sourceRevision, phase, state, result) => stageReport('recordRevisionPhase', [name, sourceRevision, phase, state, result]),
 })
 
+/**
+ * Whether this revision's changes reach anything the render reads.
+ *
+ * The two revisions diffed are the project's PUBLISHED HEAD and the revision
+ * being built: the head is what is on screen now, the revision is what this
+ * build would land, so their difference is exactly the source change in
+ * question. A project with no head yet takes `diffRevisions`' `--root` path and
+ * reports every file as changed, which renders — correct for a first build.
+ *
+ * Deletions count as changes. Removing a file the render reads has to render.
+ *
+ * Errs toward rendering in every uncertain case, including its own failure:
+ * an extra render costs time, a missed one silently serves a stale document and
+ * reports success.
+ */
+async function renderRelevance(msg, lifecycle) {
+  try {
+    const project = await readProject(msg.name)
+    const git = await lifecycle.gitRepository()
+    const publishedHead = await git.head(msg.name)
+    const { changed, deleted } = await git.diffRevisions(publishedHead, msg.sourceRevision)
+    const changedFiles = [...changed, ...deleted]
+    const decision = shouldBuildOnPush(project, msg.name, {
+      changedFiles,
+      anyChanged: changedFiles.length > 0,
+    })
+    // Gated on the REASON, not on `decision.build`. `shouldBuildOnPush` answers
+    // several questions and only this one is settled here; keying on the boolean
+    // would silently adopt any suppression the function grows later, and two of
+    // the verdicts it already returns must not suppress a render.
+    return { skip: decision.build === false && decision.reason === 'outside-tree', reason: decision.reason }
+  } catch (e) {
+    // Loud on purpose. Erring toward rendering is right, but a filter that
+    // silently errs toward rendering on EVERY build is indistinguishable from a
+    // filter nobody wired in — which is the state this whole change is fixing.
+    console.warn(`[build-worker] ${msg.name}: could not decide render relevance, rendering: ${e.message}`)
+    return { skip: false, reason: `relevance-unavailable: ${e.message}` }
+  }
+}
+
 process.on('message', async (msg) => {
   if (msg?.t === 'rpc-result') {
     const pending = pendingRpc.get(msg.id)
@@ -111,6 +151,14 @@ process.on('message', async (msg) => {
     if (!msg.sourceRevision) throw new Error(`build worker for ${msg.name} requires an immutable source revision`)
     const lifecycle = await sourceLifecycleStore(msg.name)
     const liveProject = projectDir(msg.name)
+    // BEFORE `setProjectPathOverride` below, and that ordering is the whole
+    // reason this sits up here rather than beside the render it governs:
+    // `shouldBuildOnPush` reads `relevant-files.json` out of `outputDir(name)`,
+    // and once the override points at the instance that resolves to the
+    // instance's freshly-created empty `output/`. The verdict would then be
+    // `no-relevant-files-yet` on every build forever — a filter that always
+    // says yes, which is indistinguishable from the filter not being wired in.
+    const relevance = msg.kind === 'parts' ? null : await renderRelevance(msg, lifecycle)
     const instance = await materializeBuildInstance({ name: msg.name, sourceRevision: msg.sourceRevision, lifecycle, seedProject: liveProject })
     instanceRoot = instance.root
     instanceProject = instance.project
@@ -145,7 +193,14 @@ process.on('message', async (msg) => {
       }
 
       const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides, qmd: buildQmd }[project?.format]
-      if (builder) {
+      if (relevance?.skip) {
+        // Nothing this revision changed is read by the render, so the render is
+        // skipped and the revision still lands: `['source']` below advances the
+        // source and the head while the last good render stays published.
+        // Skipping the ADMISSION instead would strand the push — the head only
+        // ever moves inside publishBuildInstance.
+        console.log(`[build-worker] ${msg.name}: ${msg.sourceRevision.slice(0, 12)} is ${relevance.reason}, publishing source without rendering`)
+      } else if (builder) {
         await builder(msg.name)
         // A build happened, so it gets a version — same as LaTeX, which reaches
         // recordBuildVersion through runBuild's finalizer. Versioning used to
@@ -156,8 +211,9 @@ process.on('message', async (msg) => {
         await runBuild(msg.name, { sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
       }
     }
-    await callParent('publishBuildInstance', [msg.name, msg.sourceRevision, msg.acceptSeq, instanceProject, stagedReports])
-    await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, 'built', { ok: true }])
+    const replacedItems = relevance?.skip ? ['source'] : null
+    await callParent('publishBuildInstance', [msg.name, msg.sourceRevision, msg.acceptSeq, instanceProject, stagedReports, replacedItems])
+    await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, relevance?.skip ? 'not_required' : 'built', { ok: true }])
     process.send?.({ t: 'done', ok: true })
     setImmediate(() => process.exit(0))
   } catch (e) {
