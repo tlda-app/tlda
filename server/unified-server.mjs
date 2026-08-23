@@ -24,6 +24,7 @@ if (!process.argv.includes('--i-am-tlda-cli')) {
 }
 
 import { createFilterSubscriptions } from './lib/filter-subscriptions.mjs'
+import { HARNESS } from '../shared/harness.ts'
 import { coalesceInflight } from '../shared/inflight-coalesce.mjs'
 import './lib/observability/otel-node.mjs'
 import express from 'express'
@@ -1834,11 +1835,19 @@ function openFleetSocketsForAgent(agentId) {
   return [...wsFleetClients].filter(client => client._tldaAgentId === agentId && client.readyState === 1)
 }
 
-// The harness kinds that have an MCP able to surface a notice. This is the same
-// set `deliverChannelNotice` switches on in mcp-server/fleet-tools.mjs, which
-// THROWS on anything else — so it is the set that can actually receive, not a
-// preference.
-const MCP_CHANNEL_KINDS = new Set(['claude', 'codex', 'goose'])
+// The harness kinds that have an MCP able to surface a notice.
+//
+// DERIVED, NOT LISTED, and that is load-bearing. This gate's failure direction
+// is silence: a kind that is not in this set gets no notification and no error,
+// so a hardcoded list that fell behind `shared/harness.ts` would stop
+// notifications for a whole harness with nothing to see. Reading the table means
+// a fourth harness is eligible the moment it is declared, in the one place
+// harnesses are declared.
+//
+// The table is authoritative rather than advisory: `harnessKindFromEnv` throws
+// on a kind that is not in it, and throws when FLEET_HARNESS is unset — "no
+// harness default is allowed" — so an MCP cannot log in with anything else.
+const MCP_CHANNEL_KINDS = new Set(Object.keys(HARNESS))
 
 /**
  * Whether this socket is an agent's MCP, and therefore a notification target.
