@@ -625,6 +625,31 @@ shipping requested work… he does not become routine QA."* A gate applied acros
 a fleet multiplies one build and one browser by the number of agents, which is
 how a verification rule becomes a denial of service.
 
+#### Driving a browser at a project writes into that project
+
+A Playwright or webdriver session sets `navigator.webdriver`, and
+`selectAutoFleetDefaultLayout` reads that flag as `automatedSession` and applies
+the `3-col` preset — **which creates six fleet shapes in the project's synced
+room.** The `ownedFleetShapeCount !== 0` guard makes it once per identity, and an
+automated launch mints a fresh anonymous identity every time, so it is once per
+launch. Nothing tells you it happened and nothing removes them.
+
+Measured 2026-08-23: eleven Playwright launches against one project left **66
+shapes under 11 anonymous identities** in eight minutes — `11 × 6`, confirmed
+against that room's `sync-snapshot.json`.
+
+Two things follow, and the second is the expensive one.
+
+**Point a browser at a disposable project, never at one someone works in.** The
+shapes are in the shared room, so the next person to open that project sees them.
+
+**Your own runs land in `client.log` beside everyone else's.** That file is one
+log for every session pointed at that server, including the browser you just
+launched. Filtering it by *time* and reading the result as somebody's tab is how,
+on that same day, an agent reported a tenfold crash escalation in Skip's session
+that was entirely its own eleven launches — and put another agent's name next to
+the window. **Filter by `session` and by project. Time is not a filter.**
+
 **An intermittent bug is immune to a browser test, and that is what telemetry is
 for.** Skip, 03:21 EDT:
 
