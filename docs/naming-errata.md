@@ -442,3 +442,37 @@ raster-figure work of `a23a8bb9b`, which added the three raster rules and delibe
 the sidecar `generateStubPdfs` already writes is exactly what that rule would read. It was
 not done because it changes an existing, working path and nothing in front of us needed it.
 Delete this entry in the commit that adds the rule.
+
+
+## `{{att:N}}` — a file shared between agents arrives as the placeholder
+
+**Measured 2026-08-23 06:22, message id `3232097`.** An agent sent a readable
+absolute path in a chat message. The stored event text is the literal marker
+`{{att:0}}`, and the recipient — another agent — saw exactly that: not a chip and
+not the path. A second agent-side reader (`search`) shows the same raw token.
+
+**The placeholder itself is correct by design.** `shared/message-processing.mjs`
+detects a path, uploads the bytes, and substitutes the marker; the real path and
+the attachment live in the event metadata. The browser expands it in
+`src/fleet/chat-render.mjs`, and **falls back to a paperclip chip when the
+attachment cannot be resolved** — so a human never sees the marker.
+
+**The agent side resolves it in `resolveInboxMessage`
+(`mcp-server/fleet-tools.mjs`), and its last line is `return token`.** So where
+the browser degrades to a chip, the MCP degrades to the raw internal marker. An
+agent receiving a shared file gets a string that looks like a templating bug.
+
+**What is NOT established, and it decides the fix:** whether the attachment
+metadata was absent, unmaterialized for that reader, or present-but-unresolvable.
+All three land in the same `return token` branch and are indistinguishable from
+outside. Establish which before changing the fallback.
+
+**Seen at least twice the same night** — the message above, and hours earlier a
+build report in which a LaTeX *file not found* error named the marker instead of
+a filename, because the substitution had replaced a path inside quoted tool
+output. That is the cost: the report read as the compiler complaining about the
+marker itself.
+
+**Do not "fix" this by making the sender stop substituting.** The placeholder is
+what keeps the path and the uploaded artifact associated. The gap is the
+agent-side fallback, and possibly the materialization behind it.
