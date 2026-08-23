@@ -3491,6 +3491,24 @@ export async function attachToAgent(name, {
     return { ok: false, error: 'process-missing', agent }
   }
   const spawnSync = spawnSyncImpl || (await import('child_process')).spawnSync
+  // A mint record can name a session that is no longer running — which is what
+  // an agent still marked awake with no process behind it looks like from here.
+  // Without this check the caller gets tmux's own `can't find session: fleet-x`,
+  // which describes the terminal and says nothing about the two states that
+  // actually differ: no such agent, or this agent has no session. Skip hit the
+  // second and read it as the first.
+  //
+  // This asserts NOTHING about whether the agent is dead. Death is a flag
+  // somebody sets explicitly; a missing terminal is not evidence of one, and
+  // nothing here writes anything.
+  const present = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', exactTmuxTarget(tmuxSession)], { stdio: 'ignore' })
+  if ((present?.status ?? 1) !== 0) {
+    const label = agent.friendlyName || agent.fleetId || agent.mintId
+    log.error(`${label} has no running terminal — its recorded session "${tmuxSession}" is not there.`)
+    log.error(`The agent record is intact and nothing here changes it. \`tlda agent wake ${label}\` starts it again.`)
+    exitImpl(1)
+    return { ok: false, error: 'session-missing', agent, tmuxSession }
+  }
   const result = spawnSync('tmux', [...tmuxBase(), 'attach-session', '-t', exactTmuxTarget(tmuxSession)], { stdio: 'inherit' })
   const status = result.status ?? 0
   exitImpl(status)
@@ -3818,7 +3836,27 @@ export async function runFleetSpawn(spawnArgs, {
     if (!result?.ok) throw new Error(result?.error || result?.reason || `mint failed for ${name}`)
     printLocalDaemonOutcome(result)
     const agentId = result.agent_id || result.fleet_id || result.mint_id
-    console.log(`Created ${result.tmux_session || result.tmuxSession || result.name || name} (${agentId}) in ${cwd}`)
+    // The AGENT's name, not its tmux session. `rpcMint` returns the assigned
+    // name as `name`, and this line used to prefer `tmux_session` over it — so
+    // on a rotated mint the one string the caller saw was the session, and the
+    // agent's actual name was never printed at all. Measured 2026-08-22: asked
+    // for `login-broken`, printed `Created fleet-login-broken-2`, and the agent
+    // was `kogin-broken`. Those are two independent uniquifiers and they do not
+    // have to agree.
+    const assignedName = result.name || result.friendly_name || result.assigned_name || null
+    console.log(`Created ${assignedName || result.tmux_session || result.tmuxSession || name} (${agentId}) in ${cwd}`)
+    if (result.tmux_session || result.tmuxSession) {
+      console.log(dim(`  session: ${result.tmux_session || result.tmuxSession}`))
+    }
+    // Rotation on collision is the design — a mint takes an alternate name
+    // rather than being rejected. Saying nothing about it is what makes it a
+    // trap: you cannot attach to a name nobody told you, and the only other
+    // place the fact exists is `tmux ls`. Skip walked s → r → q on one name
+    // without being told once.
+    if (assignedName && name && assignedName !== name) {
+      console.log(yellow(`  "${name}" was taken — this agent is "${assignedName}".`))
+      console.log(`  Attach with: tlda agent attach ${assignedName}`)
+    }
     if (result.registration_deferred) {
       console.error(`Server registration deferred for ${name}: ${result.registration_error || 'server unavailable'}`)
     }
