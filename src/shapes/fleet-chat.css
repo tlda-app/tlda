@@ -513,6 +513,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-shape .fleet-filter-choices .fleet-agents-unread-dot,
 .fleet-chat-shape .fleet-filter-choices .fleet-agents-kill-btn,
 .fleet-chat-shape .fleet-filter-choices .fleet-agents-col-ctx,
+.fleet-chat-shape .fleet-filter-choices .fleet-agents-col-model,
 .fleet-chat-shape .fleet-filter-choices .fleet-agents-col-task,
 .fleet-chat-shape .fleet-filter-choices .fleet-agents-col-labels {
   display: none;
@@ -2308,6 +2309,29 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   flex: 1 1 0;
   width: 0;
   max-width: none;
+}
+
+/* The model an agent is actually running as. Same weight and rhythm as the
+   `seen` column beside it -- fixed width, right-aligned, dormant opacity --
+   because it is reference information, not something to draw the eye.
+
+   `.unrecorded` is deliberately dimmer still: a dash that reads as absence
+   rather than as a value. The failure this column exists for is a blank that
+   looked like nothing at all. */
+.fleet-agents-shape .fleet-agents-col-model {
+  width: 68px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
+  opacity: var(--fleet-agents-content-dormant);
+  margin-right: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-agents-shape .fleet-agents-col-model.unrecorded {
+  opacity: calc(var(--fleet-agents-content-dormant) * 0.55);
 }
 
 .fleet-agents-shape .fleet-agents-col-seen {

@@ -288,6 +288,21 @@ export function FleetAgentDirectoryRow({
           onAgentPointerDown={onAgentPointerDown}
           onAgentPointerUp={onAgentPointerUp}
         />
+        {/* Skip, 2026-08-23: "WHY THE FUCK DO AGENTS NOT HAVE THEIR MODEL LISTED
+            IN THE AGENTS TABLE ... I NEVER FUCKING WANT TO WORK WITH SONNET
+            AGENTS". The model was already a chip, but only in the expansion —
+            so finding it meant opening rows one at a time, and he spent hours
+            writing with sonnet agents without knowing.
+
+            An unrecorded model renders as a dash rather than as nothing, because
+            blank is what made this invisible: a row with no model looked the same
+            as a column that was not there. The dash says the app does not know. */}
+        <span
+          className={`fleet-agents-col-model${row.model ? '' : ' unrecorded'}`}
+          title={row.model ? `model: ${row.model}` : 'model not recorded for this agent'}
+        >
+          {row.model || '—'}
+        </span>
         <span className="fleet-agents-col-seen">{row.ago}</span>
         <span
           className="fleet-agents-col-ctx"
