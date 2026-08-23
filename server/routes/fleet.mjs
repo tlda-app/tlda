@@ -969,18 +969,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   })
 
-  // --- POST /api/kick ---
-  // Kick = touch a signal file inside the agent's machine's ~/.fleet/signals.
-  // Routed through the daemon so the file lands on the right host. The
-  router.post('/api/kick', async (req, res) => {
-    const { agent: agentQuery } = req.body || {}
-    const agent = await fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const result = await rpcAgent(res, agent, 'kick', { agent_id: agent.id })
-    if (result === null) return // rpcAgent already wrote the response
-    res.json(result)
-  })
-
   // --- POST /api/rename ---
   router.post('/api/rename', async (req, res) => {
     const { agent: agentQuery, name: newName } = req.body || {}

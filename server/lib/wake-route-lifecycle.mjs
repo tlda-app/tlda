@@ -23,14 +23,14 @@ export async function runWakeRouteLifecycle({
   agent,
   daemonKey,
   ownerDaemon,
-  nudgeText = null,
-  returnNoticeText = null,
-  enterDelayMs = 0,
-  notifyDelayMs = 0,
-  notifyReadyTimeoutMs = 0,
-  notificationFailure = null,
   traceId = null,
   sendDaemonDurable,
+  // Bounds for the wake RPC itself. Defaulted to `null` rather than to a number
+  // so this module states no policy about how long a wake may take — that
+  // belongs to the caller that knows the deployment. A caller passing nothing
+  // gets the old unbounded behaviour, which is a bug at the call site and
+  // visible there rather than hidden behind a default here.
+  rpcOptions = null,
   appendControlTrace = () => {},
   getAgentDaemonRoute,
   insertWakeLifecycleEvent = async () => {},
@@ -47,21 +47,19 @@ export async function runWakeRouteLifecycle({
 
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
+  // A wake carries no mail. Skip, 14:06:12: "the demon just fucking wakes an
+  // agent up. And then the server, you know, then they log in. And the server is
+  // like, here are your fucking notifications."
+  //
+  // `notify_text`, `return_notice`, `enter_delay_ms`, `notify_delay_ms` and
+  // `notify_ready_timeout_ms` were the second delivery route in payload form —
+  // every one of them existed to get text typed into a pane by the daemon. The
+  // return notice they uniquely carried is handed over by `login()` now, which
+  // is why this could be removed without losing a behaviour.
   const wakePayload = { fleet_id: agentId }
-  if (notificationFailure) wakePayload.notification_failure = notificationFailure
-  if (nudgeText) {
-    wakePayload.notify_text = nudgeText
-    if (returnNoticeText) wakePayload.return_notice = returnNoticeText
-    if (enterDelayMs != null) wakePayload.enter_delay_ms = enterDelayMs
-    if (notifyDelayMs != null) wakePayload.notify_delay_ms = notifyDelayMs
-    if (notifyReadyTimeoutMs != null) wakePayload.notify_ready_timeout_ms = notifyReadyTimeoutMs
-  } else if (returnNoticeText) {
-    wakePayload.notify_text = returnNoticeText
-    if (enterDelayMs != null) wakePayload.enter_delay_ms = enterDelayMs
-    if (notifyDelayMs != null) wakePayload.notify_delay_ms = notifyDelayMs
-    if (notifyReadyTimeoutMs != null) wakePayload.notify_ready_timeout_ms = notifyReadyTimeoutMs
-  }
-  const spawnResult = await sendDaemonDurable(daemonKey, 'wake', wakePayload)
+  const spawnResult = rpcOptions
+    ? await sendDaemonDurable(daemonKey, 'wake', wakePayload, rpcOptions)
+    : await sendDaemonDurable(daemonKey, 'wake', wakePayload)
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }

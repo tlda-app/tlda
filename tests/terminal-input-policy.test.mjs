@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createTerminalRpc, terminalSafeNotificationText } from '../daemon/terminal-rpc.mjs'
+import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
 import { validateDaemonConfigTopLevel } from '../shared/daemon-config-schema.mjs'
 import {
   sendKeyAllowedWithoutTextInput,
@@ -202,46 +202,5 @@ test('kill-session waits for authoritative rescan on every terminal outcome', as
         /inventory rescan failed/,
       )
     })
-  }
-})
-
-test('notification text is converted to one printable line', () => {
-  assert.equal(
-    terminalSafeNotificationText('!rm -rf ~\nEnter\r\t\x1b[31m\u2028'),
-    '!rm -rf ~\\nEnter\\r\\t\\x1b[31m\\u2028',
-  )
-})
-
-test('notification tmux fallback pastes sanitized text before one Enter', async () => {
-  const { rpc, calls } = makeTerminalRpc({ terminalInputAllowed: false })
-  await rpc.handlers['notify-agent']({
-    agent_id: 'fleet:test',
-    text: '!rm -rf ~\nEnter\r\x1b[31m',
-    enter_delay_ms: 0,
-  })
-  assert.deepEqual(calls.slice(-3), [
-    ['tmux', ['set-buffer', '-b', calls.at(-3)[1][2], '!rm -rf ~\\nEnter\\r\\x1b[31m']],
-    ['tmux', ['paste-buffer', '-dp', '-b', calls.at(-3)[1][2], '-t', '=agent-session:']],
-    ['tmux', ['send-keys', '-t', '=agent-session:', 'Enter']],
-  ])
-})
-
-test('notification bypasses active PTY and pastes sanitized text before one Enter', async () => {
-  const { rpc, calls, ptyWrites } = makeTerminalRpcWithPty()
-  try {
-    await rpc.handlers['start-terminal-watch']({ agent_id: 'fleet:test' })
-    await rpc.handlers['notify-agent']({
-      agent_id: 'fleet:test',
-      text: '!rm -rf ~\nEnter\r\x1b[31m',
-      enter_delay_ms: 0,
-    })
-    assert.deepEqual(ptyWrites, [])
-    assert.deepEqual(calls.slice(-3), [
-      ['tmux', ['set-buffer', '-b', calls.at(-3)[1][2], '!rm -rf ~\\nEnter\\r\\x1b[31m']],
-      ['tmux', ['paste-buffer', '-dp', '-b', calls.at(-3)[1][2], '-t', '=agent-session:']],
-      ['tmux', ['send-keys', '-t', '=agent-session:', 'Enter']],
-    ])
-  } finally {
-    rpc.stopAllTerminalWatches()
   }
 })

@@ -24,6 +24,7 @@ if (!process.argv.includes('--i-am-tlda-cli')) {
 }
 
 import { createFilterSubscriptions } from './lib/filter-subscriptions.mjs'
+import { HARNESS } from '../shared/harness.ts'
 import { coalesceInflight } from '../shared/inflight-coalesce.mjs'
 import './lib/observability/otel-node.mjs'
 import express from 'express'
@@ -118,6 +119,7 @@ import {
   normalizeDeliveryChannel,
   normalizeInboxStatus,
   normalizeMessagePriority,
+  parseDurationMs,
   parsePriorityPhrase,
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs'
@@ -640,11 +642,6 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
     fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.AWAKE }, evidence.liveness_at)
       .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
   }
-  if (!wasAlive) {
-    // Recovery: an agent transitioning to alive (login/reconnect) clears its
-    // wake breaker so a restored session is nudged again immediately (§4.2).
-    _wakeBreaker.delete(agentId)
-  }
 }
 
 function markAgentNotAlive(agentId, detail = {}) {
@@ -949,22 +946,6 @@ setInterval(() => { void sweepStuckSourceSync() }, SOURCE_SYNC_SWEEP_MS).unref?.
 
 const _subscriptionBatchWakes = new Map()
 
-// Per-agent wake circuit breaker. Consecutive terminal wake failures put an
-// agent into exponential backoff. Reset on real recovery (markAgentAlive) or a
-// successful wake. Keyed by agentId.
-const _wakeBreaker = new Map() // agentId -> { fails, nextTs, lastError }
-const WAKE_BREAKER_BASE_MS = 5 * 60_000
-const WAKE_BREAKER_CAP_MS = Number(process.env.TLDA_WAKE_BREAKER_CAP_MS || 2 * 60 * 60_000) // 2h ceiling (also a slow self-heal probe)
-
-function isWakeBreakerOpen(breaker, agentId, now) {
-  const b = breaker?.get?.(agentId)
-  return !!(b && b.nextTs > now)
-}
-
-function wakeBreakerBackoffMs(fails, baseMs, capMs) {
-  return Math.min(baseMs * 2 ** (Math.max(1, fails) - 1), capMs)
-}
-
 function wakeHarnessKind(agent) {
   return agent?.metadata?.kind || agent?.metadata?.harness || agent?.kind || agent?.harness || null
 }
@@ -979,23 +960,6 @@ function wakeNotifyDelayMs(agent) {
 
 function wakeNotifyReadyTimeoutMs(agent) {
   return 90_000
-}
-
-async function sendWakeNudge(daemonKey, agent, nudgeText, phase, logTag = 'wake-nudge') {
-  if (!nudgeText) return
-  broadcastFleet({
-    event: 'channel-notification',
-    data: {
-      recipient: agent.id,
-      text: nudgeText,
-      metadata: {
-        type: 'wake_nudge',
-        phase,
-        logTag,
-        daemonKey,
-      },
-    },
-  })
 }
 
 function timestampMs(value) {
@@ -1023,6 +987,26 @@ function formatAwayDuration(ms) {
   return 'less than a minute'
 }
 
+// Below this, an agent was not away — it reconnected. `last_seen` is advanced by
+// heartbeats while an agent runs, so a genuine hibernation leaves it stale by the
+// length of the hibernation, while an MCP restart leaves it seconds old. Without
+// this gate every reconnect would be met with "You were hibernating for less than
+// a minute", which is both false and the kind of noise that teaches agents to
+// stop reading their own login output.
+//
+// It is the same threshold `formatAwayDuration` already uses to give up and say
+// "less than a minute" — deliberately, so the notice can never print that phrase
+// in the hibernating case. One number, one meaning.
+const RETURN_NOTICE_MIN_AWAY_MS = 60_000
+
+function agentReturnNoticeIfAway(agent) {
+  if (agent?.metadata?.shell) return null
+  const sinceMs = agentAwaySinceMs(agent)
+  if (!sinceMs) return null
+  if (Date.now() - sinceMs < RETURN_NOTICE_MIN_AWAY_MS) return null
+  return agentReturnNotice(agent)
+}
+
 function agentReturnNotice(agent, status = 'hibernating', { reanimated = false } = {}) {
   const sinceMs = agentAwaySinceMs(agent)
   const duration = sinceMs ? formatAwayDuration(Date.now() - sinceMs) : 'an unknown amount of time'
@@ -1039,23 +1023,6 @@ async function waitForAgentDaemonRoute(agentId, timeoutMs = 10_000) {
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   return await fleetStore.getAgentDaemonRoute?.(agentId) || null
-}
-
-async function sendReanimateNoticeWithRetry(agentId, agent, seat, noticeText) {
-  let currentRoute = seat
-  let lastErr = null
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      await sendWakeNudge(currentRoute.daemon_key, agent, noticeText, 'post-reanimate', 'reanimate')
-      return currentRoute
-    } catch (e) {
-      lastErr = e
-      if (attempt >= 2) break
-      await new Promise(resolve => setTimeout(resolve, 500))
-      currentRoute = await fleetStore.getAgentDaemonRoute?.(agentId) || currentRoute
-    }
-  }
-  throw lastErr || new Error('reanimate notice failed')
 }
 
 async function reanimateAgent(agentQuery) {
@@ -1117,7 +1084,11 @@ async function reanimateAgent(agentQuery) {
   broadcastState(before.id)
   let spawnResult
   try {
-    spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: before.id })
+    // Bounded for the same reason as the drain's wake below: this is the same
+    // unbounded 'wake' RPC, and an unanswered one here hangs the reanimate
+    // request rather than the fleet-wide drain. The report names the drain; the
+    // defect is the operation, and it has two call sites.
+    spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: before.id }, wakeRpcOptions())
     if (!spawnResult?.ok) {
       throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
     }
@@ -1142,23 +1113,24 @@ async function reanimateAgent(agentQuery) {
   const nextSeat = await waitForAgentDaemonRoute(before.id)
   if (!nextSeat?.daemon_key) throw new Error(`reanimate for ${before.id} did not establish a daemon route`)
   const noticeText = agentReturnNotice(before, 'dead', { reanimated: true })
-  try {
-    await sendReanimateNoticeWithRetry(before.id, revived, nextSeat, noticeText)
-  } catch (e) {
-    // A notice that did not land does not kill the agent it was about.
-    //
-    // This used to kill the session and mark the row dead — an undo of the whole
-    // reanimate because its last, least important step failed. Both halves are
-    // now wrong. Marking dead is the inferred death the rule forbids, and the
-    // kill would leave a row marked alive with no process behind it, which is
-    // the same phantom from the other side.
-    //
-    // The agent is up and reachable. What failed is that it was not told it had
-    // been reanimated, and that is what the caller is told.
-    markAgentNotAlive(before.id, { source: 'reanimate', reason: `notice failed: ${e.message}` })
-    broadcastState(before.id)
-    throw new Error(`reanimate woke ${before.friendly_name || before.id} and it is running, but the return notice failed: ${e.message}`)
-  }
+  // Step 1: park it where login will hand it over. The reanimated agent's own
+  // login is the delivery, and unlike the broadcast below it actually arrives —
+  // §S1 established that `sendWakeNudge` emits a `channel-notification` with no
+  // `wake_ack_id`, which every MCP drops, so the retry, the backoff, the route
+  // refresh and the final throw underneath are all machinery around a message
+  // that has never been delivered.
+  //
+  // The reanimate notice is handed over by `login()`. Parked here, delivered
+  // there.
+  //
+  // What used to sit at this point was `sendReanimateNoticeWithRetry` around
+  // `sendWakeNudge`, which broadcast a `channel-notification` carrying no
+  // `wake_ack_id` — and the MCP delivers such a frame to nobody. So the two
+  // attempts, the 500ms backoff, the route refresh, the final throw, and a
+  // catch that reported the agent as running-but-untold were all machinery
+  // around a message that had never once arrived. The reanimated agent is told
+  // when it logs in, which is the only moment it can be told anything.
+  await fleetStore.updateAgentMeta?.(before.id, { pendingReturnNotice: noticeText })
   await measureHotOp('fleet-ws lifecycle reanimate insert', `agent=${before.id}`, () => fleetStore.insertEventRecord({
     type: 'lifecycle',
     timestamp: new Date().toISOString(),
@@ -1521,6 +1493,37 @@ function sendDaemonDurable(machineId, operation, params = {}, rpcOptions = {}) {
 const MIRROR_ATTEMPT_TIMEOUT_MS = Number(process.env.TLDA_MIRROR_ATTEMPT_TIMEOUT_MS) || 60000
 const MIRROR_TOTAL_DEADLINE_MS = Number(process.env.TLDA_MIRROR_TOTAL_DEADLINE_MS) || 150000
 
+// A wake RPC had no attempt timeout and no total deadline: `sendDaemonDurable`
+// passed no rpcOptions, so `startWsRequest` set no timer at all and the call was
+// bounded only by the socket closing. A daemon that holds its socket open and
+// never answers therefore parked the caller forever. That is the shape of the
+// 2026-08-01 eighteen-hour outage, reached by a route the guard there does not
+// cover.
+//
+// The amplifier is gone and the bound still matters. It used to park
+// `drainWakeQueue`, which was serialized behind one `_wakeDraining` flag and
+// called unawaited, so a single silent daemon stopped every notification in the
+// fleet. That queue and its drain were deleted with the server's remedy
+// selection, so the blast radius is now the one caller that is waiting — but an
+// unbounded RPC to a machine that has stopped answering is still an unbounded
+// RPC, and the two remaining callers are the reanimate wake and the daemon
+// route lifecycle.
+//
+// It is also why the existing retry machinery was unreachable: a retry needs a
+// bounded attempt to retry *after*. Same defect and same function as the mirror
+// timeouts above, which is where these are sized from.
+//
+// Sized to what a wake legitimately takes, not to the payload. The daemon may
+// spawn a process and wait for a harness prompt — `wakeNotifyReadyTimeoutMs` is
+// 90s on its own — so an attempt ceiling below that would abort work that was
+// going to succeed, which is the mistake the mirror comment above records.
+const WAKE_ATTEMPT_TIMEOUT_MS = Number(process.env.TLDA_WAKE_ATTEMPT_TIMEOUT_MS) || 120000
+const WAKE_TOTAL_DEADLINE_MS = Number(process.env.TLDA_WAKE_TOTAL_DEADLINE_MS) || 300000
+const wakeRpcOptions = () => ({
+  attemptTimeoutMs: WAKE_ATTEMPT_TIMEOUT_MS,
+  totalDeadlineMs: WAKE_TOTAL_DEADLINE_MS,
+})
+
 const mirrorShadowViaDaemon = createShadowMirrorRpcHandler({
   readProject,
   sendDaemonEphemeral: (machineId, operation, params) => sendDaemonDurable(machineId, operation, params, {
@@ -1773,6 +1776,49 @@ function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
 
 function openFleetSocketsForAgent(agentId) {
   return [...wsFleetClients].filter(client => client._tldaAgentId === agentId && client.readyState === 1)
+}
+
+// The harness kinds that have an MCP able to surface a notice.
+//
+// DERIVED, NOT LISTED, and that is load-bearing. This gate's failure direction
+// is silence: a kind that is not in this set gets no notification and no error,
+// so a hardcoded list that fell behind `shared/harness.ts` would stop
+// notifications for a whole harness with nothing to see. Reading the table means
+// a fourth harness is eligible the moment it is declared, in the one place
+// harnesses are declared.
+//
+// The table is authoritative rather than advisory: `harnessKindFromEnv` throws
+// on a kind that is not in it, and throws when FLEET_HARNESS is unset — "no
+// harness default is allowed" — so an MCP cannot log in with anything else.
+const MCP_CHANNEL_KINDS = new Set(Object.keys(HARNESS))
+
+/**
+ * Whether this socket is an agent's MCP, and therefore a notification target.
+ *
+ * §"Notification: one path" is `server → agent's MCP → channel`. A bot holds a
+ * `/ws/fleet` socket and logs in on it exactly as an MCP does, so before this
+ * check the server sent notices to bots and then waited for an acknowledgement
+ * that had no code path to arrive by: `dev-bot.mjs` contains zero occurrences of
+ * `channel-notification`, `wake_ack_id` or `channel-notification-ack`. Measured
+ * 2026-08-22, that single bot produced 207 of 234 ack timeouts in six hours.
+ *
+ * THIS MATTERS MUCH MORE NOW THAN IT DID, and that is why the errata's "leave it
+ * alone" no longer holds. When an unanswerable notice cost a spurious sideband
+ * delivery it was untidy. Now the symptom reaches the daemon and `channel-silent`
+ * means restart, so it would have restarted `dev` every ~100 seconds forever —
+ * and `dev` is the bot that reclaims disk on this box, which never finishes a
+ * sweep if it is restarted 35 times an hour.
+ *
+ * An ALLOW-LIST, not a bot exclusion. A client kind nobody has thought of yet is
+ * not a notification target until it says it has an MCP, which is the safe
+ * direction for this to be wrong in.
+ */
+function isMcpChannelSocket(client) {
+  return MCP_CHANNEL_KINDS.has(client?._tldaClientKind)
+}
+
+function openMcpSocketsForAgent(agentId) {
+  return openFleetSocketsForAgent(agentId).filter(isMcpChannelSocket)
 }
 
 
@@ -5808,14 +5854,52 @@ function sendFleetResponseFrame(ws, frame) {
 // Interacting with a hibernating (non-dead, no live process) agent wakes.
 // Live non-Claude TUI agents also need a terminal nudge: their MCP channel can
 // record the event without submitting a new turn.
-// Idempotent waker: chat/delegate adds agent IDs to a Map.
-// A serial loop drains it — one spawn at a time, naturally deduped.
-const _wakeQueue = new Map()
-let _wakeDraining = false
-// Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
-const _wakeFailWarned = new Map() // agentId → last-warned ms
-const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-const WAKE_MCP_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_MCP_ACK_DEADLINE_MS || 2_000)
+// Step 4: *x* — how long the server waits for an agent's MCP to acknowledge a
+// notification before reporting the symptom to that agent's daemon. This is the
+// one rule the server runs, and it is a server setting, so it lives in
+// `server.yaml` rather than in this file.
+//
+// **The ordering constraint, which is what a future editor needs and cannot
+// derive from the number: `ackTimeout` must exceed the MCP's own serial budget
+// for handling a notice** — `deliverChannelNotice` (≤1000ms) followed by
+// `acknowledgeWakeChannelNotice` (≤1000ms), one after the other in
+// `fleet-tools.mjs`.
+//
+// **WHY 5s AND NOT THE 2s THIS RAN AT FOR MONTHS.** 2s is exactly those two
+// client budgets summed, and the server's clock starts before the notice leaves
+// it, so the deadline must also cover server→MCP and MCP→server transit. At 2s a
+// delivery that fully succeeded could not acknowledge in time — the overrun
+// recorded as `mcp-ack-timeout`, which is the same string a wedged process
+// produces, so a healthy agent was indistinguishable from a dead one. 5s clears
+// the serial budget with room for both network legs.
+//
+// **Raising it is not a free win and nobody should read it as one.** The largest
+// single source of these timeouts measured on this fleet was one bot holding a
+// `/ws/fleet` socket with no acknowledge path in its code at all — 88% of them.
+// A longer deadline does not convert those into successes; it makes each one take
+// longer to reach the same outcome. The fix for that population is the bot, not
+// this number. See `docs/notifications-and-liveness.md` §"Errata".
+//
+// Unit-bearing, per the `batch(15s)` precedent and via the same parser — a bare
+// `2` is an error, not a default in some unit the reader has to guess.
+const WAKE_MCP_ACK_DEADLINE_DEFAULT = '5s'
+const WAKE_MCP_ACK_DEADLINE_MS = (() => {
+  const configured = serverRuntimeConfig?.notifications?.ackTimeout
+  if (configured != null) {
+    const ms = parseDurationMs(configured)
+    // Loud rather than defaulted. An unset value presenting as a missing feature
+    // instead of an error is the exact history `server.yaml`'s own header
+    // records, and a misspelled duration silently becoming 5s is that again.
+    if (!ms) throw new Error(`server.yaml notifications.ackTimeout must be a duration with a unit (e.g. 5s, 250ms); got ${JSON.stringify(configured)}`)
+    return ms
+  }
+  // No environment override. `TLDA_WAKE_MCP_ACK_DEADLINE_MS` existed only so
+  // tests could shorten a deliberate timeout, and the design rules out an
+  // environment variable by name alongside a source constant — the same
+  // sentence, for the same reason: a timeout nobody can find in the config is a
+  // timeout in code. The tests wait the real deadline now.
+  return parseDurationMs(WAKE_MCP_ACK_DEADLINE_DEFAULT)
+})()
 const _pendingMcpWakeAcks = new Map()
 
 function acknowledgeMcpWakeNotification(ackId, agentId) {
@@ -5825,9 +5909,35 @@ function acknowledgeMcpWakeNotification(ackId, agentId) {
   return true
 }
 
+// Step 2 of the notification proposal: a refusal is not silence.
+//
+// The MCP has several ways to receive a notice and decline to surface it — the
+// sender is the recipient, the notice already arrived by terminal, the harness
+// kind is unhandled, the channel simply returned false. Every one of them used
+// to reach the server as `mcp-ack-timeout`, indistinguishable from a wedged
+// process, because the only thing that could resolve the wait was success and
+// the only other outcome was the clock.
+//
+// So `mcp-ack-timeout` was a bucket of five states wearing the name of one, and
+// step 3's symptom vocabulary would have inherited that — reporting "this agent
+// is not responding" to a daemon about an agent that answered immediately and
+// said no. A refusal is not a liveness fault and must not provoke a remedy.
+function refuseMcpWakeNotification(ackId, agentId, reason) {
+  const pending = _pendingMcpWakeAcks.get(ackId)
+  if (!pending || pending.agentId !== agentId) return false
+  pending.resolve({ ok: false, refused: true, reason: reason || 'unspecified' })
+  return true
+}
+
 async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}) {
   if (!nudgeText) return { ok: false, reason: 'no-notification-text' }
-  const sockets = openFleetSocketsForAgent(agent.id)
+  // MCP sockets only. A bot holds a /ws/fleet socket and logs in on it exactly
+  // as an MCP does, but has no code that could acknowledge — so sending here
+  // produced a guaranteed timeout, and a timeout now means the daemon restarts
+  // the agent. `no-open-mcp-socket` is the honest answer for an agent whose only
+  // connection is not an MCP, and it is also the accurate one: there is no open
+  // MCP socket. See `isMcpChannelSocket`.
+  const sockets = openMcpSocketsForAgent(agent.id)
   if (!sockets.length) return { ok: false, reason: 'no-open-mcp-socket' }
   const ackId = `${traceId || createTraceId('wake')}:mcp:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
   // No return notice here. This path runs only while the agent's own MCP socket
@@ -5901,12 +6011,109 @@ async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}
       trace_id: traceId,
       component: 'server',
       operation: 'wake.mcp-notify',
-      status: result.ok ? 'acknowledged' : 'fallback',
+      // A refusal gets its own status. It is not `acknowledged` — the notice was
+      // not surfaced — and it is not `fallback`, because there is nothing wrong
+      // with this agent to fall back about.
+      status: result.ok ? 'acknowledged' : result.refused ? 'refused' : 'fallback',
       detail: { agent: agent.id, ack_id: ackId, reason: result.reason || null },
     })
   }
   return result
 }
+// The symptom vocabulary, taken from the states `attemptMcpWakeNotification`
+// already distinguishes rather than invented. Each is a fact about the server's
+// own socket and nothing else — no claim about processes, which are the
+// daemon's business and not the server's to model.
+//
+// FOUR NAMES FOR THE THREE SYMPTOMS IN THE SPEC, and the difference is
+// deliberate. `docs/notifications-and-liveness.md` §"The back-off" enumerates:
+// the socket is closed; the MCP ack failed; the MCP acked and then nothing ever
+// came back.
+//
+//   `no-channel`      no socket at all       ⎫ his "the socket is closed",
+//   `channel-closed`  a socket that closed   ⎭ kept apart
+//   `channel-silent`  the deadline expired
+//   `channel-refused` the MCP said no
+//
+// **The split is real because these are different facts about the server's own
+// socket, which is the only thing it is allowed to report.** Never having had a
+// channel and having had one that closed are distinguishable without knowing
+// anything about the far end — and the daemon's two jobs differ between them.
+// Collapsing them would mean reporting a state the server did not observe.
+//
+// `channel-refused` exists because of the nack: without it, a healthy MCP that
+// declines a notice is reported as a failure that did not happen.
+const NOTIFICATION_SYMPTOM_BY_REASON = {
+  'no-open-mcp-socket': 'no-channel',
+  'mcp-socket-closed': 'channel-closed',
+  // Every send threw: there were sockets and none of them took the bytes. That
+  // is the socket being gone, observed one layer down.
+  'mcp-send-failed': 'channel-closed',
+  'mcp-ack-timeout': 'channel-silent',
+}
+
+// `no-notification-text` is deliberately absent: nothing was sent, so nothing
+// was observed, and there is no symptom to report.
+function notificationSymptomFor(mcpDelivery) {
+  if (mcpDelivery?.refused) return 'channel-refused'
+  return NOTIFICATION_SYMPTOM_BY_REASON[mcpDelivery?.reason] || null
+}
+
+async function reportNotificationSymptom(agent, mcpDelivery, traceId = null) {
+  const symptom = notificationSymptomFor(mcpDelivery)
+  if (!symptom) return
+  const observedAt = new Date().toISOString()
+  const route = await fleetStore.getAgentDaemonRoute?.(agent.id)
+  const daemonKey = route?.daemon_key || null
+  // Open point 4: what the server does when it has no daemon to report to. It
+  // records the symptom and stops. Not a fallback — nothing is retried and
+  // nothing is delivered another way — and the record is what keeps the removal
+  // of the second path from producing silence.
+  if (!daemonKey) {
+    if (traceId) {
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'notification.symptom',
+        status: 'no-daemon-route',
+        detail: { agent: agent.id, symptom, observed_at: observedAt },
+      })
+    }
+    return
+  }
+  if (traceId) {
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'notification.symptom',
+      status: 'reported',
+      detail: { agent: agent.id, symptom, daemon: daemonKey, observed_at: observedAt },
+    })
+  }
+  try {
+    await sendDaemonDurable(daemonKey, 'notification-symptom', {
+      agent_id: agent.id,
+      symptom,
+      observed_at: observedAt,
+      detail: { channel: 'mcp', reason: mcpDelivery?.reason || null, deadline_ms: WAKE_MCP_ACK_DEADLINE_MS },
+    }, wakeRpcOptions())
+  } catch (e) {
+    // Reporting is best-effort by construction. Every daemon action this could
+    // provoke is idempotent, so a lost report costs a round of convergence and
+    // nothing else — which is exactly why the server keeps no memory of having
+    // sent it and does not retry here.
+    if (traceId) {
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'notification.symptom',
+        status: 'report-failed',
+        detail: { agent: agent.id, symptom, daemon: daemonKey, error: e?.message || String(e) },
+      })
+    }
+  }
+}
+
 async function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
   const agent = await fleetStore.getAgent(agentId)
   if (!agent) return { ok: false, delivered: false, skipped: true, reason: 'missing-agent' }
@@ -5949,223 +6156,36 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
     reason: mcpDelivery.reason || 'not-acknowledged',
     deadline_ms: WAKE_MCP_ACK_DEADLINE_MS,
   }
-  if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
-    const breaker = _wakeBreaker.get(agentId)
-    if (traceId) {
-      controlPlaneTraces.append({
-        trace_id: traceId,
-        component: 'server',
-        operation: 'wake.request',
-        status: 'breaker-open',
-        detail: { agent: agentId, until: new Date(breaker.nextTs).toISOString(), fails: breaker.fails },
-      })
-    }
-    // Say so, on the same channel the failure path uses. One failed wake backs
-    // this agent off for five minutes, doubling to a two-hour ceiling, and every
-    // delegate arriving in that window used to return here having told nobody
-    // anything — while `delegate` had already replied ok to its caller. So a
-    // suppressed wake was indistinguishable from a wake that never needed to
-    // happen, both to the person who delegated and to the record: this is the
-    // only wake path that writes nothing durable, which is why 08-13 shows 73
-    // delegates and zero wake failures.
-    //
-    // Same per-agent throttle as the failure path, and it shares the map, so a
-    // backed-off agent cannot produce more chat than a failing one.
-    const now = Date.now()
-    if (!_wakeFailWarned.has(agentId) || now - _wakeFailWarned.get(agentId) > WAKE_FAIL_WARN_MS) {
-      _wakeFailWarned.set(agentId, now)
-      const notify = asker && asker !== agentId ? asker : SERVER_OWNER_ID
-      try {
-        deliverTldaFeedbackChat({
-          from: 'fleet:tlda',
-          to: notify,
-          text: `⚠️ Did not try to wake **${agent.friendly_name || agentId}** — ${breaker.fails} failed wake(s), backed off until ${new Date(breaker.nextTs).toISOString()}. Last error: ${breaker.lastError || '(none recorded)'}`,
-          metadata: { type: 'wake_suppressed', agentId, until: new Date(breaker.nextTs).toISOString(), fails: breaker.fails },
-        })
-      } catch (notifyErr) {
-        // Swallowed deliberately: this is a courtesy notice about a wake that was
-        // already suppressed. Letting it throw would take out requestWake for
-        // every other caller, so a failed notice must not become a failed wake
-        // path — the console line is the record that the notice itself was lost.
-        console.warn(`[respawn] could not surface suppressed wake for ${agentId}: ${notifyErr.message}`)
-      }
-    }
-    return { ok: true, delivered: false, status: 'breaker-open', suppressed: true, reason: 'breaker-open', notificationFailure }
-  }
-  const prev = _wakeQueue.get(agentId)
-  // Who is waiting, not just the first of them. A second message arriving
-  // before the drain replaces the preview with the list of senders.
-  const askers = new Set(prev?.askers || [])
-  if (asker) askers.add(asker)
-  _wakeQueue.set(agentId, {
-    nudgeText: nudgeText || prev?.nudgeText || null,
-    askers: [...askers],
-    asker: asker || prev?.asker || null,
-    traceId: traceId || prev?.traceId || null,
-    notificationFailure: notificationFailure || prev?.notificationFailure || null,
-    source: Object.keys(source || {}).length ? source : (prev?.source || {}),
-  })
-  if (traceId) {
-    controlPlaneTraces.append({
-      trace_id: traceId,
-      component: 'server',
-      operation: 'wake.request',
-      status: 'queued',
-      detail: { agent: agentId, asker },
-    })
-  }
-  if (!_wakeDraining) drainWakeQueue()
-  return { ok: true, delivered: false, status: 'queued', queued: true, notificationFailure }
-}
-
-async function drainWakeQueue() {
-  // The flag must be cleared in a `finally`. It guards the only path that
-  // services the wake queue, and the caller is `if (!_wakeDraining)
-  // drainWakeQueue()` — unawaited, unhandled. So a rejection anywhere below,
-  // including from the two store reads that sit outside the loop's own try,
-  // would leave this true forever and stop every wake for the whole fleet,
-  // silently: nothing throws inside the guarded region, so the loud failure
-  // path never fires. That happened on 2026-08-01 at 01:44Z and went unnoticed
-  // for eighteen hours until Skip could not reach his chief of staff.
-  _wakeDraining = true
-  try {
-  while (_wakeQueue.size > 0) {
-    const [agentId, wakeEntry] = _wakeQueue.entries().next().value
-    _wakeQueue.delete(agentId)
-    let nudgeText = wakeEntry?.nudgeText || null
-    const waiting = wakeEntry?.askers || []
-    if (waiting.length > 1 && nudgeText?.startsWith(NOTIFICATION_MARKER)) {
-      const names = []
-      for (const id of waiting.slice(0, 2)) names.push((await fleetStore.getAgent?.(id))?.friendly_name || id)
-      const who = waiting.length > 2 ? `${names[0]}, ${names[1]} and others` : `${names[0]} and ${names[1]}`
-      nudgeText = `${NOTIFICATION_MARKER} Check your inbox(). You have messages from ${who}.`
-    }
-    const asker = wakeEntry?.asker || null
-    const traceId = wakeEntry?.traceId || null
-    const notificationFailure = wakeEntry?.notificationFailure || null
-    const source = wakeEntry?.source || {}
-    const agent = await fleetStore.getAgent?.(agentId)
-    if (!agent || agent.dead || agent.human) {
-      if (traceId) {
-        controlPlaneTraces.append({
-          trace_id: traceId,
-          component: 'server',
-          operation: 'wake.skip',
-          status: 'ignored',
-          detail: { agent: agentId, reason: !agent ? 'missing-agent' : agent.dead ? 'dead' : 'human' },
-        })
-      }
-      continue
-    }
-    const daemonKeys = [...daemonConnections.keys()]
-    if (daemonKeys.length === 0) {
-      if (traceId) {
-        controlPlaneTraces.append({
-          trace_id: traceId,
-          component: 'server',
-          operation: 'wake.defer',
-          status: 'no-daemon',
-          detail: { agent: agentId },
-        })
-      }
-      continue
-    }
-    const seat = await fleetStore?.getAgentDaemonRoute?.(agentId)
-    if (!seat) {
-      continue
-    }
-    const daemonKey = seat.daemon_key
-    try {
-      const result = await runWakeRouteLifecycle({
-        agentId,
-        agent,
-        daemonKey,
-        ownerDaemon: daemonConnections.get(daemonKey),
-        nudgeText,
-        returnNoticeText: agentReturnNotice(agent),
-        enterDelayMs: wakeEnterDelayMs(agent),
-        notifyDelayMs: wakeNotifyDelayMs(agent),
-        notifyReadyTimeoutMs: wakeNotifyReadyTimeoutMs(agent),
-        notificationFailure,
-        traceId,
-        sendDaemonDurable,
-        appendControlTrace: (event) => controlPlaneTraces.append(event),
-        getAgentDaemonRoute: (id) => fleetStore.getAgentDaemonRoute(id),
-        insertWakeLifecycleEvent: async () => {
-          const wakeTs = new Date().toISOString()
-          await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore.insertEventRecord({
-            type: 'lifecycle',
-            timestamp: wakeTs,
-            from: agentId,
-            to: agentId,
-            text: 'agent woken',
-            unread: false,
-          }, { notify: false }))
-        },
-      })
-      if (result.action === 'respawned') console.log(`[respawn] woke ${agent.friendly_name || agentId} (${agentId})`)
-    } catch (e) {
-      const b = _wakeBreaker.get(agentId) || { fails: 0 }
-      b.fails += 1
-      b.lastError = e.message
-      b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
-      _wakeBreaker.set(agentId, b)
-      if (traceId) {
-        controlPlaneTraces.append({
-          trace_id: traceId,
-          component: 'server',
-          operation: 'wake.error',
-          status: 'failed',
-          detail: { agent: agentId },
-          error: e.message,
-        })
-      }
-      console.warn(`[respawn] failed for ${agentId} (fails=${b.fails}, backoff until ${new Date(b.nextTs).toISOString()}): ${e.message}`)
-      // Convergent, visible signal on the roster (not just a chat) so a failed
-      // wake shows up in the UI, not invisibly.
-      broadcastEvent('agent-wedged', { agentId, reason: `wake failed: ${e.message}`, ts: new Date().toISOString() })
-      // Surface the failure to WHOEVER ASKED (Skip's rule) — the agent/human who
-      // chatted or delegated — falling back to the server owner for wakes with no
-      // identifiable asker (internal retries). Throttled per-agent so a stuck wake
-      // doesn't spam chat.
-      const _now = Date.now()
-      if (!_wakeFailWarned.has(agentId) || _now - _wakeFailWarned.get(agentId) > WAKE_FAIL_WARN_MS) {
-        _wakeFailWarned.set(agentId, _now)
-        const notify = asker && asker !== agentId ? asker : SERVER_OWNER_ID
-        try {
-          deliverTldaFeedbackChat({
-            from: 'fleet:tlda',
-            to: notify,
-            text: `⚠️ Couldn't wake **${agent.friendly_name || agentId}** — ${e.message}`,
-            metadata: { type: 'wake_failed', agentId },
-          })
-        } catch (notifyErr) {
-          console.warn(`[respawn] could not surface wake failure for ${agentId}: ${notifyErr.message}`)
-        }
-      }
-    }
-  }
-  } catch (e) {
-    // Loud, and rethrow nothing: this runs unawaited, so a rejection here has
-    // nowhere to land. Report it and let the finally re-arm the queue.
-    console.error(`[wake] drain aborted: ${e?.stack || e?.message || e}`)
-    try {
-      broadcastEvent('agent-wedged', {
-        agentId: null,
-        reason: `wake queue drain aborted: ${e?.message || e}`,
-        ts: new Date().toISOString(),
-      })
-    } catch (broadcastErr) {
-      // Best effort: the broadcast is a courtesy on top of the console error
-      // above, and a failure here must not prevent the finally from re-arming
-      // the queue — that is the whole point of this change.
-      console.warn(`[wake] could not broadcast drain failure: ${broadcastErr?.message || broadcastErr}`)
-    }
-  } finally {
-    _wakeDraining = false
-    // Anything queued while we were failing still needs servicing.
-    if (_wakeQueue.size > 0) setTimeout(() => { if (!_wakeDraining) drainWakeQueue() }, 1000).unref?.()
-  }
+  // Step 3: report the symptom to the agent's daemon. What the server observed
+  // on its own socket, with no remedy attached and no text to deliver — "this is
+  // your machine, look into it" is the whole message.
+  //
+  // Fire-and-forget on purpose: nothing downstream waits on it and nothing
+  // decides anything from its result. It is a report, and a report that fails to
+  // arrive must not change what the notification path does.
+  void reportNotificationSymptom(agent, mcpDelivery, traceId)
+  // AND THAT IS THE WHOLE OF IT. The server reported what its socket did; the
+  // daemon owns the remedy. §"What this design rules out" — "No remedy selection
+  // by the server."
+  //
+  // What used to be here was a per-agent wake queue, a drain that called
+  // `runWakeRouteLifecycle` to respawn, and a circuit breaker pacing the drain.
+  // All three are gone together, deliberately: the breaker existed only to
+  // throttle the drain, so removing it alone would have left an unthrottled
+  // server still choosing wakes, and removing both while keeping the queue would
+  // have left a queue nothing drains.
+  //
+  // A hibernating agent is still woken — by the daemon, which is job one of the
+  // two in §"Liveness": the notification finds no MCP socket, the server reports
+  // `no-channel`, and the daemon makes a process. That is one remedy chosen by
+  // the machine that owns the processes, instead of two chosen by the machine
+  // that does not.
+  //
+  // AN AGENT WITH NO DAEMON ROUTE IS NOT WOKEN, and that is a real change worth
+  // stating rather than discovering. `reportNotificationSymptom` records the
+  // symptom and stops when there is no route — no local fallback, per the
+  // standing rule that a missing route fails explicitly.
+  return { ok: true, delivered: false, status: 'symptom-reported', reason: mcpDelivery?.reason || null, notificationFailure }
 }
 
 // Coalesce a retried fleet operation onto the attempt already running.
@@ -6768,6 +6788,22 @@ async function dispatchFleetWsMessage(ws, msg) {
         return
       }
       humanPresence.detach(ws)
+      // Step 1 of the notification proposal: login is where the return notice
+      // is handed over, because login is where the server hands an agent
+      // everything else it missed. Until now the notice rode on the daemon's
+      // wake payload, which is the second delivery route the design removes —
+      // and the reanimate variant of it never arrived at all (§S1: it was
+      // broadcast without a `wake_ack_id`, and every MCP drops such a frame).
+      //
+      // Computed from `existing`, before the upsert below sets `last_seen` to
+      // now — after that the away duration is zero and the notice says nothing.
+      //
+      // A reanimate notice was parked for this agent and is handed over
+      // whatever the timings; otherwise the notice is emitted only if the agent
+      // was genuinely away — see `agentReturnNoticeIfAway`, which also excludes
+      // a freshly minted shell that has never run.
+      const pendingReanimateNotice = existing.metadata?.pendingReturnNotice || null
+      const returnNotice = pendingReanimateNotice || agentReturnNoticeIfAway(existing)
       const now = new Date().toISOString()
       const agent = {
         ...existing,
@@ -6785,13 +6821,26 @@ async function dispatchFleetWsMessage(ws, msg) {
       if (agent.metadata?.shell) {
         agent.metadata = { ...agent.metadata, shell: null }
       }
+      // Handed over, so it is no longer pending. Clearing it here rather than
+      // tracking delivery is deliberate: this is mail, not a liveness flag, and
+      // the failure modes are asymmetric. A login that dies after replying
+      // repeats the notice next time, which is harmless; keeping it until
+      // something confirmed receipt would be a second delivery-state machine of
+      // exactly the kind this design exists to remove.
+      if (pendingReanimateNotice) {
+        agent.metadata = { ...(agent.metadata || {}), pendingReturnNotice: null }
+      }
       await fleetStore.setAgentDaemonRoute(loginAgentId, routeProof.daemon_key)
       await fleetStore.upsertAgent(agent)
       agentFleetConnections.set(loginAgentId, ws)
       ws._tldaAgentId = loginAgentId
+      // What kind of client this connection is, taken from its own login rather
+      // than from the agent row, because the row can be stale and this is a fact
+      // about THIS socket. See `isMcpChannelSocket`.
+      ws._tldaClientKind = kind || metadata?.kind || null
       const stored = await fleetStore.getAgent?.(loginAgentId) || agent
       const storedAgent = await fleetStore.projectAgentDaemonRoute?.(stored) || stored
-      reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
+      reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null, ...(returnNotice ? { return_notice: returnNotice } : {}) })
       void fleetStore.share?.({ type: 'login', agent_id: loginAgentId, from: loginAgentId, to: loginAgentId, text: `${agent.friendly_name || loginAgentId} logged in` })
       touchActivity(loginAgentId)
       spawnLibrarian.observeLogin(await fleetStore.getAgent?.(loginAgentId) || agent)
@@ -7981,6 +8030,16 @@ async function dispatchFleetWsMessage(ws, msg) {
     const ackId = msg.ack_id
     if (!agentId || !ackId) { error('channel-notification-ack requires agent and ack_id'); return }
     if (ws._tldaAgentId !== agentId) { error('channel-notification-ack agent does not match this connection'); return }
+    // `acknowledged: false` is a nack — the MCP received the notice and declined
+    // to surface it, and said so. Distinguished from an absent ack, which is the
+    // clock running out on a process that may be wedged. Same call, same id, one
+    // field: an MCP that does not know about nacks still sends the old shape and
+    // is read as an ack, exactly as before.
+    if (msg.acknowledged === false) {
+      const refused = refuseMcpWakeNotification(ackId, agentId, msg.reason)
+      reply({ ok: true, acknowledged: false, refused })
+      return
+    }
     const acknowledged = acknowledgeMcpWakeNotification(ackId, agentId)
     reply({ ok: true, acknowledged })
     return
@@ -8200,20 +8259,6 @@ async function dispatchFleetWsMessage(ws, msg) {
     const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, { actorId: msg.caller || agent.id })
     broadcastState()
     reply({ ok: true, ...result })
-    return
-  }
-
-  // ---- kick ----
-  if (type === 'kick') {
-    const { agent: agentQuery } = msg
-    const agent = await fleetStore.findAgent(agentQuery)
-    if (!agent) { error('agent not found'); return }
-    const route = resolveRpc('kick', agent)
-    if (route.via === 'none') { error(route.error); return }
-    try {
-      const result = await sendDaemonDurable(route.machine_id, 'kick', { agent_id: agent.id })
-      reply(result)
-    } catch (e) { error(e.message) }
     return
   }
 
