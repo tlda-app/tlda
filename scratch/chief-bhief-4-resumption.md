@@ -114,6 +114,25 @@ The harness is `bin/a-new-document-reaches-the-server-test.mjs`, which already
 builds the fixture; the shape it was missing is the standalone unreferenced
 document.
 
+### `stale-copy` (fleet:d806be8d) — a chat click makes a frozen copy of a live document
+
+**Measured on the box at 15:15Z.** Three copies of one file:
+
+```
+his disk                         11,647 bytes   11:13
+the project document on server   11,654 bytes   11:12   live, syncing
+the part he was reading          10,235 bytes   10:45   frozen
+```
+
+**The part is a snapshot and nothing on screen says so.** The file was already a
+document root, and the server already served a live render of it at
+`/docs/<project>/<root>.html` — 200, 70 KB, current. So the click produced a
+second frozen copy of a document the app already had.
+
+**Note against my own work: restoring that part restored a snapshot.** It filled
+the gray hole, which is what he asked for, and it did not give him a live view.
+I told him so.
+
 ## With Skip, actually asked, not parked
 
 **What makes a file a member of a project.** He said at 08:06 EDT it is *"supposed
