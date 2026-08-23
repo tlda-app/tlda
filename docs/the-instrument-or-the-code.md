@@ -257,6 +257,34 @@ crisp `0` next to `2621` suggests the two were computed over different sets.
 be true for it to be non-zero, and confirm the query can express that. Here the
 same payload already carried the honest number.
 
+### 10. Output edited between the tool and the reader
+
+**An agent runs a command, quotes what it printed, and the quote is silently
+rewritten before another agent reads it.** Not a wrong reading of a real output —
+a real output, altered in transit.
+
+**2026-08-23.** A build report quoted a LaTeX failure. What the recipient read
+was a *file not found* error naming the attachment marker `{{att:0}}` rather
+than a filename. The compiler never emitted that string: chat's path detection
+had matched the filename inside the quoted block and substituted its attachment
+placeholder, and the agent-side resolver left the marker raw. See
+[Naming errata](naming-errata.md) for the placeholder mechanism.
+
+**So "I ran X and it said Y" is not trustworthy whenever Y contains a path.**
+Every other shape on this page is a reading that misleads; this one is evidence
+that no longer matches what the tool produced.
+
+**And the tell is that there is no tell — it reads as a typo.** The first
+sighting was filed as odd formatting and moved past, by someone who then spent
+hours on the same subsystem. Corruption that looks like corruption gets chased;
+this looks like a stray brace.
+
+**The check:** when a quoted tool output contains something surprising in the
+*shape of a path or a filename*, go to the raw source — the log file, the
+terminal, the stored event — before reasoning about what the tool said. And when
+quoting output that contains paths, expect it to be rewritten and say where the
+original can be read.
+
 ## The standing check, in one line
 
 **Before reporting an absence, a hang, or a failure, ask what this instrument
