@@ -417,8 +417,27 @@ export async function sourceLifecycleStore(name, options = {}) {
   })
 }
 
+// Parts are SERVER state — the markdown the app materializes when someone opens
+// a file from chat. They are deliberately never in a revision.
+//
+// They used to be rooted at sourceDir(name), which is the one directory defined
+// as replaceable: publishBuildInstance renames the live `source/` aside and puts
+// the build instance's copy in its place, and that copy is materialized from the
+// revision. So every successful build silently took `parts/` and `.tlda/` with
+// it. Nothing deleted them — nothing in the publish path can even see them —
+// they were left behind by a directory swap.
+//
+// Measured on 2026-08-23 against six parts on one project: every one died at the
+// first build publish after it was created, six for six, including three that
+// survived a 2h40m gap between publishes together and died at the same one. A
+// part created while builds run about once a minute lived 26 seconds.
+//
+// Rooting them at projectDir puts them beside the replaceable directories rather
+// than inside one. The swap list is ['source', 'output', 'build-cache',
+// 'build.log', 'latex.log'], so `<project>/parts` and `<project>/.tlda` are not
+// paths it touches.
 export function projectPartsRoot(name) {
-  return sourceDir(name)
+  return projectDir(name)
 }
 
 export function projectPartsManifestPath(name) {
