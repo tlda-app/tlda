@@ -13,6 +13,10 @@ Two were minutes from being relayed to Skip. This page is the shapes they take
 and the checks that separate them, written down because the cost is not the
 wasted hour: it is that a false finding sends somebody to *fix* a working path.
 
+**The shapes below are no longer only that night's** — later ones carry their own
+dates, and the numbering is not a count of that night's nine. Do not read the
+last entry as the ninth incident.
+
 **This is the same disease as [Naming errata](naming-errata.md) one level up.**
 There, a name lies about what code does. Here, a measurement lies about what the
 system did — and unlike a name, it lies in a form that looks like evidence.
