@@ -285,3 +285,37 @@ test('every declared harness is a notification target', async () => {
     })
   }
 })
+
+// ─── THE GATE: a delegate to a hibernating agent still reaches a remedy ──────
+//
+// The server no longer wakes anyone. Its wake queue, the drain that respawned,
+// and the circuit breaker that paced them are deleted, because §"What this
+// design rules out" says "No remedy selection by the server."
+//
+// So the path that used to end in the server respawning has to end in the daemon
+// making a process instead, and this is the link that would strand the fleet if
+// it were missing: a delegate arrives for an agent with no MCP socket, and what
+// must come out the other side is `no-channel` at that agent's daemon — job one
+// of the daemon's two in §"Liveness: what the daemon is for".
+//
+// `withRecipientSocket: false` IS the hibernating agent: a live row, a daemon
+// route, and no MCP connection. That is what hibernating means here.
+test('THE GATE: a delegate to a hibernating agent reaches its daemon as no-channel', async () => {
+  await withFleet({ withRecipientSocket: false }, async (senderWs, rpcs) => {
+    await request(senderWs, 2, 'delegate', {
+      agent: 'recipient',
+      from: 'fleet:sender',
+      message: 'work for a hibernating agent',
+      description: 'the gate',
+    })
+    const hit = await waitForSymptom(rpcs)
+    assert.ok(hit, `a delegate must still reach the daemon. Ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`)
+    assert.equal(hit.params.symptom, 'no-channel',
+      'a hibernating agent has no MCP socket, so the symptom is no-channel and the daemon makes a process')
+    assert.equal(hit.params.agent_id, 'fleet:recipient')
+    // The report carries no remedy and nothing to deliver. If either appeared
+    // here the server would be choosing again.
+    assert.equal(hit.params.notify_text, undefined, 'a symptom report must not carry a notification to deliver')
+    assert.equal(hit.params.action, undefined, 'a symptom report must not carry a remedy')
+  })
+})

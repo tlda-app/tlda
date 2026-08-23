@@ -642,11 +642,6 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
     fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.AWAKE }, evidence.liveness_at)
       .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
   }
-  if (!wasAlive) {
-    // Recovery: an agent transitioning to alive (login/reconnect) clears its
-    // wake breaker so a restored session is nudged again immediately (§4.2).
-    _wakeBreaker.delete(agentId)
-  }
 }
 
 function markAgentNotAlive(agentId, detail = {}) {
@@ -950,22 +945,6 @@ async function sweepStuckSourceSync() {
 setInterval(() => { void sweepStuckSourceSync() }, SOURCE_SYNC_SWEEP_MS).unref?.()
 
 const _subscriptionBatchWakes = new Map()
-
-// Per-agent wake circuit breaker. Consecutive terminal wake failures put an
-// agent into exponential backoff. Reset on real recovery (markAgentAlive) or a
-// successful wake. Keyed by agentId.
-const _wakeBreaker = new Map() // agentId -> { fails, nextTs, lastError }
-const WAKE_BREAKER_BASE_MS = 5 * 60_000
-const WAKE_BREAKER_CAP_MS = Number(process.env.TLDA_WAKE_BREAKER_CAP_MS || 2 * 60 * 60_000) // 2h ceiling (also a slow self-heal probe)
-
-function isWakeBreakerOpen(breaker, agentId, now) {
-  const b = breaker?.get?.(agentId)
-  return !!(b && b.nextTs > now)
-}
-
-function wakeBreakerBackoffMs(fails, baseMs, capMs) {
-  return Math.min(baseMs * 2 ** (Math.max(1, fails) - 1), capMs)
-}
 
 function wakeHarnessKind(agent) {
   return agent?.metadata?.kind || agent?.metadata?.harness || agent?.kind || agent?.harness || null
@@ -1517,10 +1496,18 @@ const MIRROR_TOTAL_DEADLINE_MS = Number(process.env.TLDA_MIRROR_TOTAL_DEADLINE_M
 // A wake RPC had no attempt timeout and no total deadline: `sendDaemonDurable`
 // passed no rpcOptions, so `startWsRequest` set no timer at all and the call was
 // bounded only by the socket closing. A daemon that holds its socket open and
-// never answers therefore parks `drainWakeQueue` forever — and because the drain
-// is guarded by `_wakeDraining` and called unawaited, one silent daemon stops
-// every notification in the fleet. That is the shape of the 2026-08-01
-// eighteen-hour outage, reached by a route the guard there does not cover.
+// never answers therefore parked the caller forever. That is the shape of the
+// 2026-08-01 eighteen-hour outage, reached by a route the guard there does not
+// cover.
+//
+// The amplifier is gone and the bound still matters. It used to park
+// `drainWakeQueue`, which was serialized behind one `_wakeDraining` flag and
+// called unawaited, so a single silent daemon stopped every notification in the
+// fleet. That queue and its drain were deleted with the server's remedy
+// selection, so the blast radius is now the one caller that is waiting — but an
+// unbounded RPC to a machine that has stopped answering is still an unbounded
+// RPC, and the two remaining callers are the reanimate wake and the daemon
+// route lifecycle.
 //
 // It is also why the existing retry machinery was unreachable: a retry needs a
 // bounded attempt to retry *after*. Same defect and same function as the mirror
@@ -5867,13 +5854,6 @@ function sendFleetResponseFrame(ws, frame) {
 // Interacting with a hibernating (non-dead, no live process) agent wakes.
 // Live non-Claude TUI agents also need a terminal nudge: their MCP channel can
 // record the event without submitting a new turn.
-// Idempotent waker: chat/delegate adds agent IDs to a Map.
-// A serial loop drains it — one spawn at a time, naturally deduped.
-const _wakeQueue = new Map()
-let _wakeDraining = false
-// Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
-const _wakeFailWarned = new Map() // agentId → last-warned ms
-const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
 // Step 4: *x* — how long the server waits for an agent's MCP to acknowledge a
 // notification before reporting the symptom to that agent's daemon. This is the
 // one rule the server runs, and it is a server setting, so it lives in
@@ -6184,233 +6164,28 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
   // decides anything from its result. It is a report, and a report that fails to
   // arrive must not change what the notification path does.
   void reportNotificationSymptom(agent, mcpDelivery, traceId)
-  if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
-    const breaker = _wakeBreaker.get(agentId)
-    if (traceId) {
-      controlPlaneTraces.append({
-        trace_id: traceId,
-        component: 'server',
-        operation: 'wake.request',
-        status: 'breaker-open',
-        detail: { agent: agentId, until: new Date(breaker.nextTs).toISOString(), fails: breaker.fails },
-      })
-    }
-    // Say so, on the same channel the failure path uses. One failed wake backs
-    // this agent off for five minutes, doubling to a two-hour ceiling, and every
-    // delegate arriving in that window used to return here having told nobody
-    // anything — while `delegate` had already replied ok to its caller. So a
-    // suppressed wake was indistinguishable from a wake that never needed to
-    // happen, both to the person who delegated and to the record: this is the
-    // only wake path that writes nothing durable, which is why 08-13 shows 73
-    // delegates and zero wake failures.
-    //
-    // Same per-agent throttle as the failure path, and it shares the map, so a
-    // backed-off agent cannot produce more chat than a failing one.
-    const now = Date.now()
-    if (!_wakeFailWarned.has(agentId) || now - _wakeFailWarned.get(agentId) > WAKE_FAIL_WARN_MS) {
-      _wakeFailWarned.set(agentId, now)
-      const notify = asker && asker !== agentId ? asker : SERVER_OWNER_ID
-      try {
-        deliverTldaFeedbackChat({
-          from: 'fleet:tlda',
-          to: notify,
-          text: `⚠️ Did not try to wake **${agent.friendly_name || agentId}** — ${breaker.fails} failed wake(s), backed off until ${new Date(breaker.nextTs).toISOString()}. Last error: ${breaker.lastError || '(none recorded)'}`,
-          metadata: { type: 'wake_suppressed', agentId, until: new Date(breaker.nextTs).toISOString(), fails: breaker.fails },
-        })
-      } catch (notifyErr) {
-        // Swallowed deliberately: this is a courtesy notice about a wake that was
-        // already suppressed. Letting it throw would take out requestWake for
-        // every other caller, so a failed notice must not become a failed wake
-        // path — the console line is the record that the notice itself was lost.
-        console.warn(`[respawn] could not surface suppressed wake for ${agentId}: ${notifyErr.message}`)
-      }
-    }
-    return { ok: true, delivered: false, status: 'breaker-open', suppressed: true, reason: 'breaker-open', notificationFailure }
-  }
-  const prev = _wakeQueue.get(agentId)
-  // Who is waiting, not just the first of them. A second message arriving
-  // before the drain replaces the preview with the list of senders.
-  const askers = new Set(prev?.askers || [])
-  if (asker) askers.add(asker)
-  _wakeQueue.set(agentId, {
-    nudgeText: nudgeText || prev?.nudgeText || null,
-    askers: [...askers],
-    asker: asker || prev?.asker || null,
-    traceId: traceId || prev?.traceId || null,
-    notificationFailure: notificationFailure || prev?.notificationFailure || null,
-    source: Object.keys(source || {}).length ? source : (prev?.source || {}),
-  })
-  if (traceId) {
-    controlPlaneTraces.append({
-      trace_id: traceId,
-      component: 'server',
-      operation: 'wake.request',
-      status: 'queued',
-      detail: { agent: agentId, asker },
-    })
-  }
-  if (!_wakeDraining) drainWakeQueue()
-  return { ok: true, delivered: false, status: 'queued', queued: true, notificationFailure }
-}
-
-async function drainWakeQueue() {
-  // The flag must be cleared in a `finally`. It guards the only path that
-  // services the wake queue, and the caller is `if (!_wakeDraining)
-  // drainWakeQueue()` — unawaited, unhandled. So a rejection anywhere below,
-  // including from the two store reads that sit outside the loop's own try,
-  // would leave this true forever and stop every wake for the whole fleet,
-  // silently: nothing throws inside the guarded region, so the loud failure
-  // path never fires. That happened on 2026-08-01 at 01:44Z and went unnoticed
-  // for eighteen hours until Skip could not reach his chief of staff.
-  _wakeDraining = true
-  try {
-  while (_wakeQueue.size > 0) {
-    const [agentId, wakeEntry] = _wakeQueue.entries().next().value
-    _wakeQueue.delete(agentId)
-    // No text is composed here any more. A wake starts a process; the agent
-    // logs in and the SERVER hands over the mail, which is already sitting
-    // unread in `recipients`. The coalescing that used to happen here — "you
-    // have messages from X and Y" — was only ever needed because the daemon was
-    // typing one line into a pane and could not say "several".
-    const asker = wakeEntry?.asker || null
-    const traceId = wakeEntry?.traceId || null
-    const source = wakeEntry?.source || {}
-    const agent = await fleetStore.getAgent?.(agentId)
-    if (!agent || agent.dead || agent.human) {
-      if (traceId) {
-        controlPlaneTraces.append({
-          trace_id: traceId,
-          component: 'server',
-          operation: 'wake.skip',
-          status: 'ignored',
-          detail: { agent: agentId, reason: !agent ? 'missing-agent' : agent.dead ? 'dead' : 'human' },
-        })
-      }
-      continue
-    }
-    const daemonKeys = [...daemonConnections.keys()]
-    if (daemonKeys.length === 0) {
-      if (traceId) {
-        controlPlaneTraces.append({
-          trace_id: traceId,
-          component: 'server',
-          operation: 'wake.defer',
-          status: 'no-daemon',
-          detail: { agent: agentId },
-        })
-      }
-      continue
-    }
-    const seat = await fleetStore?.getAgentDaemonRoute?.(agentId)
-    if (!seat) {
-      // The queue entry is already deleted above, so this `continue` is a
-      // permanent drop, not a deferral — and it was the only branch here that
-      // wrote nothing. Every neighbour records why it stopped; this one left no
-      // evidence that a notification had ever existed, which makes a routeless
-      // agent indistinguishable from an agent nobody wrote to.
-      //
-      // Recording it is also the default answer to the design's open point 4
-      // (what the server does with no daemon to report to). It is not a
-      // fallback: nothing is retried, nothing is delivered another way. The
-      // symptom is written down and the wake stops here.
-      if (traceId) {
-        controlPlaneTraces.append({
-          trace_id: traceId,
-          component: 'server',
-          operation: 'wake.defer',
-          status: 'no-route',
-          detail: { agent: agentId },
-        })
-      }
-      continue
-    }
-    const daemonKey = seat.daemon_key
-    try {
-      const result = await runWakeRouteLifecycle({
-        agentId,
-        agent,
-        daemonKey,
-        ownerDaemon: daemonConnections.get(daemonKey),
-        traceId,
-        sendDaemonDurable,
-        rpcOptions: wakeRpcOptions(),
-        appendControlTrace: (event) => controlPlaneTraces.append(event),
-        getAgentDaemonRoute: (id) => fleetStore.getAgentDaemonRoute(id),
-        insertWakeLifecycleEvent: async () => {
-          const wakeTs = new Date().toISOString()
-          await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore.insertEventRecord({
-            type: 'lifecycle',
-            timestamp: wakeTs,
-            from: agentId,
-            to: agentId,
-            text: 'agent woken',
-            unread: false,
-          }, { notify: false }))
-        },
-      })
-      if (result.action === 'respawned') console.log(`[respawn] woke ${agent.friendly_name || agentId} (${agentId})`)
-    } catch (e) {
-      const b = _wakeBreaker.get(agentId) || { fails: 0 }
-      b.fails += 1
-      b.lastError = e.message
-      b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
-      _wakeBreaker.set(agentId, b)
-      if (traceId) {
-        controlPlaneTraces.append({
-          trace_id: traceId,
-          component: 'server',
-          operation: 'wake.error',
-          status: 'failed',
-          detail: { agent: agentId },
-          error: e.message,
-        })
-      }
-      console.warn(`[respawn] failed for ${agentId} (fails=${b.fails}, backoff until ${new Date(b.nextTs).toISOString()}): ${e.message}`)
-      // Convergent, visible signal on the roster (not just a chat) so a failed
-      // wake shows up in the UI, not invisibly.
-      broadcastEvent('agent-wedged', { agentId, reason: `wake failed: ${e.message}`, ts: new Date().toISOString() })
-      // Surface the failure to WHOEVER ASKED (Skip's rule) — the agent/human who
-      // chatted or delegated — falling back to the server owner for wakes with no
-      // identifiable asker (internal retries). Throttled per-agent so a stuck wake
-      // doesn't spam chat.
-      const _now = Date.now()
-      if (!_wakeFailWarned.has(agentId) || _now - _wakeFailWarned.get(agentId) > WAKE_FAIL_WARN_MS) {
-        _wakeFailWarned.set(agentId, _now)
-        const notify = asker && asker !== agentId ? asker : SERVER_OWNER_ID
-        try {
-          deliverTldaFeedbackChat({
-            from: 'fleet:tlda',
-            to: notify,
-            text: `⚠️ Couldn't wake **${agent.friendly_name || agentId}** — ${e.message}`,
-            metadata: { type: 'wake_failed', agentId },
-          })
-        } catch (notifyErr) {
-          console.warn(`[respawn] could not surface wake failure for ${agentId}: ${notifyErr.message}`)
-        }
-      }
-    }
-  }
-  } catch (e) {
-    // Loud, and rethrow nothing: this runs unawaited, so a rejection here has
-    // nowhere to land. Report it and let the finally re-arm the queue.
-    console.error(`[wake] drain aborted: ${e?.stack || e?.message || e}`)
-    try {
-      broadcastEvent('agent-wedged', {
-        agentId: null,
-        reason: `wake queue drain aborted: ${e?.message || e}`,
-        ts: new Date().toISOString(),
-      })
-    } catch (broadcastErr) {
-      // Best effort: the broadcast is a courtesy on top of the console error
-      // above, and a failure here must not prevent the finally from re-arming
-      // the queue — that is the whole point of this change.
-      console.warn(`[wake] could not broadcast drain failure: ${broadcastErr?.message || broadcastErr}`)
-    }
-  } finally {
-    _wakeDraining = false
-    // Anything queued while we were failing still needs servicing.
-    if (_wakeQueue.size > 0) setTimeout(() => { if (!_wakeDraining) drainWakeQueue() }, 1000).unref?.()
-  }
+  // AND THAT IS THE WHOLE OF IT. The server reported what its socket did; the
+  // daemon owns the remedy. §"What this design rules out" — "No remedy selection
+  // by the server."
+  //
+  // What used to be here was a per-agent wake queue, a drain that called
+  // `runWakeRouteLifecycle` to respawn, and a circuit breaker pacing the drain.
+  // All three are gone together, deliberately: the breaker existed only to
+  // throttle the drain, so removing it alone would have left an unthrottled
+  // server still choosing wakes, and removing both while keeping the queue would
+  // have left a queue nothing drains.
+  //
+  // A hibernating agent is still woken — by the daemon, which is job one of the
+  // two in §"Liveness": the notification finds no MCP socket, the server reports
+  // `no-channel`, and the daemon makes a process. That is one remedy chosen by
+  // the machine that owns the processes, instead of two chosen by the machine
+  // that does not.
+  //
+  // AN AGENT WITH NO DAEMON ROUTE IS NOT WOKEN, and that is a real change worth
+  // stating rather than discovering. `reportNotificationSymptom` records the
+  // symptom and stops when there is no route — no local fallback, per the
+  // standing rule that a missing route fails explicitly.
+  return { ok: true, delivered: false, status: 'symptom-reported', reason: mcpDelivery?.reason || null, notificationFailure }
 }
 
 // Coalesce a retried fleet operation onto the attempt already running.
