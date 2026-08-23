@@ -116,6 +116,23 @@ export function scanTexDeps(content) {
   collect(TEX_INPUT_RE, IMPLICIT_TEX, true)
   collect(TEX_BARE_INPUT_RE, IMPLICIT_TEX, true)
   collect(TEX_SCRATCH_RE, IMPLICIT_TEX, true)
+  // `required` defaults to `followable`, so graphics and bibliographies are NOT
+  // required, and `scanTexDependencyClosure` only records a `missing` entry for
+  // a required reference. That is deliberate — a \usepackage naming a TeX
+  // distribution package resolves to nothing local and is the ordinary case, so
+  // reporting those would bury the real ones.
+  //
+  // The consequence is worth knowing before you go looking for a warning that
+  // does not exist: AN UNRESOLVABLE \includegraphics IS RECORDED NOWHERE. It is
+  // not in `missing`, not logged, not counted — the closure simply omits it and
+  // the revision goes out without it. The only trace is LaTeX's own
+  // `File 'x.bb' not found` at build time, which does reach the author through
+  // the build log and `tlda project errors`.
+  //
+  // That is why nothing warned anyone when a resolution defect dropped every
+  // figure in a paper: the walk was not built to know. Left as-is on purpose —
+  // the compiler already tells the author every case that matters, and a second
+  // record here would be a second encoding of a fact the build log carries.
   collect(TEX_GRAPHICS_RE, IMPLICIT_GRAPHICS, false)
   collect(TEX_BIB_RE, IMPLICIT_BIB, false)
   collect(TEX_PACKAGE_RE, IMPLICIT_PACKAGE, true, false)
