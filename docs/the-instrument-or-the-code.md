@@ -42,7 +42,7 @@ bound; never touch the assertion.
 ### 2. A true number about the wrong subject
 
 **The measurement is correct and it is about something else.** This is the most
-convincing of the four, because nothing about the number looks wrong.
+convincing shape on this page, because nothing about the number looks wrong.
 
 - **2026-08-18** — the gate for restoring a bot to supervision was *"`ps eww` shows
   four `TLDA_DEV_BOT_*` matches, not zero"*. It read as **met** the whole time.
@@ -149,6 +149,53 @@ was read.
 **This is the same failure as shape 2 one level down** — a true number about the
 wrong subject — with the extra trap that here the number *is* about the right
 process. It answers "is it computing", and the question was "is it stuck".
+
+### 7. A fossil read as current state
+
+**`argv` records what a process was launched with. It never changes, so it
+answers a question about the past in the present tense.**
+
+- **2026-08-22** — hunting the `login()` hang, I reported **five agents wedged at
+  the identical `login()` prompt**, at 30m, 37m, 11h40m and 18h09m, from `ps`
+  output matching that prompt. The prompt is in `argv` because the harness was
+  *launched* with it. It is equally present on a process that logged in a minute
+  later and has been working ever since. The counterexample was in the same list:
+  pid 56152 carried the prompt and was "up 12h29m" — it is `sync-corruption-proof`,
+  which the fleet broadcast showed `last_seen` **23:06:10Z**. Live, not wedged.
+  Re-running the same query an hour later returned **12**, which is plainly not
+  twelve wedged seats.
+
+**The tell is a field that cannot change describing a state that does.** Process
+uptime has the same shape: it measures the process, not what the process is doing
+now. Compare [Naming errata](naming-errata.md) §`tmux` server `argv`, which is
+this fossil in a different costume.
+
+**The check:** ask what would have to be true for this field to be *updated*. If
+nothing updates it, it is a record of a moment and the moment is not now. The
+question "is this seat stuck" was answered instead by **which seats had a live
+MCP behind them**, which is state that moves.
+
+### 8. A green test whose name overstates its reach
+
+**A test can be correct, pass, and say nothing about the machine you care
+about** — and the name is what gets repeated.
+
+- **2026-08-22** — `ack-timeout-config.test.mjs` is named *"every deployment
+  declares an ack timeout, with a unit"*, and it passes. It enumerates
+  `config/deployments/*` — which is `live`, `overleaf-test`, `pic`, `rc`,
+  `stable` and `talk`. **There is no `config/deployments/testing/`, and `testing`
+  is the environment Skip uses.** The value there comes from the in-code default
+  instead, so the green test is not evidence about his box. Nothing is broken;
+  the name simply claims a scope the enumeration does not have.
+
+**The tell: a test that iterates a directory, a registry, or a glob asserts a
+property of *what it found*, not of the set you had in mind.** The absent member
+is silent by construction — this is shape 3 pointed at the input rather than the
+output.
+
+**The check:** print what the enumeration actually enumerated, and compare it to
+the set you meant. See `AGENTS.md` §"A clean sweep is only as good as the set you
+swept for", which is the same rule learned at greater cost.
 
 ## The standing check, in one line
 

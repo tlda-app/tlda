@@ -270,6 +270,51 @@ already read the message, so the duplicate is inevitable rather than mysterious.
 Load makes the ack late more often, which fires the back-off more often. Removing
 the path removes the class.
 
+## Errata: the server does not distinguish an MCP from any other socket
+
+**The design says `server → agent's MCP → channel`. The implementation says
+`server → any open /ws/fleet socket → wait for an ack`.** Nothing on the server
+side establishes that the thing on the far end is an MCP, and one class of
+receiver holds such a socket while having no code that could ever acknowledge a
+notice.
+
+**Measured 2026-08-22, from `fleet-daemon.testing.log`.** Of 234
+`mcp-ack-timeout` wake fallbacks in six hours, **207 — 88% — were `fleet:dev`**,
+a bot. The top three agents were 97%; `dev` alone ran at **30–40 per hour for
+eight consecutive hours** while every other agent combined ran at 1–8.
+
+`dev-bot.mjs` opens a `/ws/fleet` connection, so `hasOpenFleetSocketForAgent`
+answers true and the wake notice is routed to it. It then contains:
+
+| literal | `dev-bot.mjs` | `mcp-server/fleet-tools.mjs` |
+|---|---|---|
+| `channel-notification` | **0** | 6 |
+| `wake_ack_id` | **0** | 2 |
+| `channel-notification-ack` | **0** | 1 |
+
+The right-hand column is the positive control: the greps find these where they
+exist, so the zeros are the absence of an ack path rather than a bad query. **The
+server therefore waits the full deadline, every ~100 seconds, indefinitely, for
+an answer that has no code path to arrive by.**
+
+**Two consequences worth carrying.**
+
+**A bot holding a `/ws/fleet` socket is not an MCP**, and reading the fallback
+counts as though it were makes the largest single generator of notification
+failure on the box invisible as a category — it presents as the fleet being
+slow to ack.
+
+**And it inverts the ack-timeout tuning argument for the dominant population.**
+Raising the deadline does not convert these into successes; it makes each one
+take longer to reach the identical outcome. Any future measurement of ack-timeout
+incidence must **count `dev` separately**, or it will re-measure this bot and
+call it the fleet.
+
+**Not fixed, deliberately.** Making the server discriminate by receiver kind, and
+teaching the bot to acknowledge, are both behaviour changes rather than repairs,
+and §"What is not settled" item 1 already asks whether the timeout should differ
+by harness kind — which is the same question arriving from the other side.
+
 ## What is not settled
 
 These are open, and they are Skip's or an owner's to settle rather than an

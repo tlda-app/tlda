@@ -366,3 +366,43 @@ disagree; the memo makes that fast rather than correct.
 on login from always-`null` into actually-computed, which changes what agents report about where
 they are — visibility, and Skip's call. Held on 2026-08-22 for that reason, not because it is
 hard. Delete this paragraph in the commit that fixes it.
+
+---
+
+## `parseDurationMs` — two of them, and they disagree
+
+**`shared/inbox-attention.mjs` and `src/App.tsx:647` both parse "the unit-bearing duration",
+and they are not the same grammar.** The name is the same, the notation is nominally the same,
+and the answers differ on two thirds of the inputs anyone would try.
+
+Measured 2026-08-22 by running both — the frontend function lifted from its own source with
+only the type annotation stripped, the server one through `parseBatchWindowMs`:
+
+| input | `src/App.tsx` | `shared/inbox-attention.mjs` |
+|---|---|---|
+| `5` | **5** (means 5ms) | **null** (error) |
+| `1.5h` | **undefined** | 5400000 |
+| `5d` | 432000000 | **null** |
+| `2w` | 1209600000 | **null** |
+| `15 seconds` | **undefined** | 15000 |
+| `0s` | **0** | **null** |
+| `5s`, `500ms`, `2m` | agree | agree |
+
+**The first row is the one that matters, because it violates a rule this project states
+explicitly.** `AGENTS.md` §"Notation is borrowed, and so is its meaning" gives `batch(15s)` as
+borrowed from CSS durations, and rules: *"The unit is part of the value. A bare `15` is an
+error, not a default."* The server enforces that. **The frontend silently reads a bare number as
+milliseconds** — the exact "default in some unit you have to guess" the rule exists to forbid.
+
+The rest is ordinary drift in both directions: the frontend has `d` and `w` and no decimals or
+long unit names; the server has decimals and long names and no `d` or `w`.
+
+**Not fixed, and the reason is worth stating:** unifying them changes what the frontend accepts,
+which is a behaviour change on inputs users may already be typing — a bare `5` currently *works*
+there and would start erroring. That is a product call, not a cleanup, and it is the shape
+`AGENTS.md` §"The three things he found in four days of our work" names as a product decision
+taken as a maintenance chore.
+
+**If you are about to add a third:** don't. Import one of these two, and if neither will do,
+fix the one that is closest rather than growing the set. Delete this entry in the commit that
+unifies them.
