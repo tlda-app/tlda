@@ -318,6 +318,23 @@ export function createGitProjectSync({
   async function headChanged(revision = null) {
     const fetched = await fetchHead(revision)
     if (!fetched) return { ok: true, status: 'no-shared-head', revision: null }
+    // An app-owned working tree is a VIEW of the project's source, not a history
+    // of its own. It is created by `git init` with no commits, so a commit built
+    // on its HEAD descends from nothing the server knows, and the pre-receive
+    // check in server/lib/git-proposals.mjs -- "is the project head an ancestor
+    // of this proposal" -- rejects every one of them with WrongHead.
+    //
+    // That rejection is silent all the way up: pushRevision matches WrongHead and
+    // returns it as a VALUE rather than throwing, settle passes the value on, and
+    // git-sync-manager's onSettled discards the return. No log, no retry, no state
+    // change -- the source room sits at `queued` with lastError null forever, which
+    // is what "editing in the app produces no build and no version" was.
+    //
+    // Moving HEAD is enough and is all that is wanted: the tree comes from
+    // `git add -A` over the working directory, so the room's content is untouched
+    // and only the parent changes. A person-owned checkout keeps its own history
+    // and is deliberately not reparented here.
+    if (appOwnedWorkingTree) await git(['update-ref', 'HEAD', fetched])
     return { ok: true, status: 'observed', revision: fetched }
   }
 
