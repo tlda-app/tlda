@@ -59,9 +59,16 @@ function projectRelativeRef(raw) {
 
 // Resolve a reference the way TeX does: exact match first, then each implicit
 // extension. Returns the project-relative path, or null when nothing exists.
-function resolveWithExtensions(baseDir, root, ref, implicit) {
+// `searchDirs` are tried in order. The COMPILATION directory — the main file's —
+// comes first because that is what LaTeX itself resolves against; the including
+// file's directory follows, which is what `import`/`subfiles`-style layouts want;
+// the project root is last and is the historical behaviour.
+//
+// Every candidate still passes the containment check below, so adding a base
+// cannot widen what counts as a member.
+function resolveWithExtensions(searchDirs, root, ref, implicit) {
   const candidates = [ref, ...implicit.map(ext => `${ref}${ext}`)]
-  for (const from of [...new Set([baseDir, root])]) {
+  for (const from of [...new Set(searchDirs)]) {
     for (const candidate of candidates) {
       const abs = path.resolve(from, candidate)
       const rel = path.relative(root, abs).replace(/\\/g, '/')
@@ -128,6 +135,12 @@ export function scanTexDependencyClosure(mainFile, sourceDir) {
   const assets = new Set()
   const missing = []
   const queue = [main]
+  // The directory LaTeX would compile from: the main file's own. The resolver
+  // used to try only the including file's directory and the project root, which
+  // are the same as this one exactly when the main file sits at the project
+  // root — so a figure referenced from a subfile of a document rooted one level
+  // down resolved to nothing and was silently dropped from the revision.
+  const mainDir = path.dirname(path.resolve(root, main))
 
   while (queue.length > 0) {
     const current = queue.shift()
@@ -146,7 +159,7 @@ export function scanTexDependencyClosure(mainFile, sourceDir) {
     tex.add(rel)
     const baseDir = path.dirname(abs)
     for (const dep of scanTexDeps(content)) {
-      const targetRel = resolveWithExtensions(baseDir, root, dep.ref, dep.implicit)
+      const targetRel = resolveWithExtensions([mainDir, baseDir, root], root, dep.ref, dep.implicit)
       if (!targetRel) {
         // A \usepackage naming a real LaTeX distribution package is not a
         // missing project file, so only followable refs are reported absent.
