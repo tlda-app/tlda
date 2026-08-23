@@ -198,6 +198,28 @@ filter would return.
   is honest, not blind. `air-file-refs` has a read-only listener attached for
   the next one.
 
+## Ruled out — do not re-derive these
+
+- **The build storm is not what escalated the crash rate at 15:07Z.** Client
+  `unhandledrejection` bursts went from three every 5–15 minutes to three to
+  five *every* minute at 15:07. Build submissions for that project ran at
+  roughly one a minute, flat, from 14:34 to 15:21 — 35 of them, all `complete`.
+  The rate changed against a constant build rate. Cause still unknown;
+  `air-file-refs` is diffing the 14:45 and 15:07 windows of Fly's `client.log`.
+- **`Reload signal (full)` does not blank his document, so it is not the gray
+  box.** It fires on every build — about once a minute — but its only
+  subscribers are `docInfoCache`, `synctexLookup`, `TocTab` and
+  `FleetInboxShape`. Cache invalidation and two refetches, not a page reload. I
+  was about to tell him it was his gray box and checked first.
+- **The xterm crash is real and unattributed.** `TypeError: Cannot read
+  properties of undefined (reading 'dimensions')` from `Viewport._innerRefresh`
+  — a `requestAnimationFrame` callback landing after the renderer is gone, i.e.
+  a terminal-pane teardown race, over a non-null assertion in
+  `RenderService.get dimensions`. One occurrence, `12:02:21Z`, `kind: "error"`.
+  **It is not established as the white screen** and a `requestAnimationFrame`
+  throw is not caught by a React error boundary, so it is not obviously what
+  blanks a tree. It is in the `xterm` dependency, not our tldraw fork.
+
 ## What I got wrong today, so the next person does not repeat it
 
 - Told him "none stranded anywhere else" **without having checked**. Sixteen
