@@ -197,12 +197,46 @@ output.
 the set you meant. See `AGENTS.md` §"A clean sweep is only as good as the set you
 swept for", which is the same rule learned at greater cost.
 
+### 9. A counter scoped to a population that excludes what it counts
+
+**`totals.dead` in the fleet table is always `0`, and cannot be anything else.**
+The totals are computed over the live rows, and a dead row is not a live row, so
+the field counts a thing it has already filtered out.
+
+Measured 2026-08-23 04:05, both numbers from the **same response**, an hour after
+99 agents were deliberately marked dead:
+
+```
+env totals   {"awake":28,"hibernating":2593,"dead":0,"total":2621}
+wholeFleet   {"total":39369,"live":3810,"dead":35559}
+```
+
+**35,559 dead, reported as 0, eight lines apart in one payload.**
+
+**What it cost:** *"0 dead out of 2,720"* was used all night — twice to Skip and
+once into a durable note — as evidence that **nothing had ever been killed**, and
+therefore that the panel filling up was nobody's fault but the app's. That
+inference was worthless: the field reads `0` whether nothing has ever been killed
+or thirty-five thousand things have. The conclusion it supported happened to be
+true, and was established properly only afterwards, from the code: the panel
+hides a row only when `dead` is set, and `kill` refuses any agent with no daemon
+route.
+
+**The tell is a field whose maximum is structurally zero.** It is not noisy, not
+stale and not slow — it is precise, instant, and incapable of the value you are
+looking for. Same family as shape 3, but worse to spot, because nothing about a
+crisp `0` next to `2621` suggests the two were computed over different sets.
+
+**The check:** for any count you are about to reason from, ask what would have to
+be true for it to be non-zero, and confirm the query can express that. Here the
+same payload already carried the honest number.
+
 ## The standing check, in one line
 
 **Before reporting an absence, a hang, or a failure, ask what this instrument
 would show if the system were healthy — and confirm it can show that.**
 
-Every one of the nine passes that question trivially in hindsight and none of
+Every one of these passes that question trivially in hindsight and none of
 them were asked it at the time. The reason is worth naming: **an instrument
 failure and a serious defect produce the same reading, and the serious defect is
 more interesting.** Attention goes to the finding, not to the ruler.
