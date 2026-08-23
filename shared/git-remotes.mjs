@@ -119,5 +119,36 @@ export function createGitRemotes({ sourceDir, run = execFile } = {}) {
     return output(['rev-parse', '--verify', `${ref}^{commit}`]).catch(() => null)
   }
 
-  return { list, add, delete: deleteRemote, pull, push, checkout, readFile, resolveRef, currentBranch }
+  /**
+   * An absolute path on THIS machine, answered as git sees it: is it in this
+   * checkout's repository, is it tracked, and what does the repository call it.
+   *
+   * Both answers come from git rather than from path arithmetic, because the
+   * consumer is a document root and a wrong one is expensive. A configured root
+   * that is not in the settled tree makes `filteredProjectCommit` throw
+   * `configured document root is absent`, and that throw is on the settle path
+   * and caught at warn -- so declaring a root for an untracked file does not
+   * merely fail to sync that file, it stops the project syncing at all.
+   *
+   * `ls-files --error-unmatch` is the same set the settle stages: the settle runs
+   * `git add -u` over an author-owned checkout, which is the index, which is what
+   * this asks. `--full-name` prints the path relative to the REPOSITORY root,
+   * which is the coordinate `ls-tree` speaks and therefore the coordinate a
+   * configured root is compared against -- not necessarily relative to
+   * `sourceDir`, when the bound checkout is a subdirectory.
+   *
+   * `inRepo` and `tracked` are kept apart because the caller has to say which one
+   * it hit; they are different things to tell somebody.
+   */
+  async function repoPathFor(absolutePath) {
+    if (!absolutePath) throw new Error('path is required')
+    const toplevel = await output(['rev-parse', '--show-toplevel']).catch(() => null)
+    if (!toplevel) return { inRepo: false, tracked: false, path: null }
+    const inRepo = absolutePath === toplevel || absolutePath.startsWith(`${toplevel}/`)
+    if (!inRepo) return { inRepo: false, tracked: false, path: null }
+    const tracked = await output(['ls-files', '--full-name', '--error-unmatch', '--', absolutePath]).catch(() => null)
+    return { inRepo: true, tracked: Boolean(tracked), path: tracked || null }
+  }
+
+  return { list, add, delete: deleteRemote, pull, push, checkout, readFile, resolveRef, currentBranch, repoPathFor }
 }
