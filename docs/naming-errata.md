@@ -512,3 +512,24 @@ thing; renaming is a product decision and is Skip's.
 **Related, same shape:** the manifest at `.tlda/parts.json` is *the record* of
 which documents exist for a project, not a cache — nothing rebuilds it. Reading
 it as a cache is what made deleting it look survivable.
+
+## `checkpointProjectPartWritebackOffloop` — writes a part DOWN, never reads a source UP
+
+`writeback` names the direction of a sync, so the name reads as *the part is
+written back to the file it came from*, or at least as *something keeps the two
+in step*. It does neither. It takes content it is handed and installs it at
+`filePath` under a lock, with crash-debris recovery and a `lastCleanSync`
+baseline for conflict detection — `content` → part file, and nothing else. It has
+no notion of a source file, so `writeback.status` in the manifest says how the
+part's own bytes landed on disk and says nothing about whether they still match
+anything.
+
+**What that cost.** It is the reason a frozen part looked like it might refresh
+itself. Nothing does: a part's bytes are written only by
+`realizeProjectMarkdownArtifact` and `writeProjectMarkdownArtifact`, both from a
+request body. The name was load-bearing in the wrong direction while a person
+read a copy of his own document for half a morning.
+
+**Not renamed:** it is a live path with call sites in the materializer, the
+task-doc materializer and `POST /:name/task-doc/refresh`. `lastCleanSync` carries
+the same misleading word.
