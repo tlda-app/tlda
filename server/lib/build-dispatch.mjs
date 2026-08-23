@@ -72,6 +72,38 @@ function restoreAside(live, held) {
   renameSync(held, live)
 }
 
+// The only files a FAILED build is allowed to move into the live project.
+// Named here, once, so the set is the thing you read rather than something you
+// reconstruct from a call site: a failed build must never replace a working
+// render, so `source`, `output` and `build-cache` are absent by construction
+// and cannot be added by editing a caller.
+const BUILD_DIAGNOSTIC_FILES = ['build.log', 'latex.log']
+
+/**
+ * Carry a failed build's diagnostics out of its instance before the instance is
+ * destroyed. This is NOT a publication: it takes no head, moves no artifacts,
+ * and does not advance any revision — a failed build's render must stay the
+ * last good one, which is the whole point of building in an instance.
+ *
+ * Without this the log dies with the instance, and `extractBuildErrors` reads a
+ * live project that has none — so `build/status` says `error` while
+ * `tlda project errors` says `Clean.` about the same build.
+ */
+export function publishBuildDiagnostics(name, instanceProject) {
+  const liveProject = projectDir(name)
+  const copied = []
+  for (const file of BUILD_DIAGNOSTIC_FILES) {
+    const from = join(instanceProject, file)
+    if (!existsSync(from)) continue
+    // Written, not renamed: the instance is about to be removed wholesale, and
+    // a rename out of it would leave the two halves of a failure in different
+    // places if the removal then failed.
+    cpSync(from, join(liveProject, file))
+    copied.push(file)
+  }
+  return { copied }
+}
+
 export async function publishBuildInstance(name, sourceRevision, acceptSeq, instanceProject, reports = [], reportSinks = SINKS) {
   return serializedPublication(name, async () => {
     const lifecycle = await sourceLifecycleStore(name)
@@ -182,6 +214,12 @@ export function createDispatcherWithOptions(transport, options = {}) {
         const [name, sourceRevision, _acceptSeq, state, result] = message.a || []
         const lifecycle = await sourceLifecycleStore(name)
         return lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
+      }
+      if (message.m === 'publishBuildDiagnostics') {
+        // Deliberately not routed through `sinks`: this runs on the failure
+        // path, and a missing sink there would throw inside the handler for a
+        // build that has already failed, losing the log for the second time.
+        return publishBuildDiagnostics(...(message.a || []))
       }
       if (message.m === 'publishBuildInstance') {
         const result = await publishBuildInstance(...(message.a || []), sinks)
