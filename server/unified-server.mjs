@@ -118,6 +118,7 @@ import {
   normalizeDeliveryChannel,
   normalizeInboxStatus,
   normalizeMessagePriority,
+  parseDurationMs,
   parsePriorityPhrase,
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs'
@@ -5873,7 +5874,51 @@ let _wakeDraining = false
 // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
 const _wakeFailWarned = new Map() // agentId → last-warned ms
 const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-const WAKE_MCP_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_MCP_ACK_DEADLINE_MS || 2_000)
+// Step 4: *x* — how long the server waits for an agent's MCP to acknowledge a
+// notification before reporting the symptom to that agent's daemon. This is the
+// one rule the server runs, and it is a server setting, so it lives in
+// `server.yaml` rather than in this file.
+//
+// **The ordering constraint, which is what a future editor needs and cannot
+// derive from the number: `ackTimeout` must exceed the MCP's own serial budget
+// for handling a notice** — `deliverChannelNotice` (≤1000ms) followed by
+// `acknowledgeWakeChannelNotice` (≤1000ms), one after the other in
+// `fleet-tools.mjs`.
+//
+// **TODAY'S VALUE DOES NOT SATISFY IT, DELIBERATELY.** 2s is exactly the two
+// client budgets summed, and the server's clock starts before the notice leaves
+// it, so the deadline must also cover server→MCP and MCP→server transit. A
+// delivery that fully succeeds therefore cannot acknowledge in time, and the
+// overrun records as `mcp-ack-timeout` — the same string a wedged process
+// produces.
+//
+// This move is placement only. **The number is Skip's**, listed as open in
+// `docs/notifications-and-liveness.md` §"What is not settled" item 1, so this
+// preserves the behaviour that was already running rather than picking a new
+// one. `ack-timeout-config.test.mjs` pins the degenerate relationship so that
+// changing the value cannot happen silently — it is a live question, not a
+// forgotten one.
+//
+// Unit-bearing, per the `batch(15s)` precedent and via the same parser — a bare
+// `2` is an error, not a default in some unit the reader has to guess.
+const WAKE_MCP_ACK_DEADLINE_DEFAULT = '2s'
+const WAKE_MCP_ACK_DEADLINE_MS = (() => {
+  const configured = serverRuntimeConfig?.notifications?.ackTimeout
+  if (configured != null) {
+    const ms = parseDurationMs(configured)
+    // Loud rather than defaulted. An unset value presenting as a missing feature
+    // instead of an error is the exact history `server.yaml`'s own header
+    // records, and a misspelled duration silently becoming 2s is that again.
+    if (!ms) throw new Error(`server.yaml notifications.ackTimeout must be a duration with a unit (e.g. 5s, 250ms); got ${JSON.stringify(configured)}`)
+    return ms
+  }
+  // Retained as a test seam only, and it is a residual violation of the design's
+  // "no timeout in an environment variable": `fleet-inbox-delivery.test.mjs`
+  // sets it to shorten a deliberate timeout. Removing it is a deletion and a
+  // test change, neither of which is in this step's scope.
+  if (process.env.TLDA_WAKE_MCP_ACK_DEADLINE_MS) return Number(process.env.TLDA_WAKE_MCP_ACK_DEADLINE_MS)
+  return parseDurationMs(WAKE_MCP_ACK_DEADLINE_DEFAULT)
+})()
 const _pendingMcpWakeAcks = new Map()
 
 function acknowledgeMcpWakeNotification(ackId, agentId) {
