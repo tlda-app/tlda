@@ -93,7 +93,16 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       sourceDir: item.sourceDir,
       onSettled: async () => {
         try {
-          await sync.editClusterSettled()
+          // settle() reports failure two ways and only one of them was audible.
+          // A THROW is logged below; a returned { ok: false } was dropped on the
+          // floor. WrongHead, conflicted, merge-in-progress and empty-checkout all
+          // take the second path, so a proposal could be rejected on every attempt
+          // and leave no trace anywhere -- no log, no retry, no state change. That
+          // silence is what made "in-app editing does nothing" cost hours to find.
+          const result = await sync.editClusterSettled()
+          if (result && result.ok === false) {
+            log.warn(`${item.project}: proposal not accepted: ${result.status || 'unknown'}`)
+          }
           await refreshWatchedMembers()
         } catch (error) {
           // Keep the watcher live after a rejected proposal so a later member edit can repair it.
