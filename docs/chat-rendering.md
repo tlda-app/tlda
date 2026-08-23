@@ -5,6 +5,13 @@ rows, who is allowed to move the scroll position, and when — the machinery in
 `src/shapes/FleetChatShape.tsx`, `chatScrollIntent.mjs`, `chatViewportAnchor.mjs`,
 and `chatVirtuosoIndex.mjs`. It is not user guidance.
 
+> **Dated 2026-08-13.** The scroll model described below — `react-virtuoso` with
+> our capture/restore anchoring over it — was replaced by `f34e43f77` with a
+> fixed-height scroll sensor and an absolutely positioned slice. The body of this
+> document has not been rewritten. Read
+> [the errata](#the-scroll-model-this-document-describes-was-replaced-on-2026-08-13)
+> first; it says what is still true.
+
 It has an [errata section](#errata). The model below is what the system is trying
 to be. The errata is what currently does not match it, and it is part of the
 document rather than an appendix — a description of intent alone is how the next
@@ -1106,23 +1113,89 @@ churn lands directly on the machinery here.
 
 ---
 
-### Most of this machinery is proposed for deletion on an unmerged branch
+### The scroll model this document describes was replaced on 2026-08-13
 
-`rc/anchored-list`, tip `7e600b065` (2026-08-13 00:43, `list-component`), **deletes
-808 lines across the two files this document is mostly about** — including
-`chatViewportAnchor.mjs` entirely, and the implementations of
-`captureViewportAnchor`, `restoreViewportAnchor` and `checkFollowInvariant`, which
-survive there only inside comments. It is not merged and has never been rendered in
-the app.
+`f34e43f77` *"Replace fleet chat scroll with anchored list"* landed the branch the
+previous version of this section called unmerged and never rendered. **It is
+merged, it is what ships, and it is what Skip is looking at.** The section it
+replaces said the opposite, which means every reader of this document since
+2026-08-13 has been told the shipped scroller is the one that is not shipped.
 
-It exists because Skip asked for it, 2026-08-12 23:42:42 EDT: *"if someone wants to
-develop a fucking RC, based on our sort of simple observation that, like, we can
-sort of, like, measure shit from the bottom and, like, we don't need that much shit
-in the Dom."*
+What that commit did, measured rather than described: 971 lines changed in
+`FleetChatShape.tsx` and 28 added in `fleet-chat.css`, 335 insertions against 664
+deletions, touching no other file.
 
-**Neither treat it as the answer nor dismiss it.** The point of recording it here is
-narrower and practical: **before spending a night measuring a function in this
-document, check whether that branch deletes it.**
+**Virtuoso is gone.** `grep -c Virtuoso src/shapes/FleetChatShape.tsx` returns
+`0`. Every row of the prop table in §"What Virtuoso is given, and what each prop
+answers" describes a component that is no longer constructed — `followOutput`,
+`firstItemIndex`, `initialTopMostItemIndex`, `alignToBottom`,
+`atBottomStateChange` and `components.Scroller` are not props of anything now.
+
+**What replaced it is a fixed-height scroll sensor with an absolutely positioned
+slice.** `FleetChatShape.tsx:136-140`:
+
+```js
+const ANCHORED_SENSOR_HEIGHT = 20_000_000
+const ANCHORED_SENSOR_MID = ANCHORED_SENSOR_HEIGHT / 2
+const ANCHORED_SENSOR_EDGE = 1_000_000
+const ANCHORED_ESTIMATED_ROW_HEIGHT = 80
+const ANCHORED_OVERSCAN_PX = 800
+```
+
+The scroller (`.fleet-chat-log.fleet-chat-log-anchored`) contains one
+`.fleet-chat-scroll-sensor` of `ANCHORED_SENSOR_HEIGHT`, which exists only to
+give the element a scroll range. Inside it, `.fleet-chat-anchored-slice` is
+`position: absolute` and is translated to follow the reader; rows are absolutely
+positioned within the slice. `scrollTop` is parked at `ANCHORED_SENSOR_MID` and
+`recenterSensor` (`:2551`) returns it there whenever it drifts within
+`ANCHORED_SENSOR_EDGE` of either end. The model position is carried separately in
+`modelTopRef`, and `onScroll` (`:2674`) converts scroll deltas into model deltas.
+
+**Three modules this document treats as live machinery are now partly or wholly
+unreferenced:**
+
+| module | state as of 2026-08-23 |
+|---|---|
+| `chatVirtuosoIndex.mjs` | **no importers at all.** `nextChatVirtuosoFirstItemIndex`, and the §"Smaller mismatches" note about it returning an increasing `firstItemIndex`, describe code nothing calls. |
+| `chatScrollIntent.mjs` | imported only by `src/index-chat-tail.mjs`. `decideFollowTransition` is still the index page's follow decision; it is no longer the chat panel's. |
+| `chatViewportAnchor.mjs` | imported, but only four of its six exports. `anchoredTailTop`, `isReaderInputInFlight`, `shouldPrefetchEarlierChatHistory` and `nextEarlierChatHistoryWindow` are used. **`preserveChatViewportAcrossArrival` has zero callers, and `shouldPreserveChatViewport`'s only caller is `preserveChatViewportAcrossArrival` itself** (`:83`), so the pair is dead together — and those two are the capture/restore pair that §"What our anchoring is for" calls the whole job. |
+
+So §"What our anchoring is for", §"Every path that writes `scrollTop`" and
+§"The re-entrancy map" describe a mechanism whose entry points are no longer
+called. The line numbers in them refer to a file that has since had two thirds of
+that region deleted.
+
+**What is unchanged and still load-bearing.** §"The rule everything here serves"
+is Skip's invariant and does not depend on the implementation. §"Two surfaces
+share the class name" is still true, and the finding under §"Every path that
+writes `scrollTop`" — *there is no contract on this element's scroll position;
+there is a CSS class, and anyone may write it from anywhere by matching that
+class* — survives the replacement intact, because the class name survived it.
+
+**And the open symptoms are still open.** §"Occasional jerks with nothing
+arriving" and §"Cannot scroll up, and worse than it used to be" are Skip's
+reports from 2026-08-12 and 2026-08-13, i.e. from *before* this commit. Nothing
+here establishes whether the anchored list fixed them, made them worse, or left
+them alone. Do not read the replacement as a resolution of either.
+
+One measured fact about the anchored list, recorded here so nobody spends a night
+on it a second time. The 20,000,000-pixel sensor produces a compositing layer at
+Chrome's maximum layer height — 2²⁵ = 33,554,432 device pixels — because
+20,000,000 CSS px × the canvas scale × a 2.2 device pixel ratio exceeds the clamp,
+and the layer reports `drawsContent: true` since the slice and rows are absolutely
+positioned inside it and paint into it.
+
+**That layer is not a memory cost.** Measured in an isolated reproduction of the
+same structure, renderer RSS across sensor heights of 20,000,000 / 2,000,000 /
+200,000 / 20,000 was 227 / 227 / 227 / 226 MB — and a control that forced the full
+height to genuinely paint gave 229 MB against 227 MB for a painted 20,000. Chrome
+tiles the layer and rasterizes only what is visible.
+
+**Shrinking the constant is therefore not a memory fix**, and an agent measuring
+this page's memory should not spend time on the sensor. On 2026-08-23 a renderer
+holding roughly 1 GB attributed as: 494 MB `gpu/shared_images`, 482 MB
+`iosurface`, 308 MB `blink_gc`, 275 MB `malloc`, 208 MB `canvas`, 135 MB `v8` —
+and 121 MB of `cc/tile_memory` for the entire page.
 
 ## Open symptoms Skip has reported
 
