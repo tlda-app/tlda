@@ -97,6 +97,7 @@ import {
 import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
+import { actionForSymptom } from '../daemon/notification-symptom-action.mjs'
 import {
   createJsonlProcessBindingReconciler,
   jsonlProcessBindingSignature,
@@ -775,9 +776,52 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
     `${observed_at ? ` observed_at=${observed_at}` : ''}` +
     `${detail?.reason ? ` reason=${detail.reason}` : ''}` +
     `${detail?.deadline_ms ? ` deadline_ms=${detail.deadline_ms}` : ''}`)
-  // Acknowledged as received and understood. `acted: false` says which of the
-  // two this is, so the server's record does not read as a remedy having run.
-  return { ok: true, agent_id, symptom, recorded: true, acted: false }
+
+  const action = actionForSymptom(symptom)
+  // An unrecognised symptom is recorded and not acted on. A new name arriving
+  // from a newer server must not be guessed into a restart.
+  if (!action) return { ok: true, agent_id, symptom, recorded: true, acted: false, action: null }
+
+  let route = null
+  try {
+    route = await resolveAgentRoute({ agent_id })
+  } catch (e) {
+    // Swallowed because an unresolvable route is an ANSWER, not a fault: this
+    // machine has no such agent, which is handled immediately below as
+    // `no-local-route`. Rethrowing would turn "not mine" into an RPC error and
+    // the server would record a failed report for a symptom it correctly sent.
+    log.warn(`[notification-symptom] ${agent_id}: cannot resolve a local route: ${e?.message || e}`)
+  }
+  // Not ours to act on. The server routes by daemon key so this should not
+  // happen, and if it does the honest answer is that this machine has no such
+  // process rather than starting one.
+  if (!route?.tmux_session) {
+    return { ok: true, agent_id, symptom, recorded: true, acted: false, action, reason: 'no-local-route' }
+  }
+
+  try {
+    if (action === 'ensure-process') {
+      // IDEMPOTENT BY CONSTRUCTION, which is what lets the server keep no memory
+      // and re-report every time: if the session is there this is a no-op and
+      // says so, and `acted: false` stays honest rather than becoming a lie once
+      // this handler started doing things.
+      const alive = await terminalRpc.checkAlive({ agent_id }).catch(() => ({ alive: false }))
+      if (alive?.alive) return { ok: true, agent_id, symptom, recorded: true, acted: false, action, reason: 'process-already-running' }
+      await rpcWake({ agent_id })
+      return { ok: true, agent_id, symptom, recorded: true, acted: true, action }
+    }
+    // restart: off and on again. Idempotent in Skip's sense — nothing is lost,
+    // it is a blip in a running process and the session survives it.
+    await rpcRestart({ agent_id, tmux_session: route.tmux_session })
+    return { ok: true, agent_id, symptom, recorded: true, acted: true, action }
+  } catch (e) {
+    // The remedy failing is not the agent dying. Nothing here infers death from
+    // a failure — see AGENTS.md §"DEATH IS A FLAG IN THE DATABASE" — and nothing
+    // retries, because the server will report the symptom again if it recurs and
+    // both actions converge when it does.
+    log.warn(`[notification-symptom] ${agent_id}: ${action} failed: ${e?.message || e}`)
+    return { ok: true, agent_id, symptom, recorded: true, acted: false, action, error: e?.message || String(e) }
+  }
 }
 
 const agentStatus = createAgentStatus({
