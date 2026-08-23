@@ -133,6 +133,47 @@ second frozen copy of a document the app already had.
 the gray hole, which is what he asked for, and it did not give him a live view.
 I told him so.
 
+## The paper: three things he settled and none of them are in it
+
+**Not tlda work. Recorded here because it is the thing he was actually trying to
+do all night, and because the record about it is not trustworthy.**
+
+Measured directly against `revision/appendix_folder/appendix_e.tex`, not read
+from any agent's notes:
+
+```
+lem:fcs-prefix                  present   (notes say deleted)
+powered maximum, s = ⌈log n⌉    absent
+line count                      1,233     (notes say 1,209)
+title                           "The Fixed-Count Permutation", p.98
+```
+
+Three decisions he made and that are not applied:
+
+1. **Abstract the consumers to "satisfies a symmetrization inequality"**, with
+   `lem:symmetrization` and the Dümbgen one as the two examples — his words, 8/23
+   03:52. Recorded in `appendix-e.md` as "his, not yet applied".
+2. **The powered maximum** — $\phi(x)=x_+^s$ at $s \asymp \log n$ so the union
+   over the count window costs $O(1)$. He approved it at 04:22 ("cool"), the
+   agent said it was going ahead at 04:23, and it is not in the file.
+3. **The section title.** He rejected "fixed-count" on 8/20 and again on 8/23
+   03:02. A replacement was proposed, got no answer, and was recorded as "dead —
+   not accepted", so nothing happened.
+
+**The instrument failure to carry forward: `appendix-e.md` contradicts itself**
+about (2) — "left out deliberately" near the top, "built and in the paper"
+further down. I nearly retracted a true statement to him on the strength of the
+second one. **Check the file, not the note.**
+
+Also his, from the same session and worth not re-litigating: *"borrows are free,
+i don't have to check them"* — the measure of length is lines he has to check,
+not lines. And *"i don't give a shit about logs"* — a $\log n$ from a union is an
+acceptable price.
+
+**One fabrication he caught himself**, 8/23 04:11: *"use prefix maximality, not a
+countwise union"* was attributed to him and was `chief-sol`'s own sentence. His
+actual words were a question offering a tool.
+
 ## With Skip, actually asked, not parked
 
 **What makes a file a member of a project.** He said at 08:06 EDT it is *"supposed
