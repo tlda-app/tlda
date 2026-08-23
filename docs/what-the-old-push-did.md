@@ -46,6 +46,14 @@ as of now.
 | journal the accepted revision | `applyAcceptedSourceEffects` |
 | replace a book's member set | moved to `PATCH /:name/members` `{members: [...]}` |
 
+**`applyAcceptedSourceEffects` no longer exists.** As of `d6009b693` it is absent
+from `server/`, `daemon/`, `bin/` and `shared/` entirely, so every row above
+naming it points at a function that is gone. **Only the build row has been
+re-checked** — see §2, which is where it went and what that changed. The other
+rows are unverified as of this sha: the effect may have moved, or it may be a
+gap nobody has noticed. Do not read them as current, and do not read them as
+broken either. Re-check the one you need.
+
 ## Deliberately dropped
 
 | what it does | why it does not come across |
@@ -111,20 +119,98 @@ ruled that the protocol is written up and put to him before anything else is
 changed. **Do not delete the validator, and do not build this without that
 ruling.**
 
-### 2. The build fires unconditionally
+### 2. The build fires unconditionally — and the old remedy is no longer available
 
-The old path asks `shouldBuildOnPush` and suppresses the build for
-`unchanged`, `outside-tree`, `already-building` and
-`relevant-files-parse-failed`. **The new path dispatches on every accept.**
+**Re-measured 2026-08-23 against `d6009b693`.** The gap is still open. The fix
+this section used to imply is no longer available, and reading it as *"so call
+`shouldBuildOnPush` at the admit sites"* ships dropped pushes. It was briefed
+that way once already.
 
-*What a person sees:* builds on pushes that changed nothing relevant, and —
-because `already-building` no longer suppresses — a queue that can stack builds
-on a project being edited continuously. That is a load problem on a machine
-this fleet has already taken down once.
+**The new path dispatches on every accept** — `shouldBuildOnPush` still has no
+production caller at all, only tests and this file.
 
-It also drops `recordRevisionPhase(..., 'build', 'not_required' | 'superseded')`
-and the paired `'version', 'not_reached'`, so a revision that correctly did not
-build now has no phase record saying so.
+#### The list of suppression cases this section used to give was wrong
+
+It is corrected rather than deleted, because implementing the old list inverts
+the function's own stated direction. What the code actually returns:
+
+| verdict | fires when | build? |
+|---|---|---|
+| `already-building` | SVG **and `pages === 0`** and a build is in flight | no |
+| `unchanged` | nothing changed on disk **and** the lifecycle projection is `ready` | no |
+| `outside-tree` | SVG, files changed, none matches `relevant-files.json` | no |
+| `relevant-files-parse-failed` | `relevant-files.json` is unreadable | **yes** |
+| `no-relevant-files-yet` | no `relevant-files.json` on disk | yes |
+| `initial-svg-build`, `format-eager`, `svg-eager` | otherwise | yes |
+
+Two of those were listed as suppressions and are not.
+`relevant-files-parse-failed` **builds** — it is the catch branch, and skipping
+on it would skip the render in exactly the case where we could not tell whether
+the render's inputs changed. And `already-building` is not a general in-flight
+suppressor: it is gated on `pages === 0`, a brand-new SVG project that has never
+built, so **on a mature project it can never fire.** Adopting it as a general one
+would be new behaviour, not a restoration.
+
+**So on a mature SVG project the only suppression that can ever fire is
+`outside-tree`.**
+
+#### Why you cannot simply call it
+
+**On this path the build is not a downstream effect of the accept. It is the
+accept.** `publishBuildInstance`, the publish step at the end of a build, is the
+only place in the tree that does either of these:
+
+- renames the build instance's `source/` over the project's live `source/` —
+  `PUBLISH_REPLACED_ITEMS` is `['source', 'output', 'build-cache', 'build.log',
+  'latex.log']`
+- calls `git.advanceHead`, moving the project's source head to the built
+  revision
+
+`advanceHead` has **exactly one production caller** and that is it; its
+definition is in `source-git-store.mjs` and every other hit in the tree is a
+test. `publishBuildInstance` in turn has exactly one caller — the build worker,
+over the worker RPC relay — so it runs only inside a build that actually ran.
+
+So a suppressed build is a suppressed *accept*: the revision stays a proposal
+ref that never becomes head, its files never reach the server's source tree, and
+the pusher gets a 200. **That is the same "told their file landed when it did
+not" family as §1**, reached from the other side. This holds for `outside-tree`
+too — narrowing the change to the one verdict that can fire does not make
+suppressing it at the admit site safe.
+
+This fusion is the durable-queue design rather than an accident. `advanceHead`
+entered the dispatcher in `fa3f3874c` "Implement durable daemon build queue", and
+`4a3f6b139` "Publish source and revision status atomically" is what made the
+source publish atomic with the head move.
+
+**Getting the benefit therefore requires a way to publish source and advance the
+head without a render**, which does not exist today — the revision must still
+stage `source/` and move the head, with only the render skipped.
+
+#### What a person sees, corrected
+
+*Still real:* on a continuously edited project, renders run back to back —
+every completion starts the next queued revision, including revisions whose
+changes the render never reads.
+
+*No longer real:* the "queue that can stack builds" claim, which fails twice
+over. `already-building` never suppressed on a mature project in the first
+place, per the table above, so its absence explains nothing. And the durable
+queue coalesces on its own — `thinPending` kills any pending revision that is an
+ancestor of another pending one, as `superseded`, and `killNeedingRebase` kills
+pending or running work that is not a descendant of the new head. In a linear
+edit sequence that leaves at most one running plus one pending per project, and
+it keeps the *newest* revision where the filter would have refused it.
+
+#### The phase records are still missing
+
+`recordRevisionPhase(..., 'build', 'not_required' | 'superseded')` and the paired
+`'version', 'not_reached'` are still unwritten, and the mechanism is worth
+naming because a grep for the strings does not show it: the queue settles killed
+work through `recordDisposition`, and `createDispatcherWithOptions` never passes
+one, so it is the `async () => {}` default. A build killed as `superseded` or
+`needs-rebase` therefore records no phase at all. `not_required` survives only as
+a value `source-lifecycle.mjs` knows how to interpret — nothing produces it.
 
 ### 3. Book parts are never refreshed
 
