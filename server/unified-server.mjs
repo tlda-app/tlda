@@ -70,6 +70,7 @@ import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTur
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistoryRef } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { admitProposal, initBuildDispatcher, killAllDispatchedBuilds, recoverBuildPublications, recoverProposalBuilds, setBuildHeadNotifier } from './lib/build-dispatch.mjs'
+import { migrateAllProjectParts } from './lib/migrate-project-parts.mjs'
 import { createGitHttpHandler } from './lib/git-http.mjs'
 import { parseHistorySeedRef } from '../shared/history-seed-ref.mjs'
 import { listProposalRefs, parseDaemonProposalRef } from './lib/git-proposals.mjs'
@@ -9984,6 +9985,10 @@ process.on('unhandledRejection', (err) => {
   const cfg = resolveConfig()
   console.log(`[config] active="${cfg.name}" database=${cfg.database.http} store=${cfg.store.http} license=${cfg.licenseKey ? 'set' : 'none'}`)
 }
+
+// Before anything reads a parts manifest: parts written before the root moved out
+// of `source/` are still under it, where nothing looks. See migrate-project-parts.
+migrateAllProjectParts(PROJECTS_DIR)
 
 await recoverBuildPublications()
 await recoverProposalBuilds()
