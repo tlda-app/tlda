@@ -2661,7 +2661,12 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     }
     const serverResult = await (nativeBinding
       ? sendFleetRequestAttempt('login', loginBody, { deadlineMs: 5000 })
-      : mcpFleetTransport.durable('login', loginBody, { coalesceKey: `channel-login:${shellId}` }))
+      // agentId explicitly: BASE_AGENT_ID is only set *after* this call returns,
+      // so a process launched before its seat existed (no FLEET_ID in env, fleet
+      // id resolved from the mint store above) has no activeAgentId() yet and
+      // the durable send died with "no transport identity" — login could never
+      // establish the identity the transport was asking it for.
+      : mcpFleetTransport.durable('login', loginBody, { agentId: shellId, coalesceKey: `channel-login:${shellId}` }))
       ?.catch(e => ({ error: e.message }));
     if (!serverResult) {
       return { content: [{ type: 'text', text: [
