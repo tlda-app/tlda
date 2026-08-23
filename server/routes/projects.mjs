@@ -394,7 +394,10 @@ router.post('/:name/parts', requireRw, async (req, res) => {
       const status = result.status === 'not materialized' && /no project resolved/i.test(result.error || '') ? 404 : 400
       return res.status(status).json({ ok: false, error: result.error, ...result })
     }
-    emitGlobalEvent('project-changed', { name: req.params.name })
+    // A click that resolved to a document the project already renders wrote
+    // nothing, so there is no change to announce. `project-changed` here would
+    // be a reload of every open panel to report that nothing happened.
+    if (!result.live) emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({ ok: true, ...result, outputFile: markdownColumnFileForSource(result.projectPath) })
   } catch (e) {
     const message = e?.message || String(e)

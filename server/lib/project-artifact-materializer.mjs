@@ -8,6 +8,8 @@ import { homedir } from 'node:os'
 import { createProjectPartRecord } from '../../shared/project-parts.mjs'
 import { parseMarkdownPart } from '../../shared/project-parts.mjs'
 import { checkpointProjectPartWritebackOffloop, readProject, listProjects, projectPartsRoot } from './project-store.mjs'
+import { referencedRootsFromPaths } from '../../shared/source-manifest.mjs'
+import { normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 
 const execFileP = promisify(execFile)
 import {
@@ -46,6 +48,24 @@ export async function realizeProjectMarkdownArtifact({
       provenance,
       error: 'No project resolved for artifact',
     })
+  }
+
+  // A file this project ALREADY renders live is not a thing to copy. Opening it
+  // from chat used to write a second markdown file into `parts/` and put the
+  // panel on THAT, so an edit to the source never reached the panel and nothing
+  // on screen said which of the two copies was in front of you. Measured
+  // 2026-08-23 on a disposable project: source edited after the click, the live
+  // column at `/docs/<p>/index.html` carried the new paragraph and the part at
+  // `/docs/<p>/parts/<id>.html` did not.
+  //
+  // The copy could only ever diverge. A part's bytes are written by exactly two
+  // functions -- this one and writeProjectMarkdownArtifact -- and both take them
+  // from a request body. Nothing re-reads `metadata.sourcePath`: its three
+  // readers are the re-click match below, the carry-forward in the writer, and
+  // `referencedSourcePaths`, which seeds membership.
+  const liveDocument = await liveProjectDocumentPath(resolved.name, sourcePath)
+  if (liveDocument) {
+    return liveDocumentPayload({ project: resolved.name, projectPath: liveDocument, title, provenance })
   }
 
   const root = projectPartsRoot(resolved.name)
@@ -281,6 +301,95 @@ export function resolveProjectCwd(cwd) {
     return parts.slice(0, claudeIdx).join(sep) || sep
   }
   return gitTopLevel(abs) || abs
+}
+
+/**
+ * The project-relative path of a markdown document this project already renders
+ * live at `/docs/<project>/<stem>.html`, or null.
+ *
+ * Deliberately narrower than "reachable": a declared markdown document root is
+ * the app's own statement that a file is a document of this project, and it is
+ * the same set the Projects tab offers to open -- `/:name/files` builds its
+ * `documents` list from exactly these, through `markdownProjectRootColumn`. So a
+ * match always has a live column, whatever the parent project's own format is.
+ * A markdown file that is merely reachable is not a document here, and still
+ * becomes a part.
+ *
+ * `normalizeDocumentRoots` rather than `project.documentRoots`: a project whose
+ * roots were never declared explicitly has none stored, and its main file is
+ * its document. That is the same normalization `/:name/files` applies.
+ *
+ * NOT `listSourceFiles`, which is the trap next door. It intersects the disk
+ * walk with the CLIENT SOURCE MANIFEST, so a project pushed before that manifest
+ * existed reports zero files while its documents sit on disk and render --
+ * measured here on a project with no manifest, where it returned `[]` and this
+ * function silently answered "not a document" for the project's own main file.
+ * See `missingDeclaredMainFile` in build-decision.mjs, which refuses the same
+ * instrument for the same reason.
+ *
+ * The clicked path arrives absolute and on the AUTHOR'S machine -- that is what
+ * the chat chip carried -- while the project speaks in project-relative paths.
+ * `referencedRootsFromPaths` is the existing tail-match between the two, already
+ * used for this same question by `sourceMembershipContext`. Reuse rather than a
+ * second matcher beside it: two encodings of one rule can disagree.
+ */
+async function liveProjectDocumentPath(projectName, sourcePath) {
+  const normalized = String(sourcePath ?? '').replace(/\\/g, '/')
+  // A dropped OS file arrives as a bare filename -- MarkdownDropHandler passes
+  // `file.name` -- which is not a path on any machine. The tail-match's equality
+  // branch would sit it straight on top of a same-named project document, so
+  // dropping a `notes.md` would open the project's own notes.md and silently
+  // discard what was dropped. A path has a directory in it.
+  if (!normalized.includes('/')) return null
+
+  const project = await readProject(projectName)
+  if (!project) return null
+  const candidates = declaredMarkdownRootPaths(project)
+  if (candidates.length === 0) return null
+
+  const [match] = referencedRootsFromPaths([expandHome(normalized)], candidates)
+  return match || null
+}
+
+function declaredMarkdownRootPaths(project) {
+  return normalizeDocumentRoots(project?.documentRoots, {
+    mainFile: project?.mainFile,
+    format: project?.format,
+  })
+    .filter(root => root.format === 'markdown')
+    .map(root => normalizeProjectPath(root.path))
+    .filter(path => path && /\.(md|markdown)$/i.test(path))
+}
+
+/**
+ * The response for a click that opened the live document instead of copying it.
+ *
+ * `projectPath` is the whole contract: the route maps it through
+ * `markdownColumnFileForSource` into `outputFile`, which is the only field the
+ * three client callers of this route read. The shape that comes out is the one
+ * the Projects tab already builds for a live document -- same `/docs/<p>/<f>`
+ * url, same `materializedDoc`/`materializedFile` meta -- and `props.source` now
+ * resolves to the real source file rather than to a part under `parts/`.
+ */
+function liveDocumentPayload({ project, projectPath, title, provenance }) {
+  return {
+    kind: 'project-document',
+    live: true,
+    title: title || null,
+    state: 'available',
+    status: 'ready',
+    project,
+    projectArtifactId: null,
+    projectPath,
+    localPath: null,
+    localPathVerified: false,
+    contentType: 'text/markdown',
+    provenance,
+    error: null,
+    render: { kind: 'markdown', project, projectPath },
+    ready: true,
+    recipientRef: null,
+  }
 }
 
 function readMarkdownArtifactSource({ markdown, sourcePath, allowedRoot = null }) {
