@@ -56,18 +56,32 @@ the mechanism:
 
 ## Getting the work back out: the merge operation
 
-> **SPECIFIED, NOT BUILT. `tlda merge` does not exist.** There is no `merge`
-> subcommand, and `format-patch` and `git am` appear nowhere in `cli/`,
-> `server/` or `daemon/` — measured 2026-08-22:
-> `grep -rn "format-patch\|git am " --include='*.mjs' cli/ server/ daemon/`
-> returns **0**. Every sentence in this section is in the **specified** register
-> and describes behaviour to be written. **Nothing here has ever run.**
+> **BUILT on branch `tlda-merge`, 2026-08-22. Not on `main` and not deployed.**
+> The operation is `server/lib/merge-replay.mjs`; the CLI call site is
+> `cmdMerge` in `cli/tlda.mjs`; the server serves the history at
+> `GET /api/projects/:name/shadow/bundle`.
 >
-> This warning is at the top because the section is otherwise written in the
-> present indicative, which is how a specification reads and also how a
-> description of working code reads. Without this, someone greps for `tlda
-> merge`, finds nothing, and concludes it was deleted — the wrong-account
-> failure this document has already produced twice.
+> **Observed 2026-08-22**, both by running them on that branch, on a throwaway
+> project and throwaway repositories — nothing of Skip's was touched:
+>
+> - `node bin/a-replay-that-lands-on-a-real-branch-test.mjs` — nine stories over
+>   real git repositories, including a source repo built by the real
+>   `git-filter-repo --path` so that it shares no commit identity with its
+>   target.
+> - `node bin/work-gets-out-of-the-app-test.mjs` — the real `tlda merge` binary,
+>   as a subprocess, against the real `server/routes/projects.mjs` router
+>   listening on a socket. Both ends and the wire between them.
+>
+> **What has NOT been established:** the server-side call site. The module has
+> two call sites specified and one written — the CLI. **The CLI path is proven;
+> the server path is not written at all**, so "the server runs `--ff-only`
+> unattended" below is still in the **specified** register. It is blocked on two
+> decisions rather than on effort — see §"The two that block the server call
+> site". And nothing here has run against a deployment: a freeze was on.
+>
+> The rest of this section is written in the present indicative, which is how a
+> specification reads and also how a description of working code reads. Which
+> sentences are which is the paragraph above, and nothing else on this page.
 
 `tlda merge` takes the version history tlda has accumulated for a project and
 lands it on a real branch — the author's own repository, or a linked remote such
@@ -175,21 +189,60 @@ come from Skip directly are marked **inferred** rather than presented as his.
 
 ### Open — not settled, and not for an implementer to choose
 
+#### The two that block the server call site
+
+**`tlda merge` has two call sites specified and one written. The CLI path is
+built and proven; the server path is not written at all.** Nobody should read
+"`tlda merge` exists" as meaning the server can call it — it cannot, and the
+reason is not effort. It is these two, and both are Skip's:
+
+- **Which repository the server lands on.** §"Where each rule above comes from"
+  records Overleaf reached *either* through the author's own repository *or*
+  directly when the project is configured that way. **That configuration surface
+  does not exist**, so there is no answer to "which repository" for the server to
+  read. A CLI user says which by running it in one; the server has nobody to ask.
+- **Who is told when it cannot fast-forward.** The hand-off is specified — the
+  server stops, says so, and passes the branch to a box with a person on it — and
+  it **names no recipient.** §"Outbound linked-checkout changes" reaches the same
+  question for rejected pushes and rules there that who receives a notification
+  is a **product decision rather than a sync one**, which is why an implementer
+  choosing it would be choosing the wrong kind of thing.
+
+**Neither was guessed at, and the module was written so each is one call away.**
+Answering them is the whole of the remaining work for the unattended path.
+
+#### The rest
+
 - **What the operation reads.** Whether `tlda merge` replays from
   `refs/tlda/shadow/HEAD` in the local checkout, which the daemon already
   maintains, or fetches the shadow from the server.
+
+  **What the branch does, and why it is not an answer to this.** It fetches, at
+  `GET /api/projects/:name/shadow/bundle`, because the local ref is written only
+  by `daemon/shadow-mirror.mjs`, which sits behind the dead trigger recorded in
+  §"A revision is a commit" — a checkout that has never been mirrored does not
+  have the ref, and today that is every checkout. `--from <repo>` replays from a
+  repository already on the box. **When that trigger is restored the choice is
+  live again and is still Skip's**; nothing here forecloses it.
 - **Whether the pairing is recorded or recomputed.** `patch-id` recomputes it for
   nothing; an `am` trailer carrying the shadow sha records it. Both were raised;
-  neither was chosen.
+  neither was chosen. **The branch recomputes**, because recording requires a
+  decision about the trailer that has not been made. Nothing is persisted either
+  way, so recording it later changes no stored state.
 - **The patch range.** What `format-patch` takes as its base on the second and
   subsequent merge of the same project.
-- **Direct-to-Overleaf.** Fast-forwarding straight from the server to a linked
-  remote was described as conditional on how the project is configured. That
-  configuration surface is not specified.
-- **Who is told when the server cannot fast-forward.** The hand-off above names
-  no recipient. §"Outbound linked-checkout changes" records the same open
-  question for rejected pushes and rules there that who receives a notification
-  is a product decision rather than a sync one.
+
+  **This one is settled by the rule already chosen rather than by a new
+  decision.** Matching is by `patch-id`, so what the target is still owed is
+  exactly the source commits whose `patch-id` is not already on the target
+  branch — no base has to be remembered, nothing is recorded on either side, and
+  the second merge is the same computation as the first. It is what `git cherry`
+  does. Measured: a second `tlda merge` of an unchanged project lands nothing and
+  does not move the branch.
+**Direct-to-Overleaf** and **who is told when the server cannot fast-forward**
+were the two other entries in this list. They are the two above, stated there as
+what they turned out to be — the things the server call site is waiting on —
+rather than repeated here.
 
 ## A revision is a commit, and accepting is committing
 
