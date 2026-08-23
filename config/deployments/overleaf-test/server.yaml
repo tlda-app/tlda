@@ -20,21 +20,3 @@ tokensFromEnvironmentOnly: true
 
 # No uploadDir: the default ~/.config/tlda/uploads is already the persistent
 # volume here, because the entrypoint symlinks that whole directory onto it.
-
-# How long the server waits for an agent's MCP to acknowledge a notification
-# before reporting the symptom to that agent's daemon. This is the one rule the
-# notification path runs: no ack within this long -> report `channel-silent`.
-#
-# ORDERING CONSTRAINT, and it is the reason for the value rather than a
-# preference: this must EXCEED the MCP's own serial budget for handling a
-# notice -- deliverChannelNotice (<=1000ms) then acknowledgeWakeChannelNotice
-# (<=1000ms), one after the other. At the previous 2s all three were exactly
-# equal, so a delivery that fully succeeded at the boundary was scored as a
-# timeout and provoked the daemon sideband anyway. Below ~2s this does not
-# shorten a wait, it manufactures failures. Do not lower it without moving the
-# two MCP budgets first.
-#
-# The unit is part of the value (the `batch(15s)` precedent, same parser). A
-# bare `5` is an error, not a default in some unit you have to guess.
-notifications:
-  ackTimeout: 5s
