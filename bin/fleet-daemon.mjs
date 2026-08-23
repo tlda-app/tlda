@@ -672,11 +672,26 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     }
   }
 
+  // The binding's document roots were written at link time and never again.
+  // `tlda project push` does not pass `documentRoots` — it passes
+  // `projectMetadata`, which carries the project's CURRENT roots — so a root
+  // added later (PATCH /document-roots) updated the server and never reached
+  // here. The daemon then computed its closure from the roots the project had
+  // on the day it was linked, and the new document was absent from every
+  // revision while the server, the CLI and the push all reported success.
+  //
+  // The server's record is the one fact. An explicit `documentRoots` argument
+  // still wins, because `project link` passes the roots it is creating before
+  // the server knows them.
+  const metadataRoots = Array.isArray(projectMetadata?.documentRoots)
+    ? projectMetadata.documentRoots.map(root => (typeof root === 'string' ? root : root?.path)).filter(Boolean)
+    : null
+  const effectiveRoots = Array.isArray(documentRoots) ? documentRoots : metadataRoots
   const result = sourceSync.bindSource(project, sourceDir, {
     kind,
     remote,
     mirrorMode,
-    ...(Array.isArray(documentRoots) ? { documentRoots } : {}),
+    ...(effectiveRoots ? { documentRoots: effectiveRoots } : {}),
   })
   try {
     const registration = await sendMsgWithReply({
