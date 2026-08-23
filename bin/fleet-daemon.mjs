@@ -807,7 +807,22 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
       await rpcWake({ fleet_id: agent_id, agent_id })
       return { ok: true, agent_id, symptom, recorded: true, acted: true, action: 'wake' }
     }
-    await rpcRestart({ agent_id })
+    // `fleet_id` AND `tmux_session`, and neither is belt-and-braces.
+    //
+    // `rpcRestart` forwards its own params straight to `wakeMint`, which resolves
+    // an identifier from `mint_id | mintId | fleet_id | fleetId | name` — and
+    // `agent_id` is not among them. Restarting with `{ agent_id }` alone killed
+    // the session and then threw "wake requires a local mint, fleet, or
+    // friendly-name identifier", so the agent was left DOWN by the remedy meant
+    // to restore it. Observed twice on the live daemon within four minutes of
+    // this path going live.
+    //
+    // `tmux_session` is the check that the kill actually happened: `rpcRestart`
+    // asks tmux whether the session is still listed and refuses to wake if it is,
+    // because `kill-session` answers ok for an agent it could not place. Without
+    // the name that check cannot run, which is the hole it was written to close.
+    const route = await resolveAgentRoute({ agent_id }).catch(() => null)
+    await rpcRestart({ agent_id, fleet_id: agent_id, tmux_session: route?.tmux_session })
     return { ok: true, agent_id, symptom, recorded: true, acted: true, action: 'restart' }
   } catch (e) {
     // Reported, not thrown, and NOT death. The server is not waiting on this and
