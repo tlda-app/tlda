@@ -77,6 +77,57 @@ own idiom. The manager re-read its config and now reports `supervising 11 bot(s)
 `debt` absent. **That is a tourniquet, not the fix** — restore the line once
 `tlda agent wake bot:testing:debt` succeeds. The bot itself was never the problem.
 
+## The `*.heartbeat` files are not heartbeats, and that is why they grow
+
+Measured **2026-08-23T02:5xZ**, in `/Users/skip/.config/tlda/`. **180.0 MB across 14
+files**, excluding `backups/` and excluding
+`daemon-outbox.testing.sqlite.pre-heartbeat-wipe` — that last one is 338.8 MB and
+matches a `*heartbeat*` glob, but it is a sqlite backup, not a heartbeat. Do not count
+it.
+
+| file | size | last written |
+|---|---|---|
+| `todd.heartbeat` | 50.5 MB | **2026-07-25** — orphan, untouched for a month |
+| `debt.testing.heartbeat.retired-2026-08-23` | 32.6 MB | 2026-08-21, now retired |
+| `todd.testing.heartbeat.retired-2026-08-20` | 21.7 MB | 2026-08-20, retired |
+| `dev.testing.heartbeat` | 21.5 MB | live, seconds old |
+| `grammar.testing.heartbeat` | 14.2 MB | live |
+| `chat-lint.testing.heartbeat` | 12.2 MB | live |
+| `todd.stable.heartbeat` | 11.6 MB | live |
+| `grammar.heartbeat` | 6.9 MB | **2026-07-25** — orphan |
+| `grammar.stable.heartbeat` | 6.1 MB | live |
+| `chat-lint.stable.heartbeat` | 1.7 MB | live |
+| `todd.testing.heartbeat` | 0.2 MB | live, 8 min old |
+
+**The important part is the content, not the size.** The tail of
+`dev.testing.heartbeat` is not a timestamp:
+
+    ...(`fleet:9088cd80`) has incoherent mint/daemon join state after 173 minutes.
+    - fleet seat exists, but there is no `permission_grants` row ...
+    ","repeats":2,"nextNudgeAt":1787463998840}
+
+That is the bot's **finding dedup and nudge-scheduling state**. So the obvious remedy —
+*a heartbeat is a timestamp, overwrite it in place* — **would silently destroy the
+dedup state and re-nudge everything**, which is the 3am surprise, arriving from the
+other direction. Whoever fixes this has to separate the two concerns first: a liveness
+timestamp that may be overwritten, and durable per-finding state that may not.
+
+This is a `docs/naming-errata.md` candidate on its own: the name says heartbeat, the
+file is a bot state journal.
+
+**Two of the files are dead weight and are the largest.** `todd.heartbeat` (50.5 MB)
+and `grammar.heartbeat` (6.9 MB) have not been written since 2026-07-25 — they predate
+the environment-suffixed names and nothing writes them now.
+
+**Not fixed, deliberately, and nothing was truncated.** A bot's liveness check may read
+the tail of a live file, so emptying one underneath a running bot is unsafe. Recorded
+only.
+
+**One stale premise this retires:** `todd` *is* writing a heartbeat —
+`todd.testing.heartbeat` was 8 minutes old when measured. The report that it had stopped
+an hour earlier no longer holds; see the Fly-timeout section above for what is actually
+wrong with `todd`.
+
 ## Ledger rows without processes
 
 `tlda agent list` for testing shows **7 rows named `dev`** and **4 named `todd`**, all
