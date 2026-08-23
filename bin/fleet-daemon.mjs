@@ -821,7 +821,20 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
     // asks tmux whether the session is still listed and refuses to wake if it is,
     // because `kill-session` answers ok for an agent it could not place. Without
     // the name that check cannot run, which is the hole it was written to close.
-    const route = await resolveAgentRoute({ agent_id }).catch(() => null)
+    // `resolveAgentRoute` is SYNCHRONOUS — `createAgentRouteResolver` returns a
+    // plain function — so `.catch()` on its result is a TypeError, not a
+    // rejection handler. Written that way it threw before `rpcRestart` ran.
+    // Harmless as failures go, because nothing was killed, but the restart
+    // remedy did not happen at all.
+    let route = null
+    try {
+      route = resolveAgentRoute({ agent_id })
+    } catch (e) {
+      // Not fatal: without a session name `rpcRestart` loses its did-the-kill-
+      // happen check, which is worth reporting rather than worth aborting the
+      // remedy for.
+      log.warn(`[notification-symptom] ${agent_id}: no local route for the restart: ${e?.message || e}`)
+    }
     await rpcRestart({ agent_id, fleet_id: agent_id, tmux_session: route?.tmux_session })
     return { ok: true, agent_id, symptom, recorded: true, acted: true, action: 'restart' }
   } catch (e) {
