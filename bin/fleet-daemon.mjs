@@ -547,6 +547,18 @@ const sourceSync = createGitSyncManager({
     if (!admitted?.ok) throw new Error(`${project}: server did not confirm proposal admission`)
     log.info(`${project}: proposal admission confirmed id=${admitted.submissionId} state=${admitted.state} started_once=${admitted.startedOnce} lifecycle_present=${admitted.lifecyclePresent} reason=${admitted.terminalReason || 'none'}`)
   },
+  // A settle that leaves a tracked document out of the revision still reports
+  // success, and on the watcher path there is no command output for it to
+  // report into. `daemon-warning` is the one path from here to a person: the
+  // server turns it into a chat message. Severity stays default so this does
+  // not raise the per-document sync-error sentinel — nothing is broken, a file
+  // is simply not in the project.
+  onDocumentsDropped: ({ project, dropped }) => {
+    const them = dropped.length === 1 ? 'it' : 'them'
+    const message = `not in the revision — tracked in the checkout, but no document root reaches ${them}: ${dropped.join(', ')}. Reference ${them} from a document root, or add ${them} to the project's document roots.`
+    log.warn(`${project}: ${message}`)
+    sendMsg({ type: 'daemon-warning', project, warning: 'document-not-in-revision', message, dropped })
+  },
 })
 
 let lastInvalidSourceOwnerSignature = null

@@ -8,6 +8,10 @@ import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 
 const execFile = promisify(execFileCb)
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+// What this file means by a document: the candidate rule below, the
+// keep-scanning rule inside a closure, and the dropped-document report all ask
+// the same question, so they ask it in one place.
+const DOCUMENT_FILE = /\.(?:tex|md|qmd)$/i
 
 export function safeRefPart(value) {
   const part = String(value || '').replace(/[^A-Za-z0-9._-]+/g, '-')
@@ -84,7 +88,7 @@ export function createGitProjectSync({
       const paths = (await git(['ls-tree', '-r', '--name-only', workingCommit])).stdout.split('\n').filter(Boolean)
       const candidates = configuredRoots.length
         ? configuredRoots
-        : paths.filter(file => /\.(?:tex|md|qmd)$/i.test(file))
+        : paths.filter(file => DOCUMENT_FILE.test(file))
       if (!candidates.length) throw new Error(`${project}: no document roots in settled tree`)
       for (const candidate of candidates) {
         if (!paths.includes(candidate)) throw new Error(`${project}: configured document root is absent: ${candidate}`)
@@ -104,7 +108,7 @@ export function createGitProjectSync({
             : scanMarkdownDependencyClosure(document, extracted)
           for (const file of closure.files) {
             files.add(file)
-            if (/\.(?:tex|md|qmd)$/i.test(file) && !scanned.has(file)) pending.push(file)
+            if (DOCUMENT_FILE.test(file) && !scanned.has(file)) pending.push(file)
           }
           missing.push(...closure.missing)
         }
@@ -144,6 +148,18 @@ export function createGitProjectSync({
       const roots = candidates.filter(candidate => !pulled.has(candidate))
       if (!roots.length) throw new Error(`${project}: document dependency graph contains a cycle`)
       const members = new Set(roots.flatMap(root => [...closures.get(root)]))
+      // A tracked document no root reaches is not in the closure, so it is not in
+      // the revision. That is the design and this does not change it — what it
+      // changes is that the settle now says which documents it left behind.
+      //
+      // The person has already staged the file, so from where they stand they have
+      // done everything the app asks and the push answers SubmittedToBuildQueue,
+      // ok=true. Their only other evidence is the document never appearing.
+      //
+      // Distinct from the missing-dependency notes above: those are a root asking
+      // for a path that is not in the settled tree. This is a path that IS in the
+      // settled tree that no root asks for. Callers carry it out to a person.
+      const dropped = paths.filter(file => DOCUMENT_FILE.test(file) && !members.has(file))
       const index = path.join(archiveDir, 'index')
       const env = { ...process.env, GIT_INDEX_FILE: index }
       await git(['read-tree', '--empty'], { env })
@@ -162,7 +178,7 @@ export function createGitProjectSync({
       // revision with no local ancestor is a root commit instead; the person's
       // own workingCommit is already a parent candidate below.
       const parent = await rev(localRef)
-      if (parent && (await git(['rev-parse', `${parent}^{tree}`])).stdout.trim() === tree) return { commit: parent, tree, roots, members: [...members], changed: false }
+      if (parent && (await git(['rev-parse', `${parent}^{tree}`])).stdout.trim() === tree) return { commit: parent, tree, roots, members: [...members], dropped, changed: false }
       const args = ['commit-tree', tree, '-m', 'tlda project revision']
       const remoteParent = await rev('refs/tlda/remote/observed')
       const parents = []
@@ -180,7 +196,7 @@ export function createGitProjectSync({
       }
       for (const commit of parents) args.push('-p', commit)
       const commit = (await git(args)).stdout.trim()
-      return { commit, tree, roots, members: [...members], changed: true }
+      return { commit, tree, roots, members: [...members], dropped, changed: true }
     } finally {
       await fs.promises.rm(archiveDir, { recursive: true, force: true })
     }
@@ -247,7 +263,10 @@ export function createGitProjectSync({
     if (!settled) return { ok: false, status: 'empty-checkout' }
     const filtered = await filteredProjectCommit(settled)
     await git(['update-ref', localRef, filtered.commit])
-    return { ok: true, revision: filtered.commit, changed: filtered.changed, roots: filtered.roots, members: filtered.members }
+    if (filtered.dropped.length) {
+      log.warn?.(`${project}: not in the revision — tracked, but no document root reaches them: ${filtered.dropped.join(', ')}`)
+    }
+    return { ok: true, revision: filtered.commit, changed: filtered.changed, roots: filtered.roots, members: filtered.members, dropped: filtered.dropped }
   }
 
   async function pushRevision(revision, { forceRebuild = false } = {}) {
@@ -277,15 +296,17 @@ export function createGitProjectSync({
         git(['rev-parse', `${committed.revision}^{tree}`]),
         git(['rev-parse', `${shared}^{tree}`]),
       ])
-      if (oursTree.stdout.trim() === sharedTree.stdout.trim()) return { ok: true, status: 'equal-tree', revision: committed.revision }
+      if (oursTree.stdout.trim() === sharedTree.stdout.trim()) return { ok: true, status: 'equal-tree', revision: committed.revision, dropped: committed.dropped }
     }
-    return pushRevision(committed.revision)
+    // A push that reports success has to report what it left out in the same
+    // breath, so `dropped` rides every settle result a caller can reach.
+    return { ...(await pushRevision(committed.revision)), dropped: committed.dropped }
   }
 
   async function submitCurrent(options = {}) {
     const committed = await commitSettledTree()
     if (!committed.ok) return committed
-    return pushRevision(committed.revision, options)
+    return { ...(await pushRevision(committed.revision, options)), dropped: committed.dropped }
   }
 
   async function fetchHead(expected = null) {
