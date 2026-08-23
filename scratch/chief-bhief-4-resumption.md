@@ -258,6 +258,78 @@ filter would return.
   fresh identity every time. Measured: 66 shapes, 11 identities, eight minutes.
   Fix queued; it is a deletion, not a mechanism.
 
+## The lockups: what they were, and the two live fixes
+
+**His words: "SOMETHING SINCE SYNC", "REGRESSION AFTER REGRESSION".** He was right
+on both counts. Stall dumps in `/root/.config/tlda/lag-profiles` on the box —
+11,711 of them going back to 2026-07-25 — show the rate going from 46–250/day in
+early August to ~1,000/day from the 17th onward.
+
+**Cause, measured on an idle box in a 20-second window:**
+
+```
+86 slow queries logged
+76 of them the SAME agent lookup: WITH matches AS (SELECT id … WHERE lower(id) IN …)
+median 38ms, max 62ms   ·   3,302ms of query time in 20s  =  17% of the event loop
+```
+
+`lower(id)` wraps the column, so the index on `id` could not be used and every
+call scanned all 2,672 agent rows — **951 of which are dev probes.** Under load
+the same family was measured at 254ms.
+
+**Fix 1, live, no deploy:** an expression index.
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_agents_lower_id ON agents(lower(id));
+```
+
+```
+before  8.4ms per run   SCAN agents
+after   0.1ms per run   SEARCH agents USING idx_agents_lower_id
+same 20s window: 86 slow queries → 33, the agent lookup → 0, total 3,302ms → 1,418ms
+```
+
+**Fix 2, live, no deploy:** `buildMaxConcurrency: 1` in the box's `server.yaml`.
+**That machine has two cores** and the shipped default is 2, so two document
+builds could occupy both and leave nothing to answer requests with — every
+surface timing out at 20s while builds ran. The cost is real and is why the
+default is 2: at k=1 the only slot is the contested one, so finished work can
+starve behind an upstream editor. Backup at `server.yaml.bak-20260823`.
+
+**Two things this ruled OUT**, both of which I guessed at first and both wrong:
+
+- **Not builds.** 2026-08-22 had **18** builds and **1,020** stalls.
+- **Not logging volume.** 6 lines/sec, not a firehose.
+
+**Still open and not fixed:** a build should not be able to starve the server at
+all, and the build still fires on every accept because the sync rewrite dropped
+the question — `docs/what-the-old-push-did.md` §2.
+
+## Probes: cheap to run, expensive to keep
+
+**951 live `dev-probe` rows against 2,672 agents** — more than a third of his
+roster is one bot's fixtures, at ~1,400/day, 23,018 ids in the name index.
+
+**They cost no money.** `dev-bot.mjs` makes zero model calls — the once-a-minute
+probes are `reserve-shell` + `login` + a chat over a socket. The only billable
+ones are the spawn/wake and notification-consumption canaries, which launch real
+seats on a 30-minute cadence.
+
+**What they do cost is the agents table**, which is what made the query above
+slow. Clutter and lockups were the same problem.
+
+**Stopped by renaming**, which is the sanctioned stop — `dev` → `quiet-dev`,
+`todd` → `quiet-todd`. **A rename only takes effect at start**, so the bot must
+be restarted for it to go inert; `dev` kept noticing for an hour until restarted.
+
+**`TLDA_DEV_BOT_DISABLED_CHECKS` does not work.** `doc-render` and
+`file-materialization` were both in it and both created projects 17 seconds after
+a bot restart, and again after a manager restart. Do not reach for it.
+
+**His design for the panel clutter, 2026-08-23:** a `hidden` metadata property set
+at mint, and the agents panel does not render those rows. `roster` still can.
+Needs a deploy; not built.
+
 ## Ruled out — do not re-derive these
 
 - **The 15:07Z "crash escalation" never happened to him.** It was an agent's own
