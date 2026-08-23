@@ -9,10 +9,11 @@ gitignored and the next person needs to run this window, not redo the reasoning.
 | | |
 |---|---|
 | deployed sha | `027d5d940`, built 2026-08-22T10:21:47Z |
-| `main` | `f94cee089` — four fixes staged on top of the deployed sha |
+| `main` | **`48b089182`** — five fixes staged on top of the deployed sha |
 | `tsc -b` on `main` | **exit 0**, read from tsc's own status |
+| new suites | `figure-bbox.test.mjs` 10/10; the format-dump test PASS |
 | deploy command | `git push /Users/skip/work/deploy/testing HEAD:refs/heads/main` |
-| waiting on | `notify-ship`'s `figure-bbox`, and Skip's word on timing |
+| waiting on | **Skip's word on timing, and nothing else** |
 
 ## What is staged, and why each is in
 
@@ -37,11 +38,29 @@ notification scored as `mcp-ack-timeout` — the same string a wedged process
 produces. 1730 of 1922 wake fallbacks over ~49h carried `deadline_ms=2000`.
 Now `5s`. Owner `notification-reliability`, extracted by `notify-ship`.
 
-**Not yet landed: `figure-bbox`.** A LaTeX document with PNG or PDF figures
-cannot build at all — `findSvgFigures` only writes the `.bb` sidecar for `.svg`,
-and DVI-mode `latex` cannot size a raster without one. Rasters already *render*
-once sized: `scripts/patch-svg-images.mjs` embeds them into the page SVG as data
-URIs. PDF figures additionally need a PDF→SVG conversion or they render blank.
+**`a23a8bb9b` — a LaTeX document with PNG or PDF figures could not build at all.**
+`findSvgFigures` only wrote the `.bb` sidecar for `.svg`, and DVI-mode `latex`
+cannot size a raster without one. Rasters already *rendered* once sized —
+`patch-svg-images.mjs` embeds them as data URIs — so the only real gap beyond
+sizing was PDF, now converted with `pdftocairo` through the existing `inlineSvg`.
+**No client change.** Proven on a disposable 8-figure project by asking the DOM
+what it painted, plus a three-form regression table showing the SVG path
+unchanged against `main`. Owner `notify-ship`.
+
+**`48b089182` — a failed format dump now says what it could not resolve.**
+`trackedExec` rejected with the bare error from `exec`, which does not attach
+stdout — and for a TeX command the stdout *is* the error. Paired with the
+keeps-its-log fix deliberately: that one makes the log reach the user, this one
+makes its first line the cause instead of `Command failed: pdflatex -ini …`.
+Owner `sync-build`.
+
+## Known and deliberately not fixed
+
+**`\includegraphics{fig.svg}` has never worked** — no graphics rule, no extension
+list entry — and fails identically on the deployed sha, so this window does not
+introduce it. The `.bb` sidecar already exists, so it is one
+`\DeclareGraphicsRule{.svg}{eps}{.bb}{}` whenever someone wants it. Held because
+it changes an existing path and nothing needed it tonight.
 
 ## Two things that would make this deploy inert or wrong
 
