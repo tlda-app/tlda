@@ -1,3 +1,13 @@
+// FIRST IMPORT, and it has to be, as a side-effecting import rather than a call.
+// ES imports are HOISTED — every import in this file is evaluated before any
+// statement in its body — so `installCrashBeacon()` written between the imports
+// would run after `App.tsx` had already been evaluated, and would miss anything
+// thrown while App's module graph was still loading. That is exactly the class
+// that takes the whole page down before a boundary or a batched log can exist.
+// Import order is the only thing that sequences this, which is why
+// `./frame-probe` below is written the same way.
+import './crashBeacon'
+
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
