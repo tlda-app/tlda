@@ -18,8 +18,11 @@
  * Processes all page-*.svg files in svg-dir, looking for image files in source-dir.
  */
 
-import { readdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
+import { readdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs'
 import { join, extname, basename } from 'path'
+import { execFileSync } from 'child_process'
+import { createHash } from 'crypto'
+import { tmpdir } from 'os'
 
 const SVG_DIR = process.argv[2]
 const SRC_DIR = process.argv[3]
@@ -222,6 +225,40 @@ function inlineSvg(svgContent, x, y, width, height) {
 }
 
 /**
+ * Convert a PDF figure to SVG so it can go through the inline path.
+ *
+ * A PDF figure is vector art the author drew, and the whole inlineSvg machinery
+ * below — including the font namespacing, which its own comment says exists for
+ * "PDF→SVG figures" — is already built for exactly this content. So the PDF is
+ * converted rather than embedded as a raster, and quality is preserved.
+ *
+ * Returns null when pdftocairo is unavailable or fails; the caller then reports
+ * the figure as unsupported, which is the behaviour before this path existed.
+ * Cached per process because the patcher runs once per rendered page and the
+ * same figure would otherwise be converted again for every page it appears on.
+ */
+const pdfSvgCache = new Map()
+function pdfToSvg(pdfPath) {
+  if (pdfSvgCache.has(pdfPath)) return pdfSvgCache.get(pdfPath)
+  const out = join(tmpdir(), `tlda-figpdf-${createHash('sha1').update(pdfPath).digest('hex').slice(0, 16)}.svg`)
+  let svg = null
+  try {
+    // -f/-l 1: a figure is its first page. Anything else is not a figure.
+    execFileSync('pdftocairo', ['-svg', '-f', '1', '-l', '1', pdfPath, out], { stdio: ['ignore', 'ignore', 'pipe'] })
+    svg = readFileSync(out, 'utf8')
+  } catch (e) {
+    console.log(`  [patch] PDF→SVG failed for ${pdfPath}: ${e.message.split('\n')[0]}`)
+  } finally {
+    // Best-effort cleanup of a temp file we already read. Failing to unlink it
+    // must not fail the figure — the SVG is in hand by this point, and the
+    // worst case is one stale file in the OS temp dir.
+    try { if (existsSync(out)) unlinkSync(out) } catch { /* temp file, already read */ }
+  }
+  pdfSvgCache.set(pdfPath, svg)
+  return svg
+}
+
+/**
  * Build a replacement SVG element for an image.
  */
 function buildReplacement(placeholder, srcDir) {
@@ -240,6 +277,12 @@ function buildReplacement(placeholder, srcDir) {
       imagePath = svgPath
       ext = '.svg'
     }
+  }
+
+  // A real PDF figure with no SVG beside it: convert it and inline the result.
+  if (imagePath && ext === '.pdf') {
+    const converted = pdfToSvg(imagePath)
+    if (converted) return inlineSvg(converted, x, y, width, height)
   }
 
   if (!imagePath) {
