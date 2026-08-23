@@ -58,6 +58,28 @@ convincing shape on this page, because nothing about the number looks wrong.
   current. (See [Naming errata](naming-errata.md) §`~/.config/tlda/<bot>.<env>.log`,
   which is a different lie about the same files.)
 
+**2026-08-23 — the same shape with a file instead of a process, four times in one
+night.** Each person read a real file, reasoned correctly about it, and was
+describing a copy that does not run:
+
+| who | read | asserted about |
+|---|---|---|
+| chief | `shared/latex-deps.mjs` | the live closure walk — that module has **one** occurrence in the tree, its own test |
+| chief | `bin/websocket-boundary-guard.mjs` allow-list | a count that its own author's later deletion had already falsified |
+| `notify-ship` | `latex-deps.mjs` line numbers | the live path, independently, minutes apart from the chief |
+| advocate | `tlda-fork-swap`'s `dev-bot.mjs` | production — while enforcing the tree-naming rule on someone else |
+
+**This is not four discipline failures.** A repository with a dozen worktrees of
+the same file makes "the copy I opened" and "the copy that runs" indistinguishable
+at a glance, and `git grep` without a ref reads whichever branch the checkout is
+sitting on. **The path of least resistance produces the error.**
+
+**The check, and it is two commands:** name the ref (`git grep <literal> main`),
+and count production callers of the entry point before changing it — with a
+known-live sibling as the control. On 2026-08-22 that check was the only thing
+that stopped a fix landing in a module nothing calls, where every test would have
+gone green.
+
 **The check:** before reading a process's environment, establish *which process*.
 A workaround usually runs alongside the thing being fixed and will happily answer
 the question you meant to ask about the other one. Discriminate by parentage or
