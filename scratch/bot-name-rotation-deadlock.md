@@ -192,3 +192,33 @@ deliberately NOT run**, at 02:10 local, on a box that took an hour to come down
 from load 15. Restarting the supervisor is what re-mints bots, and a name-keyed
 re-mint is the loop documented at the top of this file. Worth doing awake, with
 `bots.yaml` checked first.
+
+## After the manager restart: still unfixed, and a claim to retract
+
+`chief-advocate-2`, 06:55Z. The supervisor is back (see above) and **the rotation
+deadlock this file opens with is untouched by that.** Measured after the restart:
+
+```
+quiet-todd   awake  seen 1s  model todd    ← running under a rotated name, therefore INERT
+dev          awake  seen 1s  model dev     ← canonical, working
+```
+
+**Retracting a claim I made to Skip at 06:53Z:** *"that was the last thing I knew
+was broken and hadn't fixed."* False, and false against my own message to him at
+02:46Z, which said every bot except `dev` runs inert under a rotated name. The
+manager being dead was a **second, separate** fault layered on this one; fixing it
+restored supervision and restored nothing else.
+
+**`supervising 11 bot(s)` must not be read as "the bots work."** It counts what the
+manager is watching. `quiet-todd` is supervised *and* deliberately doing nothing —
+the canonical-name guard firing as designed. **The count cannot distinguish a
+working bot from an inert one, so it is not evidence about either.** Same shape as
+`seen 4s` on a ledger row with no process, and as launchd reporting `state =
+running` for a supervisor that had been gone 73 minutes.
+
+**The fix is written and is his, in `AGENTS.md` §"One bot of a model, for its whole
+life": key the existence check on the MODEL, not the name.** Keyed on the name, a
+rename manufactures a vacancy and a hibernating holder blocks the mint forever —
+which is this file. Not done tonight: it is code in `~/work/tlda-bots`, whose
+working copy IS the deployment, and 3am is the wrong time to edit a supervisor by
+hand.
