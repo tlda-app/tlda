@@ -132,6 +132,19 @@ replaces the whole list.
 a declared directory — *everything under `paper/` is a document*. Unanswered as
 of writing.
 
+**Correction, established after the above and after I had already put the
+general finding to him: the document he was editing today IS a configured
+document root**, and its bytes are on the server, current. Sync works for it.
+The silent-drop defect is real and general; **it was not his case.** What died
+this morning was a *second* copy — the chat-materialized part of the same file.
+Do not carry "his document does not sync" forward. It does.
+
+**And that same fact is the load story.** His project has three document roots;
+the render's `relevant-files.json` holds 25 paths, all `.tex`, and the markdown
+root is not among them. So every edit to it dispatches a full compile that does
+not read it — which is precisely `outside-tree`, the one verdict the unused
+filter would return.
+
 ## Standing facts worth not re-deriving
 
 - **His tab, read-only, over `air-agent`.** `ssh -N -L 9222:localhost:9222
