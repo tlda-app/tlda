@@ -4882,7 +4882,10 @@ app.use('/docs', (req, res, next) => {
             ? await markdownDocumentColumnForOutputFile(name, filePath, { srcDir })
             : null)
         if (column) {
-          const source = await fs.promises.readFile(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
+          // Read against the root the column was listed from. A part lives under
+          // the parts root and a project document under `source/`; hardcoding
+          // `source/` here read the wrong directory for a part.
+          const source = await fs.promises.readFile(join(column.sourceRoot, column.sourceFile), 'utf8')
           let macros = {}
           const texBase = /\.tex$/i.test(project.mainFile || '')
             ? basename(project.mainFile, '.tex')

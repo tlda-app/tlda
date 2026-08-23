@@ -70,7 +70,12 @@ export async function markdownProjectRootColumn(name, sourceFile, { srcDir = get
 // markdown (e.g. a LaTeX/svg project's scratch/notes parts). Excludes the
 // project's own main-document concept entirely — that's rendered by
 // whatever pipeline already owns this project's format.
-export async function listProjectPartColumns(name, { srcDir = getSourceDir(name) } = {}) {
+// `srcDir` is accepted for signature compatibility with the other column
+// listers and deliberately not used to read a part: a part's `path` is relative
+// to the PARTS root, which is no longer the source directory. Reading it against
+// `srcDir` is how a part would silently vanish from this list — addMarkdownColumn
+// returns on ENOENT rather than throwing.
+export async function listProjectPartColumns(name, { srcDir: _srcDir = getSourceDir(name) } = {}) {
   const columns = []
   const manifestRoot = projectPartsRoot(name)
   const manifest = await readProjectPartsManifestAsync(manifestRoot)
@@ -80,7 +85,7 @@ export async function listProjectPartColumns(name, { srcDir = getSourceDir(name)
     await addMarkdownColumn(columns, {
       sourceFile,
       outputFile: markdownColumnFileForSource(sourceFile),
-      srcDir,
+      srcDir: manifestRoot,
       title: part.title,
       partId: part.id,
       kind: part.kind,
@@ -137,6 +142,11 @@ async function addMarkdownColumn(columns, { sourceFile, outputFile, srcDir, titl
     id: partId || sourceFile,
     format: 'markdown',
     sourceFile,
+    // The directory `sourceFile` is relative to. Carried on the column because
+    // parts and project documents no longer share a root, and a renderer that
+    // assumes `source/` reads the wrong file for one of them. Set from the
+    // srcDir this column was actually listed against, never inferred.
+    sourceRoot: srcDir,
     outputFile,
     file: outputFile,
     width: kind === 'task-doc' ? TASK_DOC_COLUMN_WIDTH : DEFAULT_COLUMN_WIDTH,

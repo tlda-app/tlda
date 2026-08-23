@@ -77,6 +77,12 @@ function restoreAside(live, held) {
 // reconstruct from a call site: a failed build must never replace a working
 // render, so `source`, `output` and `build-cache` are absent by construction
 // and cannot be added by editing a caller.
+// The items publishing REPLACES wholesale: each is renamed aside and swapped
+// for the build instance's copy. Anything living inside one of these does not
+// survive a build unless the revision named it. Exported so the containment
+// test reads this list rather than a second copy of it that can drift.
+export const PUBLISH_REPLACED_ITEMS = Object.freeze(['source', 'output', 'build-cache', 'build.log', 'latex.log'])
+
 const BUILD_DIAGNOSTIC_FILES = ['build.log', 'latex.log']
 
 /**
@@ -135,7 +141,7 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
       if (currentHead !== expectedHead || (currentHead && !await git.isAncestor(currentHead, sourceRevision))) {
         return { published: false, stale: true, sourceRevision, currentHead }
       }
-      for (const item of ['source', 'output', 'build-cache', 'build.log', 'latex.log']) {
+      for (const item of PUBLISH_REPLACED_ITEMS) {
         old[item] = moveAside(join(liveProject, item), transaction, item)
         const staged = join(transaction, `new-${item}`)
         if (existsSync(staged)) renameSync(staged, join(liveProject, item))
@@ -157,7 +163,7 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
       return { published: true, sourceRevision, previousHead: expectedHead }
     } catch (error) {
       if (!headMoved) {
-        for (const item of ['source', 'output', 'build-cache', 'build.log', 'latex.log']) {
+        for (const item of PUBLISH_REPLACED_ITEMS) {
           restoreAside(join(liveProject, item), old[item])
         }
       }
@@ -182,7 +188,7 @@ export async function recoverBuildPublications() {
       const git = await (await sourceLifecycleStore(project.name)).gitRepository()
       const head = await git.head(project.name)
       if (head !== marker.sourceRevision) {
-        for (const item of ['source', 'output', 'build-cache', 'build.log', 'latex.log']) {
+        for (const item of PUBLISH_REPLACED_ITEMS) {
           restoreAside(join(liveProject, item), join(transaction, `old-${item}`))
         }
       }
