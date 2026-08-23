@@ -533,3 +533,24 @@ read a copy of his own document for half a morning.
 **Not renamed:** it is a live path with call sites in the materializer, the
 task-doc materializer and `POST /:name/task-doc/refresh`. `lastCleanSync` carries
 the same misleading word.
+
+## `project-git-remote` — the daemon operation channel, most of which is not about remotes
+
+The daemon operation named `project-git-remote` dispatches `list`, `add`,
+`delete`, `pull`, `push` and `checkout`, which are remote operations, and also
+`read-file` and `repo-path`, which are not. Those two are questions only the
+machine holding the checkout can answer — *what does this revision say* and *is
+this path in the repository, and tracked* — and this is the route that reaches
+that machine.
+
+**The name matters because it hides the route.** Somebody needing to ask a
+machine-local git question searches for a way to reach the daemon, does not think
+to look inside a "remote" dispatcher, and builds a second path to the same
+answer — or worse, answers it server-side from a path string, which cannot work:
+the server strips `sourceDir` from every shared project on purpose, so it does
+not know where anyone's tree lives.
+
+**Not renamed:** the operation name crosses the server's `sendProjectSourceDaemon`
+callers, the daemon dispatcher, and the ephemeral message type on the wire between
+them, so a rename is a live-path change on both sides of a socket. This entry
+exists so the next person looking for that route finds it.
