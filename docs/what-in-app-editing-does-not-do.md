@@ -94,31 +94,45 @@ server where builds run. It establishes the failure class and the path from it t
 symptom. It does **not** name which input is unresolvable in any particular server build;
 that needs a server build log for a fixture, which finding 4 currently prevents.
 
-## 4. `tlda project link` cannot create a working project
+## 4. `tlda project link` fails when the repo's newest commit is named `init`
 
-Reproduced 2 for 2, from two different directories — the second in `~/worktrees`
-specifically because this box rewrites `$TMPDIR`, so the first failure could have been
-environmental. It was not.
+**Corrected 2026-08-23. The first version of this section said `link` could not create a
+working project at all. That was wrong, and the error was mine:** both my probe fixtures
+were built with `git commit -m init`, which is the one commit message that triggers this.
+Reproducing it twice in two directories proved only that I had made the same fixture twice.
+The controlled test — same fixture, message the only variable:
 
-```
-Created project "<name>".
-Error: adopted ref for <name> produced no versions
-```
+| repo's only commit message | `tlda project link` |
+|---|---|
+| `init` | **fails**, `adopted ref … produced no versions` |
+| `initial content` | **succeeds**, project builds and serves |
 
-What it leaves is a **half-created project**: listed by `GET /api/projects`, but with
-`sourceRevision=null`, `acceptSeq=null`, `pages=0`, `buildStatus=unknown` and no shadow
-commits — and `tlda project push` from its own checkout then answers
+**The mechanism is a filter applied after a limit.** `listVersions` in
+`server/lib/shadow-repo.mjs` runs `git log -n <limit>` and *then* drops entries whose
+message is exactly `init` — the intent being to skip the shadow repo's own synthetic init
+commit. `adoptShadowHistoryRef` (`server/lib/build-runner.mjs`) calls it with `limit: 1`.
+So for a repository whose newest commit is named `init`, the one row the query returns is
+the row the filter removes, the result is empty, and adoption throws.
+
+This is AGENTS.md §"A search path translates the query and runs it" in a different file: a
+predicate evaluated after `LIMIT` does not make a query slow, it makes it wrong, and it is
+wrong only for particular inputs — which is why it survives.
+
+**A real user hits this**, since `init` is an ordinary first-commit message. But it is a
+narrow input-dependent failure, not a general inability to create projects.
+
+When it does fail it leaves a **half-created project**: listed by `GET /api/projects`, but
+with `sourceRevision=null`, `acceptSeq=null`, `pages=0`, `buildStatus=unknown` and no
+shadow commits — and `tlda project push` from its own checkout then answers
 `Error: Project not found`.
 
-It fails **at the versioning step**, which is the same subsystem as the flat commit count
-in finding 1. Treat them as one fault until something shows otherwise.
-
-**An already-established project still pushes and builds.** This is creation-time only.
+**This is not the same fault as the flat commit count in finding 1**, which the first
+version of this section speculated it might be. Finding 1 is measured on projects that
+adopted history successfully.
 
 ## State left behind by this investigation
 
-- The throwaway `syncdrift-21a4e891-50619` is **left unlinked**, deliberately. Relinking
-  would go through the broken `link` path and risked damaging the fixture rather than
-  restoring it.
+- The throwaway `syncdrift-21a4e891-50619` is **left unlinked**. The original reason given
+  here — that `link` was broken — was wrong (see finding 4); relinking it is fine.
 - Two empty projects, `soleedit-1787441352` and `soleedit2-1787441452`, are artifacts of
   finding 4. They are kept as evidence of it rather than deleted.
