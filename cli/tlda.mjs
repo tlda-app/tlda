@@ -321,6 +321,24 @@ const red    = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
 const bold  = (s) => isTTY ? `\x1b[1m${s}\x1b[0m` : s
 const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
+// What syncs is the transitive closure of the project's document roots, so a
+// tracked file no root reaches is not in the revision. The submission says which
+// ones those were, and this is the only moment the person who ran the command is
+// looking: without it they staged the file, were told the push succeeded, and
+// find out when the document never appears.
+export function printDocumentsNotInRevision(submission) {
+  const dropped = submission?.dropped || []
+  if (!dropped.length) return
+  console.log(yellow(`Not in the revision — tracked, but no document root reaches ${dropped.length === 1 ? 'it' : 'them'}:`))
+  for (const file of dropped) console.log(yellow(`  ${file}`))
+  console.log(dim('  Reference from a document root, or add to the project\'s document roots.'))
+}
+
+function printSubmittedRevision(submission) {
+  console.log(green(`Submitted ${String(submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
+  printDocumentsNotInRevision(submission)
+}
+
 function printPushBuildStatus(result, unchangedMessage = 'No changes detected.') {
   if (result.unchanged) {
     console.log(dim(unchangedMessage))
@@ -577,7 +595,7 @@ async function cmdScratch() {
   }
   const projectMetadata = await api('GET', `/api/projects/${name}`)
   const linked = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, projectMetadata })
-  console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
+  printSubmittedRevision(linked.submission)
 
   // Auto-join book
   try {
@@ -733,7 +751,7 @@ async function cmdCreate() {
       if (artifact.missing.length > 10) console.warn(dim(`    ... ${artifact.missing.length - 10} more`))
     }
 
-    console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
+    printSubmittedRevision(linked.submission)
 
     const server = getServer()
     console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
@@ -783,7 +801,7 @@ async function cmdCreate() {
       process.exit(1)
     }
 
-    console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
+    printSubmittedRevision(linked.submission)
 
     const server = getServer()
     console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
@@ -863,7 +881,7 @@ async function cmdCreate() {
     }
     collectQmdDir(dir)
 
-    console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
+    printSubmittedRevision(linked.submission)
 
     const server = getServer()
     console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
@@ -899,7 +917,7 @@ async function cmdCreate() {
       const labels = closure.missing.slice(0, 5).map(item => `${item.from} → ${item.ref}`)
       console.log(dim(`  Skipped ${closure.missing.length} unresolved local ref(s): ${labels.join(', ')}${closure.missing.length > 5 ? '…' : ''}`))
     }
-    console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
+    printSubmittedRevision(linked.submission)
 
     const server = getServer()
     console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
@@ -931,7 +949,7 @@ async function cmdCreate() {
     }
   }
   const linked = await activateLocalSource([mainFile], { forceRebuild: updatedExistingProject })
-  console.log(green(`Submitted ${String(linked.submission?.revision || '').slice(0, 7)} through the daemon Git remote.`))
+  printSubmittedRevision(linked.submission)
 
   const server = getServer()
   console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
@@ -958,6 +976,7 @@ async function cmdPush() {
 
   console.log(`Submitting to "${name}"...`)
   printPushBuildStatus(linked.submission, 'No changes detected (use `tlda build` to force a rebuild).')
+  printDocumentsNotInRevision(linked.submission)
 
   // Auto-join book group from .tlda-book config in source dir
   const bookConfigPath = join(dir, '.tlda-book')

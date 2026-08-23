@@ -15,7 +15,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000, onProposalSubmitted = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
 
@@ -80,6 +80,20 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     })
     const watchedMembers = new Set()
     let watcher
+    // A settle driven by the file watcher has nobody at a terminal reading its
+    // return value, so the documents it left out are said out loud instead. Only
+    // when the set CHANGES: the same settle runs on every save, and a warning
+    // that repeats on every save is one people stop reading — which is the same
+    // silence one layer up. This is the shape reportInvalidProjectSourceOwners
+    // already uses in bin/fleet-daemon.mjs for the same reason.
+    let reportedDropped = null
+    async function reportDroppedDocuments(dropped = []) {
+      const signature = dropped.join('\n')
+      if (signature === reportedDropped) return
+      reportedDropped = signature
+      if (!dropped.length) return
+      await onDocumentsDropped({ project: item.project, sourceDir: item.sourceDir, dropped })
+    }
     async function refreshWatchedMembers() {
       const next = new Set((await sync.members()).map(file => path.join(item.sourceDir, file)))
       const added = [...next].filter(file => !watchedMembers.has(file))
@@ -103,6 +117,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
           if (result && result.ok === false) {
             log.warn(`${item.project}: proposal not accepted: ${result.status || 'unknown'}`)
           }
+          if (result?.ok) await reportDroppedDocuments(result.dropped || [])
           await refreshWatchedMembers()
         } catch (error) {
           // Keep the watcher live after a rejected proposal so a later member edit can repair it.
