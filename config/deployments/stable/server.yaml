@@ -39,20 +39,20 @@ uploadDir: /app/server/persist/uploads
 # a notice -- deliverChannelNotice (<=1000ms) then acknowledgeWakeChannelNotice
 # (<=1000ms), one after the other.
 #
-# THE VALUE BELOW DOES NOT SATISFY THAT, AND THAT IS DELIBERATE. 2s is exactly
-# the two client budgets summed, and the server's clock starts before the notice
-# leaves it, so this deadline must also cover the trip out and the ack back. A
-# delivery that fully succeeds cannot acknowledge in time, and the overrun is
-# recorded as `mcp-ack-timeout` -- the same string a wedged process produces.
+# THIS RAN AT 2s FOR MONTHS AND 2s COULD NEVER WORK. It is exactly the two
+# client budgets summed, while the server's clock also has to cover the trip out
+# and the ack back -- so a delivery that fully succeeded could not acknowledge in
+# time, and the overrun was recorded as `mcp-ack-timeout`, the same string a
+# wedged process produces. A healthy agent was indistinguishable from a dead one.
+# 5s clears the serial budget with room for both network legs.
 #
-# It is 2s because that is what was already running. Moving the setting out of
-# the code is settled; THE NUMBER IS NOT, and it is Skip's -- see
-# docs/notifications-and-liveness.md "What is not settled", item 1. Raising it
-# is not a free win either: the largest single source of these timeouts is a bot
-# with no acknowledge path at all, for which a longer deadline only means waiting
-# longer to reach the same outcome.
+# RAISING IT IS NOT A FREE WIN. The largest single source of these timeouts
+# measured on this fleet was one bot holding a socket with no acknowledge path in
+# its code at all -- 88% of them. A longer deadline does not turn those into
+# successes, it makes each take longer to reach the same outcome. The fix for
+# that population is the bot. See docs/notifications-and-liveness.md "Errata".
 #
 # The unit is part of the value (the `batch(15s)` precedent, same parser). A
-# bare `2` is an error, not a default in some unit you have to guess.
+# bare `5` is an error, not a default in some unit you have to guess.
 notifications:
-  ackTimeout: 2s
+  ackTimeout: 5s

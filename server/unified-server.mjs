@@ -5885,30 +5885,31 @@ const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
 // `acknowledgeWakeChannelNotice` (≤1000ms), one after the other in
 // `fleet-tools.mjs`.
 //
-// **TODAY'S VALUE DOES NOT SATISFY IT, DELIBERATELY.** 2s is exactly the two
+// **WHY 5s AND NOT THE 2s THIS RAN AT FOR MONTHS.** 2s is exactly those two
 // client budgets summed, and the server's clock starts before the notice leaves
-// it, so the deadline must also cover server→MCP and MCP→server transit. A
-// delivery that fully succeeds therefore cannot acknowledge in time, and the
-// overrun records as `mcp-ack-timeout` — the same string a wedged process
-// produces.
+// it, so the deadline must also cover server→MCP and MCP→server transit. At 2s a
+// delivery that fully succeeded could not acknowledge in time — the overrun
+// recorded as `mcp-ack-timeout`, which is the same string a wedged process
+// produces, so a healthy agent was indistinguishable from a dead one. 5s clears
+// the serial budget with room for both network legs.
 //
-// This move is placement only. **The number is Skip's**, listed as open in
-// `docs/notifications-and-liveness.md` §"What is not settled" item 1, so this
-// preserves the behaviour that was already running rather than picking a new
-// one. `ack-timeout-config.test.mjs` pins the degenerate relationship so that
-// changing the value cannot happen silently — it is a live question, not a
-// forgotten one.
+// **Raising it is not a free win and nobody should read it as one.** The largest
+// single source of these timeouts measured on this fleet was one bot holding a
+// `/ws/fleet` socket with no acknowledge path in its code at all — 88% of them.
+// A longer deadline does not convert those into successes; it makes each one take
+// longer to reach the same outcome. The fix for that population is the bot, not
+// this number. See `docs/notifications-and-liveness.md` §"Errata".
 //
 // Unit-bearing, per the `batch(15s)` precedent and via the same parser — a bare
 // `2` is an error, not a default in some unit the reader has to guess.
-const WAKE_MCP_ACK_DEADLINE_DEFAULT = '2s'
+const WAKE_MCP_ACK_DEADLINE_DEFAULT = '5s'
 const WAKE_MCP_ACK_DEADLINE_MS = (() => {
   const configured = serverRuntimeConfig?.notifications?.ackTimeout
   if (configured != null) {
     const ms = parseDurationMs(configured)
     // Loud rather than defaulted. An unset value presenting as a missing feature
     // instead of an error is the exact history `server.yaml`'s own header
-    // records, and a misspelled duration silently becoming 2s is that again.
+    // records, and a misspelled duration silently becoming 5s is that again.
     if (!ms) throw new Error(`server.yaml notifications.ackTimeout must be a duration with a unit (e.g. 5s, 250ms); got ${JSON.stringify(configured)}`)
     return ms
   }
@@ -6038,25 +6039,24 @@ async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}
 // own socket and nothing else — no claim about processes, which are the
 // daemon's business and not the server's to model.
 //
-// THESE FOUR NAMES ARE PROVISIONAL AND ARE NOT SKIP'S LIST. He enumerated
-// THREE symptoms in `docs/notifications-and-liveness.md` §"The back-off":
+// FOUR NAMES FOR THE THREE SYMPTOMS IN THE SPEC, and the difference is
+// deliberate. `docs/notifications-and-liveness.md` §"The back-off" enumerates:
 // the socket is closed; the MCP ack failed; the MCP acked and then nothing ever
-// came back. These four differ from that on both sides —
+// came back.
 //
 //   `no-channel`      no socket at all       ⎫ his "the socket is closed",
-//   `channel-closed`  a socket that closed   ⎭ split in two
-//   `channel-silent`  the deadline expired   ← his "ack failed" AND
-//                                              "acked then nothing", merged
-//   `channel-refused` the MCP said no        ← not on his list; it exists
-//                                              because of the nack, without
-//                                              which a healthy refusal is
-//                                              reported as a failure that did
-//                                              not happen
+//   `channel-closed`  a socket that closed   ⎭ kept apart
+//   `channel-silent`  the deadline expired
+//   `channel-refused` the MCP said no
 //
-// The split and the merge may both be improvements. They are still a naming
-// decision of his, sitting in code as a default, so they are marked rather than
-// left to become permanent by silence. Expect a rename; when it comes, delete
-// this paragraph in the same commit.
+// **The split is real because these are different facts about the server's own
+// socket, which is the only thing it is allowed to report.** Never having had a
+// channel and having had one that closed are distinguishable without knowing
+// anything about the far end — and the daemon's two jobs differ between them.
+// Collapsing them would mean reporting a state the server did not observe.
+//
+// `channel-refused` exists because of the nack: without it, a healthy MCP that
+// declines a notice is reported as a failure that did not happen.
 const NOTIFICATION_SYMPTOM_BY_REASON = {
   'no-open-mcp-socket': 'no-channel',
   'mcp-socket-closed': 'channel-closed',

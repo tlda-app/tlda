@@ -29,28 +29,23 @@ test('every deployment declares an ack timeout, with a unit', () => {
   }
 })
 
-// This asserts what is TRUE today rather than what ought to be, and it is
-// deliberate. The declared value does NOT exceed the MCP's serial budget, so a
-// fully successful delivery cannot acknowledge in time — see the comment beside
-// `WAKE_MCP_ACK_DEADLINE_DEFAULT`. Asserting the constraint instead would be
-// asserting a property the system does not have, and a red suite is not a way to
-// record an open question.
-//
-// So the degenerate relationship is PINNED. Changing the number turns this red,
-// which is the point: it makes the change deliberate and sends whoever made it
-// to `docs/notifications-and-liveness.md` §"What is not settled" item 1, where
-// the number is Skip's to choose. Delete this test in the commit that settles it.
-test('the declared ack timeout is still the known-degenerate value', () => {
+// The value is settled, so this asserts the constraint rather than pinning the
+// number. An earlier version of this test pinned 2s instead — that was correct
+// while the decision was open, because asserting a property the system did not
+// have would have meant a red suite standing in for a question. The question is
+// closed and the constraint is now true, so the constraint is what gets checked.
+test('every deployment ack timeout exceeds the MCP serial notice budget', () => {
   for (const env of DEPLOYMENTS) {
     const config = YAML.parse(readFileSync(join(repoRoot, 'config', 'deployments', env, 'server.yaml'), 'utf8'))
-    const ms = parseDurationMs(config?.notifications?.ackTimeout)
+    const declared = config?.notifications?.ackTimeout
+    const ms = parseDurationMs(declared)
     assert.ok(
-      ms <= MCP_SERIAL_BUDGET_MS,
-      `${env}: ackTimeout is now ${ms}ms, above the MCP's serial notice budget (${MCP_SERIAL_BUDGET_MS}ms). ` +
-      'That may well be right — it is the open question in "What is not settled" item 1 — but it is Skip\'s call, ' +
-      'and raising it is not free: the largest single source of these timeouts is a bot with no acknowledge path, ' +
-      'for which a longer deadline only means waiting longer to reach the same outcome. ' +
-      'If he has settled it, delete this test in the same commit.',
+      ms > MCP_SERIAL_BUDGET_MS,
+      `${env}: ackTimeout ${declared} (${ms}ms) must EXCEED the MCP's serial notice budget (${MCP_SERIAL_BUDGET_MS}ms) — ` +
+      'deliverChannelNotice (≤1000ms) then acknowledgeWakeChannelNotice (≤1000ms), one after the other, plus the trip ' +
+      'out and the ack back. At or below it, a delivery that fully succeeded is scored as `mcp-ack-timeout`, which is ' +
+      'the same thing a wedged process produces, so a healthy agent cannot be told from a dead one. ' +
+      'Move the two MCP budgets before lowering this.',
     )
   }
 })
