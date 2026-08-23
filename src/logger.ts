@@ -22,6 +22,32 @@
  * Levels: debug < info < warn < error < off
  * Default threshold: warn — only warn/error are captured (console + file).
  * Turn a namespace up to debug/info to capture its diagnostics when you need them.
+ *
+ * ---------------------------------------------------------------------------
+ * DO NOT IMPORT THIS MODULE FROM ANYTHING THAT MUST SURVIVE EARLY FAILURE.
+ *
+ * Its module-scope initialiser (below, under "Initialize from URL param or
+ * localStorage") reads `window.location.search` and `localStorage` with NO
+ * guard. `localStorage` throws — not returns null, throws — in a sandboxed
+ * iframe, with cookies blocked, and historically in Safari private browsing. So
+ * importing this module can throw before a single line of your code runs, and
+ * the failure is a blank page.
+ *
+ * That is survivable for ordinary callers, which are already downstream of the
+ * app booting. It is fatal for anything whose job is to be there when the app
+ * does NOT boot: a crash handler, an error reporter, a bootstrap probe. Import
+ * it from one of those and you have put the most throw-prone module in the
+ * bundle in front of the code that exists to report throws — and the report you
+ * would have gotten is the one you lose.
+ *
+ * `crashBeacon.ts` is the worked example. It imports nothing, and this module
+ * PUSHES the session id into it (see `setCrashSessionId` below) rather than
+ * being imported for it. If you need something from here in early code, invert
+ * it the same way.
+ *
+ * Fixing the initialiser to fail soft would remove the hazard and is a fine
+ * thing to do. Until someone does, this is the constraint.
+ * ---------------------------------------------------------------------------
  */
 
 import { setCrashSessionId } from './crashBeacon'
