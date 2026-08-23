@@ -9,7 +9,7 @@ gitignored and the next person needs to run this window, not redo the reasoning.
 | | |
 |---|---|
 | deployed sha | `027d5d940`, built 2026-08-22T10:21:47Z |
-| `main` | **`48b089182`** — five fixes staged on top of the deployed sha |
+| `main` | five fixes staged on top of the deployed sha — **read the tip yourself; a sha written here goes stale on the next commit, including the one that edits this file** |
 | `tsc -b` on `main` | **exit 0**, read from tsc's own status |
 | new suites | `figure-bbox.test.mjs` 10/10; the format-dump test PASS |
 | deploy command | `git push /Users/skip/work/deploy/testing HEAD:refs/heads/main` |
