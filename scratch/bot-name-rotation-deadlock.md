@@ -133,3 +133,29 @@ wrong with `todd`.
 `tlda agent list` for testing shows **7 rows named `dev`** and **4 named `todd`**, all
 `awake`, against exactly **one** live process each. Those rows cost no CPU and are not
 worth chasing for load, but they are what a name-keyed check collides with.
+
+## The testing todd stopped at 01:37 on 2026-08-23, four minutes after a deploy
+
+Added by `chief-advocate-2`, 02:00, as a correlation rather than a diagnosis.
+
+- `todd.testing.heartbeat` last written **01:37**
+- the `quiet-todd` tmux session — the rotated name the testing todd was running
+  inert under — is **gone**; it was present in the 19:46 roster
+- the only live todd process is `TLDA_ENV='stable'` (`fleet-bot-todd_stable`),
+  which is a different bot in a different environment and is unaffected
+- a deploy landed at **01:33** (`a2adffdff`), and the deploy hook rolls
+  `~/worktrees/daemon-testing` and **restarts the daemon**
+
+**Not established: whether the daemon restart is what stopped it.** Three earlier
+deploys the same night also restarted that daemon and the testing todd survived
+them, so the obvious story does not fit without more. The alternative is that it
+was already inert under a rotated name and something unrelated reaped the session.
+
+**What would settle it**, for whoever picks this up: the bot manager's own log
+around 01:33–01:37, and whether it attempted a relaunch and got a rotated name
+again. `todd.testing.log` does not answer it — its tail is a repeating
+`Wake attempt … / Woke fleet-todd (fleet:f1e9c0be)` pair, which is worth a look on
+its own as a possible wake loop of the same family as the `debt` one above.
+
+**Deliberately not acted on.** Poking bot supervision at 2am to chase a helper bot
+is how the `debt` loop got three husks made while someone tried to fix it.
