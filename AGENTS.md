@@ -1743,6 +1743,28 @@ user reaffirms, treat that as their decision and proceed"*.
   found by someone other than their author, and a pair of deletion-resumption
   artifacts parked in `scratch/` by the same agent who had just told someone else
   to write theirs somewhere durable.
+
+  **The other half, learned the expensive way on 2026-08-22: force-add
+  resumption points, never logs.** A tracked `scratch/suite-serial-rerun-*.log`
+  **rejected a live deploy push**. The deploy remote's pre-receive hook scans for
+  conflict markers, and suite output is full of `=====` dividers by nature, so it
+  matched. The chief's first reading was *force-adding under `scratch/` costs you
+  the push* — which is the wrong lesson, because it would stop people force-adding
+  the handovers this section asks for.
+
+  **The right line is the same test as above, arriving from the other side: a log
+  is regenerable by re-running the thing, which is exactly what makes it a report
+  and not a resumption point.** So the hook is not an obstacle to work around —
+  it enforces this rule mechanically, and the file it caught should never have
+  been tracked.
+
+  **Before force-adding, check your own file for it** rather than finding out at
+  push time — grep it for a line beginning with a seven-character run of `<`, `=`
+  or `>`. A prose handover passes trivially; a captured log will not.
+
+  (Deliberately described rather than written out: the hook's exact pattern lives
+  outside this repository, so a doc that spells the markers literally risks being
+  the next thing that fails the push it is warning about.)
 - Feature work belongs in its assigned worktree. Do not move or stash another
   contributor's changes to make a checkout clean.
 - **Every working copy lives in `~/worktrees/`.** One place, for worktrees and
