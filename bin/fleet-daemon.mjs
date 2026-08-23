@@ -602,6 +602,56 @@ function applyProjectWorldOwnership(reason) {
   log.info(`project ownership applied (${reason}): ${projects.length}/${serverProjects.length} projects in ${ACTIVE_ENV}`)
 }
 
+/**
+ * Carry a document-roots change from the server into the RUNNING binding.
+ *
+ * `applyProjectWorldOwnership` below calls `sourceSync.sync(projects)`, and
+ * `start()` returns the existing runtime untouched when one is already up. So
+ * before this, the only thing that ever reached `setDocumentRoots` on a live
+ * runtime was `bindSource` with explicit roots -- which happens at link time.
+ * A root added afterwards updated the server, arrived here as
+ * `project-metadata-changed`, and stopped one step short of the sync that needed
+ * it. The list the daemon computed its closure from stayed the list the project
+ * had on the day it was linked, for as long as the daemon stayed up.
+ *
+ * That is the same defect the comment at `linkProject` records and repairs at
+ * BIND time, and this is the other half of it: the bind-time repair only helps a
+ * daemon that restarts.
+ *
+ * Scoped identically, and for the reason stated there: only a binding that
+ * ALREADY declares roots is refreshed. A binding with none syncs every tracked
+ * `.tex`/`.md`/`.qmd` in the tree, and handing it a declared list would NARROW
+ * what it syncs -- a change to the 92 of 102 bindings on this machine that
+ * nobody asked for. The bug is the stale list, so only the stale list is fixed.
+ */
+function refreshBoundDocumentRoots(project) {
+  const status = sourceSync.bindingStatus(project, sourceSync.getSourceDir(project) || '')
+  const binding = status?.binding
+  if (!binding?.sourceDir) return
+  if (!Array.isArray(binding.documentRoots) || binding.documentRoots.length === 0) return
+  const metadata = serverProjects.find(item => item?.name === project)
+  const roots = Array.isArray(metadata?.documentRoots)
+    ? metadata.documentRoots.map(root => (typeof root === 'string' ? root : root?.path)).filter(Boolean)
+    : null
+  if (!roots?.length) return
+  const unchanged = roots.length === binding.documentRoots.length
+    && roots.every((root, index) => root === binding.documentRoots[index])
+  if (unchanged) return
+  try {
+    sourceSync.bindSource(project, binding.sourceDir, { documentRoots: roots })
+    log.info(`${project}: document roots refreshed from the server: ${roots.join(', ')}`)
+  } catch (error) {
+    // Swallowed on purpose: this runs inside the server-message handler, and a
+    // binding that refuses a rebind must not take the daemon's message loop
+    // down with it. Nothing is lost by not throwing — the refresh is a
+    // convergence, not a one-shot. It re-derives the whole list from the server
+    // record on the next `project-metadata-changed`, and `bindSource` re-reads
+    // it at link time besides, so a failure here costs one settle rather than
+    // wedging the list until somebody notices.
+    log.warn(`${project}: document roots could not be refreshed: ${error.message}`)
+  }
+}
+
 async function loadLocallyBoundProjects() {
   const loaded = []
   for (const name of sourceSync.boundProjectNames()) {
@@ -1807,6 +1857,7 @@ async function handleServerMessage(msg, wsAttemptId) {
   if (msg.type === 'project-metadata-changed') {
     if (!sourceSync.boundProjectNames().includes(msg.project)) return
     serverProjects = await loadLocallyBoundProjects()
+    refreshBoundDocumentRoots(msg.project)
     applyProjectWorldOwnership('project-metadata-changed')
     return
   }
