@@ -52,9 +52,21 @@ change is invisible on the box Skip uses.
 
 **`mcp-server/fleet-tools.mjs` and `shared/project-for-cwd.mjs` do not reach
 agents through a Fly deploy.** The MCP runs locally from
-`~/worktrees/daemon-testing`. The login-hang fix lives there as an **uncommitted
-working-tree edit** at checkout `027d5d94`; `login-broken` has been asked to
-commit it.
+`~/worktrees/daemon-testing`, which is a **deploy pointer** sitting at
+`027d5d94`. The login-hang fix is live there as a working-tree edit that is
+byte-identical to `main` at `3a060f73d`; `3ef60c037` is the durable copy, so
+there is nothing unrecorded and nothing to rescue.
+
+**Do not commit in that checkout** — a commit on a pointer that gets reset is a
+divergent commit. **Advance it to the deployed sha as part of this deploy**, so
+the MCP and the server run the same code rather than the MCP running ahead. Then
+agents need an MCP restart to pick it up; restarting is not enough on its own,
+check the seat came back by an established socket rather than by `ok` exiting 0.
+
+**Checking that checkout has a trap:** it is itself on a branch called `main` at
+the stale sha, so a bare `git show main:<path>` inside it reads *that* branch and
+reports a difference that does not exist. Name the ref, or compare from
+`/Users/skip/work/tlda`.
 
 ## Before pushing
 
