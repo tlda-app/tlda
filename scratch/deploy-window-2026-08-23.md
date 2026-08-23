@@ -85,6 +85,37 @@ only one was verified. The untested row is the one that shipped broken.
 5. **The testing `todd` stopped at 01:37** — see
    `scratch/bot-name-rotation-deadlock.md`, recorded as a correlation only.
 
+## Open, found at 04:50 and deliberately not chased
+
+**A month-dormant probe failure came back tonight, on the path that mints probe
+seats.**
+
+```
+file-materialization: probe reserve-shell: reserve-shell timed out after 15000ms
+prior occurrences in dev's heartbeat journal: 2026-07-25 .. 2026-07-28
+none in between
+```
+
+**Why it is worth someone's morning:** it returned on the same night the
+seat-minting path changed around it — 99 probe seats marked dead by hand, and
+`111f7fa` in the bot repo changing what happens to a seat after a probe ends.
+**None of that touches `reserve-shell`, which runs first**, and the change was
+cleared on two checks (no pending file has ever existed, and `settle` is
+reachable only from a `finally`). So it is *not* attributed to either. It is
+recorded because a failure mode dormant for a month reappearing next to related
+work is the kind of coincidence that turns out not to be one.
+
+**Do not revert `111f7fa` on account of it.** That decision was made by
+`advocate-3-2`, not by its author, on the stated grounds that the revert trigger
+named the build-timeout symptom, that symptom is still at exactly 1 occurrence,
+and this failure mode predates the change by a month.
+
+**Separately, retired rather than left hanging:** `wholeFleet.dead` climbing ~2-3
+per minute is **not** something inferring death from failure. `live` stayed flat
+at ~3,810 across three readings while `dead` rose — matched creation and
+destruction, which is disposable probe seats and nothing else. The old code
+killed its seat in a `finally` too, so the rate long predates tonight.
+
 ## Standing instruction that outlived the night
 
 His words: **"fixed means it implements my spec and works"** — not deployed, not
