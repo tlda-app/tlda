@@ -1,3 +1,5 @@
+import { parseDurationMs } from './inbox-attention.mjs'
+
 function isRecord(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
@@ -72,6 +74,17 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // wiped markdown-chip files out from under their chips. Absent = this machine's
   // ~/.config/tlda/uploads, which is correct where nothing is ephemeral.
   'uploadDir',
+  // The one rule the notification path runs: no MCP ack within
+  // notifications.ackTimeout -> report the symptom to that agent's daemon. It is
+  // a server setting, so it lives here rather than in code or an environment
+  // variable — see docs/notifications-and-liveness.md §"The timeout is
+  // configuration, not code".
+  //
+  // THIS ENTRY IS LOAD-BEARING AND WAS MISSING THE FIRST TIME. Unknown top-level
+  // keys throw in validateTopLevelKeys, and loadServerConfig() runs at module
+  // scope in unified-server.mjs, so a deployment declaring `notifications:`
+  // without this line does not misbehave — the server does not start at all.
+  'notifications',
   // Turn token auth off entirely. True where the server is gated at the NETWORK
   // layer instead — the Fly boxes sit behind Tailscale, and the tailnet IS the
   // auth posture (Skip's chosen model).
@@ -166,6 +179,25 @@ export function validateServerConfigTopLevel(root, label = 'server config') {
   for (const key of ['tokenGating', 'tokensFromEnvironmentOnly']) {
     if (config[key] !== undefined && typeof config[key] !== 'boolean') {
       throw new Error(`${label}: "${key}" must be a boolean`)
+    }
+  }
+  // Refused at load, for the same reason `subscriptions` is: a typo here makes
+  // the server wait a length of time nobody chose before it reports a symptom,
+  // and the unit rule is the whole point of the value — a bare `2` is an error,
+  // not a default in some unit the reader has to guess. The grammar is checked
+  // here rather than only at the point of use so a bad value cannot reach a
+  // running server.
+  if (config.notifications !== undefined) {
+    if (!isRecord(config.notifications)) {
+      throw new Error(`${label}: "notifications" must be an object, e.g. { ackTimeout: 2s }`)
+    }
+    const extra = Object.keys(config.notifications).filter(key => key !== 'ackTimeout')
+    if (extra.length) {
+      throw new Error(`${label}: notifications supports only ackTimeout; unknown key(s): ${extra.join(', ')}`)
+    }
+    const ackTimeout = config.notifications.ackTimeout
+    if (ackTimeout !== undefined && !parseDurationMs(ackTimeout)) {
+      throw new Error(`${label}: notifications.ackTimeout must be a duration WITH A UNIT (e.g. 2s, 250ms); got ${JSON.stringify(ackTimeout)}`)
     }
   }
   // A malformed slot list is refused at load rather than at mint. An agent that
