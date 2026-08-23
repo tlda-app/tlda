@@ -22,7 +22,35 @@
  * Levels: debug < info < warn < error < off
  * Default threshold: warn — only warn/error are captured (console + file).
  * Turn a namespace up to debug/info to capture its diagnostics when you need them.
+ *
+ * ---------------------------------------------------------------------------
+ * DO NOT IMPORT THIS MODULE FROM ANYTHING THAT MUST SURVIVE EARLY FAILURE.
+ *
+ * Its module-scope initialiser (below, under "Initialize from URL param or
+ * localStorage") reads `window.location.search` and `localStorage` with NO
+ * guard. `localStorage` throws — not returns null, throws — in a sandboxed
+ * iframe, with cookies blocked, and historically in Safari private browsing. So
+ * importing this module can throw before a single line of your code runs, and
+ * the failure is a blank page.
+ *
+ * That is survivable for ordinary callers, which are already downstream of the
+ * app booting. It is fatal for anything whose job is to be there when the app
+ * does NOT boot: a crash handler, an error reporter, a bootstrap probe. Import
+ * it from one of those and you have put the most throw-prone module in the
+ * bundle in front of the code that exists to report throws — and the report you
+ * would have gotten is the one you lose.
+ *
+ * `crashBeacon.ts` is the worked example. It imports nothing, and this module
+ * PUSHES the session id into it (see `setCrashSessionId` below) rather than
+ * being imported for it. If you need something from here in early code, invert
+ * it the same way.
+ *
+ * Fixing the initialiser to fail soft would remove the hazard and is a fine
+ * thing to do. Until someone does, this is the constraint.
+ * ---------------------------------------------------------------------------
  */
+
+import { setCrashSessionId } from './crashBeacon'
 
 type Level = 'debug' | 'info' | 'warn' | 'error' | 'off'
 
@@ -78,6 +106,18 @@ const _session = (() => {
   }
   return Math.random().toString(36).slice(2, 10)
 })()
+
+// Handed to the crash beacon so it stamps the SAME id rather than minting its
+// own. A crash is only useful next to what the tab was doing when it died, and
+// that join is this string. There are already two session-id spaces in the
+// client log; a third, appearing only on the lines that matter most, would make
+// the crash the one event nothing could be correlated with.
+//
+// PUSHED, not pulled, and the direction is the point: the beacon is the first
+// import in `main.tsx` and must import nothing, because this very module reads
+// `localStorage` and `window.location.search` unguarded a few lines above and
+// throws in a sandboxed iframe or with cookies blocked. See `crashBeacon.ts`.
+setCrashSessionId(_session)
 
 // Logs go to the server that served this SPA (same-origin, relative). That's the
 // instance you're actually debugging, and every tlda server has /api/log — so
