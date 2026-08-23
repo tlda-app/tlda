@@ -97,7 +97,7 @@ async function waitForSymptom(rpcs) {
 }
 
 // `recipient` decides whether the agent has an MCP socket and what it does.
-async function withFleet({ withRecipientSocket = true, responder = () => {} }, fn) {
+async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {} }, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-notification-symptom-'))
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
@@ -125,9 +125,13 @@ async function withFleet({ withRecipientSocket = true, responder = () => {} }, f
     daemonWs = await openDaemon(port, rpcs)
     if (withRecipientSocket) {
       recipientWs = await openFleetWs(port)
+      // `kind` is what marks this socket as an MCP. The recipient in these
+      // tests is standing in for one, so it says so — a login without a kind is
+      // a bot-shaped client and is deliberately not a notification target.
       await request(recipientWs, 'r-login', 'login', {
         operation_id: 'symptom-login', agent_id: 'fleet:recipient',
         machine_id: 'mini', env_name: 'testing',
+        ...(loginKind ? { kind: loginKind } : {}),
       })
       recipientWs.on('message', raw => {
         const frame = JSON.parse(String(raw))
@@ -205,5 +209,40 @@ test('an acknowledged notice reports no symptom at all', async () => {
       0,
       `a delivered notice is not a symptom. Ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`,
     )
+  })
+})
+
+// A bot holds a /ws/fleet socket and logs in on it exactly as an MCP does, but
+// has no code that could ever acknowledge a notice — `dev-bot.mjs` contains zero
+// occurrences of `channel-notification`, `wake_ack_id` or
+// `channel-notification-ack`. Before this, one such bot produced 207 of 234 ack
+// timeouts in six hours.
+//
+// It stopped being merely untidy when the symptom started reaching the daemon:
+// `channel-silent` means restart, so an unanswerable notice every ~100 seconds
+// is a restart every ~100 seconds — of the bot that reclaims disk on this box.
+//
+// The honest symptom is `no-channel`, and it is also the accurate one: there is
+// no open MCP socket. `ensure-process` on a bot that is running is a no-op.
+test('a socket that is not an MCP is not notified, and reports no-channel', async () => {
+  await withFleet({ loginKind: null, responder: () => {} }, async (ws, rpcs) => {
+    await sendChat(ws, 2, 'bot-shaped-recipient')
+    const hit = await waitForSymptom(rpcs)
+    assert.ok(hit, `expected a symptom. Ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`)
+    assert.equal(hit.params.symptom, 'no-channel',
+      'a logged-in socket that never declared an MCP kind must not be treated as a channel')
+  })
+})
+
+// The control for the test above. Same fixture, same flow, the only difference
+// being that this login declares a kind — so a `no-channel` result there cannot
+// be the harness simply failing to deliver anything.
+test('the same fixture with an MCP kind does reach the channel', async () => {
+  await withFleet({ loginKind: 'claude', responder: () => {} }, async (ws, rpcs) => {
+    await sendChat(ws, 2, 'mcp-shaped-recipient')
+    const hit = await waitForSymptom(rpcs)
+    assert.ok(hit, `expected a symptom. Ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`)
+    assert.equal(hit.params.symptom, 'channel-silent',
+      'a declared MCP socket must be notified and then time out, not be skipped')
   })
 })

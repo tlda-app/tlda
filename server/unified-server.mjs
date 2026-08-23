@@ -1834,6 +1834,41 @@ function openFleetSocketsForAgent(agentId) {
   return [...wsFleetClients].filter(client => client._tldaAgentId === agentId && client.readyState === 1)
 }
 
+// The harness kinds that have an MCP able to surface a notice. This is the same
+// set `deliverChannelNotice` switches on in mcp-server/fleet-tools.mjs, which
+// THROWS on anything else — so it is the set that can actually receive, not a
+// preference.
+const MCP_CHANNEL_KINDS = new Set(['claude', 'codex', 'goose'])
+
+/**
+ * Whether this socket is an agent's MCP, and therefore a notification target.
+ *
+ * §"Notification: one path" is `server → agent's MCP → channel`. A bot holds a
+ * `/ws/fleet` socket and logs in on it exactly as an MCP does, so before this
+ * check the server sent notices to bots and then waited for an acknowledgement
+ * that had no code path to arrive by: `dev-bot.mjs` contains zero occurrences of
+ * `channel-notification`, `wake_ack_id` or `channel-notification-ack`. Measured
+ * 2026-08-22, that single bot produced 207 of 234 ack timeouts in six hours.
+ *
+ * THIS MATTERS MUCH MORE NOW THAN IT DID, and that is why the errata's "leave it
+ * alone" no longer holds. When an unanswerable notice cost a spurious sideband
+ * delivery it was untidy. Now the symptom reaches the daemon and `channel-silent`
+ * means restart, so it would have restarted `dev` every ~100 seconds forever —
+ * and `dev` is the bot that reclaims disk on this box, which never finishes a
+ * sweep if it is restarted 35 times an hour.
+ *
+ * An ALLOW-LIST, not a bot exclusion. A client kind nobody has thought of yet is
+ * not a notification target until it says it has an MCP, which is the safe
+ * direction for this to be wrong in.
+ */
+function isMcpChannelSocket(client) {
+  return MCP_CHANNEL_KINDS.has(client?._tldaClientKind)
+}
+
+function openMcpSocketsForAgent(agentId) {
+  return openFleetSocketsForAgent(agentId).filter(isMcpChannelSocket)
+}
+
 
 const spawnLibrarian = new SpawnLibrarian({
   loginDeadlineMs: Number(process.env.TLDA_SPAWN_LOGIN_DEADLINE_MS || 60_000),
@@ -5951,7 +5986,13 @@ function refuseMcpWakeNotification(ackId, agentId, reason) {
 
 async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}) {
   if (!nudgeText) return { ok: false, reason: 'no-notification-text' }
-  const sockets = openFleetSocketsForAgent(agent.id)
+  // MCP sockets only. A bot holds a /ws/fleet socket and logs in on it exactly
+  // as an MCP does, but has no code that could acknowledge — so sending here
+  // produced a guaranteed timeout, and a timeout now means the daemon restarts
+  // the agent. `no-open-mcp-socket` is the honest answer for an agent whose only
+  // connection is not an MCP, and it is also the accurate one: there is no open
+  // MCP socket. See `isMcpChannelSocket`.
+  const sockets = openMcpSocketsForAgent(agent.id)
   if (!sockets.length) return { ok: false, reason: 'no-open-mcp-socket' }
   const ackId = `${traceId || createTraceId('wake')}:mcp:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
   // No return notice here. This path runs only while the agent's own MCP socket
@@ -7063,6 +7104,10 @@ async function dispatchFleetWsMessage(ws, msg) {
       await fleetStore.upsertAgent(agent)
       agentFleetConnections.set(loginAgentId, ws)
       ws._tldaAgentId = loginAgentId
+      // What kind of client this connection is, taken from its own login rather
+      // than from the agent row, because the row can be stale and this is a fact
+      // about THIS socket. See `isMcpChannelSocket`.
+      ws._tldaClientKind = kind || metadata?.kind || null
       const stored = await fleetStore.getAgent?.(loginAgentId) || agent
       const storedAgent = await fleetStore.projectAgentDaemonRoute?.(stored) || stored
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null, ...(returnNotice ? { return_notice: returnNotice } : {}) })
