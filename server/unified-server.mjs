@@ -983,23 +983,6 @@ function wakeNotifyReadyTimeoutMs(agent) {
   return 90_000
 }
 
-async function sendWakeNudge(daemonKey, agent, nudgeText, phase, logTag = 'wake-nudge') {
-  if (!nudgeText) return
-  broadcastFleet({
-    event: 'channel-notification',
-    data: {
-      recipient: agent.id,
-      text: nudgeText,
-      metadata: {
-        type: 'wake_nudge',
-        phase,
-        logTag,
-        daemonKey,
-      },
-    },
-  })
-}
-
 function timestampMs(value) {
   if (!value) return null
   const ms = Date.parse(String(value))
@@ -1061,23 +1044,6 @@ async function waitForAgentDaemonRoute(agentId, timeoutMs = 10_000) {
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   return await fleetStore.getAgentDaemonRoute?.(agentId) || null
-}
-
-async function sendReanimateNoticeWithRetry(agentId, agent, seat, noticeText) {
-  let currentRoute = seat
-  let lastErr = null
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      await sendWakeNudge(currentRoute.daemon_key, agent, noticeText, 'post-reanimate', 'reanimate')
-      return currentRoute
-    } catch (e) {
-      lastErr = e
-      if (attempt >= 2) break
-      await new Promise(resolve => setTimeout(resolve, 500))
-      currentRoute = await fleetStore.getAgentDaemonRoute?.(agentId) || currentRoute
-    }
-  }
-  throw lastErr || new Error('reanimate notice failed')
 }
 
 async function reanimateAgent(agentQuery) {
@@ -1175,27 +1141,17 @@ async function reanimateAgent(agentQuery) {
   // refresh and the final throw underneath are all machinery around a message
   // that has never been delivered.
   //
-  // The old path is left running rather than removed: deleting it is step 5 and
-  // it is not mine. Two attempts at the same notice is the correct state to be
-  // in while the replacement is proven and the original is still there.
+  // The reanimate notice is handed over by `login()`. Parked here, delivered
+  // there.
+  //
+  // What used to sit at this point was `sendReanimateNoticeWithRetry` around
+  // `sendWakeNudge`, which broadcast a `channel-notification` carrying no
+  // `wake_ack_id` — and the MCP delivers such a frame to nobody. So the two
+  // attempts, the 500ms backoff, the route refresh, the final throw, and a
+  // catch that reported the agent as running-but-untold were all machinery
+  // around a message that had never once arrived. The reanimated agent is told
+  // when it logs in, which is the only moment it can be told anything.
   await fleetStore.updateAgentMeta?.(before.id, { pendingReturnNotice: noticeText })
-  try {
-    await sendReanimateNoticeWithRetry(before.id, revived, nextSeat, noticeText)
-  } catch (e) {
-    // A notice that did not land does not kill the agent it was about.
-    //
-    // This used to kill the session and mark the row dead — an undo of the whole
-    // reanimate because its last, least important step failed. Both halves are
-    // now wrong. Marking dead is the inferred death the rule forbids, and the
-    // kill would leave a row marked alive with no process behind it, which is
-    // the same phantom from the other side.
-    //
-    // The agent is up and reachable. What failed is that it was not told it had
-    // been reanimated, and that is what the caller is told.
-    markAgentNotAlive(before.id, { source: 'reanimate', reason: `notice failed: ${e.message}` })
-    broadcastState(before.id)
-    throw new Error(`reanimate woke ${before.friendly_name || before.id} and it is running, but the return notice failed: ${e.message}`)
-  }
   await measureHotOp('fleet-ws lifecycle reanimate insert', `agent=${before.id}`, () => fleetStore.insertEventRecord({
     type: 'lifecycle',
     timestamp: new Date().toISOString(),
@@ -5957,11 +5913,11 @@ const WAKE_MCP_ACK_DEADLINE_MS = (() => {
     if (!ms) throw new Error(`server.yaml notifications.ackTimeout must be a duration with a unit (e.g. 5s, 250ms); got ${JSON.stringify(configured)}`)
     return ms
   }
-  // Retained as a test seam only, and it is a residual violation of the design's
-  // "no timeout in an environment variable": `fleet-inbox-delivery.test.mjs`
-  // sets it to shorten a deliberate timeout. Removing it is a deletion and a
-  // test change, neither of which is in this step's scope.
-  if (process.env.TLDA_WAKE_MCP_ACK_DEADLINE_MS) return Number(process.env.TLDA_WAKE_MCP_ACK_DEADLINE_MS)
+  // No environment override. `TLDA_WAKE_MCP_ACK_DEADLINE_MS` existed only so
+  // tests could shorten a deliberate timeout, and the design rules out an
+  // environment variable by name alongside a source constant — the same
+  // sentence, for the same reason: a timeout nobody can find in the config is a
+  // timeout in code. The tests wait the real deadline now.
   return parseDurationMs(WAKE_MCP_ACK_DEADLINE_DEFAULT)
 })()
 const _pendingMcpWakeAcks = new Map()
@@ -6311,17 +6267,13 @@ async function drainWakeQueue() {
   while (_wakeQueue.size > 0) {
     const [agentId, wakeEntry] = _wakeQueue.entries().next().value
     _wakeQueue.delete(agentId)
-    let nudgeText = wakeEntry?.nudgeText || null
-    const waiting = wakeEntry?.askers || []
-    if (waiting.length > 1 && nudgeText?.startsWith(NOTIFICATION_MARKER)) {
-      const names = []
-      for (const id of waiting.slice(0, 2)) names.push((await fleetStore.getAgent?.(id))?.friendly_name || id)
-      const who = waiting.length > 2 ? `${names[0]}, ${names[1]} and others` : `${names[0]} and ${names[1]}`
-      nudgeText = `${NOTIFICATION_MARKER} Check your inbox(). You have messages from ${who}.`
-    }
+    // No text is composed here any more. A wake starts a process; the agent
+    // logs in and the SERVER hands over the mail, which is already sitting
+    // unread in `recipients`. The coalescing that used to happen here — "you
+    // have messages from X and Y" — was only ever needed because the daemon was
+    // typing one line into a pane and could not say "several".
     const asker = wakeEntry?.asker || null
     const traceId = wakeEntry?.traceId || null
-    const notificationFailure = wakeEntry?.notificationFailure || null
     const source = wakeEntry?.source || {}
     const agent = await fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) {
@@ -6379,12 +6331,6 @@ async function drainWakeQueue() {
         agent,
         daemonKey,
         ownerDaemon: daemonConnections.get(daemonKey),
-        nudgeText,
-        returnNoticeText: agentReturnNotice(agent),
-        enterDelayMs: wakeEnterDelayMs(agent),
-        notifyDelayMs: wakeNotifyDelayMs(agent),
-        notifyReadyTimeoutMs: wakeNotifyReadyTimeoutMs(agent),
-        notificationFailure,
         traceId,
         sendDaemonDurable,
         rpcOptions: wakeRpcOptions(),
@@ -8538,20 +8484,6 @@ async function dispatchFleetWsMessage(ws, msg) {
     const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, { actorId: msg.caller || agent.id })
     broadcastState()
     reply({ ok: true, ...result })
-    return
-  }
-
-  // ---- kick ----
-  if (type === 'kick') {
-    const { agent: agentQuery } = msg
-    const agent = await fleetStore.findAgent(agentQuery)
-    if (!agent) { error('agent not found'); return }
-    const route = resolveRpc('kick', agent)
-    if (route.via === 'none') { error(route.error); return }
-    try {
-      const result = await sendDaemonDurable(route.machine_id, 'kick', { agent_id: agent.id })
-      reply(result)
-    } catch (e) { error(e.message) }
     return
   }
 

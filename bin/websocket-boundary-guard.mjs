@@ -136,6 +136,26 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'Wire test for the model backfill: drives /ws/fleet directly to prove the frames, not the function. Endpoint: /ws/fleet.',
   },
+  'server/lib/amend-notify-wire.test.mjs': {
+    count: 2,
+    category: 'tooling',
+    reason: 'An amend used to notify nobody, and the store-side proof that it now lands unread is not delivery. This opens the recipient\'s own /ws/fleet socket — which IS the MCP channel — and asserts the channel-notification frame arrives on it carrying the amended text, plus a second socket as /ws/fleet-daemon to prove a socketless recipient still reaches the daemon wake path. Routing either through the transport library would test the library. Endpoints: /ws/fleet, /ws/fleet-daemon.',
+  },
+  'server/lib/channel-nack-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'A refusal has to be distinguishable from silence, and that distinction exists only as a state the server reaches after a frame crosses the socket. Drives /ws/fleet as the recipient MCP and answers the notice three ways — ack, nack, nothing — asserting three distinct server states. Endpoint: /ws/fleet.',
+  },
+  'server/lib/login-return-notice-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'The login reply is assembled field by field, so a `return_notice` that is not enumerated there is dropped in silence with both ends still grepping clean. Drives /ws/fleet and reads the actual reply frame. Endpoint: /ws/fleet.',
+  },
+  'server/lib/notification-symptom-wire.test.mjs': {
+    count: 2,
+    category: 'tooling',
+    reason: 'Adds a new server->daemon message type, which is the most failure-prone thing to add here: an unrecognised type is acknowledged normally, so a severed wire reports health. Stands up a real /ws/fleet-daemon socket and reads the op and params that actually arrive, with a /ws/fleet socket as the recipient MCP to produce the symptom. Endpoints: /ws/fleet-daemon, /ws/fleet.',
+  },
   'bin/search-takes-a-message-id-test.mjs': {
     count: 1,
     category: 'tooling',

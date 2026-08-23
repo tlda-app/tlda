@@ -740,35 +740,35 @@ async function rpcCheckAlive(args) {
   return terminalRpc.checkAlive(args)
 }
 
-async function rpcKick({ agent_id }) {
-  if (!agent_id) throw new Error('missing agent_id')
-  agentStatus.armAgent(agent_id)   // kicking/waking → arm the status machine
-  const dir = path.join(os.homedir(), '.fleet', 'signals')
-  fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, agent_id.replace(/[^a-zA-Z0-9_-]/g, '_'))
-  fs.writeFileSync(file, Date.now().toString())
-  return { ok: true, signal: file }
-}
-
 // Step 3 of the notification proposal. The server tells this daemon what it
 // observed on its own socket to one of our agents' MCPs — "this is your machine,
 // look into it". It carries no remedy and no text to deliver, which is the whole
 // point: choosing the remedy is this daemon's job and delivering the
 // notification is nobody's job but the channel's.
 //
-// **It deliberately does not act yet, and that is not an oversight.** The
-// existing sideband — wake carrying `notify_text` into the pane — is still live
-// and is only removed in step 5. If this handler also woke or restarted, every
-// unacknowledged notice would provoke two remedies at once, and the second one
-// would be restarting agents that are running perfectly well. So while both
-// paths exist, this one records and the old one acts; when step 5 removes the
-// old one, the remedy moves here, and the symptom vocabulary it needs is already
-// arriving and already correct.
+// **This is now where the remedy is chosen**, and it had to become so in the
+// same change that deleted the sideband: until that deletion the old path acted
+// and this one only recorded, because two live remedies would mean restarting
+// agents that are running perfectly well. Delete the old path without this and
+// nothing acts at all — a wedged MCP would be observed, recorded, and left
+// wedged.
 //
-// Recording it is worth having on its own: until now the equivalent fact
-// (`notification_failure`) rode on a wake payload and its only consumer wrote a
-// single log line, so nothing anywhere could answer "how often does this
-// happen, and to whom".
+// The two jobs, and there are only two. Skip, 14:07:25: "No process. Make one
+// unresponsive process. Fucking fix it. Right? Have you tried turning it off and
+// turning it back on again, basically."
+//
+//   no process            -> make one            (wake)
+//   process, no channel   -> off and on again    (restart)
+//   explicit refusal      -> nothing             (not a liveness fault)
+//
+// Both actions are idempotent, which is why the server keeps no memory of having
+// reported and this handler needs no deduplication: a process that is already
+// there makes `wake` a no-op, and hibernate-and-wake loses nothing — "it's just
+// a blip in the agent's running process."
+//
+// It delivers nothing. There is no text in the message and none is constructed
+// here: the agent comes up, calls `login()`, and the SERVER hands over the mail.
+// That is the whole reason the daemon is out of the notification path.
 async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }) {
   if (!agent_id) throw new Error('missing agent_id')
   if (!symptom) throw new Error('missing symptom')
@@ -777,50 +777,45 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
     `${detail?.reason ? ` reason=${detail.reason}` : ''}` +
     `${detail?.deadline_ms ? ` deadline_ms=${detail.deadline_ms}` : ''}`)
 
-  const action = actionForSymptom(symptom)
-  // An unrecognised symptom is recorded and not acted on. A new name arriving
-  // from a newer server must not be guessed into a restart.
-  if (!action) return { ok: true, agent_id, symptom, recorded: true, acted: false, action: null }
+  // Whether to act at all. `null` means record and stop — a refusal (the MCP
+  // answered, so nothing on this machine is wrong) or a symptom this daemon does
+  // not recognise, which must never be guessed into a restart.
+  if (!actionForSymptom(symptom)) {
+    return { ok: true, agent_id, symptom, recorded: true, acted: false, action: null }
+  }
 
-  let route = null
+  // WHICH of the daemon's two jobs is decided HERE, by asking this machine
+  // whether the process exists — not by the symptom. That is the spec's table:
+  // no process -> make one; a process that is not responding -> off and on
+  // again. The server reports what its socket did and selects nothing, so a
+  // closed channel over a live process is still "not responding" and still
+  // earns a restart.
+  let alive = false
   try {
-    route = await resolveAgentRoute({ agent_id })
+    const result = await terminalRpc.handlers['check-alive']({ agent_id })
+    alive = !!result?.alive
   } catch (e) {
-    // Swallowed because an unresolvable route is an ANSWER, not a fault: this
-    // machine has no such agent, which is handled immediately below as
-    // `no-local-route`. Rethrowing would turn "not mine" into an RPC error and
-    // the server would record a failed report for a symptom it correctly sent.
-    log.warn(`[notification-symptom] ${agent_id}: cannot resolve a local route: ${e?.message || e}`)
-  }
-  // Not ours to act on. The server routes by daemon key so this should not
-  // happen, and if it does the honest answer is that this machine has no such
-  // process rather than starting one.
-  if (!route?.tmux_session) {
-    return { ok: true, agent_id, symptom, recorded: true, acted: false, action, reason: 'no-local-route' }
+    // The liveness question is the one this daemon exists to answer, so failing
+    // to answer it is reported rather than guessed. Guessing alive restarts a
+    // process that may not exist; guessing dead starts a second one.
+    log.warn(`[notification-symptom] ${agent_id}: check-alive failed: ${e?.message || e}`)
+    return { ok: false, agent_id, symptom, recorded: true, acted: false, error: `check-alive failed: ${e?.message || e}` }
   }
 
   try {
-    if (action === 'ensure-process') {
-      // IDEMPOTENT BY CONSTRUCTION, which is what lets the server keep no memory
-      // and re-report every time: if the session is there this is a no-op and
-      // says so, and `acted: false` stays honest rather than becoming a lie once
-      // this handler started doing things.
-      const alive = await terminalRpc.checkAlive({ agent_id }).catch(() => ({ alive: false }))
-      if (alive?.alive) return { ok: true, agent_id, symptom, recorded: true, acted: false, action, reason: 'process-already-running' }
-      await rpcWake({ agent_id })
-      return { ok: true, agent_id, symptom, recorded: true, acted: true, action }
+    if (!alive) {
+      await rpcWake({ fleet_id: agent_id, agent_id })
+      return { ok: true, agent_id, symptom, recorded: true, acted: true, action: 'wake' }
     }
-    // restart: off and on again. Idempotent in Skip's sense — nothing is lost,
-    // it is a blip in a running process and the session survives it.
-    await rpcRestart({ agent_id, tmux_session: route.tmux_session })
-    return { ok: true, agent_id, symptom, recorded: true, acted: true, action }
+    await rpcRestart({ agent_id })
+    return { ok: true, agent_id, symptom, recorded: true, acted: true, action: 'restart' }
   } catch (e) {
-    // The remedy failing is not the agent dying. Nothing here infers death from
-    // a failure — see AGENTS.md §"DEATH IS A FLAG IN THE DATABASE" — and nothing
-    // retries, because the server will report the symptom again if it recurs and
-    // both actions converge when it does.
-    log.warn(`[notification-symptom] ${agent_id}: ${action} failed: ${e?.message || e}`)
-    return { ok: true, agent_id, symptom, recorded: true, acted: false, action, error: e?.message || String(e) }
+    // Reported, not thrown, and NOT death. The server is not waiting on this and
+    // decides nothing from it; a remedy that failed is this machine's problem to
+    // show in its own log, and the next symptom report will try again because
+    // both actions converge. See AGENTS.md §"DEATH IS A FLAG IN THE DATABASE".
+    log.warn(`[notification-symptom] ${agent_id}: remedy failed: ${e?.message || e}`)
+    return { ok: false, agent_id, symptom, recorded: true, acted: false, error: e?.message || String(e) }
   }
 }
 
@@ -1063,31 +1058,6 @@ const wakeMint = createDaemonWakeCore({
     delayMs: 100,
     confirmExisting: (facts.processState?.harness || facts.launchRecipe?.kind) === 'bot',
   }),
-  // Wake and tell are one call, so the injection happens here rather than the
-  // server following up on an answer it got back. A terminal that cannot take
-  // the text must not fail the wake: the agent is up either way, and the caller
-  // sees `notified` absent.
-  observeNotificationFailure: async ({ agentId, failure }) => {
-    log.warn(`wake fallback for ${agentId || 'unknown-agent'} after notification failure: channel=${failure?.channel || 'unknown'} reason=${failure?.reason || 'unknown'} deadline_ms=${failure?.deadline_ms ?? 'none'}`)
-  },
-  notifyAgent: async ({ agentId, text, enterDelayMs, readyTimeoutMs, clearBeforeText }) => {
-    if (!agentId) return null
-    try {
-      const result = await terminalRpc.handlers['notify-agent']({
-        agent_id: agentId,
-        text,
-        enter_delay_ms: enterDelayMs,
-        ready_timeout_ms: readyTimeoutMs,
-        clear_before_text: clearBeforeText,
-      })
-      const level = result?.ok ? 'info' : 'warn'
-      log[level](`wake notify result for ${agentId}: ok=${!!result?.ok} via=${result?.via || 'none'} reason=${result?.reason || 'none'} ready_timeout_ms=${readyTimeoutMs ?? 'none'}`)
-      return result
-    } catch (e) {
-      log.warn(`wake notify failed for ${agentId}: ${e.message}`)
-      return null
-    }
-  },
   processAlive: async facts => {
     const tmuxSession = facts.processState?.tmux_session
     if (!tmuxSession) return false
@@ -1395,7 +1365,6 @@ machineRpc.register({
   'native-subagent-route-for-tool-use': ({ parent_agent_id, tool_use_id }) =>
     jsonlIngestor.nativeSubagentRouteForToolUse(parent_agent_id, tool_use_id),
   ...terminalRpc.handlers,
-  'kick': rpcKick,
   'notification-symptom': rpcNotificationSymptom,
   ...agentLauncher.handlers,
   'mint': rpcMint,

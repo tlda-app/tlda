@@ -9,7 +9,8 @@
 import assert from 'node:assert/strict'
 import https from 'node:https'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { removeTempDir } from './test-support/remove-temp-dir.mjs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -98,7 +99,7 @@ async function withRecipient(responder, fn) {
   await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
   await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
   await store.ensureSubscription({ owner: 'fleet:recipient', query: 'to:me', notificationPolicy: 'immediate' })
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -114,9 +115,14 @@ async function withRecipient(responder, fn) {
   try {
     await waitForServer(child)
     recipientWs = await openFleetWs(port)
+    // `metadata.kind` is what marks this socket as an MCP, sent the way the real
+    // one sends it — loginBody carries `metadata: { kind }` and no top-level
+    // field. Without it this recipient is not a notification target at all and
+    // the traces come back empty, which is the gate working rather than the nack
+    // failing.
     await request(recipientWs, 'r-login', 'login', {
       operation_id: 'channel-nack-login', agent_id: 'fleet:recipient',
-      machine_id: 'mini', env_name: 'testing',
+      machine_id: 'mini', env_name: 'testing', metadata: { kind: 'claude' },
     })
     recipientWs.on('message', raw => {
       const frame = JSON.parse(String(raw))
@@ -130,7 +136,7 @@ async function withRecipient(responder, fn) {
     recipientWs?.close(); senderWs?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 }
 

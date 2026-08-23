@@ -9,7 +9,8 @@
 // a real server.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { removeTempDir } from './test-support/remove-temp-dir.mjs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -64,7 +65,7 @@ async function withServer(seed, fn) {
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
   await seed(store)
-  store.close()
+  await store.close()
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
     cwd: join(import.meta.dirname, '..', '..'),
@@ -84,7 +85,7 @@ async function withServer(seed, fn) {
     ws?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 }
 
