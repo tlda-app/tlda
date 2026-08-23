@@ -984,7 +984,7 @@ router.get('/:name/build/status', requireRead, async (req, res) => {
 
   const durableStatus = projectRevisionStatus((await sourceLifecycleStore(req.params.name)).listRevisionLifecycles(req.params.name))
   const buildLog = await readBuildLogAsync(req.params.name)
-  const { errors, warnings } = await extractBuildErrors(req.params.name)
+  const { errors, warnings, logMissing } = await extractBuildErrors(req.params.name)
   const pipelineWarnings = await extractPipelineWarningsAsync(req.params.name)
 
   res.json({
@@ -996,6 +996,9 @@ router.get('/:name/build/status', requireRead, async (req, res) => {
     log: buildLog,
     errors,
     warnings,
+    // See the same field on build/errors below: an empty `errors` is only good
+    // news when this is false.
+    logMissing,
     pipelineWarnings,
   })
 })
@@ -1007,7 +1010,7 @@ router.get('/:name/build/errors', requireRead, async (req, res) => {
 
   const durableStatus = projectRevisionStatus((await sourceLifecycleStore(req.params.name)).listRevisionLifecycles(req.params.name))
 
-  const { errors, warnings } = await extractBuildErrors(req.params.name)
+  const { errors, warnings, logMissing } = await extractBuildErrors(req.params.name)
   const pipelineWarnings = await extractPipelineWarningsAsync(req.params.name)
 
   res.json({
@@ -1019,6 +1022,11 @@ router.get('/:name/build/errors', requireRead, async (req, res) => {
     lastBuild: project.lastBuild,
     errors: errors.map(e => e.message), // API returns flat strings for CLI compat
     warnings,
+    // An empty `errors` is only good news when this is false. Without it a
+    // caller cannot distinguish a clean build from one whose log we never got,
+    // which is how `status: error` and `Clean.` were reported about the same
+    // build.
+    logMissing,
     pipelineWarnings,
   })
 })

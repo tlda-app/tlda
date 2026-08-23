@@ -2682,7 +2682,17 @@ async function cmdErrors() {
     for (const w of data.pipelineWarnings) console.log(dim(`  ${w}`))
   }
   if (!data.errors?.length && !data.warnings?.length && !data.pipelineWarnings?.length && !data.building) {
-    console.log(green('Clean.'))
+    // `Clean.` is a claim about the build log, so it may only be said when
+    // there was one. A failed build used to land here — its log died with the
+    // build instance, `errors` came back empty for want of anything to read,
+    // and the CLI reported `Clean.` about a build the server called `error`.
+    if (data.logMissing) {
+      console.log(data.status === 'error'
+        ? `Build failed and left no log — nothing to show. This is a defect: report it.`
+        : dim('No build log yet — nothing to check.'))
+    } else {
+      console.log(green('Clean.'))
+    }
   }
 }
 
