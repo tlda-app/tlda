@@ -172,8 +172,25 @@ export async function adoptShadowHistoryRef({ name, gitDir, ref, head }) {
     throw new Error(`${name} already has version history on this server; adopting another copy is a different operation`)
   }
   await initShadowFromGitRef(name, gitDir, ref)
-  const landed = (await listVersions(name, { limit: 1 })).length > 0
-  if (!landed) throw new Error(`adopted ref for ${name} produced no versions`)
+  // Ask git whether the adoption landed a commit, rather than asking listVersions
+  // whether it can see a NON-INIT one. listVersions runs `git log -n <limit>` and
+  // filters out entries whose message is exactly `init` AFTER that limit, so with
+  // limit 1 the single row it fetches is the row the filter removes -- and every
+  // repository whose newest commit is named `init` reported "no versions" and
+  // failed to link. `init` is an ordinary first-commit message, so this was an
+  // ordinary repository, not a corner case.
+  //
+  // What this line needs to know is only whether the ref landed, which is a
+  // question about HEAD and has no opinion about commit messages at all.
+  //
+  // STILL OPEN, and deliberately not changed here: that filter-after-limit
+  // remains for listVersions' other callers, and it cannot be fixed by moving the
+  // predicate into the query without deciding something nobody has -- whether a
+  // person's own commit named `init` is a version. For a freshly created project
+  // the `init` being hidden is the shadow repo's synthetic root; for an adopted
+  // history it is the author's first real commit. One message, two meanings.
+  const adoptedHead = (await execAsync('git rev-parse --verify HEAD', { cwd: join(projectDir(name), 'shadow-repo'), encoding: 'utf8' }).catch(() => ({ stdout: '' }))).stdout.trim()
+  if (!adoptedHead) throw new Error(`adopted ref for ${name} landed no commit`)
   return true
 }
 
