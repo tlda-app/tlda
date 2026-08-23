@@ -38,10 +38,9 @@ on the same project moved three of the four fields.
 **The commit count is flat on both paths.** That is a second, independent failure:
 versioning does not increment even on the push path that does build.
 
-**Where it stops.** In `server/lib/source-room-daemon.mjs`, the submission path calls
-`gitSync.queuePaths(room.project, [room.filePath])`, sets `submission.state = 'queued'`,
-and broadcasts the `queued`/`building: true` status. Nothing after that runs. The editor
-and the room are fine; the handoff into the git-sync manager is where it dies.
+**Where it stops** — superseded, see §5. The first version of this section said the handoff
+into the git-sync manager "is where it dies". The handoff is fine; the manager runs the
+whole chain and the failure is at the far end of it, in the push.
 
 ## 2. The room and the published revision are diverging, and neither converges
 
@@ -129,6 +128,58 @@ shadow commits — and `tlda project push` from its own checkout then answers
 **This is not the same fault as the flat commit count in finding 1**, which the first
 version of this section speculated it might be. Finding 1 is measured on projects that
 adopted history successfully.
+
+## 5. Root cause: an app-owned working tree is never based on the project's head
+
+**The source room's working tree is created by `git init` and never reparented.** So a
+commit built on its HEAD descends from nothing the server knows. The pre-receive check in
+`server/lib/git-proposals.mjs` asks whether the project's head is an **ancestor** of the
+proposed revision, and rejects every proposal the source room makes. Read directly off the
+box by running the push by hand from the working tree:
+
+```
+remote: WrongHead 3059317276065b47453b8285b3e940a3e43cd489
+```
+
+**And the rejection is silent the whole way up**, which is why this was expensive to find:
+
+- `pushRevision` **matches** `WrongHead` and returns `{ ok: false, status: 'WrongHead' }` instead of throwing
+- `settle()` passes that value along
+- `onSettled` in `git-sync-manager.mjs` **discards the return entirely**
+
+A thrown error is logged; a returned one is not. Across 2,327 server log lines covering
+several failing edits there was nothing about the project at all. The fault was found by
+reading git refs on the server, not by reading logs, because there were none to read.
+
+**The watcher path is NOT affected, and that distinction is the useful part.** A person's
+checkout is not app-owned and already descends from the project head, so it never trips the
+ancestor check. Measured on the deployed code: a plain file edit on disk in a bound checkout
+— no app, no `queuePaths` — produced a submission and a proposal ref against a remote
+carrying the same pre-receive rule. **Editing files on disk syncs; editing in the browser
+does not.** Same manager, two entry points, one of them broken.
+
+**Fixes on branch `inapp-build-version`, typecheck clean, not deployed** (server-side, and a
+deploy freeze was in force):
+
+- `3225bc503` — move HEAD to the fetched project revision for an app-owned tree. One
+  functional line. Counterfactual: unfixed → no submission and no ref, silently; fixed →
+  submitted, ref lands. Same harness, same rule, one variable.
+- `5be6546a4` — log a returned `{ ok: false }` proposal result. Separate on purpose.
+- `94569675b` — the `init` adoption bug in §4.
+
+**Two hypotheses died on the way, each by counterfactual before any code was written**, and
+both are worth knowing because each looked settled:
+
+- *A stale `appOwnedWorkingTree` making `git add -u` stage nothing.* The elimination pointed
+  straight at it and **the code's own comment predicts exactly that failure**. Killed by
+  making the file tracked so `-u` would necessarily see the edit — and it still did nothing.
+- *A never-settling promise wedging the `serialized()` chain.* A documented shape in this
+  repo with a prior live instance. Killed by waiting longer: the chain completes in about
+  ten seconds and the "hang" was a 7-second cutoff in my own harness.
+
+**The lesson both share is the one this repo keeps relearning:** a confident static reading
+with a false premise produces a fix that moves the symptom. Every one of these was settled
+by running something.
 
 ## State left behind by this investigation
 
