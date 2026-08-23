@@ -251,6 +251,18 @@ export function createTerminalRpc({
     const { agent_id: agentId, text, enter_delay_ms: enterDelayMs, ready_timeout_ms: readyTimeoutMs, clear_before_text: clearBeforeText } = args
     if (!agentId) throw new Error('agent_id required')
     if (!text) throw new Error('notification text required')
+    // THIS PATH IS THE SECOND DELIVERY ROUTE, and the design does not have one:
+    // `docs/notifications-and-liveness.md` says the daemon delivers no
+    // notifications, ever. It is logged because until now it was SILENT — no log
+    // line anywhere — so every notify literal returned zero hits in the daemon
+    // log while the path was running, and a zero from that search read as "the
+    // sideband is gone" rather than "nothing writes this down". It was firing 32
+    // times a day when that was measured.
+    //
+    // The text also arrives at the agent as bare input with no `<channel>` tag,
+    // which is the only other way to tell this route apart from the real one, and
+    // an absence is not searchable. So this line is the searchable half.
+    log(`[notify-agent] SECOND DELIVERY ROUTE: typing a notification into ${agentId}'s pane (${text.length} chars) — the daemon is not supposed to deliver notifications`)
     return writeTextToTerminal({
       agent_id: agentId,
       text: terminalSafeNotificationText(text),
