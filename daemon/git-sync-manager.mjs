@@ -241,7 +241,15 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     if (operation === 'list') {
       const listed = (await remotes.list({ fetch: params.fetch === true })).filter(remote => remote.name !== 'tlda')
       const projectPart = safeRefPart(project)
-      const localTip = await remotes.resolveRef(`refs/tlda/project/${projectPart}`)
+      // The branch first, then the old ref. Not a fallback between two live
+      // names: `ensureProjectBranch` promotes one to the other on the first
+      // settle or recover of the process, and this listing runs without starting
+      // a runtime, so it can be asked before that has happened -- and it stays
+      // on the old name forever in a checkout whose promotion is blocked by a
+      // branch called `tlda`. Reading only the new name would report no local
+      // tip in both cases.
+      const localTip = await remotes.resolveRef(`refs/heads/tlda/${projectPart}`)
+        || await remotes.resolveRef(`refs/tlda/project/${projectPart}`)
         || await remotes.resolveRef(`refs/tlda/fetched/${projectPart}`)
       if (localTip) {
         const transport = (await remotes.list({ names: ['tlda'] }))[0]

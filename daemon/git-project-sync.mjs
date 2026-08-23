@@ -48,7 +48,24 @@ export function createGitProjectSync({
   const daemonPart = safeRefPart(daemonId)
   const branchPart = safeRefPart(branch)
   const bindingPart = safeRefPart(bindingId)
-  const localRef = `refs/tlda/project/${projectPart}`
+  // The tracking ref is a BRANCH, so that a person can see their own work.
+  //
+  // Skip, 2026-08-23: "there is meant to be a branch tracking" ... "OBVIOUSLY
+  // YOU FUCKING WANT A FUCKING BRANCH WITH YOUR SHIT ON IT".
+  //
+  // `refs/tlda/project/<p>` is a perfectly good ref and git will not show it to
+  // you: `git branch` does not list it, `git log` alone does not reach it, it
+  // does not tab-complete, and it cannot be checked out by name. Measured in one
+  // checkout: thousands of commits, current to the minute, holding the live
+  // document -- fully versioned in a namespace nobody can see, which reads as
+  // not versioned at all. Under `refs/heads/` the same commits are a branch,
+  // `git log tlda/<p>` works, and it diffs and checks out like anything else.
+  //
+  // `localRef` starts on the old name and is PROMOTED by ensureProjectBranch,
+  // which carries the history across and leaves the old ref where it is.
+  const legacyLocalRef = `refs/tlda/project/${projectPart}`
+  const branchLocalRef = `refs/heads/tlda/${projectPart}`
+  let localRef = legacyLocalRef
   const appliedRef = `refs/tlda/applied/${bindingPart}`
   const sharedRef = `refs/tlda/source/${projectPart}`
   const fetchedRef = `refs/tlda/fetched/${projectPart}`
@@ -66,6 +83,49 @@ export function createGitProjectSync({
 
   async function rev(ref) {
     try { return (await git(['rev-parse', '--verify', `${ref}^{commit}`])).stdout.trim() } catch { return null }
+  }
+
+  /**
+   * Move this checkout's tracking ref under `refs/heads/`, once per process.
+   *
+   * The history is CARRIED, never orphaned: when the branch does not exist and
+   * the old ref does, the branch is created AT that commit, so `git log
+   * tlda/<p>` shows everything that was already there rather than starting from
+   * the next settle. The old ref is left exactly where it is -- nothing here
+   * deletes anything, and a checkout that has been reading it keeps working.
+   *
+   * `refs/heads/tlda` and `refs/heads/tlda/<p>` cannot coexist, because git
+   * stores heads as paths and a file cannot also be a directory. A repository
+   * that already has a branch literally named `tlda` is reported and left on the
+   * old ref: forcing it would mean deleting somebody's branch, and refusing to
+   * sync would stop their project over a name. Neither is ours to choose.
+   *
+   * Memoized on the promise so a blocked repository warns once rather than on
+   * every settle, which is the difference between a warning and noise.
+   */
+  let branchPromotion = null
+  function ensureProjectBranch() {
+    branchPromotion ||= (async () => {
+      try {
+        if (await rev('refs/heads/tlda')) {
+          log.warn?.(`${project}: this checkout has a branch named "tlda", which blocks the branch tlda/${projectPart} — tracking stays on ${legacyLocalRef}. Rename that branch to move it.`)
+          return localRef
+        }
+        if (!(await rev(branchLocalRef))) {
+          const carried = await rev(legacyLocalRef)
+          if (carried) await git(['update-ref', branchLocalRef, carried])
+        }
+        localRef = branchLocalRef
+      } catch (error) {
+        // Left on the old ref on purpose. Promotion is a convenience for the
+        // person reading their own history; the sync itself works either way, so
+        // a repository that will not take the branch keeps syncing rather than
+        // stopping over where its ref lives. The next process tries again.
+        log.warn?.(`${project}: could not move tracking to ${branchLocalRef}, staying on ${legacyLocalRef}: ${error.message}`)
+      }
+      return localRef
+    })()
+    return branchPromotion
   }
 
   async function isAncestor(older, newer) {
@@ -288,6 +348,7 @@ export function createGitProjectSync({
   }
 
   async function settle() {
+    await ensureProjectBranch()
     const committed = await commitSettledTree()
     if (!committed.ok) return committed
     const shared = await rev(fetchedRef) || await rev(appliedRef)
@@ -366,6 +427,7 @@ export function createGitProjectSync({
   }
 
   async function recover() {
+    await ensureProjectBranch()
     const conflicts = await unresolved()
     if (conflicts.length) return { ok: false, status: 'conflicted', conflicted: conflicts }
     const fetched = await rev(fetchedRef)
@@ -379,6 +441,7 @@ export function createGitProjectSync({
   }
 
   async function members() {
+    await ensureProjectBranch()
     const revision = await rev(localRef) || await rev(appliedRef) || await rev(fetchedRef)
     if (!revision) return []
     return (await git(['ls-tree', '-r', '--name-only', revision])).stdout.split('\n').filter(Boolean)
@@ -388,7 +451,10 @@ export function createGitProjectSync({
     // appliedRef is not exported. Nothing writes it any more, so publishing the
     // name invites a reader that would be reading a fossil. The refs themselves
     // stay on disk in people's checkouts, untouched.
-    refs: { localRef, sharedRef, fetchedRef },
+    // A getter, because `localRef` moves: it names the old ref until
+    // ensureProjectBranch promotes it, so a snapshot taken at construction would
+    // report the pre-promotion name for the life of the runtime.
+    get refs() { return { localRef, sharedRef, fetchedRef } },
     editClusterSettled: () => serialized(settle),
     submitCurrent: options => serialized(() => submitCurrent(options)),
     headChanged: revision => serialized(() => headChanged(revision)),
