@@ -683,10 +683,22 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   // The server's record is the one fact. An explicit `documentRoots` argument
   // still wins, because `project link` passes the roots it is creating before
   // the server knows them.
+  // Scoped deliberately to bindings that ALREADY declare roots — this refreshes
+  // a stale list, it does not give a list to a binding that has none. 92 of the
+  // 102 bindings on this machine record no roots at all, and for those the sync
+  // falls back to every .tex/.md/.qmd in the tree. Handing them a declared list
+  // would narrow what they sync, and a declared root that is absent from the
+  // working tree makes the whole settle throw — caught and logged at warn, so
+  // the project would silently stop syncing anything. That is a change to 92
+  // projects nobody asked for; the bug is the stale list, so only the stale
+  // list is fixed.
   const metadataRoots = Array.isArray(projectMetadata?.documentRoots)
     ? projectMetadata.documentRoots.map(root => (typeof root === 'string' ? root : root?.path)).filter(Boolean)
     : null
-  const effectiveRoots = Array.isArray(documentRoots) ? documentRoots : metadataRoots
+  const bindingHasRoots = Array.isArray(status.binding?.documentRoots) && status.binding.documentRoots.length > 0
+  const effectiveRoots = Array.isArray(documentRoots)
+    ? documentRoots
+    : (bindingHasRoots && metadataRoots?.length ? metadataRoots : null)
   const result = sourceSync.bindSource(project, sourceDir, {
     kind,
     remote,
