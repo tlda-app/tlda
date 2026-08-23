@@ -2086,6 +2086,15 @@ export async function resolveInboxMessage(message, resolvers) {
     const rendered = formatRecipientAttachmentRef(ref);
     if (rendered) return rendered;
     if (att?.url) return `${att.name || `attachment ${idx}`}: ${att.url}`;
+    // Last resort: show the PATH, never the marker. The browser has always
+    // degraded to a chip here; this side used to return `{{att:N}}` verbatim, so
+    // an agent handed a file saw an internal placeholder that reads like a
+    // templating bug. Worse, the substitution also fires inside quoted tool
+    // output, so a build report once showed a LaTeX error naming `{{att:0}}`
+    // instead of a filename -- output altered between the tool and the reader.
+    // See docs/the-instrument-or-the-code.md shape 10 and docs/naming-errata.md.
+    if (att?.path) return att.path;
+    if (att?.name) return att.name;
     return token;
   });
   const refResolvedText = resolvers.resolveTheoremRefs(attachmentResolvedText, ctx?.doc, ctx?.version);
