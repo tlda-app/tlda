@@ -362,7 +362,18 @@ export async function createMarkdownDocviewFromContent(
 ) {
   const materialized = await createTemporaryMarkdownColumn(editor, pagePoint, title, markdown, meta, overrideUrl)
   if (!materialized?.shapeId) return true
-  const docviewScreenPoint = screenPoint || pagePointToClient(editor, pagePoint)
+  // Project with the camera that will read it back — the same round trip the
+  // report-artifact branch below already names both sides of. A caller that
+  // hands us a real screen point (the Finder drop) does no round trip at all;
+  // a pill drag has only a page point, and projecting it with the main camera
+  // while placeFleetShapeAtScreenPoint un-projects with the HUD's put the
+  // docview off by the overlay transform — non-zero whenever the layout has
+  // ridden the document.
+  const docviewScreenPoint = screenPoint || pagePointToClient(
+    editor,
+    pagePoint,
+    getHudEditor() ? (FLEET_HUD_VIEWPORT_ID as TLViewportId) : undefined,
+  )
   await placeFleetShapeAtScreenPoint(editor, 'fleet-docview', docviewScreenPoint.x, docviewScreenPoint.y, MARKDOWN_DOCVIEW_W, MARKDOWN_DOCVIEW_H, {
     sources: '[]',
     label: '',
