@@ -141,14 +141,16 @@ const unreadyNotifyWake = createDaemonWakeCore({
     updateProcessState: () => assert.fail('already-live notify must not update process state'),
   },
   processAlive: async () => true,
-  resumeSession: async () => assert.fail('already-live notify must not resume'),
-  notifyAgent: async () => ({ ok: false, reason: 'terminal-not-ready' }),
+  resumeSession: async () => assert.fail('an already-live wake must not resume'),
 })
 
-const unreadyNotify = await unreadyNotifyWake({
-  fleet_id: 'fleet:unready',
-  notify_text: 'LIVE-CLAUDE-TIMEOUT',
-})
+// A wake of a live agent is a no-op and says nothing about messages. This case
+// used to pass `notify_text` and a `notifyAgent` that reported
+// `terminal-not-ready`, asserting the result was not marked notified — the
+// daemon's notification path, which no longer exists. What survives is the part
+// that was never about notification: an agent that is already running is
+// reported alreadyAlive, and nothing is resumed or written.
+const unreadyNotify = await unreadyNotifyWake({ fleet_id: 'fleet:unready' })
 assert.equal(unreadyNotify.alreadyAlive, true)
 assert.equal(unreadyNotify.notified, undefined)
 

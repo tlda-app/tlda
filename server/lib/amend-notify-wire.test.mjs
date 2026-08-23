@@ -14,7 +14,8 @@
 import assert from 'node:assert/strict'
 import https from 'node:https'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { removeTempDir } from './test-support/remove-temp-dir.mjs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -127,7 +128,7 @@ test('an amend reaches the recipient channel as a notification', async () => {
   await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
   await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
   await store.ensureSubscription({ owner: 'fleet:recipient', query: 'to:me', notificationPolicy: 'immediate' })
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -205,7 +206,7 @@ test('an amend reaches the recipient channel as a notification', async () => {
     senderWs?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -230,7 +231,7 @@ test('an amend requests a daemon wake for a recipient with no open socket', asyn
   await store.ensureSubscription({ owner: 'fleet:sleeper', query: 'to:me', notificationPolicy: 'immediate' })
   // A route and no socket: this is what hibernating looks like to the server.
   store.setAgentDaemonRoute('fleet:sleeper', 'mini:testing')
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -281,6 +282,6 @@ test('an amend requests a daemon wake for a recipient with no open socket', asyn
     senderWs?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })

@@ -6,7 +6,8 @@
 // disk, which is the only evidence that the write happened.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { removeTempDir } from './test-support/remove-temp-dir.mjs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -83,7 +84,7 @@ async function seedAgents(dbPath) {
       metadata: { kind: 'claude', model: 'opus' },
     })
   } finally {
-    store.close()
+    await store.close()
   }
 }
 
@@ -110,12 +111,12 @@ function sendAgentModel(port, fills) {
   })
 }
 
-function metadataFor(dbPath, id) {
+async function metadataFor(dbPath, id) {
   const store = new FleetStore(dbPath, { taskDoc: false })
   try {
     return store.getAgent(id)?.metadata || null
   } finally {
-    store.close()
+    await store.close()
   }
 }
 
@@ -137,13 +138,13 @@ test('agent-model fills a missing model over the wire and leaves an existing one
 
     // Read the rows back off disk: the reply is the handler's word for it, the
     // stored metadata is the fact the panel reads.
-    const missing = metadataFor(dbPath, 'fleet:model-missing')
-    const present = metadataFor(dbPath, 'fleet:model-present')
+    const missing = await metadataFor(dbPath, 'fleet:model-missing')
+    const present = await metadataFor(dbPath, 'fleet:model-present')
     assert.equal(missing.model, 'sonnet')
     assert.equal(missing.kind, 'claude', 'the fill must not drop the rest of the metadata')
     assert.equal(present.model, 'opus', 'an existing model is the seat record and must survive')
   } finally {
     await stopServer(child)
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
