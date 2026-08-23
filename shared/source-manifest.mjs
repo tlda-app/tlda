@@ -117,11 +117,29 @@ export function referencedRootsFromPaths(referenced, known) {
   return [...roots]
 }
 
+// A declared document root is the strongest statement of membership a project
+// has — stronger than a chat reference, which is the other seed below. It was
+// nonetheless the one seed this function never read: `documentRoots` appeared
+// nowhere in this file, so a Markdown root declared on a LaTeX project failed
+// the extension test in isSourceFilePath, was never pushed, and produced a
+// document that existed in the project record and nowhere on the server. It
+// folds into the same set the chat reference uses rather than getting a branch
+// of its own, because "something declared this file part of the project" is one
+// fact with two sources.
+function declaredRootPaths(project) {
+  const roots = project?.documentRoots
+  if (!Array.isArray(roots)) return []
+  return roots.map(root => (typeof root === 'string' ? root : root?.path)).filter(Boolean)
+}
+
 export function sourceManifestContext(project = {}) {
+  const referenced = project?.referencedRoots instanceof Set
+    ? [...project.referencedRoots]
+    : Array.isArray(project?.referencedRoots) ? project.referencedRoots : []
   return {
     format: project?.format || 'svg',
     mainFile: normalizePath(project?.mainFile || ''),
-    referencedRoots: referencedRootSet(project?.referencedRoots),
+    referencedRoots: referencedRootSet([...referenced, ...declaredRootPaths(project)]),
   }
 }
 
