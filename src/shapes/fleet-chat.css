@@ -2330,8 +2330,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   text-overflow: ellipsis;
 }
 
+/* Inferred from the daemon default rather than read out of the row, so it is
+   dimmed: the value is right, its provenance is weaker than a recorded one. */
 .fleet-agents-shape .fleet-agents-col-model.unrecorded {
-  opacity: calc(var(--fleet-agents-content-dormant) * 0.55);
+  opacity: calc(var(--fleet-agents-content-dormant) * 0.7);
+  font-style: italic;
 }
 
 .fleet-agents-shape .fleet-agents-col-seen {

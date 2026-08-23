@@ -294,14 +294,24 @@ export function FleetAgentDirectoryRow({
             so finding it meant opening rows one at a time, and he spent hours
             writing with sonnet agents without knowing.
 
-            An unrecorded model renders as a dash rather than as nothing, because
-            blank is what made this invisible: a row with no model looked the same
-            as a column that was not there. The dash says the app does not know. */}
+            An unrecorded model reads as `sonnet`, not as a dash. Skip, 2026-08-23:
+            "just write sonnet dude — that's what it fucking means". The row records
+            the model the caller ASKED for, and callers usually ask for none, so a
+            blank means the mint took the daemon default — which was `sonnet` for
+            every agent that now has one. It is not unknown; it is the default,
+            and showing a dash hid the one fact he needed.
+
+            Dimmed and titled as inferred rather than recorded, because it is
+            read off the default rather than out of the row. New mints do record
+            their resolution, so blanks are the pre-2026-08-23 population; if the
+            default changes again this inference has to change with it. */}
         <span
           className={`fleet-agents-col-model${row.model ? '' : ' unrecorded'}`}
-          title={row.model ? `model: ${row.model}` : 'model not recorded for this agent'}
+          title={row.model
+            ? `model: ${row.model}`
+            : 'no model recorded — it was minted without one, so it took the daemon default (sonnet)'}
         >
-          {row.model || '—'}
+          {row.model || 'sonnet'}
         </span>
         <span className="fleet-agents-col-seen">{row.ago}</span>
         <span
