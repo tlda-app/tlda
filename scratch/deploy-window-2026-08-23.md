@@ -48,10 +48,32 @@ only one was verified. The untested row is the one that shipped broken.
 ## Open, recorded rather than guessed
 
 1. **The MCP half of the wire is not live for existing agents** — the nack needs
-   each agent's MCP to restart. Measured since the remedy started working: **208
-   `no-channel`, zero `channel-silent`**. The nack only distinguishes anything on
-   `channel-silent`, so the missing half is currently distinguishing nothing.
-   **The trigger to roll MCPs is the first `channel-silent`, not a clock.**
+   each agent's MCP to restart.
+
+   **The trigger I first set — "wait for the first `channel-silent`" — could never
+   have fired, and the positive control is what showed it.** Measured 06:57Z, all
+   `notification-symptom` lines since the remedy went live:
+
+   ```
+   419 lines total
+   247  fleet:dev
+   the rest  fleet:dev-probe-*, fleet:mcp-probe-*
+   real agents  ZERO
+   control: login-broken, notify-ship and advocate-3-2 all appear in the same
+            log window, just never in a symptom line
+   ```
+
+   **Every one of those is an agent with no MCP socket, which can only ever emit
+   `no-channel`.** So the zero was consistent both with the fleet being healthy
+   and with nothing in the corpus being *able* to express the value — and I read
+   it as the first. A real agent with a socket that acks normally produces no
+   symptom at all, so the condition I was waiting for had no producer.
+
+   **The corrected trigger: any `notification-symptom` line for an agent that is
+   not `dev` and not a probe.** That can actually occur — it is what a real
+   agent's MCP wedging looks like — and it is the case the nack exists to tell
+   apart from a refusal. Until then the nack has no work to do, which remains a
+   good reason to defer and is now a reason with an expiry that can arrive.
 2. **`chat` refuses a routeless recipient; `delegate` accepts one silently** and
    creates a task that can never be delivered. In the spec's own unsettled list.
    `delegate` *does* notify a live recipient — control run, tagged notification.
