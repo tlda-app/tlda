@@ -332,6 +332,64 @@ implementer's to infer.
    standing rule is that a missing route fails explicitly and authorizes no local
    fallback; what the server records at that moment is not stated.
 
+5. **`chat` refuses a routeless recipient and `delegate` accepts one.** Measured
+   on `a2adffdff`, two probes minutes apart against the same seat — a fixture
+   with `dead: true` and no process:
+
+   ```
+   chat      → refused, loudly:  "No recipients matched: fleet:82fd355d"
+                trace: chat.ingress/received, then nothing
+
+   delegate  → accepted, silently: a task was created
+                trace: delegate.ingress/received
+                       broadcast.fleet-event/queued
+                       fleet-store delegate.insert/stored
+                       ← ends here. No wake.request. No notification.symptom.
+   ```
+
+   So a task now exists for a seat that has no process and no route: **accepted
+   mail that can never become delivered**, which is what `AGENTS.md` §"A mailbox
+   is not proof of reachability" rules against. Which of the two behaviours is
+   right is the unsettled part — refusing loudly and queueing for a seat that may
+   return are both defensible, and they are not both defensible at once for two
+   verbs that do the same thing.
+
+   **Not established, and deliberately not asserted here:** whether `delegate`
+   attempts a notification for a *live* recipient at all. Only one `delegate`
+   trace existed in the buffer at the time and it was the probe's, so this cannot
+   distinguish a guard that fires on `dead` from a verb that never notifies
+   anyone.
+
+6. **A reserved shell that never logged in can end up `dead` while its stored
+   metadata still reads `hibernating`.** Observed on that same fixture:
+
+   ```
+   dead: true                          runtime_status: dead
+   metadata.shell: true                metadata.status.status: "hibernating"
+   ```
+
+   and the roster answering *"resolves to fleet:82fd355d but has no live roster
+   row — known to the store, absent from the registry."* A surface reading the
+   metadata reports it as hibernating; the column and the projection say dead.
+   **Which of those a reader gets depends on which surface they ask**, and that
+   is what makes such a seat a ghost: addressable by name, absent from the
+   registry, and describable two ways.
+
+   **What set `dead` is unknown.** The liveness trace gives only
+   `reason: "agent-marked-dead"` — the projection reading a flag already set,
+   never the transition. Hibernating a never-logged-in shell is a *suspect* and
+   has not been shown to be the cause; establishing it needs the transition, not
+   the projection. Recorded as an open question rather than a mechanism because
+   §"DEATH IS A FLAG IN THE DATABASE" makes the difference between those two
+   consequential: if something infers this, that is the defect, and if somebody
+   set it explicitly, there is nothing here to fix.
+
+   Related and separately worth fixing: of the two returns in `requestWake` that
+   precede `attemptMcpWakeNotification`, the reserved-shell one appends a
+   control-plane trace and **the `dead` one appends nothing at all**. The most
+   consequential branch is the silent one, so an investigation finds no record of
+   the decision that stopped the notification.
+
 Adjacent to this and already written down: the daemon↔server durable message
 protocol has its own set of unspecified states — silent ack refusal, attempt
 ceilings, cross-type starvation — enumerated in
