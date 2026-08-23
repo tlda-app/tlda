@@ -14,10 +14,50 @@ export function guessMimeType(fileName) {
   return MIME_MAP[ext] || 'application/octet-stream'
 }
 
-export function resolveFilePath(filePath, cwd) {
+// The directories tlda knows about, from the source bindings the daemon owns.
+// Read fresh and cheaply; a miss returns [] rather than throwing, because a
+// message must never fail to send because a binding file is absent.
+function boundSourceDirs(configDir, envName) {
+  try {
+    const file = path.join(configDir, `source-bindings${envName ? '.' + envName : ''}.json`)
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+    // Values are objects carrying `sourceDir`; older entries were bare strings.
+    const dirs = Object.values(raw || {}).map(v => (v && typeof v === 'object' ? v.sourceDir : v))
+    return [...new Set(dirs.filter(d => typeof d === 'string' && d))]
+  } catch { return [] }
+}
+
+// A BARE filename that is not in the author's own directory.
+//
+// Skip, 2026-08-23, after being handed a failure for a file that existed the
+// whole time, one directory over: "IF THE FUCKING FILE WEREN'T THERE 'SAY THE
+// FILENAME UNQUOTED' WOULD'VE GIVEN ME A BROKEN LINK". It was there. Resolution
+// looked only where the author was standing, and the author was standing in a
+// different repository from the document.
+//
+// So a bare name also gets looked up in the directories tlda has bindings for.
+// UNIQUE MATCH ONLY: if two projects hold that filename there is no right
+// answer, and guessing which one is worse than not resolving. A name containing
+// a slash is a path and is left alone -- it says where it means.
+function uniqueBoundFileNamed(basename, configDir, envName) {
+  if (!basename || basename.includes('/')) return null
+  const hits = []
+  for (const dir of boundSourceDirs(configDir, envName)) {
+    const candidate = path.join(dir, basename)
+    try { if (fs.statSync(candidate).isFile()) hits.push(candidate) } catch { /* not there */ }
+    if (hits.length > 1) return null
+  }
+  return hits.length === 1 ? hits[0] : null
+}
+
+export function resolveFilePath(filePath, cwd, options = {}) {
   const expanded = filePath.replace(/^~\//, os.homedir() + '/')
   if (path.isAbsolute(expanded)) return expanded
-  return cwd ? path.resolve(cwd, expanded) : expanded
+  const underCwd = cwd ? path.resolve(cwd, expanded) : expanded
+  try { if (fs.existsSync(underCwd)) return underCwd } catch { /* fall through */ }
+  const configDir = options.configDir || path.join(os.homedir(), '.config', 'tlda')
+  const found = uniqueBoundFileNamed(expanded, configDir, options.envName || process.env.TLDA_ENV || null)
+  return found || underCwd
 }
 
 // Upload bytes under a chosen name. Split out from uploadFileToServer because a
