@@ -9,7 +9,8 @@
 // called.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { removeTempDir } from './test-support/remove-temp-dir.mjs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -106,7 +107,7 @@ async function withFleet({ withRecipientSocket = true, loginKind = 'claude', res
   await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
   await store.ensureSubscription({ owner: 'fleet:recipient', query: 'to:me', notificationPolicy: 'immediate' })
   store.setAgentDaemonRoute('fleet:recipient', 'mini:testing')
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -149,7 +150,7 @@ async function withFleet({ withRecipientSocket = true, loginKind = 'claude', res
     daemonWs?.close(); recipientWs?.close(); senderWs?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 }
 

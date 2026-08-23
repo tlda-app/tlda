@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import https from 'node:https'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { removeTempDir } from './test-support/remove-temp-dir.mjs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -89,7 +90,15 @@ function request(ws, id, type, payload) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-async function waitForWakeStatuses(port, traceId, operations, expectedCount = 1, timeoutMs = 1000) {
+// Generous, and not tuned. `TLDA_WAKE_MCP_ACK_DEADLINE_MS` used to shorten the
+// server's ack deadline to 50ms so these finished quickly; the deadline is
+// configuration now and there is no environment override, so a test that waits
+// for a timeout to fire waits the real 5s. This bounds a hang, it does not
+// measure anything, so it only has to exceed the deadline by enough that a
+// loaded box cannot turn a pass into a failure.
+const WAKE_STATUS_CEILING_MS = 30_000
+
+async function waitForWakeStatuses(port, traceId, operations, expectedCount = 1, timeoutMs = WAKE_STATUS_CEILING_MS) {
   const deadline = Date.now() + timeoutMs
   let statuses = []
   while (Date.now() < deadline) {
@@ -132,8 +141,8 @@ test('the inbox delivery projection returns and acknowledges direct chat', async
     assert.equal(store.getInboxDeliveryCount('fleet:recipient'), 0)
     assert.deepEqual(store.getInboxDeliveriesLimited('fleet:recipient', 50), [])
   } finally {
-    store.close()
-    rmSync(dir, { recursive: true, force: true })
+    await store.close()
+    removeTempDir(dir)
   }
 })
 
@@ -204,7 +213,7 @@ test('MCP inbox injects markdown image content instead of a not-pre-materialized
     assert.equal(content[1].mimeType, 'image/png')
     assert.equal(content[1].data, png.toString('base64'))
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -240,7 +249,7 @@ test('my-task delivers unread messages and ack-inbox clears only returned ids', 
     text: 'websocket delivery proof',
     unread: true,
   }, { notify: false })
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -276,7 +285,7 @@ test('my-task delivers unread messages and ack-inbox clears only returned ids', 
   } finally {
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -287,7 +296,7 @@ test('timer fire crosses the server wake wire', async () => {
   const now = new Date().toISOString()
   await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
   await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -300,7 +309,6 @@ test('timer fire crosses the server wake wire', async () => {
       TLDA_FLEET_DB: dbPath,
       TLDA_DEV_SERVER: '1',
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
-      TLDA_WAKE_MCP_ACK_DEADLINE_MS: '50',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -335,7 +343,7 @@ test('timer fire crosses the server wake wire', async () => {
   } finally {
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -358,7 +366,7 @@ test('codex recipients use the MCP ACK path before daemon fallback', async () =>
     query: 'to:me',
     notificationPolicy: 'immediate',
   })
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -371,7 +379,6 @@ test('codex recipients use the MCP ACK path before daemon fallback', async () =>
       TLDA_FLEET_DB: dbPath,
       TLDA_DEV_SERVER: '1',
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
-      TLDA_WAKE_MCP_ACK_DEADLINE_MS: '50',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -416,7 +423,7 @@ test('codex recipients use the MCP ACK path before daemon fallback', async () =>
     senderWs?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -439,7 +446,7 @@ test('explicit deliveryChannel tmux does not bypass the MCP ACK path', async () 
     query: 'to:me',
     notificationPolicy: 'immediate',
   })
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -452,7 +459,6 @@ test('explicit deliveryChannel tmux does not bypass the MCP ACK path', async () 
       TLDA_FLEET_DB: dbPath,
       TLDA_DEV_SERVER: '1',
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
-      TLDA_WAKE_MCP_ACK_DEADLINE_MS: '50',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -495,7 +501,7 @@ test('explicit deliveryChannel tmux does not bypass the MCP ACK path', async () 
     senderWs?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -511,7 +517,7 @@ test('an open MCP channel must ACK notification delivery or fall through to daem
     query: 'to:me',
     notificationPolicy: 'immediate',
   })
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -524,7 +530,6 @@ test('an open MCP channel must ACK notification delivery or fall through to daem
       TLDA_FLEET_DB: dbPath,
       TLDA_DEV_SERVER: '1',
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
-      TLDA_WAKE_MCP_ACK_DEADLINE_MS: '50',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -561,7 +566,7 @@ test('an open MCP channel must ACK notification delivery or fall through to daem
     senderWs?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -577,7 +582,7 @@ test('an MCP channel ACK prevents redundant daemon wake', async () => {
     query: 'to:me',
     notificationPolicy: 'immediate',
   })
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -590,7 +595,6 @@ test('an MCP channel ACK prevents redundant daemon wake', async () => {
       TLDA_FLEET_DB: dbPath,
       TLDA_DEV_SERVER: '1',
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
-      TLDA_WAKE_MCP_ACK_DEADLINE_MS: '500',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -646,7 +650,7 @@ test('an MCP channel ACK prevents redundant daemon wake', async () => {
     senderWs?.close()
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -658,7 +662,7 @@ test('chat reply names a resolved recipient with no direct subscription', async 
   await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
   await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
   store.setAgentDaemonRoute('fleet:recipient', 'mini:testing')
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -706,7 +710,7 @@ test('chat reply names a resolved recipient with no direct subscription', async 
   } finally {
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -729,7 +733,7 @@ test('chat to a pending shell is accepted without reporting delivery or wake', a
     query: 'to:me',
     notificationPolicy: 'immediate',
   })
-  store.close()
+  await store.close()
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -785,6 +789,6 @@ test('chat to a pending shell is accepted without reporting delivery or wake', a
   } finally {
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })

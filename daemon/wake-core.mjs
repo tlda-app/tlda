@@ -1,7 +1,15 @@
 // Waking an agent is daemon-owned because the daemon knows whether it started a
-// process. User-visible notification is channel-owned; daemon-local notify_text
-// support remains for explicit terminal RPC callers, not as the fleet notice
-// path.
+// process. It is ALL this does.
+//
+// Notification is the channel's, end to end: server -> the agent's MCP -> the
+// agent. This module used to carry a second route — `tell()` typing
+// `params.notify_text` into the pane, on three branches where the process was
+// already alive, which is not a wake in any sense. Skip, 14:06:23: "why are we
+// pushing notifications to the demon ever? We don't. That's a rule."
+//
+// A wake now says nothing about messages. The agent comes up, calls `login()`,
+// and the server hands over the mail — which is what makes it impossible for a
+// notification to be lost in two places instead of one.
 export function createDaemonWakeCore({
   store,
   processAlive,
@@ -9,8 +17,6 @@ export function createDaemonWakeCore({
   replaceProcess = null,
   targetDaemonKey = null,
   resumeSession,
-  notifyAgent = null,
-  observeNotificationFailure = null,
   retryPolicy = null,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
 }) {
@@ -20,13 +26,6 @@ export function createDaemonWakeCore({
     if (!identifier) throw new Error('wake requires a local mint, fleet, or friendly-name identifier')
     const facts = store.resolve(identifier)
     if (!facts) throw new Error(`no daemon mint facts for ${identifier}`)
-    if (params.notification_failure) {
-      await observeNotificationFailure?.({
-        facts,
-        agentId: facts.fleetId || params.fleet_id || params.fleetId || null,
-        failure: params.notification_failure,
-      })
-    }
     // A mint with facts but no session is not unresumable — it is the partially
     // minted agent: the daemon prepared it, the launch recipe is on disk, and no
     // harness ever logged in to produce a session id. Finishing that is what the
@@ -46,29 +45,6 @@ export function createDaemonWakeCore({
     // a live harness runtime. A concurrent finish fails closed at the launcher.
     if (!facts.sessionId && !facts.launchRecipe) {
       throw new Error(`mint ${facts.mintId} is not resumable: no session_id and no launch recipe`)
-    }
-
-    // `started` is what the notice is about: the agent was gone and is back. An
-    // agent that never stopped gets the message and nothing else.
-    const tell = async (started) => {
-      if (!notifyAgent || !params.notify_text) return null
-      const notifyDelayMs = Math.max(0, Number(params.notify_delay_ms) || 0)
-      if (started && notifyDelayMs > 0) await sleep(notifyDelayMs)
-      const text = started && params.return_notice
-        ? `${params.return_notice}\n\n${params.notify_text}`
-        : params.notify_text
-      const readyTimeoutMs = Number(params.notify_ready_timeout_ms) > 0
-        ? params.notify_ready_timeout_ms
-        : undefined
-      return notifyAgent({
-        facts,
-        agentId: facts.fleetId || params.fleet_id || params.fleetId || null,
-        text,
-        enterDelayMs: params.enter_delay_ms,
-        readyTimeoutMs,
-        clearBeforeText: !!readyTimeoutMs,
-        started,
-      })
     }
 
     const retry = retryPolicy?.(facts) || {}
@@ -121,16 +97,14 @@ export function createDaemonWakeCore({
             + 'It cannot be addressed until it logs in; wake cannot complete a join.',
           )
         }
-        const notified = await tell(false)
-        return { ok: true, alreadyAlive: true, ...facts, ...(notified?.ok ? { notified: true } : {}) }
+        return { ok: true, alreadyAlive: true, ...facts }
       }
       if (!targetDaemonKey || !processDaemonKey || !replaceProcess) {
         throw new Error(`mint ${facts.mintId} takeover is not configured on this daemon`)
       }
       const liveDaemonKey = await processDaemonKey(facts)
       if (liveDaemonKey === targetDaemonKey) {
-        const notified = await tell(false)
-        return { ok: true, alreadyAlive: true, ...facts, ...(notified?.ok ? { notified: true } : {}) }
+        return { ok: true, alreadyAlive: true, ...facts }
       }
       if (!liveDaemonKey) {
         throw new Error(`mint ${facts.mintId} takeover refused: live process has no daemon ownership`)
@@ -178,18 +152,15 @@ export function createDaemonWakeCore({
       throw new Error(`wake did not produce a live runtime for ${facts.mintId}${detail}`)
     }
     if (!resumed) {
-      const notified = await tell(false)
-      return { ok: true, alreadyAlive: true, ...facts, ...(notified?.ok ? { notified: true } : {}) }
+      return { ok: true, alreadyAlive: true, ...facts }
     }
     const current = store.updateProcessState(facts.mintId, resumed)
-    const notified = await tell(true)
     return {
       ok: true,
       resumed: true,
       ...(alive ? { takenOver: true } : {}),
       ...current,
       ...resumed,
-      ...(notified?.ok ? { notified: true } : {}),
     }
   }
 }

@@ -49,6 +49,11 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // daemon.yaml because the server is not allowed to read daemon.yaml, and
   // minting happens on the server.
   'subscriptions',
+  // How long the server waits for an agent's MCP to acknowledge a notification
+  // before reporting the symptom to that agent's daemon. `{ ackTimeout: '5s' }`.
+  // The one rule the notification path runs, and a server setting, so it lives
+  // here rather than in a source constant or an environment variable.
+  'notifications',
   // IANA zone name (e.g. "America/New_York") that human-readable times render
   // in. DISPLAY ONLY — stored timestamps stay UTC. Read by getDisplayTimeZone()
   // in shared/display-time.mjs. Absent = render in the host machine's own zone.
