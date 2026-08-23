@@ -1984,11 +1984,10 @@ export async function finalizeBuildVersion({
   // mirror commits the accepted revision, which IS the head -- so it cannot be
   // stale by construction, and the next accept carries anything newer.
 
-  // `recorded.hash` is `git rev-parse HEAD` in commitSnapshot — the full sha.
-  // Every surface that has ever carried it has carried the short form, so the
-  // shortening lives here rather than at each site. c16e8472a deleted the
-  // mirror block this local was declared in and left its two remaining uses
-  // behind, which is what made every change summary since throw.
+  // `recorded.hash` is `git rev-parse HEAD` in commitSnapshot — the full sha,
+  // and the build card has always carried the short form. c16e8472a deleted the
+  // mirror block this local was declared in and left the uses below it behind,
+  // which is what made every change summary since throw.
   const hash7 = recorded.hash.slice(0, 7)
 
   if (recorded.committed) try {
