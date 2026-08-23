@@ -522,13 +522,37 @@ let buildIdCounter = 0
  * The build worker owns one process group. Commands inherit it so cancellation
  * reaches the worker and every descendant through the transport's group signal.
  */
-function trackedExec(buildId, cmd, opts = {}) {
+// Exported for one reason, so nobody removes it as an export nothing imports:
+// the fix for the format-dump log line is HERE (attaching output to the error)
+// and in `latexErrorSummary`, and a proof that exercised only the summary would
+// be the receiver-with-no-sender shape this repository keeps being bitten by.
+// `bin/a-failed-format-dump-says-what-it-could-not-resolve-test.mjs` crosses it.
+export function trackedExec(buildId, cmd, opts = {}) {
   return new Promise((resolve, reject) => {
     const child = execCb(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts, detached: false }, (err, stdout, stderr) => {
       const children = buildChildProcesses.get(buildId)
       if (children) children.delete(child)
-      if (err) reject(err)
-      else resolve({ stdout, stderr })
+      if (err) {
+        // Carry the output on the error. `exec` hands stdout and stderr to this
+        // callback as separate arguments and does NOT put them on `err`, so
+        // rejecting with `err` alone threw away everything the command said —
+        // and for a TeX command everything it said IS the error. `err.message`
+        // is the shell wrapper (`Command failed: pdflatex -ini …`); the reason
+        // is in stdout.
+        //
+        // ADDITIVE, and this is the part to check rather than take on trust,
+        // because "I attached fields to an error in a shared helper" is a line
+        // that should make a reviewer uneasy. Nothing consumed these before —
+        // they did not exist on this error. Measured 2026-08-23 across
+        // `server/`, `daemon/`, `cli/` and `shared/`: every other site reading
+        // `.stdout`/`.stderr` off a caught value is catching `execSync` or
+        // `promisify(exec)`, both of which set them natively, and none of them
+        // is downstream of `trackedExec`. `daemon/shadow-mirror.mjs` already
+        // does exactly this attach for the same reason.
+        err.stdout = stdout
+        err.stderr = stderr
+        reject(err)
+      } else resolve({ stdout, stderr })
     })
     if (!buildChildProcesses.has(buildId)) buildChildProcesses.set(buildId, new Set())
     buildChildProcesses.get(buildId).add(child)
@@ -604,6 +628,49 @@ function extractPreamble(texPath) {
  * The .fmt bakes in PRETEX + all preamble packages/macros, so subsequent
  * builds skip ~3s of package loading.
  */
+/**
+ * The LaTeX error out of a TeX run's output, or null if it did not report one.
+ *
+ * WHY THIS EXISTS. When the format dump fails, the operator was shown
+ * `Format creation failed: Command failed: pdflatex -ini …` — the shell command
+ * that failed, never the reason it failed. The build then carries on without a
+ * format, publishes a DVI anyway, and the status reads `error` while pages
+ * serve. So the one line an operator gets names the wrapper and not the cause,
+ * and a project sits in an unexplained `error` with nobody able to say why.
+ *
+ * WHAT IT LOOKS FOR, measured against real `pdflatex -ini` output on fixtures
+ * (2026-08-23) rather than assumed: TeX writes its errors to **stdout**, one per
+ * line beginning `!`. Both failure shapes that produce this — a package that is
+ * not installed, and an `\input` target absent from the build directory — come
+ * out as `! LaTeX Error: File \`NAME' not found.`, which names exactly the thing
+ * that could not be resolved.
+ *
+ * `! Emergency stop.` is dropped. It always follows and it is the consequence,
+ * not the cause; leading with it would be the same failure in a new costume.
+ * If nothing but `Emergency stop` is present it IS returned, because a stop with
+ * no stated cause is itself the finding and must not read as no output at all.
+ *
+ * KNOWN LIMIT, stated rather than discovered later: TeX wraps long lines, so an
+ * error naming a very long path can be split across lines and this reports only
+ * the first part. It is truncation of a real answer, not a wrong one.
+ */
+export function latexErrorSummary(output) {
+  if (!output) return null
+  const lines = String(output).split('\n').map(line => line.trimEnd())
+  const bangs = lines.filter(line => line.startsWith('!'))
+  const causes = []
+  for (const line of bangs) {
+    if (/^!\s*Emergency stop/i.test(line)) continue
+    if (/^!\s*==>\s*Fatal error occurred/i.test(line)) continue
+    if (causes.includes(line)) continue
+    causes.push(line)
+    if (causes.length === 3) break
+  }
+  if (causes.length) return causes.join(' ')
+  const stop = bangs.find(line => /^!\s*Emergency stop/i.test(line))
+  return stop || null
+}
+
 async function ensureFormat(ctx) {
   const { srcDir, buildDir, projDir, texBase, texPath, addLog, run } = ctx
   const cacheDir = join(projDir, 'build-cache')
@@ -643,7 +710,12 @@ async function ensureFormat(ctx) {
       { cwd: buildDir, timeout: 60000 },
     )
   } catch (e) {
-    addLog(`Format creation failed: ${e.message.split('\n')[0]}`)
+    // Say what could not be resolved, not which command exited nonzero. The
+    // command is already known — it is three lines above this one.
+    const cause = latexErrorSummary(`${e.stdout || ''}\n${e.stderr || ''}`)
+    addLog(cause
+      ? `Format creation failed: ${cause}`
+      : `Format creation failed with no LaTeX error in its output: ${e.message.split('\n')[0]}`)
     return null
   }
 
