@@ -751,15 +751,21 @@ export async function extractPipelineWarningsAsync(name) {
  * Extract structured errors and warnings from a LaTeX log file.
  * Returns { errors: [{ message, line?, file? }], warnings: string[] }
  */
+// `errors: []` answered two different questions for as long as this function
+// existed — "the build was clean" and "there is no log to read" — and callers
+// could not tell them apart, so a failed build reported `Clean.`. `logMissing`
+// is the discriminator: an empty error list is only good news when it is false.
 export async function extractBuildErrors(name) {
   const project = await readProject(name)
-  if (!project) return { errors: [], warnings: [] }
+  if (!project) return { errors: [], warnings: [], logMissing: true }
 
-  // latex.log is preserved by build-runner after latexmk runs
+  // latex.log is preserved by build-runner after latexmk runs, and carried out
+  // of a failed build's instance by publishBuildDiagnostics.
   const logPath = join(projectDir(name), 'latex.log')
   const logText = await readTextOrNull(logPath)
-  if (logText === null) return { errors: [], warnings: [] }
+  if (logText === null) return { errors: [], warnings: [], logMissing: true }
   const result = parseLatexErrors(logText)
+  result.logMissing = false
 
   // Enrich errors with source context (±2 lines around the error)
   const srcDir = sourceDir(name)

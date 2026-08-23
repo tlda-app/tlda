@@ -100,6 +100,9 @@ process.on('message', async (msg) => {
   }
   if (msg?.t !== 'build') return
   let instanceRoot = null
+  // Declared out here so the catch can reach it: the log that explains a
+  // failure lives in the instance, and the instance is removed in `finally`.
+  let instanceProject = null
   try {
     // This process has its own project-store module instance — point it at the
     // same projects dir the server uses, or path resolution (sourceDir/outputDir)
@@ -110,7 +113,7 @@ process.on('message', async (msg) => {
     const liveProject = projectDir(msg.name)
     const instance = await materializeBuildInstance({ name: msg.name, sourceRevision: msg.sourceRevision, lifecycle, seedProject: liveProject })
     instanceRoot = instance.root
-    const instanceProject = instance.project
+    instanceProject = instance.project
     setProjectPathOverride(msg.name, instanceProject)
     if (msg.kind === 'parts') {
       await buildProjectPartsView(msg.name)
@@ -127,9 +130,15 @@ process.on('message', async (msg) => {
       if (missingMain) {
         const message = missingMainFileMessage(msg.name, missingMain)
         // build.log before the throw, and synchronously: it is the only copy of
-        // this that outlives the worker. `t: 'done', ok: false` is not relayed
-        // to any sink, and the report below is fire-and-forget IPC racing
-        // process.exit. The file is what `tlda project status` prints.
+        // this. `t: 'done', ok: false` is not relayed to any sink, and the
+        // report below is fire-and-forget IPC racing process.exit. The file is
+        // what `tlda project status` prints.
+        //
+        // NOTE: `projectDir` here is the INSTANCE, because the path override is
+        // set above — so this write did not survive the worker at all until the
+        // catch below started carrying diagnostics out. The comment used to say
+        // it outlived the worker; it did not, and the file died with the
+        // instance along with every other failed build's log.
         writeFileSync(join(projectDir(msg.name), 'build.log'), `[build] ${message}\n`)
         await callParent('updateProject', [msg.name, { buildStatus: 'error', pages: 0 }])
         throw new Error(message)
@@ -152,6 +161,18 @@ process.on('message', async (msg) => {
     process.send?.({ t: 'done', ok: true })
     setImmediate(() => process.exit(0))
   } catch (e) {
+    // Before anything else in this handler, and before `finally` removes the
+    // instance: the log is the only account of why this failed, and it exists
+    // nowhere but inside the instance. Diagnostics only — no artifacts cross,
+    // so the last good render stays the published one.
+    if (instanceProject) {
+      try {
+        await callParent('publishBuildDiagnostics', [msg.name, instanceProject])
+      } catch (diagError) {
+        // Never let saving the explanation replace the failure being explained.
+        console.error(`[build-worker] could not preserve diagnostics for ${msg.name}: ${diagError?.message || diagError}`)
+      }
+    }
     try {
       await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, 'build_failed', { ok: false, error: e?.message || String(e) }])
     } catch (recordError) {
