@@ -191,21 +191,45 @@ filter would return.
   command once**, so it is not to be re-run without asking him.
 - **`qynth-advocate` (fleet:9088cd80) has no `permission_grants` row.**
   Operator-only. He knows.
-- **The reason-less `unhandledrejection` bursts.** Three at `14:34:29`–`:31`,
-  and bursts back to `11:19` — before `25825e519`, so not that deploy. The
-  rejections genuinely carry `undefined` as their reason; Chrome's own protocol
-  reports `"Uncaught (in promise)"` with no object and no frames, so the beacon
-  is honest, not blind. `air-file-refs` has a read-only listener attached for
-  the next one.
+- **The reason-less `unhandledrejection` bursts are what an app mount throws** —
+  three of them, every time, 0.6–2.6 s after `gesture listener installed`.
+  Established in his own uncontaminated session `1d02fb6c`. They genuinely carry
+  `undefined` as their reason, so the beacon is honest rather than blind.
+
+  **Read one step further, this is the defect, not the symptom: the app emits
+  three unhandled rejections on every start, and that is why the crash beacon
+  was useless all day** — a beacon whose baseline is noise cannot report a
+  signal. `air-file-refs` is now getting the three reasons on demand in its own
+  browser, before app code runs.
+
+- **One real crash, unattributed, and it is not ours.** `TypeError: Cannot read
+  properties of undefined (reading 'dimensions')` from `xterm`'s
+  `Viewport._innerRefresh` — a `requestAnimationFrame` callback landing after
+  the renderer is gone, over a non-null assertion in `RenderService.get
+  dimensions`. A terminal-pane teardown race. One occurrence, `12:02:21Z`. **Not
+  established as the white screen**, and a `requestAnimationFrame` throw is not
+  caught by a React error boundary.
+
+- **An observation flag causes a document write, and it is ours.**
+  `navigator.webdriver` → `automatedSession` (`src/pills/FleetIconPill.tsx:403`)
+  → `3-col` (`src/pills/fleet-phone-default.ts:32`) → six fleet shapes created in
+  the project's synced room. Once per identity, and an automated launch mints a
+  fresh identity every time. Measured: 66 shapes, 11 identities, eight minutes.
+  Fix queued; it is a deletion, not a mechanism.
 
 ## Ruled out — do not re-derive these
 
-- **The build storm is not what escalated the crash rate at 15:07Z.** Client
-  `unhandledrejection` bursts went from three every 5–15 minutes to three to
-  five *every* minute at 15:07. Build submissions for that project ran at
-  roughly one a minute, flat, from 14:34 to 15:21 — 35 of them, all `complete`.
-  The rate changed against a constant build rate. Cause still unknown;
-  `air-file-refs` is diffing the 14:45 and 15:07 windows of Fly's `client.log`.
+- **The 15:07Z "crash escalation" never happened to him.** It was an agent's own
+  eleven Playwright launches against a throwaway project, read out of
+  `client.log` filtered by time. Every entry carries `project=push-closure-probe`,
+  a distinct session id and a distinct anonymous `userId`; his session is not in
+  the table. Confirmed from the other side too — **zero layout events in his
+  session, ever.** Build rate was flat across the window and was never the
+  cause either.
+
+  **The rule that prevents the next one is in `AGENTS.md` now (`f216b8e67`):
+  `client.log` is one file for every session pointed at that server. Filter by
+  session and project. Time is not a filter.**
 - **`Reload signal (full)` does not blank his document, so it is not the gray
   box.** It fires on every build — about once a minute — but its only
   subscribers are `docInfoCache`, `synctexLookup`, `TocTab` and
