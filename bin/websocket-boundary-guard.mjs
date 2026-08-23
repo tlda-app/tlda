@@ -136,6 +136,11 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'Wire test for the model backfill: drives /ws/fleet directly to prove the frames, not the function. Endpoint: /ws/fleet.',
   },
+  'server/lib/amend-notify-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Wire test for the amend notification: opens /ws/fleet as a recipient and asserts the notice arrives after an amend, which is a claim about the frame crossing rather than about either end. Calling the notify function and the receive handler in one process is exactly the proof this repository has shipped over a severed wire before. Endpoint: /ws/fleet.',
+  },
   'bin/search-takes-a-message-id-test.mjs': {
     count: 1,
     category: 'tooling',
