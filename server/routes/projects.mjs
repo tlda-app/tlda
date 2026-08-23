@@ -377,11 +377,76 @@ router.get('/:name', requireRead, async (req, res) => {
   })
 })
 
+/**
+ * A markdown file of the project's own repository, adopted as a document root
+ * by the click that opened it.
+ *
+ * Skip, 2026-08-23: *"THESE MARKDOWN FILES ARE FUCKING ROOTS ... that is the
+ * rule ... adding doc roots is as light as clicking on md chips in chat."*
+ * So the click declares the document, the source tree renders it live, and no
+ * copy is made. Everything after this is the machinery that already existed:
+ * the root makes it a closure member of the settle, `markdownProjectRootColumn`
+ * makes it a column, and `realizeProjectMarkdownArtifact` returns the live URL
+ * because it is now a declared root.
+ *
+ * Three things this must not do.
+ *
+ * **It must not adopt an untracked file.** `filteredProjectCommit` throws
+ * `configured document root is absent` for a configured root that is not in the
+ * settled tree, on the settle path, caught at warn -- so adopting an untracked
+ * file stops the project syncing at all, silently. Git answers that question, on
+ * the machine that holds the checkout, through the daemon; nothing here guesses
+ * it from a path. An untracked file is left alone and falls through to whatever
+ * happens today.
+ *
+ * **It must append.** `PATCH /document-roots` replaces the list, so this is a
+ * read-modify-write on the server, where the record lives. Clicking the same
+ * file twice writes nothing the second time: the order, the formats and the
+ * existing entries are untouched, which is what makes a re-click free rather
+ * than a churn of `project-changed` at every open panel.
+ *
+ * **It must not take the click down with it.** A daemon that is not connected,
+ * a checkout that has moved, a path from another machine: all of them mean only
+ * that this file is not known to be a root, so the click proceeds and gets the
+ * behaviour it had before. This function reports and never throws.
+ */
+async function adoptClickedFileAsDocumentRoot(req, name, sourcePath) {
+  const absolute = String(sourcePath || '')
+  if (!absolute.startsWith('/') || !/\.(md|markdown)$/i.test(absolute)) return null
+  const send = req.app?.locals?.sendProjectSourceDaemon
+  if (!send) return null
+
+  const project = await readProject(name)
+  if (!project) return null
+
+  let answer
+  try {
+    answer = await send(name, 'project-git-remote', { operation: 'repo-path', path: absolute })
+  } catch (error) {
+    return { adopted: false, reason: 'no-daemon-answer', detail: error.message }
+  }
+  if (!answer?.inRepo) return { adopted: false, reason: 'not-in-repo' }
+  if (!answer.tracked || !answer.path) return { adopted: false, reason: 'untracked', path: answer.path || null }
+
+  const existing = normalizeDocumentRoots(project.documentRoots, {
+    mainFile: project.mainFile,
+    format: project.format,
+  })
+  if (existing.some(root => root.path === answer.path)) {
+    return { adopted: false, reason: 'already-a-root', path: answer.path }
+  }
+  const documentRoots = [...existing, { path: answer.path, format: 'markdown' }]
+  await updateProject(name, { documentRoots })
+  emitGlobalEvent('project-changed', { name })
+  return { adopted: true, path: answer.path }
+}
+
 // Materialize shared/embedded markdown as a real, synced column of this project
 // (not a separate project, not a temp snapshot) — the same manifest/rebuild
 // pipeline that already backs project parts/notes.
 router.post('/:name/parts', requireRw, async (req, res) => {
   try {
+    const adoption = await adoptClickedFileAsDocumentRoot(req, req.params.name, req.body?.sourcePath)
     const result = await realizeProjectMarkdownArtifact({
       project: req.params.name,
       markdown: req.body?.markdown,
@@ -398,7 +463,7 @@ router.post('/:name/parts', requireRw, async (req, res) => {
     // nothing, so there is no change to announce. `project-changed` here would
     // be a reload of every open panel to report that nothing happened.
     if (!result.live) emitGlobalEvent('project-changed', { name: req.params.name })
-    res.json({ ok: true, ...result, outputFile: markdownColumnFileForSource(result.projectPath) })
+    res.json({ ok: true, ...result, ...(adoption ? { adoption } : {}), outputFile: markdownColumnFileForSource(result.projectPath) })
   } catch (e) {
     const message = e?.message || String(e)
     res.status(500).json({ ok: false, error: message })

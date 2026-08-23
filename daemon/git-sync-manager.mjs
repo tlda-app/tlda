@@ -256,6 +256,10 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       return listed
     }
     if (operation === 'read-file') return remotes.readFile(params.revision, params.file)
+    // Not a remote operation, and neither is `read-file` beside it. Both are
+    // questions only the machine holding the checkout can answer, and this is
+    // the route that reaches it. See docs/naming-errata.md.
+    if (operation === 'repo-path') return remotes.repoPathFor(params.path)
     if (params.name === 'tlda') throw new Error('The tlda transport remote is not a project remote')
     if (operation === 'add') return remotes.add(params.name, params.url)
     if (operation === 'delete') return remotes.delete(params.name)
