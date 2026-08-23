@@ -151,9 +151,18 @@ function attachmentTokenHtml(message, inlineAttachments, idx) {
     const name = esc(att.name || att.path?.split('/').pop() || 'file')
     const filePath = esc(att.path || '')
     const reason = att.error || att.reason || (att.broken ? 'upload failed or file not found' : '')
+    // An attachment that did not upload still renders as the path. It used to
+    // render as "⚠ <path> unavailable: upload failed or file not found",
+    // replacing the message.
+    //
+    // Skip, 2026-08-23: "THIS SHIT NEVER HAPPENS AGAIN". He was handed that
+    // warning where an outline should have been, and the file was there the
+    // whole time. Whatever went wrong upstream, the app must not substitute its
+    // own error for what was sent -- the reader can act on a path and cannot act
+    // on our failure notice. The reason stays in the title.
     if (att.broken) {
       return {
-        html: `<span class="att-upload-failed" title="File unavailable: ${esc(reason)}">⚠ ${filePath || name} unavailable: ${esc(reason)}</span>`,
+        html: `<span class="att-upload-failed" title="Not uploaded: ${esc(reason)}">${filePath || name}</span>`,
         pending: false,
       }
     }
@@ -175,7 +184,7 @@ function attachmentTokenHtml(message, inlineAttachments, idx) {
     const url = projectRef?.url || fileUrl
     if (!url) {
       return {
-        html: `<span class="att-upload-failed" title="File unavailable: no uploaded URL">⚠ ${filePath || name} unavailable: no uploaded URL</span>`,
+        html: `<span class="att-upload-failed" title="Not uploaded: no uploaded URL">${filePath || name}</span>`,
         pending: false,
       }
     }
