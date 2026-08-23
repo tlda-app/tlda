@@ -554,3 +554,57 @@ not know where anyone's tree lives.
 callers, the daemon dispatcher, and the ephemeral message type on the wire between
 them, so a rename is a live-path change on both sides of a socket. This entry
 exists so the next person looking for that route finds it.
+
+## `reportArtifactSourceKind` / `reportArtifactNameCandidate` — the shared markdown gate, named for one of its two callers
+
+**A report is a markdown file.** Skip, 2026-08-23: *"NO I AM SAYING THAT A
+FUCKING REPORT IS LITERALLY A MARKDOWN FILE"*. These two helpers in
+`src/shapes/FleetPillShape.tsx` are the test for *is this markdown*, and the
+`reportArtifact` prefix says they belong to one branch when both use them.
+
+**`createMarkdownDocviewShapeFromPill` — the docview branch — calls
+`reportArtifactNameCandidate` and then runs the same regex
+`/\.(?:md|markdown)(?:$|[?#\s])/i` against it that `reportArtifactSourceKind`
+runs.** Same helper, same pattern, same arguments: `url`/`path` and
+`fileUrl`/`filePath` are computed by six identical lines at the top of each
+function, and `title` differs only in its fallback literal. The coupling is
+real, it is load-bearing, and the name denies it.
+
+**What that hides is a whole dead branch.** Both functions are gated
+identically at their call sites in `dropPillOnTarget` — `pillType === 'file'
+|| pillType === 'doc'` — and the docview one runs first.
+`createMarkdownDocviewShapeFromPill` returns `false` at exactly one place,
+`if (!isMarkdownChip) return false`; every other exit returns `true`. So the
+report branch runs **only** when `isMarkdownChip` is false, and
+`sourceKind === 'markdown'` implies `isMarkdownChip` is true. **The markdown
+half of `createReportArtifactShapeFromPill` is unreachable**, and has been
+since `31e3ecbd9` on 2026-08-09 took the markdown case. Each function has
+exactly one caller and both are in `dropPillOnTarget`, so there is no other way
+in. Only the `'rendered'` half — html and svg — is live, and that half is a
+genuine second capability rather than a duplicate.
+
+**The cost, measured.** `b8ed1ec24` (2026-08-13) fixed a coordinate bug on the
+report branch: it projected the drop point with the main camera while
+`placeFleetShapeAtScreenPoint` un-projected it through the HUD viewport, so the
+shape landed off by the overlay transform. **The docview branch had the
+identical bug eleven lines away and did not get the fix for ten days** — `git
+log -S` shows it was never modified after the day it landed. Nobody saw the two
+were the same case, because the code says they are not.
+
+**Two more of the same shape, from the same reading.** The branches fetch
+through two different endpoints for one job — `reportArtifactUrl` gives
+`/api/file`, the docview branch builds `/api/read-file` — and a `grep` over
+`server/` finds a route for the first and none for the second. *That is not a
+claim that it 404s*: `/api/file` also answers 404 to a live probe despite
+having a route at `server/routes/fleet.mjs`, so a probe cannot tell *path
+refused* from *no route*. Unsettled, deliberately. And a file/doc pill dropped
+on blank canvas has **four** outcomes across **three** shape types, one of
+which renders a provably non-markdown file as a markdown column with no
+docview.
+
+**Not renamed, and the branches are not merged, because that is a product
+decision and not a cleanup.** The real fork is disposable-versus-adopted — the
+report branch makes a throwaway page URL, the docview branch adopts the file as
+a document root and opens it live — and **the filename does not determine
+which one a person wants.** Collapsing them picks one, which is Skip's call.
+Delete this entry in the commit that settles it.
