@@ -138,6 +138,55 @@ test('a source-only publication advances the head without touching the published
   }
 })
 
+// The swap moves every replaced item aside whether or not it was staged, so an
+// item missing from the instance is a silent deletion rather than a no-op.
+// `source` and `output` have no other copy, so their absence must stop the
+// publication. This is unreachable today — materializeBuildInstance always
+// creates both — and is asserted so it stays that way.
+test('an instance missing source or output refuses to publish rather than deleting it', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-absent-'))
+  const partialRoot = mkdtempSync(join(tmpdir(), 'tlda-build-partial-'))
+  const name = 'paper'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    const lifecycle = await sourceLifecycleStore(name)
+    const git = await lifecycle.gitRepository()
+    const first = await git.acceptRevision({
+      project: name, files: [{ path: 'main.md', content: 'source' }], message: 'first',
+    })
+    await publishBuildInstance(name, first, 1, instance(partialRoot, name, 'the render'), [])
+    assert.equal(readFileSync(join(root, name, 'output', 'artifact.txt'), 'utf8'), 'the render')
+
+    const next = await git.acceptRevision({
+      project: name, parent: first, files: [{ path: 'main.md', content: 'edited' }], message: 'next',
+    })
+    // An instance carrying source but no output, published with the default set.
+    const noOutput = join(mkdtempSync(join(tmpdir(), 'tlda-build-no-output-')), name)
+    mkdirSync(join(noOutput, 'source'), { recursive: true })
+    writeFileSync(join(noOutput, 'source', 'main.md'), 'edited')
+    await assert.rejects(
+      () => publishBuildInstance(name, next, 2, noOutput, []),
+      /has no output to publish/)
+    assert.equal(readFileSync(join(root, name, 'output', 'artifact.txt'), 'utf8'), 'the render',
+      'the refused publication must leave the render where it was')
+
+    // And the same for source.
+    const noSource = join(mkdtempSync(join(tmpdir(), 'tlda-build-no-source-')), name)
+    mkdirSync(join(noSource, 'output'), { recursive: true })
+    await assert.rejects(
+      () => publishBuildInstance(name, next, 2, noSource, []),
+      /has no source to publish/)
+    // What the first publication installed — the INSTANCE's source, not the
+    // revision's, which is why this is the helper's text rather than 'source'.
+    assert.equal(readFileSync(join(root, name, 'source', 'main.md'), 'utf8'), 'the render source',
+      'the refused publication must leave the source where it was')
+  } finally {
+    await closeProjectStore()
+    for (const dir of [root, partialRoot]) rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('first publication installs public source and records its authoritative revision status', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-build-first-publish-'))
   const instanceRoot = mkdtempSync(join(tmpdir(), 'tlda-build-first-instance-'))

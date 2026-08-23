@@ -53,9 +53,14 @@ const publicationLocks = new Map()
 function serializedPublication(name, operation) {
   const previous = publicationLocks.get(name) || Promise.resolve()
   const current = previous.then(operation, operation)
+  // `.catch` on the TRACKING chain only. The caller still gets `current` and
+  // still sees the rejection; without this the bookkeeping copy is a second
+  // rejected promise nobody handles, so any publication that throws becomes an
+  // unhandled rejection in the server process. Reachable since publishing
+  // started refusing an instance that is missing something it cannot replace.
   const tracked = current.finally(() => {
     if (publicationLocks.get(name) === tracked) publicationLocks.delete(name)
-  })
+  }).catch(() => {})
   publicationLocks.set(name, tracked)
   return current
 }
@@ -82,6 +87,20 @@ function restoreAside(live, held) {
 // survive a build unless the revision named it. Exported so the containment
 // test reads this list rather than a second copy of it that can drift.
 export const PUBLISH_REPLACED_ITEMS = Object.freeze(['source', 'output', 'build-cache', 'build.log', 'latex.log'])
+
+// Which of the replaced items a build instance may legitimately be missing.
+// `build-cache` is an optional cache, and a build that produced no `latex.log`
+// clears the stale one — which is why the swap in `publishBuildInstance` moves
+// every item aside whether or not it was staged.
+//
+// `source` and `output` are deliberately NOT here, for one reason: swapping
+// either for nothing destroys the only copy of something. An absent `source`
+// deletes the project's source. An absent `output` blanks the published render
+// and takes `relevant-files.json` with it, so the next push reads
+// `no-relevant-files-yet`, renders, and puts it all back — which makes it
+// intermittent rather than obvious. A build that rendered nothing is a failed
+// build, and a failed build must never replace a working render.
+const OPTIONALLY_ABSENT_PUBLISHED_ITEMS = new Set(['build-cache', 'build.log', 'latex.log'])
 
 const BUILD_DIAGNOSTIC_FILES = ['build.log', 'latex.log']
 
@@ -132,20 +151,25 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
     }
 
     const liveProject = projectDir(name)
+    // Checked BEFORE the transaction directory exists, so a refusal leaves
+    // nothing behind: `recoverBuildPublications` only cleans up transactions
+    // that got as far as writing their marker, and the marker is written below.
+    //
+    // See OPTIONALLY_ABSENT_PUBLISHED_ITEMS for which absences are normal.
+    // Anything outside it stops the publication rather than being swapped for
+    // nothing, because the swap further down moves every item aside whether or
+    // not it was staged — so an unguarded absence is a silent deletion.
+    const staging = []
+    for (const item of replacedItems) {
+      if (existsSync(join(instanceProject, item))) staging.push(item)
+      else if (!OPTIONALLY_ABSENT_PUBLISHED_ITEMS.has(item)) {
+        throw new Error(`build instance for ${name} has no ${item} to publish`)
+      }
+    }
     const transaction = join(liveProject, `.build-publish-${randomUUID()}`)
     mkdirSync(transaction, { recursive: true })
-    for (const item of replacedItems) {
-      const from = join(instanceProject, item)
-      // An absent item is normal and is not the same as an empty one: a build
-      // that produced no `latex.log` clears the stale one, which is why the swap
-      // below moves every item aside whether or not it was staged here.
-      // `source` is the exception — swapping it for nothing deletes the
-      // project's source, so its absence stops the publication instead.
-      if (!existsSync(from)) {
-        if (item === 'source') throw new Error(`build instance for ${name} has no source to publish`)
-        continue
-      }
-      cpSync(from, join(transaction, `new-${item}`), { recursive: true })
+    for (const item of staging) {
+      cpSync(join(instanceProject, item), join(transaction, `new-${item}`), { recursive: true })
     }
     writeFileSync(join(transaction, 'publication.json'), JSON.stringify({
       version: 1, project: name, expectedHead, sourceRevision,

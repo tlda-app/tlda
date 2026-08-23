@@ -202,6 +202,35 @@ pending or running work that is not a descendant of the new head. In a linear
 edit sequence that leaves at most one running plus one pending per project, and
 it keeps the *newest* revision where the filter would have refused it.
 
+#### A filter that always says yes is indistinguishable from a filter nobody wired in
+
+**This gap was open for as long as it was because there is no difference, from
+outside, between the two.** `shouldBuildOnPush` existed, was tested, was correct,
+and was never called — and what a person saw was a render on every push, which
+is exactly what they would have seen from a filter that was called and always
+returned yes.
+
+It came up twice more while closing it, both times as a live failure mode rather
+than a historical one:
+
+- The decision reads `relevant-files.json` from `outputDir(name)`. Run it after
+  `setProjectPathOverride` and that resolves to the build instance's own empty
+  `output/`, so the verdict is `no-relevant-files-yet` — **rendering every time,
+  forever, with the filter fully wired in.**
+- The decision errs toward rendering when it cannot be computed, which is right.
+  But erring toward rendering on *every* build, silently, is the same
+  indistinguishable state. That path now logs.
+
+**So when a filter's safe direction is also its do-nothing direction, it must say
+when it takes it.** Otherwise the thing you built and the thing you forgot to
+build produce identical evidence, and no amount of testing the function
+distinguishes them — the function was never the part that was broken.
+
+This is §"A negative result is only evidence once the instrument can produce a
+positive" in `AGENTS.md`, pointed at a decision rather than a measurement. The
+same check applies: make it take the other branch on purpose and confirm you can
+see that it did.
+
 #### The phase records are still missing
 
 `recordRevisionPhase(..., 'build', 'not_required' | 'superseded')` and the paired
