@@ -1,4 +1,4 @@
-# Where the night ended — 2026-08-23 02:05 EDT
+# Where the night ended — last re-checked 2026-08-23 04:52 EDT
 
 **Superseded everything this file said earlier.** It was a pre-deploy window note
 and it described a stop that no longer applies. Re-checked against `main` and the
@@ -6,9 +6,13 @@ deployment at the moment of writing, per §"A disposition is as of now".
 
 | | |
 |---|---|
-| deployed | **`a2adffdff`**, verified serving, `/api/health` ok, store up |
-| `main` | ahead by **docs only** — checked by path, nothing runtime unshipped |
-| load | 4.5, from 15.0 at 22:35 |
+| deployed | **`9a1cd1a0c`**, serving, `/api/health` ok, store up |
+| `main` | ahead by **docs and scratch only** — checked by path against the deployed sha |
+| load | 3.5, from 15.0 at 22:35 |
+
+**Read the tip and the deployed sha yourself before acting on this file.** It was
+written at 02:05, said `a2adffdff` for two hours after that stopped being true,
+and only got corrected because someone re-read it. A disposition is as of now.
 
 ## Shipped and verified on the box
 
@@ -29,6 +33,13 @@ deployment at the moment of writing, per §"A disposition is as of now".
   sideband, the server's wake queue, its drain and the circuit breaker are gone.
   The server reports one of four symptoms and chooses nothing; the daemon decides.
   Ack timeout is `5s` in `server.yaml`.
+
+- **Nothing reported the crash that takes his page down.** `ErrorBoundary` covers
+  the render path only and `logger.ts` batches before POSTing, so the buffer dies
+  with the page. A window-level `error`/`unhandledrejection` handler now reports
+  unbatched through the existing `sendBeacon` path — shipped at 04:39 after he hit
+  it again and nothing had captured it. **Verified in the bundle `index.html`
+  actually references, not in a local build.** He must reload once to get it.
 
 ## What it cost, so nobody has to rediscover it
 
