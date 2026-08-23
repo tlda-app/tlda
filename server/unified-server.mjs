@@ -6037,6 +6037,26 @@ async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}
 // already distinguishes rather than invented. Each is a fact about the server's
 // own socket and nothing else — no claim about processes, which are the
 // daemon's business and not the server's to model.
+//
+// THESE FOUR NAMES ARE PROVISIONAL AND ARE NOT SKIP'S LIST. He enumerated
+// THREE symptoms in `docs/notifications-and-liveness.md` §"The back-off":
+// the socket is closed; the MCP ack failed; the MCP acked and then nothing ever
+// came back. These four differ from that on both sides —
+//
+//   `no-channel`      no socket at all       ⎫ his "the socket is closed",
+//   `channel-closed`  a socket that closed   ⎭ split in two
+//   `channel-silent`  the deadline expired   ← his "ack failed" AND
+//                                              "acked then nothing", merged
+//   `channel-refused` the MCP said no        ← not on his list; it exists
+//                                              because of the nack, without
+//                                              which a healthy refusal is
+//                                              reported as a failure that did
+//                                              not happen
+//
+// The split and the merge may both be improvements. They are still a naming
+// decision of his, sitting in code as a default, so they are marked rather than
+// left to become permanent by silence. Expect a rename; when it comes, delete
+// this paragraph in the same commit.
 const NOTIFICATION_SYMPTOM_BY_REASON = {
   'no-open-mcp-socket': 'no-channel',
   'mcp-socket-closed': 'channel-closed',
