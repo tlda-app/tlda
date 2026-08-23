@@ -758,6 +758,26 @@ setup was capable of producing something.
   - If the tree is red on **someone else's** uncommitted work, commit your own
     paths with `-o` and say so in the message. Do not loop trying to get a clean
     global build in a checkout other agents are writing to.
+- **`tsc -b` does not catch an undefined variable in a `.mjs` file. `eslint`
+  does, and nothing runs it.** Lint your own changed files when you commit —
+  `npx eslint <the files you touched>`, which takes seconds. **Not `npm run
+  lint`**, which lints the whole repository: that is the same multiplication as
+  a per-agent browser run, and it is why nobody does it.
+
+  On 2026-08-23 `server/lib/build-runner.mjs` had **two `no-undef` errors on
+  `main`**, from `c16e8472a` on 08-18 removing a local and leaving two uses of
+  it. The whole block they sit in is inside one `try`, so every build since threw
+  at the first reference and logged `Change summary failed: hash7 is not
+  defined` at info — the change summary, the lint findings and the build card
+  had not reached the app for five days. `npx eslint` on that one file names
+  both sites in under two seconds.
+
+  **The gate exists and cannot fail anything.** `npm run lint` has exactly one
+  automated caller — `.github/workflows/release.yml`, triggered only on a `v*`
+  tag and marked `continue-on-error: true`. It is not in `npm test`, not in the
+  deploy path, and not in this document until now.
+  `bin/sync-on-event-loop-guard.mjs` already records the same failure from
+  2026-08-17: someone *"ran `npm run build` and never `npm run lint`."*
 - Inspect the bundle named by `dist/index.html` when checking shipped frontend
   code. Other bundles and source maps are not proof of what the browser loads.
 
