@@ -37,7 +37,7 @@ import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
-import { computeFleetHudDefaultAnchor, type FleetHudDefaultAnchor } from './fleet-hud-anchor'
+import { computeFleetHudDefaultAnchor, fleetHudAnchorForPersistence, type FleetHudDefaultAnchor } from './fleet-hud-anchor'
 
 /**
  * Is the HUD still reachable on the axis it is pinned to?
@@ -1145,7 +1145,12 @@ export function FleetHUD({
         if (hudCameraAnchor && cam.z === lastCam.z && !suppressCameraTracking && isDeliberateReposition(cam, lastCam)) {
           userPannedRef.current = true
           ignoreSavedAnchorRef.current = false
-          saveAnchorOffsets(mainEditor, hudCameraAnchor.panOffset, hudCameraAnchor.cameraY)
+          const persistedAnchor = fleetHudAnchorForPersistence({
+            flowAxis,
+            baseAnchor: hudAnchorRef.current,
+            effectiveAnchor: hudCameraAnchor,
+          })
+          saveAnchorOffsets(mainEditor, persistedAnchor.panOffset, persistedAnchor.cameraY)
         }
         if (probe.isEnabled('hud')) {
           probe.record('hud', 'hud-pan-camera-change', performance.now() - t0, { dx: cam.x - lastCam.x })

@@ -6,6 +6,20 @@ export type FleetHudDefaultAnchor = {
   cameraY: number
 }
 
+export function fleetHudAnchorForPersistence({
+  flowAxis,
+  baseAnchor,
+  effectiveAnchor,
+}: {
+  flowAxis: Axis
+  baseAnchor: FleetHudDefaultAnchor
+  effectiveAnchor: FleetHudDefaultAnchor
+}): FleetHudDefaultAnchor {
+  return flowAxis === 'y'
+    ? { panOffset: effectiveAnchor.panOffset, cameraY: baseAnchor.cameraY }
+    : { panOffset: baseAnchor.panOffset, cameraY: effectiveAnchor.cameraY }
+}
+
 /**
  * Where the HUD's camera sits.
  *
