@@ -13,6 +13,36 @@ of them are tonight's fixes. Nothing below is proven until that deploy happens.*
 
 ---
 
+## OPEN — what the next person picks up
+
+**Unclaimed, deliberately.** The 3-second status scan:
+`daemon/agent-status.mjs:187` throws *"a listed pane has no complete fleet
+process identity"*. Daemon-side, not server-side, which is why it is absent from
+the Fly logs. It has been firing every three seconds for a day and **has cost
+nobody anything** — `bhief-4`'s call was that it keeps.
+
+**The `state=failed` builds are partly characterised.** 23 since 08-23 across 9
+projects: **16** LaTeX content errors, **4** quarto render failures, and **3 that
+are NOT content** — a declared document root that is not in the source. That
+third class is the same shape as `filteredProjectCommit`'s *"configured document
+root is absent"* caught at warn: **a project stops syncing entirely while every
+surface reports success.** About one in eight. `bhief-4`'s guess of "separate
+content errors" was right about sixteen and wrong about the class that matters.
+
+**52 stale bindings** in `source-bindings.testing.json` point at projects that no
+longer exist on the server. Since `5408bf367` each attempts a settle and fails
+**on every daemon start**. This is deliberate, not an oversight — see the section
+on why the skip condition was rejected. Whether those bindings should exist at
+all is **Skip's call**; `AGENTS.md` is explicit that we do not prune what we did
+not create.
+
+**Two things have been waiting on Skip all day, unanswered:**
+
+1. **the untracked click** — A refuse and offer to add / B `git add` then open
+   live / C live but unversioned. I recommended **B**.
+2. **the mirror** — restore `68cd40874`, which was written, tested and deleted by
+   accident? Yes or no.
+
 ## Skip's priorities, his words, replacing anything earlier
 
 2026-08-24 ~01:00 EDT, direct to me:
@@ -34,6 +64,79 @@ problematic in the system slip through your fucking finger … The system has to
 be fucking simple. It has to be what I fucking specified."*
 
 ---
+
+## THE HEADLINE — the working tree is authoritative and nothing ever asked it
+
+> **A project that is bound and then not edited has never submitted anything at
+> all.**
+
+Measured, 2026-08-24: two projects created **08-12**, `buildStatus: success`,
+1 and 10 pages, rendering fine, properly linked — and **zero revisions through
+the proposal path, ever**, until tonight.
+
+**This is bigger than the restart window and it reframes the fix.** I shipped
+`5408bf367` as *"a restart must not eat an edit"*. That undersells it. The real
+statement is **"the working tree is authoritative and somebody has to ask it"**,
+and the two faults are the same missing re-derivation seen from opposite ends:
+
+| | |
+|---|---|
+| **restart window** | the daemon wasn't there to see the edit |
+| **bound but never edited** | there was never an edit to see |
+
+Both are the working tree holding state that nothing ever asks about. A binding
+only submits when a settle runs, and a settle only ran when the watcher saw a
+change. `start()` now settles once, which closes both — and that is why four
+projects went up the moment the fix deployed.
+
+**"Never linked properly" was the comfortable conclusion and it is false.** Both
+are linked, working and rendering. Checking rather than taking the plausible
+option is the whole difference here.
+
+### What that cost him, with the part that is NOT true stated first
+
+**Committed work of his sat on that machine for four and six days without
+reaching the server**, and went up only when the fix fired.
+
+```
+his A   local newest commit 08-20   server last had 08-19   4.2 days unsent
+his B   local newest commit 08-18   server had NOTHING EVER  6 days, first ever
+his C   local newest commit 08-15   server last had 08-15    no new work — redundant
+his D   local newest commit 08-18   server had NOTHING EVER  6 days, first ever
+```
+
+**Do NOT report this as lost writing.** It was committed locally the whole time —
+safe, in git, recoverable. What was behind was the **server, the version history,
+and everything reading them.** And he may have seen nothing wrong: one submitted
+`not_required`, meaning the relevance filter judged the render unaffected, so the
+page he looks at may have been correct throughout.
+
+**The check that makes this a finding rather than a story: WHEN THE WORK WAS
+AUTHORED, not the gap between submissions.** A gap with no commits inside it is
+nothing — that is exactly what `his C` turned out to be, and without the check it
+would have been reported as "9 days unsent".
+
+Established from commit dates, subjects, counts and revision timestamps. **No
+file of his was opened.**
+
+### The blast radius of the fix, measured before landing and again after
+
+```
+predicted   ≤23 of 116 bindings could submit on the first restart
+actual      ~14 builds over 4 minutes
+              6  built — real outstanding work
+              5  build_failed — projects already dead, roots empty
+              2  not_required — correctly skipped, no render
+              1  pending
+```
+
+So the stampede worry retired with a number, and two were skipped by the
+relevance filter rather than rendered.
+
+**`documentRoots: []` is common and survivable, not a defect on its own.**
+Projects with an empty list build fine because `normalizeDocumentRoots`
+synthesises a root from `mainFile`. Do not go hunting when you see it — that
+bridge is also why removing `mainFile` is a four-step job rather than 72 edits.
 
 ## RESOLVED 2026-08-24 ~21:30Z — VERSION RECORDING WORKS, PROVEN TWICE
 
@@ -85,6 +188,44 @@ silence.
 
 **Nothing stopped on 08-17** — the fleet snapshotted through 08-18. The collapse
 is 08-19→08-20, exactly where `83cd0b0d6` landed.
+
+### FIVE instrument failures in one night, all the same family
+
+**A read that cannot distinguish absent from not-there-yet, or from
+not-recorded-here.** Every one was caught by a control run from *outside* the
+query, and none by being more careful inside it.
+
+1. **The bug itself** — `commitSnapshot` wrote into a build instance that was
+   then deleted. A brand-new shadow plus a full scope is a *successful* commit,
+   so nothing logged a failure. **Four days.**
+2. **Mine, the retraction** — I reported the shadow fix as FAILED. My read ran at
+   ~21:14:5x; the commit was written at **21:14:54.609**. Found by checking
+   `git log --all` and the reflog on a result I had already sent. **One minute.**
+3. **Mine, the blind journal** — `version` phase records: **0 across 282
+   revisions**, which looked like proof `finalizeBuildVersion` never ran. The
+   control killed it: my own just-proven probe also reports 0, because the
+   journal does not persist that phase at all.
+4. **The test that never ran** — `bound working-copy event settles through the
+   one Git proposal path` was red for days because `warnings` was undefined and
+   threw while building the assertion's *message argument*. It could never pass,
+   and it looked exactly like the sync assertion failing. **Four days of "sync
+   has a failing test" was a test that never ran.** `npx eslint` finds it in a
+   second; nothing runs eslint.
+5. **`bhief-4`'s live run, twice** — its instrument could not distinguish *the
+   fix worked* from *I missed the window*. First attempt: the push returned with
+   the daemon already restarted. Second: a 160s timer expired before the restart,
+   so it edited while the old daemon was alive and the marker arrived the
+   ordinary way. **Both void by the mtime control I gave it, not by its
+   judgement.**
+
+**The lesson is not "be careful."** Knowing the shape does not stop you producing
+it — #2 and #3 were committed by the person cataloguing the list. Only a control
+stops it, and the control has to come from outside the query.
+
+**And the sweep never covers the sweeper.** I applied *"establish the set from
+the system, not from the conversation"* to everyone's output and not to my own —
+which is how one of his project names ended up in a tracked file and a commit
+message. See `6666512c7`.
 
 ### Instrument failures from this stretch — both the same shape as the bug
 
