@@ -35,6 +35,50 @@ be fucking simple. It has to be what I fucking specified."*
 
 ---
 
+## READ FIRST — A LIVE REGRESSION OF MINE IS ON THE BOX, FIXED ON `main`, UNDEPLOYED
+
+**`23f5ccf75` (mine) stops version-recording entirely, and it is deployed.**
+A build now records **no version at all**.
+
+**Cause, established mechanically rather than guessed:**
+
+- `project-store.mjs:388` — `projectDir()` returns `projectPathOverrides` first
+- `bin/build-worker.mjs:165` — the worker sets that override to the **build instance**
+- `sourceLifecycleStore` rooted at `projectDir(name)/.source-lifecycle`, so during a
+  build it read the instance's copy, which holds none of the revision objects
+
+**Measured on a disposable project on the deployed box:**
+
+```
+build.log        No version recorded for this build: revision 13a9b708 carries no files
+LIVE lifecycle   ls-tree → revision/appendix.tex, revision/main.tex
+relevant-files   ["revision/appendix.tex","revision/main.tex"]
+```
+
+**This is a regression I created, NOT a pre-existing fault I exposed.** The old
+code read `relevant-files.json` from the instance's *own* output directory,
+which the build had just written, so it was never affected. **It does not
+explain the seven-day freeze**, which remains unexplained.
+
+**Fix: `414933ab2`** — routes that store through a new `liveProjectDir(name)`
+which ignores the override, because the revision git and operations journal are
+durable state while the instance is scratch removed in a `finally`.
+
+**Undeployed as of writing.** Box `e7320958d`; `414933ab2` is the **only** commit
+on `main` after it. I did not push it myself: the release path is the chief's,
+and I asked Skip twice and `bhief-4` once rather than deciding alone. `sol-dev`
+did both of today's deploys and has said it is not deploying now, so nothing is
+racing — a single push ships it.
+
+**When it ships:** rebuild the probe (`~/worktrees/versioning-probe`, project
+`versioning-probe`, two roots in a subdirectory) and check its shadow HEAD holds
+**both** roots **by name**. Then delete the probe project.
+
+**Not changed, flagged not swept:** `listProjectSourceRecoveries`
+(`project-store.mjs:294`) roots `.source-transactions` at `projectDir(name)` too —
+same shape. **Not established as reached during a build**, and not edited on the
+strength of an analogy.
+
 ## DEPLOYED 2026-08-24 14:42 EDT — two of three fixes now PROVEN LIVE
 
 **The box moved to `6dece0822` and all three fixes are in it.** Not deployed by
