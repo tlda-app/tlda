@@ -6,6 +6,7 @@ type ShapeLike = {
   meta?: {
     temporaryMarkdownColumn?: unknown
     foreignDocumentPage?: unknown
+    spatialWorldDocument?: unknown
   }
 }
 
@@ -19,6 +20,7 @@ export function isDocumentPageShape(s: unknown): boolean {
   if (type !== 'svg-page' && type !== 'html-page') return false
   if (shape.meta?.temporaryMarkdownColumn) return false
   if (shape.meta?.foreignDocumentPage) return false
+  if (shape.meta?.spatialWorldDocument) return false
   // Auto-opened foreign pages predate the meta flag and still sit in live rooms;
   // do not migrate them in place, because writing to that room is what this fix
   // avoids. Matched narrowly on the -p<N> suffix useDocAutoOpen writes, so a

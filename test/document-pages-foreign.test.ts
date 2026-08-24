@@ -31,3 +31,11 @@ test('newly tagged foreign pages are not document pages', () => {
     meta: { foreignDocumentPage: true },
   }), false)
 })
+
+test('spatial-world documents do not determine the primary document flow', () => {
+  assert.equal(isDocumentPageShape({
+    id: 'shape:spatial-document-h4irqh',
+    type: 'html-page',
+    meta: { spatialWorldDocument: true },
+  }), false)
+})
