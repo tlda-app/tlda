@@ -152,6 +152,52 @@ concurrent builds. On a 2-core box those conflict.
 
 Fix 1 from the previous chief **did** survive: `idx_agents_lower_id` is present.
 
+### 3b. THE SYNC TEST CLUSTER CANNOT RUN, AND THAT IS WHY THE REST OF THIS IS INVISIBLE
+
+**This is the finding under all the others.** The tests that guard sync and
+versioning do not fail on assertions — **they fail before they test anything,**
+because the API they were written against no longer exists.
+
+Measured by running them on `main`, one at a time:
+
+```
+a-commit-per-accepted-push             TypeError: lifecycle.readAuthority is not a function
+a-ref-that-does-not-outrun-its-record  TypeError: lifecycle.bootstrap is not a function
+a-refusal-that-names-what-differed     TypeError: lifecycle.bootstrap is not a function
+a-retry-that-lands-once                TypeError: lifecycle.prepareOperation is not a function
+one-file-out-of-a-big-book             TypeError: lifecycle.acceptBundle is not a function
+a-bootstrap-does-not-repeat-...        TypeError: restarted.readAuthority is not a function
+an-accept-the-daemon-is-never-told...  TypeError: store.bootstrap is not a function
+source-lifecycle-authority             SyntaxError: no export named ... (cannot even load)
+mirror-failure-visible                 mirrorAcceptedRevision is gone — the accept no longer mirrors
+```
+
+**Nine red. Six green** — `an-accept-that-preserves-the-work`,
+`shadow-mirror-preserve`, `outside-tree-publishes-source-only`,
+`shadow-mirror-rpc-adapter`, `mirror-timeout-budget`,
+`source-project-store-contract` — so this is not "the runner is broken", and the
+green ones are the positive control.
+
+**`readAuthority`, `bootstrap`, `prepareOperation` and `acceptBundle` are in NO
+production file on `main`.** Only tests call them. Same commit as the mirror:
+**`f6d0f9089`**, *"Delete parallel server source authority"*, 8,421 deletions,
+08-20. **12 files** still reference `readAuthority`, including
+`bin/lib/lifecycle-push-test-helper.mjs` — the shared helper, which is why the
+cluster went down together.
+
+**One of the 12 is not a test.** `bin/repair-source-replica-target.mjs` is a
+**repair tool**, and it calls a function that no longer exists. It throws the
+moment anyone reaches for it — which is when sync is already broken.
+
+**Nothing runs any of this.** `npm run lint`/test has one automated caller,
+`.github/workflows/release.yml`, on a `v*` tag, `continue-on-error: true`.
+
+**Do not "fix" these by deleting them.** They encode behaviour Skip cares about
+— a commit per accepted push, a refusal that names what differed, a retry that
+lands once, an accept the daemon is never told about. Rewriting them against the
+current API is a day's work and it is the thing that stops the next silent
+deletion.
+
 ### 4. `mainFile` — Skip: "There is not supposed to be a main file"
 
 Complete list committed at `scratch/mainfile-scope-2026-08-24.md`: **72 property
@@ -178,6 +224,34 @@ this is the part worth carrying:
 **The category table in the scope file is a grep heuristic and is not
 authoritative** — `build-runner.mjs:2322` and `:2344` are false positives
 (`targets: targetMeta.map(...)`, per-target and correct). Read each site.
+
+#### The removal is four steps, not 72 edits — and step 3 is a six-line deletion
+
+**`shared/document-roots.mjs` already is the single place that turns a project
+into its roots, and it already contains the whole `mainFile` concept:**
+`normalizeDocumentRoots` synthesizes one root from `mainFile` when the list is
+empty. That is the entire compatibility bridge, in one function.
+
+**Six files already go through it** — `cli/tlda.mjs`, `build-runner.mjs`,
+`project-store.mjs`, `routes/projects.mjs`, `project-artifact-materializer.mjs`
+(whose comment at `:318` explicitly says to use it *rather than*
+`project.documentRoots`). **So the 72 sites are not 72 decisions; they are 72
+places that bypassed the function that already exists.**
+
+1. route the stragglers through `normalizeDocumentRoots` /
+   `latexDocumentRootPaths` — behaviour-preserving, because the bridge still
+   falls back to `mainFile`
+2. **backfill `documentRoots`** for projects without it — measured, **8 of 21**
+   LaTeX projects on the box have an empty list and **all 8 carry a complete
+   `targets[]` with `{texBase, mainFile}`**, so the backfill is derivable rather
+   than guesswork
+3. delete the `mainFile` branch inside `normalizeDocumentRoots` — after step 2
+   nothing reaches it
+4. delete the field
+
+Step 3 is the point; steps 1–2 exist to make it safe. This ends with `mainFile`
+genuinely gone rather than 72 patched call sites, which is what he asked for:
+*"The system has to be fucking simple. It has to be what I fucking specified."*
 
 ---
 
