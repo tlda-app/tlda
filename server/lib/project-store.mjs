@@ -388,6 +388,25 @@ export function projectDir(name) {
   return projectPathOverrides.get(name) || join(projectsDir, name)
 }
 
+/**
+ * The project's REAL directory, ignoring any build-instance override.
+ *
+ * `projectDir` is overridden to the build instance while a build runs
+ * (`bin/build-worker.mjs` calls setProjectPathOverride with the instance root),
+ * because the render's inputs and outputs are supposed to be instance-local and
+ * swapped in atomically. Durable per-project state is NOT instance-local: the
+ * instance is scratch and is removed in a `finally`, so anything read from or
+ * written to it during a build is read from the wrong copy or lost.
+ *
+ * Use this for state that outlives one build. The revision git under
+ * `.source-lifecycle` is the case that made this necessary: asked through the
+ * override it answered "this revision carries no files", because the instance's
+ * copy has none of the objects.
+ */
+export function liveProjectDir(name) {
+  return join(projectsDir, name)
+}
+
 export function sourceDir(name) {
   return join(projectDir(name), 'source')
 }
@@ -402,7 +421,14 @@ export async function sourceLifecycleStore(name, options = {}) {
   const project = await readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
   return createSourceLifecycleStore({
-    root: join(projectDir(name), '.source-lifecycle'),
+    // liveProjectDir, not projectDir: this store is the durable revision git and
+    // the operations journal. During a build projectDir is the instance, whose
+    // .source-lifecycle has no objects — so readRevision answered "no files" and
+    // commitSnapshot recorded no version at all. Measured on a probe project,
+    // 2026-08-24: "No version recorded for this build: revision 13a9b708 carries
+    // no files in the source repository", while ls-tree in the LIVE repository
+    // listed both roots of that same revision.
+    root: join(liveProjectDir(name), '.source-lifecycle'),
     // Names the refs inside the project's revision repository. The repository is
     // already per project, so this is not what keeps them apart — it is so that
     // somebody reading `git for-each-ref` in there sees which paper they are in.
