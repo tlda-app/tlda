@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { computeFleetHudDefaultAnchor } from '../src/overlays/fleet-hud-anchor.ts'
+import { computeFleetHudDefaultAnchor, fleetHudAnchorForPersistence } from '../src/overlays/fleet-hud-anchor.ts'
 
 // Measured on the deployed build at 1470x866, project rc-anchored-list-probe.
 // A paper flows down, so marginAxis is 'x' and the layout rides in the side margin.
@@ -58,4 +58,20 @@ test('both-margins now lands where the single-margin layouts do', () => {
 test('omitting the near-margin edge preserves the old behaviour exactly', () => {
   const b = { x: -1156, y: 100, w: 1120, h: 606 }
   assert.equal(anchor({ bounds: b }).panOffset, DOC_NEAR_SCREEN - MARGIN_GAP - (b.x + b.w))
+})
+
+test('a paper persists document-following x without contaminating screen-fixed y', () => {
+  assert.deepEqual(fleetHudAnchorForPersistence({
+    flowAxis: 'y',
+    baseAnchor: { panOffset: 100, cameraY: 936 },
+    effectiveAnchor: { panOffset: 427, cameraY: -3262 },
+  }), { panOffset: 427, cameraY: 936 })
+})
+
+test('a deck persists document-following y without contaminating screen-fixed x', () => {
+  assert.deepEqual(fleetHudAnchorForPersistence({
+    flowAxis: 'x',
+    baseAnchor: { panOffset: 80, cameraY: 100 },
+    effectiveAnchor: { panOffset: -4118, cameraY: 512 },
+  }), { panOffset: 80, cameraY: 512 })
 })
