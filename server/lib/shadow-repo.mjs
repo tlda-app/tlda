@@ -382,6 +382,15 @@ export async function readShadowSourceScope(name) {
  * persist-symlink migration without a single log line. Callers must report it.
  */
 export async function commitSnapshot(name, sourceRevision = null) {
+  // The two halves are rooted DIFFERENTLY and that is deliberate, so nobody
+  // "corrects" one to match the other:
+  //
+  //   repoDir  liveProjectDir  — the shadow is durable and outlives the build
+  //   srcDir   projectDir      — the INSTANCE, which is the point: it holds the
+  //                              bytes this build actually rendered from
+  //
+  // Snapshotting the live `source/` instead would race the publish swap and
+  // could version content the build never saw.
   const repoDir = shadowRepoDir(name)
   const srcDir = sourceDir(name)
 
