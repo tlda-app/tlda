@@ -322,21 +322,33 @@ and `daemon/git-project-sync.test.mjs` (50 lines) passes today, exit 0.
 it that way and that was wrong. It is merely very slow, 6–30 seconds per case,
 and it **fails**:
 
+**Complete run, exit 1 — 8 cases, 4 fail:**
+
 ```
-✖ bound working-copy event settles through the one Git proposal path   17.8s
-✖ one broken binding does not prevent a later project binding from starting  8.3s
-✔ existing tlda remote is reconciled without attempting to add it again  5.8s
-✔ two projects sharing one checkout submit to their owning project remotes  30.5s
+✖ bound working-copy event settles through the one Git proposal path
+✖ one broken binding does not prevent a later project binding from starting
+✖ initial project link submits the existing checkout through the ordinary proposal ref
+✖ same-daemon relink installs corrected roots and later metadata updates preserve them
+✔ existing tlda remote is reconciled without attempting to add it again
+✔ two projects sharing one checkout submit to their owning project remotes
+✔ an up-to-date immutable proposal still requests confirmed admission
+✔ explicit submit confirms admission even when the shared tree is already equal
 ```
 
-**"bound working-copy event settles through the one Git proposal path" is the
-sync guarantee itself** — an edit in the working copy reaching the server. It
-was written by the same commit that deleted the 28 tests, and it does not pass.
+**Read the failures as sentences, because that is how they are named:** an edit
+in a working copy settles through to the server; linking a project submits the
+checkout you already have; relinking keeps the corrected document roots; one
+broken binding does not stop the next binding starting. **All four are Skip's
+"the files don't get there," and the third is the shape the classroom book hit —
+a project linked with nothing arriving.**
 
-**Caveat on those four rows:** I killed that run at two minutes, so the four
-results are real but may not be the whole file. A full run was started to get
-the complete count and is not reflected here — **re-run it rather than trusting
-this list to be exhaustive.**
+**The four passes are the control**: the file runs and the rig is sound, so
+these are real failures rather than a broken harness.
+
+**Reporting history on this file, because I got it wrong twice:** I first called
+it hanging (it is not — cases take 6–30s), then reported 2-of-4 from a run I had
+killed at two minutes. **4-of-8 is from a run that finished.** If you re-run it,
+give it several minutes and read `/tmp`-redirected output rather than a `tail`.
 
 **Whether it is a real defect or a bad test is NOT established** and is a proper
 piece of work, not a 4am guess. It is, however, the most direct evidence found
