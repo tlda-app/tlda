@@ -35,7 +35,73 @@ be fucking simple. It has to be what I fucking specified."*
 
 ---
 
-## READ FIRST — A LIVE REGRESSION OF MINE IS ON THE BOX, FIXED ON `main`, UNDEPLOYED
+## RESOLVED 2026-08-24 ~21:30Z — VERSION RECORDING WORKS, PROVEN TWICE
+
+**Superseded: the section below described this as live and undeployed. It is
+fixed, deployed and proven.** Left in place because its diagnosis is still the
+record of what was wrong.
+
+**Proven on a disposable project, by name, after `c3a7c7e62` deployed:**
+
+```
+HEAD 22bbee1  2026-08-24T21:14:54Z  Build at 2026-08-24T21:14:54.609Z
+revision/main.tex      1
+revision/appendix.tex  1
+notes.md               0     (tracked, reached by no root — correctly excluded)
+```
+
+The subject is `Build at …`, so it is a **build snapshot and not a second
+bootstrap** — that distinction was `bhief-4`'s counterfactual and it matters,
+because a commit *count* of two would look identical either way.
+**Independently confirmed by `bhief-4` on a different project** with its own
+edit: `live-watcher-probe`, `9e0ad3dd Build at 2026-08-24T21:21:03.501Z`.
+
+**Two fixes, both needed:** `414933ab2` (read side — the lifecycle store) and
+`c3a7c7e62` (write side — the shadow repo). Both were the same root cause:
+`projectDir()` returns the build-instance override.
+
+### The 08-17 → 08-20 gap is closed, and it dissolved rather than resolved
+
+I held three days open against his project and they were never its to have:
+
+```
+project createdAt      2026-08-23T01:11:24Z
+shadow newest commit   2026-08-17T11:03:27Z
+```
+
+**The shadow is older than the project.** That history was seeded from a
+previous incarnation whose last snapshot was 08-17; the project here was created
+**08-23, three days after instances landed.** So it has never been able to
+snapshot in its current life, and the instance bug accounts for all of its
+silence.
+
+**Fleet-wide `Build at` snapshots per day confirm the boundary independently:**
+
+```
+08-14 143   08-17  70   08-20   5
+08-15 125   08-18 139   08-21   1
+08-16  55   08-19  24   08-22/23 0
+```
+
+**Nothing stopped on 08-17** — the fleet snapshotted through 08-18. The collapse
+is 08-19→08-20, exactly where `83cd0b0d6` landed.
+
+### Instrument failures from this stretch — both the same shape as the bug
+
+- **I reported the fix as FAILED and had to retract it within a minute.** My
+  shadow read ran at ~21:14:5x; the commit was written at **21:14:54.609**. I
+  found it by checking `git log --all` and the reflog on a result I had already
+  sent. **A read that cannot distinguish "not there" from "not there yet."**
+- **`version` phase records in the lifecycle journal: 0 across 282 revisions**,
+  which looked like proof finalize never ran. The control killed it — my probe,
+  which I had just proven recorded a version, also shows **0**. The journal does
+  not persist that phase at all. **A read that cannot distinguish "did not
+  happen" from "not recorded here."**
+
+Both are shape 11 with a clock in it. The bug's version of the same error lasted
+four days; mine lasted a minute. **Run the control on the negative, always.**
+
+## Superseded — the regression as it was described while live
 
 **`23f5ccf75` (mine) stops version-recording entirely, and it is deployed.**
 A build now records **no version at all**.
