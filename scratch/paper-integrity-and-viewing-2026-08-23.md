@@ -25,26 +25,50 @@ His session on the two-root paper, 2026-08-23:
 Same deployed sha for both. **So it is state, not code.** He reported the lockup
 at 22:35Z; his tab is now on a different project.
 
+**It is load-against-load, not warm-against-cold.** Filtering by *session* rather
+than by time — the healthy session `mt63g2zw-fduroq` **cold-loaded the same
+project at 17:41:24Z** (`navigation type: navigate`, FCP 400, domInteractive
+201.5) and then ran healthily for 90 minutes to 19:11:31Z. The frozen session
+`mt6dldu0-itg1n7` cold-loaded at 22:25:29Z and was dead in 0.4s. **Same code
+path, same room, 4h45m apart.**
+
+The frozen load was measurably slower before it died — domInteractive **919.6ms**
+against 201.5ms, LCP 2192ms, one 1399ms longtask — **and produced no error of any
+kind.** `client.log` carries warn and above; the only records are routine gesture
+telemetry.
+
 **Ruled out — do not re-derive these:**
 
-- **Not the orphan shapes.** `docShapeCount` was already 326 at 16:01Z, 341 by
-  17:26Z, 343 at 22:25Z. They were present all day, including during the healthy
-  17 minutes.
-- **Not server latency.** Cold page render after a build is ~1.0s against ~0.3s
-  warm (measured, `?_tldaCold=1`). Real, but server slowness cannot stop a
-  browser main thread, and the telemetry stops dead.
+- **Not the orphan shapes.** `docShapeCount` was 326 at 16:01Z, 341 by 17:26Z,
+  343 at 22:25Z. Present on both sides of the gap, including through the healthy
+  90 minutes. A 342-shape fixture therefore cannot reproduce this, because his
+  own session proves 342 shapes do not suffice.
+- **Not SVG cache warmth after the 22:20 build.** This was my best candidate and
+  it is wrong: the output dir holds **5** cached page SVGs total, three of which
+  are from my own probes tonight. The cache does not retain pages in bulk, so
+  **both** loads faced on-demand rendering.
+- **Not server latency.** Cold page render is ~1.0s against ~0.3s warm
+  (`?_tldaCold=1`). Real, but server slowness cannot stop a browser main thread,
+  and the telemetry stops dead.
+- **Not asset size.** Every client-side lookup asset is modest — largest is
+  `supplementary_appendix-source-map.json` at 296 KB.
+- **Not a crash.** No error or exception record precedes the silence.
 - **Not the profiler's business.** `client-profile.jsonl` needs a live main
-  thread, so it is silent exactly when needed — its last record for that document
+  thread, so it is silent exactly when needed — last record for that document
   is 17:46Z.
 
-**What changed in the gap and has not been examined:** builds at 22:19:49–22:20:26Z
-(which publish a DVI and **clear the SVG cache**), the settle commits, and a
-restore commit at 22:24:04Z — **84 seconds before he opened it**.
+**What remains in the gap, unexamined:** the builds at 22:19:49–22:20:26Z, the
+settle commits, and a restore commit at 22:24:04Z — **84 seconds before he opened
+it**.
 
-**Next moves I had not taken:** what runs on the client immediately after
-`synced-remote` (shape creation over 342 shapes, `remapAnnotations`, the
-`doc-version` sentinel comparison); and whether anything in that path is
-quadratic in shape count.
+**Mechanism unknown. Do not let the orphan finding become the answer** — it was
+present during the 90 healthy minutes and does not cross the gap.
+
+**Note on method for whoever continues:** filter `client.log` by `session` and by
+project, never by time. Filtering by time is what made this look like
+warm-against-cold for most of the night; there are also two session id spaces
+(`data.sessionId` from `live-perf`, `session` from gesture telemetry), so one
+browser load appears under two ids.
 
 ### 2. Skip's A/B, unanswered — no code until he answers, and bhief-4 briefs it
 
