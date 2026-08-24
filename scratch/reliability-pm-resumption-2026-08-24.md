@@ -158,7 +158,7 @@ appendix historical page   HTTP 200   54,620 bytes   real dvisvgm SVG
 manuscript page (control)  HTTP 404
 ```
 
-`GET /docs/randomization-synth/history/shadow-0b5aa55/supplementary_appendix-page-1.svg`
+`GET /docs/<project>/history/shadow-0b5aa55/<second-root>-page-1.svg`
 now renders. It could not before: the old code took the target from
 `project.mainFile` ("manuscript"), so asking for the appendix compiled the
 manuscript — and `revision/manuscript.tex` is not in that commit. **Every
