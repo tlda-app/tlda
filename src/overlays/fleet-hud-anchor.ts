@@ -20,6 +20,27 @@ export function fleetHudAnchorForPersistence({
     : { panOffset: baseAnchor.panOffset, cameraY: effectiveAnchor.cameraY }
 }
 
+export function translateFleetHudAnchorForDocumentWrap({
+  flowAxis,
+  baseAnchor,
+  dx,
+  dy,
+}: {
+  flowAxis: Axis
+  baseAnchor: FleetHudDefaultAnchor
+  dx: number
+  dy: number
+}): FleetHudDefaultAnchor {
+  return fleetHudAnchorForPersistence({
+    flowAxis,
+    baseAnchor,
+    effectiveAnchor: {
+      panOffset: baseAnchor.panOffset - dx,
+      cameraY: baseAnchor.cameraY - dy,
+    },
+  })
+}
+
 /**
  * Where the HUD's camera sits.
  *

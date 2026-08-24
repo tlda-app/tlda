@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { computeFleetHudDefaultAnchor, fleetHudAnchorForPersistence } from '../src/overlays/fleet-hud-anchor.ts'
+import { computeFleetHudDefaultAnchor, fleetHudAnchorForPersistence, translateFleetHudAnchorForDocumentWrap } from '../src/overlays/fleet-hud-anchor.ts'
 
 // Measured on the deployed build at 1470x866, project rc-anchored-list-probe.
 // A paper flows down, so marginAxis is 'x' and the layout rides in the side margin.
@@ -74,4 +74,14 @@ test('a deck persists document-following y without contaminating screen-fixed x'
     baseAnchor: { panOffset: 80, cameraY: 100 },
     effectiveAnchor: { panOffset: -4118, cameraY: 512 },
   }), { panOffset: 80, cameraY: 512 })
+})
+
+test('a paper document-root jump cannot move the HUD above the screen', () => {
+  const base = { panOffset: 25627, cameraY: 936 }
+  assert.deepEqual(translateFleetHudAnchorForDocumentWrap({
+    flowAxis: 'y',
+    baseAnchor: base,
+    dx: 0,
+    dy: 1513.4275911680796,
+  }), base)
 })
