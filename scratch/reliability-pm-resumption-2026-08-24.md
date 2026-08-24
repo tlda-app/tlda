@@ -192,11 +192,43 @@ moment anyone reaches for it — which is when sync is already broken.
 **Nothing runs any of this.** `npm run lint`/test has one automated caller,
 `.github/workflows/release.yml`, on a `v*` tag, `continue-on-error: true`.
 
-**Do not "fix" these by deleting them.** They encode behaviour Skip cares about
-— a commit per accepted push, a refusal that names what differed, a retry that
-lands once, an accept the daemon is never told about. Rewriting them against the
-current API is a day's work and it is the thing that stops the next silent
-deletion.
+**They cannot be "rewritten against the current API", because there isn't one.**
+I diffed the store's methods today against what the tests call. **Ten of twelve
+are gone**; only `readRevision` and `readRevisionFile` survive.
+
+Where each actually is in production now:
+
+```
+acceptBundle      0 files        readAuthority   0 files
+lastMirrored      0 files        lastRefused     0 files
+mirrorPayload     0 files
+prepareOperation  only inside another dead test file
+finishOperation   only inside another dead test file
+markMirrored      SURVIVED — moved down into source-git-store.mjs:541
+```
+
+**`prepareOperation` / `finishOperation` is operation idempotency** — prepare an
+operation, finish it exactly once, replay safely after a restart. `AGENTS.md`
+§"Idempotence is what makes a messy environment survivable" is Skip asking for
+exactly this. It is gone from production and survives only in tests that cannot
+run.
+
+**A tenth red, in a different directory:** `server/lib/source-lifecycle.test.mjs`
+— **0 pass, 3 fail**, `first.prepareOperation is not a function`. It lives under
+`server/lib/`, so `npm test` would surface it if anything ran `npm test`.
+
+**So there are two honest options and both are Skip's:**
+
+- **A — the deletion was right.** Then delete these tests, in a commit naming
+  which behaviours were dropped. As they stand they read as coverage of things
+  nothing implements.
+- **B — the deletion took things that should not have gone.** The accept mirror
+  is already proven to be one. Operation idempotency looks like another. Then
+  the layer comes back.
+
+**Do not quietly do either.** `f6d0f9089` is one commit, 8,421 deletions, titled
+*"Delete parallel server source authority"* — and nothing in that title says the
+mirror, per-file attribution and operation idempotency would all stop.
 
 ### 4. `mainFile` — Skip: "There is not supposed to be a main file"
 
