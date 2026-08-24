@@ -287,6 +287,45 @@ async function buildCurrentDvi(ctx) {
 }
 
 /**
+ * Where a target's `.tex` actually lives, asked of the project's declared
+ * document roots.
+ *
+ * Both callers below used to do this instead: take the project's `mainFile`,
+ * and if its basename didn't match the target, GUESS `<texBase>.tex` at the
+ * checkout root. That guess is wrong for any project whose roots sit in a
+ * subdirectory — a second root at `revision/appendix.tex` was looked for at
+ * `appendix.tex`, which is not there, so the target's historical compile could
+ * not run at all. The primary root worked and every other root did not.
+ *
+ * The roots are the declaration and they carry the real path, so ask them. No
+ * default: a texBase that is not a declared root is a caller bug, and it says
+ * so rather than compiling something else or looking in the wrong place.
+ */
+async function targetMainFile(name, texBase) {
+  const project = await readProject(name)
+
+  // The declaration first.
+  const roots = Array.isArray(project?.documentRoots) ? project.documentRoots : []
+  const root = roots.find(r => r?.path && basename(r.path).replace(/\.tex$/, '') === texBase)
+  if (root) return root.path
+
+  // Then what the last build recorded per target. This is NOT a hypothetical
+  // branch and not an invented default: measured on the live box, 8 of the 21
+  // LaTeX projects have an EMPTY documentRoots and all 8 carry a complete
+  // targets[] with {texBase, mainFile}. Dropping this would have thrown on
+  // every historical page of all eight.
+  const targets = Array.isArray(project?.targets) ? project.targets : []
+  const target = targets.find(t => t?.texBase === texBase && t?.mainFile)
+  if (target) return target.mainFile
+
+  throw new Error(
+    `no document root or build target named "${texBase}" in ${name} — ` +
+    `roots: ${roots.map(r => r?.path).filter(Boolean).join(', ') || '(none)'}; ` +
+    `targets: ${targets.map(t => t?.texBase).filter(Boolean).join(', ') || '(none)'}`,
+  )
+}
+
+/**
  * Historical version: check out source at ctx.version, compile LaTeX,
  * save DVI + synctex.gz to ctx.outDir, extract lookup.json.
  */
@@ -294,14 +333,7 @@ async function buildHistoricalDvi(ctx) {
   const { checkoutSource, compileHistoricalDvi } = await import('./shadow-repo.mjs')
 
   const texBase = ctx.texBase
-  // The main tex may live in a subdirectory (e.g. revision/foo.tex). For
-  // multi-target builds the target's basename may differ from the project's
-  // primary mainFile, in which case it sits at the checkout root as
-  // <texBase>.tex (mirrors buildLookup's logic).
-  const project = await readProject(ctx.name)
-  const mainFile = project?.mainFile && basename(project.mainFile, '.tex') === texBase
-    ? project.mainFile
-    : `${texBase}.tex`
+  const mainFile = await targetMainFile(ctx.name, texBase)
 
   console.log(`[ensure] Compiling ${ctx.name}@${ctx.version}...`)
   mkdirSync(ctx.outDir, { recursive: true })
@@ -395,13 +427,7 @@ async function buildSvgPageNow(ctx, pageNum, target) {
 /** Extract lookup.json from <texBase>.synctex.gz. */
 async function buildLookup(ctx, target) {
   const { texBase } = decodeTarget(target)
-  const project = await readProject(ctx.name)
-  // For multi-target, the target's mainFile may be a sibling of the
-  // primary mainFile. We assume <texBase>.tex exists at outDir-relative
-  // root (mirrors the source layout for sibling targets).
-  const mainFile = project?.mainFile && basename(project.mainFile, '.tex') === texBase
-    ? project.mainFile
-    : `${texBase}.tex`
+  const mainFile = await targetMainFile(ctx.name, texBase)
   const synctexFile = artifactPath(ctx, `${texBase}.synctex.gz`)
   const lookupPath = artifactPath(ctx, target)
 

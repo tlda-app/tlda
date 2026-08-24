@@ -937,10 +937,12 @@ export async function buildShadowPage(name, hash7, pageNum, texBase) {
 
 export async function buildCurrentPage(name, pageNum, texBase, options = {}) {
   const { ensure, currentCtx } = await import('./ensure.mjs')
-  if (!texBase) {
-    const project = await readProject(name)
-    texBase = basename(project?.mainFile || 'main.tex', '.tex')
-  }
+  // No mainFile fallback here. Its one caller parses texBase out of the request
+  // path (`<texBase>-page-N.svg`) and 404s an unknown target before reaching
+  // this, so the fallback was unreachable — and had it ever run it would have
+  // rendered the project's first root under another root's name, which is the
+  // defect 6895a5aef fixed in buildShadowPage.
+  if (!texBase) throw new Error(`buildCurrentPage requires a texBase: which target's page ${pageNum} of ${name} is this?`)
   const ctx = { ...currentCtx(name, texBase), coldPageRender: options.coldPageRender === true }
   return ensure(ctx, `${texBase}-page-${pageNum}.svg`)
 }
