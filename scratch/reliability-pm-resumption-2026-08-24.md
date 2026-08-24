@@ -254,6 +254,38 @@ recorded reasoning anywhere.
 a house style and not a measurement artifact. Some authors explain and some do
 not.
 
+#### And a missing body does NOT mean the commit was destructive — three of the seven are fine
+
+Counting files deleted outright against files added, per commit. **Do not carry
+this list forward as "seven bad commits"; it is three bad, three fine, one
+unexamined.**
+
+| commit | files deleted | files added | test files deleted | verdict |
+|---|---|---|---|---|
+| `672ba4d90` | 34 | 4 | **28** | **stripped coverage** — §3e |
+| `f6d0f9089` | many | few | several | **removed live behaviour** — §3b, §3c |
+| `5cb978fce` | 8 | **0** | **4** | **stripped, added nothing** — below |
+| `7a8364e62` | 12 | 4 | 0 | **not examined.** No coverage lost; the 12 are non-test files |
+| `e3ba10559` | — | +2 | 2 | **fine** — a real generalisation, settled above |
+| `fa3f3874c` | 1 | **11** | 0 | **fine** — a build-out; its 1,392 deletions are edits, not removals |
+| `5ab19281f` | 2 | **51** | 0 | **fine** — a build-out |
+
+**`5cb978fce` "Unify fleet status authority" is the third one, and it lands on
+Skip's priority 4, agent status.** It deleted 8 files and added none:
+
+```
+daemon/agent-liveness.mjs                       144 lines   the liveness module
+bin/agent-liveness-trace-test.mjs               151
+bin/status-liveness-authority-test.mjs           86
+tests/daemon-status-liveness-contract.test.mjs   16
+mcp-server/fleet-tools.mjs (-25), server/routes/fleet.mjs (-11), bin/qa-watcher.py, +1
+```
+
+A liveness module and its **three** tests removed, nothing put in their place,
+no message. Worth holding next to the standing knowledge that the roster
+misreports — `AGENTS.md` and memory both already record that hibernating/awake
+rows go stale. **Not chased; recorded.**
+
 **This is the answer to "why does it keep breaking invisibly."** Every defect
 found tonight traces into that window, and the record cannot say what any of it
 was meant to preserve. One of the seven turned out to be a clean generalisation
