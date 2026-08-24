@@ -230,6 +230,35 @@ run.
 *"Delete parallel server source authority"* — and nothing in that title says the
 mirror, per-file attribution and operation idempotency would all stop.
 
+### 3d. It is not one commit. Seven commits, ~24,000 deletions, no explanation
+
+`f6d0f9089` is not an outlier. Scanning `main` since 2026-08-10 for commits over
+1,000 deletions and measuring the **body** of each message (whitespace stripped):
+
+| commit | date | deletions | body chars | subject |
+|---|---|---|---|---|
+| `672ba4d90` | 08-20 | **7,217** | **0** | Cut daemon source sync over to Git proposals |
+| `f6d0f9089` | 08-20 | **8,421** | **0** | Delete parallel server source authority |
+| `e3ba10559` | 08-20 | **2,929** | **0** | Make Git remotes ordinary daemon sources |
+| `fa3f3874c` | 08-20 | **1,392** | **0** | Implement durable daemon build queue |
+| `7a8364e62` | 08-21 | **1,881** | **0** | Remove legacy diff documents and repair initial loading |
+| `5cb978fce` | 08-21 | **1,040** | **0** | Unify fleet status authority |
+| `5ab19281f` | 08-15 | **1,647** | **0** | Compose accepted classroom lecture delta |
+
+**Four of them are the same day — 08-20 — and they are all in the sync path.**
+That is roughly twenty thousand deletions through sync, in one day, with no
+recorded reasoning anywhere.
+
+**The control matters:** other large commits in the same window DO carry bodies
+— `5a0f2ca4f` 2,119 chars, `4fc9005f0` 1,509, `b37f809d7` 1,105. So this is not
+a house style and not a measurement artifact. Some authors explain and some do
+not.
+
+**This is the answer to "why does it keep breaking invisibly."** Every defect
+found tonight traces into that window, and the record cannot say what any of it
+was meant to preserve. One of the seven turned out to be a clean generalisation
+(`e3ba10559`, above) — which is only knowable by reading its diff.
+
 ### 3c. `f6d0f9089` is 8,421 deletions with a five-word commit message
 
 **The message is the subject line and nothing else.** No body. 40 files. It is
@@ -240,12 +269,22 @@ authority layer — and **its record cannot tell anyone why any of it went.**
 Same class as the wake-marks-dead commit `AGENTS.md` §"DEATH IS A FLAG" records
 as shipping with no message. Worth stating plainly to whoever reviews this area.
 
-**A fourth deletion in it that I could NOT assess:** `server/lib/overleaf-sync.mjs`,
-**760 lines**, plus `overleaf-sync-git-history.test.mjs` and
-`overleaf-sync-remote-provenance.test.mjs`. It may be genuinely redundant — an
-Overleaf project may now just be a linked git remote, which is what
-`createGitRemotes` / `tlda project remote add` do. **I could not settle it and
-the commit says nothing.** Do not assume either way.
+**A fourth deletion, and it is SETTLED and fine — do not re-chase it.**
+`server/lib/overleaf-sync.mjs`, 760 lines, plus its two tests. I first recorded
+this as unassessable. It is not: the commit that removed it is
+**`e3ba10559`, "Make Git remotes ordinary daemon sources"** (2026-08-20), which
+in the same change **added `daemon/git-source.mjs` (188 lines) and its test**.
+`createGitRemotes` is live in six files today including
+`daemon/git-sync-manager.mjs` and `daemon/remote-git-bridge.mjs`.
+
+**So Overleaf stopped being a special subsystem and became an ordinary git
+remote. That is a generalisation, not a loss** — and it is exactly the shape
+`AGENTS.md` asks for. The subject line answered it; I had to read the diff to
+believe the subject, which is the cost of the missing body.
+
+**And it is why the onboarding line below is stale:** the flow should now go
+through `tlda project remote add <remote> <url>`, not `project link <url>
+--token`.
 
 **What IS settled: the Overleaf onboarding line the CLI prints is wrong now.**
 `cli/lib/fly/router.mjs` `docLinkDisplayLine` shows a human:
