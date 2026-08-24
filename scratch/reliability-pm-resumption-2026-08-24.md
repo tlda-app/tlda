@@ -364,11 +364,39 @@ This is `AGENTS.md` §"Verify the relevant surface" verbatim — *"`tsc -b` does
 catch an undefined variable in a `.mjs` file. `eslint` does, and nothing runs
 it."* It shipped that way in the file that replaced 4,767 lines of coverage.
 
-**Cases 3 and 4 are the two worth a morning, and they share a shape: the code
-stopped rejecting where the test expects it to.** That is the failure mode this
-repo has already paid for — a returned `{ ok: false }` dropped on the floor with
-no throw and no log, which `c16e8472a`'s own message calls out. **Whether that is
-intended or a swallowed error is NOT established.**
+**Case 4 is now settled too, and it is ALSO a stale test — but it found the best
+answer to "the files don't get there".**
+
+It expects `manager.submit()` to reject with `/broken\.tex has missing
+dependencies/`. The code deliberately stopped doing that, and
+`daemon/git-project-sync.mjs:175–199` writes the reasoning out: throwing would
+abort the whole checkpoint, *"so every OTHER file in the build loses its
+preservation commit too, permanently and on every build"*, and under
+tracked-only staging an unstaged file is missing by definition — so it would
+stop the project submitting anything, forever, because nothing ever stages it.
+**That reasoning is sound. The tolerance is right.**
+
+**What is wrong is the silence, and it is an asymmetry:**
+
+| case | what happens |
+|---|---|
+| a file **tracked** in git that no document root reaches | `onDocumentsDropped` → `daemon-warning` → **the server turns it into a chat message** (`bin/fleet-daemon.mjs:556`) |
+| a file **referenced but never `git add`ed** | `log.info` in `git-project-sync.mjs:199` and **nothing else** |
+
+The second message already exists and already says the right thing — *"references
+X, which is present but untracked — it joins the revision once it is staged"* —
+and it goes to a daemon log. **Case A gets a chat message; case B, which is the
+one that happens while he is writing, gets nothing.**
+
+**The fix is not a mechanism**, which is why it is worth stating: send the same
+`daemon-warning` case A already sends, with the sentence the code already writes.
+**Not built — it changes what he sees, and it is the same decision as the
+untracked-click A/B/C.** Folded into that question rather than opened as a
+fourth.
+
+**Tally of the four red cases: one broken test file, TWO stale tests, one
+(`one broken binding does not prevent a later project binding from starting`,
+`Missing expected rejection` at `:81`) still unexamined.**
 
 **I ran that sweep. `bin/` and `daemon/` are otherwise CLEAN** — 3 `no-undef` total, all three in that one file, 1 file affected. So it is isolated rather than systemic; do not spend a morning expecting more. (A `server/ shared/ cli/ mcp-server/` sweep was started separately.) Original note, kept because the check is still the right first move: `npx eslint bin/ daemon/` before reading
 anything. If one replacement test shipped with three `no-undef` errors, others
