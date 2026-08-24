@@ -394,9 +394,25 @@ one that happens while he is writing, gets nothing.**
 untracked-click A/B/C.** Folded into that question rather than opened as a
 fourth.
 
-**Tally of the four red cases: one broken test file, TWO stale tests, one
-(`one broken binding does not prevent a later project binding from starting`,
-`Missing expected rejection` at `:81`) still unexamined.**
+**FINAL TALLY — and it retracts the alarm. NONE of the four is evidence that
+sync is broken.**
+
+| case | what it is |
+|---|---|
+| bound working-copy event settles… | **broken test file** — `warnings` undefined, could never pass |
+| initial project link submits… | **stale test** — asserts an untracked file is a member |
+| same-daemon relink… | **stale test** — expects a throw the code deliberately stopped |
+| one broken binding does not prevent… | **almost certainly stale, NOT confirmed** — `sync()` does throw an `AggregateError` on a failed binding (`git-sync-manager.mjs:204`), so the mechanism is intact; the fixture's unreachable remote no longer fails *at bind time*, which is plausible now that remotes are polled rather than contacted on bind |
+
+**One bug in a test file and three tests describing a design that changed.**
+I reported these as alarming and they are not. *"The sync tests are red, so sync
+is broken"* was my inference and it was wrong — whoever picks this up should not
+inherit the scare.
+
+**What survives is unaffected by that:** the versioning defect (fixed,
+undeployed), the deleted accept mirror, the untracked-file silence, and the
+08-20 deletions. The 48-to-1 test reduction is still true and is still why the
+mirror and the silence went unnoticed.
 
 **I ran that sweep. `bin/` and `daemon/` are otherwise CLEAN** — 3 `no-undef` total, all three in that one file, 1 file affected. So it is isolated rather than systemic; do not spend a morning expecting more. (A `server/ shared/ cli/ mcp-server/` sweep was started separately.) Original note, kept because the check is still the right first move: `npx eslint bin/ daemon/` before reading
 anything. If one replacement test shipped with three `no-undef` errors, others
