@@ -1945,6 +1945,13 @@ export async function recordBuildVersion({
     return { hash: current?.hash || null, committed: false }
   }
 
+  // Say so when a version IS recorded. Only the failure was ever audible, so a
+  // build that versioned nothing and a build that versioned everything produced
+  // the same build log -- nothing. That silence is what let commitSnapshot write
+  // into a deleted build instance for four days with every build reporting
+  // success, and it is the same silence Skip means when he says he cannot tell
+  // whether the app is working. One line, on the surface a person already reads.
+  ctx.addLog(`Version ${result.hash.slice(0, 7)} recorded`)
   await updateDocVersionSentinel(name, result.hash, readyAt, errors, warnings, sourceRevision, acceptSeq)
   await _reporter.recordRevisionPhase(name, sourceRevision, 'version', 'versioned', { shadowVersion: result.hash })
   _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
