@@ -4751,10 +4751,11 @@ app.use('/docs', (req, res, next) => {
     const shadowPageMatch = filePath.match(/^history\/(shadow-([a-f0-9]{7}))\/(.+)-page-(\d+)\.svg$/)
     if (shadowPageMatch) {
       const hash7 = shadowPageMatch[2]
+      const texBase = shadowPageMatch[3]
       const pageNum = parseInt(shadowPageMatch[4], 10)
       try {
         const { buildShadowPage } = await import('./lib/shadow-repo.mjs')
-        const svgPath = await buildShadowPage(name, hash7, pageNum)
+        const svgPath = await buildShadowPage(name, hash7, pageNum, texBase)
         res.set('Cache-Control', 'public, max-age=86400')
         return res.sendFile(resolve(svgPath), { dotfiles: 'allow' })
       } catch (e) {

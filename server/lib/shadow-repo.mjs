@@ -918,11 +918,19 @@ export async function ensureShadowDvi(name, hash7) {
  * Build and return the path to a shadow history page SVG.
  * Cascade: cached SVG → generate from cached DVI → compile DVI then generate.
  * Throws if the page cannot be produced.
+ *
+ * `texBase` says WHICH target's page this is, and the caller always knows: the
+ * URL is `<texBase>-page-N.svg`, so it is parsed out of the request.
+ *
+ * It used to be re-derived here from `project.mainFile` instead, which threw
+ * the requested target away — so on a project with more than one document root,
+ * asking for the second root's history compiled the first one and served that.
+ * The route's own comment said texBase was required; the value was captured
+ * from the URL and then not passed.
  */
-export async function buildShadowPage(name, hash7, pageNum) {
+export async function buildShadowPage(name, hash7, pageNum, texBase) {
   const { ensure, historicalCtx } = await import('./ensure.mjs')
-  const project = await readProject(name)
-  const texBase = basename(project?.mainFile || 'main.tex', '.tex')
+  if (!texBase) throw new Error(`buildShadowPage requires a texBase: which target's page ${pageNum} of ${name}@${hash7} is this?`)
   const ctx = historicalCtx(name, hash7, texBase)
   return ensure(ctx, `${texBase}-page-${pageNum}.svg`)
 }
