@@ -4,9 +4,24 @@ Force-added under `scratch/` deliberately: this is a resumption point, not a rep
 `scratch/` is gitignored, so an untracked copy would not survive. See `AGENTS.md`
 §"Repository workflow".
 
-**Relative to:** `main` at `1f9cf574e`, 2026-08-23 21:35 EDT. Deployed sha on
-`tldraw-sync-skip` is `140101c7c`; `main` carries `1f9cf574e` (docs + a
-resumption point) undeployed, which needs no deploy.
+**Relative to:** `main` and the deployed box are **both `cd2119ce0`**,
+2026-08-23 21:50 EDT. Edit-to-browser loop verified closed after the deploy —
+`node bin/live-watcher.mjs`, 10.2s.
+
+Landed tonight, in order: `140101c7c` (edit attribution), `1f9cf574e` +
+`9fa3b9094` (instrument shape 11, resumption points, freeze ruled-outs),
+`34380c351` (this file), `e841ce089` + `cd2119ce0` (the chip-drag docview
+placement fix, cherry-picked off `chip-drag-placement`).
+
+**Chip drag — his #3 — is deployed and unconfirmed by him.** The drop projected
+the page point with the main camera while `placeFleetShapeAtScreenPoint`
+un-projected with the HUD's; the same fix landed on the sibling
+report-artifact path on 8/13 and this one never got it. He has been asked to
+drag a chip and say whether it lands where he dropped it.
+
+**The `compare/` PDFs I had committed into his paper repo are removed**
+(`26a1ecb3`). They would have ridden along on any push to the shared Overleaf
+project — the exact clutter I had just reported to him.
 
 ## His priorities, his words
 
