@@ -335,12 +335,44 @@ and it **fails**:
 ✔ explicit submit confirms admission even when the shared tree is already equal
 ```
 
-**Read the failures as sentences, because that is how they are named:** an edit
-in a working copy settles through to the server; linking a project submits the
-checkout you already have; relinking keeps the corrected document roots; one
-broken binding does not stop the next binding starting. **All four are Skip's
-"the files don't get there," and the third is the shape the classroom book hit —
-a project linked with nothing arriving.**
+**DO NOT read those four names as four sync failures. I did, and it was wrong.**
+The names describe what each case *would* test; the reasons are four different
+things and only two of them are about the app:
+
+| case | actual reason |
+|---|---|
+| bound working-copy event settles… | **`ReferenceError: warnings is not defined`** at `:54:80` — never could pass |
+| initial project link submits… | **stale test** — asserts an untracked file is a member; see below |
+| one broken binding does not prevent… | `Missing expected rejection` at `:81` |
+| same-daemon relink installs corrected roots… | `Missing expected rejection`, expected `/broken\.tex has missing dependencies/` |
+
+**The first one is a broken test, not a broken app.** `warnings` is used in that
+test and declared only in the *next* one. It is the third argument to
+`assert.match`, so it is evaluated on every run — the case has been
+dead-on-arrival since it was written, and it says nothing about sync.
+
+**And `eslint` finds it instantly:**
+
+```
+$ npx eslint daemon/git-sync-manager.test.mjs
+41:37  error  'warnings' is not defined  no-undef
+41:84  error  'warnings' is not defined  no-undef
+54:80  error  'warnings' is not defined  no-undef
+```
+
+This is `AGENTS.md` §"Verify the relevant surface" verbatim — *"`tsc -b` does not
+catch an undefined variable in a `.mjs` file. `eslint` does, and nothing runs
+it."* It shipped that way in the file that replaced 4,767 lines of coverage.
+
+**Cases 3 and 4 are the two worth a morning, and they share a shape: the code
+stopped rejecting where the test expects it to.** That is the failure mode this
+repo has already paid for — a returned `{ ok: false }` dropped on the floor with
+no throw and no log, which `c16e8472a`'s own message calls out. **Whether that is
+intended or a swallowed error is NOT established.**
+
+**I ran that sweep. `bin/` and `daemon/` are otherwise CLEAN** — 3 `no-undef` total, all three in that one file, 1 file affected. So it is isolated rather than systemic; do not spend a morning expecting more. (A `server/ shared/ cli/ mcp-server/` sweep was started separately.) Original note, kept because the check is still the right first move: `npx eslint bin/ daemon/` before reading
+anything. If one replacement test shipped with three `no-undef` errors, others
+will have them.
 
 **The four passes are the control**: the file runs and the rig is sound, so
 these are real failures rather than a broken harness.
@@ -503,10 +535,31 @@ genuinely gone rather than 72 patched call sites, which is what he asked for:
   `j.revisionLifecycle`, not at the top level. The positive control found it.
 - **`tsc -b --incremental false` in the shared checkout is the `--force`
   antipattern** — I started one and killed it.
-- **Three eslint errors on `main` in `server/unified-server.mjs`** (657, 8772,
-  8773, `tlda/await-fleet-store`) are **pre-existing, not anyone's current work**
+- **Three eslint errors on `main` in `server/unified-server.mjs`** (657, 8773,
+  8774, `tlda/await-fleet-store`) are **pre-existing, not anyone's current work**
   — verified by linting `git show main:server/unified-server.mjs` from a temp
   path inside the repo so the same config applies. Commit with `-o`.
+
+  **And all three are FALSE POSITIVES — the rule fires on correct code.**
+  `:657` assigns the promise to `durableWrite`, attaches `.catch`, and its own
+  comment says lifecycle callers await it; `:8773`/`:8774` are inside a
+  `queryPage:` arrow that **returns** the promise to a `.then`. So none of the
+  three is a dropped promise.
+
+  **That is why they have sat on `main` and why nobody runs lint.** `AGENTS.md`
+  §"An instrument that answers…" states the consequence: *"a rule that fires on
+  correct code gets disabled and then catches nothing."* This is that rule, in
+  that state. **Do not "fix" the three call sites** — the rule needs to
+  understand assignment-then-await and `return`, or it needs narrowing.
+
+- **`no-undef` sweep, run and mostly negative — do not spend a morning on it.**
+  `bin/` + `daemon/`: **3 errors, all in `daemon/git-sync-manager.test.mjs`**, 1
+  file. `server/ shared/ cli/ mcp-server/`: **no real hits.** The 4 that appeared
+  there were `'process' is not defined` and were **my own instrument artifact** —
+  passing `--rule '{"no-undef":"error"}'` overrode the config that supplies node
+  globals. Linting the same file without the override shows no `no-undef` at all.
+  Positive control for the artifact: the override-free run still reports the
+  three `await-fleet-store` errors, so the linter was working.
 - **The `sourceLifecycleStore(name)` accessor needs the project store
   initialised**, so an ad-hoc `node -e` against it throws. Go through
   `createSourceLifecycleStore({ root, project })` to test that layer by hand.
