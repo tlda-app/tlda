@@ -83,9 +83,55 @@ function withoutCode(source) {
     .replace(/`[^`\n]*`/g, '')
 }
 
+/**
+ * Files the document's own YAML header declares, which Quarto opens at render.
+ *
+ * `bin/make-handout.py` writes the handout beside a `<stem>.handout.qmd.support/`
+ * directory and points the header at both files in it — a `filters:` entry for
+ * `answer-placement-warning.lua` and `tlda-answer-baseline:` for `baseline.txt`.
+ * Neither is an image or an include, so nothing here used to look for them: a
+ * student who zipped the .qmd without that sibling directory was accepted, and
+ * the render then died with `cannot open …/answer-placement-warning.lua`, which
+ * is what makes marking show their work as never finishing.
+ *
+ * Only path-shaped entries count. A filter may also name a built-in or an
+ * installed extension (`encrypt-solutions`, `image-toggle`), which is not a file
+ * in the archive and must not be reported missing.
+ */
+function frontMatterAssets(source) {
+  const header = source.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  if (!header) return []
+  const unquote = value => value.trim().replace(/^['"]|['"]$/g, '')
+  const pathShaped = value => value && !REMOTE.test(value) && (value.includes('/') || /\.lua$/i.test(value))
+  const found = []
+  const lines = header[1].split('\n')
+  let inFilters = false
+  for (const line of lines) {
+    const baseline = line.match(/^\s*tlda-answer-baseline\s*:\s*(.+)$/)
+    if (baseline) {
+      const target = unquote(baseline[1])
+      if (pathShaped(target)) found.push(target)
+      continue
+    }
+    if (/^\s*filters\s*:\s*$/.test(line)) { inFilters = true; continue }
+    if (inFilters) {
+      const entry = line.match(/^\s*-\s*(.+)$/)
+      if (entry) {
+        const target = unquote(entry[1])
+        if (pathShaped(target)) found.push(target)
+        continue
+      }
+      // Any non-list line at or above the list's indentation ends the block.
+      if (line.trim()) inFilters = false
+    }
+  }
+  return found
+}
+
 export function parseQmdReferences(source) {
   const images = []
   const includes = []
+  const assets = frontMatterAssets(source)
   const prose = withoutCode(source)
   for (const match of prose.matchAll(MARKDOWN_IMAGE)) {
     const target = decodeURIComponent(match[1].trim())
@@ -96,7 +142,7 @@ export function parseQmdReferences(source) {
     if (!REMOTE.test(target)) includes.push(target)
   }
   const answerIds = [...source.matchAll(ANSWER_ID)].map(match => match[1])
-  return { images, includes, answerIds }
+  return { images, includes, assets, answerIds }
 }
 
 /**
@@ -153,8 +199,8 @@ export function inspectSubmissionArchive(bytes, { template = null } = {}) {
     if (checked.has(current)) continue
     checked.add(current)
     const base = path.posix.dirname(current)
-    const { images, includes } = parseQmdReferences(strFromU8(unpacked[current]))
-    for (const target of [...new Set([...images, ...includes])]) {
+    const { images, includes, assets } = parseQmdReferences(strFromU8(unpacked[current]))
+    for (const target of [...new Set([...images, ...includes, ...assets])]) {
       const resolved = path.posix.normalize(base === '.' ? target : `${base}/${target}`)
       if (!present.has(resolved)) {
         missing.push(target)
