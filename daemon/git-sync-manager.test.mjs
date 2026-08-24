@@ -304,3 +304,86 @@ test('explicit submit confirms admission even when the shared tree is already eq
   assert.equal(admissions[0].revision, submitted.revision)
   await manager.closeAll()
 })
+
+// A daemon restart must not eat an edit made while it was down.
+//
+// This is the property, and it is worth stating as a sentence because the code
+// that provides it does not look load-bearing: `start()` calls the settle path
+// once. Delete that one call and everything still compiles, every other test
+// still passes, and an edit typed during a restart is silently never submitted.
+//
+// Why nothing else catches it: the watcher is constructed `ignoreInitial: true`
+// and `refreshWatchedMembers` re-adds members through `watcher.add(added)` with
+// one argument, so chokidar's `initialAdd` is true and no `add` event fires
+// (5.0.0, handler.js:395). `recover()` cannot help either -- it only re-pushes a
+// revision already at `localRef`, and the missed edit never became one. The
+// debouncer is pure memory. So before the fix the file reached the server only
+// when the author happened to edit AGAIN, because the settle stages the whole
+// tree and swept it in. Convergence by coincidence, not a property.
+//
+// The first worry on reading the fix is "does this settle on every boot?" -- it
+// does not, and the second half of this test is that: a restart with nothing
+// outstanding submits nothing, because settle() returns `equal-tree` without
+// pushing when its tree matches the shared one.
+test('a restart submits an edit made while the daemon was down, and submits nothing when there was none', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-restart-window-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'paper.git')
+  const bindingsFile = join(root, 'bindings.json')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'main.tex'), 'before the restart\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'base'])
+  const base = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
+  await git(checkout, ['push', remote, `${base}:refs/tlda/source/paper`])
+
+  const start = () => {
+    const manager = createGitSyncManager({
+      bindingsFile, daemonId: 'daemon-restart', server: 'http://unused.test',
+      remoteUrlFor: () => remote, quietMs: 10, watch: () => testWatcher(),
+      log: { info() {}, warn() {}, error() {} },
+    })
+    manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
+    return manager
+  }
+  const proposals = async () => (await git(remote, ['for-each-ref', '--format=%(refname)', 'refs/tlda/proposals']))
+    .stdout.split('\n').filter(Boolean)
+
+  const first = start()
+  await first.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  await first.closeAll()
+  const afterFirstStart = await proposals()
+
+  // The daemon is down. Edit on disk, and emit NOTHING -- the fake watcher only
+  // fires when told, which is exactly the real case: a process that is not
+  // running observes no filesystem events.
+  writeFileSync(join(checkout, 'main.tex'), 'typed while the daemon was down\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'edit during the restart window'])
+
+  const second = start()
+  await second.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  const afterRestart = await proposals()
+  assert.ok(
+    afterRestart.length > afterFirstStart.length,
+    `restart did not submit the edit made while the daemon was down (${afterFirstStart.length} proposal refs before, ${afterRestart.length} after)`,
+  )
+  const submitted = afterRestart.filter(ref => !afterFirstStart.includes(ref)).pop()
+  const bytes = (await git(remote, ['show', `${submitted.split('/').pop()}:main.tex`])).stdout
+  assert.match(bytes, /typed while the daemon was down/, 'the submitted revision does not carry the edit')
+  await second.closeAll()
+
+  // And now the half that keeps this from becoming a boot-time revision factory:
+  // restart again with nothing changed, and nothing new may be submitted.
+  const third = start()
+  await third.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  const afterIdleRestart = await proposals()
+  assert.deepEqual(
+    afterIdleRestart.sort(), afterRestart.sort(),
+    'a restart with nothing outstanding submitted a revision anyway',
+  )
+  await third.closeAll()
+})
