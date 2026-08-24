@@ -283,9 +283,36 @@ test files added     2      test lines added       98
 
 **Be fair to it:** this was a genuine rewrite — the old mechanism was replaced by
 git proposals, so tests of the old mechanism going is not automatically wrong,
-and `daemon/git-project-sync.test.mjs` passes today (exit 0).
-`daemon/git-sync-manager.test.mjs` did not finish inside a 2-minute bound when
-run alone; **that is unresolved, not a claim that it hangs.**
+and `daemon/git-project-sync.test.mjs` (50 lines) passes today, exit 0.
+
+**But the other replacement test is RED, and it is the one that matters.**
+`daemon/git-sync-manager.test.mjs` (48 lines) is not hanging — I first recorded
+it that way and that was wrong. It is merely very slow, 6–30 seconds per case,
+and it **fails**:
+
+```
+✖ bound working-copy event settles through the one Git proposal path   17.8s
+✖ one broken binding does not prevent a later project binding from starting  8.3s
+✔ existing tlda remote is reconciled without attempting to add it again  5.8s
+✔ two projects sharing one checkout submit to their owning project remotes  30.5s
+```
+
+**"bound working-copy event settles through the one Git proposal path" is the
+sync guarantee itself** — an edit in the working copy reaching the server. It
+was written by the same commit that deleted the 28 tests, and it does not pass.
+
+**Caveat on those four rows:** I killed that run at two minutes, so the four
+results are real but may not be the whole file. A full run was started to get
+the complete count and is not reflected here — **re-run it rather than trusting
+this list to be exhaustive.**
+
+**Whether it is a real defect or a bad test is NOT established** and is a proper
+piece of work, not a 4am guess. It is, however, the most direct evidence found
+for Skip's *"the files don't get there"*: there is a test with that meaning in
+its name and it is red.
+
+**And nobody would notice.** 6–30 second cases mean it is never run casually,
+and the one automated caller is on a `v*` tag with `continue-on-error: true`.
 
 **But 98 lines do not cover those sentences.** *An edit reaches another machine*
 and *an edit made before a restart is still pushed* are not implementation
