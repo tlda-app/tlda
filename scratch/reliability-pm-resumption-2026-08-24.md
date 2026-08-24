@@ -350,10 +350,32 @@ it hanging (it is not — cases take 6–30s), then reported 2-of-4 from a run I
 killed at two minutes. **4-of-8 is from a run that finished.** If you re-run it,
 give it several minutes and read `/tmp`-redirected output rather than a `tail`.
 
-**Whether it is a real defect or a bad test is NOT established** and is a proper
-piece of work, not a 4am guess. It is, however, the most direct evidence found
-for Skip's *"the files don't get there"*: there is a test with that meaning in
-its name and it is red.
+**One of the four is settled, and it is a STALE TEST — do not make it pass.**
+
+`initial project link submits the existing checkout through the ordinary
+proposal ref` writes a **new, untracked** `child.tex`, edits `main.tex` to
+`\input{child}`, and waits 30s asserting `child.tex` becomes a project member.
+The code is right to refuse:
+
+- `daemon/git-project-sync.mjs:305` stages with **`git add -u`** for an
+  author-owned checkout, `-A` only when app-owned. `-u` stages tracked only.
+- `appOwnedWorkingTree` defaults to `false` (`:39`) and the test never sets it.
+- the closure is computed from `git archive <workingCommit>` (`:146`) — the
+  **committed** tree — so an untracked file cannot enter it by either route.
+
+**Skip ruled membership is `git add`** (2026-08-23 08:06 EDT, *"supposed to bea.
+fucking git add"*, *"to the fucking lda branch"*). The test also asserts
+`unrelated.txt` is not picked up, which shows its model was *membership is
+filesystem reachability* — the model that was replaced.
+
+**THE TRAP:** the obvious way to green it is `-u` → `-A`. His paper repo has
+**398** tracked `.md`/`.tex`/`.qmd` files, **225 under `scratch/`**. That change
+sweeps his scratch directory into the project.
+
+**The other three are NOT established.** Do not reason by analogy from this one —
+the point is that each needs reading. **"Make the sync tests pass" is the wrong
+instruction; "decide per test whether it still describes the app" is the right
+one.**
 
 **And nobody would notice.** 6–30 second cases mean it is never run casually,
 and the one automated caller is on a `v*` tag with `continue-on-error: true`.
