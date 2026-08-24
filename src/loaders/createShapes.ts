@@ -48,6 +48,25 @@ function putHtmlPageShape(editor: Editor, shape: HtmlPageShape) {
   editor.store.put([shape as unknown as Parameters<Editor['store']['put']>[0][number]])
 }
 
+/**
+ * Delete page shapes this file owns.
+ *
+ * Every shape created here is `isLocked: true`, and `editor.deleteShapes` runs
+ * its argument through `_getUnlockedShapeIds` — so a plain call silently drops
+ * every id and deletes nothing. The cleanups below all target shapes this file
+ * locked, which made all three of them no-ops: no error, no log, and stale
+ * decks left stacked on the live document for as long as the room existed.
+ *
+ * `ignoreShapeLock` is the editor's own supported route for acting on locked
+ * shapes, and the editor uses it internally for the same reason. Route every
+ * cleanup in this file through here, so the lock invariant and the delete
+ * override cannot drift apart again.
+ */
+function deleteOwnedShapes(editor: Editor, ids: TLShapeId[]) {
+  if (ids.length === 0) return
+  editor.run(() => editor.deleteShapes(ids), { ignoreShapeLock: true })
+}
+
 function getAllHtmlPageShapes(editor: Editor): HtmlPageShape[] {
   return Object.values(editor.store.allRecords())
     .filter(record =>
@@ -79,9 +98,7 @@ export function createSvgShapes(editor: Editor, document: SvgDocument): boolean 
   const expectedIds = new Set(document.pages.map(p => p.shapeId))
   const stalePages = editor.getCurrentPageShapes()
     .filter(s => (s.type as string) === 'svg-page' && !expectedIds.has(s.id))
-  if (stalePages.length > 0) {
-    editor.deleteShapes(stalePages.map(s => s.id))
-  }
+  deleteOwnedShapes(editor, stalePages.map(s => s.id))
 
   // Find which pages are missing (snapshot may have partial set)
   const missingPages = document.pages.filter((page) => !editor.getShape(page.shapeId))
@@ -148,7 +165,7 @@ export function createHtmlShapes(
       }
       return { noteId: note.id, chapterIdx: bestIdx, relY: note.y - sortedOld[bestIdx].y }
     })
-    editor.deleteShapes([...oldHtmlShapes.map(s => s.id), ...oldFigShapes.map(s => s.id)])
+    deleteOwnedShapes(editor, [...oldHtmlShapes.map(s => s.id), ...oldFigShapes.map(s => s.id)])
     changed = true
   }
 
@@ -190,7 +207,7 @@ export function createHtmlShapes(
   const staleHtmlShapes = getAllHtmlPageShapes(editor)
     .filter(shape => String(shape.id).startsWith(ownedPrefix) && !expectedIds.has(shape.id))
   if (staleHtmlShapes.length > 0) {
-    editor.deleteShapes(staleHtmlShapes.map(shape => shape.id))
+    deleteOwnedShapes(editor, staleHtmlShapes.map(shape => shape.id))
     changed = true
   }
 
