@@ -41,7 +41,7 @@ export function setCompareRef(projectName, hash7) {
 }
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
-import { projectDir, sourceDir, outputDir, readProject } from './project-store.mjs'
+import { projectDir, sourceDir, outputDir, readProject, sourceLifecycleStore } from './project-store.mjs'
 import { markdownVersionTriggerProjection } from '../../shared/markdown-volatile.mjs'
 
 const GITIGNORE_CONTENT = `# Build artifacts
@@ -287,6 +287,34 @@ export function diagnosePaperScope(name) {
   return { scope: [...out].sort(), reason: null }
 }
 
+/**
+ * Which files a revision versions. Git is asked, because git is the thing that
+ * knows — a file is versioned here if it is versioned in the revision being
+ * built, and nothing else decides.
+ *
+ * This replaced the "paper scope": the list a build wrote into
+ * `relevant-files.json`, which was whatever pdflatex happened to OPEN during
+ * that render. So a detail of how the render ran chose what history existed,
+ * and anything the compiler did not open was silently never versioned. One
+ * project's own root `.tex` was absent from all 736 of its recorded versions,
+ * which made every one of them unopenable, and nothing anywhere reported it.
+ *
+ * No artifact filtering here either, for the same reason: git already knows
+ * that `.synctex.gz` and `.bb` files are build output, because nobody added
+ * them. A second opinion about that is a second thing to be wrong.
+ */
+async function versionedFiles(name, sourceRevision) {
+  if (!sourceRevision) {
+    return { scope: null, reason: 'no source revision was given to the snapshot, so git could not be asked what this build versions' }
+  }
+  const revision = await (await sourceLifecycleStore(name)).readRevision(sourceRevision)
+  const files = revision?.manifest
+  if (!Array.isArray(files) || files.length === 0) {
+    return { scope: null, reason: `revision ${sourceRevision} carries no files in the source repository` }
+  }
+  return { scope: [...files].sort(), reason: null }
+}
+
 export async function readShadowSourceScope(name) {
   const out = new Set(readPaperScope(name) || [])
   const repoDir = shadowRepoDir(name)
@@ -308,16 +336,12 @@ export async function readShadowSourceScope(name) {
 }
 
 /**
- * Commit paper-scope source files to shadow repo. Returns { hash, timestamp }.
+ * Commit the revision's versioned files to the shadow repo.
+ * Returns { hash, timestamp }.
  *
- * What "paper-scope" means: the files pdflatex actually opened during the
- * build (from the .fls recorder), augmented with bibtex inputs and svg
- * figure sources. Build artifacts (.aux/.log/etc.) are filtered out.
- *
- * Source of truth: output/relevant-files.json (written by writeRelevantFiles
- * in build-runner.mjs at the end of every successful build). If that file
- * is missing — first build hasn't completed, or relevant-files generation
- * failed — we skip the snapshot rather than fall back to copy-everything.
+ * Which files: the ones git has in `sourceRevision`. See versionedFiles above
+ * — nothing here selects a subset, and a build detail no longer decides what
+ * history exists.
  *
  * Always returns an outcome, never null — the two ways to record nothing are
  * NOT the same event and callers must be able to tell them apart:
@@ -332,7 +356,7 @@ export async function readShadowSourceScope(name) {
  * to version. That is how shadow commits froze for weeks after the 2026-06-14
  * persist-symlink migration without a single log line. Callers must report it.
  */
-export async function commitSnapshot(name) {
+export async function commitSnapshot(name, sourceRevision = null) {
   const repoDir = shadowRepoDir(name)
   const srcDir = sourceDir(name)
 
@@ -348,11 +372,8 @@ export async function commitSnapshot(name) {
   // BECAUSE this path creates a shadow when there is nothing to seed from.
   await ensureShadowRepo(name)
 
-  const { scope, reason } = diagnosePaperScope(name)
+  const { scope, reason } = await versionedFiles(name, sourceRevision)
   if (!scope) {
-    // No paper-scope. Skip rather than fall back to copy-everything (which
-    // would re-introduce the bug class this whole change is fixing) — but hand
-    // the caller the reason so it lands on a surface someone reads.
     return { status: 'no-scope', reason }
   }
 
@@ -381,7 +402,7 @@ export async function commitSnapshot(name) {
       .map((entry) => rmAsync(join(repoDir, entry), { recursive: true, force: true })),
   )
 
-  // Copy each paper-scope file from src into the shadow repo, preserving
+  // Copy each versioned file from src into the shadow repo, preserving
   // directory structure. mkdir each dirname first since cp is per-file.
   await Promise.all(
     scope.map(async (rel) => {
