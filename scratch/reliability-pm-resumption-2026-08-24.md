@@ -230,6 +230,43 @@ run.
 *"Delete parallel server source authority"* — and nothing in that title says the
 mirror, per-file attribution and operation idempotency would all stop.
 
+### 3c. `f6d0f9089` is 8,421 deletions with a five-word commit message
+
+**The message is the subject line and nothing else.** No body. 40 files. It is
+the single commit behind three separate confirmed casualties — the accept
+mirror, per-file attribution (`lastEditedBy`), and the lifecycle operation /
+authority layer — and **its record cannot tell anyone why any of it went.**
+
+Same class as the wake-marks-dead commit `AGENTS.md` §"DEATH IS A FLAG" records
+as shipping with no message. Worth stating plainly to whoever reviews this area.
+
+**A fourth deletion in it that I could NOT assess:** `server/lib/overleaf-sync.mjs`,
+**760 lines**, plus `overleaf-sync-git-history.test.mjs` and
+`overleaf-sync-remote-provenance.test.mjs`. It may be genuinely redundant — an
+Overleaf project may now just be a linked git remote, which is what
+`createGitRemotes` / `tlda project remote add` do. **I could not settle it and
+the commit says nothing.** Do not assume either way.
+
+**What IS settled: the Overleaf onboarding line the CLI prints is wrong now.**
+`cli/lib/fly/router.mjs` `docLinkDisplayLine` shows a human:
+
+```
+TLDA_TOKEN=<rw-token> tlda project link <project> <overleafUrl> \
+  --main <file> --server <renderUrl> --token <overleafToken> --title <...> --poll <...>
+```
+
+- **`--token` is the tlda server RW token** — `cli/tlda.mjs:311`,
+  `getFlag('token') || getRwToken()`. An Overleaf token there replaces the
+  server auth token.
+- **the URL lands in `documentRoots`** — `project link`'s usage says
+  *"Positional paths are document roots"*; remotes go through
+  `tlda project remote add <remote> <url>`.
+- **`--poll` does not exist** — zero references, silently ignored.
+- `--main` (`cli/tlda.mjs:633`) and `--title` are fine.
+
+Small, reversible, and **not** what Skip asked for on 08-24 — it is recorded
+here rather than fixed.
+
 ### 4. `mainFile` — Skip: "There is not supposed to be a main file"
 
 Complete list committed at `scratch/mainfile-scope-2026-08-24.md`: **72 property
