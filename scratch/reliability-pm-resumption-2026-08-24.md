@@ -1,0 +1,221 @@
+# Reliability PM resumption point — 2026-08-24
+
+Force-added under gitignored `scratch/` on purpose. **This is not a report of
+finished work; it is what the next person continues from.** `AGENTS.md`
+§"Repository workflow".
+
+Author: `reliability-pm` (`fleet:d733e20d`), charter from `bhief-4`: whether the
+app works for Skip day to day.
+
+**Relative to, at the moment of writing (~2026-08-24 06:5xZ):** `main` is
+`efe34baa2`. **The deployed box is `cd2119ce0` — seven commits behind, and four
+of them are tonight's fixes. Nothing below is proven until that deploy happens.**
+
+---
+
+## Skip's priorities, his words, replacing anything earlier
+
+2026-08-24 ~01:00 EDT, direct to me:
+
+> the fucking phenomenon that like, the app does not version or display code and
+> periodically, like, locks up — that that is a fucking problem
+
+And the definition of the display half, which is **not** a rendering problem:
+
+> It's a synchronization problem such that the files don't get there, or if they
+> do get there, they're old. Or they don't have their version history
+
+**Shapes are off the list permanently:** *"no one cares about fucking shapes …
+if anyone says anything about fucking shapes ever again in my fucking life"*.
+The orphan A/B is dead; `7cdc0cb90` is unblocked.
+
+**Standing instruction, 01:43 EDT:** *"do not ever ever let something fucking
+problematic in the system slip through your fucking finger … The system has to
+be fucking simple. It has to be what I fucking specified."*
+
+---
+
+## The one thing blocking everything: the deploy
+
+`main` is 7 ahead of the box. **Put to Skip as A (I deploy) or B (bhief-4 does)
+and unanswered as of writing.** bhief-4 was woken, is alive (the wake refused
+with *"tmux session fleet-bhief-4 already has a live harness runtime"*, so the
+hibernating roster row is stale) and has not replied in ~50 minutes.
+
+**The two checks to run the moment it lands**, and they are by name, not count:
+
+1. a new shadow commit on the two-root project **contains the root `.tex`**
+2. a historical page of the **non-primary** root returns that root's content
+
+---
+
+## Landed tonight, all undeployed
+
+| commit | what |
+|---|---|
+| `23f5ccf75` | version the files git has, not the ones pdflatex opened |
+| `6895a5aef` | build the history page for the target that was asked for |
+| `efe34baa2` | find a target's `.tex` by asking the roots, not guessing at the root |
+| `eaa2d8707` | the `mainFile` scope document (below) |
+
+**These three are one defect in three places:** something other than git decided
+what a document is, and each place decided differently.
+
+`efe34baa2` is the one with a production counterfactual — over all 21 LaTeX
+projects on the box, the old logic resolved 19 targets to a real file and
+**2 to a file that is not there**, one of them his second root; the new logic
+resolves 21, 0 unresolvable, 0 absent.
+
+---
+
+## STILL OPEN — start here
+
+### 1. The mirror is gone, and it is why history never reaches his machine
+
+**Not a regression to hunt — a documented deletion.** The chain:
+
+| | |
+|---|---|
+| `c16e8472a` 08-18 | build-era mirror deleted **on purpose**; mirroring moves to the accept |
+| `68cd40874` 08-19 | adds `mirrorAcceptedRevision` to the push route **plus a test** |
+| `f6d0f9089` 08-20 | *"Delete parallel server source authority"*, 8,421 deletions — **removes it** |
+
+**`bin/mirror-failure-visible-test.mjs` is RED on `main` and names the defect in
+its own assertion**: *"mirrorAcceptedRevision is gone from
+server/routes/projects.mjs — the accept no longer mirrors"*. Verified by running
+it: exit 1. It has been red since 08-20 and nothing runs it — `npm run lint`/test
+has one automated caller, on a `v*` tag, `continue-on-error: true`.
+
+`f6d0f9089` also removed the only writer of `lastEditedBy`, which is why
+per-file attribution died. **One commit, two of his seeing-mechanisms.**
+
+**Do NOT rebuild a mirror from scratch.** The 08-18 commit is explicit about why
+the *build-era* one was killed: it committed the shadow's content, which lags
+the accepted source and does not converge, and on 2026-08-17 four mirror commits
+took the same two changes out of a paper's HEAD. Skip remembered this
+unprompted — *"it was playing shit back over files"*. **The accept mirror does
+not have that property by construction** (it commits the accepted revision,
+which IS the head). So the move is to restore `68cd40874`, not to invent one.
+**Put to Skip; awaiting his word.**
+
+`mirrorShadow()` in `build-runner.mjs` still exists with **no caller** — it is
+the corpse of the build-era mirror. `readShadowSourceScope`'s use of the old
+scope-picker is inside it, so that is **not** a live defect. I flagged it as one
+earlier and was wrong.
+
+### 2. Chat still hands him a frozen copy — but only for untracked files
+
+**Mostly already fixed and deployed**, which I nearly missed: `4b8345288`
+(*"Open the live document instead of copying it"*) and `acb661260` (a click on a
+tracked markdown file makes it a root) are both in `cd2119ce0`.
+
+**The remaining case is a markdown file git does not track**, and it cannot
+simply be adopted: a declared root absent from the settled tree makes
+`filteredProjectCommit` throw *"configured document root is absent"*, caught at
+warn — which stops the project syncing **entirely**, silently. So the click
+currently makes a snapshot instead, nothing says it is one, and nothing ever
+refreshes it.
+
+**Three options are with Skip, unanswered:** (A) refuse and offer to add,
+(B) `git add` it then open live, (C) render live without rooting it. I
+recommended **B** as the only one where the file ends up both current and
+versioned.
+
+**Do not read the six stale files in that project's `parts/` as six clicks.**
+They all carry the same 15:54 stamp, which reads as one bulk operation plus the
+chief's hand-restore of `a1b81267`. I reported them as per-click evidence and
+withdrew it.
+
+### 3. The lockup config is not what the record says
+
+`buildMaxConcurrency: 1` is **absent** from the box's `server.yaml`, which is
+byte-identical to `server.yaml.bak-20260823`. `server/lib/build-queue.mjs:16`
+resolves absent to **2**, and `nproc` is **2**.
+
+**This is a decision, not a re-apply.** `shared/config.mjs` ships `2` with the
+comment *"k >= 2 is a correctness bound rather than a throughput preference"*,
+and `bin/a-second-build-slot-that-exists-test.mjs` asserts absent must mean two
+concurrent builds. On a 2-core box those conflict.
+
+**Ruled out while looking at this, so nobody re-derives them:**
+
+- **Builds are already deprioritised** — `bin/build-worker.mjs:25` calls
+  `setPriority`. Do not propose nice-ing them.
+- **The queue already thins superseded pending builds** (`build-queue.mjs:50–63`).
+- **Build suppression buys nothing on his project.** `outside-tree` was gated on
+  what fraction of accepts render nothing relevant: measured over the last 60
+  revisions, **60 of 60** changed a file the render reads (controls: 0 empty
+  diffs, 0 unmatched). `shouldBuildOnPush` would suppress zero.
+- **The stall rate is currently low and that is not evidence of health** — ~32/hr
+  through the evening, 3–9/hr after 01:00Z, but he stopped working at ~01:48Z.
+  That is an idle box.
+
+Fix 1 from the previous chief **did** survive: `idx_agents_lower_id` is present.
+
+### 4. `mainFile` — Skip: "There is not supposed to be a main file"
+
+Complete list committed at `scratch/mainfile-scope-2026-08-24.md`: **72 property
+reads across 23 files**; ~170 further hits are locals that follow from them.
+
+He also ruled on bucket 2: **"The second bucket also shouldn't exist"** — the 22
+sites where a missing `mainFile` silently becomes `main.tex` or `index.md`.
+
+**Three sites are done** (the commits above). What is left is not uniform, and
+this is the part worth carrying:
+
+- Some are **pure deletions** — an unreachable fallback whose caller always
+  supplies the value.
+- Some need a **parameter threaded from the client**: `history.mjs:295` is
+  `/shadow/:hash7/lookup`, and there is no target in that URL at all. Removing
+  `mainFile` there is an API change, not an edit.
+- Some need a **design answer that is his**: `shadow-changelog.mjs:29` uses a
+  single `primaryTexBase` to find one lookup file. Whether a changelog spans all
+  roots is a product question. **I left it rather than half-change it.**
+- `unified-server.mjs:4828`'s targets fallback is reachable only for projects
+  with `pages=0` (never built) — 4 on the box, all probe fixtures. Deleting it
+  turns a first-view build attempt into a 404. **Not obviously right; left.**
+
+**The category table in the scope file is a grep heuristic and is not
+authoritative** — `build-runner.mjs:2322` and `:2344` are false positives
+(`targets: targetMeta.map(...)`, per-target and correct). Read each site.
+
+---
+
+## Instrument notes, paid for tonight
+
+- **`$?` after a pipeline is the pipe's exit.** I did it once. `${PIPESTATUS[0]}`
+  is bash — **this shell is zsh**, where it is `$pipestatus` and the bash form
+  expands to nothing, which prints an empty exit code that reads as success.
+- **A confident `0` from a JSON query means check the shape first.** A count of
+  lifecycle build states returned `0` because the records are under
+  `j.revisionLifecycle`, not at the top level. The positive control found it.
+- **`tsc -b --incremental false` in the shared checkout is the `--force`
+  antipattern** — I started one and killed it.
+- **Three eslint errors on `main` in `server/unified-server.mjs`** (657, 8772,
+  8773, `tlda/await-fleet-store`) are **pre-existing, not anyone's current work**
+  — verified by linting `git show main:server/unified-server.mjs` from a temp
+  path inside the repo so the same config applies. Commit with `-o`.
+- **The `sourceLifecycleStore(name)` accessor needs the project store
+  initialised**, so an ad-hoc `node -e` against it throws. Go through
+  `createSourceLifecycleStore({ root, project })` to test that layer by hand.
+- **Skip's Chrome had no tab on his paper project** — he was on the iPad
+  (`machine: ipad165`). A CDP `Runtime.evaluate` against his one open tlda tab
+  (`?project=ops`) timed out, most likely a backgrounded/frozen tab. Tunnel and
+  target-list worked, so that is not an `air-agent` problem.
+
+## Things I got wrong tonight, so they are not repeated
+
+- **Led the first report with the 169 orphan shapes.** He does not care about
+  shapes, said so in those words, and it cost a round trip.
+- **Told him the frozen-part problem was live** before checking whether a fix
+  had shipped. It had, two commits, both already deployed. Corrected in a new
+  message rather than an amend.
+- **Read six files with one timestamp as six user clicks.** They are one bulk
+  operation.
+- **Said "history never leaves the server" from a dead function.** The live path
+  was `mirrorAcceptedRevision` and it was deleted two days later by a different
+  commit. Right conclusion, wrong mechanism, and the mechanism is what the next
+  person would have acted on.
+- **Asked him to run nothing and told him nothing was waiting on him** — the one
+  open question is the deploy A/B, and it is stated as an actual question with
+  options.
