@@ -268,8 +268,22 @@ test('an up-to-date immutable proposal still requests confirmed admission', asyn
   const first = await manager.submit('paper')
   const second = await manager.submit('paper')
   assert.equal(first.revision, second.revision)
-  assert.equal(admissions.length, 2)
-  assert.deepEqual(admissions.map(item => item.proposalRef), [first.proposalRef, first.proposalRef])
+  // THREE, not two, and the extra one is first: `sync()` starts the binding and
+  // `start()` now settles once, which submits because this fixture never pushes
+  // to the shared ref, so there is outstanding work the moment the daemon comes
+  // up. That is the behaviour 5408bf367 added deliberately -- a restart must not
+  // eat an edit made while the daemon was down -- and this expectation was
+  // written when startup submitted nothing.
+  //
+  // The property under test is unchanged and is now asserted more strongly than
+  // before: every admission names the SAME proposal ref, because the content
+  // never changes, so re-requesting admission for an up-to-date immutable
+  // proposal is what all three are doing.
+  assert.equal(admissions.length, 3)
+  assert.deepEqual(
+    admissions.map(item => item.proposalRef),
+    [first.proposalRef, first.proposalRef, first.proposalRef],
+  )
   await manager.closeAll()
 })
 
