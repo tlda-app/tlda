@@ -22,6 +22,13 @@ const execFile = promisify(execFileCb)
 const git = (cwd, args) => execFile('git', args, { cwd, encoding: 'utf8', timeout: 30000 })
 
 test('bound working-copy event settles through the one Git proposal path', async () => {
+  // `warnings` was used twice below and declared only in the NEXT test, so this
+  // case threw ReferenceError before it could assert anything -- and it threw
+  // while EVALUATING the assertion's own message argument, which is why the
+  // failure named the assert line and looked like a real proposal failure.
+  // It could never pass. `npx eslint` reports it as no-undef in about a second;
+  // nothing runs eslint, which is the actual defect this line stands in for.
+  const warnings = []
   const root = mkdtempSync(join(tmpdir(), 'tlda-git-sync-manager-'))
   const checkout = join(root, 'checkout')
   const remote = join(root, 'paper.git')
