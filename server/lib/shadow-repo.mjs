@@ -41,7 +41,7 @@ export function setCompareRef(projectName, hash7) {
 }
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
-import { projectDir, sourceDir, outputDir, readProject, sourceLifecycleStore } from './project-store.mjs'
+import { projectDir, liveProjectDir, sourceDir, outputDir, readProject, sourceLifecycleStore } from './project-store.mjs'
 import { markdownVersionTriggerProjection } from '../../shared/markdown-volatile.mjs'
 
 const GITIGNORE_CONTENT = `# Build artifacts
@@ -66,8 +66,33 @@ const GITIGNORE_CONTENT = `# Build artifacts
 *.pdf
 `
 
+/**
+ * The shadow repo is DURABLE state and must never resolve to a build instance.
+ *
+ * `projectDir` is overridden to the instance while a build runs
+ * (`bin/build-worker.mjs` → `setProjectPathOverride`), and
+ * `materializeBuildInstance` creates only `source/`, `output/` and the private
+ * caches — there is no `shadow-repo` in an instance. So during a build this
+ * resolved to a path that did not exist, `ensureShadowRepo` made a fresh empty
+ * one, `commitSnapshot` committed into that, and the instance was removed in a
+ * `finally`. **Every version recorded by a build was thrown away**, silently:
+ * a brand-new shadow plus a full scope is a perfectly successful commit, so
+ * nothing logged a failure.
+ *
+ * Only the parent-side bootstrap (`maybeBootstrapShadowFromProjectRepo`) wrote
+ * to the real one, which is why projects have a seed commit and then nothing.
+ *
+ * Measured on a probe project 2026-08-24: three revisions all `build=built`,
+ * the revision carrying both roots, and the live shadow still holding exactly
+ * one commit — the bootstrap — with no error anywhere.
+ *
+ * NOT the whole story, and do not let this be read as such: build instances
+ * landed in `83cd0b0d6` on 2026-08-20, and the freeze being investigated starts
+ * 2026-08-17. This explains 08-20 onward. The three days before it do not have
+ * an explanation yet.
+ */
 function shadowRepoDir(name) {
-  return join(projectDir(name), 'shadow-repo')
+  return join(liveProjectDir(name), 'shadow-repo')
 }
 
 export async function createShadowBundleBase64(name, hash) {
