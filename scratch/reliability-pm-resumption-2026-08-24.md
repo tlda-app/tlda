@@ -35,7 +35,44 @@ be fucking simple. It has to be what I fucking specified."*
 
 ---
 
-## The one thing blocking everything: the deploy
+## DEPLOYED 2026-08-24 14:42 EDT — two of three fixes now PROVEN LIVE
+
+**The box moved to `6dece0822` and all three fixes are in it.** Not deployed by
+me and not by bhief-4 (hibernating since 00:50, never recovered from the API-529
+loop) — another push carried them along.
+
+**PROVEN, measured against the live box with a negative control:**
+
+```
+appendix historical page   HTTP 200   54,620 bytes   real dvisvgm SVG
+manuscript page (control)  HTTP 404
+```
+
+`GET /docs/randomization-synth/history/shadow-0b5aa55/supplementary_appendix-page-1.svg`
+now renders. It could not before: the old code took the target from
+`project.mainFile` ("manuscript"), so asking for the appendix compiled the
+manuscript — and `revision/manuscript.tex` is not in that commit. **Every
+non-primary root behaved that way.** So `6895a5aef` + `efe34baa2` work end to
+end.
+
+**The control is the stronger evidence.** Its 404 detail reads
+`main=revision/manuscript.tex` — the **full subdirectory path**, resolved from
+the declared roots. The resolver looked in the right place, found the file
+genuinely absent from that commit, and failed honestly. The old fallback would
+have guessed a bare `<texBase>.tex` at the checkout root. So the path
+discriminates between targets AND resolves each correctly.
+
+That 404 is the **permanent** one: all 736 recorded versions lack
+`revision/manuscript.tex`, so the manuscript's history stays unopenable
+regardless. The appendix's history is back.
+
+**STILL UNPROVEN: `23f5ccf75`, the versioning fix.** Its check needs a build and
+**nothing on that box has built since the deploy** — the project's last build
+was 05:40Z, and zero projects have a post-deploy shadow commit. **Not a failure;
+an absence of evidence.** It proves itself on the next build, and the check is
+unchanged: a new shadow commit contains `revision/manuscript.tex` **by name**.
+
+## Superseded: the deploy that was blocking everything
 
 `main` is 7 ahead of the box. **Put to Skip as A (I deploy) or B (bhief-4 does)
 and unanswered as of writing.** bhief-4 was woken, is alive (the wake refused
