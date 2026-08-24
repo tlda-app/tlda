@@ -1910,7 +1910,7 @@ export async function recordBuildVersion({
     warnings = warnings ?? extracted.warnings
   }
 
-  const result = await commitSnapshot(name)
+  const result = await commitSnapshot(name, sourceRevision)
   if (result.status !== 'committed') {
     // 'unchanged' and 'volatile-only' are correct and quiet — either the source
     // is identical, or the only edits are inside explicitly volatile Markdown.
