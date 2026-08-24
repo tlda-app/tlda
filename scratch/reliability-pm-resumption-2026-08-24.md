@@ -259,6 +259,43 @@ found tonight traces into that window, and the record cannot say what any of it
 was meant to preserve. One of the seven turned out to be a clean generalisation
 (`e3ba10559`, above) — which is only knowable by reading its diff.
 
+### 3e. `672ba4d90` traded 4,767 lines of sync tests for 98
+
+The largest single piece of the 08-20 window, and the one that best explains why
+nothing surfaced afterwards. *"Cut daemon source sync over to Git proposals"*,
+7,217 deletions, **no message body**. It deleted **34 files and added 4**:
+
+```
+test files deleted  28      test lines deleted  4,767
+test files added     2      test lines added       98
+```
+
+**What went is named after guarantees, not after code:**
+
+- `an-edit-that-reaches-another-machine-test.mjs`
+- `an-edit-made-before-a-restart-is-still-pushed-test.mjs`
+- `collaborators-on-one-project-test.mjs`
+- `a-removal-the-paper-still-references-test.mjs`
+- `a-document-he-clicked-is-not-a-deletion-test.mjs`
+- `server-held-phantom-deletes-test.mjs`
+- `an-unanswered-source-push-releases-the-project-test.mjs`
+- `source-conflict-delivery-test.mjs`, `source-daemon-and-caller-contract-test.mjs`
+
+**Be fair to it:** this was a genuine rewrite — the old mechanism was replaced by
+git proposals, so tests of the old mechanism going is not automatically wrong,
+and `daemon/git-project-sync.test.mjs` passes today (exit 0).
+`daemon/git-sync-manager.test.mjs` did not finish inside a 2-minute bound when
+run alone; **that is unresolved, not a claim that it hangs.**
+
+**But 98 lines do not cover those sentences.** *An edit reaches another machine*
+and *an edit made before a restart is still pushed* are not implementation
+details of the old mechanism — they are equally true or false of the new one,
+and now nothing asks.
+
+**Read this together with 3b:** `672ba4d90` deleted the sync tests, `f6d0f9089`
+deleted the layer the *surviving* sync tests were written against, and between
+them the accept mirror and per-file attribution stopped. **One day.**
+
 ### 3c. `f6d0f9089` is 8,421 deletions with a five-word commit message
 
 **The message is the subject line and nothing else.** No body. 40 files. It is
