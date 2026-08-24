@@ -4,9 +4,56 @@ Force-added under `scratch/` deliberately: this is a resumption point, not a rep
 `scratch/` is gitignored, so an untracked copy would not survive. See `AGENTS.md`
 §"Repository workflow".
 
-**Relative to:** `main` and the deployed box are **both `cd2119ce0`**,
-2026-08-23 21:50 EDT. Edit-to-browser loop verified closed after the deploy —
-`node bin/live-watcher.mjs`, 10.2s.
+**Relative to:** `main` and the deployed box are **both `72986dc45`**,
+2026-08-24 18:30 EDT. Daemon worktree on it too.
+
+## 2026-08-24 evening: sync, and what was actually wrong with it
+
+**Two of his projects had committed work the server had never received — one for
+4.2 days, one for 6.** It went up tonight only because the restart fix fired.
+Not lost: committed in git on the mini throughout. What was behind was the
+server, the version history, and anything reading through the app. He has been
+told, with those limits intact.
+
+**The generalisation, which is bigger than the bug it came from:**
+
+> **A project that is bound and then not edited has never submitted anything at
+> all.**
+
+A settle only ran when the watcher saw a change, so a binding nobody edited
+never submitted once — two projects created 08-12, `buildStatus: success`,
+rendering fine, **zero revisions ever**. Properly linked and working, and the
+server had nothing. `5408bf367` is therefore not "a restart must not eat an
+edit" — it is **the working tree is authoritative and somebody has to ask it**.
+
+**Landed and deployed tonight**, in order: `414933ab2` + `c3a7c7e62` (version
+recording — the shadow was being committed into the build instance, which the
+worker deletes, so every version since 08-20 was thrown away), `142efaaf6` (a
+build now says it recorded a version; the silence on success is what hid it for
+four days), `5408bf367` + `b1188bc6c` + `87a156041` + `72986dc45` (the startup
+re-derivation, the test-file repair, the test, and the recorded 2→3 expectation
+change).
+
+**The 08-17 gap is dissolved, not deferred.** That project's shadow is older
+than the project — inherited from a previous incarnation whose last snapshot was
+08-17. Fleet-wide daily counts put the collapse at 08-19→08-20, where build
+instances landed. Two independent measurements, one boundary.
+
+**Suite:** `daemon/git-sync-manager.test.mjs` went 4 pass / 4 fail → **6 pass /
+3 fail**, the three a strict subset of the original four. Two are stale by
+design change — one asserts an untracked file becomes a project member, against
+his `git add` ruling. Nobody touched them to get green.
+
+**Open, and deliberately unclaimed:** the daemon status scan failing every three
+seconds; **52 bindings pointing at projects that no longer exist**, which now
+attempt a settle per restart — debris, and pruning it is his call, not ours.
+
+**Five instrument failures in one night**, all the same family — a read that
+cannot tell absent from not-recorded-here. Two were mine: the "no role
+resolution" claim (grepped the wrong names; `classroomPrincipal` exists), and
+**two void runs of my own restart-window experiment**, where the instrument
+could not distinguish "the fix worked" from "I missed the window". Knowing the
+shape does not stop you producing it; only a control does.
 
 Landed tonight, in order: `140101c7c` (edit attribution), `1f9cf574e` +
 `9fa3b9094` (instrument shape 11, resumption points, freeze ruled-outs),
