@@ -285,6 +285,48 @@ terminal, the stored event — before reasoning about what the tool said. And wh
 quoting output that contains paths, expect it to be rewritten and say where the
 original can be read.
 
+### 11. A confident clean number about a set the query was never looking at
+
+**The query runs, matches, and returns. It just does not cover the population you
+believe it covers** — a field that does not exist yet, a category whose members
+are all legitimate, a type name the app has never had. Nothing is empty and
+nothing errors, so none of the emptiness checks above fire. The answer is small,
+tidy, and about a different set.
+
+**Three of these in one night, 2026-08-23, from one agent, each about to be
+reported as a finding:**
+
+| the query | what it returned | what it was actually looking at |
+|---|---|---|
+| `edit_operation` present on `Edit`/`Write` blocks in the raw session JSONL | **0 of 725**, across 40 sessions | the field does not exist in the file. `parseSessionRecord` **synthesizes** it at parse time (`normalizedToolInput`, using the tool_use `id`). The events the daemon actually sees always carry it |
+| html-page shapes whose id does not start with `shape:<project>-page-` — "legacy rooms" | **10 projects** | `-slide-N`, `--parts-page-N` and `spatial-document-*`: two other shape families and one deliberate namespace. Zero legacy rooms |
+| annotations, matched as `math-note` and `note` | **47**, all healthy | **there is no `note` type in this app.** `highlight` (63), `geo` (124), `understanding-line` (10) were never counted. The real total is 253 |
+
+**The first would have reported a working fix as useless.** The conclusion drawn
+was *the harness never populates this field, so restoring the recording call
+restores nothing* — one step from telling a chief to abandon a one-line repair
+that in fact works.
+
+**The tell is that the number is plausible.** 0 of 725 looks like a definitive
+negative. 10 legacy rooms looks like a real backlog. 47 annotations, all
+correctly parented, looks like a clean bill of health. **A number that looked
+wrong would have been checked; these did not.**
+
+**The check is the positive control again — but pointed at the query's
+VOCABULARY rather than its result.** Before believing a count, enumerate what is
+actually there: every `type` in the store, every key on the record, every value
+the column takes. All three collapse instantly under that. The type census took
+one command and turned 47 into 253.
+
+**And the reason it has to come from outside the query:** two of the three were
+caught because someone else asked *"positive-control that"* — not because the
+author reviewed their own work again. **The author of a query is the worst-placed
+person to notice it is asking the wrong question**, because the query is a
+faithful expression of what they already believe the world contains. Re-reading
+it confirms the belief. Only an instrument pointed at the belief itself — what
+types exist, what fields exist — can break it. This is the same reason
+`AGENTS.md` gives a chief of staff an advocate.
+
 ## The standing check, in one line
 
 **Before reporting an absence, a hang, or a failure, ask what this instrument
