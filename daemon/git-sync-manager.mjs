@@ -103,27 +103,31 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       watchedMembers.clear()
       for (const file of next) watchedMembers.add(file)
     }
+    // Named so `start()` can run it once, below. It is the ONE settle path:
+    // the watcher reaches it through the debouncer, and startup reaches it
+    // directly. Nothing else should grow a second way in.
+    const settleEditCluster = async () => {
+      try {
+        // settle() reports failure two ways and only one of them was audible.
+        // A THROW is logged below; a returned { ok: false } was dropped on the
+        // floor. WrongHead, conflicted, merge-in-progress and empty-checkout all
+        // take the second path, so a proposal could be rejected on every attempt
+        // and leave no trace anywhere -- no log, no retry, no state change. That
+        // silence is what made "in-app editing does nothing" cost hours to find.
+        const result = await sync.editClusterSettled()
+        if (result && result.ok === false) {
+          log.warn(`${item.project}: proposal not accepted: ${result.status || 'unknown'}`)
+        }
+        if (result?.ok) await reportDroppedDocuments(result.dropped || [])
+        await refreshWatchedMembers()
+      } catch (error) {
+        // Keep the watcher live after a rejected proposal so a later member edit can repair it.
+        log.warn(`${item.project}: proposal failed: ${error.message}`)
+      }
+    }
     const cluster = createEditClusterDebouncer({
       sourceDir: item.sourceDir,
-      onSettled: async () => {
-        try {
-          // settle() reports failure two ways and only one of them was audible.
-          // A THROW is logged below; a returned { ok: false } was dropped on the
-          // floor. WrongHead, conflicted, merge-in-progress and empty-checkout all
-          // take the second path, so a proposal could be rejected on every attempt
-          // and leave no trace anywhere -- no log, no retry, no state change. That
-          // silence is what made "in-app editing does nothing" cost hours to find.
-          const result = await sync.editClusterSettled()
-          if (result && result.ok === false) {
-            log.warn(`${item.project}: proposal not accepted: ${result.status || 'unknown'}`)
-          }
-          if (result?.ok) await reportDroppedDocuments(result.dropped || [])
-          await refreshWatchedMembers()
-        } catch (error) {
-          // Keep the watcher live after a rejected proposal so a later member edit can repair it.
-          log.warn(`${item.project}: proposal failed: ${error.message}`)
-        }
-      },
+      onSettled: settleEditCluster,
     })
     const remoteBridge = item.remote ? createRemoteGitBridge({
       sourceDir: item.sourceDir,
@@ -147,6 +151,29 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     runtimes.set(item.project, runtime)
     await sync.recover()
     await refreshWatchedMembers()
+    // Re-derive what the working tree says, once, at startup.
+    //
+    // An edit made while this daemon was down reaches nothing otherwise. The
+    // watcher is constructed `ignoreInitial: true`, and `refreshWatchedMembers`
+    // re-adds every member through `watcher.add(added)` — one argument, so
+    // chokidar's `_internal` is undefined, `initialAdd` is true, and
+    // `!(initialAdd && ignoreInitial)` suppresses the event (chokidar 5.0.0,
+    // handler.js:395). So no `add` fires, no settle runs, and `recover()` cannot
+    // help: it only re-pushes a revision already at `localRef`, and the missed
+    // edit never became one. The debouncer is pure memory, so anything pending
+    // when the process died is gone too.
+    //
+    // The file therefore only reached the server when the author happened to
+    // edit again — the settle stages the whole tree, so a later edit swept it
+    // in. That is convergence by coincidence: one edit inside the window
+    // followed by a pause was never submitted at all, silently and forever.
+    //
+    // This is a re-derivation, not a queue: nothing remembers the missed edit
+    // because the working tree already does. It is also idempotent — `settle()`
+    // compares its tree against the shared one and returns `equal-tree` without
+    // pushing when they match, so a startup with nothing outstanding costs a
+    // comparison and submits nothing.
+    await settleEditCluster()
     if (remoteBridge) await remoteBridge.poll()
     return runtime
   }
