@@ -1608,7 +1608,7 @@ export function createJsonlIngestor({
       const input = block.input || {}
       const filePath = input.file_path || input.path || ''
       if ((block.name === 'Edit' || block.name === 'Write' || block.name === 'MultiEdit') && filePath) {
-        if (!editOperationStore) recordEdit(agentId, filePath, input.edit_operation || null)
+        recordEdit(agentId, filePath, input.edit_operation || null)
       }
     }
   }
