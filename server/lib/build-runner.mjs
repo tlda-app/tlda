@@ -164,7 +164,7 @@ export async function adoptShadowHistoryRef({ name, gitDir, ref, head }) {
   }
   const advertised = (await execAsync(`git --git-dir="${gitDir}" rev-parse --verify "${ref}^{commit}"`, { encoding: 'utf8' })).stdout.trim()
   if (advertised !== head) throw new Error(`${name} history ref ${ref} does not point at ${head}`)
-  const shadowDir = join(projectDir(name), 'shadow-repo')
+  const shadowDir = shadowRepoDir(name)
   if (existsSync(join(shadowDir, '.git'))) {
     const { stdout } = await execAsync('git rev-parse --verify HEAD', { cwd: shadowDir, encoding: 'utf8' })
     const existingHead = stdout.trim()
@@ -189,7 +189,7 @@ export async function adoptShadowHistoryRef({ name, gitDir, ref, head }) {
   // person's own commit named `init` is a version. For a freshly created project
   // the `init` being hidden is the shadow repo's synthetic root; for an adopted
   // history it is the author's first real commit. One message, two meanings.
-  const adoptedHead = (await execAsync('git rev-parse --verify HEAD', { cwd: join(projectDir(name), 'shadow-repo'), encoding: 'utf8' }).catch(() => ({ stdout: '' }))).stdout.trim()
+  const adoptedHead = (await execAsync('git rev-parse --verify HEAD', { cwd: shadowRepoDir(name), encoding: 'utf8' }).catch(() => ({ stdout: '' }))).stdout.trim()
   if (!adoptedHead) throw new Error(`adopted ref for ${name} landed no commit`)
   return true
 }
@@ -1246,7 +1246,7 @@ async function summarizeDiff(diffText, projectName) {
   if (hunks.length === 0) return null
 
   // 2. Build section tree from tex source in shadow repo
-  const shadowDir = join(projDir, 'shadow-repo')
+  const shadowDir = shadowRepoDir(projectName)
   const project = await readProject(projectName)
   const mainFile = project?.mainFile || ''
   const texPath = join(shadowDir, mainFile)
@@ -1813,7 +1813,7 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
   const sourceDir = project.sourceDir
   if (!existsSync(join(sourceDir, '.git'))) return
 
-  const shadowDir = join(projectDir(name), 'shadow-repo')
+  const shadowDir = shadowRepoDir(name)
   // Already has real history? Skip. The >1 test dates from when a blank
   // `git init` shadow seeded a lone "init" commit; such shadows still exist in
   // deployed stores, so the test stays until they age out.
