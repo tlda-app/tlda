@@ -1097,6 +1097,35 @@ sampler that re-checks the clock rather than trusting `sleep`.
 
 **Server:** 32 stalls in hour 16, 6 in hour 17.
 
+
+### 17:50 — the control that anchors the whole attribution, finally run
+
+Everything in this file attributes the growth to the app. **Until now nothing
+excluded the alternative: that any renderer on this machine drifts**, under the
+memory pressure this box has been under all day. That control costs one command
+and I had not run it.
+
+Same browser process tree, same host, same instant:
+
+| renderer | uptime | footprint |
+|---|---|---|
+| **the app's tab** | 1:27:25 | **354 MB** (from 233 MB — **+121 MB**) |
+| **sibling, non-app** | 1:27:28 | **23 MB** (24 MB an hour earlier — **flat**) |
+
+The sibling is `--type=renderer --renderer-client-id=7` — a real renderer, not a
+utility process, so it is a fair comparison.
+
+**Eighty-seven minutes, identical conditions: the app's renderer gains 121 MB and
+the one next to it gains nothing.** That excludes the machine, Chrome itself,
+memory pressure, and the compressor as explanations. **The growth is the app's
+page.**
+
+It also retro-fits the reproduction: the drift is ~1.9 MB/min sustained across
+65 minutes and two cold starts, with canvas count and area, DOM nodes, SVG nodes,
+iframes and shapes constant in every sample throughout.
+
+**Server:** 21 stalls in hour 17.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
