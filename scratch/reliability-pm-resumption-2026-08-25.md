@@ -37,6 +37,49 @@ git log -1 --format=%s refs/heads/tlda/<project>     # what the branch holds
 The second row is most recently-created projects. That is why "we'll relink as
 necessary" was broken for the majority case.
 
+## THE NEXT THING TO FIX: two ingress chains, and the loser can never push again
+
+**Found 2026-08-25 08:2x, immediately after the browser leg worked for the first
+time. This is the most important open item in this file.**
+
+A project has **two independent revision chains**, and they carry the same ref
+name in different repositories:
+
+```
+the person's checkout          refs/tlda/project/<p>   6c549b1c2
+.source-room/working (server)  refs/tlda/project/<p>   98b975e37  <- IS the server head
+neither is an ancestor of the other
+```
+
+Both measured — the second by reading the refs inside
+`/app/server/persist/projects/<p>/.source-room/working` on the box.
+
+The server's pre-receive requires a proposal to descend from the project head.
+So once **both** ingresses have submitted, whichever submitted last owns the
+head and **the other one's every future push is `WrongHead`, permanently.**
+`headChanged` fetches but only reparents an **app-owned** tree — a person's
+checkout is deliberately not reparented — and nothing merges the fetched head
+into the checkout's chain. **It cannot recover on its own.**
+
+Reproduced: after one browser edit, the disk leg failed three times in a row,
+alone, on the work branch with a clean tree, having worked repeatedly
+(10.2–12.7s) for hours beforehand.
+
+**This is NOT the ref split.** Both bindings always had separate chains, in
+separate repositories. What changed is that the browser leg now actually
+submits, so both are live at once for the first time. **The room fix made a
+pre-existing gap reachable.**
+
+**What a person hits:** edit a project in the browser and on disk, and the
+checkout stops syncing and stays stopped. Nothing says so — the settle result is
+a returned value, and `git-sync-manager`'s `settleEditCluster` logs it at warn.
+
+**Do not "fix" this by reparenting the person's checkout onto the fetched head**
+without understanding why that was deliberately excluded — the comment in
+`headChanged` is explicit that a person-owned checkout keeps its own history.
+The real question is how two ingresses for one project are meant to share one
+lineage, and that is a design question, not a patch.
+
 ## What is live and what is not
 
 Box was `03da64416` at 07:20:18Z. Confirm before trusting any of this — a
