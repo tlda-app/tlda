@@ -80,6 +80,46 @@ without understanding why that was deliberately excluded — the comment in
 The real question is how two ingresses for one project are meant to share one
 lineage, and that is a design question, not a patch.
 
+### DO NOT REVERT `f1335d096` WHEN YOU MEET THIS
+
+You will meet the stuck checkout before you meet anything else here, and the
+tempting move is to revert the room fix that "caused" it. **It did not cause
+it.** Both bindings have always had their own chains, in their own
+repositories. The room fix only made the browser leg *succeed*, so both chains
+became live at once for the first time. Reverting it does not remove the
+divergence — it removes the browser leg's ability to submit, which is what was
+hiding it.
+
+**And what you would be reverting to is worse.** Before that fix the editor
+showed old text while reporting `synced`, and the next keystroke saved the whole
+stale document over newer content, accepted with no conflict. **A reachable way
+to get STUCK beats an active way to LOSE WORK.** That was the judgement call for
+shipping it and it is still the right one.
+
+### RECOVERY: none known. Relink does NOT fix it — measured
+
+Tested on `sync-demo`, which is disposable and was genuinely in the stuck state.
+**Nothing of Skip's was touched.**
+
+```
+before relink   chain 6c549b1c2   fetched 98b975e37   diverged
+after  relink   chain 6c549b1c2   fetched 98b975e37   diverged
+```
+
+The relink resubmitted the stale chain tip and changed nothing. So the obvious
+repair, and the one Skip already sanctioned for everything else tonight, does
+not apply here.
+
+**`tlda project repo-doctor` is NOT known to help and was not run against this.**
+Read its help: it targets a *content* fork against a git remote — it merges your
+working tree onto origin's chain — which is a different failure from the
+proposal chain diverging from the project head. It may be adaptable. Nobody has
+tried, and guessing costs a day when it is wrong.
+
+**So as of now: a checkout in this state is stopped, and the only known way back
+is a fresh checkout.** Say that to whoever hits it rather than letting them
+believe a relink worked.
+
 ## What is live and what is not
 
 **Re-checked at 08:2xZ: box is `5bf51ea9c`, built 07:54:17Z, and EVERYTHING
