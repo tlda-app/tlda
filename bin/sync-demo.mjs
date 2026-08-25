@@ -284,6 +284,20 @@ async function writeInBrowser(line) {
 
 async function writeOnRemote(line) {
   const file = path.join(REMOTE_CLONE, LEG_FILES.remote)
+  // Send the checkout's current state OUT before editing on top of it.
+  //
+  // Without this the clone edits a stale tree — the app does not push accepted
+  // revisions to a linked remote, so the clone never sees anything the daemon
+  // committed — and the pull back is then a merge of two lineages that both
+  // touched the file. That conflicts, and a conflicted checkout stops the daemon
+  // settling ANYTHING: `proposal not accepted: conflicted`, with the disk leg
+  // dying alongside it and nothing said anywhere a person would look.
+  //
+  // Measured: the demo wedged its own project this way and every leg went quiet
+  // for twenty minutes while I looked for a network fault that was not there.
+  execFileSync('tlda', ['project', 'remote', 'push', 'origin', '--project', PROJECT], {
+    cwd: CHECKOUT, encoding: 'utf8', timeout: 300_000, stdio: 'pipe',
+  })
   await git(REMOTE_CLONE, ['fetch', 'origin'])
   await git(REMOTE_CLONE, ['reset', '--hard', `origin/tlda/${PROJECT}`]).catch(() => {})
   appendIntoDocument(file, line)
