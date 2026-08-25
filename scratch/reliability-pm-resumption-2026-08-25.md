@@ -197,6 +197,40 @@ broadcast `status: 'synced'` **without touching the room's text**.
 Guarded by `server/lib/source-room-staleness.test.mjs` — three properties, and
 **the counterfactual was run**: all three go red at `f1335d096^`.
 
+## Migrating a real project: it worked, and three things came out of it
+
+A pre-rename project of Skip's was migrated on the live box. **Second
+independent confirmation of the migration**, on a project that had been
+refusing to sync all morning:
+
+```
+08:02  not-on-work-branch
+09:57  not-on-work-branch
+15:20  proposal admission confirmed     <- after one relink
+```
+
+Working tree stayed clean, the person's own branch was untouched, and the old
+chain history stayed reachable. **The relink is the whole procedure** for a
+project in that state.
+
+**One checkout can be bound to SEVERAL projects, and inference used to pick.**
+That directory had **three**. `inferProjectName` returned whichever came first,
+so `tlda project status` there answered *"Project not found"* about a project
+that exists and is actively syncing. Fixed: it lists the candidates and stops.
+
+**Say this part out loud, because it is the same lesson inverted:** removing the
+basename fallback is what exposed it. The old guess had been right for that
+directory **by luck** — the folder is named after one of the three. A guess does
+not just risk being wrong; it *hides an ambiguity that should have been
+reported.*
+
+**`tlda project push` on an unchanged tree does NOT trigger a rebuild.** The
+settle returns `equal-tree` and submits nothing, so there is nothing to build.
+That matters when a project is sitting on a **stale** build error: pushing looks
+like the obvious way to re-run it and does nothing, with no indication why. The
+error clears on the next real edit. Do not read a push that changes nothing as
+evidence the build is genuinely broken.
+
 ## Instrument failures found tonight
 
 Put beside the others in `docs/the-instrument-or-the-code.md` if anyone is
