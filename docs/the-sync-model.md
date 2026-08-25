@@ -88,6 +88,35 @@ only — so a new file reaches nobody until the author `git add`s it. That is a
 deliberate cost: the alternative swept every scratch file in the checkout into
 the project.
 
+## How an existing checkout gets fixed
+
+A checkout linked before this repair is standing on whatever it was linked
+from, with a work branch full of chain commits. **Relinking migrates it**, and
+the migration never discards anything.
+
+The branch is recognised as the chain by either of two facts, and which one
+applies depends on when the project was made:
+
+- **both refs present and related** — the rename created the branch *at* the old
+  `refs/tlda/project/<p>` and left that ref in place, so a project that lived
+  through it has both.
+- **the branch tip is a chain commit** — a project created *after* the rename
+  never had the old ref, so there is nothing to compare against. The
+  discriminator is the subject the daemon itself writes: a chain commit says
+  `tlda project revision`, a settled one says `tlda settled edit cluster`.
+
+The chain's tip is carried onto its own name **first**, so every commit that
+existed stays reachable; it just stops being called a branch. Only then does the
+branch name change hands.
+
+**A branch holding real settled work is never adopted** — that is what a fresh
+link creates, and treating it as the chain made `recover()` push it as an
+outstanding revision that had never been sent.
+
+If the branch cannot be moved — the person has something there that git refuses
+to overwrite — the link still succeeds and says which branch to check out. It
+does not force, and it does not fail the link.
+
 ## What a revision contains
 
 `filteredProjectCommit` starts from the declared document roots (or, absent
@@ -159,16 +188,36 @@ being told you were **refused** costs the writing.
 An edit written on disk, reaching the server, on the deployed box:
 
 ```
-10.2s  11.0s  11.4s  11.7s  12.6s  12.7s     and one 26.0s
+9s   10.2s  11.0s  11.4s  11.7s  12.6s  12.7s     and one 26.0s
 ```
 
-Roughly 3s of that is a deliberate debounce (`quietMs = 3000`, nothing
+The 9s is from the post-repair verification below. Roughly 3s of any of them is
+a deliberate debounce (`quietMs = 3000`, nothing
 overrides it). About 7s is settle, push and admit. The remainder is the
 observer's own polling. The 26s outlier is not explained.
 
 **Latency is part of the contract, not a footnote.** The complaint this model
 exists to answer has two halves — the files do not get there, *or they get there
 old* — and a pass/fail on arrival only answers the first.
+
+## Verified against the running system
+
+Not a test — a project created from scratch on the deployed box, 2026-08-25:
+
+```
+before link   branch = main
+after link    branch = tlda/sync-proof, status clean, tree = doc.md notes.txt
+
+one edit on disk
+  reached the server   9s
+  branch tip           1f4b1e1 -> 947a042
+  commit subject       tlda settled edit cluster
+  status afterwards    clean
+  notes.txt            still tracked, and absent from the published revision
+```
+
+The last two lines are the pair the old code could not do at once, because it
+used one ref for both jobs.
 
 ## Known gaps, as of writing
 
