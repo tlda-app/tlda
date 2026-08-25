@@ -168,7 +168,53 @@ using any number in it.
 | file write → daemon commits locally | **4s, 7s, 7s** — 3/3, consistent |
 | local commit → visible at `/source/<file>` | **12s**, then **38s, 57s, 38s**; **159s** earlier |
 
-**Narrowed further, 4 clean runs, demo paused — it is `source-proposal-admit`:**
+### FOUND IT: A STOPPED BUILD WORKER HOLDS A SLOT FOREVER. Everything below this heading about `source-proposal-admit` is WRONG — read this first
+
+**Admission takes 8 seconds, reliably, and the daemon log says so.** Edit at
+22:21:18 → `sync-watch: proposal admission confirmed id=9731 state=pending
+started_once=false` at **22:21:26**. The revision then sat `pending` for ~35
+minutes.
+
+**My error was the instrument, not the reasoning.** I polled `/source-head` and
+called it "accepted". `/source-head` is the **published** revision, so I was
+measuring the build queue and charging it to the step before it. The correct
+signal is the daemon log line above, and it was there the whole time.
+
+**The mechanism, in `server/lib/build-queue.mjs`:**
+
+- `drain()` runs `while (activeCount < maxConcurrency)`
+- `maxConcurrency` **defaults to 2** (line 16)
+- `activeCount` is decremented in **exactly one place — `onExit`** (line 114)
+- **there is no timeout on a build worker**
+
+**Observed:** a worker in **state `T` (stopped)** — `ps` STAT `TNsl`, 0.2% CPU,
+**34 minutes**, one `bash` child, no LaTeX process anywhere, box load **0.28**.
+Not crashed and not busy. Suspended, holding a slot.
+
+So the server ran on one of two slots with nothing to do. **If both go stopped,
+nothing on that server ever builds again until it restarts** — every project,
+every edit, and the log says `admission confirmed` for all of them.
+
+`onExit` also `await relays` before decrementing, so a relay promise that never
+settles is a second route to the same wedge.
+
+**Recovery that worked:** `kill -CONT <pid>` on the box. It resumed, exited,
+released the slot, and workers began cycling normally. **That is a poke, not a
+fix.** Nothing prevents a recurrence.
+
+**Unproven, do not assert it:** what stopped it. Niced, backgrounded, with a
+`bash` child is the shape of SIGTTIN/SIGTTOU, but I did not show it.
+
+**Not designed here on purpose.** Capping, reaping or timing out a build worker
+is a policy decision and it is the shape of thing that becomes a subsystem. Say
+the sentence to Skip before building it.
+
+**Kept below because the measurements are still true and the labels are not.**
+Read "accepted" as "published" throughout and it is a correct description of the
+build queue.
+
+**Narrowed further, 4 clean runs, demo paused — MISLABELLED, this is the build
+queue and not `source-proposal-admit`:**
 
 | leg | measured |
 |---|---|
