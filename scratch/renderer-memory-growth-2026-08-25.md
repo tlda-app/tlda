@@ -193,17 +193,56 @@ From the fresh 06:53 document, idle, footprint:
 07:01  1,267 MB      07:14    896 MB   <-- released ~600 MB
 ```
 
-**Correction to what I told Skip at 07:10:** I described that run as monotonic
-idle growth at ~31 MB/min. Over the twelve minutes I had then, it was. Seven
-minutes later the process gave 600 MB back. So the idle behaviour is a sawtooth
-with a period longer than my sampling window, and one rising segment is not a
-trend. The original tab going 2.4 GB to 15 GB over ninety minutes is far outside
-any sawtooth and remains real unbounded growth — but the *idle rate* is not
-established and I should not have stated one.
+**What I told Skip at 07:10, what I retracted at 07:15, and what 45 minutes of
+samples actually show — in that order, because I got it wrong twice.**
 
-This is the same error as the earlier `Documents`/`JSEventListeners` reading:
-a rising segment of an oscillating counter, sampled twice, read as a trend.
-Second time tonight. The lesson is the sampling window, not the counter.
+At 07:10 I told him the idle tab grew monotonically at ~31 MB/min, on twelve
+minutes of data. At 07:15 a single later reading (896 MB) showed a 600 MB drop
+and I retracted the rate, saying the idle behaviour was a sawtooth and no rate
+was established.
+
+**The retraction was too strong.** The continuous series to 07:25 is:
+
+```
+07:04  1,413      07:11    873   <-- releases 831 MB
+07:05  1,449      07:12    923
+07:06  1,520      07:13  1,000
+07:07  1,501      07:14  1,058
+07:08  1,607      07:15  1,116
+07:09  1,660      07:16  1,195
+07:10  1,704      07:17  1,265
+                  07:18  1,345
+                  07:19  1,430
+                  07:20  1,496
+                  07:21  1,572
+                  07:22  1,660
+                  07:23  1,760
+                  07:24  1,843
+                  07:25  1,925
+```
+
+**Thirteen consecutive samples, monotonically increasing, 923 → 1,925 MB in
+thirteen minutes — ~77 MB/min, with nobody touching the machine.** JS heap flat
+at 58–76 MB across every one of them. That is not noise and it is not a sampling
+artifact.
+
+So the shape is a **sawtooth on a rising baseline**: it climbs at 50–80 MB/min,
+periodically releases several hundred MB, and the peaks keep going up — 1,704 at
+07:10, 1,925 at 07:25 and still climbing. Both of my earlier statements were
+wrong in the same way: **each rested on a window shorter than the cycle.** Twelve
+minutes could not see the release. One post-release reading could not see that
+the climb resumes immediately and goes higher.
+
+The general form, and it is the one worth carrying: **an oscillation with a
+rising baseline defeats any window shorter than its period, in both directions.**
+Sample longer than the cycle or say nothing about the rate.
+
+(One inconsistency worth flagging rather than hiding: the 07:15 tick read 896 MB
+for this pid while the continuous series read 1,058 MB at 07:14:19. Two `top`
+invocations seconds apart, 162 MB apart, more than the ~19 MB the climb rate
+accounts for. I do not know which is right. The thirteen-sample monotonic run
+comes from one instrument sampling itself consistently, which is why it is the
+one I trust.)
 
 ### Typing is not the mechanism
 
