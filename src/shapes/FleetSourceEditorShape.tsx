@@ -1011,11 +1011,32 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       // gone field and this line silently stops ever saying "build queued".
       setStatusText(payload?.postAcceptEffects?.includes('build') ? 'Synced; build queued' : 'Synced')
     } catch (err: any) {
-      if (seq !== saveSeqRef.current) return
+      // The sequence guard decides whether this response may touch the BUFFER.
+      // It must not decide whether the person is told the save failed.
+      //
+      // It used to be one `return` covering both, so typing a single character
+      // while a save was in flight discarded the server's refusal along with the
+      // rest of the response — and nothing then updated the status, which had
+      // been set to 'Syncing...' on the way out and stayed there. The write did
+      // not land, and the editor said it was syncing. You close the tab believing
+      // your writing went up.
+      //
+      // Not being told what changed costs a stale read, which you find out about.
+      // Not being told you were REFUSED costs the writing.
+      const superseded = seq !== saveSeqRef.current
       // A conflict is not an error to report — it is work to do. Put the merged
       // text with its git markers into the buffer; that lights the resolve UI
       // that already exists, and the write stays held until it is resolved.
       if (typeof err?.conflictText === 'string') {
+        // Superseded: say so, and do not load the merge. The person has typed
+        // since, and replacing their buffer with the server's three-way merge
+        // would take those keystrokes away — which is the one thing worse than
+        // the silence being fixed here. The next save carries the conflict again.
+        if (superseded) {
+          setStatus('dirty')
+          setStatusText('Not saved — this file changed elsewhere')
+          return
+        }
         if (typeof err?.sourceRevision === 'string') loadedSourceRevisionRef.current = err.sourceRevision
         loadConflictIntoEditor(err.conflictText)
         setStatus('dirty')
