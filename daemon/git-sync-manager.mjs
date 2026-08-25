@@ -295,6 +295,10 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     // questions only the machine holding the checkout can answer, and this is
     // the route that reaches it. See docs/naming-errata.md.
     if (operation === 'repo-path') return remotes.repoPathFor(params.path)
+    // Same class as `repo-path` beside it: only the machine holding the checkout
+    // can stage a file, so the request comes here. Skip's ruling on the untracked
+    // click — `git add` it, then open it live.
+    if (operation === 'track-path') return remotes.trackPath(params.path)
     if (params.name === 'tlda') throw new Error('The tlda transport remote is not a project remote')
     if (operation === 'add') return remotes.add(params.name, params.url)
     if (operation === 'delete') return remotes.delete(params.name)

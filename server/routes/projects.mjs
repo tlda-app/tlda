@@ -391,13 +391,19 @@ router.get('/:name', requireRead, async (req, res) => {
  *
  * Three things this must not do.
  *
- * **It must not adopt an untracked file.** `filteredProjectCommit` throws
- * `configured document root is absent` for a configured root that is not in the
- * settled tree, on the settle path, caught at warn -- so adopting an untracked
- * file stops the project syncing at all, silently. Git answers that question, on
- * the machine that holds the checkout, through the daemon; nothing here guesses
- * it from a path. An untracked file is left alone and falls through to whatever
- * happens today.
+ * **It must not adopt an untracked file WITHOUT STAGING IT FIRST.**
+ * `filteredProjectCommit` throws `configured document root is absent` for a
+ * configured root that is not in the settled tree, on the settle path, caught at
+ * warn -- so declaring a root for a file the settle cannot see stops the project
+ * syncing at all, silently. Git answers that question, on the machine that holds
+ * the checkout, through the daemon; nothing here guesses it from a path.
+ *
+ * This used to say an untracked file was left alone and fell through to whatever
+ * happened today, and what happened today was a frozen copy in `parts/` that
+ * nothing ever refreshed. Skip chose staging over that on 2026-08-24, so the
+ * untracked branch now asks the daemon to `git add` it and proceeds only if that
+ * comes back tracked. **The hazard above is unchanged and the ORDER is what
+ * answers it** -- stage, then declare, so the root is one the settle can satisfy.
  *
  * **It must append.** `PATCH /document-roots` replaces the list, so this is a
  * read-modify-write on the server, where the record lives. Clicking the same
@@ -426,7 +432,35 @@ async function adoptClickedFileAsDocumentRoot(req, name, sourcePath) {
     return { adopted: false, reason: 'no-daemon-answer', detail: error.message }
   }
   if (!answer?.inRepo) return { adopted: false, reason: 'not-in-repo' }
-  if (!answer.tracked || !answer.path) return { adopted: false, reason: 'untracked', path: answer.path || null }
+
+  // Untracked, in the repo: STAGE IT AND CARRY ON. Skip, 2026-08-24, choosing
+  // between refusing, staging, and rendering it live-but-unversioned: **B**.
+  //
+  // The comment above used to end "an untracked file is left alone and falls
+  // through to whatever happens today", and what happened today was a frozen
+  // copy in `parts/` that nothing ever refreshed — current on the day you
+  // clicked it and silently stale forever after. That is the "or if they do get
+  // there, they're old" half of his sync complaint.
+  //
+  // Staging first is what makes adopting it safe rather than destructive. The
+  // danger the original comment names is real: a configured root absent from the
+  // settled tree makes `filteredProjectCommit` throw `configured document root
+  // is absent`, caught at warn, which stops the project syncing AT ALL. Once the
+  // file is in the index it is in the settled tree, so the root we then declare
+  // is one the settle can satisfy. Order matters and it is this way round.
+  //
+  // No commit is made. `git add` alone is enough — `commitSettledTree` copies
+  // the author's index and runs `add -u` against the copy.
+  if (!answer.tracked || !answer.path) {
+    try {
+      answer = await send(name, 'project-git-remote', { operation: 'track-path', path: absolute })
+    } catch (error) {
+      return { adopted: false, reason: 'track-failed', detail: error.message }
+    }
+    // Still not tracked means the daemon declined and said so without throwing.
+    // Same rule as everything else here: report it, never take the click down.
+    if (!answer?.tracked || !answer.path) return { adopted: false, reason: 'untracked', path: answer?.path || null }
+  }
 
   const existing = normalizeDocumentRoots(project.documentRoots, {
     mainFile: project.mainFile,
