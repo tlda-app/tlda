@@ -20,6 +20,7 @@
 import katex from 'katex'
 import { agentNameHtml } from './chat-render.mjs'
 import { normalizePrettyResult } from '../../shared/activity-pretty-result.mjs'
+import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
 import { isFullyMarked } from '../../shared/terminal-system-markers.mjs'
 import { log } from '../logger.ts'
 
@@ -548,7 +549,10 @@ export function toolContentDetail(name, input) {
 //   - Other lines → inline $...$ segments rendered, rest as escaped text
 export function renderTexLines(content, macros) {
   const rendered = []
-  const lines = content.split('\n')
+  // Tool-call TeX must accept the same delimiters as ordinary chat. Without
+  // this shared normalization, chat rendered \(...\) while Edit/Write cards
+  // exposed the literal delimiters, even though both appeared in one thread.
+  const lines = normalizeChatDisplayMathDelimiters(content).split('\n')
   let display = null
 
   const renderDisplay = (tex, fallbackLines) => {
