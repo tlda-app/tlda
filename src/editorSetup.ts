@@ -571,7 +571,7 @@ export async function reloadPages(
             pages: t.pages,
             basePath: docBasePath,
           }))
-          const fresh = createSvgDocumentLayout(document.name, newCount, docBasePath, targets)
+          const fresh = createSvgDocumentLayout(document.name, docBasePath, targets)
           // Mutate the live layout object in place so every reader — this reload,
           // remapAnnotations below, and future reloads — sees the new page set.
           document.pages.length = 0
