@@ -705,6 +705,65 @@ revisions** — roughly 344 KB per entry — and it is read and parsed synchrono
 on the event loop every time `journal()` is called. 30–45 ms is not a stall but
 it is not free either, and the file grows with revision count.
 
+
+### 12:25 — the (idle) stalls are the lag profiler measuring itself
+
+Four hypotheses died before this one. The answer was in the timestamps the whole
+time.
+
+**Consecutive stall gaps today:** 100, 90, 70, 120, 110, 80, 140, 240, 170, 200
+seconds. **Every gap is a multiple of ten seconds.** Lag values cluster tightly:
+252, 253, 256, 264, 264, 265, 269, 271, 277, 303 ms. A fixed period and a fixed
+cost is a timer, not contention.
+
+**`server/lib/lag-profiler.mjs:32`: `WINDOW_MS = 10_000`.**
+**`:218`: `windowTimer = setInterval(() => { void rollWindow() }, WINDOW_MS)`.**
+
+`rollWindow()` → `cutWindow()` → **`await post('Profiler.stop')`**, on a
+`new Session()` from `node:inspector` that is `connect()`ed **to its own
+process**. A same-thread inspector session dispatches synchronously on the main
+thread. At `SAMPLING_INTERVAL_US = 1000` over a 10-second window that is
+**~10,000 samples serialized into a JS object, on the event loop, every ten
+seconds.**
+
+The isolate has no JS frame on the stack while V8 does that work, so the samples
+covering it carry an empty stack — **which is precisely the `(idle)` this file
+has been chasing since 05:30.**
+
+**Why it does not fire every ten seconds:** only cuts expensive enough to cross
+the stall threshold get logged, so the gaps are 70–240 s rather than a steady 10.
+And the start-seconds spread across mod-10 buckets because each server restart
+re-phases the grid — the *gaps* stay on it.
+
+**Confidence, stated honestly.** Strongly supported by four independent facts:
+the period equals `WINDOW_MS` exactly; the dispatch is same-thread and
+synchronous, read from the code; the durations cluster around a fixed cost; and
+the stack is empty. **Not proven.** The decisive test is to change
+`TLDA_LAG_PROFILER_WINDOW_MS` and confirm the stall period follows it. That needs
+a restart with a changed environment, so it is Skip's call, not mine.
+
+**What this retires, and it is a headline I gave him in my first report.**
+
+> "the server takes **480 event-loop stalls a day** and 90% of them name no
+> JavaScript"
+
+**Most of that is the profiler's own cost, reported as the server's.** Today:
+157 `(idle)` against 9 `spawn`, 9 `existsSync`, 3 `utf8Write`, 2
+`cpSyncCopyDir`. If the `(idle)` class is the window roll, the server's real
+stall picture is the ~23 non-idle ones a day — and the genuine problems are the
+ones already named: the build publish copy, the fleet broadcast encoding, and
+synchronous spawn.
+
+**The design note in the file is right about the wrong half.** Its opening
+comment explains that V8's sampler runs on a dedicated thread, so sampling does
+not block the isolate. True — and the cost is not in sampling. It is in
+`Profiler.stop` handing ten thousand samples back across the same-thread
+inspector boundary, which the note does not consider.
+
+**The general shape, for the next person:** an always-on profiler that reports
+stalls will report its own. **Before believing any stall class, check whether its
+period matches the instrument's own timer.** One `uniq -c` over the gaps.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
