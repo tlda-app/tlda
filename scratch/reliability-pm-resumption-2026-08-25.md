@@ -231,6 +231,13 @@ like the obvious way to re-run it and does nothing, with no indication why. The
 error clears on the next real edit. Do not read a push that changes nothing as
 evidence the build is genuinely broken.
 
+**Half of that is measured and half is not, so treat them differently.**
+Measured: a real edit on a daemon-bound checkout produced a build in **~20
+seconds**, ending `success`, on the current deployed code — so "an edit triggers
+a build" is tested, not assumed. NOT measured: whether the specific stale error
+clears. That needs the edit to land on the project actually holding it, and
+editing someone's files to find out is not on.
+
 ## Instrument failures found tonight
 
 Put beside the others in `docs/the-instrument-or-the-code.md` if anyone is
