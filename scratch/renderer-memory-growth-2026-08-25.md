@@ -414,6 +414,61 @@ overlap expected from `shared_memory` being counted in both the renderer and the
 GPU process. An internally inconsistent dump would not land there. **The absolute
 reading stands; the delta was never obtainable.**
 
+
+### 08:35 — HIS TAB CRASHES. And I told him the opposite, from evidence that could not tell the difference
+
+**The renderer is dead right now.** The page target still exists and CDP still
+accepts a socket on it, but nothing answers in ten seconds, and there is no
+renderer process for that page in `ps`. Chrome wrote a crash dump at **04:31
+local (08:31 UTC)** — the minute pid 48640 disappeared at 12 GB.
+
+**There is a second dump at 02:38 local (06:38 UTC)** — the minute the first
+renderer, pid 34813, disappeared at 15 GB.
+
+So both tabs died the same way: **the renderer grows to 12–15 GB over roughly
+ninety minutes and then crashes.** The machine recovers immediately — swap fell
+from 4.0 GB used to 1.9 GB and free memory went 33% → 63% the moment it died.
+
+**This is the failure. Not "the app feels slow" — the tab dies, about every
+ninety minutes.**
+
+**And I got it wrong, confidently, in the way this file already warns about.** At
+07:15 I wrote that the reloads were his own and said I had checked it four ways:
+renderer pid unchanged, `performance.now()` reset, a new session id in the crash
+beacons, and no timer-driven reload anywhere in `src/`.
+
+- **The pid claim was simply false.** 34813 was replaced by 48640. I had the
+  numbers in front of me an hour apart and did not compare them.
+- **The other three cannot distinguish the two cases at all.** A reload and a
+  crash-then-reload both reset `performance.now()`, both mint a new session id,
+  and neither is caused by app code. I listed three checks that were consistent
+  with my conclusion and read that as support.
+
+Three observations consistent with a hypothesis are not three checks. **The
+question was never "did the document change" — it was "why", and nothing I ran
+addressed it.** What settles it is the crashpad directory, which took one `ls`.
+
+**Consequences for the rest of this file.** Anywhere it says he reloaded, read
+"the renderer crashed and the tab came back". In particular the 07:15 entry's
+framing of a "sawtooth on a rising baseline" is one leak, one crash, one fresh
+document, repeatedly — the large drops between documents are deaths, not
+releases. The within-document sawtooth (the 831 MB drop at 07:11) is separate and
+still real.
+
+**Growth curve, now measurable across two full lifetimes:**
+
+| document age | footprint |
+|---|---|
+| 1 min | ~1.0 GB |
+| 10 min | ~1.2 GB |
+| 25 min | ~1.9 GB |
+| 40 min | ~3.2 GB |
+| 70 min | ~5.3 GB |
+| 89 min | ~12 GB |
+| ~90 min | **crash** |
+
+Both renderers followed it. The first reached 15 GB, the second 12 GB.
+
 ## Next action
 
 Read the WebSocket buffer result. `bufferedAmount` is renderer-side malloc, is
