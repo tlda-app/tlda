@@ -603,8 +603,28 @@ console.log(`versions: ${startingVersions === null ? 'could not read shadow log'
 let n = Number(valueOf('--from', Date.now() % 100000))
 const failures = []
 const unrun = []
+// Markers that missed the window, re-checked on later cycles.
+//
+// A timeout is not a loss, and reporting it as one is the same instrument
+// dishonesty this file exists to catch — measured here: an edit reported
+// "NEVER ARRIVED" at 300s was on the server when looked at again. Late and lost
+// are different facts and only one of them is a defect in sync. Late is still
+// worth printing, because "or if they do get there, they're old" is half the
+// complaint this demo answers.
+const pending = []
 
 for (let cycle = 0; cycle < CYCLES; cycle++) {
+  // Anything that missed its window: did it turn up since?
+  for (let index = pending.length - 1; index >= 0; index--) {
+    const item = pending[index]
+    const text = await item.read()
+    if (text !== null && String(text).includes(item.marker)) {
+      const late = ((Date.now() - item.since) / 1000).toFixed(0)
+      console.log(`LATE     ${item.marker.padEnd(16)} ${item.leg} → ${item.destination} arrived, ${late}s after it was given up on`)
+      pending.splice(index, 1)
+    }
+  }
+
   for (const leg of LEGS) {
     n += 1
     const marker = `SYNCDEMO-${n}`
@@ -662,7 +682,7 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     const bad = Object.entries(result).filter(([, r]) => r.missing)
     console.log(`${leg.padEnd(8)} ${marker.padEnd(8)} ${parts.join('   ')}`)
     for (const [name] of bad) {
-      failures.push(`${leg} → ${name}: ${marker} never arrived within ${CONVERGE_MS / 1000}s`)
+      pending.push({ leg, destination: name, marker, since: Date.now(), read: destinations[name] })
     }
   }
 
@@ -687,6 +707,10 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
   }
 
   if (cycle + 1 < CYCLES) await sleep(EVERY_MS)
+}
+
+for (const item of pending) {
+  failures.push(`${item.leg} → ${item.destination}: ${item.marker} still absent ${((Date.now() - item.since) / 1000).toFixed(0)}s after the window closed`)
 }
 
 if (unrun.length) {
