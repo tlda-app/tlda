@@ -214,6 +214,7 @@ export function createGitProjectSync({
       }
       const pulled = new Set()
       for (const [candidate, files] of closures) {
+        if (/\.qmd$/i.test(candidate)) continue
         for (const other of candidates) if (other !== candidate && files.has(other)) pulled.add(other)
       }
       const roots = candidates.filter(candidate => !pulled.has(candidate))
