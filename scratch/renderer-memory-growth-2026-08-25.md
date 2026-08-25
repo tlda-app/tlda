@@ -133,9 +133,9 @@ p99 797 ms, max 933 ms. 12,317 dumps since 25 Jul.
   stack is literally `["(idle) @ :0", "(root) @ :0"]`. The isolate ran nothing;
   the loop still lagged.
 - The box is **not** saturated: 2 vCPU, load 0.67, PSI cpu `some avg300=3.67`,
-  io `some avg300=1.59`. So contention is not the explanation. **Inference, not
-  established:** time blocked in a native call outside V8, most likely
-  synchronous filesystem IO on the volume.
+  io `some avg300=1.59`. So contention is not the explanation. I inferred
+  synchronous filesystem IO here; **that was tested on 2026-08-25 09:15 and is
+  false** — see the tick entry. Cause still unknown.
 - Server main thread RSS **1.3 GB** on a 4 GB machine. `fleet.db` is **10.9 GB**.
 - `spawn` tops **28 of 499**. `existsSync`/`stat` under `migrateProjectParts`
   is startup-only. `broadcastFleet` → `utf8Write` costs 190–225 ms per stall it
@@ -508,6 +508,43 @@ browser runs with `--remote-debugging-pipe` rather than a port, so there is no
 CDP endpoint, and `LayoutCount`/`RecalcStyleCount` exist only over CDP. Standing
 up a separate browser to obtain a *comparison* metric is not worth its cost on
 this machine, so this is dropped rather than worked around.
+
+
+### 09:15 — the "(idle) stalls are synchronous filesystem IO" inference is falsified
+
+Earlier in this file I wrote, flagged as inference, that the ~90% of server
+stalls topping out at `(idle)` were most likely time blocked in a native call
+outside V8, **most likely synchronous filesystem IO on the volume**. That is
+testable from `/proc` and it does not hold.
+
+Server main process, 60 seconds:
+
+| | delta over 60 s | rate |
+|---|---:|---:|
+| `read_bytes` (actual disk) | **24 KB** | 0.4 KB/s |
+| `write_bytes` (actual disk) | 4.7 MB | 79 KB/s |
+| `rchar` (read syscalls) | 181 MB | 3 MB/s |
+| `syscr` | 49,380 | **823 reads/s** |
+| `syscw` | 7,189 | 120 writes/s |
+| `blkio_ticks` | **0** | — |
+| voluntary ctxt switches | 51,301 | 855/s |
+| nonvoluntary ctxt switches | 8,078 | 135/s |
+
+**`blkio_ticks` is zero and real disk reads are 24 KB per minute.** The process
+spends no measurable time waiting on the block device. Whatever the `(idle)`
+stalls are, they are not the volume.
+
+**And the obvious replacement guess fails too, so I am not substituting it.**
+823 read syscalls a second looks like a lot, and it is — 181 MB/min of `rchar`
+served from page cache. But at even 10 µs a call that is 8 ms of wall time per
+second, and the stalls are 271 ms at the median. Syscall volume is off by more
+than an order of magnitude from what it would need to explain.
+
+So: **the `(idle)` stalls remain unexplained.** One stated inference tested and
+killed; the next candidate killed by arithmetic before it could be written down
+as a finding. What is established is only the negative — not disk IO, not
+syscall volume, not CPU contention (load 0.67, PSI cpu 3.67), not JS (V8 records
+no frames at all).
 
 ## Next action
 
