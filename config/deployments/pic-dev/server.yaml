@@ -1,0 +1,8 @@
+# Server settings for the isolated PIC development deployment. This is the
+# testing server configuration with a separate deployment identity.
+deepgramBridgeUrl: ws://tlda-voice.internal:8180
+deepgramDirectUrl: wss://tlda-voice.cormorant-matrix.ts.net
+tokensFromEnvironmentOnly: true
+uploadDir: /app/server/persist/uploads
+notifications:
+  ackTimeout: 5s
