@@ -126,8 +126,9 @@ never runs in the reproduction and always runs in his.
 
 ## Server, same session
 
-`lag-profiler.log`, last 24 hours: **499 stalls**, median 271 ms, p90 358 ms,
-p99 797 ms, max 933 ms. 12,317 dumps since 25 Jul.
+`lag-profiler.log`, one 24-hour window: **499 stalls**, median 271 ms, p90 358 ms,
+p99 797 ms, max 933 ms. 12,317 dumps since 25 Jul. (**Daily counts actually run
+400–1,020**; 499 was a low day — see the 10:10 tick entry.)
 
 - **~90% name no JavaScript at all** — the top frame is `(idle)` and the dump's
   stack is literally `["(idle) @ :0", "(root) @ :0"]`. The isolate ran nothing;
@@ -601,6 +602,60 @@ rename, and failing that the copy should be `fs.cp` rather than `cpSync`.* That
 touches the publish transaction, which has its own documented invariants in
 `docs/what-the-old-push-did.md`, so it is Skip's call and not a 6am unilateral
 edit.
+
+
+### 10:10 — the multi-second stall class is a July problem, and I nearly reported it as current
+
+Chasing the 101-second freeze, I found **143 stalls over 5 seconds all-time**,
+with worst cases of 431 s, 239 s, 228 s, 222 s, 208 s. The top frames are
+`(program)`, `all`, `run`, and `(anonymous) @ /app/shared/live-store.ts:1` —
+alongside `compareIsoMinute @ /app/server/lib/fleet-store.mjs:85`. A page of
+multi-minute total outages with an app file named in them.
+
+**Then I checked the dates, and the class is gone.**
+
+```
+>5s stalls by date
+  2026-07-25    7        2026-08-01    1
+  2026-07-26   61        2026-08-15    2
+  2026-07-27    7        2026-08-17    2
+  2026-07-28   51        2026-08-21    1
+  2026-07-29    4        2026-08-22    1
+                         2026-08-23    5
+                         2026-08-25    1   ← the cpSyncCopyDir freeze
+```
+
+**130 of the 143 are in a five-day window at the end of July.** Since 1 August
+there have been thirteen, and today's single one is the copy. Every
+`live-store.ts` example I pulled was dated 2026-07-25 — the first day the log
+exists — and I had them on screen before I thought to look at the date column.
+
+Whatever `live-store.ts` / `compareIsoMinute` was doing, it was fixed a month
+ago. **Reporting it now would have been a month-old log line presented as a live
+defect**, which is the failure this repository has a whole section about. The
+check cost one `uniq -c` on a date prefix.
+
+### Correcting the daily stall figure
+
+I have been quoting "~500 stalls a day" from one 24-hour window. The actual
+range:
+
+```
+08-16  104     08-20  996     08-24    407
+08-17  757     08-21  764     08-25    161 (partial)
+08-18  397     08-22  1020
+08-19  643     08-23   989
+```
+
+**400 to 1,020 a day**, not ~500. The 499 I measured was a low-ish day.
+
+### What is actually current, after all that
+
+- **~400–1,000 event-loop stalls a day**, median 265 ms, ~90% naming no
+  JavaScript and still unexplained.
+- **`cpSyncCopyDir` in the build path**: 26 stalls all-time, routinely
+  0.3–1.8 s, once **101 seconds** today.
+- The multi-second `live-store` class: **historical, ended July.**
 
 ## Next action
 
