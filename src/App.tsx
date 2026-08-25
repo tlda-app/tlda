@@ -439,7 +439,7 @@ function DocumentApp() {
           pages: t.pages,
           basePath: fullBasePath,
         }))
-        document = createSvgDocumentLayout(projectName, config.pages, fullBasePath, targets)
+        document = createSvgDocumentLayout(projectName, fullBasePath, targets)
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch

@@ -8,6 +8,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Tldraw } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
+import { STORE_HTTP } from './activeConfig'
 import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
@@ -55,8 +56,24 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
           doc = await loadHtmlDocument(member.key, member.basePath)
         }
       } else {
-        // SVG: create layout immediately, pages fetched async after editor mounts
-        doc = createSvgDocumentLayout(member.key, member.pages, member.basePath)
+        // SVG: create layout immediately, pages fetched async after editor mounts.
+        //
+        // The member's targets are fetched rather than invented. A page's
+        // filename is keyed on the TEX BASE, which a book member record does not
+        // carry — it has key, pages, basePath and format. This used to pass no
+        // targets at all and the layout filled the gap by naming the target after
+        // the project, which produces a URL that 404s for every project whose
+        // name is not its document's base name.
+        const info = await fetch(`${STORE_HTTP}/api/projects/${encodeURIComponent(member.key)}`)
+          .then(r => (r.ok ? r.json() : null))
+          .catch(() => null)
+        const targets = info?.targets?.map((t: { texBase: string; pages: number }) => ({
+          name: t.texBase,
+          title: t.texBase.replace(/_/g, ' '),
+          pages: t.pages,
+          basePath: member.basePath,
+        }))
+        doc = createSvgDocumentLayout(member.key, member.basePath, targets)
       }
       setDocument(doc)
     } catch (e) {

@@ -15,16 +15,41 @@ export const pageSpacing = PAGE_GAP
 /**
  * Create SVG document layout using known page dimensions — no network.
  * Pages are created as placeholders; SVGs are fetched later via SvgPageShape viewport entry.
- * targets[] is always present — single-target is the N=1 case.
- * SVG URLs are flat: /docs/<project>/<texBase>-page-N.svg
+ *
+ * SVG URLs are keyed on the TEX BASE, which is what the server routes on. It is
+ * NOT the project's name and it is not derivable from one. `targets` carries it,
+ * and THERE IS NO FALLBACK: a caller without targets cannot know the filename,
+ * and anything it invents produces a URL that 404s.
+ *
+ * What the invented one cost, measured 2026-08-25 on a project whose name
+ * differs from its document's base name: the tab requested
+ * `<projectName>-page-14.svg` and received 29 bytes of
+ * `{"error":"Page out of range"}` — 62 times, every page, for the life of the
+ * tab — while the real `<texBase>-page-14.svg` served 82,493 bytes. The build
+ * was fine and nothing was slow. Every page had already failed, and the canvas
+ * drew an empty box for each one, which is indistinguishable from still
+ * loading. So the document read as perpetually about to appear.
+ *
+ * The comment that used to sit here asserted "targets[] is always present".
+ * It is not, and asserting it is what let the fallback go unexamined for as
+ * long as it did.
+ *
+ * There is deliberately no main-file fallback either. `link` takes several
+ * document roots, so there is no single "main" one to fall back to.
  */
-export function createSvgDocumentLayout(name: string, pageCount: number, basePath: string, targets?: TargetInfo[]): SvgDocument {
+export function createSvgDocumentLayout(name: string, basePath: string, targets?: TargetInfo[]): SvgDocument {
   const pages: SvgPage[] = []
   const width = TARGET_WIDTH
   const height = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
   let globalIdx = 0
 
-  const effectiveTargets = targets || [{ name, title: name, pages: pageCount, basePath }]
+  if (!targets?.length) {
+    throw new Error(
+      `${name}: cannot lay out pages without targets — the page filename is keyed on the tex base, `
+      + 'which is not derivable from the project name. Inventing one makes every page 404 silently.',
+    )
+  }
+  const effectiveTargets = targets
   const pageBounds = layoutPageBounds(
     effectiveTargets.flatMap(target =>
       Array.from({ length: target.pages }, () => ({ width, height }))
