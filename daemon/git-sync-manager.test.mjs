@@ -39,6 +39,8 @@ test('bound working-copy event settles through the one Git proposal path', async
   writeFileSync(join(checkout, 'main.tex'), 'base\n')
   await git(checkout, ['add', '.'])
   await git(checkout, ['commit', '-m', 'base'])
+  // The state `project link` leaves a checkout in: on its work branch.
+  await git(checkout, ['checkout', '-b', 'tlda/paper'])
   const base = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
   await git(checkout, ['push', remote, `${base}:refs/tlda/source/paper`])
   const watcher = testWatcher()
@@ -75,6 +77,8 @@ test('one broken binding does not prevent a later project binding from starting'
   writeFileSync(join(goodCheckout, 'main.tex'), 'good\n')
   await git(goodCheckout, ['add', '.'])
   await git(goodCheckout, ['commit', '-m', 'good'])
+  // The state `project link` leaves a checkout in: on its work branch.
+  await git(goodCheckout, ['checkout', '-b', 'tlda/good'])
 
   const warnings = []
   const manager = createGitSyncManager({
@@ -173,6 +177,8 @@ test('initial project link submits the existing checkout through the ordinary pr
   writeFileSync(join(checkout, 'unrelated-broken.tex'), '\\input{missing}\n')
   await git(checkout, ['add', '.'])
   await git(checkout, ['commit', '-m', 'existing local paper'])
+  // The state `project link` leaves a checkout in: on its work branch.
+  await git(checkout, ['checkout', '-b', 'tlda/paper'])
   const watcher = testWatcher()
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-link', server: 'http://unused.test',
@@ -225,6 +231,8 @@ test('same-daemon relink installs corrected roots and later metadata updates pre
   writeFileSync(join(checkout, 'broken.tex'), '\\input{missing}\n')
   await git(checkout, ['add', '.'])
   await git(checkout, ['commit', '-m', 'existing paper and unrelated backup'])
+  // The state `project link` leaves a checkout in: on its work branch.
+  await git(checkout, ['checkout', '-b', 'tlda/paper'])
 
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-relink', server: 'http://unused.test',
@@ -256,6 +264,8 @@ test('an up-to-date immutable proposal still requests confirmed admission', asyn
   writeFileSync(join(checkout, 'main.tex'), 'paper\n')
   await git(checkout, ['add', '.'])
   await git(checkout, ['commit', '-m', 'paper'])
+  // The state `project link` leaves a checkout in: on its work branch.
+  await git(checkout, ['checkout', '-b', 'tlda/paper'])
   const admissions = []
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-readmit', server: 'http://unused.test',
@@ -351,6 +361,10 @@ test('a restart submits an edit made while the daemon was down, and submits noth
   writeFileSync(join(checkout, 'main.tex'), 'before the restart\n')
   await git(checkout, ['add', '.'])
   await git(checkout, ['commit', '-m', 'base'])
+  // The state `project link` leaves a checkout in: standing on its work branch.
+  // settle only commits and pushes when it is, so a fixture on `main` is a
+  // checkout that would not sync in real use either.
+  await git(checkout, ['checkout', '-b', 'tlda/paper'])
   const base = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
   await git(checkout, ['push', remote, `${base}:refs/tlda/source/paper`])
 

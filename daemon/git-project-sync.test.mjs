@@ -61,6 +61,7 @@ test('settle submits an immutable daemon proposal and HeadChanged fetches exact 
   const arrived = []
   const sync = createGitProjectSync({ sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a', onSubmitted: value => submitted.push(value), onMirrorArrived: value => arrived.push(value) })
   writeFileSync(join(checkout, 'chapter.tex'), 'two\n')
+  await sync.standOnWorkBranch()
   const proposal = await sync.editClusterSettled()
   assert.equal(proposal.status, 'SubmittedToBuildQueue')
   assert.equal(submitted.length, 1)
@@ -103,6 +104,7 @@ test('configured document roots exclude unrelated broken TeX files', async () =>
     bindingId: 'binding-a',
     documentRoots: ['main.tex'],
   })
+  await sync.standOnWorkBranch()
   const proposal = await sync.editClusterSettled()
   assert.equal(proposal.status, 'SubmittedToBuildQueue')
   assert.deepEqual((await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'), ['chapter.tex', 'main.tex'])
@@ -132,6 +134,7 @@ test('QMD revisions carry tracked execution inputs and exclude rendered output',
     bindingId: 'binding-a',
     documentRoots: ['lecture.qmd', 'lab.qmd'],
   })
+  await sync.standOnWorkBranch()
   const proposal = await sync.editClusterSettled()
 
   assert.equal(proposal.status, 'SubmittedToBuildQueue')
@@ -240,6 +243,7 @@ test('a settle whose tree already equals the shared head submits no proposal', a
 
   assert.deepEqual(await sync.headChanged(revision), { ok: true, status: 'observed', revision })
 
+  await sync.standOnWorkBranch()
   const settled = await sync.editClusterSettled()
 
   assert.equal(settled.status, 'equal-tree', 'the trees are equal, so there is nothing to propose')
@@ -281,6 +285,7 @@ test('a reference to a file that does not exist skips without stopping the settl
     onSubmitted: event => submitted.push(event),
   })
 
+  await sync.standOnWorkBranch()
   const settled = await sync.editClusterSettled()
 
   // The positive half is the contract. "nowhere.tex is absent" is also what a

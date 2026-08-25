@@ -813,9 +813,21 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   }
   serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
   await sourceSync.sync([projectMetadata])
+  // Stand the checkout on its work branch, BEFORE the first submit.
+  //
+  // Nothing did this, and it is the whole reason linking produced a checkout
+  // that never synced cleanly: the daemon commits to `tlda/<project>` and the
+  // author was left on whatever they linked from, so their own branch never
+  // moved and their tree was dirty against it from the first edit onward.
+  //
+  // Reported rather than thrown. A checkout that could not be moved is still
+  // linked and still has its history on the server; failing the link would be a
+  // worse outcome than a link that says which branch to check out.
+  const workBranch = await sourceSync.standOnWorkBranch(project).catch(error => ({ ok: false, status: 'error', reason: error.message }))
+  if (!workBranch.ok) log.warn?.(`${project}: linked, but this checkout is not on its work branch — ${workBranch.reason || workBranch.status}`)
   const submission = await sourceSync.submit(project, { forceRebuild })
   applyProjectWorldOwnership('local-source-link')
-  return { ...result, submission }
+  return { ...result, workBranch, submission }
 }
 
 function rpcUnlinkProjectSource({ project, sourceDir }) {
