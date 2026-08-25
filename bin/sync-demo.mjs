@@ -642,6 +642,41 @@ const unrun = []
 //
 // A timeout is not a loss, and reporting it as one is the same instrument
 // dishonesty this file exists to catch — measured here: an edit reported
+/**
+ * The daemon's last recorded admission for this project, or null.
+ *
+ * Reads the daemon's own log rather than asking the server, because the point
+ * is to attribute a failure when the server is the suspect. The environment is
+ * in the filename and this demo does not know which environment its daemon
+ * runs in, so it takes whichever log actually mentions this project -- and
+ * returns null rather than guessing when none does.
+ */
+function lastAdmission() {
+  try {
+    const dir = path.join(os.homedir(), '.config', 'tlda')
+    const logs = fs.readdirSync(dir)
+      .filter(name => /^fleet-daemon.*\.log$/.test(name))
+      .map(name => path.join(dir, name))
+    let best = null
+    for (const file of logs) {
+      // The line shape is fixed by the daemon; anchor on the project so another
+      // project's admission can never be reported as this one's.
+      const pattern = new RegExp(`^(\\S+) .*${PROJECT}: proposal admission confirmed id=(\\d+) state=(\\w+)`)
+      for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+        const match = pattern.exec(line)
+        if (!match) continue
+        const at = Date.parse(match[1])
+        if (!Number.isFinite(at)) continue
+        if (!best || at > best.at) best = { at, id: match[2], state: match[3] }
+      }
+    }
+    if (!best) return null
+    return { ...best, age: Math.round((Date.now() - best.at) / 1000) }
+  } catch {
+    return null
+  }
+}
+
 // "NEVER ARRIVED" at 300s was on the server when looked at again. Late and lost
 // are different facts and only one of them is a defect in sync. Late is still
 // worth printing, because "or if they do get there, they're old" is half the
@@ -716,6 +751,21 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
         : r.unreadable ? `${name} UNREADABLE` : `${name} NEVER ARRIVED`)
     const bad = Object.entries(result).filter(([, r]) => r.missing)
     console.log(`${leg.padEnd(8)} ${marker.padEnd(8)} ${parts.join('   ')}`)
+    // NEVER ARRIVED says the text is not there. It does not say which half of
+    // the path stopped, and those two failures need opposite responses: an edit
+    // that was never admitted is a daemon or checkout problem, and an edit that
+    // was admitted and never built is a server-side build queue problem. On
+    // 2026-08-25 the second one presented as the first for most of a night --
+    // the daemon log said `admission confirmed` for a revision that then sat
+    // pending for 35 minutes behind a build worker stuck in state T.
+    //
+    // So say which, from the daemon's own record, at the moment it goes bad.
+    if (bad.length) {
+      const admitted = lastAdmission()
+      console.log(admitted
+        ? `         admitted ${admitted.age}s ago: id=${admitted.id} state=${admitted.state} -- the edit reached the server; it is not built`
+        : `         no admission recorded for ${PROJECT} -- the edit did not reach the server`)
+    }
     for (const [name] of bad) {
       pending.push({ leg, destination: name, marker, since: Date.now(), read: destinations[name] })
     }
