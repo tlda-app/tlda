@@ -119,7 +119,7 @@ async function renderRelevance(msg, lifecycle) {
     // several questions and only this one is settled here; keying on the boolean
     // would silently adopt any suppression the function grows later, and two of
     // the verdicts it already returns must not suppress a render.
-    return { skip: decision.build === false && decision.reason === 'outside-tree', reason: decision.reason }
+    return { skip: decision.build === false && decision.reason === 'outside-tree', reason: decision.reason, changedFiles }
   } catch (e) {
     // Loud on purpose. Erring toward rendering is right, but a filter that
     // silently errs toward rendering on EVERY build is indistinguishable from a
@@ -201,7 +201,7 @@ process.on('message', async (msg) => {
         // ever moves inside publishBuildInstance.
         console.log(`[build-worker] ${msg.name}: ${msg.sourceRevision.slice(0, 12)} is ${relevance.reason}, publishing source without rendering`)
       } else if (builder) {
-        await builder(msg.name)
+        await builder(msg.name, { changedFiles: relevance.changedFiles })
         // A build happened, so it gets a version — same as LaTeX, which reaches
         // recordBuildVersion through runBuild's finalizer. Versioning used to
         // live inside the LaTeX branch, which is why these formats built for

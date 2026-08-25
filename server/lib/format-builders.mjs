@@ -50,8 +50,8 @@ export async function buildMarkdown(name) {
   await getBuildReporter().regenerateBookTocs(name)
 }
 
-export async function buildQmd(name) {
-  await buildQmdDocument(name, (msg) => console.log(msg))
+export async function buildQmd(name, options = {}) {
+  await buildQmdDocument(name, (msg) => console.log(msg), options)
   await getBuildReporter().regenerateBookTocs(name)
 }
 
