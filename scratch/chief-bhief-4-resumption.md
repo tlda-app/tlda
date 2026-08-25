@@ -81,10 +81,45 @@ stale tip and reports success, which is the trap. **The only known way back is a
 fresh checkout.** `repo-doctor` is untried, not ruled out. Which chain wins is a
 design decision for daylight, not a patch.
 
-**Thursday:** he teaches. `pic` still runs `db646dc94` from 08-12 and its book
-has never built. `sol-dev` holds that lane. QTM needed four R packages plus
-`libglpk40`, found by auditing all 71 roots rather than fixing them one at a
-time — check page count against declared roots, not build status.
+## THURSDAY / `pic`: THERE IS NO DAEMON FOR THAT ENVIRONMENT
+
+**This is why the course book has never built, and it is upstream of everything
+else.** One `fleet-daemon` runs on this machine and it is `daemon-testing`.
+There is **no `daemon-pic` worktree at all**, though `daemon-cursors.pic.json`
+and `daemon-outbox.pic.sqlite` exist, so one ran at some point.
+
+So nothing has ever pushed his course files to that box: `sourceRevision: null`,
+`lastBuild: null`, `referencedSourcePaths: []`. **Not a stale project — one that
+has never received anything.** Every fix landed overnight sits upstream of a
+transport that is not running.
+
+**Done, both reversible:** `pic` deployed to `3b109f87b` (was `db646dc94`, 08-12)
+with his two working pages verified still serving 200; **72 document roots
+declared** — the 71 proven on `testing` plus `_quarto_book.yml`, which the
+endpoint requires because it must include `mainFile`. All 71 verified present in
+his checkout first.
+
+**Untested and the next step:** whether `tlda project push --env pic` delivers
+the closure without a daemon. Mine was killed before output; `sol-dev` has been
+asked to run it.
+
+**DO NOT start a `pic` daemon as a fix to try.** One daemon per named
+environment per machine, and starting one is a deliberate act. If the push
+works, no daemon is needed for a one-off; if it doesn't, **whether `pic` should
+have a daemon is the real question and it is Skip's.**
+
+**Also open: `_quarto_book.yml` may be the wrong `mainFile`.** The proven
+`testing` project uses `index.qmd` with 71 roots and no yml anywhere. A config
+file as `mainFile` looks like the original misconfiguration, and the endpoint
+forcing it into the roots is a symptom rather than a repair.
+
+**`sol-dev` carried the whole QTM chain overnight:** four R packages, the
+`libglpk40` system library, all 71 roots rendering, the publisher's
+`_book/index.html` layout, and a proven **748-page** book on `testing` — client
+path confirmed via `?include=page-info`, not a browser.
+
+**Thursday:** he teaches. Check page count against declared roots, not build
+status — a book that renders chapter one and stops reports success.
 
 ## 2026-08-24 evening: sync, and what was actually wrong with it
 
