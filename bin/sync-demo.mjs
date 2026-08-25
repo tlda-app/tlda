@@ -125,6 +125,21 @@ const CHECKOUT = path.resolve(String(valueOfEarly('--checkout', path.join(ROOT, 
 const FIXTURES = path.resolve(String(valueOfEarly('--fixtures', ROOT)))
 const REMOTE = path.join(FIXTURES, 'remote.git')
 const REMOTE_CLONE = path.join(FIXTURES, 'remote-clone')
+// The comment above named this hazard and the default still permitted it, which
+// is how it happened: a restart that omitted `--fixtures` put the bare repo at
+// <checkout>/remote.git. The remote leg then failed every cycle -- audibly, so
+// nothing was hidden -- but a bare repo and a clone inside the working tree are
+// project content as far as the daemon is concerned, and the next settle would
+// have published them.
+//
+// Refuse instead of relocating. Picking a different directory on the user's
+// behalf is the guess this file already declines to make about the checkout.
+if (FIXTURES === CHECKOUT || FIXTURES.startsWith(CHECKOUT + path.sep)) {
+  console.error(`fixtures directory is inside the checkout: ${FIXTURES}`)
+  console.error(`the bare remote and its clone would sync as project content.`)
+  console.error(`pass --fixtures with a path outside ${CHECKOUT}`)
+  process.exit(2)
+}
 const SERVER = getServerUrl().replace(/\/$/, '')
 
 const args = process.argv.slice(2)
