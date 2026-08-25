@@ -49,15 +49,28 @@
 }
 
 .fleet-agents-shape {
+  /* Skip, 2026-08-25: "contrast in the agents panel is super low ... like text
+     contrast", and then "its contrast/styling should be consistent with chat."
+     So chat is the reference, and chat's model is simple: text carries its alpha
+     ONCE. `.chat-line` is `--fleet-content-alpha`; `.chat-ts`, its secondary, is
+     `--fleet-chrome-alpha`. Two tones, applied directly.
+     This panel had a five-step scale multiplied by the same alphas, so its rows
+     came out at a fraction of chat's -- on Skip's screen a last-seen column read
+     at 0.11 effective against chat's body text at 0.56. Text is text: the
+     content steps are chat's content tone, and the one dormant step is chat's
+     secondary tone, so a column can be quieter than its neighbours without being
+     quieter than anything chat would ever show him.
+     The chrome scale is unchanged: those are affordances -- hover targets,
+     controls -- not text he is trying to read. */
   --fleet-agents-chrome-hidden: calc(var(--ui-tone-hidden) * var(--fleet-chrome-alpha, 1));
   --fleet-agents-chrome-dormant: calc(var(--ui-tone-dormant) * var(--fleet-chrome-alpha, 1));
   --fleet-agents-chrome-rest: calc(var(--ui-tone-rest) * var(--fleet-chrome-alpha, 1));
   --fleet-agents-chrome-active: calc(var(--ui-tone-active) * var(--fleet-chrome-alpha, 1));
   --fleet-agents-chrome-full: calc(var(--ui-tone-full) * var(--fleet-chrome-alpha, 1));
-  --fleet-agents-content-dormant: calc(var(--ui-tone-dormant) * var(--fleet-content-alpha, 1));
-  --fleet-agents-content-rest: calc(var(--ui-tone-rest) * var(--fleet-content-alpha, 1));
-  --fleet-agents-content-active: calc(var(--ui-tone-active) * var(--fleet-content-alpha, 1));
-  --fleet-agents-content-full: calc(var(--ui-tone-full) * var(--fleet-content-alpha, 1));
+  --fleet-agents-content-dormant: var(--fleet-chrome-alpha, 1);
+  --fleet-agents-content-rest: var(--fleet-content-alpha, 1);
+  --fleet-agents-content-active: var(--fleet-content-alpha, 1);
+  --fleet-agents-content-full: var(--fleet-content-alpha, 1);
 }
 
 /* Fleet shapes — thin borders for visibility */
@@ -1932,10 +1945,25 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-bottom: 1px solid rgba(128, 128, 128, 0.08);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   font-weight: 500;
-  opacity: var(--fleet-agents-chrome-dormant);
+  /* Chat's secondary text tone, applied once -- the same one `.chat-ts` uses. */
+  opacity: var(--fleet-chrome-alpha, 1);
   letter-spacing: 0.3px;
   text-transform: uppercase;
   flex-shrink: 0;
+}
+
+/* The column classes below are shared between this header and the body rows. In
+   a row their own opacity is the only one; in the header it would multiply with
+   the header's and take a label to a percent or two. On Skip's screen "Active"
+   measured 0.011 effective -- one per cent -- which is the "super low contrast"
+   he reported. One tone per element. */
+.fleet-agents-shape .fleet-agents-header .fleet-agents-col-name,
+.fleet-agents-shape .fleet-agents-header .fleet-agents-col-seen,
+.fleet-agents-shape .fleet-agents-header .fleet-agents-col-ctx,
+.fleet-agents-shape .fleet-agents-header .fleet-agents-col-task,
+.fleet-agents-shape .fleet-agents-header .fleet-agents-col-model,
+.fleet-agents-shape .fleet-agents-header .fleet-agents-col-labels {
+  opacity: 1;
 }
 
 .fleet-agents-shape .fleet-agents-sort-toggle {
@@ -2046,6 +2074,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-agents-shape .fleet-agents-row.dimmed:hover {
   opacity: calc(0.7 * var(--fleet-content-alpha, 1));
+}
+/* A dimmed row says "dimmed" once. `dimmed` is hibernating, which on this fleet
+   is nearly every row -- 2693 of 2696 the night this was written -- so this is
+   the tone most of the panel is read at, and underneath it each column was
+   multiplying its own on top. Measured on Skip's screen: a last-seen column in a
+   dimmed row at 0.045 effective, from 0.7 shape x 0.4 row x 0.16 column. Three
+   opacities for one idea.
+   With the row as the only tone a dimmed row lands at 0.28 -- chat's secondary
+   text, the tone `.chat-ts` is read at. */
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-col-name,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-col-seen,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-col-ctx,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-col-task,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-col-model,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-col-labels {
+  opacity: 1;
 }
 .fleet-agents-shape .fleet-agents-row-main {
   display: flex;
