@@ -292,6 +292,28 @@ This interacts with deletion-by-omission: on the new path an absent path is an
 **instruction** to delete, where the old path's omission was passive. Any
 manifest crossing onto the new accept must be complete for that reason.
 
+**Re-checked 2026-08-25, and it does NOT hold for the browser's route.**
+`POST /:name/source-room/files` — the carrier the source editor and every
+in-app edit use — reaches `submitFiles` in `server/lib/source-room-daemon.mjs`,
+and that function **never reads `payload.sourceManifest`**. It writes the
+supplied files into `.source-room/working`, removes only paths named
+explicitly in `deletedFiles`, and queues the tree for the daemon to settle.
+Omission deletes nothing there.
+
+**This was worth measuring rather than trusting, and nearly went the other
+way.** `GET /:name/files` returns `[]` for every project — nothing writes the
+client source manifest, `updateClientSourceManifest` has zero callers — and the
+editor builds its submitted manifest from that endpoint, so what it sends is
+one path. Read together with the paragraph above, that says editing one file in
+the browser instructs the server to delete every other file in the project.
+It does not, because the manifest is ignored on that route. **A stale doc row
+plus a real defect elsewhere produced a convincing false alarm**, which is the
+failure mode this whole file exists to prevent, arriving from the inside.
+
+What the empty manifest does cost is smaller and real: `resolveSourceFilePath`
+cannot disambiguate a bare basename, and anything that lists a project's files
+through `/files` sees none.
+
 ### 8. Outbound Git-remote push
 
 Carried by the Git-backed daemon rather than by a server accept effect. The
