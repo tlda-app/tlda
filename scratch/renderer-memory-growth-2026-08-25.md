@@ -1110,7 +1110,7 @@ Same browser process tree, same host, same instant:
 | renderer | uptime | footprint |
 |---|---|---|
 | **the app's tab** | 1:27:25 | **354 MB** (from 233 MB — **+121 MB**) |
-| **sibling, non-app** | 1:27:28 | **23 MB** (24 MB an hour earlier — **flat**) |
+| **sibling, non-app** | 1:27:28 | **23 MB** (24 MB an hour earlier — flat *over that window*; it later took a single 27 MB step — see 18:25) |
 
 The sibling is `--type=renderer --renderer-client-id=7` — a real renderer, not a
 utility process, so it is a fair comparison.
@@ -1125,6 +1125,44 @@ It also retro-fits the reproduction: the drift is ~1.9 MB/min sustained across
 iframes and shapes constant in every sample throughout.
 
 **Server:** 21 stalls in hour 17.
+
+
+### 18:25 — correcting the control claim, and the reproduction releases too
+
+**The sibling is not "flat", and I said it was.** Thirty-five minutes after I
+wrote that it "gains nothing", it read **50 MB against 23**. So the sentence in
+the previous entry and in its commit message was too strong.
+
+**What it actually did**, from a tighter paired series, five samples over 85
+seconds:
+
+```
+18:23:40   app 387 MB   sibling 50 MB
+18:24:02   app 384 MB   sibling 50 MB
+18:24:23   app 336 MB   sibling 50 MB
+18:24:44   app 346 MB   sibling 50 MB
+18:25:05   app 349 MB   sibling 50 MB
+```
+
+**The sibling is pinned at 50 MB in every sample.** It took one 27 MB step
+somewhere in the preceding half hour — almost certainly loading something, since
+I do not know what page it holds — and has not drifted since. **It steps; it does
+not drift.** The control's force survives, but the accurate statement is "does
+not drift", not "gains nothing", and I should not have reached for the stronger
+one.
+
+**And the reproduction releases, which is new here.** The app renderer dropped
+**387 → 336 MB inside forty seconds**, then resumed. That is the same
+within-document sawtooth seen on his tab at 07:11, now visible on the
+reproduction. **So single-sample deltas on this process are worthless** — the
+release amplitude (51 MB) is larger than half an hour of drift (~30 MB). Only
+series spanning multiple cycles mean anything, which is the same lesson as the
+07:15 and 15:00 entries and the third time it has bitten.
+
+**Net over the long run, which is what stands:** 233 MB at 16:45 to ~350–385 MB
+at 18:25, **95 minutes, ~1.6 MB/min**, sawtooth included.
+
+**Server:** 12 stalls in hour 18.
 
 ## Next action
 
