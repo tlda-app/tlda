@@ -1164,6 +1164,35 @@ at 18:25, **95 minutes, ~1.6 MB/min**, sawtooth included.
 
 **Server:** 12 stalls in hour 18.
 
+
+### 19:00 — timer bisect: every interval in the page cleared
+
+**Pre-clear baseline is solid.** 233 MB at 16:45 to **409 MB at 18:56**, uptime
+2:33:49 — **~1.16 MB/min sustained over 153 minutes**, sawtooth included. The
+sibling has held **50 MB across three samples 25 s apart and across the last 35
+minutes**, so "does not drift" now rests on a proper window rather than the
+single reading I over-claimed from earlier.
+
+**The experiment.** Cleared every timer id in the page —
+`for (let i=1;i<20000;i++) { clearInterval(i); clearTimeout(i) }`. The page
+survives it: 906 DOM nodes, 9 shapes, heap 58 MB, unchanged in structure.
+
+The app has a lot of these: two 1 Hz chat re-render tickers, the live-perf
+sampler, a sync-status poll at 5 s, a source-conflict poll at 5 s, a notes fetch
+at 15 s, a fleet-data refresh at 30 s, plus whatever tldraw runs. **If the drift
+is timer-driven it should now stop; if it continues, it is not.** Either answer
+narrows this a great deal, which is why the blunt version is worth running before
+anything subtler.
+
+Immediately after the clear: 410 → 392 → 393 MB, which is within the sawtooth's
+own amplitude and means nothing yet. A 40-minute clock-driven series is running.
+
+**A note on the sampler itself:** `sleep` inside `nohup`ed shells has silently
+stopped taking effect twice today, racing two series through their iterations.
+This one re-checks the wall clock each pass instead of trusting `sleep`.
+
+**Server:** 30 stalls in hour 18.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
