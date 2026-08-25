@@ -7330,7 +7330,13 @@ function useUnreadRailSubscription(shape: any) {
   }, [isOnlyChat, me, shape.id])
 }
 
-function FleetChatMounted({ shape }: { shape: any }) {
+/**
+ * The chat itself, given a shape to be. Exported because the canvas is not the
+ * only surface that can host it: anything that provides an editor in
+ * `EditorContext` — including the index editor, which has no canvas behind it —
+ * can render this directly. See src/fleet/index-editor.ts.
+ */
+export function FleetChatMounted({ shape }: { shape: any }) {
   useChatFilterSubscription(shape)
   useUnreadRailSubscription(shape)
   // Chat panels must not mount/unmount while the user pans horizontally. The
