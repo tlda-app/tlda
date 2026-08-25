@@ -6153,12 +6153,30 @@ async function inferProjectName() {
   try {
     const bindingsFile = join(CONFIG_DIR, `source-bindings${DAEMON_WORLD_SUFFIX}.json`)
     const bindings = JSON.parse(readFileSync(bindingsFile, 'utf8'))
-    for (const [project, sourceDir] of Object.entries(bindings || {})) {
-      if (resolve(String(sourceDir)) === dir) return project
+    for (const [project, value] of Object.entries(bindings || {})) {
+      // A binding's value is an object — {sourceDir, bindingId, documentRoots}
+      // — and was a bare path string in an older format. Read both, the same
+      // way and for the same reason `records()` in daemon/git-sync-manager.mjs
+      // does; that is the other reader of this file and the two must not
+      // disagree about what a binding is.
+      //
+      // Reading the object as a string is what this line used to do, and it
+      // could not fail loudly: `String({...})` is '[object Object]', which
+      // resolves to a path that matches nothing, so the loop fell through to
+      // the basename fallback below on EVERY checkout. Measured on this
+      // machine at the time of the fix: 117 bindings, none in string form, so
+      // the loop matched nothing at all. 50 checkouts happened to be named
+      // after their project and worked by luck; 61 refused with "project
+      // checkout is not bound on this daemon" while plainly bound; and 7
+      // resolved to a DIFFERENT real project, so an inferred command operated
+      // on somebody else's project without saying so.
+      const sourceDir = typeof value === 'string' ? value : value?.sourceDir
+      if (sourceDir && resolve(String(sourceDir)) === dir) return project
     }
   } catch {}
 
-  // Fall back to basename
+  // Only reached when this directory is not bound at all, which is the
+  // legitimate case of standing in a new checkout about to link it.
   return basename(dir)
 }
 
