@@ -962,6 +962,39 @@ decides whether the experiment is valid at all.
 **Server this tick:** 35 stalls in hour 14, 4 so far in hour 15. His tab: dead,
 tenth consecutive tick.
 
+
+### 15:45 — two attempts at an instrumented browser, neither loaded the app
+
+The plan was to get a CDP endpoint onto a leaking reproduction so the native
+allocation sampler could run on it. Both attempts failed, and both failed in the
+way this project warns about specifically.
+
+**Headless, port 9333.** Ran flat at **35 MB for twenty minutes**. It *had*
+loaded — 9 shapes, 1 canvas, 1 iframe — but was sitting in the "Set up your
+workspace" onboarding state, and 35 MB against the headed pooled tab's 858 MB
+with a comparable shape count is a 20× gap. **A flat series there measures
+headless, not the app.** The caveat I wrote before starting it turned out to be
+the result.
+
+**Headed, port 9334.** Six renderers, all 24–36 MB, and `/json/list` shows a
+single page target with an **empty URL**. The tlda address passed on the command
+line never navigated. Nothing loaded at all.
+
+**Stopping here rather than building a third.** Two rigs in one tick that
+produced numbers while measuring nothing is exactly *"they set up environments in
+which nothing happens and then are like, oh, nothing's happening"*. Both are
+reaped and their profile directories deleted.
+
+**What this leaves.** The one genuinely leaking, genuinely headed reproduction is
+the pooled Playwright tab — now at **872 MB**, up from 802 at 15:00, still
+drifting at roughly 1.4 MB/min. It cannot be instrumented: the pool runs with
+`--remote-debugging-pipe`, so there is no CDP endpoint, and `playwright-cli` has
+no verb that exposes one. **The instrumented-reproduction path is blocked, and I
+am recording that rather than continuing to spend ticks on it.**
+
+**His tab has gone from "DEAD" to "no page"** — the target itself is no longer
+listed, so the tab was closed rather than merely crashed-and-held.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
