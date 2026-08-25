@@ -98,7 +98,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libfreetype6-dev libharfbuzz-dev libfribidi-dev libfontconfig1-dev \
       libgdal-dev libgeos-dev libproj-dev libudunits2-dev \
       libgl1-mesa-dev libglu1-mesa-dev libx11-dev libxt-dev \
-      cmake gdal-bin libabsl-dev pandoc libuv1 \
+      cmake gdal-bin libabsl-dev pandoc libuv1 libglpk40 \
     && rm -rf /var/lib/apt/lists/*
 
 # Quarto is pinned rather than "latest" because a deck renders against the
