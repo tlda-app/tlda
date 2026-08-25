@@ -71,6 +71,30 @@ serve is routing around a broken channel for a live agent.
 the MCP is unresponsive — **not deliver the message another way.** Persistent
 sideband delivery to the daemon is not the design.
 
+## A tenth mechanism, environmental, not in the nine
+
+**The MCP client itself wedges under box load, and that is a delivery failure the
+nine do not cover.** Observed twice within minutes at **load 43** on 2026-08-22
+14:0x: the tools vanished, the MCP *process* stayed up (13h55m old), and the
+binding reconnected on its own without a restart.
+
+There is a memory on this — `never-self-restart-mcp-from-your-own-turn.md`, whose
+**description says SUPERSEDED and whose filename says the opposite.** Read the
+body, not the name. Its measured account: a 2 s abort in the native child binding
+with the daemon starved at load 38–67; reads work briefly after connect, the
+**first write** wedges the client, and reads die behind it — **while inbound
+notifications keep arriving, so the roster still says `awake` and last-seen looks
+fresh.**
+
+So an agent can be listed healthy, be genuinely unreachable, and nothing reports
+it. **That is the same shape as the nine — delivery failing while the surface
+says fine — but it is environmental and no subscription fix touches it.** If
+notifications still look intermittent after the branch deploys, check box load
+before concluding the fix failed.
+
+`tlda-dev restart-mcp <name>` goes through the daemon and is safe to run on
+yourself; session and conversation survive.
+
 ## Standing
 
 - **Sync: stood down by Skip.** He called the direction wrong. Worktrees and
