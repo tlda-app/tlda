@@ -7,6 +7,34 @@ session works *from* this, and `scratch/` is gitignored. See `AGENTS.md`
 The design is in `docs/the-sync-model.md`, which is tracked and is the thing to
 read first. This file is only what is *not* in the code or the commits.
 
+## LIVE, 2026-08-25 23:40Z: THE BOX IS OFF THE TAILNET. The app is fine
+
+**Symptom:** `tlda-fly.cormorant-matrix.ts.net` resolves to nothing, the fleet
+transport fails (`fleet WS request was not accepted before deadline`), and no
+agent can chat. It looks like a total outage.
+
+**It is not the app.** Asked directly on the machine over Fly's private network:
+`{"ok":true,"fleet":"embedded","store":"up"}`. Event-loop lag mean 22ms. The
+funnel config is intact and still proxies `/` to `127.0.0.1:5176`.
+
+**It is the tailnet node.** `tailscale status` reports `tlda-fly ... offline` and
+*"You are logged out. The last login error was: invalid key: API key does not
+exist"*, first logged **23:40:18Z**, retrying every ~35s forever. The Fly secret
+`TS_AUTHKEY` exists and is what expired — so **a machine restart does not fix
+this**, it re-uses the same dead key.
+
+**Recovery needs Skip and only Skip:** a Tailscale login click, or a fresh
+`TS_AUTHKEY`. Neither is mintable from here. Generate a fresh URL with
+`fly ssh console -a tldraw-sync-skip -C "sh -c 'tailscale login --timeout=30s'"`
+— the printed URL is short-lived, so make a new one rather than reusing an old.
+
+**The instrument trap in this, and I nearly restarted his machine on it:**
+probing the app from inside the box with `wget` returned nothing, on every port,
+which read as a wedged server that was listening but not answering. **`wget` is
+not installed on that image.** Every one of those checks was reporting a missing
+binary as "no answer". `curl` is present, and `node -e "fetch(...)"` works.
+**Test the tool before believing the negative.**
+
 ## READ THIS BEFORE RELINKING ANYTHING
 
 **Relinking a project created after the branch rename, on a box without
