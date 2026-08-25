@@ -839,6 +839,54 @@ synchronous and same-thread by inspection; and the block reproduces in isolation
 at the right order of magnitude. The restart test would be confirmation, not
 discovery.
 
+
+### 14:10 — the reproduction control was measured with an instrument that could not see the thing
+
+**RSS understates this by an order of magnitude.** Same process, same instant,
+the reproduction renderer:
+
+```
+footprint  782 MB
+rss         71 MB
+```
+
+`ps -o rss` was reading **71 MB** while the process actually held **782 MB**.
+Later sample: footprint 793 MB, rss 62 MB — footprint up, RSS *down*. On macOS a
+compressed page leaves the resident set and stays in the footprint, so on a
+memory-pressured machine RSS moves opposite to the truth.
+
+**Every "the reproduction does not leak" statement in this file was built on
+RSS.** The 7-minute watch that oscillated 92–131 MB; the 28-minute interleaved
+A/B whose phases averaged 179 and 224 MB; the "no trend" conclusion. All of it
+measured a number that had already been shown, on Skip's own tab, to be the
+wrong one — **his tab was measured by footprint from the first sample onward.**
+The subject and the control were never on the same instrument, and I did not
+notice for nine hours.
+
+**What is now visible.** That renderer is at **~790 MB footprint** and its peak
+is **3.2 GB**. A tab I had been calling flat has been to 3.2 GB. Some of that is
+my own ballast tests, which is exactly why a clean series is needed rather than a
+conclusion.
+
+**Corrections to earlier entries, so they are not read as standing:**
+
+- *"Does not reproduce on a disposable project … RSS oscillates 92–131 MB, no
+  trend"* — measured in RSS. **Withdrawn pending the footprint series.**
+- *"TYPE mean 183 MB, IDLE mean 238 MB"* — both RSS. The A/B's conclusion that
+  typing is not the mechanism may survive, since both arms used the same wrong
+  instrument, but the absolute numbers are meaningless.
+- *"this control could not have detected his tab's idle rate"* — I wrote that as
+  a caveat about the noise floor. **The real problem was worse than noise: it was
+  the wrong quantity.**
+
+**`vmmap -summary <pid>` and `footprint -p <pid>` both work on this machine** and
+report physical footprint directly. `top -l 1 -n N` returns nothing locally and
+`top -pid` is not permitted, which is why I fell back to `ps -o rss` in the first
+place — a fallback I never revisited.
+
+A clean footprint series on the reproduction is running now. **No conclusion
+until it has run.**
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
