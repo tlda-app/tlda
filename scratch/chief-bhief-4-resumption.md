@@ -4,8 +4,65 @@ Force-added under `scratch/` deliberately: this is a resumption point, not a rep
 `scratch/` is gitignored, so an untracked copy would not survive. See `AGENTS.md`
 §"Repository workflow".
 
-**Relative to:** `main` and the deployed box are **both `72986dc45`**,
-2026-08-24 18:30 EDT. Daemon worktree on it too.
+**Relative to:** 2026-08-25 03:55 EDT. Box `03da64416`; `main` `f7fe0ed6f` with
+a push in flight. **`f1335d096` is NOT yet serving** — see below, it is the
+highest-value undeployed commit on the machine.
+
+## The overnight run: what the source editor was doing
+
+**`f1335d096` — the editor showed stale text AND typing into it silently
+overwrote newer accepted content.** Established from code, chain fully cited by
+`reliability-pm`: `headChanged` broadcast `synced` with the new revision and
+never touched the room text; the client adopted that revision as its base and
+recorded the *old* text as saved; the idle save then posted the **whole buffer**
+stamped with a base the server agreed was current. No conflict, no merge — every
+guard bypassed **because the stamp made the lie consistent**. A freshly mounted
+editor measured twenty minutes stale.
+
+**Condition:** it needed him to type after the status arrived. An untouched open
+editor overwrote nothing; one character was enough.
+
+**Skip has been told, and told it is not yet live.** He was also asked one
+question and has not answered: **do we go through his project histories to see
+whether this actually ate any of his work?** That is his call, not ours. Nobody
+looks until he says.
+
+**`refs/heads/tlda/<project>` was never a branch anybody made** — it is the
+revision chain renamed into `refs/heads/`, carrying only the document closure.
+So it structurally lacked files the author had, nobody could stand on it, and
+**every checkout has been permanently dirty against its own HEAD**, which is why
+`git checkout` and `tlda project remote pull` refused every time. Fixed for new
+projects (`84c48f6e4`, `e1687136c`, live) and proven from scratch: clean
+checkout, disk edit served in 9s, tip advancing under a settle commit.
+
+**RELINK HOLD.** Existing projects only become correct on relink, and relinking a
+**post-rename** project before `369b49260` is *refused, not repaired*. Do not
+relink anything — `pic` included — until that sha is serving. The two-command
+test for telling the project kinds apart is in
+`scratch/reliability-pm-resumption-2026-08-25.md`, which leads with this.
+
+**Agent status: cause found.** One codex pane in a `fleet-` session with no
+`FLEET_ID` makes `scanStatus` throw, and its catch returns — so **no agent's
+status is computed at all**, which is his "every agent status is hibernating".
+Do **not** write the skip-non-fleet classifier: that pane is a fleet process
+wearing a non-fleet one's clothes, so it either still throws or silently hides a
+broken agent. Wanted instead: resolve what you can, report what you cannot by
+name, and **first trace what consumes `liveAgents`** — if it reads absence as
+death, nothing changes until that does.
+
+**Deploy mechanics learned the hard way tonight.** The gate accepts **canonical
+`main` only**, so there is no way to ship one commit ahead of the rest — a
+"split the deploy" contingency is unbuildable, and I withdrew mine after
+proposing it. Three of my background pushes were killed from outside and two
+foreground ones timed out at ten minutes; every time, box, deploy repo and lock
+were checked and nothing was ever half-applied. **`sol-dev` and I nearly pushed
+concurrently at 03:14** — the one-pusher rule held only because it sent a
+pre-push check and I saw it.
+
+**Thursday:** he teaches. `pic` still runs `db646dc94` from 08-12 and its book
+has never built. `sol-dev` holds that lane. QTM needed four R packages plus
+`libglpk40`, found by auditing all 71 roots rather than fixing them one at a
+time — check page count against declared roots, not build status.
 
 ## 2026-08-24 evening: sync, and what was actually wrong with it
 
