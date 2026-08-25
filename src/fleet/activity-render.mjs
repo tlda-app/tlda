@@ -21,6 +21,7 @@ import katex from 'katex'
 import { agentNameHtml } from './chat-render.mjs'
 import { normalizePrettyResult } from '../../shared/activity-pretty-result.mjs'
 import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
+import { formatShellCommand } from './format-shell-command.mjs'
 import { isFullyMarked } from '../../shared/terminal-system-markers.mjs'
 import { log } from '../logger.ts'
 
@@ -833,7 +834,11 @@ export function renderCodeCard(toolName, input, ctx) {
   }
 
   if (n === 'bash' && input.command) {
-    const cmd = input.command
+    // Laid out one step to a line. The copy button still hands over exactly what
+    // the agent ran -- what you paste should be what happened, not our rendering
+    // of it. See format-shell-command.mjs.
+    const source = input.command
+    const cmd = formatShellCommand(source)
     const lines = cmd.split('\n')
     const escaped = esc(cmd)
     const highlighted = highlightSyntax(escaped, 'bash')
@@ -846,7 +851,7 @@ export function renderCodeCard(toolName, input, ctx) {
       : ''
     return `<div class="code-block-wrap code-card">
       <div class="code-block-header"><span class="code-block-lang">bash</span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
-      ${copySourceTemplate(cmd)}<pre class="${foldClass}"${foldStyle}><code data-lang="bash" data-highlighted="1">${highlighted}</code></pre>
+      ${copySourceTemplate(source)}<pre class="code-bash${foldClass}"${foldStyle}><code data-lang="bash" data-highlighted="1">${highlighted}</code></pre>
     </div>`
   }
 
@@ -958,7 +963,19 @@ export function dedupTools(toolItems) {
       }
     }
     if (prev && prev._key === key) {
-      prev._count++
+      // One call, not two. Every tool call is recorded when it starts and again
+      // when its result lands, with the same name and the same arguments, so
+      // counting both is how `x2` came to mean one Bash command. The completion
+      // updates the row it belongs to.
+      if (t._toolStatus === 'completed' && prev._toolStatus !== 'completed') {
+        prev._toolStatus = 'completed'
+        if (t._toolDuration != null) prev._toolDuration = t._toolDuration
+      } else {
+        // A fresh start of the same command: a real second call, and the row is
+        // in flight again until its own completion arrives.
+        prev._count++
+        prev._toolStatus = t._toolStatus ?? null
+      }
       // Merge prettyResult from follow-up event (e.g. _prettyResult events arriving after the tool_use)
       mergePrettyResultOntoHost(prev, t)
     } else {

@@ -1,15 +1,33 @@
+/**
+ * Calls that do not appear in the activity feed.
+ *
+ * Skip, 2026-08-25: "the point is i want visibility into what agents are doing.
+ * no big if a little excess becomes visible we will trim."
+ *
+ * So this is not a list of tools someone found uninteresting. There are exactly
+ * two reasons to be on it, and a tool that fits neither belongs in the feed:
+ *
+ * 1. **It reads state.** Checking your inbox, your tasks, or who is awake is
+ *    not something an agent DID -- it is how it decided what to do next.
+ * 2. **Its effect is already in chat.** A sent message shows up as the message;
+ *    a timer shows up as its own card. Rendering the call as well says the same
+ *    thing twice in the same panel.
+ *
+ * Everything else an agent does to the fleet -- delegating, spawning, reporting,
+ * naming, labelling, interrupting -- is an action with a consequence, and it was
+ * invisible. That is what this list had grown into: it was written when tlda
+ * calls were chatter, and by now they are much of what an agent does.
+ */
 export const ACTIVITY_NOISE = new Set([
-  'wait_for_task', 'my_task', 'inbox', 'tasks', 'login',
-  'task_check', 'task_done', 'timer',
-  'chat', 'delegate', 'report', 'share', 'spawn', 'respawn', 'interrupt',
-  'name_agent', 'label_agent', 'observe', 'promote', 'cleanup',
-  'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__inbox', 'mcp__tlda__tasks',
-  'mcp__tlda__login', 'mcp__tlda__task_check',
-  'mcp__tlda__timer',
-  'mcp__tlda__chat', 'mcp__tlda__delegate', 'mcp__tlda__report',
-  'mcp__tlda__share', 'mcp__tlda__spawn', 'mcp__tlda__respawn',
-  'mcp__tlda__interrupt', 'mcp__tlda__name_agent', 'mcp__tlda__label_agent',
-  'mcp__tlda__observe', 'mcp__tlda__promote', 'mcp__tlda__cleanup',
+  // Reads: state an agent consulted, not work it performed.
+  'wait_for_task', 'my_task', 'inbox', 'tasks', 'login', 'task_check', 'observe',
+  'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__inbox',
+  'mcp__tlda__tasks', 'mcp__tlda__login', 'mcp__tlda__task_check',
+  'mcp__tlda__observe',
+  // Already visible: the message IS the message, the timer draws its own card.
+  'chat', 'timer',
+  'mcp__tlda__chat', 'mcp__tlda__timer',
+  // Harness plumbing: loading a tool's schema is not an act.
   'ToolSearch',
 ])
 
