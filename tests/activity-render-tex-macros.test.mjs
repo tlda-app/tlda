@@ -34,6 +34,20 @@ test('tex edit diffs render multiline display math with project macros', () => {
   assert.doesNotMatch(html.replace(/<annotation[\s\S]*?<\/annotation>/g, ''), /\\foo|\\barop/)
 })
 
+test('tex edit diffs use the same bracket and parenthesis delimiters as chat', () => {
+  const html = renderEditDiff({
+    file_path: 'main.tex',
+    old_string: 'Inline \\(x + \\foo\\) and display \\[\\barop(x) = \\foo\\].',
+    new_string: 'Inline \\(y + \\foo\\) and display \\[\\barop(y) = \\foo\\].',
+  }, ctx)
+
+  const visible = html.replace(/<annotation[\s\S]*?<\/annotation>/g, '')
+  assert.match(html, /class="katex/)
+  assert.match(html, /mathbb">R/)
+  assert.match(html, /mord mathrm">bar/)
+  assert.doesNotMatch(visible, /\\\(|\\\)|\\\[|\\\]/)
+})
+
 test('canonical enclosing equation renders as KaTeX instead of literal TeX', () => {
   const oldSource = ['\\begin{equation}', '  x = \\frac{1}{n}\\sum_i a_i.', '\\end{equation}'].join('\n')
   const newSource = ['\\begin{equation}', '  x = \\left|\\frac{1}{n}\\sum_i a_i\\right|.', '\\end{equation}'].join('\n')
