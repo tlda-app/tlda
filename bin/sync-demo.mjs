@@ -181,9 +181,15 @@ async function writeOnDisk(line) {
 
 async function writeInBrowser(line) {
   const result = inPage(`
-    const el = document.querySelector('[data-shape-id="${SHAPE}"]')
-    const content = el && el.querySelector('.cm-content')
-    if (!content) return { error: 'no CodeMirror view mounted' }
+    // Every copy, and the one that actually has a CodeMirror in it — never the
+    // first. A fleet shape renders twice when the HUD is open, and the
+    // main-canvas copy is deliberately EMPTY: FleetHudRenderGate returns null
+    // there so the HUD's viewport owns it. querySelector returns that empty one,
+    // which reads exactly like an editor that failed to mount. It cost this
+    // harness a false "browser leg is broken" against a working editor.
+    const content = [...document.querySelectorAll('[data-shape-id="${SHAPE}"]')]
+      .map(el => el.querySelector('.cm-content')).find(Boolean)
+    if (!content) return { error: 'no CodeMirror view mounted in any rendered copy' }
     const view = (content.cmView && content.cmView.view) || (content.cmTile && content.cmTile.view)
       || window.__source_editor_view__ || null
     if (!view) return { unreachable: true }
@@ -210,6 +216,22 @@ async function writeOnRemote(line) {
   await git(REMOTE_CLONE, ['add', '--', FILE])
   await git(REMOTE_CLONE, ['commit', '-m', line])
   await git(REMOTE_CLONE, ['push', 'origin', 'HEAD:main'])
+
+  // Then pull it in, because for this project nothing would.
+  //
+  // A linked remote is only POLLED when the binding carries a `remote` — the
+  // daemon builds a remote bridge from that field and nothing else, and the
+  // field is written at link time. `tlda project remote add` runs a plain `git
+  // remote add` in the checkout and never touches the binding, so a remote
+  // added after linking is one you pull by hand.
+  //
+  // Measured before this was understood: a commit pushed to the bare remote sat
+  // there and reached neither the server nor the checkout in 90s. That was the
+  // harness asking for behaviour the app does not claim, not a sync failure —
+  // which is exactly why the leg now exercises the path that does exist.
+  execFileSync('tlda', ['project', 'remote', 'pull', 'origin', '--project', PROJECT], {
+    cwd: CHECKOUT, encoding: 'utf8', timeout: 300_000, stdio: 'pipe',
+  })
 }
 
 const WRITERS = { disk: writeOnDisk, browser: writeInBrowser, remote: writeOnRemote }
@@ -304,6 +326,16 @@ async function setup() {
     console.log('  remote origin already present')
   }
 
+  // Seed the bare remote from the checkout, so the two share a history.
+  // Otherwise `tlda project remote pull` reaches `git merge` and stops at
+  // "refusing to merge unrelated histories" — which is git being right, and the
+  // harness having built a remote that was never a copy of this project.
+  const bareHasCommits = await git(REMOTE, ['rev-parse', '--verify', 'HEAD']).then(() => true).catch(() => false)
+  if (!bareHasCommits) {
+    await git(CHECKOUT, ['push', REMOTE, 'HEAD:main'])
+    console.log('  seeded remote from the checkout')
+  }
+
   if (!fs.existsSync(path.join(REMOTE_CLONE, '.git'))) {
     await git(ROOT, ['clone', REMOTE, REMOTE_CLONE])
     await git(REMOTE_CLONE, ['config', 'user.email', 'sync-demo@tlda']).catch(() => {})
@@ -339,10 +371,19 @@ async function mountEditor() {
     return new Promise(resolve => {
       const started = Date.now()
       const poll = setInterval(() => {
-        const el = document.querySelector('[data-shape-id="' + id + '"]')
-        const c = el && el.querySelector('.cm-content')
-        if (c && c.textContent) { clearInterval(poll); resolve({ ok: true, waitedMs: Date.now() - started }) }
-        else if (Date.now() - started > 30000) { clearInterval(poll); resolve({ ok: false, waitedMs: Date.now() - started }) }
+        // Across every rendered copy — see the note in writeInBrowser. With the
+        // HUD open the main-canvas copy is an empty container by design, so
+        // polling the first match waits out the full timeout on a shape whose
+        // editor mounted immediately in the HUD.
+        const copies = [...document.querySelectorAll('[data-shape-id="' + id + '"]')]
+        const c = copies.map(el => el.querySelector('.cm-content')).find(Boolean)
+        if (c && c.textContent) {
+          resolve({ ok: true, waitedMs: Date.now() - started, copies: copies.length })
+          clearInterval(poll)
+        } else if (Date.now() - started > 30000) {
+          resolve({ ok: false, waitedMs: Date.now() - started, copies: copies.length })
+          clearInterval(poll)
+        }
       }, 250)
     })
   `)
@@ -386,6 +427,7 @@ console.log(`versions: ${startingVersions === null ? 'could not read shadow log'
 
 let n = Number(valueOf('--from', Date.now() % 100000))
 const failures = []
+const unrun = []
 
 for (let cycle = 0; cycle < CYCLES; cycle++) {
   for (const leg of LEGS) {
@@ -398,8 +440,12 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     const destinations = {}
     destinations.server = serverText
     if (leg !== 'disk') destinations.checkout = checkoutText
-    if (leg !== 'remote') destinations.remote = remoteText
     if (leg !== 'browser' && browserReady) destinations.browser = browserText
+    // The linked remote is a SOURCE here, never a destination. Nothing pushes
+    // an accepted revision back out to it unless the binding asks for a mirror,
+    // so expecting a disk or browser edit to appear there was the harness
+    // asking for behaviour the app does not claim — it reported two convergence
+    // failures against a working system before this was understood.
 
     let wrote = true
     try {
@@ -407,6 +453,17 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     } catch (error) {
       wrote = false
       console.log(`${leg.padEnd(8)} ${marker.padEnd(8)} COULD NOT WRITE — ${error.message}`)
+      // A leg that could not write is NOT a pass. It used to `continue`
+      // silently, so a run where the remote leg never executed still ended on
+      // "Every line reached every surface" and exit 0 — the harness reporting
+      // success for work it had not done. That is the failure this whole script
+      // exists to catch, and it was in the script.
+      //
+      // Tracked apart from convergence failures because they mean opposite
+      // things: a convergence failure is the app losing an edit, this is the
+      // harness never having made one. Reporting them as the same number would
+      // send somebody debugging sync over a broken fixture.
+      unrun.push(`${leg}: ${error.message.split('\n')[0]}`)
     }
     if (!wrote) continue
 
@@ -430,11 +487,20 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
   if (cycle + 1 < CYCLES) await sleep(EVERY_MS)
 }
 
-if (failures.length) {
-  console.error(`\n${failures.length} convergence ${failures.length === 1 ? 'failure' : 'failures'}:\n`)
-  for (const failure of failures) console.error(`  ${failure}`)
-  process.exit(1)
+if (unrun.length) {
+  console.error(`\n${unrun.length} leg${unrun.length === 1 ? '' : 's'} did not run, so ${unrun.length === 1 ? 'it is' : 'they are'} neither passed nor failed:\n`)
+  for (const item of unrun) console.error(`  ${item}`)
 }
 
-console.log(`\nEvery line reached every surface. Watch it: ${SERVER}/?project=${PROJECT}`)
+if (failures.length) {
+  console.error(`\n${failures.length} convergence ${failures.length === 1 ? 'failure' : 'failures'} — an edit was made and did not arrive:\n`)
+  for (const failure of failures) console.error(`  ${failure}`)
+}
+
+if (failures.length || unrun.length) process.exit(1)
+
+// Names only the legs that actually ran. The fixed sentence this replaces said
+// "Every line reached every surface" on a run where a leg had thrown before
+// writing anything.
+console.log(`\nEvery line written by ${LEGS.join(', ')} reached every surface. Watch it: ${SERVER}/?project=${PROJECT}`)
 process.exit(0)
