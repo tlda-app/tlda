@@ -219,15 +219,17 @@ at **22:40:24Z**. The request times out, the retry succeeds, the edit costs abou
 **90 extra seconds**. That is in the log independently of anything I measured
 wrongly.
 
-**The discriminator, both build slots free:**
+**The disk-vs-remote table I built from this is NOT evidence of a fault. Do not
+reuse it.** `daemon/git-sync-manager.mjs:149`: the remote bridge is a
+`setInterval` at `Math.max(15, Number(item.pollSeconds) || 60)`, and
+`pollSeconds` is set **nowhere in the tree outside a test**. So a git-remote edit
+is **polled at 60s**, not watched, and that leg carries a 0–60s wait before
+anything starts. Comparing it to a watcher-driven disk edit measures the
+schedule, not the system.
 
-| leg | time |
-|---|---|
-| disk (`paper.tex`) | **11.6s, 10.7s** |
-| remote (git remote → `notes.md`) | **139.4s, 66.9s** |
-
-Same project, same cycle, legs run **sequentially** — so it is not queue depth.
-The slow leg is the one whose path includes a remote pull and a merge commit.
+I sampled the daemon during a slow remote leg expecting it to be blocked:
+**every thread parked in `kevent` for 12 seconds, nothing running.** It was
+waiting for the timer. **Read the schedule before reaching for a profiler.**
 
 **Disproved already, do not re-derive it:** that admit walks a growing
 `refs/tlda/proposals` set. Measured on the box — **76 proposal refs, 78 total,
