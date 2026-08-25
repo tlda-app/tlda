@@ -273,6 +273,27 @@ async function converge(marker, destinations) {
   return result
 }
 
+/**
+ * The checkout's branch and whether its tree is clean.
+ *
+ * Both are part of what sync now means, so the demo asserts them rather than
+ * only watching text arrive. A checkout that is not standing on its work branch
+ * does not sync at all — by design — and one that never goes clean is the state
+ * every checkout on this machine was stuck in: the daemon committing to a branch
+ * the author was not on, so `git status` always had the file and `git checkout`
+ * always refused.
+ */
+async function branchState() {
+  try {
+    const head = (await git(CHECKOUT, ['symbolic-ref', '--short', '-q', 'HEAD'])).stdout.trim()
+    const dirty = (await git(CHECKOUT, ['status', '--porcelain'])).stdout.trim()
+    const tip = (await git(CHECKOUT, ['rev-parse', '--short', 'HEAD'])).stdout.trim()
+    return { head, clean: dirty === '', dirty, tip }
+  } catch (error) {
+    return { head: null, clean: null, dirty: '', tip: null, error: error.message }
+  }
+}
+
 async function versionCount() {
   try {
     const res = await fetch(api('/shadow/log'), { signal: AbortSignal.timeout(30_000) })
@@ -422,6 +443,14 @@ if (LEGS.includes('browser')) {
     : `browser:  NOT mounted (${mounted.error || `waited ${mounted.waitedMs}ms`}) — that leg will report, not assert`)
 }
 
+const WORK_BRANCH = `tlda/${PROJECT}`
+const startBranch = await branchState()
+console.log(`checkout: on ${startBranch.head || 'a detached HEAD'}${startBranch.clean ? ', clean' : `, DIRTY (${startBranch.dirty.split('\n').length} paths)`}`)
+if (LEGS.includes('disk') && startBranch.head !== WORK_BRANCH) {
+  console.log(`          the disk leg will NOT sync: the daemon only commits when ${WORK_BRANCH} is checked out.`)
+  console.log(`          this checkout predates that repair — relink it, or: git -C ${CHECKOUT} checkout ${WORK_BRANCH}`)
+}
+
 const startingVersions = await versionCount()
 console.log(`versions: ${startingVersions === null ? 'could not read shadow log' : startingVersions} at start\n`)
 
@@ -467,7 +496,18 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     }
     if (!wrote) continue
 
+    const beforeTip = leg === 'disk' ? (await branchState()).tip : null
     const result = await converge(marker, destinations)
+    if (leg === 'disk') {
+      // The author's edit is committed UNDER them, so the tree goes clean and
+      // their branch moves. Watching only the text arrive would have been green
+      // throughout the period when neither of these was true.
+      const after = await branchState()
+      if (after.head === WORK_BRANCH) {
+        if (!after.clean) failures.push(`disk: the working tree did not go clean after ${marker} (${after.dirty.split('\n')[0]})`)
+        if (after.tip === beforeTip) failures.push(`disk: ${WORK_BRANCH} did not advance for ${marker} (still ${beforeTip})`)
+      }
+    }
     const parts = Object.entries(result).map(([name, r]) =>
       r.ms !== undefined && !r.missing && !r.unreadable
         ? `${name} ${(r.ms / 1000).toFixed(1)}s`
