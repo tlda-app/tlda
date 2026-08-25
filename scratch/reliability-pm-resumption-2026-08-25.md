@@ -78,6 +78,30 @@ separate repositories. What changed is that the browser leg now actually
 submits, so both are live at once for the first time. **The room fix made a
 pre-existing gap reachable.**
 
+**IT ALSO DROPS DOCUMENTS. Re-measured 2026-08-25 evening, and this is worse
+than the "stuck" framing above.**
+
+On a project with three document roots, ONE edit through the browser source
+editor took the head, and the revision it published contained **one of the
+three**:
+
+```
+/source/paper.tex    200
+/source/notes.md     404
+/source/scratch.md   404
+app lists documents: paper.tex        (was three)
+checkout still has:  paper.tex notes.md scratch.md
+```
+
+The files are still on disk. They are gone from the server's current revision,
+so the app cannot show them. The server's chain only knows the file the editor
+had open, and publishing it drops the rest.
+
+**So the consequence is not only that the loser cannot push. Using the browser
+editor on a multi-document project can remove documents from what the app
+serves.** Anyone weighing this against reverting the room fix needs that
+sentence, not the milder one.
+
 **What a person hits:** edit a project in the browser and on disk, and the
 checkout stops syncing and stays stopped. Nothing says so — the settle result is
 a returned value, and `git-sync-manager`'s `settleEditCluster` logs it at warn.
