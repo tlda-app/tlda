@@ -11,10 +11,12 @@ import {
   completeFleetNudgeGuides,
   fleetNudgeGuidesForFeatures,
   highlightFleetNudgeGuides,
+  mergeFleetNudgeGuides,
   type FleetNudgeGridFeature,
   type FleetNudgeGridGuide,
   type FleetNudgeGridMatch,
 } from './fleet-nudge-grid'
+import { readPermanentGuides, writePermanentGuides } from './fleet-permanent-guide-store'
 import { getFleetNudgeStrengthPx } from '../readabilityProfile'
 import { dispatchFleetHudReset, getHudEditor, markMainEditorHistoryStoppingPoint } from '../wm/editor-host-bridge'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
@@ -161,9 +163,19 @@ function closestFleetPanelNudge(
   grid: FleetNudgeGuide[],
   threshold: number,
   live: ReadonlySet<FleetNudgeFeature> = ALL_FLEET_NUDGE_FEATURES,
+  permanent: FleetNudgeGuide[] = [],
 ): { dx: FleetNudgeMatch | null; dy: FleetNudgeMatch | null } {
-  const alignmentX = new Set(candidates.flatMap(candidate => [candidate.left, candidate.right]))
-  const alignmentY = new Set(candidates.flatMap(candidate => [candidate.top, candidate.bottom]))
+  // A permanent line is an alignment, not a spacing coincidence: the layout named
+  // it, so it belongs in the tier that wins outright rather than the one consulted
+  // only when nothing lines up.
+  const alignmentX = new Set([
+    ...candidates.flatMap(candidate => [candidate.left, candidate.right]),
+    ...permanent.filter(guide => guide.axis === 'x').map(guide => guide.line),
+  ])
+  const alignmentY = new Set([
+    ...candidates.flatMap(candidate => [candidate.top, candidate.bottom]),
+    ...permanent.filter(guide => guide.axis === 'y').map(guide => guide.line),
+  ])
   const alignmentGrid = grid.filter(guide => guide.axis === 'x'
     ? alignmentX.has(guide.line)
     : alignmentY.has(guide.line))
@@ -209,6 +221,11 @@ function drawFleetNudgeGuides(
  * snap takes. The strength is screen px, so it is the same apparent distance at
  * any zoom. Zero (the preference turned off) has no capture zone at all.
  */
+/** The lines the layout in effect made permanent, for this person and device. */
+function currentPermanentGuides(): FleetNudgeGuide[] {
+  return readPermanentGuides(getHumanId(), getDeviceId())
+}
+
 function fleetNudgeThreshold(editor: Editor): number | null {
   const strength = getFleetNudgeStrengthPx()
   if (strength <= 0) return null
@@ -227,7 +244,11 @@ export function nudgeFleetPanelTranslate(
   if (!isMyFleetShape(current)) return clearFleetNudgeGuides()
 
   const candidates = collectFleetPanelNudgeCandidates(editor, current)
-  if (candidates.length === 0) return clearFleetNudgeGuides()
+  // The permanent lines are the other source of a grid, and on a layout that
+  // places one panel they are the only one — so an empty candidate list is not
+  // an empty grid any more.
+  const permanent = currentPermanentGuides()
+  if (candidates.length === 0 && permanent.length === 0) return clearFleetNudgeGuides()
 
   const dragged = fleetNudgeRectForCurrentShape(current)
   if (!dragged) return clearFleetNudgeGuides()
@@ -236,10 +257,10 @@ export function nudgeFleetPanelTranslate(
   if (threshold === null) return clearFleetNudgeGuides()
 
   const grid = fleetNudgeGuidesForFeatures(
-    completeFleetNudgeGuides(dragged, candidates),
+    mergeFleetNudgeGuides(completeFleetNudgeGuides(dragged, candidates), permanent),
     ALL_FLEET_NUDGE_FEATURES,
   )
-  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, grid, threshold)
+  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, grid, threshold, ALL_FLEET_NUDGE_FEATURES, permanent)
 
   // One decision, read twice. The guide and the move cannot disagree about
   // whether a match was taken, because they are the same value.
@@ -338,14 +359,18 @@ export function nudgeFleetPanelResize<T extends TLBaseBoxShape>(
   if (live.size === 0) return resized()
 
   const candidates = collectFleetPanelNudgeCandidates(editor, shape)
-  if (candidates.length === 0) return resized()
+  const permanent = currentPermanentGuides()
+  if (candidates.length === 0 && permanent.length === 0) return resized()
 
   const threshold = fleetNudgeThreshold(editor)
   if (threshold === null) return resized()
 
   const dragged = fleetNudgeRectForBox(shape.id, box.x, box.y, box.props.w, box.props.h)
-  const grid = fleetNudgeGuidesForFeatures(completeFleetNudgeGuides(dragged, candidates), live)
-  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, grid, threshold, live)
+  const grid = fleetNudgeGuidesForFeatures(
+    mergeFleetNudgeGuides(completeFleetNudgeGuides(dragged, candidates), permanent),
+    live,
+  )
+  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, grid, threshold, live, permanent)
 
   const takenX = takenMatch(dx, threshold)
   const takenY = takenMatch(dy, threshold)
@@ -700,6 +725,8 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       makeSlotId: slot => layoutSlotId(myId, myDevice, slot),
     }))
     editor.createShapes(layoutPlan.shapes as any)
+    // Choosing a layout replaces the permanent lines, including with none.
+    writePermanentGuides(myId, myDevice, layoutPlan.permanentGuides)
     if (layoutPlan.dispatchHudReset) {
       dispatchFleetHudReset()
     }

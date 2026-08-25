@@ -12,6 +12,7 @@ import type { CurveHandles } from './curveEditor.ts'
 import { DEFAULT_CURVE } from './curveEditor.ts'
 import { DEFAULT_READABILITY_PROFILES, migrateReadabilityProfiles, type ReadabilityProfiles } from './readabilityDefaults.ts'
 import { fleetDurable, fleetEphemeral } from './fleet/fleet-data.mjs'
+import type { FleetNudgeGridGuide } from './shapes/fleet-nudge-grid'
 
 export const DEFAULT_RADIO_SUBTITLE_DWELL_SEC = 15
 export const MIN_RADIO_SUBTITLE_DWELL_SEC = 3
@@ -80,6 +81,12 @@ const DEFAULTS = {
   'layout-rail-width': 375 as number,
   'layout-chat-width': 460 as number,
   'layout-margin-gap': 40 as number,
+  // The snap lines a layout made permanent, per project + person + device. Here
+  // rather than in the room because a layout is one person's on one device, and
+  // here rather than recomputed because a layout is placed once and does not
+  // reflow — the lines have to describe the box it actually made. Written by
+  // createFleetLayout, read by the panel nudge. See shapes/fleet-permanent-guide-store.ts.
+  'layout-permanent-guides': {} as Record<string, FleetNudgeGridGuide[]>,
   'fleet-chrome-opacity': 1.0 as number,
   'fleet-content-opacity': 1.0 as number,
   // Per-tool fold heights for monitoring/tool-call content (lines). 0 = never fold.
