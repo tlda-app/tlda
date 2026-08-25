@@ -1613,6 +1613,37 @@ synthetic idle tab. I will sample the footprint of their replay's renderer with
 my own instrument rather than adding a second one, at 60s intervals, **physical
 footprint not RSS.**
 
+
+### 23:15 — pool reaped; a separate severe renderer case surfaced
+
+`app-tester` authorised the reap and put forward a better candidate than mine
+before I could blame ambient load: they had left a tab on a project that loads
+**748 pages, all priority, none deferred**. On it, `() => document.readyState`
+took **over 40 seconds** to return, a screenshot could not complete for ~5
+minutes, and at **151s the page reset its own sync socket**.
+
+Reap result:
+
+```
+browser reaped
+renderers under shared-3   0
+pool memory pressure       83%  ->  78%
+```
+
+**Five points of pressure returned when that browser died.** Not proof, but a lot
+of memory to have been resident in one session, and consistent with their
+account.
+
+**Logged as a separate case, not as my leak.** Skip's tab reached 15 GB on a
+*small* project, so page count is not the mechanism I am chasing. But eager
+loading at that scale is its own severe renderer-memory problem and I had not
+seen it before. Worth measuring properly — footprint on that project's renderer —
+**after** the replay, and only if `app-tester` does not want it.
+
+**Sequencing:** `app-tester` runs the replay first; I hold the pool clear and
+open no tab until they are done. My ordering control runs afterward against a
+quiet pool, which is a better measurement than the one that never armed.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
