@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { qmdDeckPageInfo, qmdDocumentRootPaths, qmdRenderedOutputFileForSource } from './build-qmd.mjs'
+import { qmdDeckPageInfo, qmdDocumentRootPaths, qmdRenderedOutputFileForSource, qmdRootsToRender } from './build-qmd.mjs'
 
 test('qmd document roots are rendered in declared order', () => {
   assert.deepEqual(qmdDocumentRootPaths({
@@ -54,4 +54,30 @@ test('slides from one qmd root share one document location', () => {
     ['lectures/one.qmd', 0, 'lectures/one.qmd'],
     ['lectures/one.qmd', 1, 'lectures/one.qmd'],
   ])
+})
+
+test('qmd source changes render only roots whose dependency closures contain them', (t) => {
+  const source = mkdtempSync(join(tmpdir(), 'tlda-qmd-root-selection-'))
+  t.after(() => rmSync(source, { recursive: true, force: true }))
+  mkdirSync(join(source, 'chapters'), { recursive: true })
+  writeFileSync(join(source, 'index.qmd'), '# Index\n')
+  writeFileSync(join(source, 'chapters', 'one.qmd'), '{{< include shared.qmd >}}\n')
+  writeFileSync(join(source, 'chapters', 'shared.qmd'), 'shared\n')
+  writeFileSync(join(source, 'chapters', 'two.qmd'), '# Two\n')
+  const roots = ['index.qmd', 'chapters/one.qmd', 'chapters/two.qmd']
+
+  assert.deepEqual(qmdRootsToRender(roots, source, ['chapters/two.qmd']), ['chapters/two.qmd'])
+  assert.deepEqual(qmdRootsToRender(roots, source, ['chapters/shared.qmd']), ['chapters/one.qmd'])
+})
+
+test('qmd project-wide or untracked dependency changes render every root', (t) => {
+  const source = mkdtempSync(join(tmpdir(), 'tlda-qmd-project-selection-'))
+  t.after(() => rmSync(source, { recursive: true, force: true }))
+  writeFileSync(join(source, 'one.qmd'), '# One\n')
+  writeFileSync(join(source, 'two.qmd'), '# Two\n')
+  const roots = ['one.qmd', 'two.qmd']
+
+  assert.deepEqual(qmdRootsToRender(roots, source, ['_quarto.yml']), roots)
+  assert.deepEqual(qmdRootsToRender(roots, source, ['data/input.csv']), roots)
+  assert.deepEqual(qmdRootsToRender(roots, source, null), roots)
 })

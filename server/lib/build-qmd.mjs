@@ -24,6 +24,7 @@ import { getBuildReporter } from './build-runner.mjs'
 import { buildPerSlideDocuments } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
+import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -164,6 +165,25 @@ export function qmdDocumentRootPaths(project) {
   return [...new Set(declared.length > 0 ? declared : [fallback])]
 }
 
+export function qmdRootsToRender(mainFiles, srcDir, changedFiles) {
+  if (!Array.isArray(changedFiles) || changedFiles.length === 0) return mainFiles
+  const changed = new Set(changedFiles.map((file) => String(file || '').replace(/\\/g, '/').replace(/^\.?\/+/, '')))
+  const affected = []
+  const accountedFor = new Set()
+  for (const root of mainFiles) {
+    const closure = new Set(scanMarkdownDependencyClosure(root, srcDir).files)
+    const reachesChange = [...changed].some((file) => closure.has(file))
+    if (!reachesChange) continue
+    affected.push(root)
+    for (const file of changed) if (closure.has(file)) accountedFor.add(file)
+  }
+  // A project file outside every root closure can affect all renders: Quarto
+  // configuration, filters, extensions, code-read data, and deleted inputs are
+  // all in this class. Render everything rather than guess which roots consume
+  // it. Root-local source and includes take the narrow path above.
+  return accountedFor.size === changed.size ? affected : mainFiles
+}
+
 /**
  * Did this render produce a reveal.js deck?
  *
@@ -265,7 +285,7 @@ async function writeSourceScope(name, srcDir, outDir) {
   )
 }
 
-export async function buildQmdDocument(name, addLog = console.log) {
+export async function buildQmdDocument(name, addLog = console.log, { changedFiles = null } = {}) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -292,10 +312,11 @@ export async function buildQmdDocument(name, addLog = console.log) {
 
   await restoreRenv(outDir, addLog)
   const nativeTldaProject = isNativeTldaProject(outDir)
+  const rootsToRender = nativeTldaProject ? mainFiles : qmdRootsToRender(mainFiles, srcDir, changedFiles)
   if (nativeTldaProject) {
     await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true })
   } else {
-    for (const root of mainFiles) await renderInOutput(quarto, outDir, root, addLog)
+    for (const root of rootsToRender) await renderInOutput(quarto, outDir, root, addLog)
   }
 
   if (nativeTldaProject) {
@@ -374,5 +395,5 @@ export async function buildQmdDocument(name, addLog = console.log) {
     lastBuild: new Date().toISOString(),
   })
   reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: Date.now() })
-  addLog(`[qmd] ${name}: rendered ${mainFiles.length} document root(s)`)
+  addLog(`[qmd] ${name}: rendered ${rootsToRender.length} of ${mainFiles.length} document root(s)`)
 }
