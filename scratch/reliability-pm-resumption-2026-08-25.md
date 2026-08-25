@@ -276,8 +276,12 @@ has no `FLEET_ID` is a launch path not setting the environment.
   deployed gate now correctly refuses to sync it. Once `369b49260` serves:
   relink it, then `node bin/sync-demo.mjs --legs disk,browser,remote`. The
   **browser leg has never been proven end to end** and needs `f1335d096`.
-- `sync-proof` and `sync-demo` are both disposable projects on the testing box.
-  Delete them when done.
+- **KEEP `sync-demo`. It is the only reproduction of the two-chain divergence.**
+  An earlier draft of this file said to delete both disposable projects when
+  done, which was written before that bug existed. Deleting it destroys the one
+  checkout anybody can inspect in the stuck state, and the divergence is not
+  something you can conjure on demand — it took a browser write landing between
+  two disk writes. `sync-proof` is a plain healthy project and can go.
 
 ## Things that will waste your time if you do not know them
 
