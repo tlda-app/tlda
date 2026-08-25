@@ -9,6 +9,7 @@ import {
   DefaultSizeStyle,
   defaultShapeUtils,
   defaultBindingUtils,
+  defaultTldrawOptions,
   HighlightShapeUtil,
 } from 'tldraw'
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
@@ -1116,6 +1117,14 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
 
   const versionStampContent = <VersionStamp document={document} />
 
+  // HTML books use one TLDraw page per chapter or tab group. TLDraw's default
+  // cap is lower than some books, which otherwise leaves later chapter shapes
+  // without pages and makes their TOC targets inert.
+  const documentPageLimit = Math.max(
+    defaultTldrawOptions.maxPages,
+    new Set(document.pages.map(page => page.tldrawPageId).filter(Boolean)).size,
+  )
+
   return (
     <>
     <ProjectContext.Provider value={projectContextValue}>
@@ -1129,6 +1138,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         licenseKey={LICENSE_KEY}
         shapeUtils={shapeUtils}
         tools={tools}
+        options={{ maxPages: documentPageLimit }}
         overrides={overrides}
         getShapeVisibility={getShapeVisibility}
         onMount={(editor) => {
