@@ -871,7 +871,8 @@ conclusion.
 **Corrections to earlier entries, so they are not read as standing:**
 
 - *"Does not reproduce on a disposable project … RSS oscillates 92–131 MB, no
-  trend"* — measured in RSS. **Withdrawn pending the footprint series.**
+  trend"* — measured in RSS. **Withdrawn, and now replaced: measured by
+  footprint it drifts at ~1.8 MB/min. See the 14:35 entry.**
 - *"TYPE mean 183 MB, IDLE mean 238 MB"* — both RSS. The A/B's conclusion that
   typing is not the mechanism may survive, since both arms used the same wrong
   instrument, but the absolute numbers are meaningless.
@@ -886,6 +887,43 @@ place — a fallback I never revisited.
 
 A clean footprint series on the reproduction is running now. **No conclusion
 until it has run.**
+
+
+### 14:35 — measured properly, the reproduction *does* drift, at ~1.8 MB/min
+
+26 minutes of physical footprint on the reproduction renderer, alongside RSS for
+the same process at the same instants:
+
+```
+footprint  793 796 747 750 752 748 752 757 760 759 761 762 762 763 765 765 764 769 770 769 775 782 773 786 786 776
+rss         62  91  73 320 230  91 341 264  86 349  91 344 176 441  83 335 354  70 343  88  57  76 353  60 261  87
+```
+
+**Footprint moves smoothly. RSS swings between 57 and 441 MB over the same
+window.** That is the instrument problem from the last entry, shown side by side:
+one of these two columns is a signal and the other is noise, and every earlier
+"no trend" conclusion in this file read the noisy one.
+
+**The trend.** The first two samples are still settling after my ballast test;
+the clean baseline is 747 MB at 14:09. From there to 786 MB at 14:31 is
+**+39 MB in 22 minutes, ~1.8 MB/min**, near-monotonic with ±10 MB jitter. The
+trend is several times the jitter.
+
+**So "does not reproduce" was wrong, and so is treating this as the same thing.**
+
+| | rate |
+|---|---|
+| reproduction, bare project, idle | **~1.8 MB/min** |
+| his tab, idle | 30–77 MB/min |
+| his tab, active | 165–220 MB/min |
+
+**A bare tab drifts. His tab runs 20–100× faster.** Whether that is one
+mechanism at different intensity or two different things is **not established**,
+and the numbers alone cannot decide it. What the reproduction now gives that it
+did not before is a **live, freely-instrumentable process that grows** — a heap
+snapshot on it is affordable in a way one on his 12 GB tab never was.
+
+A 75-minute series is running to firm up the rate against the jitter.
 
 ## Next action
 
