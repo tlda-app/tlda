@@ -4823,13 +4823,32 @@ app.use('/docs', (req, res, next) => {
     const texBase = livePageMatch[1]
     const pageNum = parseInt(livePageMatch[2], 10)
     const project = await readProject(name)
-    const targets = Array.isArray(project?.targets) && project.targets.length > 0
-      ? project.targets
-      : [{ texBase: basename(project?.mainFile || 'main.tex', '.tex'), pages: project?.pages || 0 }]
+    // No fallback target. A project's documents are its `targets`; inventing one
+    // from a single "main file" is wrong the moment a project has more than one
+    // document root, and `link` takes several.
+    //
+    // The old fallback named that invented target after the main file's base, so
+    // a project whose targets were missing served 404 for every real page while
+    // claiming the page was out of range. That is two lies in one response: the
+    // page exists, and the reason is not its number.
+    const targets = Array.isArray(project?.targets) ? project.targets : []
+    if (targets.length === 0) {
+      return res.status(409).json({
+        error: `${name} has no build targets, so no page can be addressed. It has not built yet, or its build did not record them.`,
+      })
+    }
     const target = targets.find(t => t?.texBase === texBase)
+    if (!target) {
+      // Say which document was asked for and which exist. Getting this wrong is
+      // silent otherwise: the client asks for a name the server does not have and
+      // is told its page number is out of range.
+      return res.status(404).json({
+        error: `${name} has no document "${texBase}". Its documents are: ${targets.map(t => t?.texBase).filter(Boolean).join(', ')}.`,
+      })
+    }
     const pageLimit = Number(target?.pages || 0)
-    if (!target || pageNum < 1 || (pageLimit > 0 && pageNum > pageLimit)) {
-      return res.status(404).json({ error: 'Page out of range' })
+    if (pageNum < 1 || (pageLimit > 0 && pageNum > pageLimit)) {
+      return res.status(404).json({ error: `${name}/${texBase} has ${pageLimit} pages; page ${pageNum} is out of range` })
     }
     try {
       const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
