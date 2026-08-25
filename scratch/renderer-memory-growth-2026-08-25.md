@@ -546,6 +546,62 @@ as a finding. What is established is only the negative — not disk IO, not
 syscall volume, not CPU contention (load 0.67, PSI cpu 3.67), not JS (V8 records
 no frames at all).
 
+
+### 09:45 — a build froze the whole server for 101 seconds
+
+The 09:00 hour took 24 stalls, double the 12 in 08:00, **with his tab dead** — so
+these are not driven by his session. One of them is not like the others:
+
+```
+09:41:00  lag=100970ms   100784.5ms cpSyncCopyDir | 191.7ms (idle) | 60.7ms spawn | 5.6ms write | 4.1ms mkdir
+```
+
+**101 seconds.** `cpSyncCopyDir` is Node's synchronous recursive directory copy,
+and it held the event loop for 100.8 of those seconds. For a minute and forty
+seconds the server served nothing: no requests, no sockets, no fleet traffic.
+The other 23 stalls that hour are the usual 265 ms median.
+
+**Where it comes from.** Two recursive `cpSync` calls run on the event loop
+during a build:
+
+- `server/lib/build-dispatch.mjs:172` — publish. Copies each replaced item out
+  of the build instance into a transaction directory inside the live project.
+- `server/lib/build-qmd.mjs:281` — render. Copies the whole source tree into the
+  output directory before Quarto runs.
+
+**Best-supported attribution is the publish copy**, on three facts. The build
+instance is created under `mkdtempSync(tmpdir())`, so it lives on the root
+overlay (`none`, 7.8 G); the live project lives on the volume (`/dev/vdc`, 99 G).
+**So publish is a cross-filesystem copy onto persistent storage.** And the
+`output` directories are not evenly sized:
+
+```
+output, MB:  936, 33, 28, 23, 19, 13, 13, 10
+source, MB:  106, 27, 21, 19,  6,  6,  5,  4
+```
+
+**One output tree is 936 MB, an order of magnitude above the next.** 936 MB in
+100.8 s is ~9 MB/s, which is what a synchronous cross-filesystem copy onto a Fly
+volume looks like.
+
+**The gap, stated rather than papered over:** I have not established that the
+936 MB project was the one publishing at 09:41. The stack names the function,
+not the path. What is established is the shape — *a build publishes by copying
+its whole output synchronously on the event loop, and the largest output here is
+936 MB* — and that shape produces exactly this stall whenever that project
+builds.
+
+**Ruled out on the way:** `build-instance.mjs:16` seeds `build-cache` and
+`.biber-par-cache` with the same recursive `cpSync`. Those directories are
+**4 MB and 9 files at the largest**, across 19 projects. It cannot be this.
+
+**Not fixed, deliberately.** The one-sentence version: *publish should not copy —
+it should write the build instance onto the volume in the first place and swap by
+rename, and failing that the copy should be `fs.cp` rather than `cpSync`.* That
+touches the publish transaction, which has its own documented invariants in
+`docs/what-the-old-push-did.md`, so it is Skip's call and not a 6am unilateral
+edit.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
