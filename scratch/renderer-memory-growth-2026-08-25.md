@@ -735,12 +735,11 @@ the stall threshold get logged, so the gaps are 70–240 s rather than a steady 
 And the start-seconds spread across mod-10 buckets because each server restart
 re-phases the grid — the *gaps* stay on it.
 
-**Confidence, stated honestly.** Strongly supported by four independent facts:
-the period equals `WINDOW_MS` exactly; the dispatch is same-thread and
-synchronous, read from the code; the durations cluster around a fixed cost; and
-the stack is empty. **Not proven.** The decisive test is to change
-`TLDA_LAG_PROFILER_WINDOW_MS` and confirm the stall period follows it. That needs
-a restart with a changed environment, so it is Skip's call, not mine.
+**Confidence.** Four independent facts when this was written, and a fifth since:
+43 of 43 consecutive stall gaps land exactly on the ten-second grid and no other
+ten-second timer exists in the process — see the 13:30 entry. The restart test
+(change `TLDA_LAG_PROFILER_WINDOW_MS`, watch the period follow) remains Skip's
+call, but it is now confirmation rather than discovery.
 
 **What this retires, and it is a headline I gave him in my first report.**
 
@@ -799,6 +798,46 @@ synchronous same-thread dispatch read from the code, and now a measured block of
 the right order from an isolated reproduction. The one thing still missing is the
 decisive test — change `TLDA_LAG_PROFILER_WINDOW_MS`, confirm the stall period
 follows — which needs a restart and is Skip's call.
+
+
+### 13:30 — the periodicity is exact, and the alternative is excluded by enumeration
+
+I had been reading gaps off the **log line** timestamp, which is when the dump
+was *written*. One gap came out at 201 s and broke the grid. The dumps carry
+`stallStart` separately, which is the right measurement.
+
+**44 dumps across hours 12 and 13. Every one of the 43 gaps:**
+
+```
+120 200 110 120 100 160  70 140 100 220  80  70 150 110  90  80 130 180  80 110
+170 120 170 190  90 130 110  70  80  90 110  90  70 160 110 180  90 220 120  80
+ 70 120 200
+
+mod 10:  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+```
+
+**43 of 43, exactly on the ten-second grid.** The 201 was an artifact of the
+wrong timestamp. Dump-write lag is a tight 352–509 ms after `stallStart`, itself
+consistent with a fixed-cost operation.
+
+**And the one remaining alternative — a different ten-second timer — does not
+exist.** Every `setInterval` delay in the server:
+
+```
+50 ms, 800 ms, 1 s, 5 s, 30 s (×2), 60 s (room evict), 5 min (source sync sweep)
+```
+
+plus named constants, none of them ten seconds. **`WINDOW_MS = 10_000` in
+`lag-profiler.mjs` is the only ten-second period in the process.** A 5-second
+timer cannot explain the data either: gaps include 70, 90, 110, 130, 150, 170 and
+190 — odd multiples of ten — and nothing would force a 5-second timer to skip
+exactly every other tick, every time.
+
+**Where the claim stands now.** Period matches `WINDOW_MS` exactly across 43
+consecutive intervals; no other timer in the process has that period; dispatch is
+synchronous and same-thread by inspection; and the block reproduces in isolation
+at the right order of magnitude. The restart test would be confirmation, not
+discovery.
 
 ## Next action
 
