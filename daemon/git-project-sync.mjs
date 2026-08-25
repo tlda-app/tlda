@@ -162,6 +162,10 @@ export function createGitProjectSync({
         : []
       const closures = new Map()
       for (const candidate of candidates) {
+        if (/\.qmd$/i.test(candidate)) {
+          closures.set(candidate, new Set(qmdFiles))
+          continue
+        }
         const files = new Set()
         const pending = [candidate]
         const scanned = new Set()
@@ -170,11 +174,9 @@ export function createGitProjectSync({
           const document = pending.shift()
           if (scanned.has(document)) continue
           scanned.add(document)
-          const closure = /\.qmd$/i.test(document)
-            ? { files: qmdFiles, missing: [] }
-            : /\.tex$/i.test(document)
-              ? scanTexDependencyClosure(document, extracted)
-              : scanMarkdownDependencyClosure(document, extracted)
+          const closure = /\.tex$/i.test(document)
+            ? scanTexDependencyClosure(document, extracted)
+            : scanMarkdownDependencyClosure(document, extracted)
           for (const file of closure.files) {
             files.add(file)
             if (DOCUMENT_FILE.test(file) && !scanned.has(file)) pending.push(file)
