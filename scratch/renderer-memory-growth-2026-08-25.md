@@ -469,9 +469,54 @@ still real.
 
 Both renderers followed it. The first reached 15 GB, the second 12 GB.
 
+
+### 08:45 — the crash is confirmed from the dumps themselves
+
+Both dumps carry `ptype`, `--type=renderer`, `RendererMain` and
+**`renderer_foreground`**. So both are the renderer of a foreground tab, not a
+GPU or utility process.
+
+```
+e04acc9c…dmp   02:38:34 local  =  06:38 UTC   ← pid 34813 vanished at 15 GB
+c28bf827…dmp   04:31:39 local  =  08:31 UTC   ← pid 48640 vanished at 12 GB
+```
+
+(`stat` prints local time on this machine and the logs are UTC, four hours
+apart. Both zones are written out here because a bare timestamp from `stat`
+sitting next to a log line is the trap this repository has fallen into twice.)
+
+No explicit out-of-memory string in either dump, which is expected — the
+annotation set Chrome ships in a release build is minimal, and a renderer killed
+for memory on macOS dies by exception rather than by writing a reason.
+
+**His tab is still down.** Chrome is holding the crashed page and will not start
+a new renderer until he interacts with it. Nothing to sample there until he
+returns.
+
+### Two experiments not run, and why
+
+**Layout/recalc rate on his tab** — the measurement I wanted this tick, because
+one early sample pair showed ~33 style recalcs per second on an idle page, and a
+page laying out continuously would allocate raster memory in exactly the
+unattributed bucket the footprint grows in. The job produced **no data**: it hung
+against a renderer that was already dead. Its hang is corroboration of the crash
+time and nothing else.
+
+**The non-leaking baseline** — I wanted the same rate from the reproduction tab,
+to see whether recalc rate tracks leaking. It is not reachable: the pooled
+browser runs with `--remote-debugging-pipe` rather than a port, so there is no
+CDP endpoint, and `LayoutCount`/`RecalcStyleCount` exist only over CDP. Standing
+up a separate browser to obtain a *comparison* metric is not worth its cost on
+this machine, so this is dropped rather than worked around.
+
 ## Next action
 
-Read the WebSocket buffer result. `bufferedAmount` is renderer-side malloc, is
+When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
+against footprint growth across a full document lifetime. That is the last
+untested mechanism with a plausible path to the unattributed `malloc` bucket,
+and it needs a live leaking renderer, which only he has.
+
+Superseded, kept for the record: read the WebSocket buffer result. `bufferedAmount` is renderer-side malloc, is
 invisible to the JS heap, lands in exactly the `malloc` bucket that holds the
 8 GB, and is unbounded when a page sends faster than a socket drains. If that is
 flat, the next step is to drive the reproduction toward his conditions — chat
