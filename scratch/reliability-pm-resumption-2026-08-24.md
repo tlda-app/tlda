@@ -13,6 +13,56 @@ of them are tonight's fixes. Nothing below is proven until that deploy happens.*
 
 ---
 
+## NEXT JOB, scoped and not built: build cards stopped reaching agents on 08-21
+
+**Skip's instinct was right and the mechanism is real — it just has a dead
+input.** `unified-server.mjs:3206` addresses a build card to the agent whose edit
+triggered the build (`editedBy`) plus subscribers, and the card already carries
+`buildFailed` and `mirrorFailed`. So "tell the agent when their sync failed" is a
+slot that exists, not a feature to invent.
+
+**But no agent has received one since 2026-08-21.** Measured:
+
+```
+resolveEditedBy() requires project.lastEditedBy stamped within 10 MINUTES
+nothing in the tree writes lastEditedBy — the writer went with f6d0f9089 (08-20)
+newest lastEditedByAt on the box:  2026-08-21T00:51Z   (31 projects hold stale values)
+```
+
+Four days against a ten-minute window, so it returns `null` for every project,
+every time, and cards reach subscribers only.
+
+**And the card's own comment describes a mechanism that no longer exists** —
+*"resolved by the daemon at proposal time — robust, no time-window
+cross-reference"*. What is actually there **is** a time-window cross-reference,
+against a field nobody writes. A note that outlived its mechanism.
+
+### The fix is one fact not carried one hop — NOT a rebuild
+
+**The daemon already has the attribution.** `daemon/jsonl-ingestor.mjs` calls
+`recordEdit(agentId, path, operation)` on every agent Edit/Write/MultiEdit and
+exposes **`resolveEditor(absPaths)`** — most-recent agent to touch those paths
+within the window. Live since `140101c7c` on 08-23.
+
+It never leaves the daemon: `source-proposal-admit` sends
+`{ project, revision, ref, retry_terminal }` and no attribution.
+
+**Four small pieces:**
+
+1. `settle()` already computes the revision's members — pass them to `pushRevision`
+2. `onSubmitted` carries them (today: `{ status, revision, proposalRef, output, forceRebuild }`)
+3. the daemon resolves absolute paths against `item.sourceDir`, calls
+   `resolveEditor`, sends `editedBy` with the admit
+4. the server stamps `lastEditedBy` on admission
+
+Then cards address the editing agent again, **and conflicts riding the card —
+Skip's own suggestion — works without a new surface.**
+
+**Why I did not build it:** it crosses the daemon/server boundary into the push
+path, which is the most damage-prone code here, at the end of an eight-commit
+session on one theme. `AGENTS.md` §"Count your own commits" says that is the
+point to stop and say so. **Better done fresh, against this.**
+
 ## OPEN — what the next person picks up
 
 **Unclaimed, deliberately.** The 3-second status scan:
@@ -36,12 +86,47 @@ on why the skip condition was rejected. Whether those bindings should exist at
 all is **Skip's call**; `AGENTS.md` is explicit that we do not prune what we did
 not create.
 
-**Two things have been waiting on Skip all day, unanswered:**
+**Both of those are now ANSWERED — do not put them to him again.**
 
-1. **the untracked click** — A refuse and offer to add / B `git add` then open
-   live / C live but unversioned. I recommended **B**.
-2. **the mirror** — restore `68cd40874`, which was written, tested and deleted by
-   accident? Yes or no.
+1. **The untracked click — he chose B.** Built and committed: **`71b0ed65a`**.
+   A click stages the file through the daemon and it becomes a live root instead
+   of a frozen `parts/` copy. Staging only; no commit is authored in his name.
+   **Not yet exercised end to end** — needs a deploy, then a click on an
+   untracked markdown file in a bound checkout, checking the panel shows the live
+   URL rather than a `parts/` path.
+
+2. **The mirror — yes, but NOT the old one, and he designed the replacement.**
+   `68cd40874` must not simply be restored: the function it lived in and the one
+   it called are both gone, so a "restore" is a rebuild inside a changed
+   architecture. **His design, settled 2026-08-24:**
+
+   - **attempt a fast-forward and nothing else.** ff cannot overwrite by
+     construction — it advances or refuses. The 08-17 mirror that took his
+     paragraphs back out applied content unconditionally; that is the whole
+     difference.
+   - **guarded on conflicts, which is not new** — `commitSettledTree()` already
+     opens with `unresolved()` and refuses to push. So it is **one conflict
+     guard, both directions**: out is built, in is missing.
+   - **triggered on the edit lull the debouncer already detects.** Not on the
+     push: he pointed out pushes are automatic, so hanging it there means merging
+     constantly. The reason to wait for a lull is surprise, not safety — ff can't
+     lose work whenever it runs, but it does change files on his disk.
+   - **when it declines, the existing `SyncErrorPill` says why.** It already
+     reads `syncErrorJson` off the doc-version sentinel and already phrases it
+     *"has two versions — open it to pick"*. **A field to write, not a surface to
+     design.**
+   - **plus a `daemon.yaml` toggle for conflict markers, defaulting off.** In
+     `daemon.yaml` because the daemon is the actor. **Its acceptance check is
+     "flip it, cause a conflict, watch the behaviour change" — NOT "the value is
+     stored"**; the August audit found 8 of 45 controls inert.
+
+**One question he has NOT answered, and it changes the trigger above:** whether
+save-on-keystroke is the right model at all. His words — *"prob the save on
+keystroke thing just isn't the tlda way, agents edit in chunks, you can `:w`
+manually"*. Agents and the app's editor both **know** their write intent, and the
+watcher discards it and re-guesses from a 3-second timer; only a person in vim is
+genuinely watcher-only. **If pushes become explicit, the mirror hangs off the
+push and the lull trigger goes away.** Do not build the mirror before he answers.
 
 ## Skip's priorities, his words, replacing anything earlier
 
