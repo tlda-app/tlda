@@ -1466,6 +1466,63 @@ the establishing work and it argues against changing anything:
 on the same trajectory as the one that died at 20:37. **What the 1.5 GB consists
 of is not established** — that is the open question.
 
+
+### 22:40 — what the server's 1.5 GB is made of, so far
+
+Measurement only, authorised by sol-dev. No changes, no restart, no deploy.
+
+**The process** (`/proc/<pid>/status`, `smaps_rollup`):
+
+```
+VmRSS       1,490,744 kB   (1.49 GB)
+Anonymous   1,340,524 kB   (1.34 GB — 90%)
+Pss_File      149,471 kB
+VmSwap                0 kB
+Threads              15
+```
+
+**So it is not page cache.** 90% is anonymous — real heap and native allocation.
+A 10.9 GB SQLite file could have explained a large *file-backed* RSS; it does not
+explain this.
+
+**One quarter of it is configured, not leaked.** `server/lib/fleet-store.mjs:364`:
+
+```js
+this.db.pragma('cache_size = -262144')     // negative = KiB, so 256 MiB
+this.db.pragma('mmap_size = 1073741824')   // 1 GiB, file-backed
+```
+
+A negative SQLite `cache_size` is **kibibytes**, so that is a **256 MiB page
+cache — malloc'd, therefore anonymous.** The `[heap]` (brk) mapping measures
+**257 MB**, which matches it almost exactly. The 1 GiB `mmap_size` is file-backed
+and shows up as the 110 MB of `fleet.db` resident, well inside `Pss_File`.
+
+**The rest is the open part**, and its shape is unusual:
+
+```
+anonymous mmap regions   2,605
+anonymous mmap total     1,050 MB
+   >100 MB                   1   (128 MB)
+   10–100 MB                 5   (64, 62, 52, 15, 14)
+   <10 MB                2,599
+```
+
+**2,599 small mappings holding most of a gigabyte.** The single 128 MB region is
+consistent with a V8 heap cage; the long tail is not obviously anything yet.
+
+**The discriminator I am running now**, and it is fully passive: sample the
+region *count* against the region *total* over ten minutes. If the total grows
+while the count is flat, growth is inside existing heaps. If the count grows,
+mappings are accumulating — a different defect with a different fix.
+
+**What I cannot get passively, stated plainly:** Node's own breakdown — `heapUsed`
+vs `external` vs `arrayBuffers` — which is what would separate "V8 heap" from
+"Buffers nobody freed". The server records no memory anywhere (`process.memoryUsage()`
+appears once in the tree, in `bin/fleet-daemon.mjs`, not the server), so there is
+no history to read either. Getting it on a running process means `SIGUSR1` to open
+the inspector. **That is a live intervention on production and I have not done
+it** — it is not undoable without the restart nobody is allowed to perform.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
