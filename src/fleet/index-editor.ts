@@ -28,11 +28,20 @@
  * `pageToScreen` are the identity rather than a stubbed-out zero.
  */
 
-import { atom, type Editor, type TLShape, type TLShapeId } from 'tldraw'
+import { atom, type Editor, type TLShapeId } from 'tldraw'
 
 export const INDEX_EDITOR_PAGE_ID = 'page:index' as const
 
-type ShapeRecord = TLShape & { x: number; y: number; props: Record<string, unknown> }
+/** What this store holds: enough of a shape for the chat to read itself out of. */
+export type IndexEditorShape = {
+  id: string
+  type: string
+  x: number
+  y: number
+  props: Record<string, unknown>
+}
+
+type ShapeRecord = IndexEditorShape
 
 function boundsOf(shape: ShapeRecord | undefined) {
   if (!shape) return undefined
@@ -123,7 +132,10 @@ export function createIndexEditor(initialShapes: ShapeRecord[] = []) {
     // are canvas records, so off the canvas there are none and nothing ever
     // arrives — an empty store rather than a missing one.
     store: {
-      allRecords: () => [] as unknown[],
+      /** Records here are the shapes, keyed the way the canvas store keys them. */
+      get: (id: TLShapeId | string) => shapes.get().get(String(id)),
+      has: (id: TLShapeId | string) => shapes.get().has(String(id)),
+      allRecords: () => [...shapes.get().values()] as unknown[],
       listen: () => () => {},
     },
 
