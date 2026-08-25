@@ -65,6 +65,14 @@ Reproduced: after one browser edit, the disk leg failed three times in a row,
 alone, on the work branch with a clean tree, having worked repeatedly
 (10.2–12.7s) for hours beforehand.
 
+**Control, and it bounds the claim:** `sync-proof` — same box, same daemon, same
+code, but **only ever written from disk** — is on its work branch, clean, and
+its chain *descends from* the fetched head. Converged, hours later. So this is
+not "the work branch broke syncing" and not a property of the new refs. **It
+takes both ingresses submitting.** That is consistent with the two-chain account
+and still does not prove it; a single-ingress project simply never creates the
+second chain to diverge from.
+
 **This is NOT the ref split.** Both bindings always had separate chains, in
 separate repositories. What changed is that the browser leg now actually
 submits, so both are live at once for the first time. **The room fix made a
