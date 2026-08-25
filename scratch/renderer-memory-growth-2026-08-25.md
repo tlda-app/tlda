@@ -925,6 +925,43 @@ snapshot on it is affordable in a way one on his 12 GB tab never was.
 
 A 75-minute series is running to firm up the rate against the jitter.
 
+
+### 15:10 — the drift holds over 51 minutes, and there is now an instrumentable process
+
+**Longer series, one sample a minute, reproduction renderer:**
+
+```
+14:09  747      14:41  784      14:53  796
+14:35  790      14:44  785      14:56  796
+14:36  781      14:47  796      14:58  800
+14:38  780      14:49  798      15:00  802
+```
+
+**747 → 802 MB over 51 minutes, ~1.1 MB/min**, jitter ±5–10 MB. The earlier
+26-minute window gave 1.8 MB/min; over the longer run it settles near 1.1. Either
+way the trend is now several times the jitter and the drift is not in doubt.
+
+*(The 75-sample run raced after 15:00:31 — its `sleep` stopped taking effect and
+it burned the remaining iterations in seconds, so the file has ~20 rows sharing
+one timestamp. Only the 26 rows with distinct timestamps are data.)*
+
+**And the blocker is now cleared.** Every attempt to point a real instrument at
+the reproduction has failed because the pooled browser runs with
+`--remote-debugging-pipe` and exposes no CDP endpoint. So I launched a separate
+Chrome for Testing on port 9333, headless, its own `--user-data-dir`, pointed at
+the disposable project — nothing to do with Skip's browser or the pool — and
+armed `Memory.startSampling` on it. That is the sampler that found the 2.28 GB
+single allocation site on his tab.
+
+**Caveat, before the result exists: headless has no GPU process and no
+compositing.** If the growth is compositor- or raster-related, this instance will
+not reproduce it, and a flat series here would say something about headless
+rather than about the app. The footprint series on it (starting at 36 MB) is what
+decides whether the experiment is valid at all.
+
+**Server this tick:** 35 stalls in hour 14, 4 so far in hour 15. His tab: dead,
+tenth consecutive tick.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
