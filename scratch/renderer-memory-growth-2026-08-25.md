@@ -1399,6 +1399,73 @@ from `server/lib/build-queue.mjs`:
 That is structure I read, not a measured cause, and it does not by itself account
 for 150 s on an idle box.
 
+
+### 22:30 — two corrections received, and a queue wedge worth naming
+
+**`reliability-pm` corrected their own sync-latency figure.** Admission is
+**~8 seconds**, not 139–200. Their instrument polled `/source-head`, which is the
+**published** revision, so it measured time queued behind a **stopped build
+worker** rather than admission. The event loop stayed responsive throughout.
+
+**That confirms the call I made rather than contradicting it.** When the 139–200 s
+figure reached me I said an event-loop block could not explain it: the worst
+stall in that window was 10.5 s and ten seconds cannot produce a 150-second
+admit. The admit path was never the problem. The structure I recorded for it —
+`admitBuild` inside the per-project publication lock, inside a globally-shared
+`transition` chain — is real, had no symptom to explain, and stays filed as
+*structure read, not measured cause*.
+
+**The wedge itself, from `server/lib/build-queue.mjs`:**
+
+```
+maxConcurrency  defaults to 2                  (:16)
+activeCount += 1        in start()             (:93)
+activeCount -= 1        ONLY in onExit()       (:114)
+drain()   while (activeCount < maxConcurrency) (:79)
+```
+
+`activeCount` comes back down in **exactly one place**: the worker's `onExit`. A
+worker that stops without exiting — SIGSTOP, a paused process group — never fires
+it. **One such worker halves build capacity; two wedge the queue permanently
+until the process restarts.** Nothing re-derives the count from live workers.
+
+This is the shape the repository already has a rule about: **state that must be
+set exactly once, rather than computed, is the state that gets stuck.** A count
+derived from the live `running` map could not wedge.
+
+**Unverified, and flagged as such:** that the paused process group was a
+dispatched build worker, and that `activeCount` is currently non-zero on the live
+server. Both checkable; both possibly another lane's.
+
+### The sync-core task, and why I did not do it
+
+Asked to take the 550 s `cancelSession` / `scheduleFollowUpPrune` stall. I did
+the establishing work and it argues against changing anything:
+
+- **The stall is the run-up to an OOM kill.** Machine started 20:16:45Z, loop
+  blocked 20:18:47→20:27:57, machine killed 20:37:33Z with
+  `exit_code=137, oom_killed=true`. On a box heading into OOM everything is slow,
+  so those frames are where time landed, not the cause.
+- **Room residency is `{resident: 2, idle: 2}`** — two rooms cannot make a
+  per-room 1-second prune expensive. Killed my own hypothesis.
+- **`@tldraw/sync-core` is a plain `5.2.0` registry dependency.** Only
+  `@tldraw/editor` is forked. Changing it means forking a second package.
+- **Room eviction only closes rooms with zero sessions** — it cannot produce a
+  mass teardown.
+
+**The live picture instead**, four samples over two minutes on the 4 GB machine:
+
+```
+22:15:23  serverRSS 1457 MB   memFree 474 MB
+22:16:03  serverRSS 1458 MB   memFree 462 MB
+22:16:43  serverRSS 1467 MB   memFree 433 MB
+22:17:23  serverRSS 1530 MB   memFree 178 MB
+```
+
+**178 MB free**, server at 1.5 GB, an R render alongside, process ~1h40m old and
+on the same trajectory as the one that died at 20:37. **What the 1.5 GB consists
+of is not established** — that is the open question.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
