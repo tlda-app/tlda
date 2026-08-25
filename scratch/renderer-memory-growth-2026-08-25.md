@@ -1523,6 +1523,58 @@ no history to read either. Getting it on a running process means `SIGUSR1` to op
 the inspector. **That is a live intervention on production and I have not done
 it** — it is not undoable without the restart nobody is allowed to perform.
 
+
+### 22:50 — I cannot show the server leaks, and the admit handler is not the 139 s
+
+**The memory discriminator, seven samples over 7.5 minutes:**
+
+```
+22:40:14  rss=1454MB  regions=2605  anon=1050MB  brkHeap=257MB
+22:41:29  rss=1457MB  regions=2608  anon=1052MB  brkHeap=257MB
+22:42:44  rss=1310MB  regions=2017  anon= 905MB  brkHeap=257MB   <-- releases 591 regions
+22:43:59  rss=1335MB  regions=2121  anon= 931MB  brkHeap=257MB
+22:45:14  rss=1335MB  regions=2127  anon= 930MB  brkHeap=257MB
+22:46:29  rss=1362MB  regions=2237  anon= 958MB  brkHeap=257MB
+22:47:44  rss=1368MB  regions=2245  anon= 963MB  brkHeap=257MB
+```
+
+- **`brkHeap` is 257 MB in every sample.** The SQLite page cache is fixed, fully
+  resident and deliberate. It is a quarter of the process and it is not growth.
+- **Count and total move together** (~0.44 MB/region): growth is **more
+  mappings, not bigger ones**, at ~46 regions/min.
+- **It releases in bulk** — 591 regions and 147 MB at once — then climbs again.
+- **Net over the window: 1454 → 1368 MB. Down.**
+
+**Retracting my own framing from 22:20.** I told sol-dev the server "does not fit
+in 4 GB and is killed every couple of hours," which implied unbounded growth.
+**Over 7.5 minutes there is no growth to show** — it sawtooths around 1.3–1.5 GB,
+the same shape as the renderer. Third time today a sawtooth nearly became a
+trend in my hands; this time I sampled long enough first.
+
+**What actually explains the 20:37 OOM** is the baseline *plus* what runs beside
+it: an R render at 254 MB and build workers, on a 4 GB machine. **The baseline
+does not leak; it leaves no room.** Machine size, moving builds off, or a smaller
+cache on a small box are all placement calls and none of them mine.
+
+### The admit handler, measured on `sync-watch`
+
+| per-call cost | measured |
+|---|---|
+| `operations.json` read + parse | **0.5 ms** (29 KB, 77 revisions) |
+| `for-each-ref refs/tlda/proposals/` | **6 ms** (77 refs) |
+| `spawn` to reach git, from a 1.5 GB process | **260–766 ms** (lag profiles) |
+
+`reliability-pm` disproved their own accumulated-refs guess and this confirms it
+from the server side. **One nuance kept:** their 6 ms is the git work, but
+`listProposalRefs` reaches git via `runGit`, which is a **spawn** — forking a
+1.5 GB address space, which the lag profiles put at 260–766 ms. The real per-call
+cost is the fork, not the ref walk.
+
+**It changes nothing about the 139 s.** 766 ms is three orders of magnitude
+short. **Everything the server does in that handler is fast**, so the delay is
+the daemon side, the network, or the round trip — not handler computation. Not
+my lane and I did not take it.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
