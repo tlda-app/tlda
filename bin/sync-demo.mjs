@@ -99,14 +99,32 @@ if (!ALLOWED_PREFIXES.some(prefix => PROJECT.startsWith(prefix))) {
   process.exit(1)
 }
 const FILE = String(valueOfEarly('--file', 'demo.md'))
+// EACH INGRESS OWNS A FILE.
+//
+// They used to share one, and the demo then conflicted with itself on every
+// cycle: `UU paper.tex`. It is not a flaky fixture — it is structural. The app
+// does not push accepted revisions out to a linked git remote, so the remote
+// clone can never see a disk edit, and its next push is always a divergent
+// lineage touching the same lines. Giving each way in its own document removes
+// a collision that has nothing to do with what is being demonstrated.
+const LEG_FILES = {
+  disk: FILE,
+  browser: String(valueOfEarly('--browser-file', FILE)),
+  remote: String(valueOfEarly('--remote-file', FILE)),
+}
 const SHAPE = `shape:${PROJECT}`
 const ROOT = path.join(os.homedir(), 'worktrees', PROJECT)
 // Explicit, not inferred. A checkout that is the project root and one that is a
 // `checkout/` inside it are both ordinary, and guessing between them is the kind
 // of convenience that ends up wrong silently.
 const CHECKOUT = path.resolve(String(valueOfEarly('--checkout', path.join(ROOT, 'checkout'))))
-const REMOTE = path.join(ROOT, 'remote.git')
-const REMOTE_CLONE = path.join(ROOT, 'remote-clone')
+// The git-remote fixtures live OUTSIDE the checkout. When the checkout is the
+// project root — which it is whenever a project was made by `git init` in the
+// directory itself — putting a bare repo under ROOT puts it inside the working
+// tree, where the daemon would see it as project content.
+const FIXTURES = path.resolve(String(valueOfEarly('--fixtures', ROOT)))
+const REMOTE = path.join(FIXTURES, 'remote.git')
+const REMOTE_CLONE = path.join(FIXTURES, 'remote-clone')
 const SERVER = getServerUrl().replace(/\/$/, '')
 
 const args = process.argv.slice(2)
@@ -135,15 +153,15 @@ const git = (cwd, gitArgs) => execFile('git', gitArgs, { cwd, encoding: 'utf8', 
 // and is never allowed to count as a convergence failure.
 // ---------------------------------------------------------------------------
 
-async function serverText() {
+async function serverText(file = FILE) {
   try {
-    const res = await fetch(api(`/source/${FILE}`), { signal: AbortSignal.timeout(30_000) })
+    const res = await fetch(api(`/source/${file}`), { signal: AbortSignal.timeout(30_000) })
     return res.ok ? await res.text() : null
   } catch { return null }
 }
 
-function checkoutText() {
-  try { return fs.readFileSync(path.join(CHECKOUT, FILE), 'utf8') } catch { return null }
+function checkoutText(file = FILE) {
+  try { return fs.readFileSync(path.join(CHECKOUT, file), 'utf8') } catch { return null }
 }
 
 async function remoteText() {
@@ -153,7 +171,7 @@ async function remoteText() {
     return stdout
   } catch {
     try {
-      const { stdout } = await git(REMOTE_CLONE, ['show', `origin/main:${FILE}`])
+      const { stdout } = await git(REMOTE_CLONE, ['show', `origin/tlda/${PROJECT}:${FILE}`])
       return stdout
     } catch { return null }
   }
@@ -229,7 +247,7 @@ function appendIntoDocument(absolutePath, line) {
 }
 
 async function writeOnDisk(line) {
-  appendIntoDocument(path.join(CHECKOUT, FILE), line)
+  appendIntoDocument(path.join(CHECKOUT, LEG_FILES.disk), line)
   // Nothing else. No commit, no push, no CLI call: the daemon is supposed to
   // notice the edit, settle the tree, and push a proposal on its own. Doing any
   // of that here would be the harness performing the behaviour under test.
@@ -265,13 +283,13 @@ async function writeInBrowser(line) {
 }
 
 async function writeOnRemote(line) {
-  const file = path.join(REMOTE_CLONE, FILE)
+  const file = path.join(REMOTE_CLONE, LEG_FILES.remote)
   await git(REMOTE_CLONE, ['fetch', 'origin'])
-  await git(REMOTE_CLONE, ['reset', '--hard', 'origin/main']).catch(() => {})
+  await git(REMOTE_CLONE, ['reset', '--hard', `origin/tlda/${PROJECT}`]).catch(() => {})
   appendIntoDocument(file, line)
-  await git(REMOTE_CLONE, ['add', '--', FILE])
+  await git(REMOTE_CLONE, ['add', '--', LEG_FILES.remote])
   await git(REMOTE_CLONE, ['commit', '-m', line])
-  await git(REMOTE_CLONE, ['push', 'origin', 'HEAD:main'])
+  await git(REMOTE_CLONE, ['push', 'origin', `HEAD:refs/heads/tlda/${PROJECT}`])
 
   // Then pull it in, because for this project nothing would.
   //
@@ -351,55 +369,67 @@ async function branchState() {
 }
 
 /**
- * Fetch every rendered page and say whether it is really there.
+ * Fetch what the project says it renders, and say whether it is really there.
  *
- * This is the check the first version of this file lacked, and its absence is
- * why it certified a document nobody could read. A page that 404s comes back as
- * a short JSON error, so "did I get bytes" is not enough — the size is the test.
+ * ASKS THE APP, rather than knowing per format. `/files` reports a `documents[]`
+ * with an `outputFile` each — `doc.html` for markdown, `paper-page-1.svg` for a
+ * LaTeX target — so one check covers every format the app supports and a new
+ * format needs nothing here. Encoding "markdown means .html" in this file would
+ * be a second copy of a fact the server already states.
  *
- * The URL is built from the project's own `targets`, exactly as the client does,
- * because the filename is keyed on the TEX BASE and not the project name. Asking
- * under the wrong name is precisely the bug this exists to catch, so it must not
- * guess: no targets means no answer, reported as such.
+ * This is the check the first version lacked, and its absence is why it
+ * certified a document nobody could read. A page that 404s comes back as a short
+ * JSON error, so "did I get bytes" is not the test — the SIZE is, because a
+ * proxy can return 200 with an error document.
  */
-async function pagesRender() {
-  let project
+async function renderedOutputs() {
+  let listing
+  try {
+    const res = await fetch(api('/files'), { signal: AbortSignal.timeout(30_000) })
+    if (!res.ok) return { ok: false, reason: `file listing unreadable (HTTP ${res.status})` }
+    listing = await res.json()
+  } catch (error) { return { ok: false, reason: `file listing unreadable (${error.message})` } }
+
+  const documents = Array.isArray(listing?.documents) ? listing.documents : []
+  if (!documents.length) return { ok: false, reason: 'the project reports no documents, so nothing can be rendered' }
+
+  // For a paged format the listing names page 1; the rest come from `targets`,
+  // which is where the page count lives. Nothing is invented: a format that
+  // declares no pages is simply checked on the one output it names.
+  let targets = []
   try {
     const res = await fetch(api(''), { signal: AbortSignal.timeout(30_000) })
-    if (!res.ok) return { ok: false, reason: `project record unreadable (HTTP ${res.status})` }
-    project = await res.json()
-  } catch (error) { return { ok: false, reason: `project record unreadable (${error.message})` } }
+    if (res.ok) targets = (await res.json())?.targets || []
+  } catch { /* the per-document output below is still checkable without it */ }
 
-  const targets = Array.isArray(project?.targets) ? project.targets : []
-  if (!targets.length) return { ok: false, reason: 'the project reports no targets, so no page can be addressed' }
-
-  const results = []
-  for (const target of targets) {
-    const pages = Number(target?.pages || 0)
-    for (let page = 1; page <= pages; page++) {
-      const url = `${SERVER}/docs/${PROJECT}/${target.texBase}-page-${page}.svg`
-      const started = Date.now()
-      try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(180_000) })
-        const body = await res.text()
-        results.push({ page, status: res.status, bytes: body.length, ms: Date.now() - started })
-      } catch (error) {
-        results.push({ page, status: 0, bytes: 0, ms: Date.now() - started, error: error.message })
-      }
+  const wanted = []
+  for (const doc of documents) {
+    const out = String(doc?.outputFile || '')
+    if (!out) continue
+    const paged = out.match(/^(.*)-page-1\.svg$/)
+    if (paged) {
+      const pages = Number(targets.find(t => t?.texBase === paged[1])?.pages || 1)
+      for (let page = 1; page <= pages; page++) wanted.push(`${paged[1]}-page-${page}.svg`)
+    } else {
+      wanted.push(out)
     }
   }
-  // A real page is tens of kilobytes. A 404 body is a few dozen bytes, which is
-  // why the threshold is on SIZE and not on the status code alone — a proxy or a
-  // rewrite can return 200 with an error document.
+  if (!wanted.length) return { ok: false, reason: 'no document declared an output file' }
+
+  const results = []
+  for (const file of wanted) {
+    const started = Date.now()
+    try {
+      const res = await fetch(`${SERVER}/docs/${PROJECT}/${file}`, { signal: AbortSignal.timeout(180_000) })
+      const body = await res.text()
+      results.push({ file, status: res.status, bytes: body.length, ms: Date.now() - started })
+    } catch (error) {
+      results.push({ file, status: 0, bytes: 0, ms: Date.now() - started, error: error.message })
+    }
+  }
   const broken = results.filter(r => r.status !== 200 || r.bytes < 1000)
   const slowest = results.reduce((a, b) => (b.ms > (a?.ms ?? -1) ? b : a), null)
-  return {
-    ok: broken.length === 0,
-    total: results.length,
-    broken,
-    slowestMs: slowest?.ms ?? null,
-    slowestPage: slowest?.page ?? null,
-  }
+  return { ok: broken.length === 0, total: results.length, broken, slowestMs: slowest?.ms ?? null, slowestFile: slowest?.file ?? null }
 }
 
 async function versionCount() {
@@ -419,6 +449,7 @@ async function versionCount() {
 async function setup() {
   console.log(`Building the demo project under ${ROOT}`)
   fs.mkdirSync(ROOT, { recursive: true })
+  fs.mkdirSync(FIXTURES, { recursive: true })
 
   if (!fs.existsSync(path.join(REMOTE, 'HEAD'))) {
     fs.mkdirSync(REMOTE, { recursive: true })
@@ -459,14 +490,21 @@ async function setup() {
   // Otherwise `tlda project remote pull` reaches `git merge` and stops at
   // "refusing to merge unrelated histories" — which is git being right, and the
   // harness having built a remote that was never a copy of this project.
-  const bareHasCommits = await git(REMOTE, ['rev-parse', '--verify', 'HEAD']).then(() => true).catch(() => false)
-  if (!bareHasCommits) {
-    await git(CHECKOUT, ['push', REMOTE, 'HEAD:main'])
-    console.log('  seeded remote from the checkout')
+  // Seed the branch `tlda project remote pull` actually fetches.
+  //
+  // It fetches `refs/heads/tlda/<project>` — the work branch — and seeding
+  // `main` instead left the pull failing with "couldn't find remote ref
+  // refs/heads/tlda/<project>", which reads as a broken remote rather than a
+  // fixture that put the commits under the wrong name.
+  const workBranch = `tlda/${PROJECT}`
+  const bareHasBranch = await git(REMOTE, ['rev-parse', '--verify', `refs/heads/${workBranch}`]).then(() => true).catch(() => false)
+  if (!bareHasBranch) {
+    await git(CHECKOUT, ['push', REMOTE, `HEAD:refs/heads/${workBranch}`])
+    console.log(`  seeded remote with ${workBranch} from the checkout`)
   }
 
   if (!fs.existsSync(path.join(REMOTE_CLONE, '.git'))) {
-    await git(ROOT, ['clone', REMOTE, REMOTE_CLONE])
+    await git(FIXTURES, ['clone', REMOTE, REMOTE_CLONE])
     await git(REMOTE_CLONE, ['config', 'user.email', 'sync-demo@tlda']).catch(() => {})
     await git(REMOTE_CLONE, ['config', 'user.name', 'sync demo']).catch(() => {})
     console.log(`  remote clone     ${REMOTE_CLONE}`)
@@ -575,8 +613,9 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     // Every destination EXCEPT the one that wrote it. Asking whether the writer
     // can see its own write measures nothing.
     const destinations = {}
-    destinations.server = serverText
-    if (leg !== 'disk') destinations.checkout = checkoutText
+    const legFile = LEG_FILES[leg]
+    destinations.server = () => serverText(legFile)
+    if (leg !== 'disk') destinations.checkout = () => checkoutText(legFile)
     if (leg !== 'browser' && browserReady) destinations.browser = browserText
     // The linked remote is a SOURCE here, never a destination. Nothing pushes
     // an accepted revision back out to it unless the binding asks for a mirror,
@@ -634,17 +673,17 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
 
   // The check the first version of this file did not have. Bytes arriving is
   // not the product; a page a person can see is.
-  const rendered = await pagesRender()
+  const rendered = await renderedOutputs()
   if (!rendered.ok && rendered.reason) {
     failures.push(`pages: ${rendered.reason}`)
     console.log(`         pages   COULD NOT CHECK — ${rendered.reason}`)
   } else if (!rendered.ok) {
     const sample = rendered.broken.slice(0, 3)
-      .map(b => `p${b.page} ${b.status} ${b.bytes}b`).join(', ')
+      .map(b => `${b.file} ${b.status} ${b.bytes}b`).join(', ')
     failures.push(`pages: ${rendered.broken.length} of ${rendered.total} do not render (${sample})`)
     console.log(`         pages   ${rendered.broken.length}/${rendered.total} BROKEN — ${sample}`)
   } else {
-    console.log(`         pages   ${rendered.total}/${rendered.total} render, slowest p${rendered.slowestPage} ${(rendered.slowestMs / 1000).toFixed(1)}s`)
+    console.log(`         output  ${rendered.total}/${rendered.total} render, slowest ${rendered.slowestFile} ${(rendered.slowestMs / 1000).toFixed(1)}s`)
   }
 
   if (cycle + 1 < CYCLES) await sleep(EVERY_MS)
