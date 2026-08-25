@@ -7164,11 +7164,27 @@ function FleetChatInner({ shape }: { shape: any }) {
                     <path d="M1.5 3.1 L4.1 6.5 L7.6 5.1" />
                   </svg>
                 ) : (
-                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <circle cx="4" cy="5" r="2" />
-                    <circle cx="4" cy="11" r="2" />
-                    <path d="M5.8 5.9 L13.5 10.8" />
-                    <path d="M5.8 10.1 L13.5 5.2" />
+                  // Cut. Skip, 2026-08-25: "sometimes the 'x' that the cut icon
+                  // has replaced shows up in the chat composer." Nothing renders
+                  // that x any more -- it was retired in 0126a233d and is not in
+                  // the deployed tree. What he is seeing is THIS mark reading as
+                  // the x it replaced: two long blades crossing symmetrically in
+                  // the middle of the box, with the only thing distinguishing
+                  // them from an x being two hairline rings 1.4px across at the
+                  // smallest size on the rail, at rest opacity.
+                  //
+                  // So the difference carries its own weight now: filled handle
+                  // rings that survive at rest the way the traffic glyph's dots
+                  // do, a pivot where the blades cross -- an x has nothing at its
+                  // centre -- and blades that reach past it rather than stopping
+                  // symmetrically. Sized to 12 like its neighbour on the rail
+                  // instead of 11, the smallest thing there.
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="3.5" cy="4.2" r="2.2" fill="currentColor" fillOpacity="0.25" />
+                    <circle cx="3.5" cy="11.8" r="2.2" fill="currentColor" fillOpacity="0.25" />
+                    <path d="M5.4 5.3 L14 11.4" />
+                    <path d="M5.4 10.7 L14 4.6" />
+                    <circle cx="9.1" cy="8" r="0.95" fill="currentColor" stroke="none" />
                   </svg>
                 )}
               </button>
