@@ -152,6 +152,48 @@ tried, and guessing costs a day when it is wrong.
 is a fresh checkout.** Say that to whoever hits it rather than letting them
 believe a relink worked.
 
+## INTERACTIVE SYNC IS STARVED BY LECTURE BUILDS — measured, routed to browser-perf
+
+The live demo caught this on its own, which is the point of it.
+
+```
+LATE  disk   -> server arrived,  983s after the 240s window closed
+LATE  disk   -> server arrived, 1674s
+LATE  remote -> server arrived, 2064s
+LATE  disk   -> server arrived, 2328s      (~43 min end to end)
+```
+
+Twice in the same window the server was unreachable: `file listing unreadable
+(fetch failed)`. **Nothing was lost** — every marker arrived, which is only
+knowable because the demo re-checks and distinguishes late from lost.
+
+**Same demo, same project, a few hours earlier: 9.8s and 10.1s.**
+
+Cause, measured on the box:
+
+```
+up 8 min                       <- restarted by a deploy
+load average 7.64, 11.44
+R --file=rmd.R                 61.7-83% CPU, two of them
+quarto render lectures/Lab1-prose.qmd
+```
+
+A deploy restarted the machine and every lecture build it interrupted re-ran at
+once. `proposal failed: daemon request timed out: source-proposal-admit` appears
+in the daemon log during these windows.
+
+**Not the demo's own load** — two small edits every two minutes against a load
+average of 11 driven by quarto and R. Checked before reporting.
+
+**The open decision, and it is infrastructure rather than code:** batch renders
+and interactive paper sync share one box with nothing separating them, and batch
+wins because it is a tight CPU loop while sync is a request that can time out.
+Either batch gets bounded or it moves. Passed to `sol-dev`, who routed it to
+`browser-perf` as the active owner of renderer/server performance.
+
+**Forty minutes is not "slow", it is the app not working**, and it is exactly the
+half of Skip's complaint that is not about files going missing.
+
 ## What is live and what is not
 
 **Re-checked at 08:2xZ: box is `5bf51ea9c`, built 07:54:17Z, and EVERYTHING
