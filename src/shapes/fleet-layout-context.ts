@@ -32,8 +32,15 @@ function variantContentW(
 ): number {
   if (variant === 'single-chat') return singleChatViewportPanelSize(vp).w
   if (variant === 'two-chat') return columnW * 2 + gap
-  if (variant === 'big-chat') return leftW + gap + columnW + innerColumnW
-  if (variant === 'both-margins') return leftW + gap + Math.round(columnW * 0.5) + innerColumnW
+  // Every layout's document-adjacent column is THE inner column, and it is one
+  // width. Skip, 2026-08-25: "all inner column widths are supposed to be the
+  // same, calculated like in the 3col layout ... this is what makes shit work on
+  // laptops." That width is the adaptive one -- it is what shrinks so the layout
+  // and the document both fit the screen -- so a layout that laid its column out
+  // as columnW + innerColumnW was a full column wider than every other and the
+  // first to stop fitting.
+  if (variant === 'big-chat') return leftW + gap + innerColumnW
+  if (variant === 'both-margins') return leftW + gap + innerColumnW
   return leftW + gap + columnW + gap + innerColumnW
 }
 

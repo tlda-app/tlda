@@ -151,8 +151,11 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     }, myId, myDevice),
   ]
   if (variant === 'big-chat') {
-    // Big-chat layout: half chat over half source editor.
-    const chatWide = columnW + innerColumnW
+    // Big-chat layout: half chat over half source editor, in the inner column.
+    // Its width is innerColumnW like every other document-adjacent column --
+    // see variantContentW, which has to agree with this or the fit-to-viewport
+    // scale and the placement disagree.
+    const chatWide = innerColumnW
     const wideChatH = Math.round((totalH - gap) / 2)
     const wideEditorH = totalH - gap - wideChatH
     shapes.push(
@@ -221,7 +224,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
       }, myId, myDevice),
     )
   } else {
-    const innerWide = Math.round(columnW * 0.5) + innerColumnW
+    const innerWide = innerColumnW
     const configuredWide = Math.round(columnW * 1.5)
     // A document has two margins across its flow, and this variant uses both:
     // the first group sits before the document's near edge (via the anchor), the
