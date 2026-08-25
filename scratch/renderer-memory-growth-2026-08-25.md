@@ -1283,6 +1283,58 @@ the result is suggestive but not clean.
 
 **Server:** hour 19 closed at 20 stalls.
 
+
+### 20:40 — with the app offline, the drift stops
+
+Thirty-five minutes with the `WebSocket` constructor blocked and the app in its
+own offline state:
+
+```
+20:05  445      20:15  450      20:25  461      20:35  446
+20:07  447      20:17  452      20:27  461      20:38  448
+20:09  448      20:19  466      20:29  460      20:40  446
+20:11  447      20:21  466      20:31  463
+20:13  449      20:23  461      20:33  462
+```
+
+**445 → 446 MB over 35 minutes. Flat**, with a rise to 466 and a return. The
+preceding condition — same tab, timers already cleared, rAF already suppressed —
+was climbing at ~1.0 MB/min, which over this window would have predicted ~480 MB.
+It is at 446.
+
+**The four conditions, same process, in order:**
+
+| condition | rate |
+|---|---|
+| untouched | ~1.16 MB/min |
+| timers cleared | ~0.93 MB/min |
+| timers cleared + rAF suppressed | ~1.0 MB/min |
+| **+ app offline, no new sockets** | **~0 MB/min over 35 min** |
+
+**The one thing that changed between the third row and the fourth is the app's
+sync and socket activity.** That is the first suppression all day that moved the
+number.
+
+**Caveats, and they matter:**
+
+- **This is cumulative, not isolated.** Timers and rAF were still suppressed. The
+  claim is only that socket/sync activity is *necessary* for the drift, not that
+  it is sufficient on its own.
+- **I could not verify the two pre-existing sockets closed at the OS level** —
+  only that the app entered its offline state and constructed no new ones.
+- **35 minutes is not long**, and this process has a sawtooth with ~50 MB
+  amplitude. The window is comparable to the ones that showed clear climbing, but
+  a longer flat stretch would be worth more.
+- There was a step from 434 to 445 between 20:00 and 20:05 — **the offline
+  transition itself allocated**, which is why the window starts at 445.
+
+**Next, and it is the right control:** repeat on a fresh tab in the opposite
+order — offline from the start, measure, then allow sockets — so that ordering
+and accumulated state cannot explain it. A result that only appears when
+suppression is applied late is not the same as one that reproduces from cold.
+
+**Server:** hour 19 closed at 20.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
