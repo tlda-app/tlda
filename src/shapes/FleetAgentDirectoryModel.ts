@@ -138,8 +138,12 @@ export function fleetAgentExactName(agent: any): string {
   return agent.friendly_name || agent.id || ''
 }
 
+export function isNativeFleetSubagent(agent: any): boolean {
+  return !!agent?.parent_agent_id && agent?.route_present === false
+}
+
 export function fleetAgentVisibleName(agent: any): string {
-  if (!agent?.parent_agent_id) return agent?.pretty_name ?? agent?.friendly_name ?? agent?.id ?? ''
+  if (!isNativeFleetSubagent(agent)) return agent?.pretty_name ?? agent?.friendly_name ?? agent?.id ?? ''
   const exactName = fleetAgentExactName(agent)
   const childName = exactName.slice(exactName.lastIndexOf(':') + 1)
   return `:${childName}`
@@ -309,7 +313,7 @@ export function projectFleetAgentDirectoryFolding(
   const byId = new Map(agents.map(agent => [agent.id, agent]))
   const childrenByParent = new Map<string, any[]>()
   for (const agent of agents) {
-    if (!agent?.parent_agent_id || !byId.has(agent.parent_agent_id)) continue
+    if (!isNativeFleetSubagent(agent) || !byId.has(agent.parent_agent_id)) continue
     const children = childrenByParent.get(agent.parent_agent_id) || []
     children.push(agent)
     childrenByParent.set(agent.parent_agent_id, children)
@@ -342,12 +346,13 @@ export function projectFleetAgentDirectoryFolding(
   }
 
   const visibleAgents = agents.filter(agent => {
-    let parentId = agent?.parent_agent_id
+    let parentId = isNativeFleetSubagent(agent) ? agent.parent_agent_id : null
     const seen = new Set<string>()
     while (parentId && byId.has(parentId) && !seen.has(parentId)) {
       if (foldedParentIds.has(parentId)) return false
       seen.add(parentId)
-      parentId = byId.get(parentId)?.parent_agent_id
+      const parent = byId.get(parentId)
+      parentId = isNativeFleetSubagent(parent) ? parent.parent_agent_id : null
     }
     return true
   })

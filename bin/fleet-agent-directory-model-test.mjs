@@ -95,6 +95,7 @@ assert(!transportRow.activityHealth.includes('transport'))
 assert.equal(fleetAgentVisibleName({
   id: 'fleet:child',
   parent_agent_id: 'fleet:parent',
+  route_present: false,
   friendly_name: 'chief13:Plan',
 }), ':Plan')
 assert.equal(fleetAgentVisibleName({
@@ -110,12 +111,14 @@ const parent = {
 const awakeChild = {
   id: 'fleet:awake-child',
   parent_agent_id: parent.id,
+  route_present: false,
   friendly_name: 'chief13:Plan',
   runtime_status: { kind: 'ai', status: 'awake', route_state: 'routable' },
 }
 const sleepingChild = {
   id: 'fleet:sleeping-child',
   parent_agent_id: parent.id,
+  route_present: false,
   friendly_name: 'chief13:Nash',
   runtime_status: { kind: 'ai', status: 'hibernating', route_state: 'no-current-durable-seat' },
 }
@@ -124,6 +127,17 @@ const activeFamily = projectFleetAgentDirectoryFolding([parent, awakeChild, slee
 assert.deepEqual(activeFamily.visibleAgents.map(agent => agent.id), [parent.id, awakeChild.id, sleepingChild.id])
 assert.equal(activeFamily.foldedParentIds.has(parent.id), false)
 assert.equal(activeFamily.childCounts.get(parent.id), 2)
+
+const independentlyMinted = {
+  ...awakeChild,
+  id: 'fleet:independent-mint',
+  friendly_name: 'independent-mint',
+  route_present: true,
+}
+const noMintTree = projectFleetAgentDirectoryFolding([parent, independentlyMinted])
+assert.deepEqual(noMintTree.visibleAgents.map(agent => agent.id), [parent.id, independentlyMinted.id])
+assert.equal(noMintTree.childCounts.has(parent.id), false)
+assert.equal(fleetAgentVisibleName(independentlyMinted), 'independent-mint')
 
 const sleepingFamily = projectFleetAgentDirectoryFolding([parent, sleepingChild])
 assert.deepEqual(sleepingFamily.visibleAgents.map(agent => agent.id), [parent.id])
@@ -135,7 +149,7 @@ assert.deepEqual(manuallyOpened.visibleAgents.map(agent => agent.id), [parent.id
 const manuallyFolded = projectFleetAgentDirectoryFolding([parent, awakeChild], { [parent.id]: true })
 assert.deepEqual(manuallyFolded.visibleAgents.map(agent => agent.id), [parent.id])
 
-const cyclicParent = { ...parent, id: 'fleet:cyclic-parent', parent_agent_id: 'fleet:cyclic-child' }
+const cyclicParent = { ...parent, id: 'fleet:cyclic-parent', parent_agent_id: 'fleet:cyclic-child', route_present: false }
 const cyclicChild = { ...sleepingChild, id: 'fleet:cyclic-child', parent_agent_id: cyclicParent.id }
 const cyclicFamily = projectFleetAgentDirectoryFolding([cyclicParent, cyclicChild])
 assert.equal(cyclicFamily.childCounts.get(cyclicParent.id), 1)
