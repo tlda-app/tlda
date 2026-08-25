@@ -178,6 +178,19 @@ export function createSourceRoomDaemon({
       blocked: Boolean(state.blocked),
       timer: null,
     }
+    // Reconcile a restored room against the revision that is current NOW.
+    //
+    // Without this a room is frozen at the moment it was first opened. Both
+    // restore branches above replay a persisted Yjs snapshot and neither
+    // compares it to `currentRevision` — which this function already computed,
+    // two lines earlier, to hand to `headChanged`. So every revision accepted
+    // after that first open is invisible to the editor, permanently.
+    //
+    // Measured 2026-08-25 on a live project: the server's copy of the file
+    // carried four edits that a FRESHLY MOUNTED editor did not show. Not a stale
+    // subscription — the initial load was already old, because the snapshot won
+    // over the file. That is what "it doesn't display the code" is.
+    await reconcileRoomToRevision(room, lifecycle, currentRevision)
     ydoc.on('update', (update, origin) => {
       persistRoom(room)
       broadcast(room, { type: 'update', update: Buffer.from(update).toString('base64') })
@@ -197,6 +210,33 @@ export function createSourceRoomDaemon({
       rooms.set(key, room)
     }
     return room
+  }
+
+  /**
+   * Bring one room up to `revision`, keeping anything unsaved in it.
+   *
+   * Through `mergeText`, never an overwrite: a room can hold text the person
+   * typed and has not saved, and replacing the buffer would take it away. A
+   * three-way merge against the revision the room was holding keeps both sides
+   * and marks the room blocked if they genuinely conflict.
+   *
+   * One function for both callers on purpose. A room goes stale by two routes —
+   * it was open when a revision landed, or it was closed and reopened later —
+   * and they are the same reconciliation. Writing it twice is how the two drift.
+   */
+  async function reconcileRoomToRevision(room, lifecycle, revision) {
+    if (!revision || !room.heldRevision || room.heldRevision === revision) return { ok: true, skipped: true }
+    const base = await sourceRoomFileText(lifecycle, { revisionId: room.heldRevision, filePath: room.filePath })
+    const incoming = await sourceRoomFileText(lifecycle, { revisionId: revision, filePath: room.filePath })
+    const merged = mergeText({ base, current: room.ytext.toString(), incoming, project: room.project, filePath: room.filePath })
+    if (!merged.ok) {
+      log.error?.(`[source-room] ${room.project}:${room.filePath} could not reconcile ${room.heldRevision} onto ${revision}: ${merged.error}`)
+      return { ok: false, error: merged.error }
+    }
+    if (merged.text !== room.ytext.toString()) replaceYText(room.ytext, merged.text)
+    room.heldRevision = revision
+    room.blocked = merged.conflicted
+    return { ok: true, conflicted: merged.conflicted }
   }
 
   function persistRoom(room) {
@@ -465,8 +505,23 @@ export function createSourceRoomDaemon({
 
   async function headChanged(project, revision) {
     const result = await gitSyncManagerForProject(project).headChanged(project, revision)
-    for (const room of rooms.values()) {
-      if (room.project !== project) continue
+    const open = [...rooms.values()].filter(room => room.project === project)
+    const lifecycle = open.length ? await sourceLifecycleStore(project) : null
+    for (const room of open) {
+      // Bring the TEXT up to the revision before claiming the room holds it.
+      //
+      // This stamped `heldRevision` and broadcast `status: 'synced'` while never
+      // touching ytext, so the room recorded that it held a revision whose
+      // content it did not have — and persisted that claim. The person saw old
+      // text under a status that said synced, and reopening did not help,
+      // because a reopened room compares heldRevision against the current
+      // revision and they already matched. The lie was load-bearing: it is what
+      // made the staleness undetectable from inside.
+      //
+      // replaceYText fires the ydoc update handler, which persists and
+      // broadcasts the new text to every connected client, so the open editor
+      // updates from this one call.
+      await reconcileRoomToRevision(room, lifecycle, revision)
       room.heldRevision = revision
       room.submission = null
       room.queued = false
