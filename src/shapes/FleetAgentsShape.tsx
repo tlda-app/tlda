@@ -41,6 +41,7 @@ import {
   formatFleetAgentModel,
   formatFleetAgentRelativeTime,
   getFleetAgentNickColor,
+  isNativeFleetSubagent,
   projectFleetAgentDirectoryFolding,
   toFleetAgentDirectoryRow,
 } from './FleetAgentDirectoryRow'
@@ -666,7 +667,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     const byId = new Map(list.map(agent => [agent.id, agent]))
     const childrenByParent = new Map<string, any[]>()
     for (const agent of list) {
-      if (!agent.parent_agent_id || !byId.has(agent.parent_agent_id)) continue
+      if (!isNativeFleetSubagent(agent) || !byId.has(agent.parent_agent_id)) continue
       const children = childrenByParent.get(agent.parent_agent_id) || []
       children.push(agent)
       childrenByParent.set(agent.parent_agent_id, children)
@@ -680,7 +681,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       for (const child of childrenByParent.get(agent.id) || []) appendFamily(child, family)
     }
     for (const agent of list) {
-      if (agent.parent_agent_id && byId.has(agent.parent_agent_id)) continue
+      if (isNativeFleetSubagent(agent) && byId.has(agent.parent_agent_id)) continue
       const family: any[] = []
       appendFamily(agent, family)
       families.push(family)

@@ -2,6 +2,7 @@ import React, { useLayoutEffect, useRef, useState } from 'react'
 import { PrettyName } from './PrettyName'
 import {
   fleetAgentLabelColor,
+  isNativeFleetSubagent,
   type FleetAgentDirectoryRowModel,
 } from './FleetAgentDirectoryModel'
 export {
@@ -17,6 +18,7 @@ export {
   fleetAgentVisibleName,
   getFleetAgentDirectoryRows,
   getFleetAgentNickColor,
+  isNativeFleetSubagent,
   projectFleetAgentDirectoryFolding,
   sortFleetAgentDirectoryRows,
   sortFleetAgentDirectoryRowsByRecency,
@@ -227,7 +229,7 @@ export function FleetAgentDirectoryRow({
   onLabelPointerDown?: (e: React.PointerEvent, label: string, row: FleetAgentDirectoryRowModel) => void
   onLabelPointerUp?: (e: React.PointerEvent, label: string, row: FleetAgentDirectoryRowModel) => void
 }) {
-  const isNativeChild = !!row.agent?.parent_agent_id
+  const isNativeChild = isNativeFleetSubagent(row.agent)
   const hasChildren = childCount > 0
   const stateLabel = expanded ? 'details' : hasChildren && !childrenFolded ? 'subtree' : 'collapsed'
   const nextLabel = expanded ? 'collapse' : hasChildren && childrenFolded ? 'show subagents' : 'show details'
