@@ -4,9 +4,10 @@ Force-added under `scratch/` deliberately: this is a resumption point, not a rep
 `scratch/` is gitignored, so an untracked copy would not survive. See `AGENTS.md`
 §"Repository workflow".
 
-**Relative to:** 2026-08-25 03:55 EDT. Box `03da64416`; `main` `f7fe0ed6f` with
-a push in flight. **`f1335d096` is NOT yet serving** — see below, it is the
-highest-value undeployed commit on the machine.
+**Relative to:** 2026-08-25 07:50 EDT. `testing` and `pic` both serve
+`3b109f87b`. **`f1335d096` IS serving** — confirmed by ancestry against the
+deployed sha, not by push output. The editor no longer shows stale text or
+overwrites newer content.
 
 ## The overnight run: what the source editor was doing
 
