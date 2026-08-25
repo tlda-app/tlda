@@ -1037,6 +1037,39 @@ footprint to see whether any of them tracks the 1.3 MB/min.
 
 **Server:** 44 stalls in hour 15, 10 in hour 16.
 
+
+### 16:45 — footprint climbs while every in-page count stays exactly constant
+
+The census got five samples before the tab was taken away. In that window:
+
+```
+16:16  fp 903 MB   canvas 3 / 7.8 MB   nodes 901   svg 234   iframes 2   shapes 9   heap 136
+16:17  fp 894 MB   canvas 3 / 7.8 MB   nodes 901   svg 234   iframes 2   shapes 9   heap 122
+16:18  fp 893 MB   canvas 3 / 7.8 MB   nodes 901   svg 234   iframes 2   shapes 9   heap 164
+16:20  fp 909 MB   canvas 3 / 7.8 MB   nodes 901   svg 234   iframes 2   shapes 9   heap 133
+16:22  fp 918 MB
+```
+
+**Footprint 903 → 918 MB while canvas count, canvas area, DOM nodes, SVG nodes,
+iframe count and shape count are byte-for-byte identical across every sample.**
+The JS heap oscillates 122–164 with no direction.
+
+So on the reproduction, as on his tab, **the memory grows without anything
+countable in the page growing with it.** That rules out accumulating canvases,
+accumulating DOM, and accumulating shapes as the mechanism — the three things
+easiest to reach from page JS, and now all excluded by direct measurement rather
+than by argument.
+
+**The tab was swept, not crashed — checked before saying so.** pid 1868 is gone,
+the pool reports **75% memory pressure**, `tlda-dev pw` parks stale tabs by
+design, my tab is now `about:blank`, and two fresh renderers appeared at exactly
+16:22. Pool housekeeping. It died at 918 MB, nowhere near the 12–15 GB at which
+Skip's renderers actually crash, so reading it as an OOM would have been wrong.
+
+A new subject is loaded on the disposable project (903 nodes, 9 shapes, renderer
+identified by a 200 MB ballast: 233 → 437 MB) and a 60-minute census is running
+on it.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
