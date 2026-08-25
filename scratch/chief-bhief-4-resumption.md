@@ -59,6 +59,28 @@ were checked and nothing was ever half-applied. **`sol-dev` and I nearly pushed
 concurrently at 03:14** — the one-pusher rule held only because it sent a
 pre-push check and I saw it.
 
+**NEW AND REACHABLE AS OF TONIGHT: one surface per project.** Making the browser
+editor actually submit (it now mounts in 356ms and reaches the server in 6.5s,
+against a 30s timeout before) means the browser leg and the disk checkout are
+both live for the first time. They carry **separate lineages**, so they can
+fork — and when they do the checkout gets `WrongHead` on every proposal and
+**stops syncing permanently**. Hit within minutes of the browser leg working,
+then twice more alone with a clean tree. Skip has been told: **do not edit the
+same project in the browser and on disk.**
+
+**This was always true and only became reachable** — the browser leg never got
+far enough to submit before. **Do not revert `f1335d096` when you meet a stuck
+checkout**: reverting removes the browser's ability to submit, which is what was
+*hiding* the divergence, and returns him to an editor that shows stale text,
+reports `synced`, and overwrites newer content on the next keystroke. **A
+reachable way to get stuck beats an active way to lose work.**
+
+**Relink does NOT recover a diverged checkout** — measured on a disposable
+project, chain and fetched refs identical before and after. It resubmits the
+stale tip and reports success, which is the trap. **The only known way back is a
+fresh checkout.** `repo-doctor` is untried, not ruled out. Which chain wins is a
+design decision for daylight, not a patch.
+
 **Thursday:** he teaches. `pic` still runs `db646dc94` from 08-12 and its book
 has never built. `sol-dev` holds that lane. QTM needed four R packages plus
 `libglpk40`, found by auditing all 71 roots rather than fixing them one at a
