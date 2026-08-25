@@ -361,3 +361,52 @@ test('the work branch holds the whole tree, the revision holds the documents, an
     ['main.tex'],
   )
 })
+
+// The migration for a project created AFTER the rename, which is most of them.
+// Its work branch holds revision-chain commits and it never had the old
+// `refs/tlda/project/<p>` ref to compare against, so there is nothing to prove
+// the branch is the chain except the subject this file writes on chain commits.
+// Requiring both refs refused to migrate these, and relinking could not fix them.
+test('a work branch that is really the revision chain is migrated, and its history is kept', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-work-branch-migrate-'))
+  const remote = join(root, 'server.git')
+  const checkout = join(root, 'checkout')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  await git(checkout, ['remote', 'add', 'tlda', remote])
+  writeFileSync(join(checkout, 'main.tex'), 'the document\n')
+  writeFileSync(join(checkout, 'notes.txt'), 'mine, and not a document\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'base'])
+  const base = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
+
+  // The old world: the branch name holds a chain commit, and no chain ref exists.
+  const tree = (await git(checkout, ['rev-parse', `${base}^{tree}`])).stdout.trim()
+  const projection = (await git(checkout, ['commit-tree', tree, '-m', 'tlda project revision'])).stdout.trim()
+  await git(checkout, ['update-ref', 'refs/heads/tlda/paper', projection])
+
+  const sync = createGitProjectSync({
+    sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a',
+    documentRoots: ['main.tex'], log: { warn() {}, info() {}, error() {} },
+  })
+  const stood = await sync.standOnWorkBranch()
+  assert.equal(stood.ok, true, `could not migrate: ${stood.reason || stood.status}`)
+  assert.equal((await git(checkout, ['symbolic-ref', '--short', 'HEAD'])).stdout.trim(), 'tlda/paper')
+
+  // NOTHING IS DELETED: the chain's history is carried onto its own name before
+  // the branch name changes hands, so every commit that existed is still
+  // reachable — it just stops being called a branch.
+  assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/project/paper'])).stdout.trim(), projection)
+  // And the branch now stands where the author does.
+  assert.equal((await git(checkout, ['rev-parse', 'refs/heads/tlda/paper'])).stdout.trim(), base)
+
+  // The author's non-document file is still in their working tree — the whole
+  // reason the projection was never something to stand on.
+  assert.equal((await git(checkout, ['status', '--porcelain'])).stdout.trim(), '')
+  assert.deepEqual(
+    (await git(checkout, ['ls-tree', '-r', '--name-only', 'HEAD'])).stdout.trim().split('\n').sort(),
+    ['main.tex', 'notes.txt'],
+  )
+})
