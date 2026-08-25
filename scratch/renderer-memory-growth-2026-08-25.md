@@ -1575,6 +1575,44 @@ short. **Everything the server does in that handler is fast**, so the delay is
 the daemon side, the network, or the round trip — not handler computation. Not
 my lane and I did not take it.
 
+
+### 23:05 — the ordering control never armed, and the pooled browser is wedged
+
+**I told `app-tester` the control was running. It was not.** Every `pw` call for
+several minutes:
+
+```
+pw: "tab-list" on session "shared-3" exceeded 120s and was killed —
+    the pooled browser daemon is not answering.
+pw: couldn't resolve my tab (daemon wedged or session down); not forwarding
+```
+
+The eval meant to block `WebSocket` and take the app offline **never reached the
+page.** Had I not checked, I would have reported a flat thirty-minute result from
+a tab that was never armed — a suppression measured on an unsuppressed tab. That
+is the environment-where-nothing-happens failure, in its most expensive form: it
+would have looked like confirmation.
+
+**Pool memory pressure 83%**, threshold 90%, daemon unresponsive on `shared-3`.
+Two renderers exist under that session (23 MB and 186 MB) and I could not even
+run the ballast test to learn which was mine.
+
+**Also corrected to `app-tester`:** I had told them my control would not collide
+with their replay. I had not checked, and the claim was worth nothing. They share
+`shared-3`, their replay is heavy socket and sync traffic, and that is precisely
+the path my suppression result points at — so it would have contaminated the
+control had either of us been running.
+
+**Standing rule this reinforces:** on a shared pooled browser, *confirm the
+instrument armed before trusting a null result.* A suppression experiment whose
+suppression silently failed produces the same shape as a successful suppression.
+
+**Sequencing agreed:** `app-tester` goes first. Their replay carries a real
+conflict and a run of failed publishes, which is better load to trace than a
+synthetic idle tab. I will sample the footprint of their replay's renderer with
+my own instrument rather than adding a second one, at 60s intervals, **physical
+footprint not RSS.**
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
