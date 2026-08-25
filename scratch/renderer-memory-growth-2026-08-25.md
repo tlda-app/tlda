@@ -722,9 +722,9 @@ cost is a timer, not contention.
 `rollWindow()` → `cutWindow()` → **`await post('Profiler.stop')`**, on a
 `new Session()` from `node:inspector` that is `connect()`ed **to its own
 process**. A same-thread inspector session dispatches synchronously on the main
-thread. At `SAMPLING_INTERVAL_US = 1000` over a 10-second window that is
-**~10,000 samples serialized into a JS object, on the event loop, every ten
-seconds.**
+thread. Over a 10-second window that is **the whole profile tree serialized into a JS
+object, on the event loop, every ten seconds.** (I first wrote "~10,000 samples"
+here from arithmetic; measured, V8 delivers ~228 — see the 12:55 entry.)
 
 The isolate has no JS frame on the stack while V8 does that work, so the samples
 covering it carry an empty stack — **which is precisely the `(idle)` this file
@@ -763,6 +763,42 @@ inspector boundary, which the note does not consider.
 **The general shape, for the next person:** an always-on profiler that reports
 stalls will report its own. **Before believing any stall class, check whether its
 period matches the instrument's own timer.** One `uniq -c` over the gaps.
+
+
+### 12:55 — the mechanism reproduces in isolation, and my sample-count arithmetic was wrong
+
+Rather than wait on a restart, I reproduced the window roll in a standalone
+process: same-thread `node:inspector` Session, `setSamplingInterval(1000)`,
+`Profiler.start`, a busy loop so the window fills with real samples, then time
+`Profiler.stop`.
+
+```
+window  2s   samples    43   Profiler.stop blocked  14.1 ms
+window  5s   samples   106   Profiler.stop blocked  14.8 ms
+window 10s   samples   228   Profiler.stop blocked  74.5 ms
+```
+
+**`Profiler.stop` blocks the main thread, and the cost grows with the window.**
+The mechanism is real and does not depend on anything specific to the server.
+
+**Correction to my own write-up an hour ago.** I said the roll serializes
+"~10,000 samples (10 s at 1 ms)". **It does not.** V8 delivered **228 samples in
+a 10-second window** despite a 1000 µs request — an effective interval of ~44 ms,
+not 1 ms. The arithmetic was mine, not measured, and it was off by forty times.
+The cost is in serializing the profile *tree* — nodes, call frames, position
+ticks — not in raw sample count.
+
+**The magnitude gap, stated rather than smoothed over.** 74.5 ms here against
+~260 ms on the server. Same order, not the same number. A live server's window
+holds far more distinct stacks and deeper frames than a synthetic busy loop, so a
+3–4× richer tree is unsurprising — but **I have reproduced the mechanism, not the
+magnitude**, and the two should not be conflated.
+
+**Where that leaves the claim.** The period matching `WINDOW_MS` exactly, the
+synchronous same-thread dispatch read from the code, and now a measured block of
+the right order from an isolated reproduction. The one thing still missing is the
+decisive test — change `TLDA_LAG_PROFILER_WINDOW_MS`, confirm the stall period
+follows — which needs a restart and is Skip's call.
 
 ## Next action
 
