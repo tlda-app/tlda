@@ -254,6 +254,14 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return runtime.remoteBridge ? runtime.remoteBridge.poll() : { skipped: true, reason: 'not-remote-backed' }
   }
 
+  /** Put a bound checkout on its work branch. Called at link; see git-project-sync. */
+  async function standOnWorkBranch(project) {
+    const item = record(project)
+    if (!item) throw new Error(`project ${project} is not bound on this daemon`)
+    const runtime = await start(item)
+    return runtime.sync.standOnWorkBranch()
+  }
+
   async function submit(project, options = {}) {
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
@@ -345,6 +353,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     sync,
     headChanged,
     pollRemote,
+    standOnWorkBranch,
     remoteOperation,
     submit,
     pushHistorySeed,

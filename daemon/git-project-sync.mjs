@@ -20,6 +20,21 @@ export function safeRefPart(value) {
   return part
 }
 
+/**
+ * The branch this project's work is committed to, in one place.
+ *
+ * The daemon writes here on every settle. A person whose checkout stands on
+ * this branch therefore sees their edits committed under them and a clean
+ * working tree; a person standing anywhere else sees the daemon commit to a
+ * branch they are not on, and is dirty against their own from the first edge.
+ *
+ * Skip, 2026-08-25: "if you have a daemon-managed branch checked out — it
+ * commits, and pushes, and all that shit. otherwise it doesn't."
+ */
+export function projectBranchRef(project) {
+  return `refs/heads/tlda/${safeRefPart(project)}`
+}
+
 export function createGitProjectSync({
   sourceDir,
   project,
@@ -49,24 +64,34 @@ export function createGitProjectSync({
   const daemonPart = safeRefPart(daemonId)
   const branchPart = safeRefPart(branch)
   const bindingPart = safeRefPart(bindingId)
-  // The tracking ref is a BRANCH, so that a person can see their own work.
+  // TWO refs, because there are two objects. Conflating them is what broke this.
   //
   // Skip, 2026-08-23: "there is meant to be a branch tracking" ... "OBVIOUSLY
   // YOU FUCKING WANT A FUCKING BRANCH WITH YOUR SHIT ON IT".
   //
-  // `refs/tlda/project/<p>` is a perfectly good ref and git will not show it to
-  // you: `git branch` does not list it, `git log` alone does not reach it, it
-  // does not tab-complete, and it cannot be checked out by name. Measured in one
-  // checkout: thousands of commits, current to the minute, holding the live
-  // document -- fully versioned in a namespace nobody can see, which reads as
-  // not versioned at all. Under `refs/heads/` the same commits are a branch,
-  // `git log tlda/<p>` works, and it diffs and checks out like anything else.
+  // That was answered by RENAMING the revision chain into `refs/heads/`, which
+  // gave it a branch's name without making it a branch. The chain is the
+  // publishing projection: `filteredProjectCommit` keeps the document roots and
+  // their dependency closure and drops everything else, so the "branch" held a
+  // SUBSET of the person's tracked files. Measured 2026-08-25 on a checkout with
+  // `demo.md` and `notes.txt` committed: the branch contained `demo.md` alone.
   //
-  // `localRef` starts on the old name and is PROMOTED by ensureProjectBranch,
-  // which carries the history across and leaves the old ref where it is.
-  const legacyLocalRef = `refs/tlda/project/${projectPart}`
-  const branchLocalRef = `refs/heads/tlda/${projectPart}`
-  let localRef = legacyLocalRef
+  // A branch you cannot stand on without losing files is one nobody stands on,
+  // so the daemon committed to a branch the person was not on, their own branch
+  // never moved, and their working tree was dirty against it from the first edit
+  // — which is why `git checkout` and `tlda project remote pull` both refused
+  // forever. Skip, 2026-08-25: "if you have a daemon-managed branch checked out
+  // — it commits, and pushes, and all that shit. otherwise it doesn't."
+  //
+  //   revisionRef   the chain. Filtered, internal, never a branch. It is the
+  //                 parent of the next revision, what recover() re-pushes after
+  //                 a restart, and what members() lists. Nothing about it
+  //                 changes here except that it keeps its own name.
+  //   workBranchRef the person's branch. The real settled tree, standable,
+  //                 advanced under them on every settle.
+  const revisionRef = `refs/tlda/project/${projectPart}`
+  const workBranchRef = projectBranchRef(project)
+  const localRef = revisionRef
   const appliedRef = `refs/tlda/applied/${bindingPart}`
   const sharedRef = `refs/tlda/source/${projectPart}`
   const fetchedRef = `refs/tlda/fetched/${projectPart}`
@@ -86,47 +111,61 @@ export function createGitProjectSync({
     try { return (await git(['rev-parse', '--verify', `${ref}^{commit}`])).stdout.trim() } catch { return null }
   }
 
+  /** The full ref HEAD is on, or null when HEAD is detached. */
+  async function currentBranchRef() {
+    try { return (await git(['symbolic-ref', '-q', 'HEAD'])).stdout.trim() || null } catch { return null }
+  }
+
   /**
-   * Move this checkout's tracking ref under `refs/heads/`, once per process.
+   * Hand the branch name over to the person's real work, once per process.
    *
-   * The history is CARRIED, never orphaned: when the branch does not exist and
-   * the old ref does, the branch is created AT that commit, so `git log
-   * tlda/<p>` shows everything that was already there rather than starting from
-   * the next settle. The old ref is left exactly where it is -- nothing here
-   * deletes anything, and a checkout that has been reading it keeps working.
+   * The rename that created this mess left `revisionRef` frozen at the moment of
+   * promotion while the branch kept advancing, so the newer projection commits
+   * are reachable ONLY through the branch. This carries the chain forward onto
+   * its own name FIRST, so that when the branch starts holding real settled
+   * trees nothing that was ever committed becomes unreachable. Nothing is
+   * deleted; a ref is moved forward along its own history.
    *
    * `refs/heads/tlda` and `refs/heads/tlda/<p>` cannot coexist, because git
    * stores heads as paths and a file cannot also be a directory. A repository
-   * that already has a branch literally named `tlda` is reported and left on the
-   * old ref: forcing it would mean deleting somebody's branch, and refusing to
-   * sync would stop their project over a name. Neither is ours to choose.
+   * that already has a branch literally named `tlda` keeps syncing — the
+   * revision chain does not depend on the branch existing — and is told why its
+   * work branch is missing. Deleting somebody's branch to make room is not ours
+   * to do.
    *
-   * Memoized on the promise so a blocked repository warns once rather than on
-   * every settle, which is the difference between a warning and noise.
+   * Memoized so a blocked repository says it once rather than on every settle.
    */
-  let branchPromotion = null
-  function ensureProjectBranch() {
-    branchPromotion ||= (async () => {
+  let workBranchAdoption = null
+  function adoptWorkBranch() {
+    workBranchAdoption ||= (async () => {
       try {
         if (await rev('refs/heads/tlda')) {
-          log.warn?.(`${project}: this checkout has a branch named "tlda", which blocks the branch tlda/${projectPart} — tracking stays on ${legacyLocalRef}. Rename that branch to move it.`)
-          return localRef
+          log.warn?.(`${project}: this checkout has a branch named "tlda", which blocks the branch tlda/${projectPart}. Syncing continues; rename that branch to get your work branch.`)
+          return { ok: false, reason: 'blocked-by-tlda-branch' }
         }
-        if (!(await rev(branchLocalRef))) {
-          const carried = await rev(legacyLocalRef)
-          if (carried) await git(['update-ref', branchLocalRef, carried])
+        const branchTip = await rev(workBranchRef)
+        const chainTip = await rev(revisionRef)
+        // BOTH must exist, and the branch must descend from the chain. That pair
+        // is what identifies the rename: promotion created the branch AT the old
+        // ref and left the old ref in place, so a repository that went through it
+        // has both, related that way.
+        //
+        // Requiring `chainTip` is not belt-and-braces. Without it, a branch
+        // created fresh at HEAD — which is exactly what standOnWorkBranch does on
+        // a new link — was copied into the revision chain and `recover()` then
+        // pushed it as an outstanding revision that had never been sent. Measured
+        // as one extra admission in the readmit test. A work branch is only the
+        // chain if the chain is there to have been renamed.
+        if (branchTip && chainTip && await isAncestor(chainTip, branchTip)) {
+          await git(['update-ref', revisionRef, branchTip])
         }
-        localRef = branchLocalRef
+        return { ok: true }
       } catch (error) {
-        // Left on the old ref on purpose. Promotion is a convenience for the
-        // person reading their own history; the sync itself works either way, so
-        // a repository that will not take the branch keeps syncing rather than
-        // stopping over where its ref lives. The next process tries again.
-        log.warn?.(`${project}: could not move tracking to ${branchLocalRef}, staying on ${legacyLocalRef}: ${error.message}`)
+        log.warn?.(`${project}: could not adopt the work branch ${workBranchRef}: ${error.message}`)
+        return { ok: false, reason: error.message }
       }
-      return localRef
     })()
-    return branchPromotion
+    return workBranchAdoption
   }
 
   async function isAncestor(older, newer) {
@@ -334,7 +373,14 @@ export function createGitProjectSync({
     const settled = await settledCommit()
     if (!settled) return { ok: false, status: 'empty-checkout' }
     const filtered = await filteredProjectCommit(settled)
+    // The chain gets the projection; the BRANCH gets the person's real tree.
+    // These were one ref, and the branch held the projection — a subset of the
+    // author's tracked files, which is why it could not be stood on. settle()
+    // has already established that HEAD is this branch, so moving it to a commit
+    // parented on HEAD is a fast-forward and the working tree goes CLEAN: the
+    // author's edits are now committed under them, which is the whole design.
     await git(['update-ref', localRef, filtered.commit])
+    await git(['update-ref', workBranchRef, settled])
     if (filtered.dropped.length) {
       log.warn?.(`${project}: not in the revision — tracked, but no document root reaches them: ${filtered.dropped.join(', ')}`)
     }
@@ -367,7 +413,33 @@ export function createGitProjectSync({
   }
 
   async function settle() {
-    await ensureProjectBranch()
+    await adoptWorkBranch()
+    // Skip, 2026-08-25: "if you have a daemon-managed branch checked out — it
+    // commits, and pushes, and all that shit. otherwise it doesn't."
+    //
+    // It used to commit and push regardless, to a branch the author was not
+    // standing on. That is what left every checkout permanently dirty against
+    // its own HEAD, and it is not a smaller version of the right behaviour — it
+    // is the thing that made the branch useless.
+    //
+    // Declined LOUDLY and by name. A sync that quietly stops is the failure this
+    // whole area is made of, so the reason travels back to the caller instead of
+    // being a silent no-op.
+    // The rule is about a PERSON's checkout — "if you have a daemon-managed
+    // branch checked out". `.source-room/working` is the app's own tree, created
+    // by ensureRepo with nobody standing in it, so there is no author to commit
+    // under and nothing to be dirty against. Gating it would stop the browser
+    // source editor's path outright, which is the opposite of the repair.
+    const head = await currentBranchRef()
+    if (!appOwnedWorkingTree && head !== workBranchRef) {
+      return {
+        ok: false,
+        status: 'not-on-work-branch',
+        head,
+        workBranch: workBranchRef,
+        reason: `${project} is not syncing because this checkout is on ${head || 'a detached HEAD'} rather than its work branch tlda/${projectPart}. Run \`git checkout tlda/${projectPart}\` to sync.`,
+      }
+    }
     const committed = await commitSettledTree()
     if (!committed.ok) return committed
     const shared = await rev(fetchedRef) || await rev(appliedRef)
@@ -446,7 +518,7 @@ export function createGitProjectSync({
   }
 
   async function recover() {
-    await ensureProjectBranch()
+    await adoptWorkBranch()
     const conflicts = await unresolved()
     if (conflicts.length) return { ok: false, status: 'conflicted', conflicted: conflicts }
     const fetched = await rev(fetchedRef)
@@ -459,8 +531,52 @@ export function createGitProjectSync({
     return { ok: true, status: 'current', revision: local || fetched }
   }
 
+  /**
+   * Put this checkout on its work branch, so the daemon commits under the author.
+   *
+   * Called at link. Nothing else moved a checkout onto the branch, which is why
+   * every checkout on this machine was standing somewhere the daemon never wrote.
+   *
+   * Three cases, and the middle one is the migration:
+   *
+   *   no branch yet          `checkout -b` — creates it at HEAD. The working
+   *                          tree is not touched at all, so this cannot lose an
+   *                          edit, staged or not.
+   *   branch IS the chain    the old rename: the branch is the filtered
+   *                          projection, which is not a tree anyone can stand on.
+   *                          `-B` resets it to HEAD. Safe only because
+   *                          adoptWorkBranch has just carried that history onto
+   *                          `revisionRef`, so nothing becomes unreachable — the
+   *                          equality below is what proves it is that history.
+   *   branch is real work    an ordinary `checkout`. If git refuses, the person
+   *                          has something here we must not overwrite, so the
+   *                          refusal is reported verbatim rather than forced.
+   */
+  async function standOnWorkBranch() {
+    const adopted = await adoptWorkBranch()
+    if (!adopted?.ok) return { ok: false, status: adopted?.reason || 'adoption-failed', branch: workBranchRef }
+    const head = await currentBranchRef()
+    if (head === workBranchRef) return { ok: true, status: 'already-on-it', branch: workBranchRef }
+    const shortBranch = `tlda/${projectPart}`
+    const branchTip = await rev(workBranchRef)
+    try {
+      if (!branchTip) await git(['checkout', '-b', shortBranch])
+      else if (branchTip === await rev(revisionRef)) await git(['checkout', '-B', shortBranch])
+      else await git(['checkout', shortBranch])
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'checkout-refused',
+        branch: workBranchRef,
+        head,
+        reason: `${project} could not be moved onto ${shortBranch}: ${(error.stderr || error.message || '').trim()}`,
+      }
+    }
+    return { ok: true, status: 'moved', branch: workBranchRef, from: head }
+  }
+
   async function members() {
-    await ensureProjectBranch()
+    await adoptWorkBranch()
     const revision = await rev(localRef) || await rev(appliedRef) || await rev(fetchedRef)
     if (!revision) return []
     return (await git(['ls-tree', '-r', '--name-only', revision])).stdout.split('\n').filter(Boolean)
@@ -470,11 +586,14 @@ export function createGitProjectSync({
     // appliedRef is not exported. Nothing writes it any more, so publishing the
     // name invites a reader that would be reading a fossil. The refs themselves
     // stay on disk in people's checkouts, untouched.
-    // A getter, because `localRef` moves: it names the old ref until
-    // ensureProjectBranch promotes it, so a snapshot taken at construction would
-    // report the pre-promotion name for the life of the runtime.
-    get refs() { return { localRef, sharedRef, fetchedRef } },
+    // `localRef` no longer moves — it is the revision chain and keeps its own
+    // name for the life of the runtime, which is the whole point of the split
+    // above. The getter stays because callers destructure it and a plain object
+    // reads the same; `workBranchRef` joins it so a caller can name the person's
+    // branch without rebuilding the string.
+    get refs() { return { localRef, revisionRef, workBranchRef, sharedRef, fetchedRef } },
     editClusterSettled: () => serialized(settle),
+    standOnWorkBranch: () => serialized(standOnWorkBranch),
     submitCurrent: options => serialized(() => submitCurrent(options)),
     headChanged: revision => serialized(() => headChanged(revision)),
     recover: () => serialized(recover),
