@@ -312,6 +312,68 @@ or a rejection whose reason really is nullish.
 Three unhandled rejections per load is a real defect and the reporter cannot say
 what they are. Not chased further — it is not the leak.
 
+
+### 07:55 — it grows with the tab asleep, and faster over time
+
+He has been away since ~07:10. Nobody has touched the machine. Continuous
+series, same document, same renderer (pid 48640):
+
+```
+07:12    923 MB      07:45  4,372 MB
+07:20  1,496 MB      07:46  4,538 MB
+07:25  1,925 MB      07:47  4,713 MB
+07:27  2,102 MB      07:48  4,890 MB
+                     07:49  5,055 MB
+                     07:50  5,196 MB
+```
+
+**923 → 5,196 MB in 38 minutes with no interaction at all.** ~112 MB/min
+averaged; the last six samples are monotonic at ~165 MB/min. JS heap flat at
+52–74 MB throughout.
+
+**This retires the framing I gave Skip earlier** — that the leak ran 3–5× faster
+while he was active. It does not need him. What it does is **accelerate with the
+age of the document**: 31 MB/min in the first ten minutes, 77 in the second
+quarter hour, 165 by the fortieth minute. The original tab reaching 15 GB in
+ninety minutes is the same curve run longer, and its apparent correlation with
+our conversation was a correlation with elapsed time.
+
+### Failed experiment: the memory-infra bucket diff
+
+The plan was to diff two `disabled-by-default-memory-infra` dumps and see
+**which** allocator bucket grows, since the absolute snapshot already showed
+8.1 GB sitting in `malloc`. It does not work as run:
+
+- `levelOfDetail: 'light'` returns **empty allocator tables on some dumps**, so
+  a diff renders every value as its own delta in one direction and as a full
+  negative in the other. The completed run shows the browser process going
+  `-376.8 MB malloc … now 0.0 MB`, which is the empty-table artifact, not a
+  measurement.
+- Only 1 of 11 processes produced the three dumps the diff needs. The renderer
+  under investigation produced fewer.
+
+Recorded as failed rather than dropped, because the shape of the output is
+plausible enough to be mistaken for a result by whoever runs it next. **A dump
+that returns an empty table and a process that genuinely freed everything are
+the same JSON.**
+
+Next attempt should use `levelOfDetail: 'detailed'`, which populates fully. That
+OOM'd the collector on the first try, but the collector now aggregates each
+event and discards it, so the reason it failed no longer applies.
+
+### Server, same tick
+
+12,372 dumps total; **13 stalls in the 07:00 hour**. The worst two:
+
+```
+740 ms  existsSync | (idle) | stat | (garbage collector) | readdir
+655 ms  (anonymous) | utf8Write | broadcastFleet | (program)
+```
+
+The 740 ms one is the startup `migrateAllProjectParts` walk, which means **the
+server restarted again during that hour**. The 655 ms one is the fleet broadcast
+encoding, which is the recurring cost and not tied to a restart.
+
 ## Next action
 
 Read the WebSocket buffer result. `bufferedAmount` is renderer-side malloc, is
