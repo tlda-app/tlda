@@ -377,6 +377,16 @@ export function createGitProjectSync({
       // only writer.
       await git(['add', appOwnedWorkingTree ? '-A' : '-u'], { env })
       const tree = (await git(['write-tree'], { env })).stdout.trim()
+      // An empty answer is not a tree, and passing it on produces `git
+      // commit-tree  -m ...` with the argument silently missing — which is what
+      // reached the log as `proposal failed: Command failed: git commit-tree  -m
+      // tlda settled edit cluster`, a message that names the wrapper and hides
+      // that its input was blank. `write-tree` returns nothing when the index it
+      // was pointed at is unreadable, which happens when something else is
+      // rewriting the real index as this copies it.
+      if (!/^[0-9a-f]{40}$/.test(tree)) {
+        throw new Error(`${project}: write-tree produced no tree id (${JSON.stringify(tree)}) — the staged index was unreadable, so nothing was committed`)
+      }
       if (head && (await git(['rev-parse', `${head}^{tree}`])).stdout.trim() === tree) return head
       if (!head && tree === EMPTY_TREE) return null
       const args = ['commit-tree', tree, '-m', 'tlda settled edit cluster']
