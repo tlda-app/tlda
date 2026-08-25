@@ -957,7 +957,7 @@ async function cmdCreate() {
 
 async function cmdPush() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda project push [name] [--dir /path]'); process.exit(1) }
+  if (!name) exitNotLinkedHere('tlda project push <name>')
 
   const dir = resolve(getFlag('dir') || '.')
 
@@ -2634,7 +2634,7 @@ async function cmdList() {
 
 async function cmdStatus() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda project status [name]'); process.exit(1) }
+  if (!name) exitNotLinkedHere('tlda project status <name>')
 
   const data = await api('GET', `/api/projects/${name}/build/status`)
   const statusColor = data.status === 'success' ? green : data.status === 'error' ? red : dim
@@ -2650,7 +2650,7 @@ async function cmdStatus() {
 
 async function cmdErrors() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda project errors [name]'); process.exit(1) }
+  if (!name) exitNotLinkedHere('tlda project errors <name>')
 
   const wait = hasFlag('wait') || hasFlag('w')
 
@@ -6175,9 +6175,43 @@ async function inferProjectName() {
     }
   } catch {}
 
-  // Only reached when this directory is not bound at all, which is the
-  // legitimate case of standing in a new checkout about to link it.
-  return basename(dir)
+  // Not bound: say so, rather than guessing this project's name from the
+  // directory's.
+  //
+  // Skip, 2026-08-25: "you've been fucked over by the app guessing shit IT
+  // ISN'T WRITING DOWN. like these fallbacks are not to like, help the user or
+  // whatever, they're to enable the app to be half-broken all the time."
+  //
+  // This is the worked example. The lookup above read a binding as a string
+  // when a binding is an object, so it matched nothing and every caller
+  // silently took `basename(dir)` instead. Nobody noticed, because a guess that
+  // is right about half the time looks like a feature — 50 of 117 checkouts on
+  // this machine happen to be named after their project. What the guess bought
+  // was 61 checkouts refusing with a misleading "not bound on this daemon", and
+  // 7 resolving to somebody else's real project.
+  //
+  // Every caller already handled null and printed a usage error; the fallback
+  // is what made those branches unreachable. `project link` does not call this
+  // at all — it takes the new project's name as an argument — so there is no
+  // naming use here to preserve.
+  return null
+}
+
+/**
+ * Exit saying that this directory is not linked, for a command that needed to
+ * know which project it is standing in.
+ *
+ * These call sites used to print a bare usage line, which was accurate and
+ * useless: it says how to type the command, not what went wrong. It was also
+ * unreachable, because inferProjectName always returned a guess, so the wrong
+ * project got acted on instead of anything being reported. Now that it can
+ * answer "I do not know", the answer is worth saying properly.
+ */
+function exitNotLinkedHere(usage) {
+  console.error('This directory is not linked to a project.')
+  console.error(`  Name one:              ${usage}`)
+  console.error('  Or link this checkout: tlda project link <name> <document-root>')
+  process.exit(1)
 }
 
 // --- Ensure server is running ---
