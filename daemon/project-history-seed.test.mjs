@@ -46,6 +46,27 @@ test('new-to-tlda link history uses the selected revision and document include g
   await prepared.cleanup()
 })
 
+test('QMD history preserves tracked execution inputs and drops rendered output', async () => {
+  const { repo } = await fixtureRepo('tlda-qmd-history-')
+  mkdirSync(join(repo, 'data'))
+  writeFileSync(join(repo, 'lecture.qmd'), '```{r}\nread.csv("data/input.csv")\n```\n')
+  writeFileSync(join(repo, 'data', 'input.csv'), 'x\n1\n')
+  writeFileSync(join(repo, 'lecture.html'), 'stale render\n')
+  await git(repo, ['add', '.'])
+  await git(repo, ['commit', '-m', 'course source'])
+
+  const prepared = await prepareProjectHistorySeed({
+    project: 'course', sourceDir: repo, documentRoots: ['lecture.qmd'], log: { info() {} },
+  })
+
+  assert.deepEqual(prepared.members, ['data/input.csv', 'lecture.qmd'])
+  assert.deepEqual(
+    (await git(prepared.repositoryDir, ['ls-tree', '-r', '--name-only', prepared.head])).stdout.trim().split('\n'),
+    ['data/input.csv', 'lecture.qmd'],
+  )
+  await prepared.cleanup()
+})
+
 test('existing tlda shadow history takes precedence over ordinary Git seeding', async () => {
   const { root, repo } = await fixtureRepo('tlda-existing-shadow-')
   writeFileSync(join(repo, 'paper.tex'), 'paper\n')

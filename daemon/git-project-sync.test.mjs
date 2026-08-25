@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile as execFileCb } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -106,6 +106,38 @@ test('configured document roots exclude unrelated broken TeX files', async () =>
   const proposal = await sync.editClusterSettled()
   assert.equal(proposal.status, 'SubmittedToBuildQueue')
   assert.deepEqual((await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'), ['chapter.tex', 'main.tex'])
+})
+
+test('QMD revisions carry tracked execution inputs and exclude rendered output', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-qmd-source-'))
+  const remote = join(root, 'server.git')
+  const checkout = join(root, 'checkout')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  await git(checkout, ['remote', 'add', 'tlda', remote])
+  mkdirSync(join(checkout, 'data'))
+  writeFileSync(join(checkout, 'lecture.qmd'), '```{r}\nread.csv("data/input.csv")\n```\n')
+  writeFileSync(join(checkout, 'data', 'input.csv'), 'x\n1\n')
+  writeFileSync(join(checkout, 'lecture.html'), 'stale render\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'base'])
+
+  const sync = createGitProjectSync({
+    sourceDir: checkout,
+    project: 'course',
+    daemonId: 'daemon-a',
+    bindingId: 'binding-a',
+    documentRoots: ['lecture.qmd'],
+  })
+  const proposal = await sync.editClusterSettled()
+
+  assert.equal(proposal.status, 'SubmittedToBuildQueue')
+  assert.deepEqual(
+    (await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'),
+    ['data/input.csv', 'lecture.qmd'],
+  )
 })
 
 test('explicit same-revision rebuild reaches proposal admission metadata', async () => {
