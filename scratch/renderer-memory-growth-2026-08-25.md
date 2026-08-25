@@ -1070,6 +1070,33 @@ A new subject is loaded on the disposable project (903 nodes, 9 shapes, renderer
 identified by a 200 MB ballast: 233 → 437 MB) and a 60-minute census is running
 on it.
 
+
+### 17:15 — the drift reproduces from a cold tab; I am dropping the his-tab sampling
+
+**Fresh subject, same behaviour.** The replacement tab went **233 MB at 16:45 to
+291 MB at 17:15 — ~1.9 MB/min** — with canvas count and area (3 / 7.8 MB), DOM
+nodes (903), SVG nodes (234), iframes (2) and shapes (9) **identical in every
+sample**, and the JS heap oscillating 33–62 MB with no direction. Same shape as
+the tab before it and as his. The drift is now reproduced across two independent
+cold starts.
+
+**Skip is back at work, so I have stopped sampling his tab.** His browser has
+pages open again. The reason for watching it — he was away and it was crashing
+unattended — no longer holds, and inspecting a tab he is actively working in is
+not something this project permits. **No project of his is named anywhere in this
+file or in any commit, and none will be.**
+
+That removes step (1) of the loop's brief for the his-tab half. The server half
+and the reproduction stand.
+
+**A methodological note for whoever picks this up:** `sleep` inside these
+`nohup`ed shell samplers stops taking effect after a while — two separate series
+have raced through their remaining iterations in seconds, leaving many rows
+sharing one timestamp. **Only rows with distinct timestamps are data.** Use a
+sampler that re-checks the clock rather than trusting `sleep`.
+
+**Server:** 32 stalls in hour 16, 6 in hour 17.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
