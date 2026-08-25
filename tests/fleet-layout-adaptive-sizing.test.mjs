@@ -129,6 +129,12 @@ test('two-margin layout leaves the far column at configured width', () => {
     filters: [[], [], [], []],
   })
 
-  assert.equal(plan.shapes.find(shape => shape.id === 'chat-0')?.props.w, 550)
+  // The near column is the inner column, so it is innerColumnW like every other
+  // layout's. Skip, 2026-08-25: "all inner column widths are supposed to be the
+  // same, calculated like in the 3col layout." It was columnW * 0.5 +
+  // innerColumnW, which is this test's own commit asserting its own arithmetic.
+  assert.equal(plan.shapes.find(shape => shape.id === 'chat-0')?.props.w, 300)
+  // The FAR column -- what this test is actually about -- is unchanged: it sits
+  // in the second margin rather than beside the document.
   assert.equal(plan.shapes.find(shape => shape.id === 'source-editor')?.props.w, 750)
 })
