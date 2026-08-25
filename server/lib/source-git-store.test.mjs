@@ -25,6 +25,7 @@ test('a revision round-trips: accept, manifest, read one file', async () => {
     })
     const manifest = await store.readManifest(first)
     assert.deepEqual(manifest.map(entry => entry.path), ['figures/a.svg', 'main.tex'])
+    assert.deepEqual(manifest.map(entry => entry.mode), ['100644', '100644'])
     assert.equal((await store.readRevisionFile(first, 'main.tex')).toString(), 'one\n')
     rmSync(dir, { recursive: true, force: true })
   } catch (error) {
