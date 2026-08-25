@@ -48,12 +48,25 @@
 // them is the product working.
 //
 // ---------------------------------------------------------------------------
+// IT CHECKS THE PAGES RENDER, NOT ONLY THAT THE BYTES ARRIVED
+//
+// The first version of this measured disk -> server and browser -> server to the
+// millisecond and never asked whether a page could be SEEN. On 2026-08-25 that
+// gap cost a day: a paper's pages were requested under a filename the server
+// does not serve, every request returned 29 bytes of `{"error":...}`, and the
+// canvas drew an empty box per failure — indistinguishable from still loading.
+// Sync was perfect throughout. The demo could not have caught it, because the
+// project it ran on was markdown and had no pages at all.
+//
+// So every cycle now fetches the rendered pages and fails on a page that does
+// not come back as a real SVG. Skip: "i want a version making real fucking edits
+// to a real project."
+//
 // NEVER POINTED AT ANYTHING OF HIS
 //
-// `sync-demo` is disposable and is created by --setup. Driving a browser at a
-// project writes fleet shapes into that project's room (six per launch), so
-// this must never be aimed at a project a person works in. The project name is
-// a constant here rather than a flag for exactly that reason.
+// Driving a browser at a project writes fleet shapes into that project's room
+// (six per launch), and this edits files. It therefore refuses any project whose
+// name is not a disposable demo one — see ALLOWED_PREFIXES.
 import assert from 'assert/strict'
 import { execFile as execFileCb, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -63,13 +76,35 @@ import { promisify } from 'node:util'
 
 import { getServerUrl } from '../shared/config.mjs'
 
+// Read one flag before the option block below exists. Two readers of argv is one
+// too many, so this is the only early one and `valueOf` delegates to it.
+function valueOfEarly(flag, fallback) {
+  const at = process.argv.indexOf(flag)
+  return at === -1 ? fallback : process.argv[at + 1]
+}
+
 const execFile = promisify(execFileCb)
 
-const PROJECT = 'sync-demo'
-const FILE = 'demo.md'
-const SHAPE = 'shape:sync-demo'
-const ROOT = path.join(os.homedir(), 'worktrees', 'sync-demo')
-const CHECKOUT = path.join(ROOT, 'checkout')
+// The project is an argument now, but ONLY a disposable one. Driving a browser
+// at a project writes fleet shapes into its room, and a demo that edits files
+// must never be aimable at something someone works in. The guard is a name
+// prefix rather than a constant so the demo can run against a paper-SHAPED
+// project — Skip, 2026-08-25: "i want a version making real fucking edits to a
+// real project", after the markdown toy it used before proved it could not
+// catch a rendering fault.
+const ALLOWED_PREFIXES = ['sync-', 'pageurl-']
+const PROJECT = String(valueOfEarly('--project', 'sync-demo'))
+if (!ALLOWED_PREFIXES.some(prefix => PROJECT.startsWith(prefix))) {
+  console.error(`refusing to run against "${PROJECT}": this edits files and drives a browser, so it only runs on a disposable project (${ALLOWED_PREFIXES.join('* , ')}*)`)
+  process.exit(1)
+}
+const FILE = String(valueOfEarly('--file', 'demo.md'))
+const SHAPE = `shape:${PROJECT}`
+const ROOT = path.join(os.homedir(), 'worktrees', PROJECT)
+// Explicit, not inferred. A checkout that is the project root and one that is a
+// `checkout/` inside it are both ordinary, and guessing between them is the kind
+// of convenience that ends up wrong silently.
+const CHECKOUT = path.resolve(String(valueOfEarly('--checkout', path.join(ROOT, 'checkout'))))
 const REMOTE = path.join(ROOT, 'remote.git')
 const REMOTE_CLONE = path.join(ROOT, 'remote-clone')
 const SERVER = getServerUrl().replace(/\/$/, '')
@@ -170,10 +205,31 @@ function browserText() {
 // The three writers
 // ---------------------------------------------------------------------------
 
-const lineFor = (leg, n) => `- [${leg}] #${n} at ${stamp()}`
+// No `#`. It is a parameter character in LaTeX and a bare one is a compile
+// error, so the demo's own marker broke the build of the paper it was
+// demonstrating on — measured, not theorised: "BUILD FAILED: LaTeX produced 1
+// error(s)". The marker has to be legal in every format this runs against.
+const lineFor = (leg, n) => `- [${leg}] SYNCDEMO-${n} at ${stamp()}`
+
+// Where a demo line goes in the file.
+//
+// Appending to the end is wrong for LaTeX: everything after \end{document} is
+// ignored, so the lines land in the source, sync perfectly, and change nothing
+// a person can see — which is the exact failure this demo exists to detect,
+// reproduced by the demo itself. A file carrying the marker gets its lines
+// inserted there, inside the document body.
+const LOG_MARKER = '% SYNC-DEMO-LOG'
+function appendIntoDocument(absolutePath, line) {
+  const text = fs.readFileSync(absolutePath, 'utf8')
+  if (!text.includes(LOG_MARKER)) {
+    fs.appendFileSync(absolutePath, `${line}\n`)
+    return
+  }
+  fs.writeFileSync(absolutePath, text.replace(LOG_MARKER, `${line}\n\n${LOG_MARKER}`))
+}
 
 async function writeOnDisk(line) {
-  fs.appendFileSync(path.join(CHECKOUT, FILE), `${line}\n`)
+  appendIntoDocument(path.join(CHECKOUT, FILE), line)
   // Nothing else. No commit, no push, no CLI call: the daemon is supposed to
   // notice the edit, settle the tree, and push a proposal on its own. Doing any
   // of that here would be the harness performing the behaviour under test.
@@ -212,7 +268,7 @@ async function writeOnRemote(line) {
   const file = path.join(REMOTE_CLONE, FILE)
   await git(REMOTE_CLONE, ['fetch', 'origin'])
   await git(REMOTE_CLONE, ['reset', '--hard', 'origin/main']).catch(() => {})
-  fs.appendFileSync(file, `${line}\n`)
+  appendIntoDocument(file, line)
   await git(REMOTE_CLONE, ['add', '--', FILE])
   await git(REMOTE_CLONE, ['commit', '-m', line])
   await git(REMOTE_CLONE, ['push', 'origin', 'HEAD:main'])
@@ -291,6 +347,58 @@ async function branchState() {
     return { head, clean: dirty === '', dirty, tip }
   } catch (error) {
     return { head: null, clean: null, dirty: '', tip: null, error: error.message }
+  }
+}
+
+/**
+ * Fetch every rendered page and say whether it is really there.
+ *
+ * This is the check the first version of this file lacked, and its absence is
+ * why it certified a document nobody could read. A page that 404s comes back as
+ * a short JSON error, so "did I get bytes" is not enough — the size is the test.
+ *
+ * The URL is built from the project's own `targets`, exactly as the client does,
+ * because the filename is keyed on the TEX BASE and not the project name. Asking
+ * under the wrong name is precisely the bug this exists to catch, so it must not
+ * guess: no targets means no answer, reported as such.
+ */
+async function pagesRender() {
+  let project
+  try {
+    const res = await fetch(api(''), { signal: AbortSignal.timeout(30_000) })
+    if (!res.ok) return { ok: false, reason: `project record unreadable (HTTP ${res.status})` }
+    project = await res.json()
+  } catch (error) { return { ok: false, reason: `project record unreadable (${error.message})` } }
+
+  const targets = Array.isArray(project?.targets) ? project.targets : []
+  if (!targets.length) return { ok: false, reason: 'the project reports no targets, so no page can be addressed' }
+
+  const results = []
+  for (const target of targets) {
+    const pages = Number(target?.pages || 0)
+    for (let page = 1; page <= pages; page++) {
+      const url = `${SERVER}/docs/${PROJECT}/${target.texBase}-page-${page}.svg`
+      const started = Date.now()
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(180_000) })
+        const body = await res.text()
+        results.push({ page, status: res.status, bytes: body.length, ms: Date.now() - started })
+      } catch (error) {
+        results.push({ page, status: 0, bytes: 0, ms: Date.now() - started, error: error.message })
+      }
+    }
+  }
+  // A real page is tens of kilobytes. A 404 body is a few dozen bytes, which is
+  // why the threshold is on SIZE and not on the status code alone — a proxy or a
+  // rewrite can return 200 with an error document.
+  const broken = results.filter(r => r.status !== 200 || r.bytes < 1000)
+  const slowest = results.reduce((a, b) => (b.ms > (a?.ms ?? -1) ? b : a), null)
+  return {
+    ok: broken.length === 0,
+    total: results.length,
+    broken,
+    slowestMs: slowest?.ms ?? null,
+    slowestPage: slowest?.page ?? null,
   }
 }
 
@@ -461,7 +569,7 @@ const unrun = []
 for (let cycle = 0; cycle < CYCLES; cycle++) {
   for (const leg of LEGS) {
     n += 1
-    const marker = `#${n}`
+    const marker = `SYNCDEMO-${n}`
     const line = lineFor(leg, n)
 
     // Every destination EXCEPT the one that wrote it. Asking whether the writer
@@ -522,6 +630,21 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
   const versions = await versionCount()
   if (versions !== null && startingVersions !== null) {
     console.log(`         versions ${startingVersions} → ${versions}`)
+  }
+
+  // The check the first version of this file did not have. Bytes arriving is
+  // not the product; a page a person can see is.
+  const rendered = await pagesRender()
+  if (!rendered.ok && rendered.reason) {
+    failures.push(`pages: ${rendered.reason}`)
+    console.log(`         pages   COULD NOT CHECK — ${rendered.reason}`)
+  } else if (!rendered.ok) {
+    const sample = rendered.broken.slice(0, 3)
+      .map(b => `p${b.page} ${b.status} ${b.bytes}b`).join(', ')
+    failures.push(`pages: ${rendered.broken.length} of ${rendered.total} do not render (${sample})`)
+    console.log(`         pages   ${rendered.broken.length}/${rendered.total} BROKEN — ${sample}`)
+  } else {
+    console.log(`         pages   ${rendered.total}/${rendered.total} render, slowest p${rendered.slowestPage} ${(rendered.slowestMs / 1000).toFixed(1)}s`)
   }
 
   if (cycle + 1 < CYCLES) await sleep(EVERY_MS)
