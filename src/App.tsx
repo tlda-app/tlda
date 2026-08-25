@@ -9,7 +9,7 @@ import { log } from './logger'
 import { SHAPE_RENDER_ERROR_EVENT, errorFromShapeRenderEvent } from './shape-error-surface'
 import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
-import { receiveFilterEvents, sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity, useFleetTasks } from './fleet-data-adapter'
+import { sendMessage, useFleetAgents, useFleetIdentity } from './fleet-data-adapter'
 import { subscribeChat } from './fleet/chat-subscription.mjs'
 import { convertChatEvent } from './fleet/convert-chat-event.mjs'
 import { GradebookWorkspace } from './classroom/GradebookWorkspace'
@@ -22,14 +22,10 @@ import { viewFormat } from '../shared/document-formats.mjs'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
-import { ChatComposer } from './shapes/ChatComposer'
-import { getPref, parseCsvPref, subscribePref } from './preferences'
 // @ts-ignore — vanilla JS module
 import { buildFleetAgentFilter } from '../shared/filter-semantics.mjs'
 // @ts-ignore — vanilla JS module
-import { attachIndexChatTail } from './index-chat-tail.mjs'
 // @ts-ignore — vanilla JS module
-import { indexSelectedAgentRecipientId } from './fleet/send-target-binding.mjs'
 import {
   getFleetAgentDirectoryRows,
   sortFleetAgentDirectoryRowsByRecency,
@@ -37,14 +33,11 @@ import {
 } from './shapes/FleetAgentDirectoryModel'
 import { PrettyName } from './shapes/PrettyName'
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc } from './fleet/chat-render.mjs'
+import { IndexChatPanel } from './fleet/IndexChatPanel'
 // @ts-ignore — vanilla JS module
-import { renderActivityGroup } from './fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
-import { renderMarkdown as renderMarkdownUtil } from './fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { toggleRecording, isRecording, onRecordingChange, maybeShowRadioSubtitleForIncomingChat, setRadioReplyHandler, setRadioDraftText, commitRadioDraft, setVoiceTarget, completeMessageSend } from './voice.mjs'
-import { useProjectPreambleMacros } from './fleet/useProjectPreambleMacros'
+import { maybeShowRadioSubtitleForIncomingChat, setRadioReplyHandler, setRadioDraftText, commitRadioDraft, setVoiceTarget, completeMessageSend } from './voice.mjs'
 import './App.css'
 import './themes.css'
 import './shapes/fleet-chat.css'
@@ -61,11 +54,6 @@ function isStandaloneWorkspaceRoute() {
 // Fetch auth level (presenter permission) — fire and forget, UI updates reactively.
 // The standalone gradebook uses its classroom API request instead of viewer auth state.
 if (!isStandaloneWorkspaceRoute()) fetchAuthLevel()
-
-function composerPlaceholder(agentName: string, submitWordsPref: string) {
-  const [submitWord] = parseCsvPref(submitWordsPref)
-  return submitWord ? `Message ${agentName} · say “${submitWord}” to send` : `Message ${agentName}`
-}
 
 // Error boundary to prevent blank screen on errors
 class ErrorBoundary extends Component<
@@ -157,11 +145,6 @@ type State =
 
 // Doc assets come from the active config's STORE (http), injected by the server.
 const ASSET_BASE = STORE_HTTP
-
-// Same expression FleetChatShape, FleetInboxShape and MathNoteShape each keep
-// locally. It gates the composer's inputMode, which is what keeps iOS from
-// raising the on-screen keyboard over a field voice is going to fill.
-const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
 
 // Fetch a single document config from the API — fast path for ?project=X
 async function fetchDocConfig(projectName: string, includePageInfo = false): Promise<DocConfig | null> {
@@ -773,16 +756,6 @@ type ProjectAction = 'star' | 'archive'
 type PointerStart = { key: string; x: number; y: number; archived: boolean; dx: number; action: ProjectAction | null }
 type FleetChatFilter = [string, string][][]
 
-function fleetEventTimestamp(event: any) {
-  const ts = event?.timestamp || event?.ts || ''
-  const parsed = ts ? new Date(ts).getTime() : 0
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function fleetEventText(event: any) {
-  return String(event?.text || event?.message || event?.metadata?.message || '')
-}
-
 function projectLabelMatches(row: FleetAgentDirectoryRowModel, project: string) {
   if (!project) return false
   if (row.project === project) return true
@@ -792,32 +765,6 @@ function projectLabelMatches(row: FleetAgentDirectoryRowModel, project: string) 
 function fleetChatFilterForAgent(row: FleetAgentDirectoryRowModel | null): FleetChatFilter | null {
   if (!row?.exactName) return null
   return buildFleetAgentFilter(row.exactName) as FleetChatFilter
-}
-
-function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: ReturnType<typeof useFleetIdentity>, sendTargets: string[], preambleMacros: Record<string, string>) {
-  const agentLabel = (id: string) => {
-    if (!id) return '[unknown]'
-    if (identity.id && id === identity.id) return identity.name || 'You'
-    const agent = agents.find((a: any) => a.id === id || a.friendly_name === id)
-    return agent?.friendly_name || agent?.name || String(id).replace(/^fleet:/, '')
-  }
-  const getNickClass = (id: string) => {
-    if (identity.id && id === identity.id) return 'nick-human'
-    return 'nick-agent-0'
-  }
-  return {
-    agentLabel,
-    getNickClass,
-    isHumanId: (id: string) => !!identity.id && id === identity.id,
-    getAgents: () => agents,
-    getTasks: () => tasks,
-    sendTargets,
-    tldaToken: null,
-    renderMarkdown: (input: string) => renderMarkdownUtil(input, preambleMacros),
-    highlightSyntax: (code: string) => esc(code),
-    langFromFilePath: () => '',
-    preambleMacros,
-  }
 }
 
 // The document table's agents cell: the project's agents, most recently active
@@ -864,14 +811,9 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 }) {
   const identity = useFleetIdentity()
   const agents = useFleetAgents()
-  const tasks = useFleetTasks()
   const agentRows = useMemo(() => sortFleetAgentDirectoryRowsByRecency(getFleetAgentDirectoryRows(agents)), [agents])
   const [meta, setMeta] = useState<ProjectMeta>({})
   const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
-  const [recording, setRecording] = useState(() => isRecording())
-  useEffect(() => onRecordingChange(setRecording), [])
-  const [voiceSubmitWords, setVoiceSubmitWords] = useState(() => getPref('voice-submit-words') as string)
-  useEffect(() => subscribePref(() => setVoiceSubmitWords(getPref('voice-submit-words') as string)), [])
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [starredKeys, setStarredKeys] = useState<Set<string>>(new Set(
     Object.entries(manifest).filter(([, config]) => config.starred).map(([key]) => key)
@@ -886,9 +828,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [timeAxisNow] = useState(() => Date.now())
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
-  const [chatSendError, setChatSendError] = useState('')
-  const indexChatLogRef = useRef<HTMLDivElement | null>(null)
-  const indexChatRowsRef = useRef<HTMLDivElement | null>(null)
   const pointerStart = useRef<PointerStart | null>(null)
   const pointerSwiped = useRef(false)
   const requestedHistoriesRef = useRef(new Set<string>())
@@ -1035,90 +974,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     [selectedAgent?.exactName],
   )
   const chromeChatFilter = selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
-  const indexChatBufferKey = selectedAgent?.id ? `chat:index:${selectedAgent.id}` : 'chat:index:no-agent'
-  useEffect(() => {
-    if (!selectedAgentFilter || !identity.id) return
-    return subscribeChat(
-      selectedAgentFilter,
-      100,
-      (events, meta) => { receiveFilterEvents(indexChatBufferKey, events, meta) },
-      {
-        humanId: identity.id,
-        humanName: identity.name,
-        correlationKey: indexChatBufferKey,
-      },
-    )
-  }, [selectedAgentFilter, indexChatBufferKey, identity.id, identity.name])
-  const selectedChatEvents = useFleetEvents(chromeChatFilter, undefined, indexChatBufferKey)
-  const sendTargets = useMemo(() => {
-    const recipientId = indexSelectedAgentRecipientId(selectedAgent)
-    return recipientId ? [recipientId] : []
-  }, [selectedAgent?.id])
-  const selectedAgentProject = selectedAgent?.project || ''
-  const preambleMacros = useProjectPreambleMacros(selectedAgentProject)
-  // The React Compiler bails out here — `react-hooks/preserve-manual-memoization`
-  // reports "Compilation Skipped: Existing memoization could not be preserved"
-  // against this dep array — so this component does not get compiler
-  // optimisation. That is accepted, not unnoticed: it is recorded in
-  // `config/eslint-baseline.json` deliberately, because leaving a severity-2 red
-  // that nobody intends to fix is how a lint gate becomes one people route
-  // around.
-  //
-  // What is not known is whether it costs anything. Nobody has profiled index
-  // chat rendering against a version the compiler accepts. If you are here
-  // because rendering is slow, this is a real lead and it has not been chased.
-  const chatRenderContext = useMemo(
-    () => makeIndexChatRenderContext(agents, tasks, identity, sendTargets, preambleMacros),
-    [agents, tasks, identity, sendTargets, preambleMacros],
-  )
-  const selectedChatRows = useMemo(() => {
-    if (!selectedAgent) return []
-    return selectedChatEvents
-      .filter(event => fleetEventText(event))
-      .sort((a, b) => fleetEventTimestamp(a) - fleetEventTimestamp(b))
-      .slice(-24)
-  }, [selectedAgent, selectedChatEvents])
-  const renderedChatRows = useMemo(() => {
-    let previousMessageTimestamp: string | null = null
-    const rows: { key: string; html: string }[] = []
-    let activityGroup: any[] = []
-    const flushActivity = () => {
-      if (activityGroup.length === 0) return
-      const first = activityGroup[0]
-      rows.push({
-        key: `activity:${first._dbId || first.id || first.timestamp || rows.length}`,
-        html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, chatRenderContext)}</div>`,
-      })
-      activityGroup = []
-    }
-    selectedChatRows.forEach((event, index) => {
-      if (event._activity) {
-        if (activityGroup.length > 0 && activityGroup[0].from !== event.from) flushActivity()
-        activityGroup.push(event)
-        return
-      }
-      flushActivity()
-      const html = renderChatLine(event, { ...chatRenderContext, previousMessageTimestamp })
-      if (html && event.timestamp) previousMessageTimestamp = event.timestamp
-      rows.push({
-        key: event.id || event._tempId || `${event.timestamp}-${index}`,
-        html,
-      })
-    })
-    flushActivity()
-    return rows
-  }, [chatRenderContext, selectedChatRows])
-
-  useEffect(() => {
-    const log = indexChatLogRef.current
-    const rows = indexChatRowsRef.current
-    if (!log || !rows || !selectedAgent) return
-    return attachIndexChatTail(log, rows)
-  }, [selectedAgent?.id])
-  const composerAgentNames = useMemo(() => (
-    selectedAgent ? { [selectedAgent.exactName]: selectedAgent.displayName, [selectedAgent.id]: selectedAgent.displayName } : {}
-  ), [selectedAgent])
-  const chromeComposerPlaceholder = selectedAgent ? composerPlaceholder(selectedAgent.displayName, voiceSubmitWords) : ''
   useEffect(() => {
     const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
       .filter(name => !requestedHistoriesRef.current.has(name))
@@ -1352,57 +1207,12 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     window.location.assign(url.toString())
   }
 
-  const sendChromeChat = (text: string, targets: string[]) => {
-    setChatSendError('')
-    void Promise.all(targets.map(target => sendMessage(target, text)))
-      .then(results => {
-        if (!results.every(result => result.ok || result.queued)) {
-          setChatSendError('Message was not sent.')
-        }
-      })
-      .catch(error => setChatSendError(error instanceof Error ? error.message : 'Message was not sent.'))
-  }
-
   return (
     <div className={`PickerScreen${isDark ? ' tl-theme__dark' : ''}`}>
-      <div className="index-top-chat fleet-chat-shape">
-        <div className="index-top-chat-header">
-          <span>{selectedAgent ? selectedAgent.displayName : 'Chat'}</span>
-          {/* Dictation is toggled by Right Shift on a keyboard; a phone has none. */}
-          <button
-            type="button"
-            className={`index-top-chat-mic${recording ? ' recording' : ''}`}
-            onClick={() => toggleRecording()}
-            title={recording ? 'Stop transcription' : 'Start transcription'}
-            aria-label={recording ? 'Stop transcription' : 'Start transcription'}
-            aria-pressed={recording}
-          >
-            <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill="currentColor" stroke="none" />
-              <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
-              <line x1="9" y1="14" x2="9" y2="16" />
-            </svg>
-          </button>
-        </div>
-        <div ref={indexChatLogRef} className="index-top-chat-log fleet-chat-log" aria-live="polite">
-          <div ref={indexChatRowsRef}>
-            {!selectedAgent && <div className="index-top-chat-empty">Select an agent from a project column.</div>}
-            {selectedAgent && renderedChatRows.length === 0 && <div className="index-top-chat-empty">No messages</div>}
-            {renderedChatRows.map(row => (
-              <div key={row.key} className="chat-row-wrap" dangerouslySetInnerHTML={{ __html: row.html }} />
-            ))}
-          </div>
-        </div>
-        <ChatComposer
-          className="index-top-chat-composer"
-          sendTargets={sendTargets}
-          agentNames={composerAgentNames}
-          onSend={sendChromeChat}
-          isTouchDevice={_isTouchDevice}
-          placeholder={chromeComposerPlaceholder}
-        />
-        {chatSendError && <div className="index-top-chat-error">{chatSendError}</div>}
-      </div>
+      {/* The real chat, in an index editor. It brings its own header, filter
+          pane, composer and voice control — the hand-rolled versions that used
+          to be here are gone with it. See src/fleet/IndexChatPanel.tsx. */}
+      <IndexChatPanel className="index-top-chat" filter={chromeChatFilter} />
 
       <div className="project-index-search-row">
         {/* No autoFocus. Focus follows a deliberate action everywhere else in

@@ -318,86 +318,6 @@ body.tlda-pan-mode * {
   line-height: 1.4;
 }
 
-.index-top-chat-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 30px;
-  padding: 0 8px;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
-  color: #64748b;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.index-top-chat-header button {
-  border: 0;
-  background: transparent;
-  color: #2563eb;
-  cursor: pointer;
-  font: inherit;
-  text-transform: none;
-  letter-spacing: normal;
-}
-
-.index-top-chat-header .index-top-chat-mic {
-  display: flex;
-  width: 28px;
-  height: 28px;
-  margin-left: auto;
-  padding: 0;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  color: currentColor;
-  opacity: var(--ui-tone-rest);
-}
-
-.index-top-chat-header .index-top-chat-mic.recording {
-  color: #dc2626;
-  opacity: 1;
-}
-
-.index-top-chat-log {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 8px 10px;
-  background: #fff;
-}
-
-.index-top-chat-empty {
-  padding: 18px 8px;
-  color: #64748b;
-  text-align: center;
-  opacity: var(--ui-tone-rest);
-}
-
-.index-top-chat-composer {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 34px;
-  max-height: 92px;
-  padding: 7px 8px;
-  border: 0;
-  border-top: 1px solid rgba(128, 128, 128, 0.15);
-  border-radius: 0;
-  background: #fff;
-  color: #0f172a;
-  font: inherit;
-  outline: none;
-  resize: vertical;
-}
-
-.index-top-chat-error {
-  padding: 0 8px 6px;
-  color: #dc2626;
-  font-size: 0.74rem;
-}
-
 .project-index-search-row {
   max-width: 860px;
   margin: 0 auto 18px;
@@ -712,11 +632,6 @@ body.tlda-pan-mode * {
     margin-bottom: 14px;
   }
 
-  /* iOS Safari zooms the page when a focused text control is below 16px. */
-  .index-top-chat-composer {
-    font-size: 16px !important;
-  }
-
   .project-index-axis,
   .project-index-row {
     grid-template-columns: minmax(0, 1fr) 104px 76px;
@@ -810,16 +725,6 @@ body.tlda-pan-mode * {
 
 .tl-theme__dark .index-top-chat {
   border-color: var(--tl-color-divider);
-}
-
-.tl-theme__dark .index-top-chat-header,
-.tl-theme__dark .index-top-chat-empty {
-  color: var(--tl-color-text-3);
-}
-
-.tl-theme__dark .index-top-chat,
-.tl-theme__dark .index-top-chat-log,
-.tl-theme__dark .index-top-chat-composer {
   background: var(--tl-color-panel);
   color: var(--tl-color-text-1);
 }
