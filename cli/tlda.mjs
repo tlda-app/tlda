@@ -6149,6 +6149,7 @@ async function cmdSystem() {
 
 async function inferProjectName() {
   const dir = resolve(getFlag('dir') || '.')
+  const matches = []
 
   try {
     const bindingsFile = join(CONFIG_DIR, `source-bindings${DAEMON_WORLD_SUFFIX}.json`)
@@ -6171,7 +6172,30 @@ async function inferProjectName() {
       // resolved to a DIFFERENT real project, so an inferred command operated
       // on somebody else's project without saying so.
       const sourceDir = typeof value === 'string' ? value : value?.sourceDir
-      if (sourceDir && resolve(String(sourceDir)) === dir) return project
+      if (sourceDir && resolve(String(sourceDir)) === dir) matches.push(project)
+    }
+    // ONE checkout can host SEVERAL projects — that is a supported arrangement,
+    // not a mistake — so a directory does not always name a single project.
+    //
+    // Returning the first match is picking one arbitrarily, which is the same
+    // fault as the basename guess this replaced, wearing a lookup's clothes.
+    // Measured on this machine: `/Users/skip/work/balancing-act` is bound to TWO
+    // projects, and iteration order handed back the one the caller did not mean,
+    // so `tlda project status` there answered "Project not found" about a project
+    // that exists and is syncing. The old basename guess got it right by luck,
+    // because the folder happens to be named after one of them — which is
+    // exactly how a guess hides an ambiguity instead of reporting it.
+    if (matches.length === 1) return matches[0]
+    if (matches.length > 1) {
+      console.error(`This directory is linked to ${matches.length} projects, so the one you mean cannot be inferred:`)
+      for (const project of matches.sort()) console.error(`  ${project}`)
+      // The first argument, not `--project`. Most of these commands take the
+      // name positionally — `getPositional(0) || inferProjectName()` — and only
+      // `remote` reads the flag, where it is consulted first and this branch is
+      // never reached. Telling someone to pass a flag the command ignores is a
+      // worse error message than none.
+      console.error('\n  Name it as the command\'s first argument, e.g. `tlda project status <name>`.')
+      process.exit(1)
     }
   } catch {}
 
