@@ -168,9 +168,27 @@ using any number in it.
 | file write → daemon commits locally | **4s, 7s, 7s** — 3/3, consistent |
 | local commit → visible at `/source/<file>` | **12s**, then **38s, 57s, 38s**; **159s** earlier |
 
-So the whole spread lives **downstream of the local commit** — push, admit,
-publish. The watcher and the debounce are not involved and are not worth
-instrumenting.
+**Narrowed further, 4 clean runs, demo paused — it is `source-proposal-admit`:**
+
+| leg | measured |
+|---|---|
+| file write → local commit | **5s, 5s, 8s** |
+| local commit → revision accepted | **153s, >200s, 139s** |
+| accepted → visible at `/source/<file>` | **same second** — these do not separate |
+
+**Not transport**, same box same moment: `git ls-remote` **1.45/1.03/1.04s**, a
+plain API GET **2.61/2.59/1.15s**.
+
+So the watcher, the debounce and publishing are all fast, and 139–200s sits in
+the push plus admission. The handler at `server/unified-server.mjs:9321` (the
+`source-proposal-admit` case) is bounded and takes no lock, so the time is below
+it — `admitProposal`, `sourceLifecycleStore`, or `gitRepository`. **That floor is
+`browser-perf`'s and I did not go into it.**
+
+**This does not only make sync slow, it makes it fail.** One run exceeded 200s
+against the daemon's 240s window; that is where `NEVER ARRIVED` comes from. And
+the same path measured **12s** earlier the same day, so there is a fast mode and
+something moves it to a slow one.
 
 **Load does not explain it.** 159s at load 0.22; 38s at load 3.0. Ruled out on
 measurement, not argument: CPU, network (0.089s connect, 0% loss), server event
