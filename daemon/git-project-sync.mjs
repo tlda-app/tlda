@@ -329,12 +329,19 @@ export function createGitProjectSync({
     return { ok: true, revision: filtered.commit, changed: filtered.changed, roots: filtered.roots, members: filtered.members, dropped: filtered.dropped }
   }
 
-  async function pushRevision(revision, { forceRebuild = false } = {}) {
+  // `members` rides along so the caller can say WHO edited. The daemon knows --
+  // jsonl-ingestor records every agent Edit/Write/MultiEdit and `resolveEditor`
+  // answers "who touched these paths recently" -- but the answer needs the paths,
+  // and this is the only place that has both the revision and its file list.
+  //
+  // Optional because `recover()` also pushes, and a revision recovered at startup
+  // has no edit cluster behind it to attribute.
+  async function pushRevision(revision, { forceRebuild = false, members = null } = {}) {
     const proposalRef = `refs/tlda/proposals/${daemonPart}/${branchPart}/${revision}`
     try {
       const result = await git(['push', '--porcelain', remote, `${revision}:${proposalRef}`])
       const submitted = { status: 'SubmittedToBuildQueue', revision, proposalRef, output: `${result.stdout || ''}${result.stderr || ''}` }
-      await onSubmitted({ ...submitted, forceRebuild })
+      await onSubmitted({ ...submitted, forceRebuild, members })
       return { ok: true, ...submitted }
     } catch (error) {
       const output = `${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`
@@ -361,7 +368,7 @@ export function createGitProjectSync({
     }
     // A push that reports success has to report what it left out in the same
     // breath, so `dropped` rides every settle result a caller can reach.
-    return { ...(await pushRevision(committed.revision)), dropped: committed.dropped }
+    return { ...(await pushRevision(committed.revision, { members: committed.members })), dropped: committed.dropped }
   }
 
   async function submitCurrent(options = {}) {

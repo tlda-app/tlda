@@ -9311,6 +9311,26 @@ async function handleDaemonWsMessage(ws, msg) {
       const hasCurrentLifecycle = lifecycle.listRevisionLifecycles(project)
         .some(item => item.sourceRevision === revision)
       const row = await admitProposal({ project, ...proposal }, { retryTerminal: msg.retry_terminal === true || !hasCurrentLifecycle })
+      // Stamp who caused this revision, so the build card can be addressed to
+      // them. `resolveEditedBy` reads exactly this pair and requires it inside a
+      // ten-minute window; nothing had written it since f6d0f9089 on 08-20, so it
+      // returned null for every project and no agent had received a build card
+      // since 08-21. The daemon resolves the name from its own edit records --
+      // see resolveProposalEditor in bin/fleet-daemon.mjs -- and this is where it
+      // lands.
+      //
+      // Best-effort on purpose: a failed stamp costs a name on a chat message,
+      // and must not fail an admission that already succeeded.
+      if (msg.editedBy) {
+        try {
+          await updateProject(project, { lastEditedBy: msg.editedBy, lastEditedByAt: Date.now() })
+        } catch (e) {
+          // Swallowed deliberately: the admission above already SUCCEEDED and the
+          // revision is durable. Rethrowing would turn a missing name on a chat
+          // message into a failed push the daemon then retries.
+          console.error(`[${project}] recording edit attribution failed: ${e.message}`)
+        }
+      }
       if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: {
         ok: true,
         project,

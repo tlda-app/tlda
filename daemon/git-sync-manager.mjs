@@ -76,7 +76,9 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       documentRoots: item.documentRoots || [],
       appOwnedWorkingTree: item.appOwnedWorkingTree === true,
       log,
-      onSubmitted: event => onProposalSubmitted({ project: item.project, ...event }),
+      // sourceDir rides along because the members in `event` are project-relative
+      // and the attribution lookup needs absolute paths.
+      onSubmitted: event => onProposalSubmitted({ project: item.project, sourceDir: item.sourceDir, ...event }),
     })
     const watchedMembers = new Set()
     let watcher

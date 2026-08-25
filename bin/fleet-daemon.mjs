@@ -535,6 +535,39 @@ jsonlBindingReconciler = createJsonlProcessBindingReconciler({
   log,
 })
 
+/**
+ * Which agent's edit is in this proposal, answered from what this daemon already
+ * recorded.
+ *
+ * The ingester stamps `recordEdit(agentId, path, operation)` on every agent
+ * Edit/Write/MultiEdit and `resolveEditor` answers "who touched these paths
+ * inside the attribution window". That has been live since `140101c7c` and has
+ * never left this process, so the server had nothing to stamp `lastEditedBy`
+ * with — which is why `resolveEditedBy` failed its ten-minute window for every
+ * project and build cards stopped reaching the agent who caused them on
+ * 2026-08-21. This is the one hop that was missing.
+ *
+ * `resolveEditor` returns matches oldest-first, so the last one is the most
+ * recent edit.
+ *
+ * **Never throws and never blocks the push.** Attribution is a nicety on top of
+ * somebody's writing reaching the server; a lookup that failed must cost a name
+ * on a chat message, not a revision.
+ */
+function resolveProposalEditor(sourceDir, members) {
+  if (!sourceDir || !Array.isArray(members) || members.length === 0) return null
+  try {
+    const found = jsonlIngestor.resolveEditor(members.map(rel => path.resolve(sourceDir, rel))) || []
+    return found.length ? found[found.length - 1]?.agentId || null : null
+  } catch (error) {
+    // Swallowed deliberately: attribution is a name on a chat message sitting on
+    // top of somebody's writing reaching the server. Rethrowing here would fail
+    // the push itself, so a broken lookup must cost the name and nothing else.
+    log.warn(`proposal attribution lookup failed: ${error.message}`)
+    return null
+  }
+}
+
 // ---------- source watching ----------
 const sourceSync = createGitSyncManager({
   bindingsFile: SOURCE_BINDINGS_FILE,
@@ -542,8 +575,9 @@ const sourceSync = createGitSyncManager({
   server: SERVER,
   token: TOKEN,
   log,
-  onProposalSubmitted: async ({ project, revision, proposalRef, forceRebuild = false }) => {
-    const admitted = await sendMsgWithReply({ type: 'source-proposal-admit', project, revision, ref: proposalRef, retry_terminal: forceRebuild })
+  onProposalSubmitted: async ({ project, sourceDir, revision, proposalRef, members = null, forceRebuild = false }) => {
+    const editedBy = resolveProposalEditor(sourceDir, members)
+    const admitted = await sendMsgWithReply({ type: 'source-proposal-admit', project, revision, ref: proposalRef, retry_terminal: forceRebuild, ...(editedBy ? { editedBy } : {}) })
     if (!admitted?.ok) throw new Error(`${project}: server did not confirm proposal admission`)
     log.info(`${project}: proposal admission confirmed id=${admitted.submissionId} state=${admitted.state} started_once=${admitted.startedOnce} lifecycle_present=${admitted.lifecyclePresent} reason=${admitted.terminalReason || 'none'}`)
   },
