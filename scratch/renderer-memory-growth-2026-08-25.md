@@ -219,6 +219,18 @@ IDLE  248, 240, 243, 260, 127                  mean ~224 MB
 Idle averages **higher** than typing. No effect, and if anything typing provokes
 collection. Ruled out.
 
+**Completed run, 28 minutes, 12 samples per phase** (the numbers above were the
+first half): TYPE mean **183 MB**, IDLE mean **238 MB**. Both phases swing
+between 85 and 345 MB; neither trends. First sample 184 MB, last 284 MB, with
+the swing an order of magnitude larger than the difference between the ends.
+
+So the reproduction tab shows **no net growth over 28 minutes** — a much longer
+window than the 7 minutes the earlier negative rested on, and RSS there is noisy
+enough that nothing under ~100 MB of drift would be visible anyway. That is worth
+stating plainly: this instrument could not detect his tab's *idle* rate even if
+the reproduction had it. It could not miss the 82–180 MB/min his tab ran at while
+he was active.
+
 ### The quantified difference between his tab and the reproduction
 
 Measured the same way in both, same minute:
