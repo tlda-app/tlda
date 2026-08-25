@@ -995,6 +995,48 @@ am recording that rather than continuing to spend ticks on it.**
 **His tab has gone from "DEAD" to "no page"** — the target itself is no longer
 listed, so the tab was closed rather than merely crashed-and-held.
 
+
+### 16:20 — his tab is gone; the reproduction shows the same unaccounted shape
+
+**His browser now reports zero page targets.** Not crashed-and-held, not
+unresponsive — the tab is closed. Nothing to sample there until he opens one.
+
+**The reproduction keeps drifting**, and it now has enough history to be a proper
+subject in its own right:
+
+```
+15:00  802 MB      15:45  872 MB
+15:20  ~810 MB     16:00  889 MB
+                   16:16  903 MB
+```
+
+**802 → 903 MB over 76 minutes, ~1.3 MB/min**, consistent with the earlier
+1.1–1.4.
+
+**And the accounting looks like his.** First census sample, same instant:
+
+```
+footprint   903 MB
+JS heap     136 MB
+canvas ×3   7.8 MB
+DOM nodes     901
+SVG nodes     234
+iframes         2
+shapes          9
+```
+
+**~760 MB unaccounted for.** That is the same shape as his tab at 8.8 GB —
+~100 MB heap, 82 MB canvas, 8.1 GB in Chrome's unattributed `malloc`. A tab
+holding 901 DOM nodes and 9 shapes has no business at 903 MB.
+
+One thing that differs from earlier readings on this same tab: **the JS heap is
+136 MB now against 68–101 MB earlier**, so unlike his, this heap is also
+growing — slowly, and nowhere near fast enough to explain the drift. A 22-minute
+census of canvas count, canvas area, node count and heap is running alongside
+footprint to see whether any of them tracks the 1.3 MB/min.
+
+**Server:** 44 stalls in hour 15, 10 in hour 16.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
