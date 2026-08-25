@@ -381,6 +381,27 @@ export function createGitProjectSync({
     // author's edits are now committed under them, which is the whole design.
     await git(['update-ref', localRef, filtered.commit])
     await git(['update-ref', workBranchRef, settled])
+    // Bring the author's index up to the commit we just made under them.
+    //
+    // settledCommit stages into a COPY of their index, deliberately, so that
+    // settling never disturbs what they have staged. The consequence is that
+    // after the branch moves, their real index still holds the pre-edit blob:
+    // index differs from HEAD and the working tree differs from the index, so
+    // `git status` reports `MM` and `git checkout` still refuses. Moving the
+    // branch without this leaves the checkout exactly as unusable as before,
+    // which is the entire symptom — caught by the property test, not by reading.
+    //
+    // `reset --mixed` and nothing else: it rewrites the index to HEAD and does
+    // not touch the working tree, so no edit of theirs is at risk. Nothing
+    // tracked is lost because the commit it resets to is the one that just
+    // captured the whole tracked tree, and untracked files are outside what
+    // `--mixed` looks at.
+    //
+    // Only when HEAD really is this branch. settle() guarantees that for a
+    // person's checkout, but the app-owned working tree is exempt from that gate
+    // and may be sitting anywhere, and resetting an index against a branch the
+    // tree is not on would be a corruption rather than a repair.
+    if (await currentBranchRef() === workBranchRef) await git(['reset', '-q', '--mixed'])
     if (filtered.dropped.length) {
       log.warn?.(`${project}: not in the revision — tracked, but no document root reaches them: ${filtered.dropped.join(', ')}`)
     }
