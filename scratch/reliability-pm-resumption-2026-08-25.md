@@ -152,7 +152,36 @@ tried, and guessing costs a day when it is wrong.
 is a fresh checkout.** Say that to whoever hits it rather than letting them
 believe a relink worked.
 
-## INTERACTIVE SYNC IS STARVED BY LECTURE BUILDS — measured, routed to browser-perf
+## SYNC LATENCY: RANGE IS REAL, CAUSE IS NOT ESTABLISHED — with browser-perf
+
+**This section previously read "INTERACTIVE SYNC IS STARVED BY LECTURE BUILDS —
+measured". That heading was wrong and I retracted it to `sol-dev`, who passed the
+retraction to `browser-perf` (message 3332289). Do not re-derive it.** The
+starvation story fit the 43-minute window below and then failed its control: a
+later run at load **0.22** still took **159s**. Read the whole section before
+using any number in it.
+
+**What is measured and stands (2026-08-25, demo paused, one project):**
+
+| leg of the path | time |
+|---|---|
+| file write → daemon commits locally | **4s, 7s, 7s** — 3/3, consistent |
+| local commit → visible at `/source/<file>` | **12s**, then **38s, 57s, 38s**; **159s** earlier |
+
+So the whole spread lives **downstream of the local commit** — push, admit,
+publish. The watcher and the debounce are not involved and are not worth
+instrumenting.
+
+**Load does not explain it.** 159s at load 0.22; 38s at load 3.0. Ruled out on
+measurement, not argument: CPU, network (0.089s connect, 0% loss), server event
+loop (mean 20–35ms).
+
+**Numbers to throw out: any 90–160s figure from the demo's own output.** Those
+were taken with two write legs running against one daemon and they include the
+demo's self-contention — the same edit measured solo was 12–57s.
+
+The 43-minute window below was real and is worth keeping as an artifact of what
+the bad tail looks like. It is not evidence for a cause.
 
 The live demo caught this on its own, which is the point of it.
 
@@ -169,7 +198,8 @@ knowable because the demo re-checks and distinguishes late from lost.
 
 **Same demo, same project, a few hours earlier: 9.8s and 10.1s.**
 
-Cause, measured on the box:
+What the box looked like in that window — **correlation, and it did not survive
+its control; this is not the cause:**
 
 ```
 up 8 min                       <- restarted by a deploy
@@ -178,18 +208,19 @@ R --file=rmd.R                 61.7-83% CPU, two of them
 quarto render lectures/Lab1-prose.qmd
 ```
 
-A deploy restarted the machine and every lecture build it interrupted re-ran at
-once. `proposal failed: daemon request timed out: source-proposal-admit` appears
-in the daemon log during these windows.
+A deploy had restarted the machine and every batch render it interrupted re-ran
+at once. `proposal failed: daemon request timed out: source-proposal-admit`
+appears in the daemon log during these windows — **and also appears while plain
+HTTPS to the same box answers in 0.26s**, which is the fact that broke the
+story.
 
-**Not the demo's own load** — two small edits every two minutes against a load
-average of 11 driven by quarto and R. Checked before reporting.
+**The batch-vs-interactive contention proposal is withdrawn.** It was a good fit
+for one window and it predicted fast sync on an idle box, which is false. Do not
+propose bounding or moving batch renders on the strength of this section.
 
-**The open decision, and it is infrastructure rather than code:** batch renders
-and interactive paper sync share one box with nothing separating them, and batch
-wins because it is a tight CPU loop while sync is a request that can time out.
-Either batch gets bounded or it moves. Passed to `sol-dev`, who routed it to
-`browser-perf` as the active owner of renderer/server performance.
+**What is actually open:** why the same path takes 12s and 159s on the same box
+under the same load. `browser-perf` owns it, via `sol-dev`. The narrowing above —
+everything downstream of the local commit — is the useful part to hand over.
 
 **Forty minutes is not "slow", it is the app not working**, and it is exactly the
 half of Skip's complaint that is not about files going missing.
@@ -361,6 +392,28 @@ knowing what consumes `liveAgents` and whether it treats absence as death.
 **And chase the instance separately — it is the smaller, safer fix and it fixes
 today's outage without touching the guard at all:** a codex agent whose process
 has no `FLEET_ID` is a launch path not setting the environment.
+
+## A CONFLICTED CHECKOUT SILENTLY HALTS ALL SETTLING — found 2026-08-25, unfixed
+
+**Leave a merge conflict in a bound checkout and the daemon stops settling
+anything.** Not only the file that conflicted, and not only the leg that caused
+it — every ingress into that project goes quiet, disk writes included. The only
+signal anywhere is one `warn` line: `proposal not accepted: conflicted`.
+
+Reproduced by accident, twice. The state is plainly visible in the checkout —
+`UU notes.md`, `MERGE_HEAD` present — but nothing in the app says so, so from
+outside it is indistinguishable from a dead watcher, a dead daemon, or a network
+fault. **I spent twenty minutes looking for a network fault that was not there.**
+
+**This is the third failure today whose presentation was "nothing is happening",**
+after the dead watcher on an `rm -rf`'d checkout and the page-filename mismatch.
+That is the class worth fixing, not the individual causes: a stopped pipeline
+reports the same as an idle one.
+
+**Not fixed, and I did not design a fix** — where the conflict gets surfaced is a
+product decision. The mechanism is `settle()` in `daemon/git-project-sync.mjs`
+returning without progress, and the demo now works around it on its own side by
+keeping its fixture from diverging (`7877a4843`).
 
 ## Open, and whose
 
