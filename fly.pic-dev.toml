@@ -1,0 +1,25 @@
+# fly.pic-dev.toml — isolated PIC development backend, cloned from testing.
+# Same image and deployment configuration as testing; its own app, volume, and
+# tailnet name keep heavy class builds away from the testing serving box.
+# Deploy with: fly deploy -c fly.pic-dev.toml
+app = "tlda-pic-dev"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.live"
+
+[env]
+  PORT = "5176"
+  NODE_ENV = "production"
+  TLDA_DEPLOYMENT = "pic-dev"
+  TS_HOSTNAME = "tlda-pic-dev"
+
+[[vm]]
+  size = "performance-2x"
+  # Testing has already OOM-killed under concurrent class builds at 4 GB.
+  # This box exists to absorb those builds without starving the serving box.
+  memory = "8192"
+
+[mounts]
+  source = "sync_data"
+  destination = "/app/server/persist"
