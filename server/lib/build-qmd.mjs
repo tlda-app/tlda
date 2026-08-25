@@ -22,6 +22,7 @@ import { parse as parseYaml } from 'yaml'
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { buildPerSlideDocuments } from './slides-parser.mjs'
+import { extractHtmlToc } from './html-toc-extractor.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -141,6 +142,15 @@ export function qmdRenderedOutputFileForSource(outDir, sourceFile) {
   const direct = qmdOutputFileForSource(sourceFile)
   return [direct, `_book/${direct}`]
     .find((candidate) => existsSync(join(outDir, candidate))) || null
+}
+
+export function qmdDeckPageInfo(root, perSlide) {
+  return perSlide.map(({ pageInfo }, groupIndex) => ({
+    ...pageInfo,
+    group: root,
+    groupIndex,
+    source: { type: 'project-source', format: 'qmd', file: root },
+  }))
 }
 
 export function qmdDocumentRootPaths(project) {
@@ -336,9 +346,10 @@ export async function buildQmdDocument(name, addLog = console.log) {
     anyDeck ||= isDeck
     if (isDeck) {
       const perSlide = buildPerSlideDocuments(rendered, outputFile)
-      for (const slide of perSlide) {
+      const groupedPageInfo = qmdDeckPageInfo(root, perSlide)
+      for (const [groupIndex, slide] of perSlide.entries()) {
         writeFileSync(join(outDir, slide.filename), slide.html)
-        pageInfo.push(slide.pageInfo)
+        pageInfo.push(groupedPageInfo[groupIndex])
       }
       addLog(`[qmd] split ${root} into ${perSlide.length} single-slide documents`)
     } else {
@@ -353,6 +364,7 @@ export async function buildQmdDocument(name, addLog = console.log) {
     }
   }
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
+  writeFileSync(join(outDir, 'toc.json'), JSON.stringify(extractHtmlToc(outDir, pageInfo), null, 2))
 
   await writeSourceScope(name, srcDir, outDir)
   await reporter.updateProject(name, {

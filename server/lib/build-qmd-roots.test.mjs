@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { qmdDocumentRootPaths, qmdRenderedOutputFileForSource } from './build-qmd.mjs'
+import { qmdDeckPageInfo, qmdDocumentRootPaths, qmdRenderedOutputFileForSource } from './build-qmd.mjs'
 
 test('qmd document roots are rendered in declared order', () => {
   assert.deepEqual(qmdDocumentRootPaths({
@@ -43,4 +43,15 @@ test('qmd book roots resolve from the Quarto _book directory', (t) => {
   mkdirSync(join(outDir, 'chapters'), { recursive: true })
   writeFileSync(join(outDir, 'chapters', 'one.html'), '<html></html>')
   assert.equal(qmdRenderedOutputFileForSource(outDir, 'chapters/one.qmd'), 'chapters/one.html')
+})
+
+test('slides from one qmd root share one document location', () => {
+  const pages = qmdDeckPageInfo('lectures/one.qmd', [
+    { pageInfo: { file: 'one-slide-0.html', title: 'First' } },
+    { pageInfo: { file: 'one-slide-1.html', title: 'Second' } },
+  ])
+  assert.deepEqual(pages.map(page => [page.group, page.groupIndex, page.source.file]), [
+    ['lectures/one.qmd', 0, 'lectures/one.qmd'],
+    ['lectures/one.qmd', 1, 'lectures/one.qmd'],
+  ])
 })

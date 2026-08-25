@@ -71,15 +71,14 @@ function extractHeadings(html, pageNum, chapterTitle, tocLevel) {
   return entries
 }
 
-function extractToc(projectName) {
-  const outputDir = join(PROJECTS_DIR, projectName, 'output')
+export function extractHtmlToc(outputDir, providedPageInfo = null) {
   const pageInfoPath = join(outputDir, 'page-info.json')
 
   if (!existsSync(pageInfoPath)) {
-    throw new Error(`No page-info.json found for project ${projectName}`)
+    throw new Error(`No page-info.json found in ${outputDir}`)
   }
 
-  const pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
+  const pageInfo = providedPageInfo || JSON.parse(readFileSync(pageInfoPath, 'utf8'))
   const toc = []
 
   // Compute "Chapter N" display titles (same logic as unified-server)
@@ -87,6 +86,10 @@ function extractToc(projectName) {
   let chapterNum = 0
   for (let i = 0; i < pageInfo.length; i++) {
     const entry = pageInfo[i]
+    if (entry.group && entry.groupIndex > 0) {
+      toc.push({ title: entry.title || `Slide ${entry.groupIndex + 1}`, level: 'section', page: i + 1 })
+      continue
+    }
     if (entry.tocLevel === 'part') {
       chapterNum = 0
       inPart = true
@@ -112,6 +115,13 @@ function extractToc(projectName) {
     console.log(`  ${entry.file}: ${headings.length} headings`)
     toc.push(...headings)
   }
+
+  return toc
+}
+
+function extractToc(projectName) {
+  const outputDir = join(PROJECTS_DIR, projectName, 'output')
+  const toc = extractHtmlToc(outputDir)
 
   const tocPath = join(outputDir, 'toc.json')
   writeFileSync(tocPath, JSON.stringify(toc, null, 2))
@@ -163,10 +173,12 @@ function buildSearchIndex(projectName) {
 }
 
 // CLI
-const projectName = process.argv[2]
-if (!projectName) {
-  console.error('Usage: node server/lib/html-toc-extractor.mjs <project-name>')
-  process.exit(1)
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
+  const projectName = process.argv[2]
+  if (!projectName) {
+    console.error('Usage: node server/lib/html-toc-extractor.mjs <project-name>')
+    process.exit(1)
+  }
+  extractToc(projectName)
+  buildSearchIndex(projectName)
 }
-extractToc(projectName)
-buildSearchIndex(projectName)
