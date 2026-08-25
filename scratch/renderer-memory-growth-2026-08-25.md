@@ -1193,6 +1193,48 @@ This one re-checks the wall clock each pass instead of trusting `sleep`.
 
 **Server:** 30 stalls in hour 18.
 
+
+### 19:30 — clearing every timer did NOT stop the drift
+
+Thirty minutes after clearing every `setInterval` and `setTimeout` id in the
+page:
+
+```
+18:59  408      19:09  443      19:19  420      19:27  436
+19:01  404      19:11  411      19:21  423      19:29  436
+19:03  413      19:13  410      19:23  429
+19:05  422      19:15  416      19:25  431
+19:07  435      19:17  416
+```
+
+**408 → 436 MB, ~0.93 MB/min**, sawtooth intact (443 → 411 at 19:11). The
+pre-clear rate was ~1.16 MB/min over a longer window. **Within the variation this
+process shows, the drift is unchanged.**
+
+**So it is not driven by `setInterval`/`setTimeout`** — not the two 1 Hz chat
+tickers, not the live-perf sampler, not the 5-second polls, not the 15- and
+30-second refreshes. That is a clean negative from a decisive experiment, and it
+removes the largest remaining family of app-side suspects.
+
+**What it does not rule out, stated precisely:** clearing timer ids does nothing
+to `requestAnimationFrame` loops, WebSocket message handlers, or promise chains
+already in flight. **tldraw renders on rAF**, so that is now the leading
+candidate, and suppressing it is the next experiment — already armed, with a
+series running.
+
+### The sibling control is dead — someone else started using it
+
+In the same window the sibling renderer went
+**44 → 408 → 3,584 → 3,747 → 757 → ~790 MB**. That is another agent's workload
+landing in the pooled browser, not a property of anything I am testing.
+
+**It is no longer a control and I am not treating it as one.** Its value was the
+17:50–19:11 stretch, where it held 44–50 MB while the app's renderer climbed;
+that comparison stands on its own window. Anything after 19:13 is somebody
+else's tab.
+
+**Server:** 20 stalls in hour 19.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
