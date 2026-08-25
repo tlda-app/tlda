@@ -1235,6 +1235,54 @@ else's tab.
 
 **Server:** 20 stalls in hour 19.
 
+
+### 20:00 — suppressing requestAnimationFrame did NOT stop it either
+
+rAF suppression was real and load-bearing: **2,072 calls blocked in 30 minutes**,
+~1.1 per second, so something in the page asks for frames steadily and was being
+denied throughout.
+
+```
+19:30  436      19:40  421      19:50  423      20:00  434
+19:32  412      19:42  423      19:52  423
+19:34  407      19:44  422      19:54  427
+19:36  414      19:46  404      19:56  429
+19:38  417      19:48  419      19:58  435
+```
+
+Endpoints are misleading here because 436 was a peak — the honest read is
+trough-to-latest: **407 at 19:34 → 434 at 20:00, ~1.0 MB/min**, and the later
+trough of 404 at 19:46 → 434 gives 2.1. **It is still climbing.**
+
+Three measurements of the same process now:
+
+| condition | rate |
+|---|---|
+| untouched | ~1.16 MB/min |
+| all timers cleared | ~0.93 MB/min |
+| timers cleared **and** rAF suppressed | ~1.0 MB/min |
+
+**Neither of the two largest app-side drivers is responsible.** Not
+`setInterval`/`setTimeout`, not `requestAnimationFrame`. Both eliminated by
+direct suppression rather than by argument.
+
+### Next: WebSocket traffic — armed, with a limitation I can't remove
+
+The page holds two sockets, fleet and sync. I have blocked the `WebSocket`
+constructor and dispatched `offline`, and **the app has entered its own offline
+state** — `sync-offline-badge: ⚡ offline` is in the DOM and **zero** reconnects
+have been attempted since.
+
+**What I cannot confirm:** that the two pre-existing sockets are closed at the OS
+level. `navigator.onLine` still reads `true` (dispatching the event does not
+change the property), and without CDP I cannot enumerate live sockets on this
+browser. So the honest statement of what is being tested is **"the app has
+stopped its sync activity and opens no new sockets"**, not "no bytes arrive". If
+the drift continues under that, socket *handling* is not the driver; if it stops,
+the result is suggestive but not clean.
+
+**Server:** hour 19 closed at 20 stalls.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
