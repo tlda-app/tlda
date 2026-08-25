@@ -198,6 +198,9 @@ function renderedActivity(record) {
     waitingOn: 'Bash: tlda deploy testing --sha abc123',
     action: 'wait for output',
     _semanticOutputHandle: 'cell:41',
+    // The id of the call that started the command, so a waiting card can point
+    // at that card rather than only repeating its text.
+    _semanticWaitingOnId: 'call_parent',
   })
   const html = renderActivityGroup([{
     from: 'fleet:codex', timestamp: activity.ts, _toolName: activity.tool,
@@ -207,7 +210,7 @@ function renderedActivity(record) {
     highlightSyntax: value => value, langFromFilePath: () => '',
   })
   assert.match(html, /waitingOn: Bash: tlda deploy testing --sha abc123, action: wait for output/)
-  assert.doesNotMatch(html, /cell: 41|semanticOutputHandle/)
+  assert.doesNotMatch(html, /cell: 41|semanticOutputHandle|semanticWaitingOnId|call_parent/)
 
   extractor.extractActivityEvents([parseCodexRecord({
     timestamp: ts,

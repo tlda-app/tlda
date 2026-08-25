@@ -68,6 +68,28 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
   const pendingTools = new Map()
   const pendingOutputParents = new Map()
 
+  /**
+   * The thing a poll is parked on, when the poll itself has one.
+   *
+   * A backgrounded command is polled through a chain: the shell yields a cell,
+   * a `wait` polls the cell, and its own result yields a cell again. Without
+   * this the second link registers the FIRST POLL as the parent, and since a
+   * poll has no command to name, `pendingOperationLabel` falls back to the bare
+   * tool name -- so the card reads `waitingOn: BashOutput`, naming the thing
+   * doing the waiting instead of the thing being waited on. Carry the original
+   * command forward instead of letting a poll stand in for it.
+   */
+  function inheritedWaitParent(pending) {
+    if (!pending?.input?.waitingOn) return null
+    return { label: pending.input.waitingOn, id: pending.input._semanticWaitingOnId || '' }
+  }
+
+  /** A call that is only waiting on something else has no subject of its own. */
+  function isWaitPoll(pending) {
+    const action = pending?.input?.action
+    return action === 'wait for output' || Boolean(pending?.input?.waitingOn)
+  }
+
   function pendingOperationLabel(pendings) {
     const operations = pendings.filter(Boolean)
     if (operations.length > 1) {
@@ -115,16 +137,33 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
           if (ACTIVITY_NOISE.has(name)) continue
           const humanName = name.replace(/^mcp__/, '').replace(/__/g, '/')
           let input = block.input || {}
-          const outputHandle = input.cell != null ? `cell:${input.cell}` : ''
+          // A backgrounded command is reached by cell (codex `wait`) or by shell
+          // session (codex `write_stdin`). Both are the same thing to a reader --
+          // a poll of something running elsewhere -- so both get a handle, and
+          // the session case is why a `BashOutput` run never resolved before.
+          const outputHandle = input.cell != null
+            ? `cell:${input.cell}`
+            : (input.session != null ? `session:${input.session}` : '')
           if (outputHandle && input.action === 'wait for output') {
-            const waitingOn = pendingOutputParents.get(outputHandle)
-            if (waitingOn) {
-              input = {
-                waitingOn,
-                action: input.action,
-                _semanticOutputHandle: outputHandle,
-              }
-            }
+            // The handle is stamped whether or not the parent is known: it is
+            // what marks this call as one link in a poll of something running
+            // elsewhere, and a run has to be recognisable as one run before
+            // anything can be said about what it is waiting for. `waitingOn`
+            // replaces the raw cell/session only once there is a command to
+            // name -- otherwise the call keeps its own arguments.
+            const parent = pendingOutputParents.get(outputHandle)
+            input = parent
+              ? {
+                  waitingOn: parent.label,
+                  action: input.action,
+                  _semanticOutputHandle: outputHandle,
+                  // The card the reader wants is the one that STARTED the
+                  // command, so carry its tool_use id and not just its text.
+                  // Skip, 2026-08-25: "can we have a hover to the actual cmd?
+                  // like the bash card? do we have a reference to it?"
+                  ...(parent.id ? { _semanticWaitingOnId: parent.id } : {}),
+                }
+              : { ...input, _semanticOutputHandle: outputHandle }
           }
           const arg = input.file_path || input.path ||
             input.command || input.cat || input.pattern || input.message ||
@@ -171,9 +210,12 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
         const pending = pendingTools.get(id)
         pendingTools.delete(id)
         if (yieldedCell) {
-          if (!pending.input?._semanticOutputHandle && yieldedLabel) {
-            pendingOutputParents.set(`cell:${yieldedCell}`, yieldedLabel)
-          }
+          // A poll is never a parent. It either passes on what it was waiting
+          // for or it registers nothing, so the chain keeps naming the command.
+          const parent = isWaitPoll(pending)
+            ? inheritedWaitParent(pending)
+            : (yieldedLabel ? { label: yieldedLabel, id } : null)
+          if (parent) pendingOutputParents.set(`cell:${yieldedCell}`, parent)
         } else if (pending.input?._semanticOutputHandle) {
           pendingOutputParents.delete(pending.input._semanticOutputHandle)
         } else if (pending.input?.cell != null) {
