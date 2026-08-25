@@ -161,13 +161,29 @@ Skip's rule is to say it in one sentence before building it. The sentence would
 be: *keep `dist/assets/index-*.js.map` on the volume, keyed by bundle hash, so
 a profile posted from an older bundle can still be resolved.*
 
-## Instrumentation left in his tab
+## Instrumentation and cleanup obligations
 
-None. The counting probe was uninstalled and confirmed removed, the native
-sampler stopped itself, and the `WebSocket` watch was uninstalled (it reported
-`not installed` on the second call because his reload had already wiped it).
-Left on the Air under `/tmp`: `cdp-watch.mjs`, `cdp-query.mjs`, `tlda-watch.csv`.
-Delete them when this is done.
+**In Skip's tab: none.** The counting probe was uninstalled and confirmed
+removed, the native sampler stopped itself, and the `WebSocket` watch was
+uninstalled (it reported `not installed` on the second call because his reload
+had already wiped it).
+
+**Still to remove when this work closes.** `sol-dev` asked for cleanup
+confirmation in the final report, so this is the checklist — but **enumerate the
+directories at cleanup time rather than trusting this list**, because a list
+written from memory is exactly the thing that goes stale.
+
+| where | what |
+|---|---|
+| **production server** (`/tmp`) | `baseline.js` + `baseline.out` — the 5-minute sampler, **keep running through the replay and the ordering control**, then stop the process and delete. Also sweep `anonshape.*` and anything else I left. |
+| **the Air** (`/tmp`) | `cdp-watch.mjs`, `cdp-query.mjs`, `tick.mjs`, `layoutrate.mjs`, `tlda-watch.csv`, `tlda-watch-1.csv`, plus any `cdp-*.mjs` not already removed inline |
+| **pooled browser** | release the tab; do not leave a project loaded in it |
+| **server projects** | `leak-probe-mem` — a disposable project I created for the reproduction. Still needed for the ordering control; delete after. |
+| **this checkout** (`scratch/`) | measurement scripts are gitignored and regenerable; fine to leave, but they are mine |
+
+**The sampler is a live process on the production box** — one `ps` plus a
+`/proc/meminfo` read every five minutes, unbounded. It is negligible but it is
+mine, and leaving it would make it a mystery process on someone else's server.
 
 
 ## Tick log (autonomous, from 07:15 UTC)
