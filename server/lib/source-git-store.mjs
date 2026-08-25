@@ -251,8 +251,8 @@ export function createSourceGitStore({ gitDir }) {
     const out = await git(['ls-tree', '-r', '-l', '--full-tree', revision])
     return out.split('\n').filter(Boolean).map(line => {
       const [meta, path] = line.split('\t')
-      const [, , sha, size] = meta.split(/\s+/)
-      return { path, sha256: sha, size: Number(size) || 0 }
+      const [mode, , sha, size] = meta.split(/\s+/)
+      return { path, sha256: sha, size: Number(size) || 0, mode }
     })
   }
 

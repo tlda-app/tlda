@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -40,6 +40,33 @@ test('concurrent same-project instances read immutable revisions and cannot shar
   } finally {
     await closeProjectStore()
     for (const instance of instances) rmSync(instance.root, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('materializes tracked symbolic links as links', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-instance-symlink-test-'))
+  let instance
+  try {
+    const lifecycle = {
+      async readRevision() {
+        return { files: [{ path: '_quarto.yml', mode: '120000' }] }
+      },
+      async readRevisionFile() {
+        return Buffer.from('_quarto_book.yml')
+      },
+    }
+    instance = await materializeBuildInstance({
+      name: 'course',
+      sourceRevision: 'revision',
+      lifecycle,
+      temporaryRoot: root,
+    })
+    const link = join(instance.source, '_quarto.yml')
+    assert.equal(lstatSync(link).isSymbolicLink(), true)
+    assert.equal(readlinkSync(link), '_quarto_book.yml')
+  } finally {
+    if (instance) rmSync(instance.root, { recursive: true, force: true })
     rmSync(root, { recursive: true, force: true })
   }
 })

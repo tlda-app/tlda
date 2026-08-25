@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -20,7 +20,8 @@ export async function materializeBuildInstance({ name, sourceRevision, lifecycle
     if (!bytes) throw new Error(`submitted revision is missing ${entry.path}`)
     const destination = join(source, entry.path)
     mkdirSync(dirname(destination), { recursive: true })
-    writeFileSync(destination, bytes)
+    if (entry.mode === '120000') symlinkSync(bytes.toString('utf8'), destination)
+    else writeFileSync(destination, bytes)
   }
   return { root: instanceRoot, project, source, output: join(project, 'output') }
 }
