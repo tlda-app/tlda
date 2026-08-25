@@ -5,6 +5,7 @@ import path from 'path'
 import { promisify } from 'util'
 import { scanTexDependencyClosure } from '../shared/tex-deps.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
+import { isQuartoRenderOutput, isSourceFilePath } from '../shared/source-manifest.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -141,6 +142,10 @@ export async function prepareProjectHistorySeed({ project, sourceDir, seedBranch
 
   const { stdout: seedOut } = await execFileP('git', ['rev-parse', '--verify', `${seedRevision}^{commit}`], { cwd: sourceDir, timeout: 5000 })
   const seed = seedOut.trim()
+  const seedPaths = (await execFileP(
+    'git', ['ls-tree', '-r', '--name-only', seed],
+    { cwd: sourceDir, timeout: 30000, maxBuffer: 64 * 1024 * 1024 },
+  )).stdout.split('\n').filter(Boolean)
   if (seedBranch) {
     const { stdout: branchOut } = await execFileP('git', ['rev-parse', '--verify', `${seedBranch}^{commit}`], { cwd: sourceDir, timeout: 5000 })
     const branch = branchOut.trim()
@@ -160,12 +165,20 @@ export async function prepareProjectHistorySeed({ project, sourceDir, seedBranch
     await execFileP('tar', ['-xf', archivePath, '-C', treeDir], { timeout: 30000 })
 
     const members = new Set()
+    const qmdRoots = roots.filter(file => /\.qmd$/i.test(file))
+    const qmdFiles = qmdRoots.length
+      ? seedPaths.filter(file =>
+          isSourceFilePath(file, { format: 'qmd', mainFile: qmdRoots[0] })
+          && !qmdRoots.some(root => isQuartoRenderOutput(file, root)))
+        : []
     for (const root of roots) {
-      const closure = /\.tex$/i.test(root)
-        ? scanTexDependencyClosure(root, treeDir)
-        : /\.(?:md|markdown|qmd)$/i.test(root)
-          ? scanMarkdownDependencyClosure(root, treeDir)
-          : { files: [root], missing: fs.existsSync(path.join(treeDir, root)) ? [] : [{ path: root }] }
+      const closure = /\.qmd$/i.test(root)
+        ? { files: qmdFiles, missing: [] }
+        : /\.tex$/i.test(root)
+          ? scanTexDependencyClosure(root, treeDir)
+          : /\.(?:md|markdown)$/i.test(root)
+            ? scanMarkdownDependencyClosure(root, treeDir)
+            : { files: [root], missing: fs.existsSync(path.join(treeDir, root)) ? [] : [{ path: root }] }
       if (closure.missing.length) {
         throw new Error(`${project}: ${root} has missing dependencies at ${seed.slice(0, 7)}: ${closure.missing.map(item => item.path).join(', ')}`)
       }

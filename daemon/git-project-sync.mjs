@@ -5,6 +5,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { scanTexDependencyClosure } from '../shared/tex-deps.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
+import { isQuartoRenderOutput, isSourceFilePath } from '../shared/source-manifest.mjs'
 
 const execFile = promisify(execFileCb)
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
@@ -153,6 +154,12 @@ export function createGitProjectSync({
       for (const candidate of candidates) {
         if (!paths.includes(candidate)) throw new Error(`${project}: configured document root is absent: ${candidate}`)
       }
+      const qmdRoots = candidates.filter(file => /\.qmd$/i.test(file))
+      const qmdFiles = qmdRoots.length
+        ? paths.filter(file =>
+            isSourceFilePath(file, { format: 'qmd', mainFile: qmdRoots[0] })
+            && !qmdRoots.some(root => isQuartoRenderOutput(file, root)))
+        : []
       const closures = new Map()
       for (const candidate of candidates) {
         const files = new Set()
@@ -163,9 +170,11 @@ export function createGitProjectSync({
           const document = pending.shift()
           if (scanned.has(document)) continue
           scanned.add(document)
-          const closure = /\.tex$/i.test(document)
-            ? scanTexDependencyClosure(document, extracted)
-            : scanMarkdownDependencyClosure(document, extracted)
+          const closure = /\.qmd$/i.test(document)
+            ? { files: qmdFiles, missing: [] }
+            : /\.tex$/i.test(document)
+              ? scanTexDependencyClosure(document, extracted)
+              : scanMarkdownDependencyClosure(document, extracted)
           for (const file of closure.files) {
             files.add(file)
             if (DOCUMENT_FILE.test(file) && !scanned.has(file)) pending.push(file)
