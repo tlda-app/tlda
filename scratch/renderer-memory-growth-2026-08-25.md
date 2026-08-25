@@ -657,6 +657,54 @@ range:
   0.3–1.8 s, once **101 seconds** today.
 - The multi-second `live-store` class: **historical, ended July.**
 
+
+### 11:15 — the lag profiler cannot answer "what entered the blocking call", and a third candidate dies
+
+**The instrument's limit, established from its own output and its source.** A
+dump is 583 bytes: `at`, `lagMs`, `stallStart`, `stallEnd`,
+`samplingIntervalUs`, and one `sections` entry holding `sampledMs`, a `ranked`
+aggregate and a single `stack`. `lag-profiler.mjs` aggregates the slice **by
+label** and ranks by self-time, keeping the deepest stack for the heaviest label.
+
+**Sample order is discarded.** So the profiler can say what was on the stack
+during a stall and can never say what ran immediately before the loop went
+quiet — which is exactly the question an `(idle)` stall poses. That is a real
+limitation, not a gap in what I looked at.
+
+**What it does establish, precisely.** One dump this hour:
+
+```
+lagMs 264   samplingIntervalUs 1000
+sampledMs 330.6 | (idle)=328.5  journal @ source-lifecycle.mjs:80=1.1  (program)=1
+```
+
+Sampled at 1 ms across the stall, **328.5 of 330.6 ms carry an empty JS stack —
+99.4%.** The sampler ran and recorded ~330 samples; it did not miss frames. The
+isolate genuinely executed no JavaScript for the whole stall.
+
+**The one JS frame present looked like a lead, and is not.**
+`journal()` at `source-lifecycle.mjs:80` does `existsSync` + `readFileSync` +
+`JSON.parse` synchronously on the event loop. There are **333 `operations.json`
+files**; the largest is **7.9 MB**. Timed on the box, three runs on that file:
+
+```
+read 25.4ms  parse 10.8ms
+read 20.6ms  parse 11.1ms
+read 15.3ms  parse 22.0ms
+```
+
+**30–45 ms for the worst file. The median stall is 264 ms.** An order of
+magnitude short, so it is not the cause and is not being written up as one.
+
+That is the third `(idle)` hypothesis killed by measurement — synchronous disk
+IO, syscall volume, and now this. **The cause remains unknown, and the honest
+list is still only what it is not.**
+
+**A real if secondary finding on the way past:** that 7.9 MB journal holds **23
+revisions** — roughly 344 KB per entry — and it is read and parsed synchronously
+on the event loop every time `journal()` is called. 30–45 ms is not a stall but
+it is not free either, and the file grows with revision count.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
