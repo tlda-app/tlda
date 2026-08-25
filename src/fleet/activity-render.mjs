@@ -61,18 +61,11 @@ function copySourceTemplate(text) {
 
 // --- Constants ---
 
-export const ACTIVITY_NOISE = new Set([
-  'wait_for_task', 'my_task', 'tasks', 'login', 'register', 'register_manager',
-  'task_check', 'unregister_manager', 'task_done', 'timer',
-  'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__tasks',
-  'mcp__tlda__login', 'mcp__tlda__register', 'mcp__tlda__register_manager', 'mcp__tlda__task_check',
-  'mcp__tlda__task_done', 'mcp__tlda__timer',
-  'ToolSearch',
-])
+// The activity noise list lives in shared/activity-tool-classification.mjs and
+// is applied at extraction, in the daemon. Two copies of it stood here for the
+// renderer to consult and NOTHING consulted them -- so the one a reader found
+// first was the one that could never be right. Deleted rather than corrected.
 
-export const CHAT_TOOLS = new Set([
-  'chat', 'delegate', 'mcp__tlda__chat', 'mcp__tlda__delegate',
-])
 
 // --- Pretty-print tool results ---
 
@@ -270,6 +263,21 @@ function renderMarkdownPrettyResult(toolName, text, ctx) {
 
 // Format remaining ms-until-fire as "in Xm Ys" / "in Ys" / "fired". Shared shape
 // with the chat-shape ticker that re-ticks the card each second.
+/**
+ * How long a wait has been going, as the only number worth showing for it.
+ *
+ * Not a count of polls: how often the harness checks is its business. Skip is
+ * looking at this to know whether a thing is still going and for how long.
+ */
+export function waitingElapsedLabel(sinceMs, nowMs = Date.now()) {
+  const seconds = Math.max(0, Math.floor((nowMs - sinceMs) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m`
+}
+
 export function scheduleTimeLabel(fireAt) {
   const r = Math.ceil((fireAt - Date.now()) / 1000)
   if (r <= 0) return 'fired'
@@ -949,6 +957,35 @@ export function dedupTools(toolItems) {
     // without folding it in here we'd render a duplicate card and only the
     // follow-up would carry the result. Merge onto the first matching tool item
     // regardless of adjacency, then drop the follow-up.
+    // A poll of something running elsewhere. The harness checks every 30s for
+    // as long as the command runs, so left alone this is one row per check --
+    // thirty of them saying nothing, interleaved so adjacency never collapses
+    // them. It is one thing happening, so it is one row, and what a reader wants
+    // from it is not how many times we asked but how long it has been.
+    const waitHandle = t._toolInput?._semanticOutputHandle
+    if (waitHandle) {
+      const waitKey = t._toolInput?.waitingOn || waitHandle
+      const host = result.find(r => r._waitKey === waitKey)
+      if (host) {
+        host._waitLastTs = t.timestamp || host._waitLastTs
+        if (!host._toolInput?.waitingOn && t._toolInput?.waitingOn) {
+          host._toolInput = { ...host._toolInput, ...t._toolInput }
+        }
+        mergePrettyResultOntoHost(host, t)
+        if (t._toolStatus === 'completed') host._toolStatus = 'completed'
+        continue
+      }
+      result.push({
+        ...t,
+        _key: key,
+        _semanticKey: semanticKey,
+        _count: 1,
+        _waitKey: waitKey,
+        _waitFirstTs: t.timestamp,
+        _waitLastTs: t.timestamp,
+      })
+      continue
+    }
     if (t._prettyResult) {
       const host = result.find(r => (semanticKey ? r._semanticKey === semanticKey : r._key === key) && !r._prettyResult)
       if (host) { mergePrettyResultOntoHost(host, t); host._count++; if (semanticKey) mergeSemanticInspected(host, t); continue }
@@ -970,6 +1007,8 @@ export function dedupTools(toolItems) {
       if (t._toolStatus === 'completed' && prev._toolStatus !== 'completed') {
         prev._toolStatus = 'completed'
         if (t._toolDuration != null) prev._toolDuration = t._toolDuration
+        // The id arrives with whichever half of the pair carries it.
+        if (!prev._toolCallId && t._toolCallId) prev._toolCallId = t._toolCallId
       } else {
         // A fresh start of the same command: a real second call, and the row is
         // in flight again until its own completion arrives.
@@ -1008,7 +1047,12 @@ export function renderActivityGroup(group, ctx) {
   let headerSummary = ''
   if (lastTool) {
     const extra = tools.length > 1 ? ` <span class="activity-more">(+${tools.length - 1} more)</span>` : ''
-    headerSummary = `${esc(lastTool._toolName)}: ${esc(toolCallArgs(lastTool._toolInput, lastTool._toolArg))}${extra}`
+    // A poll says what it is waiting on, not `CodeOutput: waitingOn: …, action:
+    // wait for output` -- which is the internals read aloud, and is the header
+    // Skip was looking at when he asked what these even were.
+    headerSummary = lastTool._toolInput?.waitingOn
+      ? `Waiting for output: ${esc(lastTool._toolInput.waitingOn)}${extra}`
+      : `${esc(lastTool._toolName)}: ${esc(toolCallArgs(lastTool._toolInput, lastTool._toolArg))}${extra}`
   } else if (lastText && lastText._text) {
     headerSummary = esc(lastText._text.split('\n')[0])
   }
@@ -1069,6 +1113,25 @@ export function renderActivityGroup(group, ctx) {
           + `<span class="apply-check">✓</span>`
           + `<span class="apply-text">edit applied</span>`
           + (pid ? `<span class="apply-ref" data-token="«${esc(pid)}#proposal:${esc(pid)}»">${esc(pid)}</span>` : '')
+          + `</div>`
+      }
+      // A run of polls draws as one live card: what is being waited on, and how
+      // long. It carries the id of the call that started the command so the
+      // reference can find that card; the text is there either way, so it still
+      // says what you are waiting on when the card is scrolled out of the
+      // mounted window. Skip, 2026-08-25: "can we have a hover to the actual
+      // cmd? like the bash card?"
+      if (t._waitKey && t._toolStatus !== 'completed' && !t._prettyResult) {
+        const since = Date.parse(t._waitFirstTs || '') || Date.now()
+        const subject = t._toolInput?.waitingOn || ''
+        const parentId = t._toolInput?._semanticWaitingOnId || ''
+        return `<div class="tool-line tool-waiting-line" data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-waiting-since="${since}">`
+          + `<span class="tool-linenum">${num}</span>`
+          + `<span class="waiting-label">Waiting for output</span>`
+          + (subject
+            ? `<span class="tool-sep">·</span> <span class="waiting-subject"${parentId ? ` data-waiting-on-id="${esc(parentId)}"` : ''} title="${esc(subject)}">${esc(subject)}</span>`
+            : '')
+          + `<span class="tool-sep">·</span> <span class="waiting-elapsed">${esc(waitingElapsedLabel(since))}</span>`
           + `</div>`
       }
       const countHtml = t._count > 1 ? `<span class="tool-count">×${t._count}</span>` : ''
@@ -1133,7 +1196,7 @@ export function renderActivityGroup(group, ctx) {
         : (t._prettyResult && !isPropose)
           ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
           : ''
-      return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
+      return `<div class="tool-line${hasDiff}"${cmdAttr}${t._toolCallId ? ` data-tool-id="${esc(String(t._toolCallId))}"` : ''} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
         + `<span class="drag-handle" title="Drag tool call"></span>`
         + `<span class="tool-linenum">${num}</span>`
         + `${countHtml}`

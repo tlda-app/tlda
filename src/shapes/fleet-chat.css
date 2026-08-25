@@ -1899,6 +1899,27 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .apply-text { opacity: var(--ui-tone-active); }
 .fleet-chat-shape .apply-ref { font-family: monospace; font-size: calc(var(--fleet-base-font, 11px) * 0.909091); opacity: var(--ui-tone-rest); }
 
+/* Waiting for output — a live status, not a log entry. One row for a whole run
+   of polls, saying what is being waited on and for how long. It is replaced by
+   the result when the command returns, so it never becomes scrollback. */
+.fleet-chat-shape .tool-waiting-line { display: flex; align-items: baseline; gap: 4px; }
+.fleet-chat-shape .waiting-label { opacity: var(--ui-tone-rest); }
+.fleet-chat-shape .waiting-subject {
+  font-family: monospace;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: var(--ui-tone-active);
+}
+.fleet-chat-shape .waiting-subject[data-waiting-on-id] { cursor: pointer; }
+.fleet-chat-shape .waiting-elapsed { margin-left: auto; opacity: var(--ui-tone-rest); font-variant-numeric: tabular-nums; }
+/* The card a waiting row points at, while the row is hovered. */
+.fleet-chat-shape .tool-line.waiting-target {
+  outline: 1px solid var(--tl-color-selected, #2f80ed);
+  outline-offset: 1px;
+}
+
 /* --- Code cards (inside activity) --- */
 .fleet-chat-shape .code-block-wrap {
   margin: 4px 0;

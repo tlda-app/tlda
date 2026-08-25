@@ -209,8 +209,14 @@ function renderedActivity(record) {
     agentLabel: () => 'codex', getNickClass: () => '', getAgents: () => [],
     highlightSyntax: value => value, langFromFilePath: () => '',
   })
-  assert.match(html, /waitingOn: Bash: tlda deploy testing --sha abc123, action: wait for output/)
-  assert.doesNotMatch(html, /cell: 41|semanticOutputHandle|semanticWaitingOnId|call_parent/)
+  // A run of polls draws as one waiting row naming the command it waits on.
+  assert.match(html, /Waiting for output/)
+  assert.match(html, /Bash: tlda deploy testing --sha abc123/)
+  // The bookkeeping stays out of what the reader sees. The parent's id is an
+  // attribute rather than text -- it is the reference the row points with, and
+  // `call_parent` must never be rendered as words.
+  const shown = new JSDOM(html).window.document.body.textContent
+  assert.doesNotMatch(shown, /cell: 41|semanticOutputHandle|semanticWaitingOnId|call_parent/)
 
   extractor.extractActivityEvents([parseCodexRecord({
     timestamp: ts,
