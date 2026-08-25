@@ -150,5 +150,30 @@ export function createGitRemotes({ sourceDir, run = execFile } = {}) {
     return { inRepo: true, tracked: Boolean(tracked), path: tracked || null }
   }
 
-  return { list, add, delete: deleteRemote, pull, push, checkout, readFile, resolveRef, currentBranch, repoPathFor }
+  /**
+   * Stage a file so the project starts carrying it, and answer as `repoPathFor`
+   * does. Skip's ruling, 2026-08-24, on what a click should do with a markdown
+   * file git does not track: **`git add` it, then open it live.**
+   *
+   * STAGING IS ENOUGH AND A COMMIT IS NOT MADE. `commitSettledTree` copies the
+   * author's index to a temp index and runs `git add -u` against the copy, so a
+   * file that is in the index is in the settled tree from the next settle
+   * onward. Its own comment states the cost this pays off: *"a NEW file is not
+   * submitted until the author `git add`s it."* This is the click doing that on
+   * their behalf and nothing more — no commit is authored in anyone's name, and
+   * the file stays as unstaged-or-staged work they still own.
+   *
+   * Refuses outside the repository rather than staging blind: `-- <abs>` in a
+   * repo that does not contain the path is an error, and the caller has a
+   * different thing to say about a file that is not a member at all.
+   */
+  async function trackPath(absolutePath) {
+    const before = await repoPathFor(absolutePath)
+    if (!before.inRepo) return before
+    if (before.tracked) return before
+    await git(['add', '--', absolutePath])
+    return repoPathFor(absolutePath)
+  }
+
+  return { list, add, delete: deleteRemote, pull, push, checkout, readFile, resolveRef, currentBranch, repoPathFor, trackPath }
 }
