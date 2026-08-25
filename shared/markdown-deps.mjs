@@ -23,6 +23,7 @@ const MD_IMAGE_RE = /!\[[^\]]*\]\(([^)]+)\)/g
 const MD_LINK_RE = /(?<!!)\[[^\]]*\]\(([^)]+)\)/g
 const HTML_IMG_RE = /<img\s[^>]*\bsrc=["']([^"']+)["']/g
 const HTML_LINK_RE = /<a\s[^>]*\bhref=["']([^"']+)["']/g
+const QUARTO_INCLUDE_RE = /\{\{<\s*include\s+([^\s>]+)\s*>\}\}/g
 
 // True for refs we must NOT treat as local files: remote URLs, data URIs,
 // protocol-relative URLs.
@@ -61,6 +62,7 @@ export function scanMarkdownDeps(content, baseDir) {
   collect(MD_LINK_RE)
   collect(HTML_IMG_RE)
   collect(HTML_LINK_RE)
+  collect(QUARTO_INCLUDE_RE)
   return deps
 }
 
@@ -71,7 +73,7 @@ function projectRelativeRef(raw) {
 }
 
 function isMarkdownPath(file) {
-  return /\.(?:md|markdown)$/i.test(file)
+  return /\.(?:md|markdown|qmd)$/i.test(file)
 }
 
 export function scanMarkdownDependencyClosure(mainFile, sourceDir) {
