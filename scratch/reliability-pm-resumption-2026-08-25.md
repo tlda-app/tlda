@@ -209,6 +209,32 @@ fix.** Nothing prevents a recurrence.
 is a policy decision and it is the shape of thing that becomes a subsystem. Say
 the sentence to Skip before building it.
 
+### AND THERE IS A SECOND, SEPARATE FAULT — the admit timeout is real
+
+I over-corrected above. Both of these exist and they are not the same thing.
+
+`sync-watch: proposal failed: daemon request timed out: source-proposal-admit`
+at **22:39:34Z**, inside a leg that took **139.4s**; the next admission confirms
+at **22:40:24Z**. The request times out, the retry succeeds, the edit costs about
+**90 extra seconds**. That is in the log independently of anything I measured
+wrongly.
+
+**The discriminator, both build slots free:**
+
+| leg | time |
+|---|---|
+| disk (`paper.tex`) | **11.6s, 10.7s** |
+| remote (git remote → `notes.md`) | **139.4s, 66.9s** |
+
+Same project, same cycle, legs run **sequentially** — so it is not queue depth.
+The slow leg is the one whose path includes a remote pull and a merge commit.
+
+**Disproved already, do not re-derive it:** that admit walks a growing
+`refs/tlda/proposals` set. Measured on the box — **76 proposal refs, 78 total,
+`for-each-ref` in 6ms, 366 loose objects.** Nothing there costs seconds.
+
+**Still unexplained. `browser-perf` owns it.**
+
 **Kept below because the measurements are still true and the labels are not.**
 Read "accepted" as "published" throughout and it is a correct description of the
 build queue.
