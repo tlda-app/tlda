@@ -109,6 +109,12 @@ export function convertChatEvent(e) {
     // lands -- with identical name and arguments. Without the status the display
     // cannot tell one call from two, and every count it shows is doubled.
     msg._toolStatus = e.metadata?.status || null
+    // The call's own id, so one card can point at another. See the waiting rows
+    // in activity-render.mjs, which carry the id of the call they wait on.
+    msg._toolCallId = e.metadata?.correlationId || null
+    // The call's own id, so one card can point at another. See the waiting rows
+    // in activity-render.mjs, which carry the id of the call they are waiting on.
+    msg._toolCallId = e.metadata?.correlationId || null
     msg._toolDuration = e.metadata?.duration ?? null
     msg.agent = msg.from
     if (msg._isText) msg.text = e.metadata?.arg || e.text

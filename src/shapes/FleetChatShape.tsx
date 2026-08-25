@@ -31,7 +31,7 @@ import { compareChatMessagesChronologically } from '../fleet/chat-ordering.mjs'
 // @ts-ignore — vanilla JS module
 import { activityPreambleDoc } from '../fleet/activity-preamble.mjs'
 // @ts-ignore — vanilla JS module
-import { renderActivityGroup, renderThreadRows, scheduleTimeLabel } from '../fleet/activity-render.mjs'
+import { renderActivityGroup, renderThreadRows, scheduleTimeLabel, waitingElapsedLabel } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
@@ -4427,9 +4427,50 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (!fireAt || !span) continue
         setTickerText(span, scheduleTimeLabel(fireAt))
       }
+      // Waiting-for-output cards: a live status rather than a log entry, so the
+      // one number on it counts up for as long as the command runs.
+      const waitNodes = logEl.querySelectorAll<HTMLElement>('.tool-waiting-line[data-waiting-since]')
+      for (const node of waitNodes) {
+        const since = parseInt(node.getAttribute('data-waiting-since') || '0', 10)
+        const span = node.querySelector<HTMLElement>('.waiting-elapsed')
+        if (!since || !span) continue
+        setTickerText(span, waitingElapsedLabel(since))
+      }
     }
     const id = setInterval(tick, 1000)
     return () => clearInterval(id)
+  }, [chatLogEl])
+
+  // A waiting row points at the call it is waiting on. Hovering it marks that
+  // card, when that card is mounted -- chat only mounts rows near the viewport,
+  // so a command far up the scroll simply is not there, and the row's own text
+  // is what tells you what you are waiting on in that case.
+  useEffect(() => {
+    const logEl = chatLogEl
+    if (!logEl) return
+    let marked: HTMLElement | null = null
+    const clear = () => {
+      marked?.classList.remove('waiting-target')
+      marked = null
+    }
+    const onOver = (e: Event) => {
+      const subject = (e.target as HTMLElement)?.closest?.('.waiting-subject[data-waiting-on-id]') as HTMLElement | null
+      if (!subject) return
+      const id = subject.getAttribute('data-waiting-on-id')
+      if (!id) return
+      clear()
+      const target = logEl.querySelector<HTMLElement>(`.tool-line[data-tool-id="${CSS.escape(id)}"]`)
+      if (!target) return
+      target.classList.add('waiting-target')
+      marked = target
+    }
+    logEl.addEventListener('mouseover', onOver)
+    logEl.addEventListener('mouseout', clear)
+    return () => {
+      logEl.removeEventListener('mouseover', onOver)
+      logEl.removeEventListener('mouseout', clear)
+      clear()
+    }
   }, [chatLogEl])
 
   // Hover events on bullet cards → dispatch to AnnotationViewer
