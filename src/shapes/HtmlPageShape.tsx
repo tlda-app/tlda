@@ -1005,26 +1005,26 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           return
         }
 
-        const pages = editor.getPages()
-        const currentPageId = editor.getCurrentPageId()
-        const currentIdx = pages.findIndex(p => p.id === currentPageId)
-        const targetIdx = e.data.direction === 'next' ? currentIdx + 1 : currentIdx - 1
-        if (targetIdx >= 0 && targetIdx < pages.length) {
+        const match = String(shape.id).match(/^(shape:.*-page-)(\d+)$/)
+        const targetShape = match
+          ? editor.store.get(`${match[1]}${Number(match[2]) + (e.data.direction === 'next' ? 1 : -1)}` as TLShapeId) as HtmlPageShapeRecord | undefined
+          : undefined
+        if (targetShape?.parentId) {
           recordHtmlNavigationStart(editor)
-          editor.setCurrentPage(pages[targetIdx].id)
-          // Center on top of the new page's html-page shape
-          setTimeout(() => {
-            const shapes = editor.getCurrentPageShapes()
-            const htmlShape = shapes.find((s: any) => s.type === 'html-page') as any
-            if (htmlShape) {
-              const vpHeight = editor.getViewportPageBounds().h
-              editor.centerOnPoint(
-                { x: htmlShape.x + htmlShape.props.w / 2, y: htmlShape.y + vpHeight * 0.3 },
-                { animation: { duration: 300 } }
-              )
-              recordHtmlNavigationEnd(editor)
-            }
-          }, 100)
+          const pageChanged = targetShape.parentId !== editor.getCurrentPageId()
+          if (pageChanged) editor.setCurrentPage(targetShape.parentId)
+          const centerTarget = () => {
+            const fresh = editor.store.get(targetShape.id) as HtmlPageShapeRecord | undefined
+            if (!fresh) return
+            const vpHeight = editor.getViewportPageBounds().h
+            editor.centerOnPoint(
+              { x: fresh.x + fresh.props.w / 2, y: fresh.y + vpHeight * 0.3 },
+              { animation: { duration: 300 } }
+            )
+            recordHtmlNavigationEnd(editor)
+          }
+          if (pageChanged) setTimeout(centerTarget, 100)
+          else centerTarget()
         }
         return
       }
