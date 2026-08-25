@@ -8,6 +8,11 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
+// The two recursive whole-tree operations in `publishBuildInstance` are async.
+// Everything else here stays sync: `renameSync` is a metadata operation on one
+// filesystem and costs nothing, and turning it async would put yields inside
+// the swap, which is the one part that must not be interleaved.
+import { cp, rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
@@ -168,8 +173,18 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
     }
     const transaction = join(liveProject, `.build-publish-${randomUUID()}`)
     mkdirSync(transaction, { recursive: true })
+    // Async, not `cpSync`. The build instance is created under
+    // `mkdtempSync(tmpdir())` while the live project is on the volume, so this
+    // is a cross-filesystem copy of the whole render — 936 MB for the largest
+    // output tree here. Synchronously that blocked the event loop for the
+    // duration: measured at 1,198 ms for a 150 MB tree on a local disk, and a
+    // 101-second whole-server stall in production on 2026-08-25T09:41Z.
+    //
+    // Awaiting here is safe because `serializedPublication` chains publications
+    // per project, so no second publication of this project can interleave, and
+    // the function already awaits git reads inside the same transaction.
     for (const item of staging) {
-      cpSync(join(instanceProject, item), join(transaction, `new-${item}`), { recursive: true })
+      await cp(join(instanceProject, item), join(transaction, `new-${item}`), { recursive: true })
     }
     writeFileSync(join(transaction, 'publication.json'), JSON.stringify({
       version: 1, project: name, expectedHead, sourceRevision,
@@ -218,7 +233,13 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
     } finally {
       // A process crash leaves this directory and its marker. Startup recovery
       // uses the Git ref to choose the only honest side before removing it.
-      rmSync(transaction, { recursive: true, force: true })
+      //
+      // Async for the same reason as the copy above, and it is the same size:
+      // after a successful swap this directory holds the PREVIOUS render, moved
+      // aside by `moveAside`. Deleting a 936 MB tree synchronously blocks the
+      // loop exactly as copying one does, so fixing only the copy would have
+      // left half the stall in place.
+      await rm(transaction, { recursive: true, force: true })
     }
   })
 }
