@@ -751,6 +751,12 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     if (!wrote) continue
 
     const beforeTip = leg === 'disk' ? (await branchState()).tip : null
+    // Captured BEFORE the wait so the admission check below can tell an
+    // admission of THIS edit from one that happened earlier. Without it the
+    // check reports the project's most recent admission whatever its age, which
+    // is how it first ran: it printed a thirty-minute-old admission as the
+    // explanation for an edit made seconds before.
+    const editedAt = Date.now()
     const result = await converge(marker, destinations)
     if (leg === 'disk') {
       // The author's edit is committed UNDER them, so the tree goes clean and
@@ -779,9 +785,14 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     // So say which, from the daemon's own record, at the moment it goes bad.
     if (bad.length) {
       const admitted = lastAdmission()
-      console.log(admitted
-        ? `         admitted ${admitted.age}s ago: id=${admitted.id} state=${admitted.state} -- the edit reached the server; it is not built`
-        : `         no admission recorded for ${PROJECT} -- the edit did not reach the server`)
+      // An admission OLDER than this edit says nothing about this edit, and
+      // reporting it as though it did is the exact mistake this line exists to
+      // stop someone else making.
+      console.log(admitted && admitted.at >= editedAt
+        ? `         admitted id=${admitted.id} state=${admitted.state} -- the edit reached the server; it is not built`
+        : admitted
+          ? `         nothing admitted since this edit (last was ${admitted.age}s ago, id=${admitted.id}) -- the edit did not reach the server`
+          : `         no admission ever recorded for ${PROJECT} -- the edit did not reach the server`)
     }
     for (const [name] of bad) {
       pending.push({ leg, destination: name, marker, since: Date.now(), read: destinations[name] })
