@@ -137,6 +137,12 @@ export function qmdOutputFileForSource(sourceFile) {
     .replace(/\.qmd$/i, '.html')
 }
 
+export function qmdRenderedOutputFileForSource(outDir, sourceFile) {
+  const direct = qmdOutputFileForSource(sourceFile)
+  return [direct, `_book/${direct}`]
+    .find((candidate) => existsSync(join(outDir, candidate))) || null
+}
+
 export function qmdDocumentRootPaths(project) {
   const declared = Array.isArray(project?.documentRoots)
     ? project.documentRoots
@@ -310,15 +316,14 @@ export async function buildQmdDocument(name, addLog = console.log) {
   const pageInfo = []
   let anyDeck = false
   for (const root of mainFiles) {
-    const outputFile = qmdOutputFileForSource(root)
-    const renderedPath = join(outDir, outputFile)
-    if (!existsSync(renderedPath)) {
-      // Quarto exited 0 without producing the file expected — almost always a
-      // `format:` in the header that is not html. Name the file that is missing.
-      addLog(`[qmd] render produced no ${outputFile}`)
+    const sourceOutputFile = qmdOutputFileForSource(root)
+    const outputFile = qmdRenderedOutputFileForSource(outDir, root)
+    if (!outputFile) {
+      addLog(`[qmd] render produced neither ${sourceOutputFile} nor _book/${sourceOutputFile}`)
       await reporter.updateProject(name, { buildStatus: 'error' })
       return
     }
+    const renderedPath = join(outDir, outputFile)
 
     const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
     writeFileSync(renderedPath, rendered)
