@@ -91,7 +91,7 @@ const GITIGNORE_CONTENT = `# Build artifacts
  * 2026-08-17. This explains 08-20 onward. The three days before it do not have
  * an explanation yet.
  */
-function shadowRepoDir(name) {
+export function shadowRepoDir(name) {
   return join(liveProjectDir(name), 'shadow-repo')
 }
 

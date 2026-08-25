@@ -58,7 +58,7 @@ import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, aggregateBookToc, extractBuildErrors, sourceLifecycleStore } from './project-store.mjs'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
-import { commitSnapshot, currentVersion, initShadowFromProjectRepo, initShadowFromGitRef, listVersions, createShadowBundleBase64, readShadowSourceScope } from './shadow-repo.mjs'
+import { commitSnapshot, currentVersion, initShadowFromProjectRepo, initShadowFromGitRef, listVersions, createShadowBundleBase64, readShadowSourceScope, shadowRepoDir } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
@@ -1998,7 +1998,25 @@ export async function finalizeBuildVersion({
   const hash7 = recorded.hash.slice(0, 7)
 
   if (recorded.committed) try {
-    const shadowDir = join(projDir, 'shadow-repo')
+    // Ask shadow-repo.mjs where the shadow repo is rather than rebuilding the
+    // path here. This one line was why NO BUILD CARD WAS EVER EMITTED, by two
+    // different routes, and both were invisible because the whole block —
+    // change summary, lint findings, AND the `build-card` event at its end —
+    // sits inside one try whose catch only logs.
+    //
+    //   bin/build-worker.mjs passes no projDir at all, so this was
+    //   join(undefined, ...) and threw `The "path" argument must be of type
+    //   string` before anything in the block ran.
+    //
+    //   The other caller passes projectDir(name), which during a build is
+    //   OVERRIDDEN to the build instance — and materializeBuildInstance creates
+    //   source/, output/, build-cache and .biber-par-cache and no shadow-repo,
+    //   so that path does not exist either.
+    //
+    // Measured on the deployed box: every build logged `Version <hash>
+    // recorded` immediately followed by `Change summary failed`, and no card
+    // reached the app.
+    const shadowDir = shadowRepoDir(name)
     const { stdout: diffOutput } = await _execAsync(
       `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
       { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
