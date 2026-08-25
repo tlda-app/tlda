@@ -374,6 +374,46 @@ The 740 ms one is the startup `migrateAllProjectParts` walk, which means **the
 server restarted again during that hour**. The 655 ms one is the fleet broadcast
 encoding, which is the recurring cost and not tied to a restart.
 
+
+### 08:25 — the curve is reproducible; the bucket diff is abandoned
+
+**His second tab is on the same curve as the first.** 12 GB at 89 minutes,
+against 15 GB at ~90 minutes for the tab before it. Different documents, same
+shape, same machine. 5,196 MB at 07:50 to 12 GB at 08:21 is ~220 MB/min, and he
+has not touched it since ~07:10.
+
+**The server restarts are deploys, not crashes.** Checked rather than inferred:
+the Fly machine event log shows `launch` by `user` at 08:00 UTC and the version
+has gone 1306 → 1308 → 1311 overnight. So the startup `migrateAllProjectParts`
+stall is what a deploy costs, and it should not be carried as a fault. Stalls are
+quiet — 14 in the 07:00 hour, 6 in 08:00.
+
+**The memory-infra bucket diff is abandoned after a second distinct failure.**
+The first attempt failed because some dumps return empty allocator tables. I
+filtered those out and ran five dumps at 45-second intervals. The result:
+
+- **The renderer under investigation produced exactly one populated dump out of
+  five.** So does every other renderer. No diff is possible for the process that
+  matters.
+- The one process with two populated dumps shows `malloc −438.7 MB → 0.0` and
+  `global +479.4 MB`. That is not a process freeing its heap. **The two dumps use
+  different bucket schemas** — one itemises `malloc`/`cc`/`sqlite`/…, the other
+  reports a single `global` roll-up. My "non-empty" filter passed both because
+  both are non-empty.
+
+So the failure is not dump count and not empty tables. **Dumps from the same
+process are not schema-comparable**, and there is no filter that fixes that.
+Stopping this line rather than building a third variant.
+
+**What this costs the headline number, and it is worth saying.** The
+`malloc 8,092 MB` figure came from a single dump of this same instrument. Given
+that dumps disagree about their own schema, that reading needed a check it did
+not originally carry. It has one: the itemised buckets summed to ~10.5 GB
+against a process footprint of 8.8 GB at that moment — the right order, with the
+overlap expected from `shared_memory` being counted in both the renderer and the
+GPU process. An internally inconsistent dump would not land there. **The absolute
+reading stands; the delta was never obtainable.**
+
 ## Next action
 
 Read the WebSocket buffer result. `bufferedAmount` is renderer-side malloc, is
