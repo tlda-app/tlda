@@ -82,21 +82,26 @@ lineage, and that is a design question, not a patch.
 
 ## What is live and what is not
 
-Box was `03da64416` at 07:20:18Z. Confirm before trusting any of this — a
-deploy was mid-build when this was written.
+**Re-checked at 08:2xZ: box is `5bf51ea9c`, built 07:54:17Z, and EVERYTHING
+BELOW IS LIVE.** Verify before trusting this — a table like it was already
+stale once inside an hour:
 
-| commit | what | state |
+```sh
+curl -sk https://tlda-fly.cormorant-matrix.ts.net/api/build-info
+git merge-base --is-ancestor <commit> <that gitSha>
+```
+
+| commit | what | verified how |
 |---|---|---|
-| `84c48f6e4` `e1687136c` | work branch + index reset | **live, verified on the box** |
-| `3d01bfb8f` | editor says it was refused | **live** — string confirmed in the served bundle |
-| `f3df688c1` | build card emitted at all | live |
-| `f1335d096` | room staleness | **pending** |
-| `8d119dcc4` | remaining shadow-repo paths | pending |
-| `369b49260` | migration for post-rename projects | pending |
-| `7e4c06167` | demo asserts the branch invariant | pending |
+| `84c48f6e4` `e1687136c` | work branch + index reset | on the box, project built from scratch |
+| `3d01bfb8f` | editor says it was refused | string present in the **served bundle** |
+| `f3df688c1` `8d119dcc4` | build cards, shadow-repo paths | code inspection only |
+| `f1335d096` | room staleness | **browser leg now works — 6.5s** |
+| `369b49260` | migration | **`sync-demo` migrated live** |
+| `7e4c06167` | demo asserts the branch invariant | ran against the migrated checkout |
 
-**Verified live, on a project created from scratch** (`sync-proof`, disposable,
-still on the testing box):
+**Verified live, project created from scratch** (`sync-proof`, disposable, still
+on the testing box):
 
 ```
 after link   branch = tlda/sync-proof, status clean, tree = doc.md notes.txt
@@ -106,6 +111,23 @@ one edit     server 9s | tip 1f4b1e1 -> 947a042 | subject "tlda settled edit
 ```
 
 That last pair is what one ref doing two jobs could never do.
+
+**Verified live, migrating a project that was IN the broken state**
+(`sync-demo`):
+
+```
+before   branch main, dirty, branch tip subject "tlda project revision"
+after    branch tlda/sync-demo, CLEAN, tip subject "tlda settled edit cluster"
+kept     the old chain tip is still reachable and is an ancestor of the
+         chain ref -- nothing deleted
+```
+
+**Verified live, the browser leg, for the first time ever:** editor mounted in
+**356ms** (it used to time out at 30s), and text typed into CodeMirror reached
+the server in **6.5s**.
+
+**And then the disk leg stopped forever** — see the two-chain section above.
+That is the state `sync-demo` is in right now.
 
 ## The room bug, and why it mattered more than "you saw old code"
 
