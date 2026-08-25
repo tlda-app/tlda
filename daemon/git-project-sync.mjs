@@ -13,6 +13,11 @@ const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 // keep-scanning rule inside a closure, and the dropped-document report all ask
 // the same question, so they ask it in one place.
 const DOCUMENT_FILE = /\.(?:tex|md|qmd)$/i
+// The subject `filteredProjectCommit` writes on every revision-chain commit.
+// Named once because it is also how a work branch that is REALLY the chain is
+// recognised during migration — see adoptWorkBranch. Two copies of this string
+// would drift and the migration would silently stop working.
+const REVISION_COMMIT_SUBJECT = 'tlda project revision'
 
 export function safeRefPart(value) {
   const part = String(value || '').replace(/[^A-Za-z0-9._-]+/g, '-')
@@ -145,20 +150,37 @@ export function createGitProjectSync({
         }
         const branchTip = await rev(workBranchRef)
         const chainTip = await rev(revisionRef)
-        // BOTH must exist, and the branch must descend from the chain. That pair
-        // is what identifies the rename: promotion created the branch AT the old
-        // ref and left the old ref in place, so a repository that went through it
-        // has both, related that way.
+        // TWO ways a work branch turns out to be the revision chain wearing a
+        // branch's name, and a project falls into one or the other depending on
+        // when it was created.
         //
-        // Requiring `chainTip` is not belt-and-braces. Without it, a branch
-        // created fresh at HEAD — which is exactly what standOnWorkBranch does on
-        // a new link — was copied into the revision chain and `recover()` then
-        // pushed it as an outstanding revision that had never been sent. Measured
-        // as one extra admission in the readmit test. A work branch is only the
-        // chain if the chain is there to have been renamed.
-        if (branchTip && chainTip && await isAncestor(chainTip, branchTip)) {
-          await git(['update-ref', revisionRef, branchTip])
-        }
+        // Both refs present and related: promotion created the branch AT the old
+        // ref and left the old ref in place, so a repository that lived through
+        // the rename has both.
+        //
+        // Or the branch's own tip is a chain commit. A project created AFTER the
+        // rename never had the old ref at all — the branch was made directly, so
+        // there is nothing to compare it against. Measured on such a project: the
+        // branch held `tlda project revision` commits and `refs/tlda/project/<p>`
+        // did not exist, so requiring both refs refused to migrate it and
+        // relinking could not fix it. That is most projects created recently.
+        //
+        // The subject is the discriminator because this file writes it: a chain
+        // commit says REVISION_COMMIT_SUBJECT, a settled one says `tlda settled
+        // edit cluster`. It is not a heuristic about someone else's commits.
+        //
+        // What is NOT adopted is a branch holding real settled work, which is
+        // what standOnWorkBranch creates at HEAD on a new link. Adopting that
+        // made `recover()` push it as an outstanding revision that had never been
+        // sent — one extra admission in the readmit test.
+        const tipSubject = branchTip
+          ? (await git(['log', '-1', '--format=%s', branchTip]).catch(() => ({ stdout: '' }))).stdout.trim()
+          : ''
+        const branchIsChain = Boolean(branchTip) && (
+          (Boolean(chainTip) && await isAncestor(chainTip, branchTip))
+          || tipSubject === REVISION_COMMIT_SUBJECT
+        )
+        if (branchIsChain) await git(['update-ref', revisionRef, branchTip])
         return { ok: true }
       } catch (error) {
         log.warn?.(`${project}: could not adopt the work branch ${workBranchRef}: ${error.message}`)
@@ -290,7 +312,7 @@ export function createGitProjectSync({
       // own workingCommit is already a parent candidate below.
       const parent = await rev(localRef)
       if (parent && (await git(['rev-parse', `${parent}^{tree}`])).stdout.trim() === tree) return { commit: parent, tree, roots, members: [...members], dropped, changed: false }
-      const args = ['commit-tree', tree, '-m', 'tlda project revision']
+      const args = ['commit-tree', tree, '-m', REVISION_COMMIT_SUBJECT]
       const remoteParent = await rev('refs/tlda/remote/observed')
       const parents = []
       for (const candidate of [parent, workingCommit, remoteParent]) {
