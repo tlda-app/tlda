@@ -119,6 +119,7 @@ test('QMD revisions carry tracked execution inputs and exclude rendered output',
   await git(checkout, ['remote', 'add', 'tlda', remote])
   mkdirSync(join(checkout, 'data'))
   writeFileSync(join(checkout, 'lecture.qmd'), '```{r}\nread.csv("data/input.csv")\n```\n')
+  writeFileSync(join(checkout, 'lab.qmd'), 'Lab\n')
   writeFileSync(join(checkout, 'data', 'input.csv'), 'x\n1\n')
   writeFileSync(join(checkout, 'lecture.html'), 'stale render\n')
   await git(checkout, ['add', '.'])
@@ -129,14 +130,14 @@ test('QMD revisions carry tracked execution inputs and exclude rendered output',
     project: 'course',
     daemonId: 'daemon-a',
     bindingId: 'binding-a',
-    documentRoots: ['lecture.qmd'],
+    documentRoots: ['lecture.qmd', 'lab.qmd'],
   })
   const proposal = await sync.editClusterSettled()
 
   assert.equal(proposal.status, 'SubmittedToBuildQueue')
   assert.deepEqual(
     (await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'),
-    ['data/input.csv', 'lecture.qmd'],
+    ['data/input.csv', 'lab.qmd', 'lecture.qmd'],
   )
 })
 
