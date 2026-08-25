@@ -295,9 +295,15 @@ async function writeOnRemote(line) {
   //
   // Measured: the demo wedged its own project this way and every leg went quiet
   // for twenty minutes while I looked for a network fault that was not there.
-  execFileSync('tlda', ['project', 'remote', 'push', 'origin', '--project', PROJECT], {
-    cwd: CHECKOUT, encoding: 'utf8', timeout: 300_000, stdio: 'pipe',
-  })
+  // Force, because this bare repo is a FIXTURE and the checkout is the truth.
+  //
+  // `tlda project remote push` is the app's verb and it correctly refuses a
+  // non-fast-forward — the clone's own earlier pushes are on the fixture and the
+  // checkout does not have them. That refusal is right and is not something to
+  // work around inside the app; it is the fixture that needs to stop being a
+  // second source of history. So the demo realigns its own bare repo directly,
+  // and the app's remote verbs are left exercising their real behaviour.
+  await git(CHECKOUT, ['push', '--force', REMOTE, `HEAD:refs/heads/tlda/${PROJECT}`])
   await git(REMOTE_CLONE, ['fetch', 'origin'])
   await git(REMOTE_CLONE, ['reset', '--hard', `origin/tlda/${PROJECT}`]).catch(() => {})
   appendIntoDocument(file, line)
