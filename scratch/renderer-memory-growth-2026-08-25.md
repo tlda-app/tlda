@@ -1644,6 +1644,32 @@ seen it before. Worth measuring properly — footprint on that project's rendere
 open no tab until they are done. My ordering control runs afterward against a
 quiet pool, which is a better measurement than the one that never armed.
 
+
+## Known and unmeasured: the 748-page eager load
+
+**Recorded on `sol-dev`'s instruction and then dropped. Nobody has measured it.**
+It is written down here so it is not lost and not mistaken for a finding.
+
+A project exists that loads **748 pages, all priority, none deferred**. Observed
+by `app-tester` on 2026-08-25, not by me:
+
+- `() => document.readyState` took **over 40 seconds** to return
+- a screenshot could not complete for **~5 minutes**
+- at **151 s the page reset its own sync socket**
+- their tab left on it is the likely cause of the pooled browser wedge that
+  evening; pool memory pressure fell **83% → 78%** when that browser was reaped
+
+**It is not the leak this document is about.** Skip's tab reached 15 GB on a
+*small* project, so page count cannot be the mechanism. **Two different problems
+that both end in a dead renderer**, and conflating them would be a mistake.
+
+**What would settle it, if anyone is ever asked to:** open it once and sample the
+renderer's **physical footprint** at 60 s intervals for ~20 minutes. Not RSS —
+see the instrument note above. Do not reopen it casually: doing so is what wedged
+the shared pool.
+
+**Status: no owner, no measurement, deliberately not pursued.**
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
