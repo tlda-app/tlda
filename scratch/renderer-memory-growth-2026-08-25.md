@@ -655,7 +655,8 @@ range:
   JavaScript and still unexplained.
 - **`cpSyncCopyDir` in the build path**: 26 stalls all-time, routinely
   0.3–1.8 s, once **101 seconds** today.
-- The multi-second `live-store` class: **historical, ended July.**
+- The multi-second `live-store` class: historical, ended July — **but the
+  multi-second class as a whole came back on 25 Aug; see the 22:10 entry.**
 
 
 ### 11:15 — the lag profiler cannot answer "what entered the blocking call", and a third candidate dies
@@ -1334,6 +1335,69 @@ and accumulated state cannot explain it. A result that only appears when
 suppression is applied late is not the same as one that reproduces from cold.
 
 **Server:** hour 19 closed at 20.
+
+
+### 22:10 — the multi-second stall class is NOT historical, and a nine-minute freeze
+
+**Retracting my own 10:10 entry.** I wrote that the >5 s stall class "ended in
+July — 130 of 143 in a five-day window, thirteen since August 1." True when
+measured; **stale by evening.** Today alone, stalls over 3 s:
+
+```
+18:58:40Z   116,055 ms   cpSyncCopyDir
+19:29:56Z     5,545 ms   emit @ node:events
+20:27:57Z   550,750 ms   <-- nine minutes
+20:40:42Z    61,904 ms   emit | listOnTimeout | onStreamTimeout
+20:54:07Z     6,561 ms   lag-profiler.mjs:189
+21:55:38Z    10,585 ms   consoleCall
+21:56:46Z     3,310 ms   spawn
+```
+
+**The 550-second one is tldraw sync-room session teardown:**
+
+```
+84,823 ms  close @ node_modules/ws/lib/sender.js:184
+65,021 ms  cancelSession @ @tldraw/sync-core/.../TLSyncRoom.mjs:250
+41,043 ms  scheduleFollowUpPrune @ @tldraw/sync-core/.../TLSyncRoom.mjs:83
+```
+
+Nine minutes with nothing served.
+
+**It lands in `reliability-pm`'s first measurement window.** Their 983 / 1674 /
+2064 / 2328 s late arrivals were reported at 20:47Z; the 550 s freeze is 20:27Z
+and the 62 s is 20:40Z. **So their original observation was real and their
+retraction was right for the wrong reason** — not CPU starvation from renders,
+and an idle-looking box is exactly what a dead event loop looks like.
+
+**It does not explain their second set** (139 / 153 / >200 s, quiet box, 22:04Z):
+the worst stall in that window is 10.5 s, and ten seconds cannot make a
+150-second admit. That one is still uncaused.
+
+**Second instance of the publish copy: 116 s.** `560bdd692` fixes it and is
+**not deployed**, so it recurs. Twice today — 101 s and 116 s.
+
+**And my profiler magnitude was the median, not the range.** I reported ~265 ms
+every 10 s. `20:54:07Z lag=6,561 ms` is topped by `lag-profiler.mjs:189`, and it
+appears inside the 62-second stall too. The mechanism stands; occasionally its
+own cost is multi-second.
+
+### What I read in the admit path, for whoever takes it
+
+`source-proposal-admit` → `admitProposal` → `dispatcher().admitBuild`. Structure,
+from `server/lib/build-queue.mjs`:
+
+- `admitBuild` runs inside **`serializeProject(project, …)`**, which the
+  dispatcher wires to **`serializedPublication`** — the *same* per-project lock
+  `publishBuildInstance` takes. **An admit waits behind that project's own
+  publish.**
+- Inside that, it runs **`transition(…)`**, and `transition` chains on a single
+  module-level promise **shared by every project**. So an admit for project A can
+  also queue behind a transition for project B.
+- `drain()` does **not** await the build — `start(row)` is fire-and-forget — so
+  admit never waits for a render to finish.
+
+That is structure I read, not a measured cause, and it does not by itself account
+for 150 s on an idle box.
 
 ## Next action
 
