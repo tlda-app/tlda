@@ -137,6 +137,17 @@ export function qmdOutputFileForSource(sourceFile) {
     .replace(/\.qmd$/i, '.html')
 }
 
+export function qmdDocumentRootPaths(project) {
+  const declared = Array.isArray(project?.documentRoots)
+    ? project.documentRoots
+        .map((root) => typeof root === 'string' ? root : root?.path)
+        .map((path) => String(path || '').replace(/\\/g, '/').replace(/^\.?\/+/, ''))
+        .filter((path) => path.toLowerCase().endsWith('.qmd'))
+    : []
+  const fallback = String(project?.mainFile || 'index.qmd').replace(/\\/g, '/').replace(/^\.?\/+/, '')
+  return [...new Set(declared.length > 0 ? declared : [fallback])]
+}
+
 /**
  * Did this render produce a reveal.js deck?
  *
@@ -244,12 +255,15 @@ export async function buildQmdDocument(name, addLog = console.log) {
   const outDir = getOutputDir(name)
 
   const project = await readProject(name)
-  const mainFile = String(project?.mainFile || 'index.qmd').replace(/\\/g, '/').replace(/^\.?\/+/, '')
+  const mainFiles = qmdDocumentRootPaths(project)
+  const mainFile = mainFiles[0]
 
-  if (!existsSync(join(srcDir, mainFile))) {
-    addLog(`[qmd] main file not found: ${mainFile}`)
-    await reporter.updateProject(name, { buildStatus: 'error' })
-    return
+  for (const root of mainFiles) {
+    if (!existsSync(join(srcDir, root))) {
+      addLog(`[qmd] document root not found: ${root}`)
+      await reporter.updateProject(name, { buildStatus: 'error' })
+      return
+    }
   }
 
   const quarto = await resolveQuarto()
@@ -262,7 +276,11 @@ export async function buildQmdDocument(name, addLog = console.log) {
 
   await restoreRenv(outDir, addLog)
   const nativeTldaProject = isNativeTldaProject(outDir)
-  await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: nativeTldaProject })
+  if (nativeTldaProject) {
+    await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true })
+  } else {
+    for (const root of mainFiles) await renderInOutput(quarto, outDir, root, addLog)
+  }
 
   if (nativeTldaProject) {
     const renderedProject = readTldaManifest(outDir)
@@ -289,49 +307,45 @@ export async function buildQmdDocument(name, addLog = console.log) {
     return
   }
 
-  const outputFile = qmdOutputFileForSource(mainFile)
-  const renderedPath = join(outDir, outputFile)
-  if (!existsSync(renderedPath)) {
-    // Quarto exited 0 without producing the file expected — almost always a
-    // `format:` in the header that is not html. Name the file that is missing.
-    addLog(`[qmd] render produced no ${outputFile}`)
-    await reporter.updateProject(name, { buildStatus: 'error' })
-    return
-  }
-
-  const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
-  writeFileSync(renderedPath, rendered)
-
-  // A deck and a document are the same build with the same inputs and two
-  // different things on the far side: one page of prose to scroll, or N slides
-  // addressed by reveal coordinates. The rendered HTML is what says which, so
-  // it is read rather than guessed at from the source header — a deck can
-  // declare revealjs through _quarto.yml, a custom extension format, or a
-  // profile, and only the output settles all three.
-  const isDeck = isRevealDeck(rendered)
-  let pageInfo
-  if (isDeck) {
-    // Skip chose the surgery over "25 copies of the same fucking thing": each
-    // slide is one shape holding one slide, not an iframe of the whole deck
-    // scrolled to slide k. So the deck is cut into one self-contained document
-    // per slide here, after the build, and page-info points each slide at its
-    // own file. The .qmd source is untouched — quarto emits one deck and the
-    // split happens on the rendered output.
-    const perSlide = buildPerSlideDocuments(rendered, outputFile)
-    for (const slide of perSlide) {
-      writeFileSync(join(outDir, slide.filename), slide.html)
+  const pageInfo = []
+  let anyDeck = false
+  for (const root of mainFiles) {
+    const outputFile = qmdOutputFileForSource(root)
+    const renderedPath = join(outDir, outputFile)
+    if (!existsSync(renderedPath)) {
+      // Quarto exited 0 without producing the file expected — almost always a
+      // `format:` in the header that is not html. Name the file that is missing.
+      addLog(`[qmd] render produced no ${outputFile}`)
+      await reporter.updateProject(name, { buildStatus: 'error' })
+      return
     }
-    pageInfo = perSlide.map((slide) => slide.pageInfo)
-    addLog(`[qmd] split deck into ${perSlide.length} single-slide documents`)
-  } else {
-    pageInfo = [{
-      file: outputFile,
-      width: DEFAULT_WIDTH,
-      height: DEFAULT_HEIGHT,
-      title: titleFromRenderedHtml(rendered, mainFile.replace(/\.qmd$/i, '')),
-      format: 'qmd',
-      source: { type: 'project-source', format: 'qmd', file: mainFile },
-    }]
+
+    const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
+    writeFileSync(renderedPath, rendered)
+
+    // A deck and a document are the same build with the same inputs and two
+    // different things on the far side: one page of prose to scroll, or N slides
+    // addressed by reveal coordinates. The rendered HTML is what says which, so
+    // it is read rather than guessed at from the source header.
+    const isDeck = isRevealDeck(rendered)
+    anyDeck ||= isDeck
+    if (isDeck) {
+      const perSlide = buildPerSlideDocuments(rendered, outputFile)
+      for (const slide of perSlide) {
+        writeFileSync(join(outDir, slide.filename), slide.html)
+        pageInfo.push(slide.pageInfo)
+      }
+      addLog(`[qmd] split ${root} into ${perSlide.length} single-slide documents`)
+    } else {
+      pageInfo.push({
+        file: outputFile,
+        width: DEFAULT_WIDTH,
+        height: DEFAULT_HEIGHT,
+        title: titleFromRenderedHtml(rendered, root.replace(/\.qmd$/i, '')),
+        format: 'qmd',
+        source: { type: 'project-source', format: 'qmd', file: root },
+      })
+    }
   }
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
 
@@ -339,9 +353,9 @@ export async function buildQmdDocument(name, addLog = console.log) {
   await reporter.updateProject(name, {
     buildStatus: 'success',
     pages: pageInfo.length,
-    renderedFormat: isDeck ? 'slides' : 'html',
+    renderedFormat: mainFiles.length === 1 && anyDeck ? 'slides' : 'html',
     lastBuild: new Date().toISOString(),
   })
   reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: Date.now() })
-  addLog(`[qmd] ${name}: rendered ${mainFile} → ${outputFile}`)
+  addLog(`[qmd] ${name}: rendered ${mainFiles.length} document root(s)`)
 }
