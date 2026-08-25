@@ -105,6 +105,11 @@ export function convertChatEvent(e) {
     msg._toolInput = e.metadata?.input || null
     msg._toolDetail = e.metadata?.input ? toolContentDetail(tool === '_text' ? null : tool, e.metadata.input) : null
     msg._prettyResult = e.metadata?.prettyResult || null
+    // A tool call is recorded twice -- once when it starts, once when its result
+    // lands -- with identical name and arguments. Without the status the display
+    // cannot tell one call from two, and every count it shows is doubled.
+    msg._toolStatus = e.metadata?.status || null
+    msg._toolDuration = e.metadata?.duration ?? null
     msg.agent = msg.from
     if (msg._isText) msg.text = e.metadata?.arg || e.text
   }

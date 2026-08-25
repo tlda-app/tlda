@@ -1407,6 +1407,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   margin-top: 0;
   border-radius: 0 0 4px 4px;
 }
+/* A shell command wraps rather than running off the side. format-shell-command
+   breaks it at the joins between commands, but one command's own arguments can
+   still be longer than the panel -- a path, a grep pattern, a long flag list --
+   and a line you have to scroll sideways for is a line you never read.
+   Skip, 2026-08-25: "all scrolled offscreen." */
+.fleet-chat-shape .code-block-wrap pre.code-bash {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .fleet-chat-shape .code-block-wrap pre.code-collapsed {
   max-height: calc(10 * 1.4em + 12px);
   overflow: hidden;
