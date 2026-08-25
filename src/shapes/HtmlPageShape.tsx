@@ -919,56 +919,63 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         }
 
         const targetPageId = targetShape.parentId as TLPageId
-        if (!isTemporaryMarkdownNavigation && targetPageId !== editor.getCurrentPageId()) {
+        const pageChanged = !isTemporaryMarkdownNavigation && targetPageId !== editor.getCurrentPageId()
+        if (pageChanged) {
           editor.setCurrentPage(targetPageId)
         }
 
-        // Center on anchor or page top
-        const vpHeight = editor.getViewportPageBounds().h
-        const cx = targetShape.x + targetShape.props.w / 2
-        if (anchor) {
-          const yOff = htmlHeadingPositions.get(targetShape.id)?.[anchor]
-          if (yOff != null) {
+        const centerTarget = () => {
+          // Center on anchor or page top
+          const vpHeight = editor.getViewportPageBounds().h
+          const cx = targetShape.x + targetShape.props.w / 2
+          if (anchor) {
+            const yOff = htmlHeadingPositions.get(targetShape.id)?.[anchor]
+            if (yOff != null) {
             // Place heading at ~15% from top (center + 0.35*vh pushes heading up from center)
-            if (isTemporaryMarkdownNavigation) {
-              setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y + yOff, 0.15, sourceLeftScreen)
+              if (isTemporaryMarkdownNavigation) {
+                setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y + yOff, 0.15, sourceLeftScreen)
+              } else {
+                editor.centerOnPoint({ x: cx, y: targetShape.y + yOff + vpHeight * 0.35 }, { animation: { duration: 300 } })
+              }
+              recordHtmlNavigationEnd(editor)
             } else {
-              editor.centerOnPoint({ x: cx, y: targetShape.y + yOff + vpHeight * 0.35 }, { animation: { duration: 300 } })
+              // Anchor not resolved yet — center on page top, poll for anchor
+              if (isTemporaryMarkdownNavigation) {
+                setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
+              } else {
+                editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
+              }
+              recordHtmlNavigationEnd(editor)
+              const poll = setInterval(() => {
+                const yOff2 = htmlHeadingPositions.get(targetShape.id)?.[anchor!]
+                if (yOff2 != null) {
+                  clearInterval(poll)
+                  const fresh = editor.store.get(targetShape.id) as any
+                  if (fresh) {
+                    const vph = editor.getViewportPageBounds().h
+                    if (isTemporaryMarkdownNavigation) {
+                      setCameraKeepingDocumentMargin(editor, fresh, fresh.y + yOff2, 0.15, sourceLeftScreen)
+                    } else {
+                      editor.centerOnPoint({ x: fresh.x + fresh.props.w / 2, y: fresh.y + yOff2 + vph * 0.35 }, { animation: { duration: 300 } })
+                    }
+                  }
+                }
+              }, 200)
+              setTimeout(() => clearInterval(poll), 8000)
             }
-            recordHtmlNavigationEnd(editor)
           } else {
-            // Anchor not resolved yet — center on page top, poll for anchor
             if (isTemporaryMarkdownNavigation) {
               setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
             } else {
               editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
             }
             recordHtmlNavigationEnd(editor)
-            const poll = setInterval(() => {
-              const yOff2 = htmlHeadingPositions.get(targetShape.id)?.[anchor!]
-              if (yOff2 != null) {
-                clearInterval(poll)
-                const fresh = editor.store.get(targetShape.id) as any
-                if (fresh) {
-                  const vph = editor.getViewportPageBounds().h
-                  if (isTemporaryMarkdownNavigation) {
-                    setCameraKeepingDocumentMargin(editor, fresh, fresh.y + yOff2, 0.15, sourceLeftScreen)
-                  } else {
-                    editor.centerOnPoint({ x: fresh.x + fresh.props.w / 2, y: fresh.y + yOff2 + vph * 0.35 }, { animation: { duration: 300 } })
-                  }
-                }
-              }
-            }, 200)
-            setTimeout(() => clearInterval(poll), 8000)
           }
-        } else {
-          if (isTemporaryMarkdownNavigation) {
-            setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
-          } else {
-            editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
-          }
-          recordHtmlNavigationEnd(editor)
         }
+        // A page switch restores its saved camera after setCurrentPage. Let
+        // that finish before applying the navigation target.
+        if (pageChanged) setTimeout(centerTarget, 100)
+        else centerTarget()
         return
       }
       if (e.data?.type === 'tlda-navigate-rel') {

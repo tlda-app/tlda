@@ -64,15 +64,21 @@ export function navigateToPage(editor: Editor, doc: Pick<ProjectContextValue, 'p
   if (tlPageId) {
     recordAnnotationViewerNavigationStart()
     // Multipage HTML: switch TLDraw page and center on the shape
-    editor.setCurrentPage(tlPageId)
-    const shape = pageShape || currentHtmlPageShape(editor)
-    if (shape) {
+    const pageChanged = tlPageId !== editor.getCurrentPageId()
+    if (pageChanged) editor.setCurrentPage(tlPageId)
+    const centerTarget = () => {
+      const shape = pageShape || currentHtmlPageShape(editor)
+      if (!shape) return
       const vpH = editor.getViewportPageBounds().h
       editor.centerOnPoint(
         { x: shape.x + shape.props.w / 2, y: shape.y + vpH * 0.3 },
         { animation: { duration: 300 } },
       )
     }
+    // TLDraw restores a page's saved camera during the page switch. Centering
+    // in that same tick is overwritten by the restore.
+    if (pageChanged) setTimeout(centerTarget, 100)
+    else centerTarget()
   } else {
     // SVG/slides: center the slide in the viewport
     navigateTo(editor, page.bounds.x + page.bounds.width / 2, page.bounds.y + page.bounds.height / 2)
@@ -92,38 +98,43 @@ export function navigateToAnchor(editor: Editor, doc: Pick<ProjectContextValue, 
 
   recordAnnotationViewerNavigationStart()
   // Switch to the target TLDraw page
-  editor.setCurrentPage(tlPageId)
-  const shape = pageShape || currentHtmlPageShape(editor)
-  if (!shape) return
+  const pageChanged = tlPageId !== editor.getCurrentPageId()
+  if (pageChanged) editor.setCurrentPage(tlPageId)
+  const centerTarget = () => {
+    const shape = pageShape || currentHtmlPageShape(editor)
+    if (!shape) return
 
-  const cx = shape.x + shape.props.w / 2
+    const cx = shape.x + shape.props.w / 2
 
-  // Check if anchor position is already known
-  const yOff = getHtmlHeadingY(shape.id, anchor)
-  if (yOff != null) {
-    editor.centerOnPoint({ x: cx, y: shape.y + yOff }, { animation: { duration: 300 } })
-    return
-  }
-
-  // Anchor not yet resolved — center on page top, poll for the anchor
-  const vpH = editor.getViewportPageBounds().h
-  editor.centerOnPoint({ x: cx, y: shape.y + vpH * 0.3 }, { animation: { duration: 300 } })
-
-  const targetId = shape.id
-  const poll = setInterval(() => {
-    const y = getHtmlHeadingY(targetId, anchor)
-    if (y != null) {
-      clearInterval(poll)
-      const fresh = htmlPageNavShape(editor.getShape(targetId as TLShapeId))
-      if (fresh) {
-        editor.centerOnPoint(
-          { x: fresh.x + fresh.props.w / 2, y: fresh.y + y },
-          { animation: { duration: 300 } },
-        )
-      }
+    // Check if anchor position is already known
+    const yOff = getHtmlHeadingY(shape.id, anchor)
+    if (yOff != null) {
+      editor.centerOnPoint({ x: cx, y: shape.y + yOff }, { animation: { duration: 300 } })
+      return
     }
-  }, 200)
-  setTimeout(() => clearInterval(poll), 8000)
+
+    // Anchor not yet resolved — center on page top, poll for the anchor
+    const vpH = editor.getViewportPageBounds().h
+    editor.centerOnPoint({ x: cx, y: shape.y + vpH * 0.3 }, { animation: { duration: 300 } })
+
+    const targetId = shape.id
+    const poll = setInterval(() => {
+      const y = getHtmlHeadingY(targetId, anchor)
+      if (y != null) {
+        clearInterval(poll)
+        const fresh = htmlPageNavShape(editor.getShape(targetId as TLShapeId))
+        if (fresh) {
+          editor.centerOnPoint(
+            { x: fresh.x + fresh.props.w / 2, y: fresh.y + y },
+            { animation: { duration: 300 } },
+          )
+        }
+      }
+    }, 200)
+    setTimeout(() => clearInterval(poll), 8000)
+  }
+  if (pageChanged) setTimeout(centerTarget, 100)
+  else centerTarget()
 }
 
 // --- Heading parsing ---
