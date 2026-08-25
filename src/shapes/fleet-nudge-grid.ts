@@ -136,6 +136,31 @@ export function completeFleetNudgeGuides(
   return [...guides.values()]
 }
 
+/**
+ * One list of lines from two sources, with a line named twice appearing once.
+ *
+ * The highlight pass keys on `axis:line`, so a duplicate would draw the same
+ * hairline twice and both copies would light up — merge the spans instead, the
+ * way `completeFleetNudgeGuides` already merges within its own set.
+ */
+export function mergeFleetNudgeGuides(
+  base: FleetNudgeGridGuide[],
+  extra: FleetNudgeGridGuide[],
+): FleetNudgeGridGuide[] {
+  const merged = new Map<string, FleetNudgeGridGuide>()
+  for (const guide of [...base, ...extra]) {
+    const key = `${guide.axis}:${guide.line}`
+    const current = merged.get(key)
+    if (!current) {
+      merged.set(key, { ...guide })
+      continue
+    }
+    current.spanFrom = Math.min(current.spanFrom, guide.spanFrom)
+    current.spanTo = Math.max(current.spanTo, guide.spanTo)
+  }
+  return [...merged.values()]
+}
+
 export function highlightFleetNudgeGuides(
   guides: FleetNudgeGridGuide[],
   taken: FleetNudgeTakenLine[],

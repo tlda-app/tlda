@@ -2,6 +2,7 @@ import type { FleetChatFilter } from './fleet-layout-seeding'
 import { fleetPanelDefaultProps, type FleetPanelType } from './fleet-panel-registry'
 import { singleChatViewportPanelSize } from './fleet-layout-sizing'
 import type { Axis } from './document-flow-axis'
+import type { FleetNudgeGridGuide } from './fleet-nudge-grid'
 
 export type FleetLayoutVariant = 'single-chat' | 'two-chat' | '3-col' | '2x2' | 'big-chat' | 'both-margins'
 
@@ -17,6 +18,27 @@ export type FleetLayoutShapePlan = {
 export type FleetLayoutPlan = {
   shapes: FleetLayoutShapePlan[]
   dispatchHudReset: boolean
+  /**
+   * The lines this layout makes permanent. Skip, 2026-08-25: "the layout chooses
+   * which lines it makes permanent."
+   *
+   * They are not every edge the layout placed. A layout names the lines worth
+   * keeping and the rest are just where its panels happened to start. The soft
+   * snap otherwise builds its whole grid from the OTHER panels on the page, so a
+   * layout that places a single panel — `single-chat`, which is what the phone
+   * gets — has nothing to snap to at all. These are what it snaps to.
+   */
+  permanentGuides: FleetNudgeGridGuide[]
+}
+
+/** The four edges of a box, each line spanning that box. */
+function boxGuides(x: number, y: number, w: number, h: number): FleetNudgeGridGuide[] {
+  return [
+    { axis: 'x', line: x, spanFrom: y, spanTo: y + h },
+    { axis: 'x', line: x + w, spanFrom: y, spanTo: y + h },
+    { axis: 'y', line: y, spanFrom: x, spanTo: x + w },
+    { axis: 'y', line: y + h, spanFrom: x, spanTo: x + w },
+  ]
 }
 
 export type FleetLayoutPlanInput = {
@@ -100,6 +122,11 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
         }, myId, myDevice),
       ],
       dispatchHudReset: false,
+      // The chat's own full-viewport box, kept. This is the layout that has no
+      // second panel to align against, and the box is the one position worth
+      // getting back to — drag or resize the chat near an edge of it and it goes
+      // there, which is how you fullscreen a chat on the phone.
+      permanentGuides: boxGuides(anchorX, anchorY, size.w, size.h),
     }
   }
 
@@ -127,6 +154,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
         }, myId, myDevice),
       ],
       dispatchHudReset: false,
+      permanentGuides: [],
     }
   }
 
@@ -264,5 +292,9 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
       }, myId, myDevice),
     )
   }
-  return { shapes, dispatchHudReset: false }
+  // Skip, 2026-08-25, on which layouts declare lines: "for now like, just this
+  // one." Every other variant places more than one panel, so the panel-to-panel
+  // matcher already has a grid; add lines here when a layout wants a position
+  // its panels do not already describe.
+  return { shapes, dispatchHudReset: false, permanentGuides: [] }
 }
