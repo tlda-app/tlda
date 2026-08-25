@@ -21,18 +21,21 @@ import {
 import { fleetInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore — vanilla JS module
-import { inboxConversationRecipientId } from '../fleet/send-target-binding.mjs'
-import type { TLShapeId } from 'tldraw'
 import { agentDisplayLabel, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { usePillDrag, type FleetPillDropData } from './FleetAgentsShape'
 import { registerWMDropTarget, type WMDropPayload } from '../wm/drop-targets'
 // @ts-ignore — vanilla JS module
 import { inboxTaskTransfer, projectOwnedFleetTasks } from './fleet-task-inbox.mjs'
+// FleetTaskDetail still has its own composer: a task's reply box is not a chat
+// thread, and nothing about it changed.
 import { ChatComposer } from './ChatComposer'
+import { StandaloneChatPanel } from '../fleet/StandaloneChatPanel'
+// @ts-ignore — vanilla JS module
+import { buildFleetDmFilter } from '../../shared/filter-semantics.mjs'
 import type { VoiceTargetHandle } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent, fleetEphemeral } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetIdentity, fleetEphemeral } from '../fleet-data-adapter'
 import { ProjectContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { onReloadSignal } from '../useYjsSync'
@@ -42,7 +45,7 @@ import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc, timeShort } from '../fleet/chat-render.mjs'
+import { esc, timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { fleetDurable } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
@@ -50,7 +53,7 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { FleetHudRenderGate, useIsInViewport } from './useIsInViewport'
-import { CHIP_OPEN_FAILED, fetchMarkdownChipText, openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
+import { CHIP_OPEN_FAILED, fetchMarkdownChipText, openChatMarkdownColumn } from './fleet-chat-markdown-open'
 import { log } from '../logger'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 import './fleet-chat.css'
@@ -828,13 +831,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
         {/* Body */}
         {activeThread ? (
-          <ConversationView
-            shapeId={shape.id}
-            thread={activeThread}
-            ctx={ctx}
-            myId={myId}
-            myName={myName}
-          />
+          <ConversationView thread={activeThread} myName={myName} />
         ) : activeItem?.kind === 'fleet-task' ? (
           <FleetTaskDetail task={activeItem.task} myId={myId} onAssign={assignTask} />
         ) : activeItem ? (
@@ -1160,188 +1157,36 @@ function ItemDetail({ item, onApprove }: { item: PaperDetailItem; onApprove: (t:
   )
 }
 
-function ConversationView({
-  shapeId,
-  thread,
-  ctx,
-  myId,
-  myName,
-}: {
-  shapeId: TLShapeId
-  thread: Thread
-  ctx: any
-  myId: string | null
-  myName: string
-}) {
-  const editor = useEditor()
-  const { addToast } = useToasts()
-  const showError = useCallback((message: string) => {
-    addToast({ title: message, severity: 'error' })
-  }, [addToast])
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const wasNearBottomRef = useRef(true)
-  const downTargetRef = useRef<HTMLElement | null>(null)
-  const suppressNativeChipClickUntilRef = useRef(0)
-  useWheelScroll(scrollRef)
-
-  const updateNearBottom = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    wasNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-  }, [])
-
-  const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [])
-
-  // Pin to bottom when switching threads.
-  useEffect(() => {
-    wasNearBottomRef.current = true
-    scrollToBottom()
-  }, [thread.partnerId, scrollToBottom])
-
-  // Follow new/local messages only while the user is already reading the bottom.
-  useEffect(() => {
-    if (wasNearBottomRef.current) scrollToBottom()
-  }, [thread.messages.length, scrollToBottom])
-
-  const sendTargets = useMemo(() => [thread.friendly], [thread.friendly])
-  // The conversation's default target is its partner, so a line addressed to the
-  // partner prints no recipient — same rule as the chat panel.
-  const lineCtx = useMemo(() => ({ ...ctx, sendTargets }), [ctx, sendTargets])
-  const agentNames = useMemo(() => {
-    const map: Record<string, string> = { [thread.partnerId]: thread.partnerName }
-    if (myId) map[myId] = myName || 'user'
-    return map
-  }, [thread.partnerId, thread.partnerName, myId, myName])
-
-  const send = useCallback((text: string, targets: string[]) => {
-    if (!text || targets.length === 0) return
-    // Bind the payload to the conversation partner's immutable id, not the
-    // mutable friendly name the composer carries — so the inbox composer obeys
-    // the same canonical-ID contract as the main fleet-chat composer: the shown
-    // partner and the delivered recipient are one agent object, independent of
-    // any name/phase change and without leaning on server name-resolution.
-    const to = inboxConversationRecipientId(thread)
-    if (!to) return
-    const tempId = `opt-inbox-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    injectOptimisticEvent({
-      _tempId: tempId,
-      type: 'chat',
-      event_type: 'chat',
-      from: getHumanId(),
-      to,
-      text,
-      timestamp: new Date().toISOString(),
-      read: false,
-    })
-    wasNearBottomRef.current = true
-    setTimeout(scrollToBottom, 0)
-	    const sendWithRetry = (attempt: number) => {
-	      Promise.all([sendMessage(to, text, { _tempId: tempId })])
-	        .then((results: { ok: boolean; queued?: boolean; event_id: number | null; permanent?: boolean }[]) => {
-	          if (results.some((r) => r.queued)) {
-	            updateOptimisticEvent(tempId, { _failed: false, _queued: true })
-	            return
-	          }
-	          if (results.every((r) => r.ok)) {
-	            updateOptimisticEvent(tempId, { _failed: false, _queued: false })
-	            return
-	          }
-	          // A permanent failure (target matched no recipient) can't succeed on
-	          // retry — fail visibly now instead of masking it through the retries.
-	          const permanent = results.some((r) => !r.ok && r.permanent)
-	          if (permanent || attempt >= 3) updateOptimisticEvent(tempId, { _failed: true, _queued: false })
-	          else setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-	        })
-	        .catch(() => {
-	          if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-	          else updateOptimisticEvent(tempId, { _failed: true, _queued: false })
-	        })
-	    }
-    sendWithRetry(1)
-  }, [scrollToBottom, thread.partnerId])
-
-  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
-    return openChatMarkdownColumn({
-      editor,
-      sourceShapeId: shapeId,
-      title,
-      markdown,
-      sourceEl,
-      placementEl: scrollRef.current,
-      logPrefix: 'fleet-inbox',
-      showError,
-    })
-  }, [editor, shapeId, showError])
-
-  const openMarkdownChipFromEventTarget = useCallback((target: EventTarget | null, stopPropagation: () => void) => {
-    if (!(target instanceof HTMLElement)) return false
-    return openMarkdownChipFromTarget({ target, stopPropagation, openMarkdownColumn, showError })
-  }, [openMarkdownColumn, showError])
-
-  const handleConversationClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (Date.now() < suppressNativeChipClickUntilRef.current) return
-    if (openMarkdownChipFromEventTarget(e.target, () => e.stopPropagation())) return
-  }, [openMarkdownChipFromEventTarget])
-
-  const handleConversationPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const target = e.target instanceof HTMLElement ? e.target.closest('.ref-chip-doc, .md-file-card') as HTMLElement | null : null
-    downTargetRef.current = target
-  }, [])
-
-  const handleConversationPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const target = downTargetRef.current
-    downTargetRef.current = null
-    if (!target) return
-    if (!e.currentTarget.contains(target)) return
-    if (openMarkdownChipFromEventTarget(target, () => stopEventPropagation(e))) {
-      suppressNativeChipClickUntilRef.current = Date.now() + 700
-    }
-  }, [openMarkdownChipFromEventTarget])
-
+/**
+ * A thread, opened. This is the real chat panel — the same component a chat
+ * shape renders — filtered to the correspondent.
+ *
+ * Skip, 2026-08-25: "rn the like, inbox chat is kind of a lesser thing ... let's
+ * just have a proper chat in the inbox. same exact thing; normal chat when you
+ * click into a thread. normal chat composer, all that. that way like, the inbox
+ * is kind of a reasonable stand-alone tool."
+ *
+ * What stood here was that lesser thing: a map over `thread.messages` calling
+ * renderChatLine, its own scroll-to-bottom, its own send-with-retry, its own
+ * markdown-chip handling, and a bare composer. Every one of those exists in the
+ * chat panel already, along with earlier history, folds, operation cards, the
+ * unread rail and the filter modes that none of this had. It is deleted rather
+ * than kept in step.
+ *
+ * The filter is the DM filter the chat panel's own DM mode uses, so a thread
+ * here and the same conversation in a chat panel are the same query.
+ */
+function ConversationView({ thread, myName }: { thread: Thread; myName: string }) {
+  const filter = useMemo(
+    () => buildFleetDmFilter(myName, thread.friendly) as [string, string][][],
+    [myName, thread.friendly],
+  )
   return (
-    <>
-      <div
-        ref={scrollRef}
-        className="fleet-inbox-conv fleet-chat-shape"
-        onScroll={updateNearBottom}
-        onClick={handleConversationClick}
-        onPointerDown={handleConversationPointerDown}
-        onPointerUp={(e) => {
-          handleConversationPointerUp(e)
-        }}
-        style={{ touchAction: 'pan-y' }}
-      >
-        {(() => {
-          let previousMessageTimestamp: string | null = null
-          return thread.messages.map((m, i) => {
-            const key = m._dbId || m.id || String(i)
-            const lineHtml = renderChatLine(m, { ...lineCtx, previousMessageTimestamp })
-            if (!lineHtml) return null
-            if (m.timestamp) previousMessageTimestamp = m.timestamp
-            const mine = m.from === myId
-            return (
-              <div key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
-                <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
-              </div>
-            )
-          })
-        })()}
-      </div>
-      <div className="fleet-inbox-composer-slot" onPointerDown={(e) => stopEventPropagation(e)}>
-        <ChatComposer
-          sendTargets={sendTargets}
-          agentNames={agentNames}
-          onSend={send}
-          isTouchDevice={_isTouchDevice}
-          draftKey={`inbox:${thread.partnerId}`}
-          className="fleet-inbox-composer-textarea"
-          style={COMPOSER_STYLE}
-        />
-      </div>
-    </>
+    <StandaloneChatPanel
+      className="fleet-inbox-conv-panel"
+      filter={filter}
+      panelKey={`inbox:${thread.partnerId}`}
+    />
   )
 }
 

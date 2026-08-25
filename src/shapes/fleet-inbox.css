@@ -666,12 +666,15 @@
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
-.fleet-inbox-msg {
-  padding: 2px 10px;
-  position: relative;
-}
-.fleet-inbox-msg.mine {
-  opacity: 0.85;
+/* The opened thread is the real chat panel, which measures this box and sizes
+   itself to it, so this only has to be a box. It brings its own scrolling,
+   composer and padding — the row styling that used to live here went with the
+   hand-rolled conversation it styled. */
+.fleet-inbox-conv-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .fleet-inbox-composer-slot {
   flex-shrink: 0;

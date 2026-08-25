@@ -33,7 +33,7 @@ import {
 } from './shapes/FleetAgentDirectoryModel'
 import { PrettyName } from './shapes/PrettyName'
 // @ts-ignore — vanilla JS module
-import { IndexChatPanel } from './fleet/IndexChatPanel'
+import { StandaloneChatPanel } from './fleet/StandaloneChatPanel'
 // @ts-ignore — vanilla JS module
 // @ts-ignore — vanilla JS module
 // @ts-ignore — vanilla JS module
@@ -1211,8 +1211,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     <div className={`PickerScreen${isDark ? ' tl-theme__dark' : ''}`}>
       {/* The real chat, in an index editor. It brings its own header, filter
           pane, composer and voice control — the hand-rolled versions that used
-          to be here are gone with it. See src/fleet/IndexChatPanel.tsx. */}
-      <IndexChatPanel className="index-top-chat" filter={chromeChatFilter} />
+          to be here are gone with it. See src/fleet/StandaloneChatPanel.tsx. */}
+      <StandaloneChatPanel className="index-top-chat" filter={chromeChatFilter} panelKey="index" />
 
       <div className="project-index-search-row">
         {/* No autoFocus. Focus follows a deliberate action everywhere else in
