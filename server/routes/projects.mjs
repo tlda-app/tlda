@@ -61,6 +61,7 @@ import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelo
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
 import { requireClassroomDocumentAccess } from './classroom.mjs'
 import { normalizeDocumentRoots } from '../../shared/document-roots.mjs'
+import { formatForDocumentPath } from '../lib/document-roots.mjs'
 
 const router = Router()
 const execFileAsync = promisify(execFile)
@@ -469,7 +470,15 @@ async function adoptClickedFileAsDocumentRoot(req, name, sourcePath) {
   if (existing.some(root => root.path === answer.path)) {
     return { adopted: false, reason: 'already-a-root', path: answer.path }
   }
-  const documentRoots = [...existing, { path: answer.path, format: 'markdown' }]
+  // The format comes from the file, not from a literal. This appended
+  // `format: 'markdown'` for whatever was clicked, so adopting a `.tex` root
+  // recorded it as markdown -- and the membership walk then chose the markdown
+  // closure for it, losing its figures by a second route.
+  //
+  // A path that is not a document at all is not adopted as one.
+  const format = formatForDocumentPath(answer.path)
+  if (!format) return { adopted: false, reason: 'not-a-document', path: answer.path }
+  const documentRoots = [...existing, { path: answer.path, format }]
   await updateProject(name, { documentRoots })
   emitGlobalEvent('project-changed', { name })
   return { adopted: true, path: answer.path }
@@ -992,12 +1001,30 @@ router.post('/:name/synctex-path', requireRead, async (req, res) => {
 router.get('/:name/macros', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: `No project "${req.params.name}"` })
-  const texBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
-  const outputPath = join(getOutputDir(req.params.name), `${texBase}-macros.json`)
+  // A project's documents are its `targets`. Deriving ONE name from a single
+  // declared file was wrong the moment a project had two documents: it answered
+  // for whichever one that field happened to name and reported the others as
+  // having no preamble. `main.tex` as a default made it worse -- a project with
+  // no such document got a confident answer about a document that is not there.
+  //
+  // Each document has its own macros artifact, and this route can only answer
+  // for one, so it names which: the project's first declared document, or the
+  // one asked for by `?target=`.
+  const targets = Array.isArray(project?.targets) ? project.targets : []
+  const requested = String(req.query.target || '').trim()
+  const target = requested ? targets.find(item => item?.texBase === requested) : targets[0]
+  if (requested && !target) {
+    return res.status(404).json({
+      error: `${req.params.name} has no document "${requested}". Its documents are: ${targets.map(item => item?.texBase).filter(Boolean).join(', ') || 'none recorded'}.`,
+    })
+  }
   // Not built yet is not "no macros": the preamble is unknown until a build has
   // produced the artifact, and a document that has never been built is the case
-  // most likely to be read as "you have no preamble".
-  if (!await pathExists(outputPath)) {
+  // most likely to be read as "you have no preamble". No targets recorded IS
+  // that case -- they are written by the build -- so it takes the same answer
+  // rather than a new one.
+  const outputPath = target?.texBase ? join(getOutputDir(req.params.name), `${target.texBase}-macros.json`) : null
+  if (!outputPath || !await pathExists(outputPath)) {
     return res.status(404).json({ error: `No macros artifact for "${req.params.name}" — the project has not been built yet` })
   }
   try {
@@ -1024,7 +1051,16 @@ router.get('/:name/outline', requireRead, async (req, res) => {
   if (![startLine, startCol, endLine, endCol].every(Number.isFinite)) {
     return res.status(400).json({ error: 'startLine, startCol, endLine, endCol required' })
   }
-  const file = String(req.query.file || project.mainFile || 'main.tex')
+  // The project's DECLARED documents, not a single configured file and not a
+  // guess at `main.tex`. `documentRoots` is the declaration -- it exists whether
+  // or not the project has built, and it covers every format, where `targets`
+  // only carries what a tex build recorded.
+  const roots = Array.isArray(project?.documentRoots) ? project.documentRoots : []
+  const firstRoot = roots.map(root => (typeof root === 'string' ? root : root?.path)).find(Boolean)
+  const file = String(req.query.file || firstRoot || '')
+  if (!file) {
+    return res.status(409).json({ error: `${req.params.name} declares no documents, so there is nothing to outline. Pass ?file= to name one.` })
+  }
   const texPath = join(getSourceDir(req.params.name), file)
   if (!await pathExists(texPath)) return res.status(404).json({ error: `tex not found: ${file}` })
   const text = await readFile(texPath, 'utf8')
