@@ -48,6 +48,7 @@ function cliUntil(cwd, args, base, until, capMs = 30_000) {
       cwd, env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: '0', GIT_SSL_NO_VERIFY: '1' },
     })
     let out = ''
+    let matched = null
     let settled = false
     const finish = (reason, code) => {
       if (settled) return
@@ -58,12 +59,16 @@ function cliUntil(cwd, args, base, until, capMs = 30_000) {
         // that reaches here except the reached-the-stage one, and failing to
         // kill an already-dead process is not a test failure.
       }
-      resolve({ out, reason, code })
+      resolve({ out, reason, code, matched })
     }
     // A cap, not the mechanism. If the CLI never reaches the stage the test
     // fails on its assertions rather than hanging.
     const timer = setTimeout(() => finish('timeout', null), capMs)
-    const watch = chunk => { out += String(chunk); if (until.test(out)) finish('reached-stage', null) }
+    const watch = chunk => {
+      out += String(chunk)
+      const hit = out.match(until)
+      if (hit) { matched = hit[0]; finish('reached-stage', null) }
+    }
     child.stdout.on('data', watch)
     child.stderr.on('data', watch)
     child.on('close', code => finish('exited', code))
@@ -94,7 +99,7 @@ after(async () => {
   rmSync(root, { recursive: true, force: true })
 })
 
-test('an existing rootless project relinks, and its record is untouched', async () => {
+test('an existing project does not require a source, and gets past argument handling', async () => {
   const checkout = join(root, 'rootless-checkout')
   const project = 'rootless-relink'
   {
@@ -118,28 +123,25 @@ test('an existing rootless project relinks, and its record is untouched', async 
     await git(checkout, ['add', '-A'])
     await git(checkout, ['commit', '-m', 'author working copy'])
 
-    // THE RELINK: no source, no roots.
-    // `Source:` is printed immediately after the usage gate and BEFORE the CLI
-    // binds to the local fleet daemon. That matters: the CLI binds before it
-    // writes the project record, so on a machine with no daemon it never
-    // reaches the write at all. An earlier version of this waited for the push
-    // stage, passed here because this machine runs a daemon, and failed on a
-    // colleague's fresh checkout after six `local fleet daemon is unavailable`
-    // retries. Waiting for anything past the bind makes the test a fact about
-    // the machine.
-    // The gate fires in the CLI's first moments or not at all -- it is an
-    // argument check, before any network or daemon work. So the assertion is
-    // the ABSENCE of the usage message within a short window, and reaching the
-    // cap is a pass rather than a failure.
+    // THE RELINK: no source, no roots. POSITIVE EVIDENCE, not silence.
     //
-    // Every marker further in turned out to be daemon-dependent: `Source:` is
-    // printed after `bindLocalSource()`, and the push stage after that. An
-    // earlier version waited for the push, passed here because this machine
-    // runs a daemon, and failed on a fresh checkout after six
-    // `local fleet daemon is unavailable` retries. Anything past the bind makes
-    // this a fact about the machine rather than about the CLI.
+    // Asserting only that the usage message never appeared passed on any path
+    // that produced no output at all -- a crash would have satisfied it. So the
+    // CLI must REACH one of the markers below, and the one it reaches must not
+    // be the usage message.
+    //
+    // The marker set covers both environments deliberately. With a daemon, the
+    // CLI proceeds to bind and push. Without one it retries and says
+    // `local fleet daemon is unavailable`. Either is proof it got past argument
+    // handling; only `Usage:` proves it did not. An earlier version waited for
+    // a push-stage marker, which exists only where a daemon is running, and so
+    // passed here and failed on a fresh checkout.
     const relink = await cliUntil(checkout, ['project', 'link', project], base,
-      /Usage: tlda project link/, 8_000)
+      /Usage: tlda project link|local fleet daemon is unavailable|exists, pushing files|Submitting |Submitted /, 30_000)
+    assert.equal(relink.reason, 'reached-stage',
+      `the CLI reached a known stage rather than dying quietly:\n${relink.out}`)
+    assert.doesNotMatch(relink.matched, /Usage: tlda project link/,
+      `and the stage it reached was not the usage gate -- it got past argument handling:\n${relink.out}`)
 
     // The exit code is deliberately NOT asserted, and the reason is worth
     // stating rather than hiding: the relink goes on to push through the
@@ -147,11 +149,8 @@ test('an existing rootless project relinks, and its record is untouched', async 
     // it, so the command ends on a push failure that has nothing to do with the
     // change. Asserting exit 0 here would test the harness's completeness.
     //
-    // What IS asserted are the two properties this change is: it gets past the
-    // usage gate without naming documents, and it declares nothing on the
-    // project's behalf. Both still fail loudly if the fix regresses.
-    assert.doesNotMatch(relink.out, /Usage: tlda project link/,
-      `it does not demand a source for a project that already exists:\n${relink.out}`)
+    // What IS asserted is the property this change is: it gets past the usage
+    // gate without naming documents. That fails loudly if the fix regresses.
 
     // WHAT THIS FILE DOES NOT PROVE, said plainly rather than implied: that the
     // project record is preserved. The CLI cannot reach the record write
