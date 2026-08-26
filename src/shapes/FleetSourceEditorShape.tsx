@@ -1261,8 +1261,14 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
               setStatus('synced')
               setStatusText(message.building ? 'Synced; build queued' : 'Synced')
             } else if (message.status === 'conflict') {
+              // MARK THE FILE. The room is holding this edit because the
+              // accepted source changed the same lines, and the document
+              // deliberately does NOT carry conflict markers any more -- so the
+              // old text, which told the person to resolve markers that are not
+              // there, would have been an instruction to do the impossible.
+              setHeldConflictFile(normalizeFile(typeof message.file === 'string' ? message.file : file))
               setStatus('dirty')
-              setStatusText('Conflict — resolve the markers, then it syncs')
+              setStatusText('Held — someone else changed the same lines. Your text is safe here.')
             } else if (message.status === 'error') {
               const reason = typeof message.error === 'string' && message.error.trim() ? ` ${message.error.trim()}` : ''
               setStatus('error')
