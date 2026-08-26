@@ -1728,6 +1728,53 @@ background samplers looping on the Mini, both browser rigs reaped, profile
 directories deleted. The only live process of mine is the 5-minute sampler on the
 **Fly** box.
 
+
+### 23:55 — first named frame in an app profile, and it is layout thrash
+
+Spent the blocked time on the profile backlog rather than idling. **The bundle
+has turned over enough that a couple of profiles finally resolve.** This is
+**jank, not the memory leak** — a different problem, not to be conflated.
+
+```
+47.0%   1250 ms   Shn @ src/svgWordSpaces.ts:13
+25.2%    670 ms   (anonymous) @ shared/defaultStyleDefs.mjs:61
+ 3.5%     94 ms   (anonymous) @ src/shapes/SvgPageShape.tsx:325
+```
+
+**The sample is two profiles.** `mappable profiles = 2`, busy 2,658 ms, longest
+single block 1,456 ms, out of 300 records across four bundles of which only the
+live one has a map. **Those percentages are not representative and must not be
+quoted as though they were.**
+
+**The code does not need the sample.** `injectWordSpaces` in
+`src/svgWordSpaces.ts`, per text fragment:
+
+```js
+textEl.insertBefore(tmp, child.nextSibling)   // mutate
+const width = tmp.getComputedTextLength()     // forced synchronous layout
+textEl.removeChild(tmp)                       // mutate
+```
+
+**Insert, measure, remove — once per fragment, across every `<text>` element in a
+page SVG.** `getComputedTextLength()` forces a reflow; each surrounding mutation
+dirties layout again. A preceding loop writes `style.fontFamily`/`fontSize` onto
+every text element first, so layout is already dirty before measuring starts. On
+a dense page that is thousands of forced reflows.
+
+**The profile said where to look; the source confirms the shape independently of
+how few profiles there were.** That is stronger than either alone — and it is
+still *not* a measurement of what it costs in practice, which n=2 cannot give.
+
+**Deliberately not changed.** Outside the assigned work, and the function exists
+for a correctness reason its own comment states (without it, native text
+selection runs words together). A naive "measure all, then mutate all" rewrite
+needs someone to check it against that reason.
+
+**Partly retires an earlier claim.** I reported the client profiler as writing
+"3,975 traces, **all** unreadable." Two are readable. The defect is unchanged —
+deploys still delete the maps their own profiles reference — but "all" is no
+longer accurate.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
