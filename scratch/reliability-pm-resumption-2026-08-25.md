@@ -1099,3 +1099,58 @@ keeping its fixture from diverging (`7877a4843`).
   that checkout and restarts it — there is no separate restart step.
 - `tlda` (the CLI) runs from the shared checkout, so CLI fixes are live on
   commit with no deploy. Server, daemon and client changes all need one.
+
+## 2026-08-26 — CLI gate accepted; one canary relink done
+
+**`3ab696cd8` — the relink CLI gate now requires evidence it got somewhere.**
+The chief rejected the previous version four times and was right each time: the
+existing-project case asserted only that `Usage:` never appeared, under an
+eight-second cap, so **silence passed it** — a crash satisfied it. It now waits
+for `Usage:` | `local fleet daemon is unavailable` | `exists, pushing files` |
+`Submitting` | `Submitted`, and asserts BOTH that a marker was reached AND that
+the marker was not `Usage`. The daemon-unavailable line is in the set on
+purpose: it is what a daemon-less checkout prints, so both environments reach a
+marker and the test stops being a fact about this machine.
+
+Two counterfactuals, both red:
+- pre-fix CLI → fails on *"the stage it reached was not the usage gate"*
+- marker made unreachable (the crash/silence path) → fails on *"reached a known
+  stage rather than dying quietly"*
+
+Also deleted a comment claiming `Source:` prints *before* `bindLocalSource()`.
+It prints after, and the file carried both claims at once.
+
+```
+node --import tsx --test cli/relink-preserves-an-empty-declaration.test.mjs shared/document-roots-to-declare.test.mjs
+```
+6/6, 28s here; the chief independently got 6/6, 30.4s.
+
+**The canary relink — ONE directory, `sync-rootless`, mine and disposable.**
+Preconditions all checked before acting: exists; single-binding; clean; HEAD
+`f8b850f` an ancestor of server head `3f7acc3`; one branch, no MERGE_HEAD. The
+project really is the case under test — `documentRoots: []` on the server.
+
+`tlda-dev project link sync-rootless` from inside the directory, **no source
+argument**, exit 0, 13s. After: `documentRoots: []` **preserved** (the fix,
+live — this is where a root used to be invented from the main file and written
+into the record), branch and HEAD unchanged, checkout clean.
+
+Edit-to-browser on a disposable change: marker appended to `doc.md`, server-side
+in **14s**, then read back **across the source-room websocket**
+(`/source-sync/sync-rootless/doc.md`, real Yjs frames) rather than the `/source/`
+endpoint — the published endpoint is not the browser surface, and reporting it
+as one is the wire failure this repo keeps repeating. Fully restored afterwards:
+`doc.md` byte-identical (11 bytes), server source byte-identical, zero markers
+left, checkout clean.
+
+**Stopped there.** No second directory. Real relinks still held.
+
+**Still open, and NOT to be touched unasked — it is a semantics decision.**
+`onWrongHead` in `daemon/git-project-sync.mjs` is a no-op default parameter with
+**zero callers** (`git grep onWrongHead main -- daemon server cli` returns only
+the definition and its own call site). A rejected proposal logs a warning in
+`git-sync-manager.mjs` and then never converges: park, retry, same `WrongHead`,
+forever. That is the lockout chain still open. The tempting fix — reparent the
+proposal onto the fetched head, same tree — is last-writer-wins at file
+granularity against a concurrent browser edit, which is Skip's call and not
+mine.
