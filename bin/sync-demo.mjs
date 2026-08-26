@@ -74,6 +74,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
+import * as Y from 'yjs'
+
 import { getServerUrl } from '../shared/config.mjs'
 
 // Read one flag before the option block below exists. Two readers of argv is one
@@ -268,33 +270,57 @@ async function writeOnDisk(line) {
   // of that here would be the harness performing the behaviour under test.
 }
 
+/**
+ * The BROWSER route, driven over the source room's own socket.
+ *
+ * Not through a browser, deliberately. This used to drive CodeMirror inside a
+ * real page, which is fragile in both directions -- it could not reach the
+ * EditorView on some builds and reported a working editor as broken -- and it
+ * tests the editor rather than the route. Skip's standing rule: reach for a
+ * browser only when browser interaction is itself the thing under test.
+ *
+ * What IS under test is the third way an edit enters a project: a Yjs source
+ * room, which the editor talks to and which settles into the same proposal path
+ * as everything else. The room speaks JSON frames carrying base64 Yjs updates,
+ * so a script can be an editor without pretending to be a person.
+ */
 async function writeInBrowser(line) {
-  const result = inPage(`
-    // Every copy, and the one that actually has a CodeMirror in it — never the
-    // first. A fleet shape renders twice when the HUD is open, and the
-    // main-canvas copy is deliberately EMPTY: FleetHudRenderGate returns null
-    // there so the HUD's viewport owns it. querySelector returns that empty one,
-    // which reads exactly like an editor that failed to mount. It cost this
-    // harness a false "browser leg is broken" against a working editor.
-    const content = [...document.querySelectorAll('[data-shape-id="${SHAPE}"]')]
-      .map(el => el.querySelector('.cm-content')).find(Boolean)
-    if (!content) return { error: 'no CodeMirror view mounted in any rendered copy' }
-    const view = (content.cmView && content.cmView.view) || (content.cmTile && content.cmTile.view)
-      || window.__source_editor_view__ || null
-    if (!view) return { unreachable: true }
-    // CodeMirror's own transaction path: the update listener fires and the idle
-    // save timer arms exactly as it does for a keystroke.
-    view.dispatch({ changes: { from: view.state.doc.length, insert: ${JSON.stringify(`${line}\n`)} } })
-    return { typed: true }
-  `)
-  if (result.error) throw new Error(result.error)
-  if (result.unreachable) {
-    throw new Error(
-      'the CodeMirror EditorView is not reachable from the DOM on this build (no `cmView` on\n'
-      + '    .cm-content). The browser leg cannot be driven from outside the page until the shape\n'
-      + '    exposes it — e.g. window.__source_editor_view__. Reported, not counted as a sync failure.',
-    )
-  }
+  const file = LEG_FILES.browser
+  const url = `${SERVER.replace(/^http/, 'ws')}/source-sync/${encodeURIComponent(PROJECT)}/${encodeURIComponent(file)}`
+  const ws = new WebSocket(url)
+  const doc = new Y.Doc()
+
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`source room sent no sync frame within 30s (${file})`)), 30_000)
+    const fail = message => { clearTimeout(timer); try { ws.close() } catch { /* already gone */ } reject(new Error(message)) }
+    ws.onerror = event => fail(`source room socket error: ${event?.message || 'unknown'}`)
+    ws.onclose = event => { if (!event.wasClean) fail(`source room socket closed: ${event.code} ${event.reason || ''}`.trim()) }
+    ws.onmessage = event => {
+      let message
+      try { message = JSON.parse(String(event.data)) } catch { return }
+      if (message?.type === 'error') { fail(`source room refused: ${message.message}`); return }
+      if (message?.type !== 'sync') return
+      clearTimeout(timer)
+      Y.applyUpdate(doc, new Uint8Array(Buffer.from(message.update, 'base64')))
+      const ytext = doc.getText('source')
+      const before = ytext.toString()
+      // Same anchor the other legs use, so the line lands inside the document
+      // body rather than after \end{document}, where it would sync perfectly
+      // and change nothing anyone can see.
+      // Same placement as appendIntoDocument: before the marker, inside the
+      // document body. A line after \end{document} syncs perfectly and changes
+      // nothing anyone can see, which is the failure this demo exists to catch.
+      const anchor = before.indexOf(LOG_MARKER)
+      const stateBefore = Y.encodeStateVector(doc)
+      ytext.insert(anchor >= 0 ? anchor : before.length, `${line}\n\n`)
+      ws.send(JSON.stringify({ type: 'update', update: Buffer.from(Y.encodeStateAsUpdate(doc, stateBefore)).toString('base64') }))
+      // `flush` is what the editor's save timer does. Without it the room waits
+      // for its own debounce and the leg times out against a room that is
+      // working perfectly well.
+      ws.send(JSON.stringify({ type: 'flush' }))
+      setTimeout(() => { try { ws.close() } catch { /* already gone */ } resolve() }, 1000)
+    }
+  })
 }
 
 async function writeOnRemote(line) {
@@ -780,7 +806,11 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     // pending for 35 minutes behind a build worker stuck in state T.
     //
     // So say which, from the daemon's own record, at the moment it goes bad.
-    if (bad.length) {
+    // Only the SERVER destination can be explained by an admission. Saying "the
+    // edit did not reach the server" about a leg whose server hop SUCCEEDED and
+    // whose checkout hop failed is a false statement about the wrong half --
+    // which is what it printed the first time the browser leg ran.
+    if (bad.some(([name]) => name === 'server')) {
       const admitted = lastAdmission()
       // An admission OLDER than this edit says nothing about this edit, and
       // reporting it as though it did is the exact mistake this line exists to
