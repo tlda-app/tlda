@@ -341,7 +341,8 @@ more interesting.** Attention goes to the finding, not to the ruler.
 
 **The check runs correctly, reads real state, and reports a contradiction that
 is not one** — because the premise in its own comment is wrong about what the
-system does. It cannot go green, so it fires forever.
+system does. It stays red for as long as the system stays in a state it was
+designed to enter and hold.
 
 **Measured 2026-08-26.** `dev-bot.mjs`'s `document-surfaces` check:
 
@@ -369,11 +370,19 @@ papers are broken. And `document-surfaces` also carries the spinner check and th
 `/macros` check, which are real — **a permanently-red alarm trains everyone to
 ignore the report that contains the true findings.**
 
-**The check that catches it: make the monitor go green.** Not "does it fire on
-the bad case" but "is there any reachable state in which it is silent". A monitor
-with no green state is not measuring; it is asserting. This is the emptiness
-control pointed at an alarm rather than a query — and it is cheap, because you
-only have to name one state and check the code permits it.
+**The check that catches it: name the state the alarm is complaining about, and
+ask whether the system enters it on purpose.** Not "does it fire on the bad
+case" — this one fires on a real state, correctly detected. The question is
+whether that state is a fault or a design. Here the answer was one grep away,
+in the server's own error string.
+
+**Be precise about the failure, because "it can never go green" would be
+wrong.** This check does go quiet for a project whose build succeeds — 
+`balancing-act` left the list between two sweeps by rebuilding clean. What it
+cannot do is go quiet for a project that is *correctly* holding its last good
+render, which is a state the system will sit in indefinitely and by intent. So
+the alarm is not stuck; it is faithfully reporting a design as a defect, for as
+long as the design holds.
 
 ## Why this is not a testing-discipline note
 
