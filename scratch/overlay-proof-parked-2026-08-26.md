@@ -62,7 +62,30 @@ Branch `classroom-student-overlay`, head **`9a38e5d6a`**. **Behaviours 1, 2 and 
 are neither established nor refuted** — there was never a rendered book to draw on.
 Not "the overlay didn't work." **And per §0 they are no longer the thing to prove.**
 
-### Blocker: a TLS preview cannot accept source content
+### Blocker: RESOLVED 2026-08-26 — three faults, not one
+
+Source push into a TLS preview is **fixed and proven end to end** (a real document
+mounted and rendered KaTeX). It took **three distinct faults**, all of which had to
+land:
+
+| fault | commit |
+|---|---|
+| internal HTTP/HTTPS scheme — the one diagnosed below | `fb5b14d0b` |
+| `--server` git-remote routing | `0f8da75ef` |
+| tokenless Basic username | `fc379cb0f` |
+
+**Worth keeping:** the scheme fault below was real but was **not sufficient on its
+own**. A single confident root cause would have been wrong here — not because the
+evidence for it was bad, but because two more faults sat behind it. When a fix
+lands whose subject does not match your diagnosis, that is worth asking about
+rather than assuming either that you were wrong or that you were right.
+
+**Still required before resuming: a branch head merged with current main.**
+`f6948f235` predates all three commits, so a preview built from it fails exactly as
+described below. Do **not** merge into a throwaway worktree and test that — the
+gate is on the actual branch.
+
+### The original diagnosis (fault 1 of 3)
 
 Every source push fails, including `tlda-dev serve`'s own seeder:
 
