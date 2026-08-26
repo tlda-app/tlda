@@ -93,6 +93,35 @@ submission failed, and let the revision be re-proposed — which is safe because
 sync re-derives. **Not written. Waiting on his ruling and on what the threshold
 should be**, since a legitimate build on that box runs for minutes.
 
+## A DEPLOY LOOKS EXACTLY LIKE AN OUTAGE FROM OUTSIDE. CHECK THE VERSION FIRST
+
+2026-08-26 01:49–02:15Z: three deploys landed back to back — machine versions
+**1316 → 1317 → 1318**. Each replaces the machine, so the `.ts.net` name stops
+answering for about a minute and `curl` returns **HTTP 000**, identical to the
+tailnet outage an hour earlier.
+
+**How to tell them apart in one command**, before diagnosing anything:
+
+```sh
+fly status -a tldraw-sync-skip | grep '^ app'   # VERSION bumped => a deploy
+```
+
+A bumped version and a fresh `LAST UPDATED` is a deploy. An unchanged version
+with the box up for a while is a real fault.
+
+**And check whether the failure is at YOUR end.** During that window the fleet
+log showed the app perfectly healthy — event-loop lag ~25ms, agents connecting,
+my own MCP reconnecting — while my `curl` returned 000. The server was fine and
+the request was not reaching it. Retrying three times returned 200 each time.
+
+**Nothing was lost across any of the three.** The demo was writing throughout;
+two edits missed their windows and both arrived afterwards, at **148s** and
+**421s**. The daemon retried and they landed intact — idempotence doing its job.
+
+**The demo reported the deploys honestly** rather than papering over them:
+`pages 3/4 BROKEN` with zero-byte responses while the machine was being
+replaced, and `nothing admitted since this edit` on the leg that missed.
+
 ## THE DEMO NEEDS `--watch` OR IT RUNS THREE CYCLES AND EXITS
 
 `const CYCLES = Number(valueOf('--cycles', has('--watch') ? Infinity : 3))`.
