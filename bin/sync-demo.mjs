@@ -715,15 +715,21 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     }
   }
 
-  for (const leg of LEGS) {
+  // EVERY ROUTE WRITES AT THE SAME TIME.
+  //
+  // This used to write one route, wait up to 90s for it to land everywhere, then
+  // write the next. Putting them on one file was necessary and not sufficient:
+  // strict serialization meant two writers still never overlapped in time, so a
+  // conflict between routes remained a state the demo could not reach. Skip's
+  // standard is a real editing session -- him and a collaborator in one document
+  // -- and that is overlap, not turn-taking. Caught by my advocate.
+  //
+  // So the writes go out together and convergence is judged afterwards. If they
+  // collide, that is the finding: it is what happens to two real people.
+  const plans = LEGS.map(leg => {
     n += 1
-    const marker = `SYNCDEMO-${n}`
-    const line = lineFor(leg, n)
-
-    // Every destination EXCEPT the one that wrote it. Asking whether the writer
-    // can see its own write measures nothing.
-    const destinations = {}
     const legFile = LEG_FILES[leg]
+    const destinations = {}
     destinations.server = () => serverText(legFile)
     // The remote leg pulls explicitly, so its working file really does move.
     // A browser edit is published server-side and parked, so its arrival is the
@@ -733,36 +739,30 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     // The linked remote is a SOURCE here, never a destination. Nothing pushes
     // an accepted revision back out to it unless the binding asks for a mirror,
     // so expecting a disk or browser edit to appear there was the harness
-    // asking for behaviour the app does not claim — it reported two convergence
-    // failures against a working system before this was understood.
+    // asking for behaviour the app does not claim.
+    return { leg, marker: `SYNCDEMO-${n}`, line: lineFor(leg, n), destinations }
+  })
 
-    let wrote = true
-    try {
-      await WRITERS[leg](line)
-    } catch (error) {
-      wrote = false
-      console.log(`${leg.padEnd(8)} ${marker.padEnd(8)} COULD NOT WRITE — ${error.message}`)
-      // A leg that could not write is NOT a pass. It used to `continue`
-      // silently, so a run where the remote leg never executed still ended on
-      // "Every line reached every surface" and exit 0 — the harness reporting
-      // success for work it had not done. That is the failure this whole script
-      // exists to catch, and it was in the script.
-      //
-      // Tracked apart from convergence failures because they mean opposite
-      // things: a convergence failure is the app losing an edit, this is the
-      // harness never having made one. Reporting them as the same number would
-      // send somebody debugging sync over a broken fixture.
-      unrun.push(`${leg}: ${error.message.split('\n')[0]}`)
-    }
-    if (!wrote) continue
+  const beforeTip = LEGS.includes('disk') ? (await branchState()).tip : null
+  const editedAt = Date.now()
+  const outcomes = await Promise.allSettled(plans.map(plan => WRITERS[plan.leg](plan.line)))
+  const written = []
+  for (const [at, plan] of plans.entries()) {
+    if (outcomes[at].status === 'fulfilled') { written.push(plan); continue }
+    const error = outcomes[at].reason
+    const message = error?.message || String(error)
+    console.log(`${plan.leg.padEnd(8)} ${plan.marker.padEnd(8)} COULD NOT WRITE — ${message}`)
+    // A leg that could not write is NOT a pass. Tracked apart from convergence
+    // failures because they mean opposite things: a convergence failure is the
+    // app losing an edit, this is the harness never having made one.
+    unrun.push(`${plan.leg}: ${message.split('\n')[0]}`)
+  }
 
-    const beforeTip = leg === 'disk' ? (await branchState()).tip : null
-    // Captured BEFORE the wait so the admission check below can tell an
-    // admission of THIS edit from one that happened earlier. Without it the
-    // check reports the project's most recent admission whatever its age, which
-    // is how it first ran: it printed a thirty-minute-old admission as the
-    // explanation for an edit made seconds before.
-    const editedAt = Date.now()
+  for (const { leg, marker, destinations } of written) {
+
+    // `editedAt` and `beforeTip` are from before the concurrent write phase, so
+    // the admission check can still tell an admission of THIS cycle from an
+    // older one, and the disk branch check still has a tip to compare against.
     const result = await converge(marker, destinations)
     if (leg === 'disk') {
       // The author's edit is committed UNDER them, so the tree goes clean and
