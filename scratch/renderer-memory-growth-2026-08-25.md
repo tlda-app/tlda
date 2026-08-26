@@ -15,6 +15,27 @@ nobody believes me"*.
 
 He is right. It leaks.
 
+## STATUS OF THE CAUSAL CLAIM — read this before quoting anything below
+
+**The cause of the renderer leak is NOT established.**
+
+Taking the app offline is the only intervention that has ever changed the number:
+the drift stopped, 445 → 446 MB over 35 minutes, where it had been climbing
+~1 MB/min. **That is correlation, and possibly necessity. It is not cause.**
+
+Three things keep it from being more, all of them recorded in full below:
+
+1. **The run was cumulative, not isolated** — timers and `requestAnimationFrame`
+   were still suppressed during it.
+2. **The pre-existing sockets were never confirmed closed** at the OS level; only
+   that the app entered its offline state and opened no new ones.
+3. **The ordering control that would settle it has not been run.** Four attempts,
+   four environmental failures, none of them a result. See the 01:00 entry.
+
+**So: socket activity is correlated with the drift and may be necessary for it.
+It is not established as the cause, and nothing in this file should be read or
+quoted as saying otherwise.** Recorded on `sol-dev`'s instruction, 2026-08-26.
+
 ## What the growth is
 
 One browser tab, one project open, nobody touching it. Renderer process
