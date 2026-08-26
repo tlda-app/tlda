@@ -123,17 +123,23 @@ export function createTerminalRpc({
   // genuinely ready terminal as not-ready. Scanning the full (already-bounded,
   // see capturePaneTail's own -S limit) capture preserves the "stale busy text
   // above the prompt doesn't block" guarantee via ordering alone.
-  function terminalInputReady(pane) {
+  function terminalInputReady(pane, { requireEmpty = false } = {}) {
     const text = stripAnsi ? stripAnsi(pane || '') : String(pane || '')
     const lines = text.split('\n').filter(line => line.trim())
     const promptIndex = lines.findLastIndex(line => line.includes('❯') || line.trimStart().startsWith('›'))
     const busyIndex = lines.findLastIndex(line =>
       ['Thinking', 'Working', 'Transmuting', 'ESC to interrupt', 'esc to interrupt', 'Starting MCP servers'].some(marker => line.includes(marker)) ||
       line.includes('✻'))
-    return promptIndex >= 0 && promptIndex > busyIndex
+    if (promptIndex < 0 || promptIndex <= busyIndex) return false
+    if (requireEmpty) {
+      const promptLine = lines[promptIndex]
+      const glyphIndex = Math.max(promptLine.lastIndexOf('❯'), promptLine.lastIndexOf('›'))
+      if (promptLine.slice(glyphIndex + 1).trim()) return false
+    }
+    return true
   }
 
-  async function waitForTerminalInputReady(tmuxSession, timeoutMs = 0) {
+  async function waitForTerminalInputReady(tmuxSession, timeoutMs = 0, { requireEmpty = false } = {}) {
     const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0)
     while (Date.now() < deadline) {
       try {
@@ -141,7 +147,7 @@ export function createTerminalRpc({
         const prompt = detectPrompt(pane)
         if (prompt.type === 'auto-accept') {
           await autoAcceptPrompt(tmuxSession, prompt.reason, prompt.acceptKey)
-        } else if (terminalInputReady(pane)) {
+        } else if (terminalInputReady(pane, { requireEmpty })) {
           return true
         }
       } catch {
@@ -176,6 +182,19 @@ export function createTerminalRpc({
     return writeTextToTerminal(args)
   }
 
+  async function notifyConnectionDisconnected({ agent_id } = {}) {
+    return writeTextToTerminal({
+      agent_id,
+      text: `The tlda connection seems disconnected. Consider running: tlda-dev restart-mcp ${agent_id}`,
+      enter: true,
+      enter_delay_ms: 0,
+      literal_text: true,
+      ready_timeout_ms: 1,
+      require_ready: true,
+      require_empty_prompt: true,
+    })
+  }
+
   // The actual write. `rpcSendText` is the user-input door and is gated; this
   // is not, because a server-originated notification is not terminal text
   // input. Gating both meant the policy that stops the browser typing into a
@@ -183,12 +202,12 @@ export function createTerminalRpc({
   async function writeTextToTerminal(args = {}) {
     if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
     const { tmux_session: tmuxSession } = resolveAgentRoute(args)
-    const { text, enter, enter_delay_ms, literal_text, ready_timeout_ms, clear_before_text, use_pty = true, require_ready = false } = args
+    const { text, enter, enter_delay_ms, literal_text, ready_timeout_ms, clear_before_text, use_pty = true, require_ready = false, require_empty_prompt = false } = args
     checkSession(tmuxSession)
     onArmBySession(tmuxSession)
     const readyTimeoutMs = Math.max(0, Number(ready_timeout_ms) || 0)
     if (readyTimeoutMs > 0) {
-      const ready = await waitForTerminalInputReady(tmuxSession, readyTimeoutMs)
+      const ready = await waitForTerminalInputReady(tmuxSession, readyTimeoutMs, { requireEmpty: require_empty_prompt })
       if (!ready && require_ready) return { ok: false, reason: 'terminal-not-ready', via: 'none' }
     }
     // A live tmux can still be unable to consume task text. Clear only prompts
@@ -624,6 +643,7 @@ export function createTerminalRpc({
     checkSession,
     gooseKickSend,
     hasActiveWatch,
+    notifyConnectionDisconnected,
     handlers: {
       'send-key': rpcSendKey,
       'send-text': rpcSendText,

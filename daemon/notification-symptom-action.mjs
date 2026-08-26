@@ -6,23 +6,22 @@
 // knowing anything about it. See docs/notifications-and-liveness.md
 // §"The back-off: the server reports a symptom, the daemon decides the remedy".
 //
-// There are exactly two actions, because §"Liveness: what the daemon is for"
-// gives the daemon exactly two jobs:
+// Notification symptoms can select one lifecycle action from §"Liveness: what
+// the daemon is for":
 //
 //   ensure-process   no process -> make one; process there -> no-op
-//   restart          a process that is not answering -> off and on again
 //
-// Both are idempotent, which is what lets the server keep no memory of what it
-// has already reported and simply report again when it sees the symptom again.
+// It is idempotent, which is what lets the server keep no memory of what it has
+// already reported and simply report again when it sees the symptom again.
 //
-// `channel-refused` maps to NOTHING, deliberately. A refusal is a healthy MCP
-// saying no, so nothing on this machine is wrong. It is also the clearest reason
-// the nack has to exist: without it that same case arrives as `channel-silent`,
-// and this table would restart an agent that is working perfectly well.
+// Silence authorizes a message to the existing session, not a lifecycle action.
+// Automatically turning that observation into a restart destroys the live tmux
+// session and the turn in it. A refusal is a healthy MCP saying no, so it needs
+// no action at all.
 export const NOTIFICATION_SYMPTOM_ACTION = Object.freeze({
   'no-channel': 'ensure-process',
   'channel-closed': 'ensure-process',
-  'channel-silent': 'restart',
+  'channel-silent': 'suggest-restart',
   'channel-refused': null,
 })
 
@@ -46,18 +45,16 @@ export function actionForSymptom(symptom) {
   return NOTIFICATION_SYMPTOM_ACTION[symptom] ?? null
 }
 
-export async function performNotificationSymptomAction({ symptom, checkAlive, ensureProcess, restart }) {
+export async function performNotificationSymptomAction({ symptom, ensureProcess, suggestRestart }) {
   const action = actionForSymptom(symptom)
   if (!action) return null
   if (action === 'ensure-process') {
     await ensureProcess()
     return 'wake'
   }
-  const alive = await checkAlive()
-  if (!alive) {
-    await ensureProcess()
-    return 'wake'
+  if (action === 'suggest-restart') {
+    await suggestRestart()
+    return 'suggest-restart'
   }
-  await restart()
-  return 'restart'
+  return null
 }

@@ -11,6 +11,8 @@ test('source-room edits and published heads use its canonical Git manager', asyn
   const manager = {
     bindSource: (...args) => calls.push(['bind', ...args]),
     sync: async (...args) => calls.push(['sync', ...args]),
+    // The room stands on its project branch like any other checkout.
+    standOnWorkBranch: async (...args) => { calls.push(['stand', ...args]); return { ok: true, status: 'moved' } },
     queuePaths: (...args) => calls.push(['queue', ...args]),
     headChanged: async (...args) => { calls.push(['head', ...args]); return { ok: true } },
   }

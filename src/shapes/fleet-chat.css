@@ -4168,6 +4168,34 @@ body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: ca
   display: block;
   flex: 0 0 auto;
 }
+/* Dictation, on the composer rail with the other composer controls. Same base as
+   its neighbours — without it a button carries the browser's default grey fill
+   and border, which is what it looked like the first time it rendered. */
+.fleet-chat-shape .fleet-composer-mic-toggle {
+  order: 2;
+  pointer-events: auto;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: var(--ui-tone-dormant);
+  transition: opacity 0.3s, color 0.2s;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+}
+/* Recording reads in the rail's own vocabulary: the control comes up from its
+   resting tone to its active one, the same step every other control on this rail
+   uses. It does NOT change colour.
+   Skip, 2026-08-26: "it CANNOT be a glowing fucking red thing." The red and the
+   full-opacity bump were mine, carried over from the old index-page mic, and on
+   a rail where everything else is a faint monochrome glyph they made an open
+   microphone the loudest thing on the screen. */
+.fleet-chat-shape .fleet-composer-mic-toggle.recording {
+  opacity: var(--ui-tone-active);
+}
+
 .fleet-chat-shape .fleet-composer-clear-toggle {
   order: 4;
   pointer-events: auto;

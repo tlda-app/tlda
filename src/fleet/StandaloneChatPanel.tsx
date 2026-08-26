@@ -69,6 +69,14 @@ export function StandaloneChatPanel({
   // you dragged. Here the box is the DOM element, so the element's size IS the
   // shape's size and the chat lays out against its container the way it lays out
   // against its frame.
+  //
+  // The element must also be a positioning context, which `.standalone-chat-panel`
+  // makes it. tldraw's HTMLContainer is `position: absolute; top: 0; left: 0`,
+  // and with a static wrapper it resolves against the page instead — measured on
+  // the deployed index page, the chat drew at viewport x=0 while its box sat
+  // centred at x=462, and `overflow: hidden` could not clip it because the
+  // containing block was outside. Skip: "index page chat is like, working great
+  // but not where the old shitty one was".
   useEffect(() => {
     const element = containerRef.current
     if (!element || typeof ResizeObserver === 'undefined') return
@@ -111,7 +119,7 @@ export function StandaloneChatPanel({
   const contextValue = useMemo(() => asEditorContextValue(editor), [editor])
 
   return (
-    <div ref={containerRef} className={className}>
+    <div ref={containerRef} className={`standalone-chat-panel${className ? ` ${className}` : ''}`}>
       {shape && (
         <EditorContext.Provider value={contextValue}>
           <TldrawUiToastsProvider>

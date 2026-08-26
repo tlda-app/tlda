@@ -75,7 +75,7 @@ import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
-import { normalizeDocumentRoots } from '../shared/document-roots.mjs'
+import { documentRootsToDeclare, normalizeDocumentRoots } from '../shared/document-roots.mjs'
 
 // --- Argument parsing ---
 
@@ -594,7 +594,10 @@ async function cmdScratch() {
     }
   }
   const projectMetadata = await api('GET', `/api/projects/${name}`)
-  const linked = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, projectMetadata })
+  // `--server` governs this command's git remote as well as its API calls. It
+  // used to govern only the API, so a scratch aimed at a preview was created
+  // there and its content pushed to the configured server.
+  const linked = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, projectMetadata, server: getFlag('server') || null })
   printSubmittedRevision(linked.submission)
 
   // Auto-join book
@@ -612,9 +615,33 @@ async function cmdScratch() {
 async function cmdCreate() {
   const name = getPositional(0)
   const rootArgs = getPositionals().slice(1)
-  if (!name || rootArgs.length === 0) { console.error('Usage: tlda project link <name> <root> [root ...] [--version <branch>@<commit>]'); process.exit(1) }
+  // RELINKING AN EXISTING PROJECT DOES NOT REQUIRE RESTATING ITS DOCUMENTS.
+  //
+  // This demanded roots before it knew whether the project existed, so the only
+  // way to relink one was to name its documents again -- and for a project that
+  // declares none, there was no way at all except to INVENT some and write them
+  // into its record. That is the stored declaration that has caused every
+  // document-loss bug in this area, and a repair should not manufacture one.
+  //
+  // Found 2026-08-26 while classifying bound checkouts for repair: existing
+  // projects that declare no roots are common, and this check was the only
+  // thing preventing them being relinked at all. (The candidate counts from
+  // that sweep are not repeated here -- they moved as the classification was
+  // corrected, and a number in a comment goes stale where the rule does not.)
+  //
+  // So: roots are required to CREATE a project and optional to relink one. An
+  // existing project keeps the declaration it has, including an empty one.
+  const existingProject = rootArgs.length === 0 && name
+    ? await api('GET', `/api/projects/${encodeURIComponent(name)}`).catch(() => null)
+    : null
+  if (!name || (rootArgs.length === 0 && !existingProject)) { console.error('Usage: tlda project link <name> <root> [root ...] [--version <branch>@<commit>]'); process.exit(1) }
 
-  let format = getFlag('format') || null
+  // An existing project's FORMAT and main file come from the project, the same
+  // as its roots. Re-inferring them on a relink is how relinking a markdown
+  // project went looking for a .tex file with \documentclass -- the CLI
+  // guessing at facts the record already holds.
+  const existingRecord = (existingProject?.project || existingProject) || null
+  let format = getFlag('format') || existingRecord?.format || null
   let dir = resolve('.')
   let repoRoot
   try {
@@ -624,13 +651,18 @@ async function cmdCreate() {
     console.error(red('  — tlda project link requires the current working copy to be an existing Git repository.'))
     process.exit(1)
   }
-  const documentRoots = rootArgs.map(root => relative(repoRoot, resolve(dir, root)).replace(/\\/g, '/'))
+  const documentRoots = rootArgs.length
+    ? rootArgs.map(root => relative(repoRoot, resolve(dir, root)).replace(/\\/g, '/'))
+    // The project's own declaration, carried through untouched -- including the
+    // empty one, which is a real state and not a missing value.
+    : ((existingProject?.project || existingProject)?.documentRoots || [])
+        .map(root => (typeof root === 'string' ? root : root?.path)).filter(Boolean)
   if (documentRoots.some(root => !root || root === '..' || root.startsWith('../'))) {
     console.error(red('Every document root must be inside the current Git working copy.'))
     process.exit(1)
   }
   dir = repoRoot
-  let mainArg = getFlag('main') || documentRoots[0]
+  let mainArg = getFlag('main') || documentRoots[0] || existingRecord?.mainFile || null
   const title = getFlag('title') || name
   const version = getFlag('version')
   const acceptContainedServerHistory = hasFlag('accept-contained-server-history')
@@ -665,6 +697,7 @@ async function cmdCreate() {
       sourceDir: dir,
       acceptContainedServerHistory,
       preflightOnly: true,
+      server: getFlag('server') || null,
       ...linkedRemote,
     })
     if (binding.alreadyLinked) console.log(dim(`Project "${name}" is already linked to ${dir}.`))
@@ -926,9 +959,22 @@ async function cmdCreate() {
 
   const mainFile = mainArg || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
-  const effectiveDocumentRoots = projectDocumentRoots.length > 0
-    ? projectDocumentRoots
-    : normalizeDocumentRoots([mainFile], { mainFile, format: 'svg' })
+  // AN EXISTING PROJECT'S EMPTY DECLARATION IS AN ANSWER, NOT A GAP.
+  //
+  // This fell back to deriving roots from the main file whenever none were
+  // supplied, and the relink path then PATCHes the result -- so relinking a
+  // project that declares no roots wrote one in on its behalf. Making the roots
+  // argument optional got past the usage gate and walked straight into this:
+  // the invention moved one step later rather than going away.
+  //
+  // Only relinking is affected. Creating a project still derives roots from the
+  // main file, because a new project has no declaration to preserve.
+  const effectiveDocumentRoots = documentRootsToDeclare({
+    supplied: projectDocumentRoots,
+    existing: projectDocumentRoots,
+    mainFile,
+    projectExists: rootArgs.length === 0 && Boolean(existingRecord),
+  })
 
   await bindLocalSource()
   console.log(dim(`  Source: ${dir}`))
@@ -941,7 +987,12 @@ async function cmdCreate() {
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
-      await api('PATCH', `/api/projects/${name}/document-roots`, { documentRoots: effectiveDocumentRoots })
+      // An existing project that declares nothing keeps declaring nothing: the
+      // way to keep an empty declaration is not to write one.
+      const alreadyDeclares = ((existingRecord?.documentRoots) || []).length > 0
+      if (rootArgs.length || alreadyDeclares) {
+        await api('PATCH', `/api/projects/${name}/document-roots`, { documentRoots: effectiveDocumentRoots })
+      }
       updatedExistingProject = true
       console.log(`Project "${name}" exists, pushing files.`)
     } else {
@@ -1009,11 +1060,20 @@ async function cmdLink() {
     process.exit(1)
   }
   const source = getPositional(1)
+  // A RELINK NEEDS NO SOURCE, because the project already says what its
+  // documents are. Requiring one here meant the only way to relink a project
+  // that declares no roots was to invent some and write them into its record --
+  // and a repair that manufactures a declaration is the shape of defect this
+  // area has produced before. Roots are required to CREATE, optional to relink.
   if (!source) {
-    console.error('Usage: tlda project link <name> <source> [--main <file>]')
-    process.exit(1)
-  }
-  if (isGitUrl(source)) {
+    const name = getPositional(0)
+    const existing = name ? await api('GET', `/api/projects/${encodeURIComponent(name)}`).catch(() => null) : null
+    if (!existing) {
+      console.error('Usage: tlda project link <name> <source> [--main <file>]')
+      console.error('  (a source is only optional when relinking a project that already exists)')
+      process.exit(1)
+    }
+  } else if (isGitUrl(source)) {
     console.error('A Git URL is not a project source. Run project link from an existing Git checkout and manage its remotes with `tlda project remote`.')
     process.exit(1)
   }

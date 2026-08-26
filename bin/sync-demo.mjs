@@ -74,6 +74,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
+import * as Y from 'yjs'
+
 import { getServerUrl } from '../shared/config.mjs'
 
 // Read one flag before the option block below exists. Two readers of argv is one
@@ -99,14 +101,26 @@ if (!ALLOWED_PREFIXES.some(prefix => PROJECT.startsWith(prefix))) {
   process.exit(1)
 }
 const FILE = String(valueOfEarly('--file', 'demo.md'))
-// EACH INGRESS OWNS A FILE.
+// EVERY INGRESS EDITS THE SAME DOCUMENT, BECAUSE THAT IS THE FEATURE.
 //
-// They used to share one, and the demo then conflicted with itself on every
-// cycle: `UU paper.tex`. It is not a flaky fixture — it is structural. The app
-// does not push accepted revisions out to a linked git remote, so the remote
-// clone can never see a disk edit, and its next push is always a divergent
-// lineage touching the same lines. Giving each way in its own document removes
-// a collision that has nothing to do with what is being demonstrated.
+// This used to give each route its own file. The routes conflicted on a shared
+// document -- `UU paper.tex` on most cycles -- so they were separated, and a
+// comment was written justifying it as structural.
+//
+// Skip, 2026-08-26, on that: *"i mean part of this is editing the same file
+// yeah?"* / *"TEST THE FUCKING FEATURE"* / *"the standard is that a real editing
+// session, e.g. the one i worked on w/ jose earlier, actually fucking works"* /
+// *"not that you can AVOID TESTING THE STUFF THAT'S ACTUALLY HARD"*.
+//
+// He is right and the separation was the harness removing the thing it exists to
+// check. Two people in one document is not an edge case in this product, it is
+// the product: him and a collaborator, in the same file, at the same time. A demo
+// arranged so that never happens cannot say anything about it.
+//
+// So the default is one file for every route, and a conflict is a FINDING rather
+// than a fixture problem -- it is what happens to two real people, and it has to
+// work. The per-route overrides remain for isolating a single path while
+// diagnosing one, which is a different job from demonstrating that sync works.
 const LEG_FILES = {
   disk: FILE,
   browser: String(valueOfEarly('--browser-file', FILE)),
@@ -179,6 +193,29 @@ function checkoutText(file = FILE) {
   try { return fs.readFileSync(path.join(CHECKOUT, file), 'utf8') } catch { return null }
 }
 
+/**
+ * What reached the checkout from the SERVER side, which is a parked ref and not
+ * a working file.
+ *
+ * An accepted revision is deliberately not applied to a person's working tree.
+ * `git-project-sync.mjs`: *"The accepted revision is PARKED, not applied ... that
+ * is the whole obligation: the person can see it, diff it, and merge it with
+ * their own git whenever they choose to."* It used to force-checkout the branch,
+ * commit the dirty tree unasked and merge server history in, which left
+ * unresolved merges in people's checkouts. Local is authoritative.
+ *
+ * So reading the working file to decide whether a browser edit "arrived" asks
+ * for behaviour the app does not claim -- the same mistake this file already
+ * records for the linked remote as a destination, one hop over. It reported a
+ * convergence failure against a working system before this was understood.
+ */
+async function parkedText(file = FILE) {
+  try {
+    const { stdout } = await git(CHECKOUT, ['show', `refs/tlda/fetched/${PROJECT}:${file}`])
+    return stdout
+  } catch { return null }
+}
+
 async function remoteText() {
   try {
     await git(REMOTE_CLONE, ['fetch', 'origin'])
@@ -192,47 +229,7 @@ async function remoteText() {
   }
 }
 
-/**
- * Run code in this agent's pooled tab and return its value.
- *
- * Takes a function OR a source string. The string form is here because most of
- * these bodies need the project's file name and shape id interpolated into
- * them, and `new Function(...).toString()` wraps the body in `function
- * anonymous(\n)` — which is one more thing between what is written here and
- * what the page runs, for no gain.
- */
-function inPage(fn, { timeoutMs = 600_000 } = {}) {
-  const source = typeof fn === 'string' ? `() => { ${fn} }` : fn.toString()
-  // 10 minutes, and that is not paranoia: the pool serialises on a lock, so an
-  // eval that returns in milliseconds can sit behind another agent's turn.
-  const out = execFileSync('tlda-dev', ['pw', 'eval', source], {
-    encoding: 'utf8', timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024,
-  })
-  const start = out.indexOf('### Result')
-  if (start === -1) throw new Error(`pw eval returned no result:\n${out.slice(0, 800)}`)
-  const body = out.slice(start + '### Result'.length)
-  const end = body.indexOf('### Ran Playwright code')
-  const json = (end === -1 ? body : body.slice(0, end)).trim()
-  try { return JSON.parse(json) } catch { return json }
-}
 
-// `.cm-content`'s textContent concatenates one div per line with NO newline
-// between them, so nothing here may compare whole documents — only look for a
-// distinctive phrase, which is what the per-line marker is for.
-function browserText() {
-  try {
-    // Reads EVERY rendered copy, not the first. With the HUD open the shape
-    // exists twice, and `querySelector` would silently pick one of them — the
-    // difference between "the editor received it" and "one of the two editors
-    // received it", and only the second is an answer.
-    const read = inPage(`
-      const els = [...document.querySelectorAll('[data-shape-id="${SHAPE}"]')]
-      return els.map(el => { const c = el.querySelector('.cm-content'); return c ? c.textContent : null })
-                .filter(Boolean).join(' | ')
-    `)
-    return typeof read === 'string' ? read : null
-  } catch { return null }
-}
 
 // ---------------------------------------------------------------------------
 // The three writers
@@ -242,7 +239,30 @@ function browserText() {
 // error, so the demo's own marker broke the build of the paper it was
 // demonstrating on — measured, not theorised: "BUILD FAILED: LaTeX produced 1
 // error(s)". The marker has to be legal in every format this runs against.
+/** One git command in a checkout, stdout or '' — used to ask git about STATE. */
+function runGitIn(dir, args) {
+  try { return execFileSync('git', args, { cwd: dir, encoding: 'utf8' }) } catch { 
+    // Swallowed deliberately: this asks git a QUESTION about the checkout's
+    // state, and a non-zero exit is one of the answers (no such ref, not a
+    // repo). Raising here would turn "there is nothing unmerged" into a crash.
+    return ''
+  }
+}
+
 const lineFor = (leg, n) => `- [${leg}] SYNCDEMO-${n} at ${stamp()}`
+
+/**
+ * Whether a surface carries a specific marker -- ANCHORED, not a substring.
+ *
+ * `text.includes('SYNCDEMO-9')` is satisfied by `SYNCDEMO-99999` left in the
+ * document by an earlier run. Markers start at `Date.now() % 100000` and count
+ * up, so a short one is a live prefix of a long one and the check passes in 0ms
+ * with nothing having synced. Every marker is written followed by ` at `, so
+ * requiring that suffix makes the match exact without parsing the line.
+ */
+function hasMarker(text, marker) {
+  return String(text).includes(`${marker} at `)
+}
 
 // Where a demo line goes in the file.
 //
@@ -268,33 +288,57 @@ async function writeOnDisk(line) {
   // of that here would be the harness performing the behaviour under test.
 }
 
+/**
+ * The BROWSER route, driven over the source room's own socket.
+ *
+ * Not through a browser, deliberately. This used to drive CodeMirror inside a
+ * real page, which is fragile in both directions -- it could not reach the
+ * EditorView on some builds and reported a working editor as broken -- and it
+ * tests the editor rather than the route. Skip's standing rule: reach for a
+ * browser only when browser interaction is itself the thing under test.
+ *
+ * What IS under test is the third way an edit enters a project: a Yjs source
+ * room, which the editor talks to and which settles into the same proposal path
+ * as everything else. The room speaks JSON frames carrying base64 Yjs updates,
+ * so a script can be an editor without pretending to be a person.
+ */
 async function writeInBrowser(line) {
-  const result = inPage(`
-    // Every copy, and the one that actually has a CodeMirror in it — never the
-    // first. A fleet shape renders twice when the HUD is open, and the
-    // main-canvas copy is deliberately EMPTY: FleetHudRenderGate returns null
-    // there so the HUD's viewport owns it. querySelector returns that empty one,
-    // which reads exactly like an editor that failed to mount. It cost this
-    // harness a false "browser leg is broken" against a working editor.
-    const content = [...document.querySelectorAll('[data-shape-id="${SHAPE}"]')]
-      .map(el => el.querySelector('.cm-content')).find(Boolean)
-    if (!content) return { error: 'no CodeMirror view mounted in any rendered copy' }
-    const view = (content.cmView && content.cmView.view) || (content.cmTile && content.cmTile.view)
-      || window.__source_editor_view__ || null
-    if (!view) return { unreachable: true }
-    // CodeMirror's own transaction path: the update listener fires and the idle
-    // save timer arms exactly as it does for a keystroke.
-    view.dispatch({ changes: { from: view.state.doc.length, insert: ${JSON.stringify(`${line}\n`)} } })
-    return { typed: true }
-  `)
-  if (result.error) throw new Error(result.error)
-  if (result.unreachable) {
-    throw new Error(
-      'the CodeMirror EditorView is not reachable from the DOM on this build (no `cmView` on\n'
-      + '    .cm-content). The browser leg cannot be driven from outside the page until the shape\n'
-      + '    exposes it — e.g. window.__source_editor_view__. Reported, not counted as a sync failure.',
-    )
-  }
+  const file = LEG_FILES.browser
+  const url = `${SERVER.replace(/^http/, 'ws')}/source-sync/${encodeURIComponent(PROJECT)}/${encodeURIComponent(file)}`
+  const ws = new WebSocket(url)
+  const doc = new Y.Doc()
+
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`source room sent no sync frame within 30s (${file})`)), 30_000)
+    const fail = message => { clearTimeout(timer); try { ws.close() } catch { /* already gone */ } reject(new Error(message)) }
+    ws.onerror = event => fail(`source room socket error: ${event?.message || 'unknown'}`)
+    ws.onclose = event => { if (!event.wasClean) fail(`source room socket closed: ${event.code} ${event.reason || ''}`.trim()) }
+    ws.onmessage = event => {
+      let message
+      try { message = JSON.parse(String(event.data)) } catch { return }
+      if (message?.type === 'error') { fail(`source room refused: ${message.message}`); return }
+      if (message?.type !== 'sync') return
+      clearTimeout(timer)
+      Y.applyUpdate(doc, new Uint8Array(Buffer.from(message.update, 'base64')))
+      const ytext = doc.getText('source')
+      const before = ytext.toString()
+      // Same anchor the other legs use, so the line lands inside the document
+      // body rather than after \end{document}, where it would sync perfectly
+      // and change nothing anyone can see.
+      // Same placement as appendIntoDocument: before the marker, inside the
+      // document body. A line after \end{document} syncs perfectly and changes
+      // nothing anyone can see, which is the failure this demo exists to catch.
+      const anchor = before.indexOf(LOG_MARKER)
+      const stateBefore = Y.encodeStateVector(doc)
+      ytext.insert(anchor >= 0 ? anchor : before.length, `${line}\n\n`)
+      ws.send(JSON.stringify({ type: 'update', update: Buffer.from(Y.encodeStateAsUpdate(doc, stateBefore)).toString('base64') }))
+      // `flush` is what the editor's save timer does. Without it the room waits
+      // for its own debounce and the leg times out against a room that is
+      // working perfectly well.
+      ws.send(JSON.stringify({ type: 'flush' }))
+      setTimeout(() => { try { ws.close() } catch { /* already gone */ } resolve() }, 1000)
+    }
+  })
 }
 
 async function writeOnRemote(line) {
@@ -338,9 +382,47 @@ async function writeOnRemote(line) {
   // there and reached neither the server nor the checkout in 90s. That was the
   // harness asking for behaviour the app does not claim, not a sync failure —
   // which is exactly why the leg now exercises the path that does exist.
-  execFileSync('tlda', ['project', 'remote', 'pull', 'origin', '--project', PROJECT], {
-    cwd: CHECKOUT, encoding: 'utf8', timeout: 300_000, stdio: 'pipe',
-  })
+  // A PULL THAT CONFLICTS IS THE FINDING, NOT A BROKEN FIXTURE.
+  //
+  // Two people editing one document is what this demonstrates, so a merge
+  // conflict here is the product's real behaviour and it gets reported as such.
+  // What must not happen is leaving the conflict in the checkout: an unresolved
+  // merge SILENTLY HALTS ALL SETTLING for the project -- every route, not just
+  // this one -- so a demo that walked away would wedge the thing it is watching
+  // and every later cycle would measure the wedge instead of the product.
+  //
+  // So: report it, then put the checkout back so the next cycle still means
+  // something. `--abort` is safe here because this merge is one the demo itself
+  // started seconds earlier; it is not somebody's in-progress work.
+  try {
+    execFileSync('tlda', ['project', 'remote', 'pull', 'origin', '--project', PROJECT], {
+      cwd: CHECKOUT, encoding: 'utf8', timeout: 300_000, stdio: 'pipe',
+    })
+  } catch (error) {
+    // STATE, NOT TEXT. The first version of this matched /conflict|unmerged/ on
+    // the error output and missed "Please commit your changes or stash them
+    // before you merge", which is a different refusal that still leaves work
+    // half-done -- so the checkout stayed conflicted through nine more cycles.
+    // Git has several sentences for this and the checkout has one observable
+    // state, so the state is what decides.
+    const unmerged = String(runGitIn(CHECKOUT, ['diff', '--name-only', '--diff-filter=U'])).trim()
+    const output = `${error.stdout || ''}${error.stderr || ''}${error.message || ''}`
+    if (!unmerged) throw new Error(`the linked-remote pull failed and left the checkout clean: ${output.split('\n')[0]}`)
+    try {
+      execFileSync('git', ['merge', '--abort'], { cwd: CHECKOUT, stdio: 'pipe' })
+    } catch {
+      // Swallowed deliberately: `merge --abort` exits non-zero when there is no
+      // merge in progress, which is one of the two states this can be in and is
+      // not a failure. The other state -- a merge that IS in progress and could
+      // not be aborted -- shows up immediately as the conflicted checkout the
+      // next cycle reports, so nothing is hidden by not raising here.
+    }
+    throw new Error(
+      `CONCURRENT EDIT CONFLICT in ${unmerged.split('\n').join(', ')}: pulling the linked remote collided with a local edit of the same document. `
+      + 'The merge was aborted so the checkout is not left conflicted -- an unresolved merge silently stops the '
+      + 'daemon settling ANY route for this project.',
+    )
+  }
 }
 
 const WRITERS = { disk: writeOnDisk, browser: writeInBrowser, remote: writeOnRemote }
@@ -366,18 +448,24 @@ async function converge(marker, destinations) {
     for (const [name, read] of [...pending]) {
       const text = await read()
       if (text === null) continue
-      if (String(text).includes(marker)) {
+      if (hasMarker(text, marker)) {
         result[name] = { ms: Date.now() - started }
         pending.delete(name)
       }
     }
     if (pending.size) await sleep(1000)
   }
+  // A destination that cannot be read is MISSING, not exempt.
+  //
+  // `unreadable` used to be its own outcome, and `bad` filtered on `missing`
+  // only -- so a surface that never answered at all never entered `pending`,
+  // never reached `failures`, and the run exited 0. `parkedText` returns null
+  // when the fetched ref does not exist, which is exactly what a browser route
+  // that published nothing looks like; `serverText` returns null on any
+  // non-2xx. Green that depends on a read failing is not green.
   for (const [name, read] of pending) {
     const text = await read()
-    result[name] = text === null
-      ? { unreadable: true, ms: Date.now() - started }
-      : { missing: true, ms: Date.now() - started }
+    result[name] = { missing: true, unreadable: text === null, ms: Date.now() - started }
   }
   return result
 }
@@ -552,45 +640,6 @@ async function setup() {
 // Mount the editor in the pooled tab, once
 // ---------------------------------------------------------------------------
 
-async function mountEditor() {
-  execFileSync('tlda-dev', ['pw', 'setup', '--project', PROJECT], { encoding: 'utf8', timeout: 300_000 })
-  const mounted = inPage(`
-    const ed = window.__tldraw_editor__
-    if (!ed) return { error: 'no tldraw editor on window' }
-    const id = '${SHAPE}'
-    if (!ed.getShape(id)) {
-      const peer = ed.getCurrentPageShapes().find(s => s.type === 'fleet-chat')
-      if (!peer) return { error: 'no fleet-chat shape to borrow identity and position from' }
-      const b = ed.getShapePageBounds(peer.id)
-      ed.createShape({ id, type: 'fleet-source-editor', x: b.x, y: b.y + b.h + 40,
-        props: { w: 640, h: 520, file: '${FILE}', line: 1, title: 'Source', userId: peer.props.userId, deviceId: peer.props.deviceId } })
-    }
-    ed.zoomToBounds(ed.getShapePageBounds(id), { inset: 60 })
-    // Creating the shape and reading it in the same turn finds a mounted element
-    // with no CodeMirror in it: React has not rendered, and the editor then has
-    // to fetch the file. Both are asynchronous, so wait rather than sampling
-    // once and calling it broken.
-    return new Promise(resolve => {
-      const started = Date.now()
-      const poll = setInterval(() => {
-        // Across every rendered copy — see the note in writeInBrowser. With the
-        // HUD open the main-canvas copy is an empty container by design, so
-        // polling the first match waits out the full timeout on a shape whose
-        // editor mounted immediately in the HUD.
-        const copies = [...document.querySelectorAll('[data-shape-id="' + id + '"]')]
-        const c = copies.map(el => el.querySelector('.cm-content')).find(Boolean)
-        if (c && c.textContent) {
-          resolve({ ok: true, waitedMs: Date.now() - started, copies: copies.length })
-          clearInterval(poll)
-        } else if (Date.now() - started > 30000) {
-          resolve({ ok: false, waitedMs: Date.now() - started, copies: copies.length })
-          clearInterval(poll)
-        }
-      }, 250)
-    })
-  `)
-  return mounted
-}
 
 // ---------------------------------------------------------------------------
 // Run
@@ -629,14 +678,17 @@ assert.ok(
 assert.ok(project, `${PROJECT} does not exist on ${SERVER}. Run: node bin/sync-demo.mjs --setup`)
 assert.ok(fs.existsSync(path.join(CHECKOUT, FILE)), `no demo checkout at ${CHECKOUT}. Run: node bin/sync-demo.mjs --setup`)
 
-let browserReady = false
-if (LEGS.includes('browser')) {
-  const mounted = await mountEditor().catch(e => ({ error: e.message }))
-  browserReady = !!mounted.ok
-  console.log(mounted.ok
-    ? `browser:  editor mounted on ${FILE} after ${mounted.waitedMs}ms`
-    : `browser:  NOT mounted (${mounted.error || `waited ${mounted.waitedMs}ms`}) — that leg will report, not assert`)
-}
+// NO BROWSER IS LAUNCHED ANY MORE, and that is a fix rather than a shortcut.
+//
+// This used to open a page and drive CodeMirror. Two costs, both real: driving a
+// browser at a project writes SIX fleet shapes into that project's room per
+// launch, so the demo polluted the very project it was demonstrating on every
+// run; and it tested the editor rather than the route, reporting a working
+// editor as broken whenever the EditorView was not reachable from the DOM.
+//
+// The browser leg now speaks the source room's protocol directly, which is the
+// route. Skip's rule: reach for a browser only when browser interaction is
+// itself the thing under test.
 
 const WORK_BRANCH = `tlda/${PROJECT}`
 const startBranch = await branchState()
@@ -651,6 +703,8 @@ console.log(`versions: ${startingVersions === null ? 'could not read shadow log'
 
 let n = Number(valueOf('--from', Date.now() % 100000))
 const failures = []
+// Markers that reached the server and must never leave it again.
+let witnessed = []
 const unrun = []
 // Markers that missed the window, re-checked on later cycles.
 //
@@ -709,51 +763,54 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     }
   }
 
-  for (const leg of LEGS) {
+  // EVERY ROUTE WRITES AT THE SAME TIME.
+  //
+  // This used to write one route, wait up to 90s for it to land everywhere, then
+  // write the next. Putting them on one file was necessary and not sufficient:
+  // strict serialization meant two writers still never overlapped in time, so a
+  // conflict between routes remained a state the demo could not reach. Skip's
+  // standard is a real editing session -- him and a collaborator in one document
+  // -- and that is overlap, not turn-taking. Caught by my advocate.
+  //
+  // So the writes go out together and convergence is judged afterwards. If they
+  // collide, that is the finding: it is what happens to two real people.
+  const plans = LEGS.map(leg => {
     n += 1
-    const marker = `SYNCDEMO-${n}`
-    const line = lineFor(leg, n)
-
-    // Every destination EXCEPT the one that wrote it. Asking whether the writer
-    // can see its own write measures nothing.
-    const destinations = {}
     const legFile = LEG_FILES[leg]
+    const destinations = {}
     destinations.server = () => serverText(legFile)
-    if (leg !== 'disk') destinations.checkout = () => checkoutText(legFile)
-    if (leg !== 'browser' && browserReady) destinations.browser = browserText
+    // The remote leg pulls explicitly, so its working file really does move.
+    // A browser edit is published server-side and parked, so its arrival is the
+    // parked revision -- not the file on disk.
+    if (leg === 'remote') destinations.checkout = () => checkoutText(legFile)
+    if (leg === 'browser') destinations.parked = () => parkedText(legFile)
     // The linked remote is a SOURCE here, never a destination. Nothing pushes
     // an accepted revision back out to it unless the binding asks for a mirror,
     // so expecting a disk or browser edit to appear there was the harness
-    // asking for behaviour the app does not claim — it reported two convergence
-    // failures against a working system before this was understood.
+    // asking for behaviour the app does not claim.
+    return { leg, marker: `SYNCDEMO-${n}`, line: lineFor(leg, n), destinations }
+  })
 
-    let wrote = true
-    try {
-      await WRITERS[leg](line)
-    } catch (error) {
-      wrote = false
-      console.log(`${leg.padEnd(8)} ${marker.padEnd(8)} COULD NOT WRITE — ${error.message}`)
-      // A leg that could not write is NOT a pass. It used to `continue`
-      // silently, so a run where the remote leg never executed still ended on
-      // "Every line reached every surface" and exit 0 — the harness reporting
-      // success for work it had not done. That is the failure this whole script
-      // exists to catch, and it was in the script.
-      //
-      // Tracked apart from convergence failures because they mean opposite
-      // things: a convergence failure is the app losing an edit, this is the
-      // harness never having made one. Reporting them as the same number would
-      // send somebody debugging sync over a broken fixture.
-      unrun.push(`${leg}: ${error.message.split('\n')[0]}`)
-    }
-    if (!wrote) continue
+  const beforeTip = LEGS.includes('disk') ? (await branchState()).tip : null
+  const editedAt = Date.now()
+  const outcomes = await Promise.allSettled(plans.map(plan => WRITERS[plan.leg](plan.line)))
+  const written = []
+  for (const [at, plan] of plans.entries()) {
+    if (outcomes[at].status === 'fulfilled') { written.push(plan); continue }
+    const error = outcomes[at].reason
+    const message = error?.message || String(error)
+    console.log(`${plan.leg.padEnd(8)} ${plan.marker.padEnd(8)} COULD NOT WRITE — ${message}`)
+    // A leg that could not write is NOT a pass. Tracked apart from convergence
+    // failures because they mean opposite things: a convergence failure is the
+    // app losing an edit, this is the harness never having made one.
+    unrun.push(`${plan.leg}: ${message.split('\n')[0]}`)
+  }
 
-    const beforeTip = leg === 'disk' ? (await branchState()).tip : null
-    // Captured BEFORE the wait so the admission check below can tell an
-    // admission of THIS edit from one that happened earlier. Without it the
-    // check reports the project's most recent admission whatever its age, which
-    // is how it first ran: it printed a thirty-minute-old admission as the
-    // explanation for an edit made seconds before.
-    const editedAt = Date.now()
+  for (const { leg, marker, destinations } of written) {
+
+    // `editedAt` and `beforeTip` are from before the concurrent write phase, so
+    // the admission check can still tell an admission of THIS cycle from an
+    // older one, and the disk branch check still has a tip to compare against.
     const result = await converge(marker, destinations)
     if (leg === 'disk') {
       // The author's edit is committed UNDER them, so the tree goes clean and
@@ -769,6 +826,9 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
       r.ms !== undefined && !r.missing && !r.unreadable
         ? `${name} ${(r.ms / 1000).toFixed(1)}s`
         : r.unreadable ? `${name} UNREADABLE` : `${name} NEVER ARRIVED`)
+    // Only markers that DID arrive are worth watching for loss. One that never
+    // arrived is already a failure and would otherwise be reported twice.
+    if (result.server && !result.server.missing) witnessed.push({ marker, leg })
     const bad = Object.entries(result).filter(([, r]) => r.missing)
     console.log(`${leg.padEnd(8)} ${marker.padEnd(8)} ${parts.join('   ')}`)
     // NEVER ARRIVED says the text is not there. It does not say which half of
@@ -780,7 +840,11 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     // pending for 35 minutes behind a build worker stuck in state T.
     //
     // So say which, from the daemon's own record, at the moment it goes bad.
-    if (bad.length) {
+    // Only the SERVER destination can be explained by an admission. Saying "the
+    // edit did not reach the server" about a leg whose server hop SUCCEEDED and
+    // whose checkout hop failed is a false statement about the wrong half --
+    // which is what it printed the first time the browser leg ran.
+    if (bad.some(([name]) => name === 'server')) {
       const admitted = lastAdmission()
       // An admission OLDER than this edit says nothing about this edit, and
       // reporting it as though it did is the exact mistake this line exists to
@@ -794,6 +858,30 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     for (const [name] of bad) {
       pending.push({ leg, destination: name, marker, since: Date.now(), read: destinations[name] })
     }
+  }
+
+  // NOTHING THAT ARRIVED MAY GO MISSING.
+  //
+  // Every check above asks "did MY line arrive". None of them asks whether the
+  // lines already there survived. So a route whose write clobbers an earlier
+  // one -- a stale Yjs room overwriting the file, a merge dropping a side, a
+  // revision published from a partial tree -- passes every per-line check while
+  // destroying the document. That is the failure this whole demo exists for,
+  // and it was the one thing not being measured.
+  //
+  // Cheap, because the data is already here: every marker written this run must
+  // still be on the server. One that was present and is now gone is a hard
+  // failure, and it names the leg that wrote it so the loss is attributable.
+  const serverNow = await serverText(LEG_FILES.disk)
+  if (serverNow === null) {
+    failures.push('the server copy could not be read, so loss could not be checked')
+  } else {
+    const lost = witnessed.filter(entry => !hasMarker(serverNow, entry.marker))
+    for (const entry of lost) {
+      failures.push(`${entry.marker} (written by ${entry.leg}) ARRIVED AND IS NOW GONE from the server copy`)
+    }
+    // Stop re-reporting a line already counted as lost.
+    witnessed = witnessed.filter(entry => !lost.includes(entry))
   }
 
   const versions = await versionCount()

@@ -197,12 +197,7 @@ export function HighlighterSlider() {
     if (dragging && dragIdx !== null) {
       activateSlot(dragIdx)
     } else if (!dragging && dragStartY) {
-      const cur = editor.getCurrentToolId()
-      if (cur === 'highlight' || cur === 'eraser') {
-        editor.setCurrentTool('select')
-      } else {
-        activateSlot(activeIdx)
-      }
+      activateSlot(activeIdx)
     }
     setDragging(false)
     setDragIdx(null)

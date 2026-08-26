@@ -49,19 +49,8 @@ export function createGitProjectSync({
   remote = 'tlda',
   branch = 'main',
   documentRoots = [],
-  // True for a working tree the APP owns — `.source-room/working`, created by
-  // ensureRepo() and written by the source room. There is no person in it, so
-  // nothing stages what the app writes there and settle must stage it itself.
-  // False, and default, for a person's own checkout, which is what every
-  // territory rule in this file is about.
-  //
-  // Ownership is a property of the directory, and this object is the one bound
-  // to the directory, so the fact lives here. The manager forwards it from the
-  // binding record; there is no second encoding.
-  appOwnedWorkingTree = false,
   log = console,
   onSubmitted = () => {},
-  onWrongHead = () => {},
   onMirrorArrived = () => {},
   runGit = null,
 } = {}) {
@@ -307,6 +296,53 @@ export function createGitProjectSync({
       // Distinct from the missing-dependency notes above: those are a root asking
       // for a path that is not in the settled tree. This is a path that IS in the
       // settled tree that no root asks for. Callers carry it out to a person.
+      // A closure member may point through a committed symlink, which git will
+      // not traverse in a tree: `scratch/book/figs -> ../../lectures/figs` makes
+      // the walk record `scratch/book/figs/plot.png`, and only
+      // `lectures/figs/plot.png` is a tree entry. Resolve the member to its
+      // canonical committed path, and carry the link itself so the built
+      // document can still find its figures. The check below is unchanged: a
+      // member that resolves to nothing still stops the revision.
+      const committedEntry = async (candidatePath) => {
+        const line = (await git(['ls-tree', workingCommit, '--', candidatePath])).stdout.trim()
+        const match = line.match(/^(\d+)\s+\w+\s+([0-9a-f]{40})\t(.+)$/)
+        return match ? { mode: match[1], sha: match[2] } : null
+      }
+      const resolveThroughSymlinks = async (member, links, seen = new Set()) => {
+        if (await committedEntry(member)) return member
+        const parts = member.split('/')
+        // Longest prefix first: the nearest enclosing entry is the one that
+        // decides. A shorter prefix that happens to exist says nothing about
+        // whether the rest of the path does.
+        for (let index = parts.length - 1; index >= 1; index--) {
+          const prefix = parts.slice(0, index).join('/')
+          const entry = await committedEntry(prefix)
+          if (!entry) continue
+          // A real directory here means the remainder genuinely is not in the
+          // tree. That is an absent file, and it belongs to the check below.
+          if (entry.mode !== '120000') return null
+          const target = (await git(['cat-file', 'blob', entry.sha])).stdout.trim()
+          const resolved = path.posix.normalize(
+            path.posix.join(path.posix.dirname(prefix), target, parts.slice(index).join('/')))
+          // A link pointing outside the repository, or a cycle, resolves to
+          // nothing rather than to something outside the project.
+          if (resolved.startsWith('..') || resolved.startsWith('/') || seen.has(resolved)) return null
+          seen.add(resolved)
+          links.add(prefix)
+          return resolveThroughSymlinks(resolved, links, seen)
+        }
+        return null
+      }
+      const symlinkMembers = new Set()
+      for (const member of [...members]) {
+        if (await committedEntry(member)) continue
+        const canonical = await resolveThroughSymlinks(member, symlinkMembers)
+        if (!canonical) continue
+        members.delete(member)
+        members.add(canonical)
+      }
+      for (const link of symlinkMembers) members.add(link)
+
       const dropped = paths.filter(file => DOCUMENT_FILE.test(file) && !members.has(file))
       const index = path.join(archiveDir, 'index')
       const env = { ...process.env, GIT_INDEX_FILE: index }
@@ -390,7 +426,7 @@ export function createGitProjectSync({
       // `-A` here is not a hole in the territory rule. That rule is about a
       // repository someone else owns; this branch only runs where the app is the
       // only writer.
-      await git(['add', appOwnedWorkingTree ? '-A' : '-u'], { env })
+      await git(['add', '-u'], { env })
       const tree = (await git(['write-tree'], { env })).stdout.trim()
       // An empty answer is not a tree, and passing it on produces `git
       // commit-tree  -m ...` with the argument silently missing — which is what
@@ -462,7 +498,54 @@ export function createGitProjectSync({
   //
   // Optional because `recover()` also pushes, and a revision recovered at startup
   // has no edit cluster behind it to attribute.
-  async function pushRevision(revision, { forceRebuild = false, members = null } = {}) {
+  /**
+   * Combine the accepted head with our revision WITHOUT touching this
+   * repository's checkout, index, or branches.
+   *
+   * `merge-tree --write-tree` merges two commits entirely in the object
+   * database: it writes a tree and prints its id, and it reads nothing from the
+   * working tree and writes nothing to it or to the index. That is what makes
+   * it usable here at all -- `d60d18573` removed five mutations of a repository
+   * the app does not own, and none of them may come back.
+   *
+   * Exit 0 means a clean merge; exit 1 means a real conflict, and the stdout
+   * carries the conflicted paths. That distinction is why this uses the
+   * `--write-tree` form and not the legacy one, which prints `changed in both`
+   * for any file both sides touched -- a report that is not about conflicts at
+   * all and reads as one.
+   */
+  async function combineWithAcceptedHead(accepted, revision) {
+    try {
+      const result = await git(['merge-tree', '--write-tree', accepted, revision])
+      const tree = String(result.stdout || '').trim().split('\n')[0]
+      // THROWN, never returned as a conflict. Exit 0 means git merged the two
+      // cleanly, so output that is not a tree id is this code being wrong --
+      // a bad invocation, a git that does not support `--write-tree`, a stubbed
+      // runner. Returning it as `ok: false` let `pushRevision` label it
+      // `conflict-held`, which tells the person their collaborator's edit
+      // conflicts with theirs when nothing of the kind happened. An
+      // implementation failure must never be reported as a fact about two
+      // authors, and that is the same rule as the exit-code check below.
+      if (!/^[0-9a-f]{40}$/.test(tree)) {
+        throw new Error(`merge-tree reported success but wrote no tree for ${accepted.slice(0, 7)}+${revision.slice(0, 7)}: ${JSON.stringify(tree.slice(0, 80))}`)
+      }
+      return { ok: true, tree }
+    } catch (error) {
+      // Exit 1 is the answer "these genuinely conflict", not a failure to run.
+      // Anything else is a broken invocation and must not be reported as a
+      // conflict -- that would turn a bug in this code into a story about the
+      // two authors.
+      if (error?.code !== 1) throw error
+      const lines = String(error.stdout || '').split('\n')
+      const conflicted = [...new Set(lines
+        .map(line => line.match(/^\d{6} [0-9a-f]{40} [123]\t(.+)$/))
+        .filter(Boolean)
+        .map(match => match[1]))]
+      return { ok: false, conflicted }
+    }
+  }
+
+  async function pushRevision(revision, { forceRebuild = false, members = null, combined = false } = {}) {
     const proposalRef = `refs/tlda/proposals/${daemonPart}/${branchPart}/${revision}`
     try {
       const result = await git(['push', '--porcelain', remote, `${revision}:${proposalRef}`])
@@ -473,10 +556,43 @@ export function createGitProjectSync({
       const output = `${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`
       const match = output.match(/WrongHead\s+([0-9a-f]{40})/i)
       if (!match) throw error
-      const wrong = { ok: false, status: 'WrongHead', head: match[1], revision }
-      await onWrongHead(wrong)
+
+      // Park the accepted head first. This is unchanged: the person's checkout
+      // is not moved onto it, it simply becomes reachable at fetchedRef.
       await headChanged(match[1])
-      return wrong
+
+      // ONE attempt, never a loop. If a proposal built on the accepted head is
+      // ALSO rejected, the head moved again while we were working, and the next
+      // edit cluster will settle it. Retrying here would spin against a project
+      // somebody else is actively pushing to.
+      if (combined) return { ok: false, status: 'WrongHead', head: match[1], revision }
+
+      const accepted = (await rev(fetchedRef)) || match[1]
+      const merge = await combineWithAcceptedHead(accepted, revision)
+      if (!merge.ok) {
+        // HELD, and named as what it is. Both sides are recoverable: the
+        // person's work is their own commit on their branch, and the accepted
+        // head is parked at fetchedRef. Nothing is discarded and no winner is
+        // picked -- choosing one is not this code's decision to make.
+        log.warn?.(`${project}: holding — the accepted source and this checkout both changed ${merge.conflicted?.join(', ') || 'the same content'}`)
+        return {
+          ok: false,
+          status: 'conflict-held',
+          head: accepted,
+          revision,
+          conflicted: merge.conflicted || [],
+        }
+      }
+
+      // A two-parent commit whose tree is the combination. The accepted head is
+      // a parent, so the server's ancestry rule is satisfied; our revision is
+      // the other, so nothing of the person's is orphaned. It is created as a
+      // loose object and pushed -- no local ref, no branch move, no checkout.
+      const combinedRevision = (await git([
+        'commit-tree', merge.tree, '-p', accepted, '-p', revision,
+        '-m', `combine ${revision.slice(0, 7)} with accepted ${accepted.slice(0, 7)}`,
+      ])).stdout.trim()
+      return pushRevision(combinedRevision, { forceRebuild, members, combined: true })
     }
   }
 
@@ -499,7 +615,7 @@ export function createGitProjectSync({
     // under and nothing to be dirty against. Gating it would stop the browser
     // source editor's path outright, which is the opposite of the repair.
     const head = await currentBranchRef()
-    if (!appOwnedWorkingTree && head !== workBranchRef) {
+    if (head !== workBranchRef) {
       return {
         ok: false,
         status: 'not-on-work-branch',
@@ -556,6 +672,7 @@ export function createGitProjectSync({
   // history was merged into their checkout — which left an unresolved merge in
   // it whenever the two diverged. Local is authoritative. Divergence is theirs to
   // resolve, and it does not stop the project working.
+
   async function headChanged(revision = null) {
     const fetched = await fetchHead(revision)
     if (!fetched) return { ok: true, status: 'no-shared-head', revision: null }
@@ -575,7 +692,6 @@ export function createGitProjectSync({
     // `git add -A` over the working directory, so the room's content is untouched
     // and only the parent changes. A person-owned checkout keeps its own history
     // and is deliberately not reparented here.
-    if (appOwnedWorkingTree) await git(['update-ref', 'HEAD', fetched])
     return { ok: true, status: 'observed', revision: fetched }
   }
 
@@ -628,7 +744,30 @@ export function createGitProjectSync({
     const shortBranch = `tlda/${projectPart}`
     const branchTip = await rev(workBranchRef)
     try {
-      if (!branchTip) await git(['checkout', '-b', shortBranch])
+      if (!branchTip) {
+        // A tree with NO COMMITS AT ALL is a fresh checkout of this project, and
+        // a fresh checkout of a project starts at the project's head -- that is
+        // what cloning it would give you. Creating the branch at nothing instead
+        // produces an empty tree, and settle then refuses it as `empty-checkout`.
+        //
+        // This is the source editor's case: its tree is created empty and it is
+        // another daemon like any other, so it gets the project the same way a
+        // person's clone would. Narrowed to the no-commits case on purpose -- a
+        // person's checkout that already has history keeps starting the branch
+        // from their own HEAD, which is what they would expect.
+        const hasCommits = await rev('HEAD')
+        // No flag, and no caller opting in. A checkout with no commits is a
+        // fresh checkout of this project, and a fresh checkout of a project
+        // starts at the project's head -- that is simply what checking a
+        // project out means, for the editor and for a person alike.
+        //
+        // It does not change linking a NEW directory as a new project: there is
+        // no project head yet, so this resolves to null and the branch is
+        // unborn exactly as before.
+        const projectHead = hasCommits ? null : (await rev(fetchedRef)) || (await rev(revisionRef))
+        if (projectHead) await git(['checkout', '-b', shortBranch, projectHead])
+        else await git(['checkout', '-b', shortBranch])
+      }
       else if (branchTip === await rev(revisionRef)) await git(['checkout', '-B', shortBranch])
       else await git(['checkout', shortBranch])
     } catch (error) {
