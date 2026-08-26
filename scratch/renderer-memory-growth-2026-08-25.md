@@ -2077,3 +2077,60 @@ and check the allocation actually happened.
 together. Which one carries the growth is **not yet established**. Second tab
 (renderer 59846, socket connected) is baselining for the ladder: kill `setInterval`
 only, then add `rAF`, then `setTimeout`.
+
+### The scheduler decomposition — it is `requestAnimationFrame`
+
+Second tab, renderer **59846**, confirmed a distinct process from 72131 by a 500 MB
+ballast that moved that pid and no other. **Socket connected throughout**
+(`wsIntact: true` — this tab was never network-blocked), so this is the
+socket-live condition.
+
+| rung | live | window | footprint | slope |
+|---|---|---|---|---|
+| baseline | all three + socket | 16:02:50 → 16:09:01 | 345 → 452 MB | 17 MB/min |
+| `setInterval` dead | `setTimeout`, `rAF`, socket | 16:09:31 → 16:15:01 | 466 → 560 MB | 17 MB/min |
+| `+rAF` dead | `setTimeout`, socket | 16:15:01 → 16:21:12 | 560 → 533 MB | **−4 MB/min** |
+
+Killing `setInterval` changed nothing. Adding `rAF` stopped it outright **while
+`setTimeout` was still firing and the socket was still connected**. So `rAF` is
+sufficient to stop the growth and neither other scheduler is necessary to it —
+`setTimeout` is excluded by being live across the flat phase, so no fourth rung
+was needed.
+
+Every rung self-tested in four directions: the killed scheduler fired before and
+not after, and the ones meant to stay live were confirmed still firing.
+
+**The flat line is not a dead tab** — checked, because a crashed renderer gives an
+identical flat footprint. The tab ran a 10⁶-iteration loop on demand: 1250 nodes,
+heap 53 MB, age 24.5 min, both suppressions still in place.
+
+Tab 72131 corroborates independently: all three killed at constant blocked
+network, 44 MB/min → flat, and still flat.
+
+### What is established, and what is not
+
+Established: the growth is driven by the **render loop**. Consistent with the rest
+of the picture — footprint climbing while JS heap and node count stay flat,
+thousands of small anonymous mappings, a tab that dies at 15 GB rather than slows.
+
+**Not established: the callsite, or the retained owner.** This names a scheduler.
+"Something allocated on every animation frame is retained" is not a cause anyone
+can act on.
+
+**The gap is instrumental, not analytical.** Closing it needs native allocation
+stacks with `rAF` live. The pooled browser exposes no CDP — the same constraint
+that has blocked retained-owner evidence throughout — and sampling footprint more
+carefully cannot substitute. It needs a CDP-attachable browser that renders the
+real app; standalone attempts reached only the onboarding state, a different page
+whose result would not transfer.
+
+### Cleanup
+
+Fly sampler stopped, `/tmp/baseline.js` and `/tmp/anonshape.*` gone, server
+untouched (pid 665 + esbuild only). Ten probe files removed from the Air after
+confirming no process was still writing to them. **Two of the ten were not on the
+cleanup list** — enumerate the directory rather than working from a remembered
+list.
+
+`pkill -f baseline.js` over ssh killed its own shell: the ssh command line
+contains the pattern. Verify with a command that does not contain it.
