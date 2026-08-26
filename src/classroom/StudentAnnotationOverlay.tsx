@@ -42,6 +42,8 @@ interface StudentAnnotationOverlayProps {
   visible: boolean
   /** Whether marks land here. Exactly one layer is the write target. */
   isWriteTarget: boolean
+  /** This layer's editor, so a move between layers has both stores. */
+  onEditorMount?: (editor: Editor | null) => void
 }
 
 export function StudentAnnotationOverlay({
@@ -50,6 +52,7 @@ export function StudentAnnotationOverlay({
   bookEditor,
   visible,
   isWriteTarget,
+  onEditorMount,
 }: StudentAnnotationOverlayProps) {
   const roomId = studentOverlayRoomId(bookRoomId, studentId)
   const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
@@ -106,7 +109,7 @@ export function StudentAnnotationOverlay({
         store={store}
         shapeUtils={shapeUtils}
         hideUi
-        onMount={setOverlayEditor}
+        onMount={editor => { setOverlayEditor(editor); onEditorMount?.(editor) }}
         components={OVERLAY_COMPONENTS}
       />
     </div>
