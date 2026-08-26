@@ -274,6 +274,16 @@ export function createDocumentShapeUtils() {
   return [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))]
 }
 
+// The tools a canvas in this app registers.
+//
+// Shared for the same reason as the shape utilities: a student's annotation
+// layer follows whatever tool the book is in, because the tool never chooses
+// which layer a mark lands on. A canvas that had not registered `math-note`
+// would be asked to enter a tool it has never heard of.
+export const DOCUMENT_TOOLS = [
+  BrowseTool, PenTool, SoftAxisHandTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, PlaybackTool, TerminalTool, RibbonEraserTool, RibbonHighlightTool,
+]
+
 // The rendered document — what the pages and figures are made of. Everything
 // else in a document's room is somebody's annotation, which is what makes
 // "hide this layer" expressible without a second store to put marks in.
@@ -816,9 +826,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = isPhoneViewport()
-  const tools = useMemo(() => [
-    BrowseTool, PenTool, SoftAxisHandTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, PlaybackTool, TerminalTool, RibbonEraserTool, RibbonHighlightTool,
-  ], [])
+  const tools = useMemo(() => DOCUMENT_TOOLS, [])
 
   // --- @tldraw/sync: shape CRDT sync ---
   const syncUri = useMemo(

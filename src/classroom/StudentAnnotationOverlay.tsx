@@ -1,9 +1,9 @@
 import { useMemo, useEffect, useState } from 'react'
 import { Tldraw, react, type Editor } from 'tldraw'
 import { useSync } from '@tldraw/sync'
-import { STORE_WS } from '../activeConfig'
+import { STORE_WS, LICENSE_KEY } from '../activeConfig'
 import { appendToken } from '../authToken'
-import { createDocumentShapeUtils, INLINE_ASSETS } from '../SvgDocument'
+import { createDocumentShapeUtils, INLINE_ASSETS, DOCUMENT_TOOLS } from '../SvgDocument'
 import { studentOverlayRoomId } from './studentOverlayRoom'
 import './StudentAnnotationOverlay.css'
 
@@ -57,6 +57,7 @@ export function StudentAnnotationOverlay({
   const roomId = studentOverlayRoomId(bookRoomId, studentId)
   const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
   const shapeUtils = useMemo(() => createDocumentShapeUtils(), [])
+  const tools = useMemo(() => DOCUMENT_TOOLS, [])
 
   const syncUri = useMemo(() => () => appendToken(`${STORE_WS}/sync/${roomId}`), [roomId])
   const store = useSync({ uri: syncUri, shapeUtils, assets: INLINE_ASSETS })
@@ -115,6 +116,18 @@ export function StudentAnnotationOverlay({
       <Tldraw
         store={store}
         shapeUtils={shapeUtils}
+        // Every other canvas in this app passes these two and this one did not.
+        //
+        // `licenseKey`: without it tldraw renders its container and no canvas —
+        // a mounted, correctly sized, healthy-store element with nothing inside,
+        // which is exactly what a student saw when they selected this layer.
+        //
+        // `tools`: the design is that the tool never chooses the destination, so
+        // whatever the book is in has to exist here too. Without them, following
+        // the book into `math-note` or `text-select` addresses a tool this editor
+        // has never heard of.
+        licenseKey={LICENSE_KEY}
+        tools={tools}
         hideUi
         // The teardown half is load-bearing, not tidiness. This canvas unmounts
         // whenever its room's sync status leaves `synced-remote` — a reconnect is
