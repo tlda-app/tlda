@@ -296,6 +296,53 @@ export function createGitProjectSync({
       // Distinct from the missing-dependency notes above: those are a root asking
       // for a path that is not in the settled tree. This is a path that IS in the
       // settled tree that no root asks for. Callers carry it out to a person.
+      // A closure member may point through a committed symlink, which git will
+      // not traverse in a tree: `scratch/book/figs -> ../../lectures/figs` makes
+      // the walk record `scratch/book/figs/plot.png`, and only
+      // `lectures/figs/plot.png` is a tree entry. Resolve the member to its
+      // canonical committed path, and carry the link itself so the built
+      // document can still find its figures. The check below is unchanged: a
+      // member that resolves to nothing still stops the revision.
+      const committedEntry = async (candidatePath) => {
+        const line = (await git(['ls-tree', workingCommit, '--', candidatePath])).stdout.trim()
+        const match = line.match(/^(\d+)\s+\w+\s+([0-9a-f]{40})\t(.+)$/)
+        return match ? { mode: match[1], sha: match[2] } : null
+      }
+      const resolveThroughSymlinks = async (member, links, seen = new Set()) => {
+        if (await committedEntry(member)) return member
+        const parts = member.split('/')
+        // Longest prefix first: the nearest enclosing entry is the one that
+        // decides. A shorter prefix that happens to exist says nothing about
+        // whether the rest of the path does.
+        for (let index = parts.length - 1; index >= 1; index--) {
+          const prefix = parts.slice(0, index).join('/')
+          const entry = await committedEntry(prefix)
+          if (!entry) continue
+          // A real directory here means the remainder genuinely is not in the
+          // tree. That is an absent file, and it belongs to the check below.
+          if (entry.mode !== '120000') return null
+          const target = (await git(['cat-file', 'blob', entry.sha])).stdout.trim()
+          const resolved = path.posix.normalize(
+            path.posix.join(path.posix.dirname(prefix), target, parts.slice(index).join('/')))
+          // A link pointing outside the repository, or a cycle, resolves to
+          // nothing rather than to something outside the project.
+          if (resolved.startsWith('..') || resolved.startsWith('/') || seen.has(resolved)) return null
+          seen.add(resolved)
+          links.add(prefix)
+          return resolveThroughSymlinks(resolved, links, seen)
+        }
+        return null
+      }
+      const symlinkMembers = new Set()
+      for (const member of [...members]) {
+        if (await committedEntry(member)) continue
+        const canonical = await resolveThroughSymlinks(member, symlinkMembers)
+        if (!canonical) continue
+        members.delete(member)
+        members.add(canonical)
+      }
+      for (const link of symlinkMembers) members.add(link)
+
       const dropped = paths.filter(file => DOCUMENT_FILE.test(file) && !members.has(file))
       const index = path.join(archiveDir, 'index')
       const env = { ...process.env, GIT_INDEX_FILE: index }
