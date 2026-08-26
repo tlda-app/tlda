@@ -234,7 +234,7 @@ and logs the line; the stand then happens and the next settle publishes. On an
 **established** room the tree is already on the branch and the line never appears.
 **Transient by construction — one refused settle and one log line.**
 
-## 2. Three rig traps — all produce an empty canvas, two silently
+## 2. Four rig traps — three produce an empty canvas, two silently
 
 The most reusable thing here. **All three look identical to a feature that simply
 does not work**, and two give no reason at all.
@@ -244,6 +244,19 @@ does not work**, and two give no reason at all.
 | **`tlda-dev serve start` dies with its shell** | prints a pid, then `Shutting down... Server closed cleanly` as the command returns | process-group death. Launch it detached (`nohup … &`) |
 | **`--detach` worktree derives the project name `HEAD`** | seeding fails `HTTP 400 {"error":"name must be lowercase alphanumeric with hyphens"}` | the name is uppercase. Check out a **named lowercase branch** |
 | **TLS preview rejects all source content** | `202 queued`, then `pages 0` forever | `http://` self-push against an `https://` listener (§1) |
+| **`serve stop` discards the whole sandbox** | a hand-edit to the preview's `server.yaml` fails *no such file*; classroom records vanish | stopping a preview deletes its `projects/`, its `config/` and every `*.db`. Only `daemon-cfg/` survives |
+
+**On that fourth one — it is not only an inconvenience.** Anything that writes a
+preview's config **once** and expects it to persist works exactly one time per
+sandbox and then **silently falls back to the ungated default**. A gated-preview
+option must write its config **and print its tokens at every start**, because
+neither can be recovered from a directory that no longer exists. Measured
+2026-08-26: after `serve stop` the tree was `daemon-cfg/` alone — no projects, no
+databases, no `server.yaml`.
+
+**Cheap to recover, expensive to discover late.** Course, assignment and two
+students are four API calls (~1 min). Found at the start that is a step; found at
+check 5 it reads as a broken feature.
 
 **The cost of the pair is worse than either.** Trap 2 was my own error and trap 3 is
 a real defect, and they present the same way — so a rig that never came up is
