@@ -1745,3 +1745,47 @@ skip-the-PATCH decision into a named function and test it with a record shaped
 Worktrees in play: `latex-relink-gate` (gate + repair), `pre-repair-cli`
 (detached at the parent, for counterfactuals), `lockout-proof`,
 `room-conflict-proof`.
+
+## 2026-08-26 - Skip's two decisions, and a regression I shipped this morning
+
+**His words, read from his own thread after the relayed IDs did not resolve:**
+- 10:58:16 EDT **"4 mark"** -> mark the affected file in the editor
+- 10:58:19 EDT **"5 fine"** -> the relink branch switch stays
+
+**Citation note:** the two IDs relayed (3379495, 3379496) both resolve to
+`classroom-pm`'s own Bash ACTIVITY, not to Skip. The substance was right; only
+the IDs were wrong. Recorded because a wrong ID is how an approval gets
+laundered -- the next reader checks it, finds someone else's shell command, and
+either believes it anyway or discards a real decision.
+
+**`9ef2fd6e5` on branch `held-edit-mark`.**
+
+**THE MARK USED TO HAPPEN BY ACCIDENT, and my own fix removed it.** The
+conflicted merge wrote git's markers into the document; the client saw
+`<<<<<<<` in its buffer and set `heldConflictFile` itself. Keeping markers out
+of the document -- the point of the earlier change -- deleted the only signal
+the person had, so **a held edit became indistinguishable from a successful sync
+from inside the editor.** That is a regression shipped this morning and not
+noticed at the time; his answer closes it.
+
+- **Server:** both conflict-shaped paths broadcast `status: 'conflict'` naming
+  the file.
+- **Client:** that branch existed and was DEAD for the room path -- no server
+  code ever sent it -- and its text said "resolve the markers", which are no
+  longer there. It now marks the file and says the edit is held and safe.
+
+**Asserted AT THE SOCKET, not at `room.blocked`:** a flag the server sets and
+never sends is the same as no signal. Counterfactual: remove only the broadcast,
+keep the hold -> red with `frames seen: ["update:"]`.
+
+Room tests 4/4; tsc -b and lint:guards clean; eslint on the touched files
+identical to main (49 problems, 43 errors, 6 warnings, all pre-existing in
+`FleetSourceEditorShape.tsx`).
+
+**NOT DONE, deliberately visible:** nobody has seen this rendered. The mark
+reuses the existing conflict bar, whose ours/theirs buttons stay disabled
+without markers while `resolved` stays enabled. Whether that bar is the right
+control for a held-without-markers file is a look-at-it judgement.
+
+Worktrees: `held-edit-mark`, `latex-relink-gate`, `lockout-proof`,
+`room-conflict-proof`, `pre-repair-cli`.
