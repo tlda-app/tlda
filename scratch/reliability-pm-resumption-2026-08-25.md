@@ -1697,3 +1697,51 @@ changes later, and the honest residue of the mistake. One project.
 **Another instrument error caught before reporting:** the first derivation
 printed `{}` and nearly went out as "derives nothing". `documentRootsIn` is
 ASYNC and was not awaited -- that was a Promise.
+
+## 2026-08-26 - canary against the deployed repair, and a correction to my own claim
+
+**Index 6 passes** against `b4097808f`: roots `set:1` unchanged, HEAD unchanged,
+branch unchanged, ancestry holds, edit reached server 17s and the source room,
+restored both sides, clean.
+
+**But index 6 can no longer test the case that failed** -- the earlier run wrote
+`main.tex` into it and that is not revertible. Audited every other rootless
+LaTeX project: **four exist, none eligible.** One is a paper (excluded
+absolutely); the other three have DIRTY checkouts holding someone else's
+uncommitted work.
+
+**Disposable LaTeX canary instead** (`scratch/latex-rootless-canary.mjs`):
+created rootless, relinked with no source and no roots, roots `empty` before AND
+after, bound to the work branch, edit reached server in 16s and the source room,
+restored, clean. **Counterfactual with the pre-repair CLI: red** -- dies in 3s on
+`documentRoots must be a non-empty array`, no push.
+
+**THE CORRECTION. The gate does NOT cover the invention that damaged the real
+project, and the first commit body implied it did.** Its pre-repair red is:
+
+```
+AssertionError: the CLI reached a known stage rather than dying quietly
+  actual: 'exited'   expected: 'reached-stage'
+  Error: documentRoots must be a non-empty array
+```
+
+Red because the CLI ABORTS, not because it declared `main.tex`.
+
+**Reproducing the invention needs a record with a mainFile AND no declared
+roots, and no supported route creates one.** Creating with a mainFile declares
+it immediately; the relink does not set a mainFile (checked both canary projects
+afterwards -- `mainFile` still absent). The 18 rootless projects are legacy
+state from older code.
+
+So the invention is prevented BY CONSTRUCTION -- with no declared roots
+`alreadyDeclares` is false and no PATCH is issued -- which is an argument about
+the code, not a test result. Commit body amended to say so: **`00ef09842`**
+(was `2ee8fa102`).
+
+**If that path should be tested rather than argued:** extract the
+skip-the-PATCH decision into a named function and test it with a record shaped
+`{ mainFile: "main.tex", documentRoots: undefined }`. Small refactor, NOT done.
+
+Worktrees in play: `latex-relink-gate` (gate + repair), `pre-repair-cli`
+(detached at the parent, for counterfactuals), `lockout-proof`,
+`room-conflict-proof`.
