@@ -7,6 +7,39 @@ session works *from* this, and `scratch/` is gitignored. See `AGENTS.md`
 The design is in `docs/the-sync-model.md`, which is tracked and is the thing to
 read first. This file is only what is *not* in the code or the commits.
 
+## `buildMaxConcurrency: 1` IS NOT IN EFFECT AND KEEPS REVERTING
+
+Skip, 2026-08-26 ~01:4xZ: *"I feel like we went to one build process because we
+were getting lockups. When we had two, but now we're getting build lockups when
+we have one."*
+
+**He is right that it was set and wrong that it is set now.** Checked on the live
+box: `buildMaxConcurrency` is absent from **every** deployment's `server.yaml` —
+`live`, `stable`, `pic`, `rc`, `talk`, `pic-dev`, `overleaf-test`. It falls back
+to the code default in `shared/config.mjs:376`, which is **2**. Two build workers
+were observed running concurrently tonight, so this is behaviour, not a config
+reading.
+
+**Why it reverts:** `scratch/chief-bhief-4-resumption.md:562` records it applied
+*"live, no deploy"* — edited inside the running container. That file ships in the
+image, so **every deploy overwrites it**, and it was never committed. My own
+2026-08-24 note already recorded it as absent; the two notes look contradictory
+and are both true at their own times.
+
+**Do not simply put the 1 back.** The slot is released **only in `onExit`**, so
+the count decides the blast radius rather than preventing the wedge:
+
+- **2 slots** — one stuck worker halves throughput; builds go slow; the app stays
+  usable. That is what tonight looked like.
+- **1 slot** — one stuck worker stops **every build on the server**, permanently,
+  until restart.
+
+**Lowering it makes each lockup total instead of partial.** Proposed to Skip
+instead: release the slot on lack of progress rather than on exit, mark that
+submission failed, and let the revision be re-proposed — which is safe because
+sync re-derives. **Not written. Waiting on his ruling and on what the threshold
+should be**, since a legitimate build on that box runs for minutes.
+
 ## THE DEMO NEEDS `--watch` OR IT RUNS THREE CYCLES AND EXITS
 
 `const CYCLES = Number(valueOf('--cycles', has('--watch') ? Infinity : 3))`.
