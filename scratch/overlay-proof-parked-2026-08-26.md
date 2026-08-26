@@ -85,11 +85,29 @@ the tailnet cert — and **git's CA store has Let's Encrypt but not the mkcert r
 So a self-push at loopback could never validate. The fix hands the cert-valid URL
 over in **`TLDA_SELF_BASE_URL`** rather than disabling verification.
 
-**The trap that follows, and it is the one to watch:** the repair is only in effect
-when the preview is started through `cmdServeWorktree`, which sets that variable.
-**Start a server another way and the self-push silently reverts to loopback** — same
-fault, except everyone now believes it is fixed. **If a mount fails, check
-`TLDA_SELF_BASE_URL` before reporting anything.**
+**Check `TLDA_SELF_BASE_URL` before the mount gate — but for the right reason.**
+
+**I first wrote this as a general warning that any other launcher silently reverts.
+That is wrong, and corrected here so nobody inherits it.** Verified in
+`shared/self-base-url.mjs`:
+
+```js
+if (explicit) return explicit.replace(/\/+$/, '')
+return `${useTls ? 'https' : 'http'}://127.0.0.1:${port}`
+```
+
+With `useTls` false the self-call is **plain HTTP to loopback and never meets a
+certificate**, which is correct and is what an ordinary deployed server does. The
+fault exists only for a **TLS** listener with no supplied URL — i.e. a TLS server
+launched outside `tlda-dev serve`, which is not a supported configuration. The
+file's own comment says it: *"Everything else keeps loopback, which is correct for
+plain HTTP and is what a server that was told nothing should assume."*
+
+**So the check stays, with a better justification:** the variable's presence proves
+you came up through the **intended launcher**. That distinguishes *"the rig started
+the supported way"* from *"the rig started somehow"* — the same distinction that
+cost a night when a `--detach` worktree derived the project name `HEAD` and produced
+a silent empty canvas.
 
 **And the shape worth carrying:** the scheme fix changed the *error message* without
 changing the *cause* — `Empty reply from server` became a certificate error, both
