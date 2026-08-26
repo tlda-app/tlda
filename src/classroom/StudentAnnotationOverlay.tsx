@@ -93,12 +93,19 @@ export function StudentAnnotationOverlay({
     overlayEditor.updateInstanceState({ isReadonly: !isWriteTarget })
   }, [overlayEditor, isWriteTarget])
 
-  if (store.status !== 'synced-remote') return null
-
-  // Kept mounted when hidden rather than unmounted: hiding a layer hides it, and
-  // a layer that is torn down and rebuilt on every toggle is a different thing
-  // wearing the same name — it would drop the write target's tool state and
-  // re-sync the room each time someone glanced away.
+  // The store goes to <Tldraw> with its status attached, exactly as the book's
+  // editor does — tldraw owns the not-yet-synced state itself.
+  //
+  // This used to return null until `synced-remote`, which meant a reconnect
+  // unmounted the canvas and disposed its editor mid-session. That is the whole
+  // cause of the crash on selecting this layer, not a symptom of it: the editor
+  // died, the reference to it did not, and the camera reactor kept writing to a
+  // corpse. Defending the reactor would have left the layer silently vanishing
+  // on every reconnect instead.
+  //
+  // Kept mounted when hidden, for the same reason: hiding a layer hides it, and
+  // a layer torn down and rebuilt on every toggle is a different thing wearing
+  // the same name.
   return (
     <div
       className="studentAnnotationOverlay"
@@ -109,7 +116,19 @@ export function StudentAnnotationOverlay({
         store={store}
         shapeUtils={shapeUtils}
         hideUi
-        onMount={editor => { setOverlayEditor(editor); onEditorMount?.(editor) }}
+        // The teardown half is load-bearing, not tidiness. This canvas unmounts
+        // whenever its room's sync status leaves `synced-remote` — a reconnect is
+        // enough — and that disposes the editor. Without clearing the reference,
+        // the camera reactor below goes on calling `setCamera` on a dead editor,
+        // whose `_cameraOptions` is undefined, and the render throws
+        // `Cannot read properties of undefined (reading '__unsafe__getWithoutCapture')`,
+        // taking the overlay AND the layers control off the page. tldraw runs
+        // what `onMount` returns when the editor goes.
+        onMount={editor => {
+          setOverlayEditor(editor)
+          onEditorMount?.(editor)
+          return () => { setOverlayEditor(null); onEditorMount?.(null) }
+        }}
         components={OVERLAY_COMPONENTS}
       />
     </div>
