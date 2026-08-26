@@ -116,10 +116,52 @@ once.** Verified rather than assumed: `scanTexDeps` collects eight edge kinds
 and xr is not among them. Counterfactualled — adding xr as an edge turns that
 test red.
 
-**Still to do here:** the GET endpoint returning the list, pointing the call
-sites at it, and deleting the stored `documentRoots` field. The stored field is
-written once at link time from whatever `--root` arguments the CLI got and
-**nothing ever recomputes it**.
+**The endpoint is in: `264cc42c9`.** `GET /api/projects/:name/document-roots`,
+computed per request. Read-only and additive — the stored field still exists and
+is still what everything reads.
+
+**Roots get in two ways, and neither recomputes:** positional arguments to
+`tlda project link <name> <root> [root ...]` (**not** `--root`; Skip corrected me
+on that), and `adoptClickedFileAsDocumentRoot`, which stages a clicked chat file
+with `git add` through the daemon and appends it. `b4522bde2` fixed that path
+appending `format: 'markdown'` **literally, for whatever was clicked** — a `.tex`
+adopted as a root was recorded as markdown, which then selected the markdown
+closure and lost its figures by a second, independent route.
+
+### The graph nearly shipped unable to run on the server — `9da9ef24c`
+
+I wrote it to call `git ls-files`. **`projects/<name>/source` is a materialized
+directory, not a git work tree.** Measured on the box: `git rev-parse` says "not
+a git repository", `ls-files` lists nothing. It would have answered **"this
+project has no documents"** on the one machine that serves them, silently,
+because an empty list is an ordinary result.
+
+Split into `documentRootsIn(files, read)` — the graph — plus adapters.
+`projectDocumentRoots(name)` walks the materialized tree;
+`computeDocumentRoots(sourceDir)` uses `ls-files` where a checkout exists. The
+markdown scan no longer takes a mounted path either, so the graph cannot answer
+differently depending on where the tree lives.
+
+**`projectDocumentRoots` deliberately does NOT filter through `listSourceFiles`**,
+which applies membership. Membership is roots plus closure, so filtering the
+input to the thing that determines roots is circular — a document not already a
+member could never become one.
+
+### Why `source/` is not git: historic, not designed
+
+Skip, 2026-08-26: *"nothing was git until recently"* / *"so prob just historic
+junk"*. `source/` is the original design — files in a directory — and the
+per-project repo was added **beside** it rather than under it. Nothing does
+`git init` there because nothing ever converted it.
+
+**So making `source/` a real work tree of the repo already next to it is a
+cleanup, not a redesign, and it deletes this whole class:** the server would stop
+walking a directory and hoping it matches the branch, because it would be the
+branch. **Not attempted** — it touches every write path into `source/`, and what
+still expects a plain directory has not been established.
+
+**Still to do:** point the call sites at the endpoint, then delete the stored
+field.
 
 ### `f159432a6` — a tex document's figures are members of its project
 
