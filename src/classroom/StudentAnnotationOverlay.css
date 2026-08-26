@@ -1,0 +1,24 @@
+/* The student's annotation layer, composited over the book.
+ *
+ * Transparent, and inert unless a mark-making tool is selected. The
+ * pointer-events flip is the whole interaction model: while it is 'none' the
+ * book underneath behaves exactly as it does without an overlay, and hit tests
+ * reach it normally. */
+
+.studentAnnotationOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 300;
+  pointer-events: none;
+  background: transparent;
+}
+
+.studentAnnotationOverlay[data-capturing='true'] {
+  pointer-events: auto;
+}
+
+/* tldraw paints its own surface; over the book it must not. */
+.studentAnnotationOverlay .tl-background,
+.studentAnnotationOverlay .tl-canvas {
+  background: transparent !important;
+}
