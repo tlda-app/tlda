@@ -270,6 +270,44 @@ two edits missed their windows and both arrived afterwards, at **148s** and
 `pages 3/4 BROKEN` with zero-byte responses while the machine was being
 replaced, and `nothing admitted since this edit` on the leg that missed.
 
+## THE LOCKOUT CHAIN: what happens when two people edit one document
+
+**Established step by step on a disposable project, 2026-08-26, against the
+deployed build. Not inferred.** This is the central sync failure and every link
+in it is silent.
+
+1. **Someone edits in the browser.** The revision publishes; the project head
+   moves.
+2. **The other person's daemon PARKS it and does not move their branch.**
+   Deliberate, and written in `git-project-sync.mjs`: *"The accepted revision is
+   PARKED, not applied … the person can see it, diff it, and merge it whenever
+   they choose."* It exists because it used to force-checkout and merge into
+   people's trees and wreck them.
+3. **Their branch is now not an ancestor of the head**, so every edit is
+   rejected — `proposal not accepted: WrongHead`, on repeat in the daemon log.
+   **Local editing has stopped syncing, permanently, with no signal.**
+4. **The remedy the design assumes is a manual merge. It CONFLICTS** —
+   `CONFLICT (content): Merge conflict in paper.tex` — because both sides edited
+   the same file, which is the whole point of the feature.
+5. **A conflicted checkout silently halts ALL settling** (see the section on
+   that). So the documented way out of 3 lands somewhere worse.
+
+**No single link is a bug.** Parking is right in isolation, the WrongHead
+refusal is right in isolation, the conflict is honest. What is missing is that
+**nothing ever says "your edits are no longer syncing"**, and the way out is a
+manual merge of a conflict nobody knows exists.
+
+**`de356e277` should remove step 1's cause** — once the editor is a normal
+checkout on the project branch it publishes on the same lineage, so the head
+moves in a way the other branch can descend from. **NOT PROVEN END TO END.** It
+is not deployed, and the honest statement is that the mechanism above is
+measured while the fix is not.
+
+**How it was found:** the demo could not reach this state until it wrote all
+three routes **concurrently into one document**. Serial-and-same-file still
+never overlapped in time. Skip: *"not that you can AVOID TESTING THE STUFF
+THAT'S ACTUALLY HARD"*.
+
 ## THE DEMO NEEDS `--watch` OR IT RUNS THREE CYCLES AND EXITS
 
 `const CYCLES = Number(valueOf('--cycles', has('--watch') ? Infinity : 3))`.
