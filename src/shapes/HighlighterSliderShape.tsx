@@ -90,6 +90,9 @@ export function HighlighterSlider() {
   const [dragging, setDragging] = useState(false)
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [dragStartY, setDragStartY] = useState(0)
+  const [dragStartX, setDragStartX] = useState(0)
+  // Whether the pointer went anywhere between press and release.
+  const [travelled, setTravelled] = useState(false)
   const lastTapTime = useRef(0)
   const [showHud, setShowHud] = useState(false)
   const hudFadeRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -199,6 +202,8 @@ export function HighlighterSlider() {
     }
     lastTapTime.current = now
     setDragStartY(e.clientY)
+    setDragStartX(e.clientX)
+    setTravelled(false)
     setCursorX(e.clientX)
     setDragging(false)
     setDragIdx(null)
@@ -209,6 +214,20 @@ export function HighlighterSlider() {
     if (isTouch && e.pointerType !== 'pen') return
     setCursorY(e.clientY)
     setCursorX(e.clientX)
+    // A tap is a press and a release in the same place. This is the only thing
+    // that distinguishes one, and the code used to test ONLY vertical travel --
+    // so a stroke across the strip, which moves a long way and barely changes y,
+    // was indistinguishable from a tap and toggled the tool on release. That is
+    // the warm path: hover sets the cursor, the guard in handlePointerDown
+    // passes, and the release exits the tool.
+    //
+    // This is distance moved, not a direction test. Which way the pointer went
+    // is never consulted; the slider's own up/down model just below is unchanged.
+    if (!travelled && dragStartY) {
+      const dx = e.clientX - dragStartX
+      const dy = e.clientY - dragStartY
+      if (Math.hypot(dx, dy) > 6) setTravelled(true)
+    }
     if (!dragging && dragStartY && Math.abs(e.clientY - dragStartY) > 6) {
       setDragging(true)
       setShowHud(true)
@@ -227,11 +246,16 @@ export function HighlighterSlider() {
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
     if (dragging && dragIdx !== null) {
       activateSlot(dragIdx)
-    } else if (!dragging && dragStartY) {
-      // A tap toggles the drawing tools and enters the others. This is the
-      // control's own behaviour and it is deliberate; what was wrong is that a
-      // STROKE could reach it. It cannot now — see handlePointerDown, which
-      // only arms while the slider is on screen.
+    } else if (!dragging && dragStartY && !travelled) {
+      // A tap toggles the drawing tools and enters the others.
+      //
+      // UNVERIFIED as a product decision. It has been here since this component's
+      // first commit (c2df5ba98) and no ruling of Skip's has been found for it,
+      // so it is preserved as shipped behaviour rather than asserted as intended.
+      // If it is wrong it should be deleted outright, not tuned.
+      //
+      // What IS fixed is that a stroke can no longer reach it: `travelled`
+      // above, and the visibility guard in handlePointerDown.
       const cur = editor.getCurrentToolId()
       if (cur === 'highlight' || cur === 'eraser') {
         editor.setCurrentTool('select')
@@ -242,6 +266,8 @@ export function HighlighterSlider() {
     setDragging(false)
     setDragIdx(null)
     setDragStartY(0)
+    setDragStartX(0)
+    setTravelled(false)
     // The cursor is NOT cleared here. It used to be, which hid the slider the
     // instant you let go — while the pointer was still sitting in the zone. So
     // the next press found `cursorY === null`: a live control with nothing
