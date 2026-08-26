@@ -1405,3 +1405,49 @@ Not implemented; awaiting the chief. Real projects and relinks frozen.
 
 **Process note:** a shell heredoc hung a turn for six minutes. Commit messages
 now go through a file and `git commit -F`. Not the tests -- the heredoc.
+
+## 2026-08-26 - lockout FIXED on branch `lockout-proof` (`8333b3c53`)
+
+**The gate boundary was stated wrong first time and the chief caught it.**
+`commitSettledTree()` DOES commit the tracked disk edit and advance the work
+branch -- existing, wanted behaviour -- so "the checkout is untouched" was
+false, and asserting a clean worktree/index proved nothing because a clean tree
+is exactly what committing produces. The real line: **the app-owned merge commit
+must never become checkout HEAD.** The gate asserts that directly, plus that
+HEAD did not quietly absorb the other side, plus that the accepted head stays
+parked and reachable so "held" means recoverable.
+
+**The missing case was the ordinary one:** same file, non-overlapping lines. A
+fix handling only different-file edits would leave the everyday collaboration
+path locked out and the earlier tests could not tell the difference.
+
+**Implementation.** On WrongHead the accepted head is parked as before; then
+`merge-tree --write-tree accepted local` merges entirely in the object database
+and `commit-tree` builds a two-parent commit. No working tree, no index, no
+branch -- none of the five mutations `d60d18573` removed comes back. ONE retry,
+never a loop. Conflict returns `conflict-held` naming the paths, both sides
+recoverable, no winner chosen. `onWrongHead` (zero callers) deleted.
+
+An exit code other than 0 or 1 from `merge-tree` is RETHROWN, not reported as a
+conflict: a bug in the invocation must not become a story about two authors.
+
+**Results.** Gate 4/4 green with the fix, 3 red + 1 green control without.
+
+| file | parent | with implementation |
+|---|---|---|
+| `git-project-sync` | 8 pass / 2 fail | 8 pass / 2 fail, same two |
+| `git-project-mirror-unrelated` | 3 pass / 4 fail | 3 pass / 4 fail, same four |
+
+**All six are PRE-EXISTING failures on main; none is a regression.** The QMD one
+is baseline too -- byte-identical both sides, `lecture.html` unexpectedly
+included. The `d60d18573` boundary guard "a would-be conflict is parked instead
+of being left unresolved in the checkout" passes on BOTH sides, which is the one
+this change could plausibly have breached.
+
+eslint, tsc -b, lint:guards clean.
+
+**Two things for someone else.** `main`'s daemon suite is red: six failing tests
+across those two files, unrelated to this work. And both files LEAK AN OPEN
+HANDLE -- they need `--test-force-exit` to terminate, which is why an aggregate
+run sits with idle workers instead of finishing. Reproduces at the parent, so
+not from this work.
