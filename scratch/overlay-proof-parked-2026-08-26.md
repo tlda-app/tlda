@@ -180,6 +180,22 @@ enforcement: `/sync/:room` has no per-room check, so "not shown" rather than
 "refused". **On the branch, refusal is implemented and is a thing to verify.** Do
 not carry the `main` statement onto the branch; that is the whole distinction.
 
+## 1a. A caveat on every ancestry check in this file
+
+This document verifies commits with `git merge-base --is-ancestor`. **A `YES` from
+that is sound; a `NO` is not.** `main` here is assembled by **cherry-pick**, so a
+landed change exists as **two shas** and ancestry reports the author's sha as
+unmerged.
+
+Live example from this work: the staging fix reached me as **`bef19e701`**, which is
+**not an ancestor of `main`** — yet it had landed as **`5f5bce041`**, same subject,
+`trackPath` present in `source-room-daemon.mjs`, the two differing by one unrelated
+scratch file. `classroom-pm` nearly reported it unmerged.
+
+**So: check by message and content, not ancestry.** Every `ancestor? YES` below is
+still good evidence of presence — none of them was a false positive. Only read a
+`NO` as absence after checking `git log --grep` and the file contents.
+
 ## 1b. Fifth fault — the room never staged its own first file (`bef19e701`)
 
 After all four transport faults were fixed, the mount still failed:
