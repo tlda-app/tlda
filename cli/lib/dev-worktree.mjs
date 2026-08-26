@@ -506,9 +506,12 @@ export async function cmdServeWorktree(args) {
   // it cannot drift from what a real build produces.
   let previewProject = project
   if (!project) {
-    previewProject = await seedScratchProject(base, branch)
+    previewProject = await seedScratchProject(base, branch, tokens?.rw ?? null)
     if (previewProject) console.log(`seeded scratch project: ${previewProject}`)
-    else console.log('scratch project not seeded — preview will open on an empty canvas')
+    // Loud on purpose. This printing is the only reason a silently unseeded
+    // gated preview was caught in one run rather than ten — an empty canvas
+    // looks exactly like the transport failures we spent a day clearing.
+    else console.error(`scratch project not seeded — preview will open on an EMPTY CANVAS${tokens ? ' (gated preview: the seeder was refused)' : ''}`)
   }
 
   // --sandbox: also bring up a fleet-daemon wired ONLY to this sandbox server.
@@ -854,13 +857,26 @@ function reapOrphanPreviews(json) {
 }
 
 /** Create and build a small markdown project through the preview's own API. */
-async function seedScratchProject(base, branch) {
+/**
+ * Seed the preview's scratch document.
+ *
+ * `rwToken` is the gated preview's RW token, or null when the preview is
+ * ungated. Creating a project is a write, so on a gated preview an
+ * unauthenticated seeder is refused and the preview opens on an empty canvas —
+ * which is indistinguishable from the transport failures that cost a day, and
+ * sends the next person debugging the wrong thing entirely.
+ *
+ * One seeder that authenticates when it has to, rather than a second seeding
+ * path for the gated case.
+ */
+export async function seedScratchProject(base, branch, rwToken = null) {
   const name = `scratch-${sanitize(branch)}`.slice(0, 48).replace(/-+$/, '')
+  const authHeaders = rwToken ? { authorization: `Bearer ${rwToken}` } : {}
   const post = async (path, body) => {
     try {
       const r = await fetch(`${base}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...authHeaders },
         body: JSON.stringify(body),
       })
       if (r.ok || r.status === 409) return r
@@ -910,7 +926,7 @@ async function seedScratchProject(base, branch) {
   try {
     await fetch(`${base}/api/projects/${name}/archive`, {
       method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...authHeaders },
       body: JSON.stringify({ archived: true }),
     })
   } catch { /* the project is usable either way; archiving is tidiness */ }
