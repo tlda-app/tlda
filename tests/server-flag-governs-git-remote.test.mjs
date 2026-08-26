@@ -71,3 +71,21 @@ test('the credentials still ride the URL', () => {
   assert.equal(url.password, 'test-token')
   assert.ok(url.username, 'the daemon id is the user')
 })
+
+test('a tokenless server still gets a username — /git needs one to look at all', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-remote-'))
+  const bindingsFile = path.join(dir, 'git-bindings.json')
+  fs.writeFileSync(bindingsFile, JSON.stringify({ paper: { sourceDir: '/tmp/paper', server: PREVIEW_SERVER } }))
+  const manager = createGitSyncManager({
+    bindingsFile,
+    daemonId: 'mini:dev-preview/x',
+    server: DAEMON_SERVER,
+    token: null,
+  })
+  const url = new URL(manager.projectRemoteUrl('paper'))
+  // Username present, password empty. `/git` refuses a request with no Basic
+  // credentials at all before it ever validates them, so omitting both — which
+  // is what happened when there was no token — made git prompt for a username.
+  assert.ok(url.username, 'the daemon id rides the URL even with no token')
+  assert.equal(url.password, '', 'and the password is simply empty')
+})
