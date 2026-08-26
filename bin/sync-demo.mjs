@@ -101,14 +101,26 @@ if (!ALLOWED_PREFIXES.some(prefix => PROJECT.startsWith(prefix))) {
   process.exit(1)
 }
 const FILE = String(valueOfEarly('--file', 'demo.md'))
-// EACH INGRESS OWNS A FILE.
+// EVERY INGRESS EDITS THE SAME DOCUMENT, BECAUSE THAT IS THE FEATURE.
 //
-// They used to share one, and the demo then conflicted with itself on every
-// cycle: `UU paper.tex`. It is not a flaky fixture — it is structural. The app
-// does not push accepted revisions out to a linked git remote, so the remote
-// clone can never see a disk edit, and its next push is always a divergent
-// lineage touching the same lines. Giving each way in its own document removes
-// a collision that has nothing to do with what is being demonstrated.
+// This used to give each route its own file. The routes conflicted on a shared
+// document -- `UU paper.tex` on most cycles -- so they were separated, and a
+// comment was written justifying it as structural.
+//
+// Skip, 2026-08-26, on that: *"i mean part of this is editing the same file
+// yeah?"* / *"TEST THE FUCKING FEATURE"* / *"the standard is that a real editing
+// session, e.g. the one i worked on w/ jose earlier, actually fucking works"* /
+// *"not that you can AVOID TESTING THE STUFF THAT'S ACTUALLY HARD"*.
+//
+// He is right and the separation was the harness removing the thing it exists to
+// check. Two people in one document is not an edge case in this product, it is
+// the product: him and a collaborator, in the same file, at the same time. A demo
+// arranged so that never happens cannot say anything about it.
+//
+// So the default is one file for every route, and a conflict is a FINDING rather
+// than a fixture problem -- it is what happens to two real people, and it has to
+// work. The per-route overrides remain for isolating a single path while
+// diagnosing one, which is a different job from demonstrating that sync works.
 const LEG_FILES = {
   disk: FILE,
   browser: String(valueOfEarly('--browser-file', FILE)),
@@ -181,6 +193,29 @@ function checkoutText(file = FILE) {
   try { return fs.readFileSync(path.join(CHECKOUT, file), 'utf8') } catch { return null }
 }
 
+/**
+ * What reached the checkout from the SERVER side, which is a parked ref and not
+ * a working file.
+ *
+ * An accepted revision is deliberately not applied to a person's working tree.
+ * `git-project-sync.mjs`: *"The accepted revision is PARKED, not applied ... that
+ * is the whole obligation: the person can see it, diff it, and merge it with
+ * their own git whenever they choose to."* It used to force-checkout the branch,
+ * commit the dirty tree unasked and merge server history in, which left
+ * unresolved merges in people's checkouts. Local is authoritative.
+ *
+ * So reading the working file to decide whether a browser edit "arrived" asks
+ * for behaviour the app does not claim -- the same mistake this file already
+ * records for the linked remote as a destination, one hop over. It reported a
+ * convergence failure against a working system before this was understood.
+ */
+async function parkedText(file = FILE) {
+  try {
+    const { stdout } = await git(CHECKOUT, ['show', `refs/tlda/fetched/${PROJECT}:${file}`])
+    return stdout
+  } catch { return null }
+}
+
 async function remoteText() {
   try {
     await git(REMOTE_CLONE, ['fetch', 'origin'])
@@ -194,47 +229,7 @@ async function remoteText() {
   }
 }
 
-/**
- * Run code in this agent's pooled tab and return its value.
- *
- * Takes a function OR a source string. The string form is here because most of
- * these bodies need the project's file name and shape id interpolated into
- * them, and `new Function(...).toString()` wraps the body in `function
- * anonymous(\n)` — which is one more thing between what is written here and
- * what the page runs, for no gain.
- */
-function inPage(fn, { timeoutMs = 600_000 } = {}) {
-  const source = typeof fn === 'string' ? `() => { ${fn} }` : fn.toString()
-  // 10 minutes, and that is not paranoia: the pool serialises on a lock, so an
-  // eval that returns in milliseconds can sit behind another agent's turn.
-  const out = execFileSync('tlda-dev', ['pw', 'eval', source], {
-    encoding: 'utf8', timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024,
-  })
-  const start = out.indexOf('### Result')
-  if (start === -1) throw new Error(`pw eval returned no result:\n${out.slice(0, 800)}`)
-  const body = out.slice(start + '### Result'.length)
-  const end = body.indexOf('### Ran Playwright code')
-  const json = (end === -1 ? body : body.slice(0, end)).trim()
-  try { return JSON.parse(json) } catch { return json }
-}
 
-// `.cm-content`'s textContent concatenates one div per line with NO newline
-// between them, so nothing here may compare whole documents — only look for a
-// distinctive phrase, which is what the per-line marker is for.
-function browserText() {
-  try {
-    // Reads EVERY rendered copy, not the first. With the HUD open the shape
-    // exists twice, and `querySelector` would silently pick one of them — the
-    // difference between "the editor received it" and "one of the two editors
-    // received it", and only the second is an answer.
-    const read = inPage(`
-      const els = [...document.querySelectorAll('[data-shape-id="${SHAPE}"]')]
-      return els.map(el => { const c = el.querySelector('.cm-content'); return c ? c.textContent : null })
-                .filter(Boolean).join(' | ')
-    `)
-    return typeof read === 'string' ? read : null
-  } catch { return null }
-}
 
 // ---------------------------------------------------------------------------
 // The three writers
@@ -578,45 +573,6 @@ async function setup() {
 // Mount the editor in the pooled tab, once
 // ---------------------------------------------------------------------------
 
-async function mountEditor() {
-  execFileSync('tlda-dev', ['pw', 'setup', '--project', PROJECT], { encoding: 'utf8', timeout: 300_000 })
-  const mounted = inPage(`
-    const ed = window.__tldraw_editor__
-    if (!ed) return { error: 'no tldraw editor on window' }
-    const id = '${SHAPE}'
-    if (!ed.getShape(id)) {
-      const peer = ed.getCurrentPageShapes().find(s => s.type === 'fleet-chat')
-      if (!peer) return { error: 'no fleet-chat shape to borrow identity and position from' }
-      const b = ed.getShapePageBounds(peer.id)
-      ed.createShape({ id, type: 'fleet-source-editor', x: b.x, y: b.y + b.h + 40,
-        props: { w: 640, h: 520, file: '${FILE}', line: 1, title: 'Source', userId: peer.props.userId, deviceId: peer.props.deviceId } })
-    }
-    ed.zoomToBounds(ed.getShapePageBounds(id), { inset: 60 })
-    // Creating the shape and reading it in the same turn finds a mounted element
-    // with no CodeMirror in it: React has not rendered, and the editor then has
-    // to fetch the file. Both are asynchronous, so wait rather than sampling
-    // once and calling it broken.
-    return new Promise(resolve => {
-      const started = Date.now()
-      const poll = setInterval(() => {
-        // Across every rendered copy — see the note in writeInBrowser. With the
-        // HUD open the main-canvas copy is an empty container by design, so
-        // polling the first match waits out the full timeout on a shape whose
-        // editor mounted immediately in the HUD.
-        const copies = [...document.querySelectorAll('[data-shape-id="' + id + '"]')]
-        const c = copies.map(el => el.querySelector('.cm-content')).find(Boolean)
-        if (c && c.textContent) {
-          resolve({ ok: true, waitedMs: Date.now() - started, copies: copies.length })
-          clearInterval(poll)
-        } else if (Date.now() - started > 30000) {
-          resolve({ ok: false, waitedMs: Date.now() - started, copies: copies.length })
-          clearInterval(poll)
-        }
-      }, 250)
-    })
-  `)
-  return mounted
-}
 
 // ---------------------------------------------------------------------------
 // Run
@@ -655,14 +611,17 @@ assert.ok(
 assert.ok(project, `${PROJECT} does not exist on ${SERVER}. Run: node bin/sync-demo.mjs --setup`)
 assert.ok(fs.existsSync(path.join(CHECKOUT, FILE)), `no demo checkout at ${CHECKOUT}. Run: node bin/sync-demo.mjs --setup`)
 
-let browserReady = false
-if (LEGS.includes('browser')) {
-  const mounted = await mountEditor().catch(e => ({ error: e.message }))
-  browserReady = !!mounted.ok
-  console.log(mounted.ok
-    ? `browser:  editor mounted on ${FILE} after ${mounted.waitedMs}ms`
-    : `browser:  NOT mounted (${mounted.error || `waited ${mounted.waitedMs}ms`}) — that leg will report, not assert`)
-}
+// NO BROWSER IS LAUNCHED ANY MORE, and that is a fix rather than a shortcut.
+//
+// This used to open a page and drive CodeMirror. Two costs, both real: driving a
+// browser at a project writes SIX fleet shapes into that project's room per
+// launch, so the demo polluted the very project it was demonstrating on every
+// run; and it tested the editor rather than the route, reporting a working
+// editor as broken whenever the EditorView was not reachable from the DOM.
+//
+// The browser leg now speaks the source room's protocol directly, which is the
+// route. Skip's rule: reach for a browser only when browser interaction is
+// itself the thing under test.
 
 const WORK_BRANCH = `tlda/${PROJECT}`
 const startBranch = await branchState()
@@ -745,8 +704,11 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     const destinations = {}
     const legFile = LEG_FILES[leg]
     destinations.server = () => serverText(legFile)
-    if (leg !== 'disk') destinations.checkout = () => checkoutText(legFile)
-    if (leg !== 'browser' && browserReady) destinations.browser = browserText
+    // The remote leg pulls explicitly, so its working file really does move.
+    // A browser edit is published server-side and parked, so its arrival is the
+    // parked revision -- not the file on disk.
+    if (leg === 'remote') destinations.checkout = () => checkoutText(legFile)
+    if (leg === 'browser') destinations.parked = () => parkedText(legFile)
     // The linked remote is a SOURCE here, never a destination. Nothing pushes
     // an accepted revision back out to it unless the binding asks for a mirror,
     // so expecting a disk or browser edit to appear there was the harness
