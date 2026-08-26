@@ -239,6 +239,16 @@ async function remoteText() {
 // error, so the demo's own marker broke the build of the paper it was
 // demonstrating on — measured, not theorised: "BUILD FAILED: LaTeX produced 1
 // error(s)". The marker has to be legal in every format this runs against.
+/** One git command in a checkout, stdout or '' — used to ask git about STATE. */
+function runGitIn(dir, args) {
+  try { return execFileSync('git', args, { cwd: dir, encoding: 'utf8' }) } catch { 
+    // Swallowed deliberately: this asks git a QUESTION about the checkout's
+    // state, and a non-zero exit is one of the answers (no such ref, not a
+    // repo). Raising here would turn "there is nothing unmerged" into a crash.
+    return ''
+  }
+}
+
 const lineFor = (leg, n) => `- [${leg}] SYNCDEMO-${n} at ${stamp()}`
 
 /**
@@ -389,8 +399,15 @@ async function writeOnRemote(line) {
       cwd: CHECKOUT, encoding: 'utf8', timeout: 300_000, stdio: 'pipe',
     })
   } catch (error) {
+    // STATE, NOT TEXT. The first version of this matched /conflict|unmerged/ on
+    // the error output and missed "Please commit your changes or stash them
+    // before you merge", which is a different refusal that still leaves work
+    // half-done -- so the checkout stayed conflicted through nine more cycles.
+    // Git has several sentences for this and the checkout has one observable
+    // state, so the state is what decides.
+    const unmerged = String(runGitIn(CHECKOUT, ['diff', '--name-only', '--diff-filter=U'])).trim()
     const output = `${error.stdout || ''}${error.stderr || ''}${error.message || ''}`
-    if (!/conflict|unmerged/i.test(output)) throw error
+    if (!unmerged) throw new Error(`the linked-remote pull failed and left the checkout clean: ${output.split('\n')[0]}`)
     try {
       execFileSync('git', ['merge', '--abort'], { cwd: CHECKOUT, stdio: 'pipe' })
     } catch {
@@ -401,7 +418,7 @@ async function writeOnRemote(line) {
       // next cycle reports, so nothing is hidden by not raising here.
     }
     throw new Error(
-      'CONCURRENT EDIT CONFLICT: pulling the linked remote collided with a local edit of the same document. '
+      `CONCURRENT EDIT CONFLICT in ${unmerged.split('\n').join(', ')}: pulling the linked remote collided with a local edit of the same document. `
       + 'The merge was aborted so the checkout is not left conflicted -- an unresolved merge silently stops the '
       + 'daemon settling ANY route for this project.',
     )
