@@ -26,6 +26,7 @@ import { ProjectLifecycleStatusIndex, UNKNOWN_PROJECT_LIFECYCLE_STATUS } from '.
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { scanTexDependencyClosure } from '../../shared/tex-deps.mjs'
+import { documentRootsIn } from './document-roots.mjs'
 import { normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 
 let projectsDir = null
@@ -542,6 +543,26 @@ async function sourceMembershipContext(project, owned) {
     }
   }
   return { ...base, referencedRoots: [...reached] }
+}
+
+/**
+ * A project's documents, computed from its materialized tree.
+ *
+ * Skip, 2026-08-26: *"document roots is just a computed property of the git
+ * branch"*. On the server the branch is materialized as a plain directory
+ * rather than a checkout, so the listing is a walk and not `git ls-files` --
+ * measured, `git rev-parse` in that directory reports it is not a repository.
+ *
+ * **Deliberately not filtered through `listSourceFiles`**, which applies
+ * membership. Membership is roots plus their closure, so filtering the input to
+ * the thing that determines roots is circular: a document not already a member
+ * could never become one.
+ */
+export async function projectDocumentRoots(name) {
+  const dir = sourceDir(name)
+  if (!await pathExists(dir)) return []
+  const files = (await walkDirAsync(dir)).map(full => relative(dir, full).replace(/\\/g, '/'))
+  return documentRootsIn(files, file => readFile(join(dir, file), 'utf8'))
 }
 
 export async function listSourceFiles(name) {
