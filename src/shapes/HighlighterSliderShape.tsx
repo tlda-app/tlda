@@ -197,12 +197,18 @@ export function HighlighterSlider() {
     if (dragging && dragIdx !== null) {
       activateSlot(dragIdx)
     } else if (!dragging && dragStartY) {
-      const cur = editor.getCurrentToolId()
-      if (cur === 'highlight' || cur === 'eraser') {
-        editor.setCurrentTool('select')
-      } else {
-        activateSlot(activeIdx)
-      }
+      // One behaviour for every tool: a tap activates the slot under the cursor.
+      //
+      // It used to special-case highlight and eraser and drop you into `select`
+      // instead — the only path here that changes tools without the user
+      // choosing a slot. That is what Skip hit: "IT DOES A DOT THEN KICKS YOU
+      // OUT OF THE FKING TOOL", and it reads as a programmatic pointer-up
+      // because from the outside the stroke just ends and the tool is gone.
+      //
+      // The rule is his: "tit's for changing toolks", "if it doesn't work for
+      // all tools, it's fucking useless". A control for changing tools does the
+      // same thing from every tool; it does not quietly exit two of them.
+      activateSlot(activeIdx)
     }
     setDragging(false)
     setDragIdx(null)
