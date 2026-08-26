@@ -1451,3 +1451,47 @@ across those two files, unrelated to this work. And both files LEAK AN OPEN
 HANDLE -- they need `--test-force-exit` to terminate, which is why an aggregate
 run sits with idle workers instead of finishing. Reproduces at the parent, so
 not from this work.
+
+## 2026-08-26 - correction, and the manager-test classification
+
+**`26bf217b3`: a malformed `merge-tree` success now THROWS.** Exit 0 means git
+merged cleanly, so output that is not a tree id means this code is wrong.
+Returning `{ok:false}` let `pushRevision` label it `conflict-held` -- telling a
+person their collaborator's edit conflicted when nothing of the kind happened,
+indistinguishable from a real conflict in every surface. **Only exit 1 may
+produce `conflict-held`.** The same rule was already written one paragraph
+lower for the exit-code check; it had been applied on the throw path only.
+
+Counterfactual drives it through `runGit`, not a repository, because the thing
+under test is git answering WRONGLY, which a real git will not do on demand. It
+asserts the error fails as itself, is not dressed as a conflict, and that
+nothing was committed from the malformed output. Red pre-correction, green
+after. Gate now **5/5**.
+
+**The two manager tests, each in its own process, `--test-force-exit`, 60s
+inner / ~90s outer, both sides:**
+
+| test | parent | implementation |
+|---|---|---|
+| `two projects sharing one checkout...` | timed out 60000ms | timed out 60000ms |
+| `initial project link...` | timed out 60000ms | timed out 60000ms |
+
+Identical failure mode and duration. **Not regressions** -- which was a live
+risk, since the implementation adds a merge and a second push on the WrongHead
+path and could plausibly have stalled here.
+
+**NOT established: what they actually are.** These are timeouts, not assertion
+failures. "Not mine" is proved; "known baseline failure" is not. This is also
+the file that needs `--test-force-exit` to terminate at all, so a 60s hang is a
+statement about the run, not the behaviour. Do not inherit these as classified.
+
+**A measurement error of my own, recorded because it nearly shipped:** the first
+run of these printed `pass 0 / fail 0` and I almost reported it. The outer loop
+was killing the process before the summary line -- the tests HAD run and timed
+out. A zero from a runner you cut off is not a measurement. Read the per-test
+lines, not the counts.
+
+**Standing hole, not mine and unowned:** `main`'s daemon suite carries six
+assertion failures and at least two hanging tests across three files, plus an
+open-handle leak in two of them. An aggregate run over that directory can
+neither come back clean nor terminate.
