@@ -1264,3 +1264,43 @@ treat divergence as a held edit, which changes semantics. Leaning (1).
 Harnesses `scratch/room-conflict-repro.mjs` and
 `scratch/room-divergent-repro.mjs` are force-added on that branch.
 Disposable project verified consistent across disk, server and room.
+
+## 2026-08-26 — the conflict-marker fix, on branch `room-conflict-proof`
+
+**`baf8eb86f`.** On a conflicted merge both `applyAcceptedSourceMutation` and
+`reconcileRoomToRevision` now keep the room's own text and report through the
+existing `noteRoomIsHolding` hook. No winner chosen; non-conflicting merges
+untouched. The gate covers both paths and asserts recoverability directly --
+the person's text is still in the room, `blocked` is set, the held edit is
+recorded.
+
+```
+node --import tsx --test server/lib/source-room-never-publishes-conflict-markers.test.mjs
+```
+2/2 green with the fix, 2/2 red without. Neighbouring room test green. eslint,
+tsc -b, lint:guards clean.
+
+**The counterfactual is what made the gate real.** The reconcile test first
+PASSED against unfixed code: `headChanged` takes POSITIONAL arguments and was
+being handed an options object, so `revision` was undefined and
+`reconcileRoomToRevision` returned at its first guard. Written down because the
+same mistake is available to anyone extending these tests.
+
+**`lint:guards` follows git tracking, not the filesystem.** It flagged the two
+repro harnesses for WebSocket construction outside the transport library;
+untracking them cleared it and they remain on disk. They are regenerable tools,
+so they belong on the "logs, not resumption points" side of the repo rule. They
+were deliberately NOT added to the guard's ALLOWED list, which is for product
+sites.
+
+**The live disposable proof cannot be produced yet, for a specific reason.** The
+disposable project never produced markers even BEFORE the fix
+(`publishedConflicted: false`), so a clean run after the fix cannot distinguish
+the fixed state from the state it was already in. Markers were only observed on
+a real project and real projects are frozen. The deterministic gate is the check
+that does distinguish. Live confirmation needs a deploy, which is the chief's
+lane; the branch is not on `main`.
+
+**Still open:** the zero-gap silent disk-edit loss. Pre-fix disposable run:
+`publishedHasDiskEdit: false` -- the disk author's edit gone, no markers, no
+error. Cause NOT established.
