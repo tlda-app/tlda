@@ -31,9 +31,24 @@
  * checkout's older copies of files the browser has since changed, silently
  * reverting them.
  *
- * **So the requirement this test states is narrow.** Both sides'
- * non-conflicting changes survive, the result is acceptable to the server's
- * ancestry rule, and the person's checkout and index are untouched. On a real
+ * **The boundary, stated exactly, because an earlier version of this file got
+ * it wrong.** The app is NOT hands-off the checkout and never has been:
+ * `commitSettledTree()` deliberately commits the tracked disk edit and advances
+ * the person's work branch, and that is the existing, wanted behaviour. Saying
+ * "the checkout is untouched" was therefore false, and asserting only a clean
+ * worktree and index could not have caught the difference — a clean tree is
+ * exactly what committing produces.
+ *
+ * The real line is about WHICH commit the person ends up standing on. The
+ * app-owned merge commit combines their work with the accepted head; it belongs
+ * in app-owned refs and in the proposal pushed to the remote, and it must NEVER
+ * become the checkout's HEAD. The person stays on their own disk commit. That
+ * is the difference between the app recording your edit and the app moving you
+ * onto a merge you never asked for, which is what `d60d18573` removed.
+ *
+ * **So the requirement is:** both sides' non-conflicting changes survive, the
+ * result satisfies the server's ancestry rule, the checkout's HEAD is still the
+ * person's own commit, and nothing is staged in their index. On a real
  * conflict, the divergence is HELD and REPORTED — no winner is chosen here,
  * because that is merge semantics and not a test's to decide.
  *
@@ -176,11 +191,19 @@ test('a disk edit still lands after the browser has published, and keeps both si
   assert.match(notesText, /one-FROM-BROWSER/,
     'and the browser edit is still in it -- a fix that reverts the other side is not a fix')
 
-  // The person's repository is not the app's to write.
-  assert.equal((await git(checkout, ['status', '--porcelain'])).stdout.trim().length === 0, true,
-    'the checkout has no leftover changes')
+  // THE BOUNDARY. The app committing the disk edit onto the work branch is
+  // wanted; the app standing the person on its merge commit is not.
+  const headAfter = await sha(checkout, 'HEAD')
+  assert.notEqual(headAfter, best,
+    'the app-owned merge commit is NOT the checkout HEAD -- the person is not moved onto a merge they did not ask for')
+  assert.match((await git(checkout, ['show', 'HEAD:main.md'])).stdout, /bravo-FROM-DISK/,
+    'the checkout stands on its own commit, carrying its own edit')
+  assert.doesNotMatch((await git(checkout, ['show', 'HEAD:notes.md'])).stdout, /FROM-BROWSER/,
+    'and that commit did not quietly absorb the browser side -- the combination lives in the proposal, not under the person')
+  assert.equal((await git(checkout, ['status', '--porcelain'])).stdout.trim(), '',
+    'no leftover changes in the working tree')
   assert.equal((await git(checkout, ['diff', '--cached', '--name-only'])).stdout.trim(), '',
-    'and nothing was staged in the person\'s index')
+    'and nothing staged in the person\'s index')
 })
 
 test('when both sides changed the same line the divergence is HELD, not silently dropped', async () => {
@@ -205,9 +228,56 @@ test('when both sides changed the same line the divergence is HELD, not silently
 
   // AND THE WORK IS STILL THERE. Held means recoverable.
   assert.match((await git(checkout, ['show', 'HEAD:main.md'])).stdout, /bravo-FROM-DISK/,
-    'the disk author\'s committed work is intact')
+    'the disk author\'s committed work is intact and still theirs')
   assert.equal((await git(checkout, ['diff', '--cached', '--name-only'])).stdout.trim(), '',
     'and nothing was staged in the person\'s index')
+  // BOTH SIDES RECOVERABLE. Held is only meaningful if the other side is still
+  // reachable; a conflict that discarded the accepted head would satisfy a
+  // weaker test than this.
+  assert.ok((await sha(checkout, 'refs/tlda/fetched/paper')).length === 40,
+    'the accepted head is parked and reachable, so the divergence can be resolved later')
+})
+
+test('the ordinary case: same file, different lines, and both edits survive', async () => {
+  // THE COMMON PATH, and it was missing. Two people in one document is not
+  // usually two people on one line -- it is one editing the introduction while
+  // the other fixes a later paragraph. A fix that only handled edits to
+  // DIFFERENT FILES would leave the everyday case still locked out, and the
+  // previous two tests could not tell the difference.
+  const root = mkdtempSync(join(tmpdir(), 'tlda-lockout-samefile-'))
+  const { remote, checkout, browserHead } = await projectWithABrowserEditAhead(root, {
+    browserFile: 'main.md',
+    // First body line changed; `charlie` untouched.
+    browserText: '# paper\n\nalpha-FROM-BROWSER\nbravo\ncharlie\n',
+  })
+
+  // Last body line changed; `alpha` untouched. Same file, no overlap.
+  writeFileSync(join(checkout, 'main.md'), '# paper\n\nalpha\nbravo\ncharlie-FROM-DISK\n')
+  await syncFor(checkout, remote).editClusterSettled()
+
+  const landed = []
+  for (const proposal of await proposalsOn(remote)) {
+    try {
+      await git(remote, ['merge-base', '--is-ancestor', browserHead, proposal])
+      landed.push(proposal)
+    } catch { /* not a descendant of the published head: the server would reject it, so it is not a candidate */ }
+  }
+  assert.ok(landed.length > 0,
+    'two people editing one document at different points is the ordinary case and it must not be a lockout')
+
+  const merged = (await git(remote, ['show', `${landed[0]}:main.md`])).stdout
+  assert.match(merged, /charlie-FROM-DISK/, 'the disk edit survived')
+  assert.match(merged, /alpha-FROM-BROWSER/, 'and so did the browser edit')
+  assert.doesNotMatch(merged, /^(<{7}|={7}|>{7})/m,
+    'and it is a document, not a merge for someone to resolve')
+
+  const headAfter = await sha(checkout, 'HEAD')
+  assert.notEqual(headAfter, landed[0],
+    'the merge commit is still not the checkout HEAD')
+  assert.doesNotMatch((await git(checkout, ['show', 'HEAD:main.md'])).stdout, /FROM-BROWSER/,
+    'the person stands on their own commit, not on the combination')
+  assert.equal((await git(checkout, ['diff', '--cached', '--name-only'])).stdout.trim(), '',
+    'nothing staged in their index')
 })
 
 test('CONTROL: with no browser edit ahead, the same harness lands the disk edit', async () => {
