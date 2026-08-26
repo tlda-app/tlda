@@ -1971,3 +1971,40 @@ around it. Their worktree and preview untouched.
 **Branches awaiting the chief:** `symlink-closure` at `d0b98a013`,
 `room-first-writer` at `bef19e701`, `held-edit-mark` at `9ef2fd6e5`,
 `latex-relink-gate` at `00ef09842`.
+
+### `bef19e701` GATE-PASSED by app-tester, and one expectation of mine was wrong
+
+Their evidence: `pages 1 · build success · sourceRevision 5467a69b6658` on the
+FIRST sample at t+8s, `/docs/.../index.html -> 200`, and in the room
+`git log f36f635 "tlda settled edit cluster"` with **0 dirty paths** where it was
+previously `?? main.md`, zero commits, unborn HEAD. **`empty-checkout` appears
+nowhere in the run.**
+
+**MY EXPECTATION WAS WRONG.** I told them BOTH `proposal not accepted` lines
+should stop. Only `empty-checkout` was ever mine to remove.
+`not-on-work-branch` still appears once, early, and it is ORDERING not fault:
+
+```
+source-room-daemon   bindSource(...)
+                     await gitSync.sync([projectRecord])   <- settles ONCE here
+                     standRoomOnProjectBranch(...)
+git-sync-manager:198 await settleEditCluster()             <- inside sync()'s start()
+```
+
+`sync()` settles once through `start()` BEFORE the caller stands the tree on the
+work branch. On a fresh room tree HEAD is still `main`, so that settle is
+correctly refused; the stand then happens and the next settle publishes. On an
+established room it never appears. Transient by construction: one refused
+attempt, one log line.
+
+**NOT FIXED, deliberately.** A one-line reorder in a path that has just started
+working, nobody has reported it, and it costs nothing. Belongs in the record, not
+in a commit, unless the chief asks.
+
+**No 409 fired** -- `trackPath` genuinely staged in their environment.
+app-tester's point that it stayed quiet FOR A REASON rather than being
+unreachable is the right distinction and I would have skipped it.
+
+**The six behaviour checks are NOT run:** they need `bef19e701` merged into the
+classroom head by its owner. app-tester declined to run them on a locally-merged
+variant because a mount pass on a variant is not a gate pass. Correct call.
