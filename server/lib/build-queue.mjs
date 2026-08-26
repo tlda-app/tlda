@@ -15,6 +15,25 @@ export function createBuildQueue({
   const configured = Number(options.maxConcurrency)
   const maxConcurrency = Number.isFinite(configured) && configured >= 1 ? configured : 2
   const buildPriority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 10
+  // How long a build may say NOTHING before its slot is taken back.
+  //
+  // This is a silence threshold, not a duration limit, and the difference is
+  // the whole point: a build streams its output, so a ten-minute render and a
+  // ten-second one both tick throughout. Skip put the question that forces this
+  // shape -- a tex build should finish in "ten fifteen seconds" while a large
+  // qmd render legitimately runs for minutes, so no single wall-clock number
+  // can tell slow from stuck. Silence can.
+  //
+  // 90s is six missed seconds-apart flushes. Set to 0 to disable, which is what
+  // a test does when it drives the clock itself.
+  const configuredStall = Number(options.stallTimeoutMs)
+  const stallTimeoutMs = Number.isFinite(configuredStall) && configuredStall >= 0 ? configuredStall : 90_000
+  // Deliberately NOT an injectable clock. An injected `now` looks testable and
+  // is not: the watchdog below is a real `setInterval`, so a test that advances
+  // a fake clock proves the arithmetic and never runs the timer that has to
+  // fire. The test sets a small threshold and waits instead, which exercises
+  // the path that actually ships.
+  const now = Date.now
   const running = new Map()
   let activeCount = 0
   let transitions = Promise.resolve()
@@ -90,9 +109,47 @@ export function createBuildQueue({
     let workerFailure = null
     let cancelled = false
     let relays = Promise.resolve()
+    let lastHeard = now()
     activeCount += 1
 
+    // A slot used to come back ONLY when the worker process exited, and nothing
+    // anywhere put a bound on that. A worker that stopped -- one was found
+    // suspended in state T for 34 minutes, 0.2% CPU, on an idle box -- kept its
+    // slot for good, so the queue ran at reduced capacity until the server was
+    // restarted, and with every slot held it stopped building anything at all
+    // while each edit still logged as admitted.
+    //
+    // An in-process timeout could never have caught it. The worker's own timers
+    // are frozen along with the rest of it, which is why the per-command
+    // `timeout: 120000` in build-runner never fired. The bound has to be held by
+    // the parent, and this is the parent.
+    //
+    // Not a death, and deliberately not called one: the submission is settled as
+    // FAILED, which is what it is -- a build that did not work. The revision is
+    // proposed again afterwards, which is safe because sync re-derives rather
+    // than depending on any single attempt having succeeded.
+    const stallTimer = stallTimeoutMs > 0 ? setInterval(() => {
+      if (cancelled || !running.has(row.id)) return
+      const silentFor = now() - lastHeard
+      if (silentFor < stallTimeoutMs) return
+      const stalled = new Error(
+        `build produced no output for ${Math.round(silentFor / 1000)}s; treating the build as stalled and releasing its slot`,
+      )
+      logError(job.name, stalled)
+      // `workerFailure`, NOT `cancelled`. onExit reads cancelled as 'killed',
+      // which is the word for something somebody asked to stop; nobody asked
+      // for this. A stall is a build that failed, and it settles as failed.
+      workerFailure = stalled
+      running.get(row.id)?.handle?.cancel?.()
+    }, Math.max(100, Math.floor(stallTimeoutMs / 4))) : null
+    stallTimer?.unref?.()
+
     function relay(message, channel) {
+      // ANY message is proof the worker's event loop is running. The build
+      // streams its output, so this ticks continuously for a healthy build of
+      // any length -- which is why the stall threshold does not have to be
+      // guessed against how long a build takes.
+      lastHeard = now()
       if (message?.t === 'done' && message.ok === false) workerFailure = new Error(message.error || `build worker for ${job.name} failed`)
       relays = relays.then(async () => {
         if (message?.t === 'rpc') {
@@ -109,6 +166,7 @@ export function createBuildQueue({
     }
 
     async function onExit(code) {
+      if (stallTimer) clearInterval(stallTimer)
       await relays
       if (!running.delete(row.id)) return
       activeCount = Math.max(0, activeCount - 1)

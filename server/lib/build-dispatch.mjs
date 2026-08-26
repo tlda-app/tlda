@@ -281,7 +281,15 @@ export function createDispatcherWithOptions(transport, options = {}) {
     },
     random: options.random || Math.random,
     async relayMessage(name, message, job) {
-      if (message?.t === 'report') return null
+      if (message?.t === 'report') {
+        // Build output, streamed while the build runs. Everything else arriving
+        // as `t: 'report'` is still discarded here, as it always was.
+        if (message.m === 'buildOutput') {
+          const [project, line, skipped] = message.a || []
+          console.log(`[build:${project}] ${line}${skipped ? `  (+${skipped} lines)` : ''}`)
+        }
+        return null
+      }
       if (message?.t !== 'rpc') return null
       if (message.m === 'recordRevisionPhase') return null
       if (message.m === 'recordBuildResult') {
@@ -333,6 +341,7 @@ export function initBuildDispatcher() {
   activeDispatcher = createDispatcherWithOptions(ForkTransport, {
     maxConcurrency: config.buildMaxConcurrency,
     priority: config.buildPriority,
+    stallTimeoutMs: config.buildStallTimeoutMs,
     storePath: join(getProjectsDir(), '.build-queue.sqlite'),
     notifyHeadChanged: (...args) => headNotifier?.(...args),
   })
