@@ -145,8 +145,29 @@ export function createSourceRoomDaemon({
     const paths = roomPaths(project, filePath)
     const projectRecord = await readProject(project)
     const gitSync = gitSyncManagerForProject(project)
-    gitSync.bindSource(project, join(paths.root, 'working'), { mainFile: projectRecord?.mainFile || null, appOwnedWorkingTree: true })
+    // The browser editor is another daemon, like any other. Skip, 2026-08-26:
+    // *"THE FKING SPEC FOR THE BROWSER EDITOR IS IT'S A NORMAL FUCKING DAEMON
+    // BACKING IT LIKE EVERYTHING ELSE"* / *"NORMAL FUCKING PROJECT BRANCH"* /
+    // *"it has its own fucking tree"*.
+    //
+    // Its own tree is right. What was wrong is what the tree WAS: a scratch
+    // repo from `git init -b main`, standing on `main`, holding only the files
+    // somebody had opened -- with the project's branch sitting unused beside it.
+    // Everything this route did wrong came from that. It could not be pushed
+    // without reparenting HEAD by hand, the server rejected it as WrongHead,
+    // and settle's staging over a partial tree recorded every absent file as a
+    // DELETION, which is how one browser edit published a revision with the
+    // project's other documents removed.
+    //
+    // So it stands on `tlda/<project>` like every other checkout, and is bound
+    // like every other checkout. `standOnWorkBranch` is the same call the disk
+    // route makes; it was simply never made here.
+    gitSync.bindSource(project, join(paths.root, 'working'), { mainFile: projectRecord?.mainFile || null })
     await gitSync.sync(projectRecord ? [projectRecord] : [])
+    const stood = await gitSync.standOnWorkBranch(project)
+    if (!stood?.ok) {
+      log.warn?.(`[source-room] ${project}: could not stand on its project branch (${stood?.status || 'unknown'}); ${stood?.reason || 'editing will not sync'}`)
+    }
     const snapshot = readJson(paths.snapshot)
     const state = snapshot || readJson(paths.state) || {}
     const lifecycle = await sourceLifecycleStore(project)
@@ -537,8 +558,15 @@ export function createSourceRoomDaemon({
     if (!projectRecord) return { status: 404, body: { ok: false, error: 'Project not found' } }
     const root = join(projectDir(project), '.source-room', 'working')
     const gitSync = gitSyncManagerForProject(project)
-    gitSync.bindSource(project, root, { mainFile: projectRecord.mainFile || null, appOwnedWorkingTree: true })
+    // Same tree, same rule as createRoom: a normal checkout on the project
+    // branch. This path writes whole files rather than editing one through a
+    // room, and it published the same partial tree with the same deletions.
+    gitSync.bindSource(project, root, { mainFile: projectRecord.mainFile || null })
     await gitSync.sync([projectRecord])
+    const stood = await gitSync.standOnWorkBranch(project)
+    if (!stood?.ok) {
+      log.warn?.(`[source-room] ${project}: could not stand on its project branch (${stood?.status || 'unknown'}); ${stood?.reason || 'this submit will not sync'}`)
+    }
     const paths = []
     for (const file of payload.files || []) {
       if (typeof file?.path !== 'string' || !file.path || isAbsolute(file.path) || file.path.split(/[\\/]/).includes('..')) {
