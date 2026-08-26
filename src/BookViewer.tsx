@@ -183,6 +183,13 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const roomId = activeMember ? `doc-${activeMember.key}` : ''
   // Which course's roster a teacher flicks through. Read once: changing student
   // rewrites the URL, and re-reading it here would fight that.
+  //
+  // No default, deliberately, and this differs from the other two readers of
+  // `?course=` — classroom registration and the gradebook both fall back to a
+  // single named course. That is harmless while there is one course and becomes
+  // a wrong roster with no error the moment there are two, which on this path
+  // means showing a teacher the wrong students' work. Absent means absent here:
+  // no course named, no roster, no overlay.
   const courseId = useMemo(() => new URLSearchParams(window.location.search).get('course') || '', [])
 
   // The book's editor, kept so the overlay above it can follow its camera and
