@@ -29,8 +29,21 @@ node bin/sync-demo.mjs --project sync-watch --legs disk,remote \
 *inside* the synced checkout, where it becomes project content. That now refuses
 rather than running (`01b5656b6`).
 
-**Healthy baseline, measured 2026-08-26 ~01:0xZ over 4 cycles:** disk 9.8s /
-8.6s, remote 9.7s / 8.5s, 4/4 pages rendering, 0 late, 0 lost, checkout clean.
+**Healthy baseline, 2026-08-26 00:5x–01:3xZ, 13 cycles:** disk **8.5–12s**,
+remote **8.5–11.2s**, 4/4 pages every cycle, checkout clean throughout. One late
+arrival in thirteen cycles and **nothing lost**.
+
+**That one late arrival is explained and is NOT a product fault** — worth writing
+down because it looks like the worst case in the file. `SYNCDEMO-45677` was given
+up on at 240s and arrived **421s later**, an 11-minute edit. The daemon log for
+that window shows `git push ... 502` at **00:45:15Z**, inside the tailnet
+recovery, with the next admission at **00:57:08Z**. The server was briefly
+unreachable, the daemon retried, and the edit landed intact. **A retry that
+recovers with no loss is the idempotence property working**, not a defect —
+resist reading the 11 minutes as a latency finding.
+
+**24 `source-proposal-admit` timeouts across the night** for this project. That
+one is still a real open fault; it is just not what produced the 11 minutes.
 
 ## LIVE, 2026-08-25 23:40Z: THE BOX IS OFF THE TAILNET. The app is fine
 
