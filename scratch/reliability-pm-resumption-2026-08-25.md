@@ -19,14 +19,31 @@ funnel config is intact and still proxies `/` to `127.0.0.1:5176`.
 
 **It is the tailnet node.** `tailscale status` reports `tlda-fly ... offline` and
 *"You are logged out. The last login error was: invalid key: API key does not
-exist"*, first logged **23:40:18Z**, retrying every ~35s forever. The Fly secret
-`TS_AUTHKEY` exists and is what expired — so **a machine restart does not fix
-this**, it re-uses the same dead key.
+exist"*, first logged **23:40:18Z**, retrying every ~35s forever.
+
+**Not an expiry — a revoked key.** Corrected by `sol-dev`, who checked the
+tailnet: **device expiry is disabled** on that node. The Fly secret `TS_AUTHKEY`
+holds an auth key that has been **deleted or revoked**, which is what `API key
+does not exist` means. I originally wrote "expired" here and it was wrong.
+
+**And the entrypoint re-applies the dead key on every boot, fail-soft.**
+`scripts/fly-entrypoint-live.sh:81`:
+
+```sh
+tailscale ... up --authkey="$TS_AUTHKEY" --hostname="${TS_HOSTNAME:-tlda-fly}" ... \
+  || echo "[entrypoint] tailscale up failed — continuing (public stays up)"
+```
+
+So a dead key does not stop the machine — **the app comes up perfectly with no
+tailnet name, and the only signal is one echo line in the entrypoint log.** That
+is why this presents as a total outage of a completely healthy server. The route
+stays restart-fragile until the secret is replaced.
 
 **Recovery needs Skip and only Skip:** a Tailscale login click, or a fresh
 `TS_AUTHKEY`. Neither is mintable from here. Generate a fresh URL with
 `fly ssh console -a tldraw-sync-skip -C "sh -c 'tailscale login --timeout=30s'"`
 — the printed URL is short-lived, so make a new one rather than reusing an old.
+**Skip cleared it that way at ~00:5xZ on 08-26 and the fleet came straight back.**
 
 **The instrument trap in this, and I nearly restarted his machine on it:**
 probing the app from inside the box with `wget` returned nothing, on every port,
