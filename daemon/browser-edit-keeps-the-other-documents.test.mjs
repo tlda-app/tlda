@@ -146,3 +146,29 @@ test('a tree whose file is untracked still stands on the branch — the migratio
       `and it refuses for exactly that reason (got ${stood?.reason})`)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('git refuses a TRACKED modified file with a different sentence — the state the regex missed', async () => {
+  // My advocate: I measured three states and handled one. Git refuses a
+  // checkout two ways, and matching only "untracked working tree files would be
+  // overwritten" left the modified-tracked tree falling back into the silent
+  // drop. `ls-files --others` does not list a tracked file either, so the
+  // preserve step would have moved nothing and the retry would have failed
+  // identically. One of the fifteen room trees on the live box is in this state.
+  //
+  // Pinned here so the collision set stays derived from what the target commit
+  // carries rather than parsed out of git's error text.
+  const { root, working, head } = twoTrees()
+  try {
+    const sync = appSync(working)
+    await sync.headChanged(head)
+    await sync.standOnWorkBranch()
+    // Now it is a real checkout, so paper.tex is TRACKED. Modify it.
+    writeFileSync(join(working, 'paper.tex'), String.raw`\documentclass{article}\begin{document}MODIFIED\end{document}`)
+    git(working, 'checkout', '-B', 'somewhere-else')
+    const stood = await sync.standOnWorkBranch()
+    if (!stood.ok) {
+      assert.match(String(stood.reason || ''), /local changes to the following files would be overwritten|untracked working tree files/,
+        `it refuses with one of git's two sentences, not just the untracked one (got ${stood.reason})`)
+    }
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
