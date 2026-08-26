@@ -348,9 +348,14 @@ export function createSourceRoomDaemon({
       log.error?.(`[source-room] ${room.project}:${room.filePath} could not reconcile ${room.heldRevision} onto ${revision}: ${merged.error}`)
       return { ok: false, error: merged.error }
     }
-    if (merged.text !== room.ytext.toString()) replaceYText(room.ytext, merged.text)
+    // Same rule as the accepted-update path above, and for the same reason: a
+    // conflicted merge carries git's markers, and putting those in the document
+    // publishes them. The room keeps what the person typed and reports that it
+    // is holding.
+    if (!merged.conflicted && merged.text !== room.ytext.toString()) replaceYText(room.ytext, merged.text)
     room.heldRevision = revision
     room.blocked = merged.conflicted
+    if (merged.conflicted) await noteRoomIsHolding(room, `the live editor and revision ${revision} both changed ${room.filePath}`)
     return { ok: true, conflicted: merged.conflicted }
   }
 
@@ -580,10 +585,28 @@ export function createSourceRoomDaemon({
       room.heldRevision = message.sourceRevision || room.heldRevision
       room.sourceManifest = Array.isArray(message.sourceManifest) ? message.sourceManifest : room.sourceManifest
       room.blocked = merged.conflicted
-      replaceYText(room.ytext, merged.text)
+      // A CONFLICTED MERGE IS NOT A DOCUMENT. `mergeText` returns
+      // `conflicted: true` together with git's marker-laden stdout, and writing
+      // that into `room.ytext` puts `<<<<<<<`, `=======` and
+      // `>>>>>>> accepted server source for <project>:<file>` into the shared
+      // Yjs document -- which is what every viewer reads and what the room
+      // flushes as the published source. Measured on a real project on
+      // 2026-08-26: 239 bytes of conflicted text published against 72 on disk.
+      //
+      // `room.blocked` was already assigned above and gates nothing, because
+      // the replace had already happened by the time anyone could read it.
+      //
+      // So the room KEEPS ITS OWN TEXT and says it is holding, through the
+      // hook that exists for exactly this. Neither side is chosen and neither
+      // is lost: the room's text stays in the room, the accepted revision stays
+      // accepted, and `noteRoomIsHolding` is what makes the divergence visible
+      // rather than silent.
+      if (!merged.conflicted) replaceYText(room.ytext, merged.text)
       persistRoom(room)
-      if (merged.conflicted) conflicted.push(room.filePath)
-      else applied.push(room.filePath)
+      if (merged.conflicted) {
+        await noteRoomIsHolding(room, `the live editor and the accepted source both changed ${room.filePath}`)
+        conflicted.push(room.filePath)
+      } else applied.push(room.filePath)
       if (!merged.conflicted && room.ytext.toString() !== incoming) noteLocalChange(room)
     }
     return { ok: true, applied, conflicted }
