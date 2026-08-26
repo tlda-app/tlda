@@ -1649,3 +1649,51 @@ No edit was made -- the deviation halted before the disposable-edit step.
 effective declaration is empty. Keeping an empty declaration means not writing
 one, which is also what the server's own 400 says from the other side. It leaves
 `normalizeDocumentRoots` alone for the creation path.
+
+## 2026-08-26 - LaTeX relink gate + repair (`4ed102ad1`, branch `latex-relink-gate`)
+
+```
+node --import tsx --test cli/relinking-a-latex-project-declares-nothing.test.mjs
+```
+2/2 green with the repair, 1 red + 1 green control without. Neighbouring relink
+tests 6/6. eslint, tsc -b, lint:guards clean.
+
+**Repair:** the PATCH is skipped unless roots were named on the command line or
+the project already declares some. Normalization and creation untouched --
+`normalizeDocumentRoots` still invents for creation, which is right there.
+
+**API facts the gate had to be corrected against, and they are findings:**
+- creating with a `mainFile` declares it immediately
+- an explicit `documentRoots: []` alongside a mainFile is OVERRIDDEN, not honoured
+- a declaration must include the project mainFile
+- a LaTeX project reaches the rootless state ONLY by being created without a mainFile
+
+The first two runs of the gate were red on MY FIXTURES, not on the bug.
+
+**RESTORATION: THERE IS NO SUPPORTED PATH.** Checked, not assumed. Two writers:
+- `PATCH /:name/document-roots` -- the only setter, rejects empty at the top of
+  the handler (`!Array.isArray || length === 0` -> 400); 400 for `null` too
+- `server/routes/projects.mjs:482` -- APPEND-ONLY adoption, `[...existing, root]`
+
+No DELETE, no reset, no clear. The only route producing "declares nothing" is
+creation without a mainFile, and re-creating an existing project means deleting
+it, which takes its history. Not a restoration.
+
+**What the change cost, MEASURED:** with nothing declared the roots come from
+the include graph. Run over the real checkout:
+
+```
+files:   figures/bounds.png, figures/compliance.png, intro.tex, main.tex, method.tex, refs.bib
+derived: [{"path":"main.tex","format":"svg"}]
+now:     ["main.tex"]        same set: true
+```
+
+The declaration names exactly what the graph would derive; `intro.tex` and
+`method.tex` are `\input`s and are not roots either way. Content, history, HEAD,
+branch, revision untouched; no edit was made. **The record is now PINNED where
+it was previously COMPUTED** -- a real difference if the document structure
+changes later, and the honest residue of the mistake. One project.
+
+**Another instrument error caught before reporting:** the first derivation
+printed `{}` and nearly went out as "derives nothing". `documentRootsIn` is
+ASYNC and was not awaited -- that was a Promise.
