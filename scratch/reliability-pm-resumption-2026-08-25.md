@@ -1595,3 +1595,57 @@ from the cause.
 that halted it before --- passed clean: roots absent and unchanged, HEAD
 unchanged, ancestry holds, edit reached server in 13s and the source room,
 restored local and server, checkout clean.
+
+## 2026-08-26 - SWEEP HALTED at index 6: the relink fix is incomplete for LaTeX
+
+**6 of 7 attempted. Indices 0-5 clean** (roots absent and unchanged, HEAD
+unchanged, ancestry holds, edit reached server 10-13s and crossed the source
+room, restored byte-identically both sides, checkouts clean; branches moved to
+the daemon work branch as ruled intended).
+
+**Index 6: `DEVIATION at roots-unchanged: absent -> set:1`.** The relink wrote
+`[{"path":"main.tex","format":"svg"}]` onto a project that declared nothing --
+the exact invention this task existed to stop.
+
+**CAUSE, upstream of the guard.** `cli/tlda.mjs:737` builds
+`projectDocumentRoots` with `normalizeDocumentRoots(documentRoots, {mainFile,
+format})`. Measured:
+
+```
+normalizeDocumentRoots([], { mainFile: 'main.tex', format: 'svg' })
+  -> [{"path":"main.tex","format":"svg"}]
+```
+
+It SYNTHESISES a root from the main file when the list is empty -- before
+`documentRootsToDeclare` is called. The guard then receives the invented root as
+`supplied` and correctly passes it through. **Right function, wrong input.** The
+unit gate tests the function in isolation and is still green; it could never
+have caught this.
+
+**The six passes before it proved nothing about this path.** The MARKDOWN branch
+never PATCHes document-roots at all -- on already-exists it logs and pushes.
+Only the LaTeX/svg branch PATCHes. Index 6 was the first LaTeX project in the
+queue and therefore the first real exercise of the changed code. The queue was
+six markdown and one LaTeX, and that should have been read before treating the
+run as reassurance.
+
+**This exact path was flagged earlier in this same file and not closed:** "my
+live check missed it because markdown returns before that fallback."
+
+**NOT REVERTIBLE THROUGH THE API, and this is the part that matters:**
+
+```
+PATCH /api/projects/<p>/document-roots  {documentRoots: []}
+  -> 400 {"error":"documentRoots must be a non-empty array"}
+```
+
+A project can EXIST with no roots -- 18 do -- but the API cannot set it back to
+that. **The state is reachable and not settable.** One real project now declares
+`main.tex` where it declared nothing before, with no documented route to undo
+it. Content, HEAD, branch and revision untouched; only the declaration changed.
+No edit was made -- the deviation halted before the disposable-edit step.
+
+**Smallest repair, NOT implemented, pending the chief:** do not PATCH when the
+effective declaration is empty. Keeping an empty declaration means not writing
+one, which is also what the server's own 400 says from the other side. It leaves
+`normalizeDocumentRoots` alone for the creation path.
