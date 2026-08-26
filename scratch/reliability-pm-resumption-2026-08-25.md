@@ -289,17 +289,32 @@ at **22:40:24Z**. The request times out, the retry succeeds, the edit costs abou
 **90 extra seconds**. That is in the log independently of anything I measured
 wrongly.
 
-**The disk-vs-remote table I built from this is NOT evidence of a fault. Do not
-reuse it.** `daemon/git-sync-manager.mjs:149`: the remote bridge is a
-`setInterval` at `Math.max(15, Number(item.pollSeconds) || 60)`, and
-`pollSeconds` is set **nowhere in the tree outside a test**. So a git-remote edit
-is **polled at 60s**, not watched, and that leg carries a 0–60s wait before
-anything starts. Comparing it to a watcher-driven disk edit measures the
-schedule, not the system.
+**The disk-vs-remote table I built from this is NOT evidence of a fault — but
+the 60s-poll explanation I replaced it with was ALSO wrong. Both are dead.**
+
+**There is no systematic disk-vs-remote gap.** Nine cycles with both build slots
+free: disk **8.5–12s**, remote **8.5–10.2s**. The gap existed only while the
+stopped worker held a slot, and closed when it was freed. I explained a
+difference that had already stopped being there.
+
+**And the poll does not apply here at all**, on two counts:
+
+- `writeOnRemote` calls `tlda project remote pull` itself. The remote leg is
+  **triggered, not polled**.
+- The daemon builds a remote bridge only when the **binding** carries a
+  `remote`, written at link time. `tlda project remote add` runs a plain
+  `git remote add` in the checkout and never touches the binding.
+  `sync-watch`'s record says `remote: none`. **No timer runs in this path.**
+
+**The useful constraint that survives: outliers are not leg-specific.** The worst
+of the night was **184.2s on the *disk* leg** in an otherwise clean run of nines.
+Whatever causes them hits both ingresses, which rules out anything specific to
+remote handling.
 
 I sampled the daemon during a slow remote leg expecting it to be blocked:
-**every thread parked in `kevent` for 12 seconds, nothing running.** It was
-waiting for the timer. **Read the schedule before reaching for a profiler.**
+**every thread parked in `kevent` for 12 seconds, nothing running.** That
+observation is real; the timer I attributed it to is not. **What it actually
+shows is the daemon idle while the delay happens somewhere else.**
 
 **Disproved already, do not re-derive it:** that admit walks a growing
 `refs/tlda/proposals` set. Measured on the box — **76 proposal refs, 78 total,
