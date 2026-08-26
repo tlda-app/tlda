@@ -521,6 +521,7 @@ export function createSourceRoomDaemon({
       room.sourceManifest = sourceManifest
       persistRoom(room)
       const gitSync = gitSyncManagerForProject(room.project)
+      await trackRoomFile(room.project, room.paths.working)
       gitSync.queuePaths(room.project, [room.filePath])
       submission.state = 'queued'
       persistRoom(room)
@@ -670,6 +671,48 @@ export function createSourceRoomDaemon({
     return result
   }
 
+  /**
+   * Stage a file the room wrote, so the settle can see it.
+   *
+   * `settledCommit` stages TRACKED changes only -- `d60d18573` removed `add -A`
+   * because the app does not stage files in a repository it does not own, and
+   * the accepted cost is that a person's new file waits for their `git add`.
+   * A room has no author to run it: its tree is a projection of a Yjs document.
+   * So a project whose FIRST file came from the editor stalled at
+   * `empty-checkout` forever -- nothing tracked, empty tree, refused on every
+   * settle.
+   *
+   * `track-path` is the verb that already exists for this, and it is the same
+   * one the adopt-a-root path uses. It refuses anything outside the repository
+   * and is a no-op for a file already tracked, so this is safe to call on every
+   * flush. Deletions still ride the settle's `add -u`; a person's checkout is
+   * untouched, because nothing here runs against one.
+   */
+  async function trackRoomFile(project, absolutePath) {
+    let answer
+    try {
+      answer = await gitSyncManagerForProject(project)
+        .remoteOperation(project, 'track-path', { path: absolutePath })
+    } catch (error) {
+      throw new Error(`${project}: could not stage ${absolutePath}: ${error?.message || error}`)
+    }
+    // ANSWERED IS NOT STAGED. `trackPath` returns `{ inRepo: false }` WITHOUT
+    // throwing when the path does not textually match git's `--show-toplevel`
+    // -- a realpath difference is enough -- so a try/catch alone reports success
+    // while the file sits untracked. Caught while writing this: the file stayed
+    // `?? main.md` and nothing raised.
+    //
+    // THROWN, not logged. The bytes are already persisted to the room's tree and
+    // its Yjs document, so nothing is lost by failing here, and `flushRoom`'s
+    // catch schedules a retry. Warning and carrying on is what makes a caller
+    // answer `queued` for a file that can never be committed -- the document
+    // then never appears and the only trace is a log line nobody reads.
+    if (!answer?.tracked) {
+      throw new Error(`${project}: ${absolutePath} was not staged (${JSON.stringify(answer)}) — it cannot become a revision`)
+    }
+    return answer
+  }
+
   async function submitFiles(project, payload = {}) {
     const projectRecord = await readProject(project)
     if (!projectRecord) return { status: 404, body: { ok: false, error: 'Project not found' } }
@@ -689,6 +732,15 @@ export function createSourceRoomDaemon({
       }
       const target = join(root, file.path)
       atomicWrite(target, Buffer.from(file.content || '', file.encoding === 'base64' ? 'base64' : 'utf8'))
+      // The bytes are on disk either way; what this decides is whether the
+      // caller is told the write is on its way to a revision. A file that could
+      // not be staged is not, and saying `queued` for it is the lie that hides
+      // the whole failure.
+      try {
+        await trackRoomFile(project, target)
+      } catch (error) {
+        return { status: 409, body: { ok: false, error: error?.message || String(error) } }
+      }
       paths.push(file.path)
     }
     for (const filePath of payload.deletedFiles || []) {
