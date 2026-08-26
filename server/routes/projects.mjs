@@ -27,6 +27,7 @@ import {
   listSourceFiles, hashSourceFiles, readSourceFileAsync, writeSourceFileAsync, deleteSourceFileAsync, readBuildLogAsync, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarningsAsync, addBookMember, getProjectsDir, projectDir as getProjectDir,
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest, referencedSourcePaths,
+  projectDocumentRoots,
   listDocumentAssociations,
   isClientOwnedSourcePath, readClientSourceManifest, validateSourceFilePath,
   beginProjectSourceTransaction,
@@ -764,6 +765,33 @@ router.patch('/:name/members', requireRw, async (req, res) => {
     res.json({ ok: true, members: book.members })
   } catch (e) {
     res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * The project's documents, COMPUTED from its tree.
+ *
+ * Skip, 2026-08-26: *"document roots is just a computed property of the git
+ * branch"*, *"just have an endpoint that returns a list"*, and the rule --
+ * *"create the directed include graph. roots are roots"*, with *"xr = link"*.
+ *
+ * The stored `documentRoots` this will replace is written once at link time and
+ * appended to by the chat click-adopt path, and **nothing ever recomputes it**.
+ * So a project's idea of its own documents is a snapshot of the moment somebody
+ * linked it: add a paper to the branch and the project still describes the old
+ * tree.
+ *
+ * Read-only and additive on purpose. The stored field still exists and is still
+ * what everything reads; this is the list to point them at, one at a time,
+ * before it is deleted.
+ */
+router.get('/:name/document-roots', requireRead, async (req, res) => {
+  const project = await readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: `No project "${req.params.name}"` })
+  try {
+    res.json({ documentRoots: await projectDocumentRoots(req.params.name) })
+  } catch (e) {
+    res.status(500).json({ error: `Could not read the source tree for "${req.params.name}": ${e.message}` })
   }
 })
 
