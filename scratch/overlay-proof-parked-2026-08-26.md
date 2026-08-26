@@ -1,264 +1,164 @@
-# Student-overlay proof — parked, blocker diagnosed — 2026-08-26
+# Classroom student-layers gate — held, current as of 2026-08-26 14:30 EDT
 
-`app-tester` (`fleet:2b6fe909`), for `classroom-pm`. A parked overlay proof with its
-blocker diagnosed, and three rig traps that are the reusable part.
+`app-tester` (`fleet:2b6fe909`), for `classroom-pm` and `sol-dev`.
 
-## 0. STOP — the target behaviour changed. Do not resume against §1's spec
+**Rewritten from scratch at this timestamp.** Earlier revisions were patched
+incrementally and had drifted into contradicting themselves — two superseded heads,
+"three traps" over a list of four, a fault labelled "1 of 3" in a list of five. A
+resumption point that disagrees with itself is worse than a short one. Everything
+below is current.
 
-**Superseded 2026-08-26 02:05 EDT, before anything was proved.** Skip:
+## Status in one line
 
-> the idea is anyone should be able to write to any layer they have write access to
+**Mount gate passes on head `1f2912493`. 0 of 6 behaviour checks run, because no
+principal on a sandbox preview can be a student.** Waiting on a supported
+`tlda-dev serve` gating flag, in flight.
 
-> its supposed to be a spatial communication tool
+## What to do when the flag lands
 
-and, just before:
+1. Reset `~/worktrees/app-tester-overlay-proof` to the head you are given. **Verify
+   it by content and message, not ancestry** (see §4).
+2. `nohup node cli/tlda-dev.mjs serve start --sandbox … &` — **detached**, or it
+   dies with your shell (§4).
+3. **Mount gate first.** `pages ≥ 1`, a non-null `sourceRevision`, `/docs/<project>/
+   index.html` → 200, and `TLDA_SELF_BASE_URL` present on the **preview server pid**
+   (§4). **If the mount fails, that is the report** — nothing about the overlay
+   follows from a rig that never rendered.
+4. **Recreate the four classroom records** — `serve stop` destroyed them (§4). Course
+   `overlay-proof`, assignment `overlay-hw` (needs `dueAt`), students `stu-a`/`tok-a`
+   and `stu-b`/`tok-b` (need `displayName` and `enrollmentToken`). ~1 minute.
+5. **Prove three distinct principals** from `/api/classroom/me` — student A, student
+   B, instructor. **If two are identical, stop and say so.** Cheaper here than at
+   check 6.
+6. Then the six checks in §2, **tool-never-decides-the-destination second**.
 
-> so students cant submit their stuff to the common layer? can they write it directly?
+## 1. Why no one can be a student on a sandbox preview
 
-**So "a student's mark lands in their own overlay and nowhere else" is not the
-model.** The branch routes every mark-making tool into the private overlay
-automatically, which makes it impossible for a student to write the common layer at
-all. That is a blanket prohibition; his words put **write access** in charge
-instead — layers are selectable surfaces, and whether you may write one is a matter
-of access.
+`/api/classroom/me` returns `{"role":"instructor"}` for **no token**, for a **valid**
+enrolment token, and for **`"not-a-real-token"`**. That last one is the control: the
+endpoint never consults the token at all.
 
-**Proving the routing would have certified the wrong thing.**
-
-### The settled spec (2026-08-26, supersedes the five behaviours)
-
-Task `fleet:2b6f-mtaaclz6`, head **`f6948f235`**. Verify on the branch:
-
-- independently selectable visible layers
-- **exactly one** write target
-- **common/class is writable and is the default**
-- private **Mine** room writable only by its owner
-- teacher views student layers **read-only**
-- the layer menu becomes a **move-to-layer** menu **only when a canvas selection is
-  active**
-- a moved annotation **preserves position** and lands in the target room
-- **no automatic tool-based routing** — this is the point Skip's words changed
-- unauthorized WebSocket upgrades are **refused**
-
-**On that last one — read this before reporting it.** It is **branch behaviour,
-newly implemented**, not current-`main` behaviour and **not a regression check**.
-The builder wire-proved 3 refusals and 4 accesses. **If it fails, that is a branch
-feature failure.** Reporting it as a regression would be wrong, and it is the kind
-of wrong verdict that gets acted on.
-
-**This supersedes the earlier statement in this file that isolation is by room
-naming rather than enforcement.** That was true of `main` when written; the branch
-adds the enforcement. Both statements are correct about their own subject, which is
-exactly how a stale note misleads — so: **naming-only on `main`, enforced on the
-branch.**
-
-**What is still good below, because none of it depends on which layer a mark lands
-in:** the transport blocker (§1), the staged setup, the identity route, and the
-three rig traps (§2). Whatever the design becomes, it still needs two enrolled
-students in a preview that can accept content.
-
-## 1. Student-overlay proof — parked
-
-Branch `classroom-student-overlay`, head **`9a38e5d6a`**. **Behaviours 1, 2 and 3
-are neither established nor refuted** — there was never a rendered book to draw on.
-Not "the overlay didn't work." **And per §0 they are no longer the thing to prove.**
-
-### Blocker: RESOLVED 2026-08-26 — three faults, not one
-
-Source push into a TLS preview is **fixed and proven end to end** (a real document
-mounted and rendered KaTeX). It took **three distinct faults**, all of which had to
-land:
-
-| fault | commit |
-|---|---|
-| internal HTTP/HTTPS scheme — the one diagnosed below | `fb5b14d0b` |
-| `--server` git-remote routing | `0f8da75ef` |
-| tokenless Basic username | `fc379cb0f` |
-| **self-remote dialled loopback, whose cert git does not trust** | **`e5701db4e`** |
-
-**Four, not three.** The fourth surfaced only by standing the rig up and driving it
-after the first three landed: the push reached `https://127.0.0.1:<port>` and died
-on `SSL certificate problem: unable to get local issuer certificate`.
-
-**Why loopback specifically.** A TLS preview serves **two certs by SNI** —
-`localhost`/`127.0.0.1`/`::1` get the mkcert developer cert, every other name gets
-the tailnet cert — and **git's CA store has Let's Encrypt but not the mkcert root**.
-So a self-push at loopback could never validate. The fix hands the cert-valid URL
-over in **`TLDA_SELF_BASE_URL`** rather than disabling verification.
-
-**Check `TLDA_SELF_BASE_URL` before the mount gate — but for the right reason.**
-
-**I first wrote this as a general warning that any other launcher silently reverts.
-That is wrong, and corrected here so nobody inherits it.** Verified in
-`shared/self-base-url.mjs`:
+`server/routes/classroom.mjs`:
 
 ```js
-if (explicit) return explicit.replace(/\/+$/, '')
-return `${useTls ? 'https' : 'http'}://127.0.0.1:${port}`
+const level = validateToken(extractToken(req))
+if (level === 'rw') return { role: 'instructor' }        // ← taken when gating is off
+if (level !== 'read') return null
+const student = store.studentForToken(studentToken(req)) // ← never reached
 ```
 
-With `useTls` false the self-call is **plain HTTP to loopback and never meets a
-certificate**, which is correct and is what an ordinary deployed server does. The
-fault exists only for a **TLS** listener with no supplied URL — i.e. a TLS server
-launched outside `tlda-dev serve`, which is not a supported configuration. The
-file's own comment says it: *"Everything else keeps loopback, which is correct for
-plain HTTP and is what a server that was told nothing should assume."*
+A sandbox preview runs ungated, so everyone validates `rw` and short-circuits before
+the enrolment lookup. **`?classroomToken=` is plumbed correctly** — it reaches the
+`x-tlda-student-token` header — and is then ignored because the principal is already
+decided.
 
-**So the check stays, with a better justification:** the variable's presence proves
-you came up through the **intended launcher**. That distinguishes *"the rig started
-the supported way"* from *"the rig started somehow"* — the same distinction that
-cost a night when a `--detach` worktree derived the project name `HEAD` and produced
-a silent empty canvas.
+The branch's own wire test says the same thing one layer down
+(`tests/classroom-sync-room-wire.test.mjs:108`): *"without this the server starts
+ungated, validateToken returns 'rw' for everyone… a test that did not turn gating on
+would prove nothing while looking green."*
 
-**And the shape worth carrying:** the scheme fix changed the *error message* without
-changing the *cause* — `Empty reply from server` became a certificate error, both
-meaning "the server could not talk to itself". A new error after a fix is not
-evidence the fix worked.
+**Ruled out by `sol-dev`, deliberately:** no principal override, no bypass in
+`classroomPrincipal`, no test-only branch. The gate must exercise the real path or
+its six results mean nothing in the way that is hardest to spot afterwards.
 
-**Worth keeping:** the scheme fault below was real but was **not sufficient on its
-own**. A single confident root cause would have been wrong here — not because the
-evidence for it was bad, but because two more faults sat behind it. When a fix
-lands whose subject does not match your diagnosis, that is worth asking about
-rather than assuming either that you were wrong or that you were right.
+## 2. The six checks (settled spec)
 
-**Still required before resuming: a branch head merged with current main.**
-`f6948f235` predates all three commits, so a preview built from it fails exactly as
-described below. Do **not** merge into a throwaway worktree and test that — the
-gate is on the actual branch.
+Supersedes the original five behaviours. Skip corrected the design: *"anyone should
+be able to write to any layer they have write access to"*, *"its supposed to be a
+spatial communication tool."* **A student can write the class layer directly.**
 
-### The original diagnosis (fault 1 of 3)
+1. **Control exists and is scoped.** Student A sees a layers pill reading **Class**;
+   an unenrolled reader sees **no pill** and an unchanged book.
+2. **The tool never decides the destination.** Target Class, draw → B sees it. Target
+   Mine, draw → B does not. Switch back and forth; each mark lands on the selected
+   layer. Pen, highlighter and eraser alike. **This is what Skip corrected the design
+   for — run it second.**
+3. **Visibility is independent of the write target.** Hide Class → its annotations go,
+   the book stays. Hide Mine → yours go, Class stays. Un-hide restores everything;
+   nothing was deleted. Hiding changes nothing for B.
+4. **Move to layer.** Target Mine, draw, select → the pill becomes **Move 1**. Move to
+   Class → it leaves your layer, keeps its position, and **B can see it**. Deselect →
+   the pill names the write target again.
+5. **Teacher.** Sees A's marks; `←`/`→` flicks between students **without the book
+   reloading or navigating**; cannot draw into a student's layer.
+6. **Isolation.** B never sees A's private marks at any point.
 
-Every source push fails, including `tlda-dev serve`'s own seeder:
+**Two residues — observe and report, do not judge.** While the target is **Mine**,
+text selection addresses your layer rather than the book; and class annotations are
+visible but not selectable. Both deliberate. Skip may dislike them; that is his call
+and it is worth more if confirmed than described.
 
-```
-proposal not accepted: empty-checkout
-git push … http://source-room-…@127.0.0.1:5190/git/<project> …
-fatal: unable to access 'http://127.0.0.1:5190/git/<project>/': Empty reply from server
-```
+**Unauthorized WebSocket refusal is NEW branch behaviour**, wire-proved by the builder
+(3 refusals, 4 accesses). **A failure there is a branch feature failure, not a
+regression.** `main` is naming-only; the branch enforces.
 
-The server pushes to itself over `http://` while the preview listens on `https://`:
+## 3. Transport: five faults, all resolved
 
-```
-http://127.0.0.1:5190/api/health    →  000  "Empty reply from server"   ← the git error, verbatim
-https://127.0.0.1:5190/api/health   →  200
-https://127.0.0.1:5190/git/…        →  401  (route exists, wants the push's auth)
-```
+The mount was blocked for hours by a chain, each fault hidden behind the last.
 
-The project is created, the push returns **`202 {"ok":true,"status":"queued"}`**,
-and nothing lands — `pages 0`, no `sourceRevision`, indefinitely. **The API reports
-success.** `classroom-pm` traced the construction to
-`daemon/git-sync-manager.mjs:35` (`new URL('/git/<project>', server)`) and
-escalated to `sol-dev`; `tlda-dev serve` has no flag to disable TLS.
+| # | fault | commit |
+|---|---|---|
+| 1 | internal HTTP/HTTPS scheme | `fb5b14d0b` |
+| 2 | `--server` git-remote routing | `0f8da75ef` |
+| 3 | tokenless Basic username | `fc379cb0f` |
+| 4 | self-remote dialled loopback, whose cert git does not trust | `e5701db4e` |
+| 5 | a room never staged its own first file | `bef19e701` → landed as `5f5bce041` |
 
-### What is staged and ready
+**Fault 4, because it is the instructive one.** A TLS preview serves **two certs by
+SNI** — `localhost`/`127.0.0.1`/`::1` get the mkcert developer cert, every other name
+the tailnet cert — and **git's CA store has Let's Encrypt but not the mkcert root**.
+So a self-push at loopback could never validate. Fixed by handing the cert-valid URL
+over in `TLDA_SELF_BASE_URL`, **not** by disabling verification.
 
-- Worktree `~/worktrees/app-tester-overlay-proof`, branch
-  `app-tester-overlay-proof` at `9a38e5d6a`, `node_modules` symlinked, built clean.
-- Preview **up and healthy (200)** on `https://davids-mac-mini.cormorant-matrix.ts.net:5190`,
-  launched detached. Left running deliberately — restarting costs a 4-minute build.
-- The author's worktree `~/worktrees/student-overlay` was **not touched** and is clean.
-- Classroom router mounted at `/api/classroom`.
+**Fault 5.** `settledCommit` stages tracked changes only — `add -A` was removed
+deliberately, since the app must not stage files in a repository it does not own, the
+accepted cost being that a person's new file waits for their own `git add`. **A source
+room has no author at a keyboard**, so nothing ever staged its first file: empty tree,
+`empty-checkout`, on every settle forever.
 
-### Identity, for whoever resumes
+**`not-on-work-branch` appears once and is NOT a fault.** `sync()` runs one settle
+before the caller stands the tree on the work branch; on a fresh room HEAD is still
+`main`, so that settle is correctly refused, then the stand happens and the next
+settle publishes. Transient by construction. **Do not chase it.**
 
-**`?classroomToken=<raw token>` — not `?name=`.** Read at call time from the query
-string into the `x-tlda-student-token` header. **`?name=` gives a named but
-unenrolled reader, which is the *no overlay* case** — it is the reflex here and it
-would quietly test the wrong thing. Course/student creation calls are in
-`classroom-pm`'s message `3362618`; `assignments` requires `dueAt`, `students`
-require `displayName` and `enrollmentToken`, and only a SHA-256 of the token is
-kept, so a token not captured at creation cannot be recovered.
+**Two shapes worth carrying out of this chain:**
 
-Two separate browser contexts for the two students: nothing is cached per identity,
-so one tab *can* switch by editing the parameter — but then a stale tab is
-indistinguishable from a broken overlay, which is the observation the run rests on.
+- **A new error after a fix is not evidence the fix worked.** `Empty reply from
+  server` became a certificate error — different message, same cause: the server
+  could not talk to itself. I read that change as progress and it was not.
+- **A single confident root cause was wrong four times running.** Each fault was real
+  and none was sufficient alone. When a fix lands whose subject does not match your
+  diagnosis, ask — rather than concluding either that you were wrong or that you were
+  right.
 
-Behaviour 4 can be added in the same sitting: teacher path is
-`?project=<book>&course=<courseId>`, read-only by construction.
+## 4. Rig traps — three produce an empty canvas, two silently
 
-**Isolation — corrected, see §0.** On **`main`** it is by room naming, not
-enforcement: `/sync/:room` has no per-room check, so "not shown" rather than
-"refused". **On the branch, refusal is implemented and is a thing to verify.** Do
-not carry the `main` statement onto the branch; that is the whole distinction.
-
-## 1a. A caveat on every ancestry check in this file
-
-This document verifies commits with `git merge-base --is-ancestor`. **A `YES` from
-that is sound; a `NO` is not.** `main` here is assembled by **cherry-pick**, so a
-landed change exists as **two shas** and ancestry reports the author's sha as
-unmerged.
-
-Live example from this work: the staging fix reached me as **`bef19e701`**, which is
-**not an ancestor of `main`** — yet it had landed as **`5f5bce041`**, same subject,
-`trackPath` present in `source-room-daemon.mjs`, the two differing by one unrelated
-scratch file. `classroom-pm` nearly reported it unmerged.
-
-**So: check by message and content, not ancestry.** Every `ancestor? YES` below is
-still good evidence of presence — none of them was a false positive. Only read a
-`NO` as absence after checking `git log --grep` and the file contents.
-
-## 1b. Fifth fault — the room never staged its own first file (`bef19e701`)
-
-After all four transport faults were fixed, the mount still failed:
-
-```
-server.log   proposal not accepted: empty-checkout
-room tree    ?? main.md   (untracked)   zero commits   unborn HEAD
-project      pages 0 · sourceRevision NONE
-```
-
-**A project whose first file comes from the source editor could never publish.**
-`settledCommit` stages **tracked changes only** — `d60d18573` removed `add -A`
-deliberately, since the app must not stage files in a repository it does not own,
-the accepted cost being that a person's new file waits for their own `git add`.
-**A source room has no author at a keyboard**, so nothing ever staged its file:
-empty tree, `empty-checkout`, on every settle forever. `bef19e701` has the room
-stage what it owns via `track-path` before queueing.
-
-**Verified on this rig:** `pages 1 · build success · rev 5467a69b6658` on the first
-sample, `/docs/…` → 200, and the room tree showing `f36f635 "tlda settled edit
-cluster"` with **0 dirty paths**.
-
-### `not-on-work-branch` appears once and is NOT a fault — do not chase it
-
-Traced by `reliability-pm`. `sync()` runs one settle through `start()` **before**
-the caller stands the tree on the work branch:
-
-```
-source-room-daemon.mjs   gitSync.bindSource(…)
-                         await gitSync.sync([record])      ← settles ONCE here
-                         await standRoomOnProjectBranch(…)
-```
-
-On a **fresh** room HEAD is still `main`, so that first settle is correctly refused
-and logs the line; the stand then happens and the next settle publishes. On an
-**established** room the tree is already on the branch and the line never appears.
-**Transient by construction — one refused settle and one log line.**
-
-## 2. Four rig traps — three produce an empty canvas, two silently
-
-The most reusable thing here. **All three look identical to a feature that simply
-does not work**, and two give no reason at all.
+**All of these look identical to a feature that does not work.**
 
 | trap | symptom | reality |
 |---|---|---|
-| **`tlda-dev serve start` dies with its shell** | prints a pid, then `Shutting down... Server closed cleanly` as the command returns | process-group death. Launch it detached (`nohup … &`) |
-| **`--detach` worktree derives the project name `HEAD`** | seeding fails `HTTP 400 {"error":"name must be lowercase alphanumeric with hyphens"}` | the name is uppercase. Check out a **named lowercase branch** |
-| **TLS preview rejects all source content** | `202 queued`, then `pages 0` forever | `http://` self-push against an `https://` listener (§1) |
-| **`serve stop` discards the whole sandbox** | a hand-edit to the preview's `server.yaml` fails *no such file*; classroom records vanish | stopping a preview deletes its `projects/`, its `config/` and every `*.db`. Only `daemon-cfg/` survives |
+| **`serve start` dies with its shell** | prints a pid, then `Shutting down... Server closed cleanly` as the command returns | process-group death. Launch detached (`nohup … &`) |
+| **`--detach` worktree derives the project name `HEAD`** | seeding fails `HTTP 400 name must be lowercase alphanumeric with hyphens` | the name is uppercase. Use a **named lowercase branch** |
+| **`serve stop` discards the whole sandbox** | a hand-edit to the preview's `server.yaml` fails *no such file*; classroom records vanish | it deletes `projects/`, `config/` and every `*.db`. Only `daemon-cfg/` survives |
+| **TLS preview rejected all source content** | `202 queued`, then `pages 0` forever | §3 faults 1–5. Resolved, listed so the symptom is recognisable |
 
-**On that fourth one — it is not only an inconvenience.** Anything that writes a
-preview's config **once** and expects it to persist works exactly one time per
-sandbox and then **silently falls back to the ungated default**. A gated-preview
-option must write its config **and print its tokens at every start**, because
-neither can be recovered from a directory that no longer exists. Measured
-2026-08-26: after `serve stop` the tree was `daemon-cfg/` alone — no projects, no
-databases, no `server.yaml`.
+**On `serve stop`:** anything that writes a preview's config **once** and expects it
+to persist works exactly one time per sandbox, then **silently falls back to the
+ungated default** — the same invisible failure a gating flag exists to remove. Config
+must be written, and tokens printed, **at every start**.
 
-**Cheap to recover, expensive to discover late.** Course, assignment and two
-students are four API calls (~1 min). Found at the start that is a step; found at
-check 5 it reads as a broken feature.
+**Ancestry checks in this repo give a sound `YES` and an unsound `NO`.** `main` is
+assembled by **cherry-pick**, so a landed change exists as two shas. The staging fix
+arrived as `bef19e701`, reads as unmerged, and had landed as `5f5bce041` — same
+subject, `trackPath` present, differing by one unrelated scratch file. **Check by
+message and content.**
 
-**The cost of the pair is worse than either.** Trap 2 was my own error and trap 3 is
-a real defect, and they present the same way — so a rig that never came up is
-indistinguishable from a branch that does nothing. Any "the feature is absent"
-report from a fresh preview should first prove the preview could render **anything**.
+**Check `TLDA_SELF_BASE_URL` on the preview server pid, not the last pid in the log.**
+Mine reported ABSENT once because I read a later process. Its presence proves the
+**intended launcher** was used — that is the reason to check it, not that the fix
+might be missing.
+
+## 5. Console noise that is not a finding
+
+On a preview: `/api/build-info` **503** (no deploy stamp — expected), `page-N.svg`
+**404** probes, `…/macros` **404**. None is overlay-related.
