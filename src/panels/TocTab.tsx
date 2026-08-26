@@ -775,18 +775,6 @@ export function normalizeZoneWidth(value: unknown): number {
   return Math.round(Math.max(ZONE_WIDTH_MIN, Math.min(ZONE_WIDTH_MAX, parsed)))
 }
 
-/**
- * The reserved edge-control region's width, shared by the TOC panel and the
- * highlighter slider BY DESIGN.
- *
- * Skip, 2026-08-26: "i want the linked TOC/slider area width", "plz make that
- * happen and document it as a design decision", and the rationale in his words
- * -- "this is the part of your screen that doesn't like, behave normally".
- *
- * They are one region, not two controls that happen to agree on a number, so
- * this is the one reader and changing it moves both. A branch that split them
- * was rejected; see the note at `zoneWidth` in HighlighterSliderShape.tsx.
- */
 export function getZoneWidth(): number {
   // The pref is the value. This used to ask `normalizeZoneWidth(pref) !==
   // ZONE_WIDTH_DEFAULT` and fall back to a `zone-width` localStorage key, which
