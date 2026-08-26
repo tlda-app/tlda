@@ -42,7 +42,19 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     const bound = load()[project]
     const base = (bound && typeof bound === 'object' && bound.server) || server
     let remoteUrl = remoteUrlFor ? remoteUrlFor(project) : new URL(`/git/${encodeURIComponent(project)}`, base)
-    if (remoteUrl instanceof URL && token) { remoteUrl.username = safeRefPart(daemonId); remoteUrl.password = token }
+    // The daemon id is the username and it is always known; the token is the
+    // password and may legitimately be empty. Both were attached only when a
+    // token existed, so a tokenless server got NEITHER -- and `/git` requires
+    // Basic credentials to exist before it will look at them, so git fell
+    // through to prompting: `could not read Username for '…'`.
+    //
+    // This does not weaken anything. `validateToken` returns 'rw' for any token
+    // only when gating is OFF, which is what a tokenless preview is; with gating
+    // ON an empty password still fails the check and still 401s.
+    if (remoteUrl instanceof URL) {
+      remoteUrl.username = safeRefPart(daemonId)
+      if (token) remoteUrl.password = token
+    }
     return remoteUrl.toString()
   }
 
