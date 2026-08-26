@@ -556,6 +556,43 @@ export function createGitProjectSync({
   // history was merged into their checkout — which left an unresolved merge in
   // it whenever the two diverged. Local is authoritative. Divergence is theirs to
   // resolve, and it does not stop the project working.
+  /**
+   * Bring an app-owned working tree up to a revision WITHOUT touching what is
+   * already on disk.
+   *
+   * **This is the browser route losing documents, and the mechanism is one
+   * line.** An app-owned tree only ever contained the files somebody had opened
+   * in the source editor. `headChanged` moved HEAD onto the project revision and
+   * deliberately left the directory alone, so HEAD held every document while the
+   * directory held one — and settle stages that directory with `git add -A`,
+   * which records every file present in HEAD and absent on disk as a
+   * **DELETION**. One browser edit therefore published a revision with the other
+   * documents removed.
+   *
+   * Measured 2026-08-26 on a throwaway two-document project: edit `paper.tex` in
+   * the editor, and `notes.md` went from 54 bytes to HTTP 404 in nine seconds,
+   * while `.source-room/working` on the box contained `paper.tex` alone.
+   *
+   * **Only files that are ABSENT are written.** A checkout of the whole tree
+   * would clobber the room's in-flight content — the editor writes the live
+   * buffer into this directory, so overwriting it from HEAD would throw away the
+   * edit being made. Absent files cannot have unsaved content, so restoring
+   * exactly those is the part that is safe and the part that is needed.
+   *
+   * The comment on `headChanged` already called this directory a VIEW of the
+   * project's source. It was not one; this makes it one.
+   */
+  async function materializeMissingFiles(revision) {
+    const listed = (await git(['ls-tree', '-r', '--name-only', revision])).stdout.split('\n').filter(Boolean)
+    const missing = listed.filter(file => !fs.existsSync(path.join(sourceDir, file)))
+    if (!missing.length) return
+    // In batches, because a project can have more files than one argv holds.
+    for (let at = 0; at < missing.length; at += 100) {
+      await git(['checkout', revision, '--', ...missing.slice(at, at + 100)])
+    }
+    log.info?.(`${project}: restored ${missing.length} file(s) into the app working tree from ${revision.slice(0, 9)}`)
+  }
+
   async function headChanged(revision = null) {
     const fetched = await fetchHead(revision)
     if (!fetched) return { ok: true, status: 'no-shared-head', revision: null }
@@ -575,7 +612,10 @@ export function createGitProjectSync({
     // `git add -A` over the working directory, so the room's content is untouched
     // and only the parent changes. A person-owned checkout keeps its own history
     // and is deliberately not reparented here.
-    if (appOwnedWorkingTree) await git(['update-ref', 'HEAD', fetched])
+    if (appOwnedWorkingTree) {
+      await git(['update-ref', 'HEAD', fetched])
+      await materializeMissingFiles(fetched)
+    }
     return { ok: true, status: 'observed', revision: fetched }
   }
 
