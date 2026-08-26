@@ -66,21 +66,27 @@ cp "$DEPLOYMENT_DIR/server.yaml" /root/.config/tlda/server.yaml
 cp "$DEPLOYMENT_DIR/daemon.yaml" /root/.config/tlda/daemon.yaml
 
 # --- Tailscale: join Skip's tailnet so the server is reachable privately ---
-# When TS_AUTHKEY is set (via `fly secrets`), this Fly machine joins the tailnet
-# as a node and serves the app over the tailnet's HTTPS (valid cert on the
-# .ts.net name). Fail-soft: if Tailscale doesn't come up, the server still starts
-# (the public fly.dev stays up during the cutover until the tailnet path is proven).
-if [ -n "$TS_AUTHKEY" ]; then
-  mkdir -p "$PERSIST/tailscale" /var/run/tailscale
-  tailscaled \
-    --state="$PERSIST/tailscale/tailscaled.state" \
-    --socket=/var/run/tailscale/tailscaled.sock \
-    --tun=userspace-networking &
-  # Wait for the daemon socket before `up`.
-  i=0; until tailscale --socket=/var/run/tailscale/tailscaled.sock status >/dev/null 2>&1 || [ $i -ge 30 ]; do i=$((i+1)); sleep 0.5; done
-  tailscale --socket=/var/run/tailscale/tailscaled.sock up \
-    --authkey="$TS_AUTHKEY" --hostname="${TS_HOSTNAME:-tlda-fly}" --accept-dns=false \
-    || echo "[entrypoint] tailscale up failed — continuing (public stays up)"
+# The mounted state is the durable node identity. TS_AUTHKEY is needed only for
+# first registration; a revoked setup key must not take an already-authorized
+# node back off the tailnet on its next deploy.
+mkdir -p "$PERSIST/tailscale" /var/run/tailscale
+tailscaled \
+  --state="$PERSIST/tailscale/tailscaled.state" \
+  --socket=/var/run/tailscale/tailscaled.sock \
+  --tun=userspace-networking &
+# Wait for the daemon socket before `up`.
+i=0; until tailscale --socket=/var/run/tailscale/tailscaled.sock status >/dev/null 2>&1 || [ $i -ge 30 ]; do i=$((i+1)); sleep 0.5; done
+
+if [ -n "${TS_AUTHKEY:-}" ]; then
+  echo "[entrypoint] registering with TS_AUTHKEY"
+  AUTH_ARG="--authkey=$TS_AUTHKEY"
+else
+  echo "[entrypoint] no TS_AUTHKEY - coming up from stored node identity"
+  AUTH_ARG=""
+fi
+
+if tailscale --socket=/var/run/tailscale/tailscaled.sock up \
+    $AUTH_ARG --hostname="${TS_HOSTNAME:-tlda-fly}" --accept-dns=false --timeout=45s; then
   # Proxy the tailnet HTTPS to the local server (valid cert on the .ts.net name).
   # `serve` keeps that name tailnet-only and is the default for every
   # deployment. `funnel` publishes the same name to the public internet, and is
@@ -90,7 +96,9 @@ if [ -n "$TS_AUTHKEY" ]; then
   TS_EXPOSE=serve
   [ -n "$TS_FUNNEL" ] && TS_EXPOSE=funnel
   tailscale --socket=/var/run/tailscale/tailscaled.sock "$TS_EXPOSE" --bg --https=443 http://127.0.0.1:5176 \
-    || echo "[entrypoint] tailscale $TS_EXPOSE failed — continuing"
+    || echo "[entrypoint] ERROR: tailscale $TS_EXPOSE failed - browsers cannot reach this server"
+else
+  echo "[entrypoint] ERROR: tailscale up failed - browsers cannot reach this server"
 fi
 
 # --- Run-once: merge pre-cutover chat history into fleet.db ---
