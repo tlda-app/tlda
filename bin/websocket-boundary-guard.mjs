@@ -126,21 +126,6 @@ const ALLOWED = {
     reason: 'Reads a message back by the id the server assigned it, over the socket the MCP transport uses. The wire is the whole claim: thread(message_id:) sends the ephemeral verb `event-by-id` and dispatchFleetWsMessage answers it, and calling both functions in one process would prove the two ends and not that they are joined. Endpoint: /ws/fleet.',
   },
 
-  'bin/the-room-and-a-git-remote-test.mjs': {
-    count: 1,
-    category: 'tooling',
-    reason: 'Source-room client speaking the room\'s JSON frames against a linked git remote. Endpoint: /source-sync/.',
-  },
-  'bin/typing-when-the-socket-goes-away-test.mjs': {
-    count: 2,
-    category: 'tooling',
-    reason: 'Two source-room clients: the story is a socket dying mid-edit, which needs one connection to lose and one to observe with. Endpoint: /source-sync/.',
-  },
-  'scripts/fly-edge-proxy-hold-test.mjs': {
-    count: 1,
-    category: 'tooling',
-    reason: 'Proves an RFC 6455 upgrade survives the edge proxy\'s TCP pipe, which is what the canvas and fleet chat ride on across a deploy. The transport library speaks the fleet protocol and would prove the library; this needs a bare upgrade against a local echo server to show the pipe does not parse. Endpoint: the proxy itself, no server.',
-  },
   'scripts/backfill-agent-models.mjs': {
     count: 1,
     category: 'tooling',
