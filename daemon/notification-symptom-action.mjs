@@ -45,3 +45,19 @@ export function actionForSymptom(symptom) {
   if (!Object.hasOwn(NOTIFICATION_SYMPTOM_ACTION, symptom)) return null
   return NOTIFICATION_SYMPTOM_ACTION[symptom] ?? null
 }
+
+export async function performNotificationSymptomAction({ symptom, checkAlive, ensureProcess, restart }) {
+  const action = actionForSymptom(symptom)
+  if (!action) return null
+  if (action === 'ensure-process') {
+    await ensureProcess()
+    return 'wake'
+  }
+  const alive = await checkAlive()
+  if (!alive) {
+    await ensureProcess()
+    return 'wake'
+  }
+  await restart()
+  return 'restart'
+}
