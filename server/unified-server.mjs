@@ -4678,12 +4678,48 @@ app.get('/docs/manifest.json', requireRead, async (req, res) => {
   res.json(manifest)
 })
 
+/**
+ * The project name out of a `/docs/<name>/…` path.
+ *
+ * `req.path` is NOT url-decoded, so a name the client percent-encoded arrives
+ * here still encoded and never matches the directory on disk. A classroom
+ * submission is the case that made this visible: a student id is
+ * `<course>:<login>`, so the project is `submission-<assignment>-<course>:<login>`,
+ * `ProblemMarking` asks for it through `encodeURIComponent`, and the `%3A`
+ * 404s — while the same request with a bare `:` is served. Marking therefore
+ * showed "has not finished rendering" for every student who actually
+ * registered, against a document that had rendered fine. The demo fixtures are
+ * `d-ada`/`d-bo`, which carry no colon and so never showed it.
+ *
+ * Malformed input falls back to the raw segment: `decodeURIComponent` throws on
+ * a lone `%`, and a 404 for a name nobody has is better than a 500.
+ *
+ * **Decoding is what makes path containment this function's problem.** Before
+ * it, `parts[0]` came from a `split('/')` and could not hold a separator. After
+ * it, `%2F` is a `/` and `%2E%2E` is `..`, and the result is handed to
+ * `join(PROJECTS_DIR, name, …)` — so a decoded name carrying either would walk
+ * out of the projects directory. A segment that decodes into a path is not a
+ * project name; the raw segment goes back, matches nothing, and 404s.
+ */
+function docsProjectName(segment) {
+  let decoded
+  try {
+    decoded = decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
+  // A separator cannot appear in a name, and `.`/`..` are not names — the
+  // separator test alone would let `..` through, since it holds neither.
+  if (/[/\\]/.test(decoded) || decoded === '.' || decoded === '..') return segment
+  return decoded
+}
+
 // Serve sub-resources of html-format projects without auth (CSS, JS, fonts from site_libs)
 // These are Quarto framework files loaded by iframes that can't pass auth headers
 app.use('/docs', async (req, res, next) => {
   const parts = req.path.slice(1).split('/')
   if (parts.length < 3) return next() // need at least /name/site_libs/...
-  const name = parts[0]
+  const name = docsProjectName(parts[0])
   const filePath = parts.slice(1).join('/')
   // Skip auth for non-HTML sub-resources in html-format projects
   // (CSS, JS, fonts, figures — loaded by iframes that can't pass auth headers)
@@ -4728,7 +4764,7 @@ app.use('/docs', (req, res, next) => {
   // Extract name from /docs/{name}/rest-of-path
   const parts = req.path.slice(1).split('/')
   if (parts.length < 2) return next()
-  const name = parts[0]
+  const name = docsProjectName(parts[0])
   const filePath = parts.slice(1).join('/')
   const gated = await runDocsAccessCheck(req, res, name)
   if (gated) return gated === 'sent' ? undefined : next(gated)
