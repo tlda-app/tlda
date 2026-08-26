@@ -104,7 +104,11 @@ test('an unresolved listed pane suppresses the complete generation', async () =>
   assert.deepEqual(f.sent, [])
 })
 
-test('duplicate live fleet identities suppress the complete generation', async () => {
+// This test used to assert `sent` was empty: a duplicate identity suppressed the
+// whole generation. That is the all-or-nothing behaviour removed here. The pane
+// is ambiguous, but the STATUS is not -- whichever pane it is, the id is live --
+// so the ambiguous extra pane is dropped and the agent is still reported awake.
+test('duplicate live fleet identities report the agent once instead of suppressing the generation', async () => {
   const f = fixture({
     processes: [
       { session: 'fleet-duplicate-a', pid: 201 },
@@ -122,7 +126,36 @@ test('duplicate live fleet identities suppress the complete generation', async (
 
   await f.status.scanStatus('duplicate')
 
-  assert.deepEqual(f.sent, [])
+  assert.equal(f.sent.length, 1)
+  assert.deepEqual(f.sent[0].agents.map(a => a.agent_id), ['fleet:duplicate'])
+  assert.equal(f.sent[0].snapshot_complete, true)
+})
+
+// THE COUNTERFACTUAL for the always-hibernating defect. Before this change the
+// unidentifiable pane threw, `scanStatus` returned, and NOTHING was sent -- so no
+// agent received a runtime_status and the whole fleet rendered as hibernating.
+// `tmux list-sessions` returns every session on the machine, so an ordinary shell
+// reaches this code path as readily as a broken harness.
+test('one unidentifiable pane does not suppress status for the panes that are identifiable', async () => {
+  const f = fixture({
+    processes: [
+      { session: 'fleet-busy', pid: 101 },
+      { session: 'fleet-idle', pid: 102 },
+      { session: 'fleet-stable', pid: 103 },
+      { session: 'skips-own-shell', pid: 999 },
+    ],
+  })
+  f.status.armAgent('fleet:busy')
+
+  await f.status.scanStatus('unidentifiable-pane')
+
+  assert.equal(f.sent.length, 1, 'a batch is still published')
+  const batch = f.sent[0]
+  // fleet:stable belongs to mini:stable, so it is correctly excluded by daemon key
+  // rather than by the malformed pane.
+  assert.deepEqual(batch.agents.map(a => a.agent_id).sort(), ['fleet:busy', 'fleet:idle'])
+  assert.ok(batch.agents.every(a => a.status === 'awake'))
+  assert.equal(batch.snapshot_complete, true)
 })
 
 test('a newer complete status batch replaces a queued older tick', () => {

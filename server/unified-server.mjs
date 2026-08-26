@@ -9384,6 +9384,11 @@ async function handleDaemonWsMessage(ws, msg) {
         lastSequence: daemonAgentStatusSequences.get(generationKey) || 0,
         routedAgents,
         knownAgents,
+        // A dropped row used to drop the whole batch, so its refusal was loud by
+        // construction. Now that valid rows survive it, say which row was refused
+        // -- a cross-daemon identity claim arrives through here.
+        onSkip: result => console.warn(
+          `[fleet] agent-status: skipped row ${result?.agent_id || '<no agent_id>'} from ${ws._daemonKey}`),
       })
       if (!accepted) return
       await fleetStore.admitDaemonAgentStatusIdentities(accepted.admissions, ws._daemonKey)

@@ -245,13 +245,18 @@ test('accepts only a newer complete batch owned by the socket daemon', () => {
     agents: [agent],
   }), null)
 
-  assert.equal(validateDaemonAgentStatusBatch({
+  // An agent routed to another daemon is refused, but as a ROW: this daemon does
+  // not get to report it awake, and the rest of the batch is unaffected. This
+  // previously nulled the whole batch; the ownership boundary is what matters and
+  // it is unchanged.
+  const foreign = validateDaemonAgentStatusBatch({
     message,
     daemonKey: 'mini:testing',
     bootId: 7,
     lastSequence: 1,
     agents: [{ ...agent, route_daemon_key: 'mini:stable' }],
-  }), null)
+  })
+  assert.deepEqual(foreign.results, [], 'the foreign-routed agent is not reported awake')
 })
 
 test('an empty complete batch hibernates every routed agent', () => {
@@ -331,4 +336,70 @@ test('an old boot queued after takeover has no side effects', async () => {
   await Promise.all([current, superseded])
   assert.deepEqual(events, ['new-start', 'new-end'])
   assert.equal(chains.size, 0)
+})
+
+// THE COUNTERFACTUAL at the server boundary. Row-level checks used to `return
+// null`, discarding every valid agent's status travelling in the same message.
+test('one malformed row does not discard the valid awake and hibernating rows beside it', () => {
+  const awake = { id: 'fleet:awake', route_daemon_key: 'mini:testing' }
+  const sleeping = { id: 'fleet:sleeping', route_daemon_key: 'mini:testing' }
+  const skipped = []
+  const accepted = validateDaemonAgentStatusBatch({
+    message: {
+      ...message,
+      agents: [
+        { agent_id: 'fleet:awake', status: 'awake', activity: 'thinking', tool: null },
+        { agent_id: 'fleet:nonsense', status: 'banana', activity: '', tool: null },
+        { agent_id: 'fleet:sleeping', status: 'hibernating', activity: 'idle', tool: null },
+      ],
+    },
+    daemonKey: 'mini:testing',
+    bootId: 7,
+    lastSequence: 1,
+    agents: [awake, sleeping],
+    onSkip: result => skipped.push(result?.agent_id),
+  })
+
+  assert.ok(accepted, 'the batch survives a malformed row')
+  assert.equal(accepted.sequence, 2)
+  assert.deepEqual(skipped, ['fleet:nonsense'])
+  const byId = new Map(accepted.results.map(r => [r.agent_id, r]))
+  assert.equal(byId.get('fleet:awake').status, 'awake')
+  assert.equal(byId.get('fleet:sleeping').status, 'hibernating')
+  assert.equal(byId.has('fleet:nonsense'), false)
+})
+
+test('a message from the wrong daemon boot is still rejected whole', () => {
+  assert.equal(validateDaemonAgentStatusBatch({
+    message, daemonKey: 'mini:testing', bootId: 9, lastSequence: 1, agents: [agent],
+  }), null)
+  assert.equal(validateDaemonAgentStatusBatch({
+    message, daemonKey: 'mini:testing', bootId: 7, lastSequence: 2, agents: [agent],
+  }), null, 'a replayed sequence is refused')
+})
+
+test('a cross-daemon identity claim is dropped as a row without taking the batch with it', () => {
+  const mine = { id: 'fleet:mine', route_daemon_key: 'mini:testing' }
+  const theirs = { id: 'fleet:theirs', route_daemon_key: 'mini:stable' }
+  const skipped = []
+  const planned = planDaemonAgentStatusBatch({
+    message: {
+      ...message,
+      agents: [
+        { agent_id: 'fleet:mine', status: 'awake', activity: 'idle', tool: null, identity: { friendly_name: 'mine', runtime_kind: 'codex' } },
+        { agent_id: 'fleet:theirs', status: 'awake', activity: 'idle', tool: null, identity: { friendly_name: 'theirs', runtime_kind: 'codex' } },
+      ],
+    },
+    daemonKey: 'mini:testing',
+    bootId: 7,
+    lastSequence: 1,
+    routedAgents: [mine],
+    knownAgents: [mine, theirs],
+    onSkip: result => skipped.push(result?.agent_id),
+  })
+
+  assert.ok(planned)
+  assert.deepEqual(skipped, ['fleet:theirs'], 'the claim is refused')
+  assert.deepEqual(planned.admissions.map(a => a.id), ['fleet:mine'])
+  assert.equal(planned.results.some(r => r.agent_id === 'fleet:theirs'), false)
 })
