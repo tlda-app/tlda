@@ -337,6 +337,44 @@ them were asked it at the time. The reason is worth naming: **an instrument
 failure and a serious defect produce the same reading, and the serious defect is
 more interesting.** Attention goes to the finding, not to the ruler.
 
+### 12. A monitor that flags designed behaviour as a fault
+
+**The check runs correctly, reads real state, and reports a contradiction that
+is not one** — because the premise in its own comment is wrong about what the
+system does. It cannot go green, so it fires forever.
+
+**Measured 2026-08-26.** `dev-bot.mjs`'s `document-surfaces` check:
+
+```js
+// A build reported failed while the pages it supposedly failed to make are
+// being served.
+if (project.buildStatus === 'error' && built) { … }
+```
+
+Those pages are not the ones the build failed to make. They are the *previous*
+good ones, kept on purpose — the server says so in the throw itself,
+`server/lib/build-runner.mjs:200`:
+
+```js
+throw new Error(`LaTeX produced ${errors.length} error(s); keeping the last successful render`)
+```
+
+So `buildStatus: error` **plus** served pages is the documented success path of a
+failed build: the author's last working render stays up instead of the document
+going blank. There is a test asserting that message.
+
+**Why this one is worse than noise.** It had fired unchanged for 236 minutes
+naming four projects, two of them Skip's, so anyone reading it cold concludes his
+papers are broken. And `document-surfaces` also carries the spinner check and the
+`/macros` check, which are real — **a permanently-red alarm trains everyone to
+ignore the report that contains the true findings.**
+
+**The check that catches it: make the monitor go green.** Not "does it fire on
+the bad case" but "is there any reachable state in which it is silent". A monitor
+with no green state is not measuring; it is asserting. This is the emptiness
+control pointed at an alarm rather than a query — and it is cheap, because you
+only have to name one state and check the code permits it.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see
