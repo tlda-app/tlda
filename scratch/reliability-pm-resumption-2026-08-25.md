@@ -1225,3 +1225,42 @@ Runner used: `scratch/relink-one.mjs` (gitignored, regenerable, a tool not a
 resumption point). It rechecks every precondition at action time, crosses the
 source room rather than reading `/source/` and calling that the browser, and
 restores before asserting so a failed arrival cannot leave an edit behind.
+
+## 2026-08-26 — isolated: the conflict-marker publication, and a second defect
+
+**The markers did not predate the run.** The conflict hunk carried the canary
+written by the runner in that same run.
+
+**First failing node.** `server/lib/source-room-daemon.mjs`,
+`applyAcceptedSourceMutation`. On conflict `mergeText` returns
+`conflicted: true` AND the marker-laden stdout, and the caller runs
+`replaceYText(room.ytext, merged.text)` **unconditionally**. The markers are in
+the shared Yjs document -- what viewers see, what the room flushes -- before
+`room.blocked = merged.conflicted` is assigned. `blocked` is set after the fact
+and gates nothing; `hasConflictMarkers()` sits in the same file and is never
+consulted here. `reconcileRoomToRevision` has the same shape.
+
+**Red test: branch `room-conflict-proof`, `54cb7f2c1`.**
+`node --import tsx --test server/lib/source-room-never-publishes-conflict-markers.test.mjs`
+Deterministic and offline. Red on main, green with a one-line guard (verified,
+then reverted), so it is satisfiable rather than impossible. Held on a branch so
+main's suite is not red while the repair is chosen. It asserts ONLY that
+conflicted output never reaches the document -- not which side wins.
+
+**A SECOND defect, found by the timing sweep and not yet diagnosed.** With a
+room open, a disk edit at a 0s gap is **silently lost** -- the server keeps the
+room's text, no conflict, no error. At 15s and 30s it is clean. And with two
+sides editing the SAME line deterministically, the published document carries
+the browser edit and **not** the disk edit. The disk author's work vanishes with
+no warning. **The node that drops it is NOT established** -- do not repeat a
+cause for this one.
+
+**Repair options reported to the chief, none implemented, none choosing a
+winner:** (1) don't write conflicted output into the room; set `blocked` and
+record through the existing `recordHeldEdit` hook; (2) gate the flush path on
+`hasConflictMarkers()`; (3) the deletion option -- drop the three-way merge and
+treat divergence as a held edit, which changes semantics. Leaning (1).
+
+Harnesses `scratch/room-conflict-repro.mjs` and
+`scratch/room-divergent-repro.mjs` are force-added on that branch.
+Disposable project verified consistent across disk, server and room.
