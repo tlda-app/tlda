@@ -308,6 +308,33 @@ three routes **concurrently into one document**. Serial-and-same-file still
 never overlapped in time. Skip: *"not that you can AVOID TESTING THE STUFF
 THAT'S ACTUALLY HARD"*.
 
+### THE REPAIR UNIT IS THE DIRECTORY, NOT THE BINDING
+
+Read-only audit, all 129 testing bindings grouped by canonical realpath → **113
+distinct directories**, each classified by its **worst** binding:
+
+| | directories |
+|---|---|
+| **DIVERGED** | **11** |
+| never-synced (no server head) | 10 |
+| no-project (server 404) | 21 |
+| missing directory | 34 |
+| safe | 37 |
+
+**9 directories carry more than one binding, and 3 of those contain a DIVERGED
+one.** So a "safe" binding can share a working tree with a diverged binding, and
+repairing it is not isolated: relink moves the branch and the tree the other
+binding also sits on. A per-binding loop touches such a directory more than once
+and can act on a tree it has already invalidated.
+
+**So: a directory is repairable only if EVERY binding in it is safe.** That also
+removes the ordering problem rather than managing it.
+
+**And 55 of 113 directories are debris** — 34 gone, 21 naming projects the server
+404s. Nearly half the bindings file. Any two people counting "repairable" will
+disagree until they say how much debris they are counting; that was the whole of
+the 40-vs-35 argument.
+
 ### THE REPAIRABLE SET IS 1, NOT 35 — and two reasons nobody had looked at
 
 Re-evaluating the 35 "safe" candidates at action time:
