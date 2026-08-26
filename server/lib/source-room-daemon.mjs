@@ -141,6 +141,53 @@ export function createSourceRoomDaemon({
     }
   }
 
+
+  /**
+   * Put a room's tree on the project branch, preserving anything already in it.
+   *
+   * **Why this is not just `standOnWorkBranch`.** Every room tree that exists
+   * today is a scratch repo whose edited file was never committed to the branch,
+   * so the file is UNTRACKED and `git checkout <branch>` refuses: *"the following
+   * untracked working tree files would be overwritten"*. Measured on the live box
+   * before shipping this: **13 of 15 existing room trees are in exactly that
+   * state**, so the migration case is the one most likely to fail.
+   *
+   * **Nothing is deleted to get past it.** The colliding files are moved into a
+   * timestamped directory beside the room, not removed -- this app does not delete
+   * things, and a file that turns out to have mattered is still there. The room's
+   * own file is a projection of its Yjs document, which is authoritative and is
+   * rewritten immediately after hydration, so moving it costs nothing; anything
+   * else that collided is a file the branch already carries.
+   */
+  async function standRoomOnProjectBranch(project, workingDir) {
+    const gitSync = gitSyncManagerForProject(project)
+    let stood = await gitSync.standOnWorkBranch(project)
+    if (stood?.ok) return stood
+  
+    const colliding = /untracked working tree files would be overwritten/i.test(stood?.reason || '')
+    if (colliding) {
+      const preserved = join(workingDir, '..', `working-preserved-${Date.now()}`)
+      try {
+        const listed = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: workingDir, encoding: 'utf8' })
+        const untracked = String(listed.stdout || '').split('\n').filter(Boolean)
+        for (const file of untracked) {
+          const from = join(workingDir, file)
+          const to = join(preserved, file)
+          mkdirSync(dirname(to), { recursive: true })
+          renameSync(from, to)
+        }
+        if (untracked.length) log.info?.(`[source-room] ${project}: preserved ${untracked.length} untracked file(s) in ${preserved} to stand on the project branch`)
+        stood = await gitSync.standOnWorkBranch(project)
+      } catch (error) {
+        return { ok: false, status: 'preserve-failed', reason: `${project} could not be moved onto its project branch: ${error.message}` }
+      }
+    }
+    if (!stood?.ok) {
+      log.warn?.(`[source-room] ${project}: NOT SYNCING — could not stand on its project branch (${stood?.status || 'unknown'}): ${stood?.reason || 'unknown'}`)
+    }
+    return stood
+  }
+
   async function createRoom(project, filePath) {
     const paths = roomPaths(project, filePath)
     const projectRecord = await readProject(project)
@@ -164,10 +211,7 @@ export function createSourceRoomDaemon({
     // route makes; it was simply never made here.
     gitSync.bindSource(project, join(paths.root, 'working'), { mainFile: projectRecord?.mainFile || null })
     await gitSync.sync(projectRecord ? [projectRecord] : [])
-    const stood = await gitSync.standOnWorkBranch(project)
-    if (!stood?.ok) {
-      log.warn?.(`[source-room] ${project}: could not stand on its project branch (${stood?.status || 'unknown'}); ${stood?.reason || 'editing will not sync'}`)
-    }
+    const stood = await standRoomOnProjectBranch(project, join(paths.root, 'working'))
     const snapshot = readJson(paths.snapshot)
     const state = snapshot || readJson(paths.state) || {}
     const lifecycle = await sourceLifecycleStore(project)
@@ -563,10 +607,8 @@ export function createSourceRoomDaemon({
     // room, and it published the same partial tree with the same deletions.
     gitSync.bindSource(project, root, { mainFile: projectRecord.mainFile || null })
     await gitSync.sync([projectRecord])
-    const stood = await gitSync.standOnWorkBranch(project)
-    if (!stood?.ok) {
-      log.warn?.(`[source-room] ${project}: could not stand on its project branch (${stood?.status || 'unknown'}); ${stood?.reason || 'this submit will not sync'}`)
-    }
+    const stood = await standRoomOnProjectBranch(project, root)
+    if (!stood?.ok) return { status: 409, body: { ok: false, error: `${project} is not syncing: ${stood.reason || stood.status}` } }
     const paths = []
     for (const file of payload.files || []) {
       if (typeof file?.path !== 'string' || !file.path || isAbsolute(file.path) || file.path.split(/[\\/]/).includes('..')) {

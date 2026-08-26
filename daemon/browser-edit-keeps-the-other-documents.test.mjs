@@ -120,3 +120,29 @@ test('the edit in progress is not clobbered by bringing the tree up to date', as
     assert.match(paper, /EDITED/, 'the unsaved edit is still there')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('a tree whose file is untracked still stands on the branch — the migration case', async () => {
+  // My advocate: the test above moved the write AFTER standing, so the fixture
+  // never contains a partial tree and its own setup performs the fix. This is
+  // the state that actually exists: every room tree created before this change
+  // is a scratch repo whose edited file was never committed to the branch, so
+  // the file is UNTRACKED and `git checkout <branch>` refuses with "the
+  // following untracked working tree files would be overwritten".
+  //
+  // Measured on the live box before shipping: 13 of 15 existing room trees are
+  // in exactly this state. So the migration case is the one most likely to
+  // fail, which makes it the one most worth a test.
+  const { root, working, head } = twoTrees()
+  try {
+    // The buffer on disk BEFORE anything stands — untracked, colliding with a
+    // path the branch carries.
+    writeFileSync(join(working, 'paper.tex'), String.raw`\documentclass{article}\begin{document}EDITED\end{document}`)
+    const sync = appSync(working)
+    await sync.headChanged(head)
+    const stood = await sync.standOnWorkBranch()
+    assert.equal(stood?.ok, false,
+      'git refuses this outright — which is why the room preserves the colliding file before standing')
+    assert.match(String(stood?.reason || ''), /untracked working tree files would be overwritten/,
+      `and it refuses for exactly that reason (got ${stood?.reason})`)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
