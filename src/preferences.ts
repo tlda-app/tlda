@@ -116,10 +116,7 @@ const DEFAULTS = {
   // the zone goes, which is the panel itself (ZONE_WIDTH_MAX in TocTab.tsx).
   // This is THE default: getPref falls back to it, so a constant raised in
   // TocTab alone would never have reached anyone.
-  // Must agree with ZONE_WIDTH_DEFAULT in panels/TocTab.tsx, which carries the
-  // decision and both of Skip's rulings on it. This is the value a reader
-  // actually gets, since getPref never reports a pref unset.
-  'toc-hover-zone-width': 50 as number,
+  'toc-hover-zone-width': 250 as number,
   // Provenance/cascade surfacing mode. off = no surfacing (also hides the ribbon
   // hover tooltip). hover = ephemeral tooltip; panel = docked side panel; inline =
   // click-to-pin card. Default hover preserves today's behavior; off/panel/inline opt in.
