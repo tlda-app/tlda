@@ -2272,3 +2272,63 @@ memory graph by breaking that, and no memory chart would show it.
 **Side effect caused while hunting for a renderable project:** an automated tab was
 pointed at **`fleet-workspace`**, which applies the fleet layout preset and writes
 fleet shapes into that shared room. Not swept back out.
+
+## 2026-08-26 (later) — the patched bundle, and what its proofs did and did not show
+
+Branch `fix/chat-row-ro-gate`. `9c5bf5f13` restructures the comparison so the
+observer keeps last-seen heights in its **own closure** rather than reading
+`heightByKeyRef` — lint **45**, equal to unmodified `main` (the earlier form was
+46). Better on the merits too: the layout effect owns that map and writes it on
+its own schedule. `c4ee70a07` merges `main` for the preview seeder.
+
+**The rig that finally worked**, after six failed routes recorded above:
+`tlda-dev serve start --real-fleet --no-build`, then unarchive its own scratch
+project — the route is `PATCH /api/projects/:name/archive` with
+`{"archived":false}`. There is **no** `PATCH /api/projects/:name`. Result: 1255
+nodes, 7 chat rows, patched bundle, no crash.
+
+### Proof 1 — idle self-scheduling: GREEN
+
+294 observe / 276 unobserve per 5 s unpatched, against **0 / 0** patched, both on
+**stable idle geometry**. Counter verified live (a fresh observer incremented it).
+
+**Correction to how this was first read.** Re-measured later the patched tab
+showed **40 observe / 37 unobserve per 5 s** — because **the patch gates the state
+bump, not the `observe()` calls.** The inline ref still re-observes every row on
+every render, so observation tracks *genuine* renders; the 40 was live chat
+arriving with rows going 7 → 11. The green stands (idle vs idle), but "0
+observes" is **not** a general property of the patched build.
+
+### Proof 2 — delayed row-height growth: GREEN, with a RED
+
+| condition | row grew | row below moved |
+|---|---|---|
+| patched, observation live | 300 px | **300 px**, exact |
+| patched, chat-row observation blocked | 300 px | **0 px** |
+
+The red is the point: the test can fail, so the pass means something. This is the
+proof that mattered — a gate on remeasurement is exactly the fix that flattens
+memory by breaking layout, and no memory chart would show it.
+
+### Proof 3 — slope: INCONCLUSIVE
+
+First 18 min looked favourable (1.05 vs 2.10 MB/min). **Extended to 22 min it
+converged: patched 2.44, unpatched 2.26.** The early advantage was a short-window
+artifact.
+
+**And the comparison is confounded anyway.** The patched tab was **ingesting live
+fleet chat** (rows 7 → 11) while the control sat **static at 3 rows**. Accumulated
+messages are real retained memory. Two tabs, two projects, two bundles, unequal
+chat activity — the paired timing controls machine noise and none of that.
+
+**So: not "flattens", not "does not flatten".** The rig cannot separate the patch
+from unequal ingestion.
+
+**The memory evidence still rests on the same-tab suppression** — one tab, one
+process, one variable toggled, same wall clock: **2.26 → 0.14 MB/min**. That is
+the measurement to extend, not this one.
+
+### What would settle proof 3
+
+Patched and unpatched bundles of the **same** project, matched row counts, an idle
+window with no chat arriving — or a longer same-tab suppression run.
