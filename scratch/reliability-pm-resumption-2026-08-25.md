@@ -1154,3 +1154,32 @@ forever. That is the lockout chain still open. The tempting fix — reparent the
 proposal onto the fetched head, same tree — is last-writer-wins at file
 granularity against a concurrent browser edit, which is Skip's call and not
 mine.
+
+## 2026-08-26 — one REAL relink, and two findings that change the picture
+
+Selection funnel: 39 real single-binding candidates -> 28 whose directory
+exists and whose record is reachable -> 18 carrying no document roots -> 11
+meeting every git precondition -> excluding paper-named projects, Skip's
+current viewer document, and anything over 2 pages -> **8 eligible, 1 taken**.
+Preconditions were re-run at action time rather than inherited from the audit.
+Relink: no source argument, exit 0, 12s. Roots not invented. HEAD unchanged,
+clean, still an ancestor of the server head. Marker to `README.md` reached the
+server in 15s and was read back across the source-room websocket; local and
+server both restored byte-identically.
+
+**Finding 1: `project link` moves the checkout onto the daemon work branch.**
+This one went from `master` to the work branch -- same HEAD sha, clean tree,
+nothing lost. It was NOT moved back, deliberately: Skip's rule is that a
+checkout commits and pushes only while a daemon-managed branch is checked out,
+so restoring `master` would switch sync off for that checkout and undo the
+repair. It is still an unrequested visible change to a real directory and it
+will happen to all 8. Flagged to the chief; not proceeding until answered.
+
+**Finding 2: the "18 rootless projects" number came from an instrument that
+could not tell an absent field from an empty one.** The audit tested
+`(documentRoots || []).length === 0`, which reports a MISSING key as rootless.
+Re-measured across all 18: **the key is absent in 18 and explicitly `[]` in
+none.** The disposable fixture had an explicit `[]`, so the two are genuinely
+different record shapes and had been conflated. `documentRootsToDeclare`
+preserves both, so the fix is unaffected -- but the count means "18 records
+carry no documentRoots key", not what was previously reported.
