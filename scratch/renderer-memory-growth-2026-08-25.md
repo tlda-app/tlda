@@ -2134,3 +2134,55 @@ list.
 
 `pkill -f baseline.js` over ssh killed its own shell: the ssh command line
 contains the pattern. Verify with a command that does not contain it.
+
+### The callsite, without CDP: wrap `rAF` and record registration stacks
+
+The `rAF` loop re-registers every frame, so an in-page wrapper recovers the
+callsites that CDP was wanted for. Third cold tab, renderer **49343**
+(ballast-confirmed distinct). 1468 registrations in 90 s across **four** sites,
+sourcemapped against the deployed bundle `index-B6AoulfA.js`:
+
+| n / 90 s | resolved source |
+|---|---|
+| 1144 | `@tldraw/utils/dist-esm/lib/throttle.mjs` — `FpsScheduler.tick` |
+| **314** | **`react-virtuoso/dist/index.mjs:309`** via `ResizeObserver` |
+| 9 | `throttle.mjs:36` |
+| 1 | the self-test |
+
+~3.5 frames/second scheduled by a resize observer **on an idle tab**.
+
+#### Selective suppression names the boundary
+
+Wrapper installed for **both** phases, so it is not a confound — and the baseline
+slope matches the untouched tabs (17–23 MB/min), which is the evidence for that.
+
+| phase | `rAF` live | window | footprint | slope |
+|---|---|---|---|---|
+| baseline | both | 16:29:09 → 16:37:22 | 360 → 521 MB | 19.6 MB/min |
+| `ResizeObserver` blocked | `FpsScheduler` only | 16:41:25 → 16:49:30 | 629 → 634 MB | **0.6 MB/min** |
+
+**Rendering continued** — this is not the coarse stop-all-painting intervention.
+With blocking active, a 5 s window saw 52 registrations, 18 blocked, **34 passed
+through** to `FpsScheduler`. Tab alive (10⁶ loop on demand), nodes 1048 → 1451,
+heap 56 MB.
+
+The blocker self-tested three ways first: non-matching fires, matching is blocked
+without firing, others keep firing while blocking is active.
+
+#### Mechanism: `FpsScheduler` is one self-sustaining chain
+
+`FpsScheduler.tick` re-registers from **inside its own callback**. Blocking it once
+ends the whole chain — 1 block in 4 s, not ~28. Raw registration counts therefore
+overstate how many distinct schedulers exist.
+
+#### What is NOT established
+
+Blocking that callback also stops the work it schedules. So **the allocation is
+downstream of `react-virtuoso:309`** is established; **that callback is the bug**
+is not — the allocation may sit in a render path the observer merely triggers.
+One run, one tab. The reciprocal (`FpsScheduler` blocked, `ResizeObserver` live)
+was running when this was written.
+
+Plausibility only, not evidence: `react-virtuoso` renders the chat list, and
+`docs/chat-rendering.md` exists because writes there trigger observers that
+trigger writes.
