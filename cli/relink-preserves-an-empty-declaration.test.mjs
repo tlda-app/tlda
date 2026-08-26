@@ -13,13 +13,13 @@
  * something else.
  */
 import assert from 'node:assert/strict'
-import { execFile as execFileCb } from 'node:child_process'
+import { execFile as execFileCb, spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import test from 'node:test'
+import test, { after, before } from 'node:test'
 
 import { startServer, stopServer, unusedPort } from '../server/lib/unified-server-test-harness.mjs'
 
@@ -28,30 +28,76 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), 'tlda.mjs')
 
 const git = (cwd, args) => execFile('git', args, { cwd, encoding: 'utf8' })
 
-/** Run the CLI exactly as a person would, against the test server. */
-async function cli(cwd, args, base) {
-  try {
-    const { stdout, stderr } = await execFile(process.execPath, [CLI, ...args, '--server', base], {
-      cwd, encoding: 'utf8', timeout: 120_000, env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: '0', GIT_SSL_NO_VERIFY: '1' },
+/**
+ * Run the real CLI and STOP WATCHING once it has passed a named stage.
+ *
+ * A relink continues into a push through the daemon's git remote, and this
+ * harness runs a server with no daemon behind it, so the command would sit
+ * there until whatever timeout it was given. Waiting for that costs two minutes
+ * per run and makes the record assertion happen only after a timeout error --
+ * which is a test whose timing is an accident rather than a decision.
+ *
+ * So the caller names the point it cares about, this returns as soon as the CLI
+ * prints it, and the child is stopped. The proof is unweakened: it is the real
+ * CLI against the real server, and the stage is one the CLI announces on its way
+ * past the thing under test.
+ */
+function cliUntil(cwd, args, base, until) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...args, '--server', base], {
+      cwd, env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: '0', GIT_SSL_NO_VERIFY: '1' },
     })
-    return { code: 0, out: `${stdout}${stderr}` }
-  } catch (error) {
-    return { code: error.code ?? 1, out: `${error.stdout || ''}${error.stderr || ''}` }
-  }
+    let out = ''
+    let settled = false
+    const finish = (reason, code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { child.kill('SIGKILL') } catch {
+        // Swallowed deliberately: the child has already exited on every path
+        // that reaches here except the reached-the-stage one, and failing to
+        // kill an already-dead process is not a test failure.
+      }
+      resolve({ out, reason, code })
+    }
+    // A cap, not the mechanism. If the CLI never reaches the stage the test
+    // fails on its assertions rather than hanging.
+    const timer = setTimeout(() => finish('timeout', null), 30_000)
+    const watch = chunk => { out += String(chunk); if (until.test(out)) finish('reached-stage', null) }
+    child.stdout.on('data', watch)
+    child.stderr.on('data', watch)
+    child.on('close', code => finish('exited', code))
+  })
 }
 
-test('an existing rootless project relinks, and its record is untouched', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'tlda-relink-rootless-'))
-  const projectsDir = join(root, 'projects')
-  const checkout = join(root, 'checkout')
-  const project = 'rootless-relink'
+// ONE server for both cases. They do not interact, and starting a second was
+// most of this file's runtime -- the CLI itself now returns as soon as it has
+// passed the stage under test.
+let server = null
+let base = ''
+let root = ''
+let previousTls
+
+before(async () => {
+  root = mkdtempSync(join(tmpdir(), 'tlda-relink-'))
   const port = await unusedPort()
-  const base = `https://127.0.0.1:${port}`
-  const previousTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED
+  base = `https://127.0.0.1:${port}`
+  previousTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
-  let server
-  try {
-    server = await startServer({ port, projectsDir, fleetDb: join(root, 'fleet.db') })
+  server = await startServer({ port, projectsDir: join(root, 'projects'), fleetDb: join(root, 'fleet.db') })
+})
+
+after(async () => {
+  if (server) await stopServer(server)
+  if (previousTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+  else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTls
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('an existing rootless project relinks, and its record is untouched', async () => {
+  const checkout = join(root, 'rootless-checkout')
+  const project = 'rootless-relink'
+  {
 
     // A project that declares NO document roots — the state 18 of Skip's
     // projects are in, and the one that had no way through this verb.
@@ -73,7 +119,13 @@ test('an existing rootless project relinks, and its record is untouched', async 
     await git(checkout, ['commit', '-m', 'author working copy'])
 
     // THE RELINK: no source, no roots.
-    const relink = await cli(checkout, ['project', 'link', project], base)
+    // "exists, pushing files" is printed AFTER the project record has been
+    // resolved and any record write would have happened, and BEFORE the daemon
+    // push this harness cannot satisfy. That is exactly the far side of the
+    // stage under test.
+    const relink = await cliUntil(checkout, ['project', 'link', project], base,
+      /exists, pushing files|Submitting |Submitted |Usage: tlda project link/)
+    assert.notEqual(relink.reason, 'timeout', `the CLI reached the push stage rather than hanging:\n${relink.out}`)
 
     // The exit code is deliberately NOT asserted, and the reason is worth
     // stating rather than hiding: the relink goes on to push through the
@@ -93,11 +145,6 @@ test('an existing rootless project relinks, and its record is untouched', async 
     assert.deepEqual(afterRecord.documentRoots, [], 'documentRoots is still empty — nothing was declared for it')
     assert.equal(afterRecord.mainFile, beforeRecord.mainFile, 'mainFile unchanged')
     assert.equal(afterRecord.format, beforeRecord.format, 'format unchanged')
-  } finally {
-    if (server) await stopServer(server)
-    if (previousTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
-    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTls
-    rmSync(root, { recursive: true, force: true })
   }
 })
 
@@ -105,15 +152,8 @@ test('a project that does not exist still requires a source', async () => {
   // The other half. Making roots optional must not make them optional for
   // CREATING a project, or `project link` silently starts inventing the
   // declaration from whatever directory it was run in.
-  const root = mkdtempSync(join(tmpdir(), 'tlda-relink-missing-'))
-  const checkout = join(root, 'checkout')
-  const port = await unusedPort()
-  const base = `https://127.0.0.1:${port}`
-  const previousTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
-  let server
-  try {
-    server = await startServer({ port, projectsDir: join(root, 'projects'), fleetDb: join(root, 'fleet.db') })
+  const checkout = join(root, 'missing-checkout')
+  {
     mkdirSync(checkout)
     await git(checkout, ['init', '-b', 'main'])
     await git(checkout, ['config', 'user.name', 'fixture'])
@@ -122,13 +162,9 @@ test('a project that does not exist still requires a source', async () => {
     await git(checkout, ['add', '-A'])
     await git(checkout, ['commit', '-m', 'author working copy'])
 
-    const attempt = await cli(checkout, ['project', 'link', 'no-such-project-here'], base)
+    const attempt = await cliUntil(checkout, ['project', 'link', 'no-such-project-here'], base,
+      /Usage: tlda project link/)
     assert.notEqual(attempt.code, 0, 'it refuses rather than creating a project from a bare name')
     assert.match(attempt.out, /Usage: tlda project link/, `and it says how to call it:\n${attempt.out}`)
-  } finally {
-    if (server) await stopServer(server)
-    if (previousTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
-    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTls
-    rmSync(root, { recursive: true, force: true })
   }
 })
