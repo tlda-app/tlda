@@ -25,6 +25,7 @@ import { createSourceLifecycleStore, projectRevisionStatus } from './source-life
 import { ProjectLifecycleStatusIndex, UNKNOWN_PROJECT_LIFECYCLE_STATUS } from './project-lifecycle-status-index.mjs'
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
+import { scanTexDependencyClosure } from '../../shared/tex-deps.mjs'
 import { normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 
 let projectsDir = null
@@ -520,9 +521,22 @@ async function sourceMembershipContext(project, owned) {
   const roots = referencedRootsFromPaths(referenced, owned)
   const reached = new Set(roots)
   for (const root of roots) {
-    if (!/\.(?:md|markdown)$/i.test(root)) continue
+    // A `.tex` root took `continue` here and reached nothing, while the push
+    // path has always walked the tex closure. Membership was decided by the
+    // side that could not see a figure: `\includegraphics` is the only edge
+    // that reaches one.
+    //
+    // The same two traversals the push path uses, chosen the same way. No third
+    // walk, and the include-graph/xr distinction is inherited from
+    // `scanTexDependencyClosure` rather than restated here -- `\externaldocument`
+    // is a link, not an edge, so two papers that cite each other stay two.
+    const closureFor = /\.tex$/i.test(root) ? scanTexDependencyClosure
+      : /\.(?:md|markdown|qmd)$/i.test(root) ? scanMarkdownDependencyClosure
+        : null
+    if (!closureFor) continue
     try {
-      for (const path of scanMarkdownDependencyClosure(root, sourceDir(project.name)).files) reached.add(path)
+      // `files` is the union of source and assets on both sides.
+      for (const path of closureFor(root, sourceDir(project.name)).files) reached.add(path)
     } catch {
       // A missing root remains a root; the source validator reports absence.
     }

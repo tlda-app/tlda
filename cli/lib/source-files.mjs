@@ -17,6 +17,7 @@ import {
   isTextSourcePath,
 } from '../../shared/source-manifest.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
+import { scanTexDependencyClosure } from '../../shared/tex-deps.mjs'
 
 export { SOURCE_EXTENSIONS }
 export const JUNK_PATTERNS = BUILD_JUNK_SUFFIXES
@@ -52,10 +53,24 @@ export function withReferencedRoots(dir, context = {}) {
     // to, and what those refer to. This is the same walk that already backs
     // markdown pushes and chat file-share rather than a second traversal — the
     // seed differs, the edge-following does not.
-    if (!/\.(?:md|markdown)$/i.test(projectRelative)) continue
+    //
+    // A `.tex` root took `continue` here and dragged in NOTHING. The push path
+    // has always branched on the extension and walked the tex closure
+    // (`daemon/git-project-sync.mjs`), so the two sides disagreed about what a
+    // tex document is made of, and the side that disagreed is the one that
+    // decides membership. A figure is reached only through `\includegraphics`,
+    // so it was reachable at push and invisible here.
+    //
+    // Same traversal, chosen by extension, exactly as the push path chooses it.
+    const closureFor = /\.tex$/i.test(projectRelative) ? scanTexDependencyClosure
+      : /\.(?:md|markdown|qmd)$/i.test(projectRelative) ? scanMarkdownDependencyClosure
+        : null
+    if (!closureFor) continue
     try {
-      const closure = scanMarkdownDependencyClosure(projectRelative, dir)
-      for (const rel of [...closure.files, ...closure.assets]) roots.add(rel)
+      const closure = closureFor(projectRelative, dir)
+      // `files` already unions the assets on the tex side; taking both is
+      // harmless there and required on the markdown side.
+      for (const rel of [...closure.files, ...(closure.assets || [])]) roots.add(rel)
     } catch {
       // A root whose closure cannot be read is still a member on its own.
     }
