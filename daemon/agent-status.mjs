@@ -75,6 +75,7 @@ export function createAgentStatus({
   const pendingTools = new Map()
   let scanInFlight = false
   let scanAgain = false
+  let lastSkippedKey = null
 
   function isArmed(agentId) {
     return armedSince.has(agentId)
@@ -182,15 +183,56 @@ export function createAgentStatus({
         let liveAgents
         try {
           const processes = listed.processes || []
-          const identities = await Promise.all(processes.map(resolveProcessIdentity))
-          if (identities.some((agent, index) => !isCompleteProcessIdentity(agent, processes[index]))) {
-            throw new Error('a listed pane has no complete fleet process identity')
-          }
-          liveAgents = identities.filter(agent => agent.daemonKey === daemonKey)
+          // A single pane must never decide the fate of the batch. `listSessions`
+          // returns EVERY tmux session on the machine, not just `fleet-` ones, so
+          // an ordinary shell — or a harness whose process lost its FLEET_*
+          // environment — is a pane we cannot identify, not a scan failure. This
+          // used to throw, and one such pane aborted every scan on this machine
+          // for three days: no batch was ever sent, so no agent ever received a
+          // runtime_status, and the absent-runtime_status default rendered the
+          // entire fleet as hibernating.
+          const identities = await Promise.all(
+            processes.map(process => Promise.resolve()
+              .then(() => resolveProcessIdentity(process))
+              .catch(() => null)),
+          )
+          const skipped = []
           const liveIds = new Set()
-          for (const agent of liveAgents) {
-            if (liveIds.has(agent.id)) throw new Error(`duplicate live fleet identity ${agent.id}`)
+          liveAgents = []
+          for (const [index, agent] of identities.entries()) {
+            const session = processes[index]?.session || '<unknown>'
+            if (!isCompleteProcessIdentity(agent, processes[index])) {
+              skipped.push(session)
+              continue
+            }
+            if (agent.daemonKey !== daemonKey) continue
+            // A duplicate id is genuinely ambiguous — we cannot tell which pane is
+            // the agent — so drop the ambiguous pane, not everyone else's status.
+            if (liveIds.has(agent.id)) {
+              skipped.push(`${session} (duplicate ${agent.id})`)
+              continue
+            }
             liveIds.add(agent.id)
+            liveAgents.push(agent)
+          }
+          // If panes were listed and NOT ONE of them could be identified, that is
+          // the instrument failing, not an empty machine -- publishing it as a
+          // complete snapshot would mark every routed agent hibernating. Keep the
+          // original all-or-nothing protection for exactly this case; it is the
+          // case the throw was right about. One bad pane among good ones is not.
+          if (processes.length && skipped.length === processes.length) {
+            log?.warn?.(`agent status identified none of ${processes.length} listed pane(s) (${reason}); not publishing`)
+            return
+          }
+          // Report the skipped set only when it changes. At the scan interval this
+          // otherwise emits the same line thousands of times a day, which is how
+          // the original failure stayed unread for three days.
+          const skippedKey = skipped.join(',')
+          if (skippedKey !== lastSkippedKey) {
+            lastSkippedKey = skippedKey
+            if (skipped.length) {
+              log?.warn?.(`agent status skipping ${skipped.length} unidentifiable pane(s): ${skipped.join(', ')}`)
+            } else log?.info?.('agent status: all listed panes identified')
           }
         } catch (error) {
           log?.warn?.(`agent status process identity scan failed (${reason}): ${error.message}`)
