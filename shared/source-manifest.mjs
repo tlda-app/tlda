@@ -145,19 +145,37 @@ export function sourceManifestContext(project = {}) {
 
 export function isSourceFilePath(path, context = {}) {
   const rel = normalizePath(path)
-  if (!rel || isBuildJunkPath(rel)) return false
+  if (!rel) return false
   const ctx = sourceManifestContext(context)
-  if (rel === ctx.mainFile) return true
-  // A chat reference makes a file a member whatever its extension. This is the
-  // route `b4-outline.md` came in by and the one that did not exist: a Markdown
-  // outline beside a LaTeX paper failed the extension test below, so it was
-  // never pushed, never watched, and the column made from it froze at the
-  // moment it was opened — with no build to fail and nothing to report.
+  // **Membership is decided before the junk test, not after it.**
   //
-  // Above the format branches deliberately: the reference is what decides, and
-  // asking the parent project's format about a file referenced into it is the
-  // "Markdown is less real than TeX" reading that put this bug here.
+  // `.pdf` is in BUILD_JUNK_SUFFIXES because a `.pdf` is usually the compiled
+  // paper. That test ran first, so it also threw away every PDF FIGURE: a
+  // document's `\includegraphics{figures/diagram.pdf}` was junk, was never
+  // pushed, and the built document lost the figure while the `.tex` beside it
+  // arrived intact. Measured: `figures/plot.png` IS source, `figures/diagram.pdf`
+  // NOT source, in the same project.
+  //
+  // Skip, 2026-08-26, on the distinction: *"a pdf with no corresponding tex or
+  // svg is a source"*. The include graph draws the same line exactly rather than
+  // by stem-matching — a figure is reached by `\includegraphics` and the
+  // compiled paper is reached by nothing, so asking whether a document includes
+  // it separates them without needing to look for a companion file.
+  //
+  // Adding `.pdf` to SOURCE_EXTENSIONS instead would have swept the built paper
+  // back in, which is what that suffix list exists to stop.
+  //
+  // This test also carries the older reason it existed, which has not changed:
+  // a reference makes a file a member whatever its extension, and it sits above
+  // the format branches deliberately. `b4-outline.md` came in by this route —
+  // a Markdown outline beside a LaTeX paper failed the extension test below, so
+  // it was never pushed, never watched, and the column made from it froze the
+  // moment it was opened, with no build to fail and nothing to report. Asking
+  // the parent project's format about a file referenced into it is the
+  // "Markdown is less real than TeX" reading that put that bug there.
   if (ctx.referencedRoots.has(rel)) return true
+  if (isBuildJunkPath(rel)) return false
+  if (rel === ctx.mainFile) return true
   // html and slides push a rendered tree; qmd pushes an unrendered one. All
   // three share the same rule for the same reason: what the document needs is
   // whatever sits beside it — site_libs, _quarto.yml, _extensions, data, images
