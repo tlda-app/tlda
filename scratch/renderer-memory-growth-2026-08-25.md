@@ -1867,6 +1867,54 @@ result gathered in that band is not a null result.
 but `sol-dev`'s instruction is not to retry until **Dev** reports a *sustained*
 quiet window, and one agent saying the pool is free is not that. Not grabbing it.
 
+
+### 01:50 — Skip's hypothesis: is it Chrome running with debugging enabled?
+
+He asked directly, and it is a **real class of problem** — the debugging protocol
+retains console messages, network bodies and profiler samples, and agents attach
+to his browser routinely. It deserved a real answer rather than a reflex.
+
+**The answer is probably no, and the evidence predates the question.**
+
+**Two tabs, same browser, same debugging configuration, same eighty minutes:**
+
+| | |
+|---|---|
+| the app's tab | **climbed 121 MB** |
+| a different page beside it | **44 → 50 MB**, one step, then flat across five samples |
+
+**If Chrome-with-debugging were the leak, both would leak.** Same process tree,
+same flags, same protocol attached. One did; one did not.
+
+**Where it stops being airtight, stated rather than hidden:** the protocol retains
+**per target**, not per browser. If something had been attached to the app's tab
+and not the other, the same picture would follow. Both were automated tabs with
+sessions on them, which weakens that, but does not close it.
+
+**A second, weaker piece:** his renderer was already **26 minutes old and ~2.4 GB
+and climbing** when I first attached, so *my* attaching did not start it. That
+kills "browser-perf attached and it grew"; it does **not** kill "debugging was
+already enabled and that is unhealthy", because the port was open before I
+arrived. **Two different claims, and only the first is dead.**
+
+### The clean test exists and I could not run it
+
+A browser launched with **no debugging port at all**, measured from outside the
+process with `footprint`, needs no protocol and would settle it outright.
+
+**Three attempts, none produced data.** Each time the app failed to load —
+confirmed independently from the **server side**, where `client.log` shows the
+browser never connected at all. The positional URL navigates headless and is
+swallowed headed; `--app=` did not start; a `kill` loop caught one launch.
+
+**That is a rig failure, not a result**, and it is recorded as one. **A flat line
+from a browser that never loaded the app would have looked exactly like "debugging
+was the cause"** — the same trap as the unarmed tab, wearing the opposite answer.
+
+**Standing:** hypothesis reasonable, evidence points away from it, not closed. The
+thing it cannot explain is why the growth lands in **one tab** rather than the
+browser as a whole.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
