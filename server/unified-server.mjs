@@ -10036,7 +10036,6 @@ process.on('unhandledRejection', (err) => {
 migrateAllProjectParts(PROJECTS_DIR)
 
 await recoverBuildPublications()
-await recoverProposalBuilds()
 
 server.listen(PORT, HOST, () => {
   const proto = useTls ? 'https' : 'http'
@@ -10074,4 +10073,10 @@ server.listen(PORT, HOST, () => {
     // outage.
     console.error('[session-history-index] spawn failed:', err.message)
   }
+
+  // Recovered builds may be compute-intensive. They must not delay the
+  // serving port during startup; the queue can resume them after HTTP is up.
+  recoverProposalBuilds().catch(err => {
+    console.error('[build-recovery] failed:', err?.message || err)
+  })
 })
