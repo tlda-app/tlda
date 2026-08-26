@@ -217,7 +217,11 @@ function renderPrettyResult(toolName, text, ctx, input, ts, arg = '') {
     recordUnknownCodexToolKind(input._unknownCodexToolKind)
     return renderMarkdownPrettyResult(toolName, text, ctx)
   }
-  const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
+  // esc() first, like every other renderMarkdown call site: the renderer takes
+  // escaped input (see this file's header), and this path alone handed it raw
+  // tool output -- so a result containing markup was the one surface that could
+  // put it into the page.
+  const md = ctx.renderMarkdown ? ctx.renderMarkdown(esc(text)) : esc(text)
   return `<div class="tool-pretty-result">${md}</div>`
 }
 
@@ -495,6 +499,30 @@ export function toolArgSummary(input, toolName) {
   return ''
 }
 
+/**
+ * Which files hold text a person reads, and which hold code.
+ *
+ * Skip, 2026-08-25: "gotta make sure we're using the same rendering code
+ * throughout so everything works everywhere", after finding `\(` and `\[`
+ * showing as literal delimiters "in, at least, like edit tool calls".
+ *
+ * This is the whole decision, and it was written twice: the Write card asked
+ * `/\.md$/` and `/\.tex$/`, and the Edit diff asked only `/\.tex$/` -- so a
+ * Write of a Markdown file rendered its prose and math, and an Edit of the same
+ * file showed the raw source. One encoding, both cards.
+ *
+ * Everything not named here stays literal, which is the point: a diff of a .ts
+ * file is code, and running code through a prose renderer is the opposite
+ * failure.
+ */
+export function isReaderTexPath(filePath) {
+  return /\.tex$/i.test(String(filePath || ''))
+}
+
+export function isReaderMarkdownPath(filePath) {
+  return /\.(md|markdown|qmd|mdx)$/i.test(String(filePath || ''))
+}
+
 export function toolContentDetail(name, input) {
   if (!input) return ''
   const n = (name || '').toLowerCase()
@@ -642,9 +670,16 @@ export function renderEditDiff(input, ctx, opts = {}) {
   // propose_edit names its target `file`; the Edit tool uses `file_path`.
   const filePath = input.file_path || input.file || ''
   const uid = stableId('diff', filePath, input.old_string || '', input.new_string || '', input.diff || '')
-  const isTeX = filePath && /\.tex$/i.test(filePath)
-  const lang = !isTeX ? langFromFilePath(filePath) : ''
+  const isTeX = isReaderTexPath(filePath)
+  // A diff of a Markdown file is prose, and reads as prose in the Write card
+  // already. It rendered as raw source here -- the same file, the same thread,
+  // two answers.
+  const isMarkdown = !isTeX && isReaderMarkdownPath(filePath) && Boolean(ctx.renderMarkdown)
+  const lang = !isTeX && !isMarkdown ? langFromFilePath(filePath) : ''
   const renderSide = (str) => {
+    if (isMarkdown) {
+      return `<div class="pretty-msg-body diff-md">${ctx.renderMarkdown(esc(str))}</div>`
+    }
     if (!isTeX) {
       const escaped = esc(str)
       return `<pre><code>${lang ? highlightSyntax(escaped, lang) : escaped}</code></pre>`
@@ -820,8 +855,8 @@ export function renderCodeCard(toolName, input, ctx) {
     const lines = content.split('\n')
     if (lines.length < 2) return ''
     const filePath = input.file_path || ''
-    const isMd = /\.md$/i.test(filePath)
-    const isTex = /\.tex$/i.test(filePath)
+    const isMd = isReaderMarkdownPath(filePath)
+    const isTex = isReaderTexPath(filePath)
     const lang = langFromFilePath(filePath)
     const escaped = esc(content)
     if (isTex) {
