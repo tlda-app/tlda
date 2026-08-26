@@ -320,11 +320,7 @@ COPY dist/ ./dist/
 
 # --- entrypoint: wire mutable data (projects, fleet.db, yjs) to the volume ---
 COPY scripts/fly-entrypoint-live.sh ./
-# The `edge` process group runs from this same image — Fly process groups share
-# one image and differ only in their command — so the front door ships here too.
-# fly-edge-proxy.mjs arrives with the COPY scripts/ layer above.
-COPY scripts/fly-entrypoint-edge.sh ./
-RUN chmod +x fly-entrypoint-live.sh fly-entrypoint-edge.sh
+RUN chmod +x fly-entrypoint-live.sh
 WORKDIR /app/server
 EXPOSE 5176
 CMD ["/app/fly-entrypoint-live.sh"]

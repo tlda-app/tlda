@@ -8,31 +8,9 @@ primary_region = "sjc"
 [build]
   dockerfile = "Dockerfile.live"
 
-# Two process groups, and the split is the whole point: `app` is the machine that
-# carries the volume and therefore has to stop to be redeployed; `edge` is the
-# tailnet node and the front door, and a `fly deploy --process-groups app` leaves
-# it running. Deploying `edge` is a separate, rare act — it is the only thing that
-# takes the .ts.net name down.
-[processes]
-  app = "/app/fly-entrypoint-live.sh"
-  edge = "/app/fly-entrypoint-edge.sh"
-
 [env]
   PORT = "5176"
   NODE_ENV = "production"
-  # Read only by the `edge` process (scripts/fly-edge-proxy.mjs), which refuses to
-  # start without all four rather than inventing a default.
-  #
-  # 6PN DNS, resolved per connection attempt: it is the app machine's address that
-  # changes when the machine is replaced.
-  TLDA_EDGE_UPSTREAM = "app.process.tldraw-sync-skip.internal:5176"
-  TLDA_EDGE_LISTEN_PORT = "5177"
-  # Longer than the gap it covers. The measured gap on 2026-08-18 was ~60s
-  # (machine stop 03:11:45Z, serving 03:12:45Z); a cold start on this box has been
-  # measured near 90s. Holding is what the person experiences as "slow", so this
-  # is the number to argue about, and it is here rather than in the code.
-  TLDA_EDGE_HOLD_SECONDS = "180"
-  TLDA_EDGE_RETRY_MS = "250"
   # Everything else this server needs now lives in config/deployments/live/,
   # committed and baked into the image. TLDA_DEPLOYMENT names that directory and
   # is the only pointer that must arrive from outside it.
@@ -44,26 +22,9 @@ primary_region = "sjc"
 [[vm]]
   size = "performance-2x"
   memory = "4096"
-  processes = ["app"]
-
-# The edge machine runs a tailnet node and a TCP pipe. It opens no database and
-# serves no files, so it is sized for what it is.
-[[vm]]
-  size = "shared-cpu-1x"
-  memory = "512"
-  processes = ["edge"]
 
 # 10 GB volume for mutable content/data: projects (~3.7G), fleet.db (~568M), yjs data.
 # If reusing the existing sync_data volume, extend it to 10G:  fly volumes extend <id> -s 10
-[[mounts]]
+[mounts]
   source = "sync_data"
   destination = "/app/server/persist"
-  processes = ["app"]
-
-# Tailscaled's node key, and nothing else. Without somewhere to keep it the edge
-# machine joins the tailnet as a NEW node on every boot and Tailscale hands it
-# tlda-fly-1, tlda-fly-2, … — which moves the URL Skip has open.
-[[mounts]]
-  source = "edge_ts_state"
-  destination = "/var/lib/tlda-edge"
-  processes = ["edge"]
