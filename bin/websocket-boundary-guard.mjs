@@ -126,6 +126,12 @@ const ALLOWED = {
     reason: 'Reads a message back by the id the server assigned it, over the socket the MCP transport uses. The wire is the whole claim: thread(message_id:) sends the ephemeral verb `event-by-id` and dispatchFleetWsMessage answers it, and calling both functions in one process would prove the two ends and not that they are joined. Endpoint: /ws/fleet.',
   },
 
+  'bin/sync-demo.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Drives the SOURCE ROOM endpoint, which is a different protocol from fleet transport: /source-sync/<project>/<file>, JSON frames carrying base64 Yjs updates ({type:"sync"} in, {type:"update"} and {type:"flush"} out). The fleet transport library carries fleet messages and cannot speak it. This is the browser ingress route under test -- one of the three ways an edit enters a project -- and the socket IS the route, so carrying it any other way would test something else. It replaced a version that drove CodeMirror in a real browser, which tested the editor rather than the route and wrote six fleet shapes into the project on every launch.',
+  },
+
   'scripts/backfill-agent-models.mjs': {
     count: 1,
     category: 'tooling',

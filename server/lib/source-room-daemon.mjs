@@ -2,8 +2,11 @@ import { createHash, randomUUID } from 'crypto'
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, isAbsolute, join } from 'path'
-import { spawnSync } from 'child_process'
+import { execFile as execFileCb, spawnSync } from 'child_process'
+import { promisify } from 'util'
 import * as Y from 'yjs'
+
+const execFileAsync = promisify(execFileCb)
 
 const SERVER_ORIGIN = Symbol('tlda-source-room-server')
 const CLIENT_ORIGIN = Symbol('tlda-source-room-client')
@@ -161,8 +164,14 @@ export function createSourceRoomDaemon({
    */
   async function standRoomOnProjectBranch(project, workingDir) {
     const gitSync = gitSyncManagerForProject(project)
-    const git = (...args) => spawnSync('git', args, { cwd: workingDir, encoding: 'utf8' })
-    const lines = result => String(result.stdout || '').split('\n').filter(Boolean)
+    // ASYNC, because this runs inside the server. A synchronous subprocess here
+    // blocks the event loop for every other request while git works, which is
+    // what `lint:guards` budgets `spawnSync` in this file to stop -- and it
+    // caught this before it shipped. The guard is right and the budget stays.
+    const git = async (...args) => {
+      try { return await execFileAsync('git', args, { cwd: workingDir, encoding: 'utf8' }) } catch (error) { return { stdout: error.stdout || '' } }
+    }
+    const lines = result => String(result?.stdout || '').split('\n').filter(Boolean)
 
     let stood = await gitSync.standOnWorkBranch(project)
     if (stood?.ok) return stood
@@ -183,8 +192,8 @@ export function createSourceRoomDaemon({
     // and it is NARROW -- only files that actually collide are touched, where
     // before every untracked file in the tree was moved on the strength of a
     // justification that covered one of them.
-    const target = lines(git('rev-parse', '--verify', '--quiet', `refs/heads/tlda/${project}`))[0]
-      || lines(git('rev-parse', '--verify', '--quiet', `refs/tlda/fetched/${project}`))[0]
+    const target = lines(await git('rev-parse', '--verify', '--quiet', `refs/heads/tlda/${project}`))[0]
+      || lines(await git('rev-parse', '--verify', '--quiet', `refs/tlda/fetched/${project}`))[0]
     if (!target) {
       // No branch and no fetched head: adoption failed upstream and there is
       // nothing to stand on. Reported as itself rather than as a collision.
@@ -192,8 +201,8 @@ export function createSourceRoomDaemon({
       return { ok: false, status: stood?.status || 'no-project-head', reason: `${project} has no project branch to stand on` }
     }
 
-    const carried = new Set(lines(git('ls-tree', '-r', '--name-only', target)))
-    const dirty = [...lines(git('ls-files', '--others', '--exclude-standard')), ...lines(git('diff', '--name-only'))]
+    const carried = new Set(lines(await git('ls-tree', '-r', '--name-only', target)))
+    const dirty = [...lines(await git('ls-files', '--others', '--exclude-standard')), ...lines(await git('diff', '--name-only'))]
     const colliding = [...new Set(dirty.filter(file => carried.has(file)))]
 
     if (colliding.length) {
@@ -215,7 +224,7 @@ export function createSourceRoomDaemon({
         }
         // A tracked file that was moved aside is still "modified" as far as the
         // index is concerned -- restore it from HEAD so the checkout is clean.
-        git('checkout', '--', ...colliding)
+        await git('checkout', '--', ...colliding)
         log.info?.(`[source-room] ${project}: preserved ${colliding.length} colliding file(s) in ${preserved} to stand on the project branch`)
         stood = await gitSync.standOnWorkBranch(project)
       } catch (error) {
