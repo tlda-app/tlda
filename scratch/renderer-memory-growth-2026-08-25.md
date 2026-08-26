@@ -1915,6 +1915,101 @@ was the cause"** — the same trap as the unarmed tab, wearing the opposite answ
 thing it cannot explain is why the growth lands in **one tab** rather than the
 browser as a whole.
 
+
+## MEASURED REPORT — 2026-08-26, current deployed build `b4097808f`
+
+Run after the Mini restart, on a **quiet box** (load 3), against the **current
+deployed build**, on a **disposable project**. `qtm285` not touched.
+
+### 1. Exact reproduction
+
+Pooled Playwright browser, disposable project, default fleet layout. Renderer
+identified by **ballast** (208 → 415 MB on a 220 MB allocation), never by
+inspection. Page verified rendered: **962 DOM nodes, 9 shapes, 3 canvases,
+2 iframes.**
+
+### 2. Memory growth over time
+
+```
+15:26  184 MB        15:33  289 MB
+15:28  256 MB        15:35  373 MB
+15:30  306 MB        15:37  446 MB
+```
+
+**184 → 446 MB in 10 minutes ≈ 26 MB/min**, with the sawtooth (289 after 306).
+JS heap over the same span: **31 → 54 MB.** Nodes 912 → 962.
+
+**And the periodic sample understates it badly.** `vmmap` reports
+**physical footprint peak 2.9 GB** for this renderer against a current 383 MB.
+**A two-minute sampling interval never saw a 2.9 GB excursion.** That matters for
+"lockups": a transient multi-gigabyte spike locks the machine even when the tab
+recovers.
+
+**Rate is build-dependent.** Last night's build: 1.1–1.9 MB/min sustained. Today:
+~26 MB/min. Skip's own tab: 30–220 MB/min, reaching 12–15 GB in ~90 minutes.
+
+### 3. First retained owner / allocation evidence
+
+**Not the JS heap** — 54 MB while the process holds 446 MB.
+**Not sampled allocation** — `Memory.getSamplingProfile`, armed *before*
+navigation, captured **63.8 MB live** across a load in which a renderer grew
+**2.8 GB**. The memory does not pass through the sampled allocator.
+
+**It is anonymous VM regions, accumulating in count:**
+
+```
+pooled tab (growing)   Memory Tag 253   4,655 regions   114 MB resident  100 MB dirty
+                       Memory Tag 255     929 regions   120 MB resident  120 MB dirty
+                       shared memory       70 regions    31 MB resident
+Skip's renderer        anonymous          2,605 regions  1,050 MB
+```
+
+The tag-253 regions are `SM=NUL`, 0 K resident — **address-space reservations**,
+so the committed share is smaller than the count suggests. **The finest owner I
+can name is "thousands of small anonymous mappings, growing in number."** The
+allocation site itself is **unsymbolizable**: release Chrome is stripped and
+`atos` resolves every address to `ChromeMain + offset`.
+
+### 4. Slows, or dies?
+
+**Dies.** Two renderer crashes, ~90 minutes apart, at **15 GB and 12 GB**,
+confirmed from Chrome's own crash dumps — `ptype`, `--type=renderer`,
+`renderer_foreground`, each timestamped to the minute its renderer vanished. It
+is not a tab that gets sluggish; it is a tab that is killed.
+
+### 5. Ruled out, each by measurement
+
+- **JS heap** — flat while the process climbs.
+- **JS allocation** — 6.3 MB in 240 s on Skip's tab.
+- **Listener registrations** — `getEventListeners`: `document` 79 in both samples.
+- **DOM / canvas / shapes / iframes** — byte-for-byte constant across samples in
+  which footprint rose 903 → 918 MB.
+- **Images** — zero. **Voice PCM backlog** — capped by construction at 64 MB.
+- **The machine and Chrome itself** — a sibling renderer in the same browser gained
+  nothing over 80 minutes while the app's tab gained 121 MB.
+- **Skip's "is it debugging?"** — the same sibling shared his debugging
+  configuration and stayed flat. *Limit:* the protocol retains per target, so this
+  weakens rather than closes it.
+- **A rig artifact I nearly reported as the finding.** A standalone browser hit
+  **2.8 GB with a 5.5 GB peak** on a 300-node onboarding page — `shared memory`,
+  2.7 GB virtual, 2.4 GB swapped, 52 regions. **The pooled tab's shared memory is
+  40 MB.** So that blowup is specific to my standalone launch, **not the app**.
+  Recorded so nobody chases it.
+
+### 6. The exact remaining causal gap
+
+**Socket/sync activity is correlated and may be necessary. It is not established
+as the cause.**
+
+Clearing every timer: no effect. Suppressing `requestAnimationFrame` (2,072 calls
+blocked): no effect. **Taking the app offline: the drift stopped** — 445 → 446 MB
+over 35 minutes where it had been climbing ~1 MB/min.
+
+**Why that is not yet cause:** the offline run had timers and rAF still
+suppressed, and the pre-existing sockets were never confirmed closed at OS level.
+**The ordering control — offline from a cold tab — has never completed.** Five
+attempts, every one an environmental failure, none a result.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
@@ -1928,3 +2023,166 @@ invisible to the JS heap, lands in exactly the `malloc` bucket that holds the
 flat, the next step is to drive the reproduction toward his conditions — chat
 traffic and voice on — until it grows, and take a heap snapshot there, where the
 tab can be frozen for as long as it takes.
+
+---
+
+## 2026-08-26 — the ordering controls, and a retraction
+
+**Retracted: "offline stops the growth."** That earlier run stacked timer and rAF
+suppression alongside the WebSocket block, so it could not attribute the effect.
+Run in isolation, the network condition contributes nothing.
+
+Socket closure was **confirmed, not assumed**: the blocked-constructor counter went
+1 (self-test) → 2 thirty-nine seconds after arming. An app only constructs a
+replacement socket after the previous one has closed. It then held at 2, so nothing
+was reconnecting behind the block. The pooled browser exposes no CDP and the
+server's room accounting (`resident 896 / idle 896`) cannot isolate one tab, so
+neither of those could have answered this.
+
+Renderer 72131, project `leak-probe-mem`, one tab, one continuous sampler across
+every boundary.
+
+| phase | window | footprint | slope |
+|---|---|---|---|
+| online, timers live | 15:26:49 → 15:41:14 | 184 → 525 MB | 23.7 MB/min |
+| socket blocked, timers live | 15:43:16 → 15:53:25 | 596 → 1043 MB | **44 MB/min** |
+| socket blocked, timers suppressed | 15:57:31 → 16:02:32 | 1123 → 1123 MB | **0 MB/min** |
+
+JS heap stayed flat throughout (52–74 MB) and node count flat (927–981), so the
+accumulation is neither JS nor DOM — consistent with the anonymous-mapping owner
+recorded above, and now shown independent of network input.
+
+**Conclusion so far:** the driver is work the tab schedules on its own clock. The
+sync path is ruled out as the driver.
+
+### Why the timer suppression has to clear the existing id space
+
+Patching `setTimeout`/`setInterval` blocks only *new* timers; the app's
+already-registered intervals keep firing. That self-tests as "armed" and measures
+nothing, and is the likely fault in the earlier stacked run. The arm above cleared
+**16,518** existing ids, and self-tested in both directions — timers fired before
+the patch, did not fire after.
+
+### Instrument failure worth remembering
+
+The first renderer-identification ballast silently did nothing: the eval threw
+`SyntaxError` (multiple statements in one `pw eval`) with output suppressed. No pid
+moved, which reads exactly like "both tabs share one renderer." Re-run as a single
+expression it moved one pid 310 → 819 MB. Identify a renderer by making it move,
+and check the allocation actually happened.
+
+### Open — the separation not yet done
+
+"Timers" above means `setInterval` + `setTimeout` + `requestAnimationFrame`
+together. Which one carries the growth is **not yet established**. Second tab
+(renderer 59846, socket connected) is baselining for the ladder: kill `setInterval`
+only, then add `rAF`, then `setTimeout`.
+
+### The scheduler decomposition — it is `requestAnimationFrame`
+
+Second tab, renderer **59846**, confirmed a distinct process from 72131 by a 500 MB
+ballast that moved that pid and no other. **Socket connected throughout**
+(`wsIntact: true` — this tab was never network-blocked), so this is the
+socket-live condition.
+
+| rung | live | window | footprint | slope |
+|---|---|---|---|---|
+| baseline | all three + socket | 16:02:50 → 16:09:01 | 345 → 452 MB | 17 MB/min |
+| `setInterval` dead | `setTimeout`, `rAF`, socket | 16:09:31 → 16:15:01 | 466 → 560 MB | 17 MB/min |
+| `+rAF` dead | `setTimeout`, socket | 16:15:01 → 16:21:12 | 560 → 533 MB | **−4 MB/min** |
+
+Killing `setInterval` changed nothing. Adding `rAF` stopped it outright **while
+`setTimeout` was still firing and the socket was still connected**. So `rAF` is
+sufficient to stop the growth and neither other scheduler is necessary to it —
+`setTimeout` is excluded by being live across the flat phase, so no fourth rung
+was needed.
+
+Every rung self-tested in four directions: the killed scheduler fired before and
+not after, and the ones meant to stay live were confirmed still firing.
+
+**The flat line is not a dead tab** — checked, because a crashed renderer gives an
+identical flat footprint. The tab ran a 10⁶-iteration loop on demand: 1250 nodes,
+heap 53 MB, age 24.5 min, both suppressions still in place.
+
+Tab 72131 corroborates independently: all three killed at constant blocked
+network, 44 MB/min → flat, and still flat.
+
+### What is established, and what is not
+
+Established: the growth is driven by the **render loop**. Consistent with the rest
+of the picture — footprint climbing while JS heap and node count stay flat,
+thousands of small anonymous mappings, a tab that dies at 15 GB rather than slows.
+
+**Not established: the callsite, or the retained owner.** This names a scheduler.
+"Something allocated on every animation frame is retained" is not a cause anyone
+can act on.
+
+**The gap is instrumental, not analytical.** Closing it needs native allocation
+stacks with `rAF` live. The pooled browser exposes no CDP — the same constraint
+that has blocked retained-owner evidence throughout — and sampling footprint more
+carefully cannot substitute. It needs a CDP-attachable browser that renders the
+real app; standalone attempts reached only the onboarding state, a different page
+whose result would not transfer.
+
+### Cleanup
+
+Fly sampler stopped, `/tmp/baseline.js` and `/tmp/anonshape.*` gone, server
+untouched (pid 665 + esbuild only). Ten probe files removed from the Air after
+confirming no process was still writing to them. **Two of the ten were not on the
+cleanup list** — enumerate the directory rather than working from a remembered
+list.
+
+`pkill -f baseline.js` over ssh killed its own shell: the ssh command line
+contains the pattern. Verify with a command that does not contain it.
+
+### The callsite, without CDP: wrap `rAF` and record registration stacks
+
+The `rAF` loop re-registers every frame, so an in-page wrapper recovers the
+callsites that CDP was wanted for. Third cold tab, renderer **49343**
+(ballast-confirmed distinct). 1468 registrations in 90 s across **four** sites,
+sourcemapped against the deployed bundle `index-B6AoulfA.js`:
+
+| n / 90 s | resolved source |
+|---|---|
+| 1144 | `@tldraw/utils/dist-esm/lib/throttle.mjs` — `FpsScheduler.tick` |
+| **314** | **`react-virtuoso/dist/index.mjs:309`** via `ResizeObserver` |
+| 9 | `throttle.mjs:36` |
+| 1 | the self-test |
+
+~3.5 frames/second scheduled by a resize observer **on an idle tab**.
+
+#### Selective suppression names the boundary
+
+Wrapper installed for **both** phases, so it is not a confound — and the baseline
+slope matches the untouched tabs (17–23 MB/min), which is the evidence for that.
+
+| phase | `rAF` live | window | footprint | slope |
+|---|---|---|---|---|
+| baseline | both | 16:29:09 → 16:37:22 | 360 → 521 MB | 19.6 MB/min |
+| `ResizeObserver` blocked | `FpsScheduler` only | 16:41:25 → 16:49:30 | 629 → 634 MB | **0.6 MB/min** |
+
+**Rendering continued** — this is not the coarse stop-all-painting intervention.
+With blocking active, a 5 s window saw 52 registrations, 18 blocked, **34 passed
+through** to `FpsScheduler`. Tab alive (10⁶ loop on demand), nodes 1048 → 1451,
+heap 56 MB.
+
+The blocker self-tested three ways first: non-matching fires, matching is blocked
+without firing, others keep firing while blocking is active.
+
+#### Mechanism: `FpsScheduler` is one self-sustaining chain
+
+`FpsScheduler.tick` re-registers from **inside its own callback**. Blocking it once
+ends the whole chain — 1 block in 4 s, not ~28. Raw registration counts therefore
+overstate how many distinct schedulers exist.
+
+#### What is NOT established
+
+Blocking that callback also stops the work it schedules. So **the allocation is
+downstream of `react-virtuoso:309`** is established; **that callback is the bug**
+is not — the allocation may sit in a render path the observer merely triggers.
+One run, one tab. The reciprocal (`FpsScheduler` blocked, `ResizeObserver` live)
+was running when this was written.
+
+Plausibility only, not evidence: `react-virtuoso` renders the chat list, and
+`docs/chat-rendering.md` exists because writes there trigger observers that
+trigger writes.

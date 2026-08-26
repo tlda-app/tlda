@@ -1,13 +1,94 @@
-# Chief of staff resumption point — `bhief-4`, 2026-08-23
+# Resumption point — `bhief-4`, started 2026-08-23
 
 Force-added under `scratch/` deliberately: this is a resumption point, not a report.
 `scratch/` is gitignored, so an untracked copy would not survive. See `AGENTS.md`
 §"Repository workflow".
 
-**Relative to:** 2026-08-25 07:50 EDT. `testing` and `pic` both serve
-`3b109f87b`. **`f1335d096` IS serving** — confirmed by ancestry against the
-deployed sha, not by push output. The editor no longer shows stale text or
-overwrites newer content.
+**I am no longer chief. `sol-dev` is** — Skip, 2026-08-25. Everything below is a
+doer's record; chief questions go to `sol-dev`, not to whoever reads this.
+
+**Relative to:** 2026-08-26 01:35 EDT. `testing` serves `29db651fb`; `main` is
+`f1101cfe9`. `pic` is **closed** — see below, do not deploy or configure it.
+
+## 2026-08-26 03:00–03:40: HIS CHECKOUTS CANNOT SUBMIT, AND HOW WE MISCOUNTED IT
+
+**The edit-to-browser watcher failed on a routine check** — not served after
+120s. Daemon log, three times over three hours:
+`live-watcher-probe: proposal not accepted: not-on-work-branch`. The checkout
+sat on `main`; the work branch existed and was not checked out. **`settle()`
+declines by name when the work branch isn't checked out, and tells the person
+typing nothing.**
+
+**Relink repairs it — proven end to end on the disposable probe:** `main` →
+`tlda/live-watcher-probe`, tree clean, loop closed in **10.2s**. Done *before*
+touching anything else so the result attributed.
+
+**Population, and the correction that matters.** I first compared
+`refs/tlda/project/<p>` against `refs/tlda/fetched/<p>` — the **chain** against
+the server head — and got 1 diverged. `reliability-pm` got 6. Same directories,
+same minute, different ref:
+
+```
+chain vs fetched  (mine)   safe 21   diverged 1   no refs 21
+HEAD  vs fetched  (theirs) safe 15   diverged 7   no refs 21
+```
+
+**HEAD-based is correct and mine was wrong.** The question is whether the
+*working checkout* can submit — that is HEAD's lineage. A chain ref can sit on
+the server's line while the checkout the person types in has wandered off it.
+**My test would have cleared six of his checkouts that cannot push.**
+`sol-dev` ruled HEAD-vs-current-server-head governs.
+
+**The 21 neither instrument could classify — resolved by asking the server**,
+which has no local refs to be blind about:
+
+```
+no such project on the server   15   ← debris, nothing to repair
+server has a sourceRevision      3   ← server ahead, local blind: LOOK, do not sweep
+exists, never synced             3   ← relink trivially safe
+```
+
+**Both git-local instruments returned the same silent 21 and would have forever.
+Agreement on an absence is not corroboration — it can mean a shared blind spot.**
+
+**Status: all writes held.** `reliability-pm` is executing per-checkout repairs.
+I relinked only the disposable probe and nothing of his.
+
+**Also stopped:** a `dev-preview` daemon from `app-tester`'s worktree that was
+holding `FLEET_DAEMON_KEY=mini:testing` alongside the real one. Verified the
+target twice before killing; watcher after was 10.4s against 10.2s before, so it
+was never implicated in the sync failure. **And a `pic` daemon IS running**
+(pid 96898, from the shared checkout, started 08-25 14:09) — my earlier "there
+is no daemon for that environment" was true when measured and is now false.
+
+## THE LIVE THURSDAY BLOCKER: a colon in a student's project name 404s
+
+**Every real student's work fails to render in the marking pane, and the demo
+fixtures hide it.** A student id is `<course>:<login>`, so a submission project
+name carries a colon. `req.path` is not url-decoded, and both `/docs`
+middlewares read the project name straight out of it, while the client fetches
+under `encodeURIComponent`. Found by `classroom-thursday`; I confirmed it
+independently on the live box:
+
+```
+submission-probe-hw-b-probe-course-b:probe-four   (buildStatus success, 1 page)
+bare      /docs/…:probe-four/homework/hw5-rvs-markov-biased.html   200  137,170 b
+encoded   /docs/…%3Aprobe-four/…                                   404       21 b
+```
+
+The demo fixtures are `d-ada` and `d-bo` — no colon — which is why this survived.
+
+**Fix: `25f970e33` on branch `classroom-docs-decode`, off `main` at `29db651fb`.**
+One file, 38 lines, mostly comment, encoded traversal refused and tested.
+**Committed, NOT merged, NOT deployed.** Its author states plainly that the wire
+is unproven — the tests exercise the decode logic, not the route — and offered to
+stand up a local server and request both forms. **That check has not been run.**
+
+**A trap on the way in, which cost me a false negative I nearly sent:** testing a
+colon project whose build had *failed* returns 404 for **both** forms, which
+reads as a clean refutation. It is not — nothing exists at either path. You need
+a colon project that actually built before bare returns 200. Only one on the box
+did.
 
 ## The overnight run: what the source editor was doing
 
@@ -82,7 +163,20 @@ stale tip and reports success, which is the trap. **The only known way back is a
 fresh checkout.** `repo-doctor` is untried, not ruled out. Which chain wins is a
 design decision for daylight, not a patch.
 
-## THURSDAY / `pic`: THERE IS NO DAEMON FOR THAT ENVIRONMENT
+## `pic` — SUPERSEDED 2026-08-26 BY SKIP. NOT A BLOCKER.
+
+**Skip, via `sol-dev`, message 3361766:** *"`pic` is not in use now. Stop carrying
+its old code/empty project list as an active classroom blocker or release
+warning. It will receive fresh code when the class is actually put there. Do not
+deploy or configure pic now."*
+
+**So: do not deploy `pic`, do not configure it, do not load its daemon, and do
+not raise its stale code as a Thursday risk.** I pushed this as the top blocker
+for hours and it is not one. The section below is kept because the *findings*
+are true and someone will need them when the class is actually put there — but
+its framing as urgent is wrong and superseded.
+
+### What was found (still true, no longer urgent)
 
 **This is why the course book has never built, and it is upstream of everything
 else.** One `fleet-daemon` runs on this machine and it is `daemon-testing`.

@@ -337,6 +337,90 @@ them were asked it at the time. The reason is worth naming: **an instrument
 failure and a serious defect produce the same reading, and the serious defect is
 more interesting.** Attention goes to the finding, not to the ruler.
 
+### 12. A monitor that flags designed behaviour as a fault
+
+**The check runs correctly, reads real state, and reports a contradiction that
+is not one** — because the premise in its own comment is wrong about what the
+system does. It stays red for as long as the system stays in a state it was
+designed to enter and hold.
+
+**Measured 2026-08-26.** `dev-bot.mjs`'s `document-surfaces` check:
+
+```js
+// A build reported failed while the pages it supposedly failed to make are
+// being served.
+if (project.buildStatus === 'error' && built) { … }
+```
+
+Those pages are not the ones the build failed to make. They are the *previous*
+good ones, kept on purpose — the server says so in the throw itself,
+`server/lib/build-runner.mjs:200`:
+
+```js
+throw new Error(`LaTeX produced ${errors.length} error(s); keeping the last successful render`)
+```
+
+So `buildStatus: error` **plus** served pages is the documented success path of a
+failed build: the author's last working render stays up instead of the document
+going blank. There is a test asserting that message.
+
+**Why this one is worse than noise.** It had fired unchanged for 236 minutes
+naming four projects, two of them Skip's, so anyone reading it cold concludes his
+papers are broken. And `document-surfaces` also carries the spinner check and the
+`/macros` check, which are real — **a permanently-red alarm trains everyone to
+ignore the report that contains the true findings.**
+
+**The check that catches it: name the state the alarm is complaining about, and
+ask whether the system enters it on purpose.** Not "does it fire on the bad
+case" — this one fires on a real state, correctly detected. The question is
+whether that state is a fault or a design. Here the answer was one grep away,
+in the server's own error string.
+
+**Be precise about the failure, because "it can never go green" would be
+wrong.** This check does go quiet for a project whose build succeeds — 
+`balancing-act` left the list between two sweeps by rebuilding clean. What it
+cannot do is go quiet for a project that is *correctly* holding its last good
+render, which is a state the system will sit in indefinitely and by intent. So
+the alarm is not stuck; it is faithfully reporting a design as a defect, for as
+long as the design holds.
+
+### 13. Two instruments agreeing on an absence, because they share a blind spot
+
+**Independent confirmation is the strongest evidence there is — except when both
+instruments are the same kind of instrument.** Then agreement is not two
+measurements; it is one measurement taken twice, and its blind spot is confirmed
+rather than exposed.
+
+**Measured 2026-08-26.** Two agents classified the same 43 checkouts for whether
+they could still submit. The counts disagreed — 1 diverged against 6 — which is
+what made the reconciliation happen, and the reconciliation found the real error:
+one test compared `refs/tlda/project/<p>` (the chain) and the other compared
+`HEAD`. **HEAD is the right one**, because the question is whether the working
+checkout can push, and a chain ref can sit on the server's line while the
+checkout the person types in has wandered off it. The chain-based test would have
+cleared six checkouts that cannot submit.
+
+**But both tests returned the same 21 "no refs to compare", and both were
+silent on them.** Two independent agents, agreeing, on a fifth of the
+population — and the agreement was worthless, because both instruments were
+git-local and the missing refs were exactly what git-local cannot see past.
+
+**One HTTP call to the server resolved all 21**, and split them three ways:
+fifteen were bindings to projects that do not exist, three had a server-side
+revision with no local record of it, three had never synced. Three different
+dispositions, one of which — server ahead, local blind — is the shape where a
+repair overwrites.
+
+**The check: when two measurements agree, ask whether they could disagree.** If
+both read the same store, the same log, the same tree, agreement tells you
+they are consistent, not that they are right. **Reach for an instrument of a
+different kind** — the server when you have been reading git, the wire when you
+have been reading code, his screen when you have been reading the wire.
+
+**The disagreement is the useful event.** The chain-versus-HEAD error was caught
+*because* the numbers conflicted. Nothing caught the shared 21 until somebody
+asked a question neither query could answer.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see

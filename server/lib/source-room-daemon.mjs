@@ -2,8 +2,11 @@ import { createHash, randomUUID } from 'crypto'
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, isAbsolute, join } from 'path'
-import { spawnSync } from 'child_process'
+import { execFile as execFileCb, spawnSync } from 'child_process'
+import { promisify } from 'util'
 import * as Y from 'yjs'
+
+const execFileAsync = promisify(execFileCb)
 
 const SERVER_ORIGIN = Symbol('tlda-source-room-server')
 const CLIENT_ORIGIN = Symbol('tlda-source-room-client')
@@ -141,12 +144,124 @@ export function createSourceRoomDaemon({
     }
   }
 
+
+  /**
+   * Put a room's tree on the project branch, preserving anything already in it.
+   *
+   * **Why this is not just `standOnWorkBranch`.** Every room tree that exists
+   * today is a scratch repo whose edited file was never committed to the branch,
+   * so the file is UNTRACKED and `git checkout <branch>` refuses: *"the following
+   * untracked working tree files would be overwritten"*. Measured on the live box
+   * before shipping this: **13 of 15 existing room trees are in exactly that
+   * state**, so the migration case is the one most likely to fail.
+   *
+   * **Nothing is deleted to get past it.** The colliding files are moved into a
+   * timestamped directory beside the room, not removed -- this app does not delete
+   * things, and a file that turns out to have mattered is still there. The room's
+   * own file is a projection of its Yjs document, which is authoritative and is
+   * rewritten immediately after hydration, so moving it costs nothing; anything
+   * else that collided is a file the branch already carries.
+   */
+  async function standRoomOnProjectBranch(project, workingDir) {
+    const gitSync = gitSyncManagerForProject(project)
+    // ASYNC, because this runs inside the server. A synchronous subprocess here
+    // blocks the event loop for every other request while git works, which is
+    // what `lint:guards` budgets `spawnSync` in this file to stop -- and it
+    // caught this before it shipped. The guard is right and the budget stays.
+    const git = async (...args) => {
+      try { return await execFileAsync('git', args, { cwd: workingDir, encoding: 'utf8' }) } catch (error) { return { stdout: error.stdout || '' } }
+    }
+    const lines = result => String(result?.stdout || '').split('\n').filter(Boolean)
+
+    let stood = await gitSync.standOnWorkBranch(project)
+    if (stood?.ok) return stood
+
+    // WHICH FILES ARE IN THE WAY, computed rather than parsed out of git's
+    // error text.
+    //
+    // Git refuses a checkout with two different sentences -- "untracked working
+    // tree files would be overwritten" and "Your local changes to the following
+    // files would be overwritten" -- and an earlier version of this matched only
+    // the first. Measured on the live box: 13 room trees are untracked-only, 1
+    // is modified-tracked, 2 have no project branch at all. Matching one
+    // sentence left the modified one falling back into the silent drop this
+    // exists to close, and `ls-files --others` would not have listed it anyway.
+    //
+    // So the collision set is derived: files the target commit carries that are
+    // also dirty here. That covers both sentences without depending on either,
+    // and it is NARROW -- only files that actually collide are touched, where
+    // before every untracked file in the tree was moved on the strength of a
+    // justification that covered one of them.
+    const target = lines(await git('rev-parse', '--verify', '--quiet', `refs/heads/tlda/${project}`))[0]
+      || lines(await git('rev-parse', '--verify', '--quiet', `refs/tlda/fetched/${project}`))[0]
+    if (!target) {
+      // No branch and no fetched head: adoption failed upstream and there is
+      // nothing to stand on. Reported as itself rather than as a collision.
+      log.warn?.(`[source-room] ${project}: NOT SYNCING — no project branch or fetched head to stand on (${stood?.status || 'unknown'})`)
+      return { ok: false, status: stood?.status || 'no-project-head', reason: `${project} has no project branch to stand on` }
+    }
+
+    const carried = new Set(lines(await git('ls-tree', '-r', '--name-only', target)))
+    const dirty = [...lines(await git('ls-files', '--others', '--exclude-standard')), ...lines(await git('diff', '--name-only'))]
+    const colliding = [...new Set(dirty.filter(file => carried.has(file)))]
+
+    if (colliding.length) {
+      // MOVED, never deleted. This app does not delete things, and a file that
+      // turns out to have mattered is still on disk. The room's own file is a
+      // projection of its Yjs document, which is authoritative and is rewritten
+      // on hydration, so preserving it costs nothing.
+      //
+      // These directories accumulate, one per collision per room, and nothing
+      // sweeps them. Left deliberately: a stray directory is recoverable and a
+      // swept one is not. This note is here so the next person finds a reason
+      // rather than a mystery.
+      const preserved = join(workingDir, '..', `working-preserved-${Date.now()}`)
+      try {
+        for (const file of colliding) {
+          const to = join(preserved, file)
+          mkdirSync(dirname(to), { recursive: true })
+          renameSync(join(workingDir, file), to)
+        }
+        // A tracked file that was moved aside is still "modified" as far as the
+        // index is concerned -- restore it from HEAD so the checkout is clean.
+        await git('checkout', '--', ...colliding)
+        log.info?.(`[source-room] ${project}: preserved ${colliding.length} colliding file(s) in ${preserved} to stand on the project branch`)
+        stood = await gitSync.standOnWorkBranch(project)
+      } catch (error) {
+        return { ok: false, status: 'preserve-failed', reason: `${project} could not be moved onto its project branch: ${error.message}` }
+      }
+    }
+
+    if (!stood?.ok) {
+      log.warn?.(`[source-room] ${project}: NOT SYNCING — could not stand on its project branch (${stood?.status || 'unknown'}): ${stood?.reason || 'unknown'}`)
+    }
+    return stood
+  }
+
   async function createRoom(project, filePath) {
     const paths = roomPaths(project, filePath)
     const projectRecord = await readProject(project)
     const gitSync = gitSyncManagerForProject(project)
-    gitSync.bindSource(project, join(paths.root, 'working'), { mainFile: projectRecord?.mainFile || null, appOwnedWorkingTree: true })
+    // The browser editor is another daemon, like any other. Skip, 2026-08-26:
+    // *"THE FKING SPEC FOR THE BROWSER EDITOR IS IT'S A NORMAL FUCKING DAEMON
+    // BACKING IT LIKE EVERYTHING ELSE"* / *"NORMAL FUCKING PROJECT BRANCH"* /
+    // *"it has its own fucking tree"*.
+    //
+    // Its own tree is right. What was wrong is what the tree WAS: a scratch
+    // repo from `git init -b main`, standing on `main`, holding only the files
+    // somebody had opened -- with the project's branch sitting unused beside it.
+    // Everything this route did wrong came from that. It could not be pushed
+    // without reparenting HEAD by hand, the server rejected it as WrongHead,
+    // and settle's staging over a partial tree recorded every absent file as a
+    // DELETION, which is how one browser edit published a revision with the
+    // project's other documents removed.
+    //
+    // So it stands on `tlda/<project>` like every other checkout, and is bound
+    // like every other checkout. `standOnWorkBranch` is the same call the disk
+    // route makes; it was simply never made here.
+    gitSync.bindSource(project, join(paths.root, 'working'), { mainFile: projectRecord?.mainFile || null })
     await gitSync.sync(projectRecord ? [projectRecord] : [])
+    const stood = await standRoomOnProjectBranch(project, join(paths.root, 'working'))
     const snapshot = readJson(paths.snapshot)
     const state = snapshot || readJson(paths.state) || {}
     const lifecycle = await sourceLifecycleStore(project)
@@ -233,9 +348,14 @@ export function createSourceRoomDaemon({
       log.error?.(`[source-room] ${room.project}:${room.filePath} could not reconcile ${room.heldRevision} onto ${revision}: ${merged.error}`)
       return { ok: false, error: merged.error }
     }
-    if (merged.text !== room.ytext.toString()) replaceYText(room.ytext, merged.text)
+    // Same rule as the accepted-update path above, and for the same reason: a
+    // conflicted merge carries git's markers, and putting those in the document
+    // publishes them. The room keeps what the person typed and reports that it
+    // is holding.
+    if (!merged.conflicted && merged.text !== room.ytext.toString()) replaceYText(room.ytext, merged.text)
     room.heldRevision = revision
     room.blocked = merged.conflicted
+    if (merged.conflicted) await noteRoomIsHolding(room, `the live editor and revision ${revision} both changed ${room.filePath}`)
     return { ok: true, conflicted: merged.conflicted }
   }
 
@@ -465,10 +585,28 @@ export function createSourceRoomDaemon({
       room.heldRevision = message.sourceRevision || room.heldRevision
       room.sourceManifest = Array.isArray(message.sourceManifest) ? message.sourceManifest : room.sourceManifest
       room.blocked = merged.conflicted
-      replaceYText(room.ytext, merged.text)
+      // A CONFLICTED MERGE IS NOT A DOCUMENT. `mergeText` returns
+      // `conflicted: true` together with git's marker-laden stdout, and writing
+      // that into `room.ytext` puts `<<<<<<<`, `=======` and
+      // `>>>>>>> accepted server source for <project>:<file>` into the shared
+      // Yjs document -- which is what every viewer reads and what the room
+      // flushes as the published source. Measured on a real project on
+      // 2026-08-26: 239 bytes of conflicted text published against 72 on disk.
+      //
+      // `room.blocked` was already assigned above and gates nothing, because
+      // the replace had already happened by the time anyone could read it.
+      //
+      // So the room KEEPS ITS OWN TEXT and says it is holding, through the
+      // hook that exists for exactly this. Neither side is chosen and neither
+      // is lost: the room's text stays in the room, the accepted revision stays
+      // accepted, and `noteRoomIsHolding` is what makes the divergence visible
+      // rather than silent.
+      if (!merged.conflicted) replaceYText(room.ytext, merged.text)
       persistRoom(room)
-      if (merged.conflicted) conflicted.push(room.filePath)
-      else applied.push(room.filePath)
+      if (merged.conflicted) {
+        await noteRoomIsHolding(room, `the live editor and the accepted source both changed ${room.filePath}`)
+        conflicted.push(room.filePath)
+      } else applied.push(room.filePath)
       if (!merged.conflicted && room.ytext.toString() !== incoming) noteLocalChange(room)
     }
     return { ok: true, applied, conflicted }
@@ -537,8 +675,13 @@ export function createSourceRoomDaemon({
     if (!projectRecord) return { status: 404, body: { ok: false, error: 'Project not found' } }
     const root = join(projectDir(project), '.source-room', 'working')
     const gitSync = gitSyncManagerForProject(project)
-    gitSync.bindSource(project, root, { mainFile: projectRecord.mainFile || null, appOwnedWorkingTree: true })
+    // Same tree, same rule as createRoom: a normal checkout on the project
+    // branch. This path writes whole files rather than editing one through a
+    // room, and it published the same partial tree with the same deletions.
+    gitSync.bindSource(project, root, { mainFile: projectRecord.mainFile || null })
     await gitSync.sync([projectRecord])
+    const stood = await standRoomOnProjectBranch(project, root)
+    if (!stood?.ok) return { status: 409, body: { ok: false, error: `${project} is not syncing: ${stood.reason || stood.status}` } }
     const paths = []
     for (const file of payload.files || []) {
       if (typeof file?.path !== 'string' || !file.path || isAbsolute(file.path) || file.path.split(/[\\/]/).includes('..')) {

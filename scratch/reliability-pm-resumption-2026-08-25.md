@@ -270,6 +270,175 @@ two edits missed their windows and both arrived afterwards, at **148s** and
 `pages 3/4 BROKEN` with zero-byte responses while the machine was being
 replaced, and `nothing admitted since this edit` on the leg that missed.
 
+## THE LOCKOUT CHAIN: what happens when two people edit one document
+
+**Established step by step on a disposable project, 2026-08-26, against the
+deployed build. Not inferred.** This is the central sync failure and every link
+in it is silent.
+
+1. **Someone edits in the browser.** The revision publishes; the project head
+   moves.
+2. **The other person's daemon PARKS it and does not move their branch.**
+   Deliberate, and written in `git-project-sync.mjs`: *"The accepted revision is
+   PARKED, not applied … the person can see it, diff it, and merge it whenever
+   they choose."* It exists because it used to force-checkout and merge into
+   people's trees and wreck them.
+3. **Their branch is now not an ancestor of the head**, so every edit is
+   rejected — `proposal not accepted: WrongHead`, on repeat in the daemon log.
+   **Local editing has stopped syncing, permanently, with no signal.**
+4. **The remedy the design assumes is a manual merge. It CONFLICTS** —
+   `CONFLICT (content): Merge conflict in paper.tex` — because both sides edited
+   the same file, which is the whole point of the feature.
+5. **A conflicted checkout silently halts ALL settling** (see the section on
+   that). So the documented way out of 3 lands somewhere worse.
+
+**No single link is a bug.** Parking is right in isolation, the WrongHead
+refusal is right in isolation, the conflict is honest. What is missing is that
+**nothing ever says "your edits are no longer syncing"**, and the way out is a
+manual merge of a conflict nobody knows exists.
+
+**`de356e277` should remove step 1's cause** — once the editor is a normal
+checkout on the project branch it publishes on the same lineage, so the head
+moves in a way the other branch can descend from. **NOT PROVEN END TO END.** It
+is not deployed, and the honest statement is that the mechanism above is
+measured while the fix is not.
+
+**How it was found:** the demo could not reach this state until it wrote all
+three routes **concurrently into one document**. Serial-and-same-file still
+never overlapped in time. Skip: *"not that you can AVOID TESTING THE STUFF
+THAT'S ACTUALLY HARD"*.
+
+### THE REPAIR UNIT IS THE DIRECTORY, NOT THE BINDING
+
+Read-only audit, all 129 testing bindings grouped by canonical realpath → **113
+distinct directories**, each classified by its **worst** binding:
+
+| | directories |
+|---|---|
+| **DIVERGED** | **11** |
+| never-synced (no server head) | 10 |
+| no-project (server 404) | 21 |
+| missing directory | 34 |
+| safe | 37 |
+
+**9 directories carry more than one binding, and 3 of those contain a DIVERGED
+one.** So a "safe" binding can share a working tree with a diverged binding, and
+repairing it is not isolated: relink moves the branch and the tree the other
+binding also sits on. A per-binding loop touches such a directory more than once
+and can act on a tree it has already invalidated.
+
+**So: a directory is repairable only if EVERY binding in it is safe.** That also
+removes the ordering problem rather than managing it.
+
+**And 55 of 113 directories are debris** — 34 gone, 21 naming projects the server
+404s. Nearly half the bindings file. Any two people counting "repairable" will
+disagree until they say how much debris they are counting; that was the whole of
+the 40-vs-35 argument.
+
+### THE REPAIRABLE SET IS 1, NOT 35 — and two reasons nobody had looked at
+
+Re-evaluating the 35 "safe" candidates at action time:
+
+| | count |
+|---|---|
+| project returns **HTTP 404** — it does not exist on the server | **16** |
+| project exists but declares **no documentRoots** | **18** |
+| project exists with roots that can be passed back unchanged | **1** |
+
+**My classification error, recorded so nobody inherits it.** I called those 16
+*safe* on the reasoning "the server has no head, so there is nothing to diverge
+from". **A 404 is not "no head", it is "no project".** Those are stale bindings
+pointing at projects that are gone — cleanup, not repair. Distinguish *asked and
+got no head* from *asked and got no project*; they are one HTTP status apart and
+mean opposite things.
+
+**And the hazard that stops the other 18.** `tlda project link` takes document
+roots **POSITIONALLY**. There is no relink-in-place that preserves them. So
+relinking a project that declares none means **choosing** roots and writing them
+into its record — inventing exactly the stored declaration that caused every
+document-loss bug in this file. **Do not do that per-project to get a repair
+through.** It reads as a gap in the verb, not something to work around.
+
+### WHAT RELINK ACTUALLY DOES, measured on disposable projects
+
+**Safe class — it repairs, and the repair is verifiable.** Throwaway put in the
+exact precondition (off its work branch, no edits, tip an ancestor):
+
+```
+before   branch=main            tip IS an ancestor
+after    branch=tlda/sync-safe  clean   tip IS an ancestor   → repaired
+```
+
+**Diverged class — it reports success and leaves the checkout broken:**
+
+```
+Submitted ab7fba3 through the daemon Git remote      <- reported success
+after: on its branch, clean, tip is NOT an ancestor  <- still cannot sync
+```
+
+**So the post-check is the only thing that separates them** — the command prints
+`Submitted` either way. Repairing without re-testing ancestry afterwards
+produces a report of a fixed checkout that still cannot push.
+
+**A trap that nearly produced a false conclusion:** run from the wrong
+directory, `tlda project link` fails with *"already has version history on this
+server; adopting another copy is a different operation"*. That is the guard
+working correctly — refusing to adopt a **different copy** — not evidence that
+relink is broken for projects with history. **Run it from inside the bound
+checkout**, and check `Source:` in its output before believing any result.
+
+### SIX OF SKIP'S CHECKOUTS ARE ALREADY IN THIS STATE — swept 2026-08-26
+
+Read-only sweep of the 49 bindings under `~/work` in `testing`:
+
+| class | count |
+|---|---|
+| **safe** — off their work branch but the tip can still fast-forward | **35** |
+| **DIVERGED — cannot sync, relink will not fix** | **6** |
+| binding points at a directory that no longer exists | 6 |
+| already on their work branch | 2 |
+
+**The discriminator is exact and cheap: is the checkout's tip an ANCESTOR of the
+project head?** Yes → it can catch up, relink is safe. No → the lineages have
+split and there is no automatic way back. Where the daemon had never fetched a
+head locally, ask the server for `source-head` and test against that; where the
+server has no head at all there is nothing to diverge from.
+
+**Two of the six are Skip's own working documents and one is the shared `tlda`
+checkout itself.** Names are deliberately not in this file — the rule is that
+his projects are not named in a message or a file to anyone but him. The
+classification travels as shas.
+
+**Nothing was relinked and nothing should be.** Relink is unsafe on a diverged
+checkout and can report `Submitted` while doing nothing. Recovery for a diverged
+checkout is unsolved; work it out on a copy first.
+
+### It takes ONE browser edit on a brand-new project — reproduced in 4 minutes
+
+Not accumulated damage. On `sync-trio`, created minutes earlier, disk and
+browser writing the same document concurrently:
+
+```
+cycle 1   disk 9.2s      browser 8.0s     both landed
+cycle 2   disk NEVER     browser 0.4s
+
+daemon:   sync-trio: announced a1f9f51, fetched 0820202
+          sync-trio: proposal not accepted: WrongHead
+server head 08202028364c   local tip e277177bd5a8   NOT an ancestor
+```
+
+**Cycle one works, cycle two the disk collaborator is finished.** That is the
+whole lifetime of a collaboration: one edit each.
+
+**Standing reproduction:** `sync-trio` with the demo running all three routes
+concurrently. `sync-watch` is left in the diverged state as evidence and cannot
+recover — relink does not fix a diverged checkout, only a fresh project does.
+
+**Do not read the remote leg's `remote pull` failures as part of this.** Measured:
+that is the demo's own remote leg racing its own disk leg — a pull refuses while
+a local edit is uncommitted, which is ordinary git. The checkout is clean between
+cycles. It is a real thing two people can hit; it is not the lockout.
+
 ## THE DEMO NEEDS `--watch` OR IT RUNS THREE CYCLES AND EXITS
 
 `const CYCLES = Number(valueOf('--cycles', has('--watch') ? Infinity : 3))`.
@@ -930,3 +1099,764 @@ keeping its fixture from diverging (`7877a4843`).
   that checkout and restarts it — there is no separate restart step.
 - `tlda` (the CLI) runs from the shared checkout, so CLI fixes are live on
   commit with no deploy. Server, daemon and client changes all need one.
+
+## 2026-08-26 — CLI gate accepted; one canary relink done
+
+**`3ab696cd8` — the relink CLI gate now requires evidence it got somewhere.**
+The chief rejected the previous version four times and was right each time: the
+existing-project case asserted only that `Usage:` never appeared, under an
+eight-second cap, so **silence passed it** — a crash satisfied it. It now waits
+for `Usage:` | `local fleet daemon is unavailable` | `exists, pushing files` |
+`Submitting` | `Submitted`, and asserts BOTH that a marker was reached AND that
+the marker was not `Usage`. The daemon-unavailable line is in the set on
+purpose: it is what a daemon-less checkout prints, so both environments reach a
+marker and the test stops being a fact about this machine.
+
+Two counterfactuals, both red:
+- pre-fix CLI → fails on *"the stage it reached was not the usage gate"*
+- marker made unreachable (the crash/silence path) → fails on *"reached a known
+  stage rather than dying quietly"*
+
+Also deleted a comment claiming `Source:` prints *before* `bindLocalSource()`.
+It prints after, and the file carried both claims at once.
+
+```
+node --import tsx --test cli/relink-preserves-an-empty-declaration.test.mjs shared/document-roots-to-declare.test.mjs
+```
+6/6, 28s here; the chief independently got 6/6, 30.4s.
+
+**The canary relink — ONE directory, `sync-rootless`, mine and disposable.**
+Preconditions all checked before acting: exists; single-binding; clean; HEAD
+`f8b850f` an ancestor of server head `3f7acc3`; one branch, no MERGE_HEAD. The
+project really is the case under test — `documentRoots: []` on the server.
+
+`tlda-dev project link sync-rootless` from inside the directory, **no source
+argument**, exit 0, 13s. After: `documentRoots: []` **preserved** (the fix,
+live — this is where a root used to be invented from the main file and written
+into the record), branch and HEAD unchanged, checkout clean.
+
+Edit-to-browser on a disposable change: marker appended to `doc.md`, server-side
+in **14s**, then read back **across the source-room websocket**
+(`/source-sync/sync-rootless/doc.md`, real Yjs frames) rather than the `/source/`
+endpoint — the published endpoint is not the browser surface, and reporting it
+as one is the wire failure this repo keeps repeating. Fully restored afterwards:
+`doc.md` byte-identical (11 bytes), server source byte-identical, zero markers
+left, checkout clean.
+
+**Stopped there.** No second directory. Real relinks still held.
+
+**Still open, and NOT to be touched unasked — it is a semantics decision.**
+`onWrongHead` in `daemon/git-project-sync.mjs` is a no-op default parameter with
+**zero callers** (`git grep onWrongHead main -- daemon server cli` returns only
+the definition and its own call site). A rejected proposal logs a warning in
+`git-sync-manager.mjs` and then never converges: park, retry, same `WrongHead`,
+forever. That is the lockout chain still open. The tempting fix — reparent the
+proposal onto the fetched head, same tree — is last-writer-wins at file
+granularity against a concurrent browser edit, which is Skip's call and not
+mine.
+
+## 2026-08-26 — one REAL relink, and two findings that change the picture
+
+Selection funnel: 39 real single-binding candidates -> 28 whose directory
+exists and whose record is reachable -> 18 carrying no document roots -> 11
+meeting every git precondition -> excluding paper-named projects, Skip's
+current viewer document, and anything over 2 pages -> **8 eligible, 1 taken**.
+Preconditions were re-run at action time rather than inherited from the audit.
+Relink: no source argument, exit 0, 12s. Roots not invented. HEAD unchanged,
+clean, still an ancestor of the server head. Marker to `README.md` reached the
+server in 15s and was read back across the source-room websocket; local and
+server both restored byte-identically.
+
+**Finding 1: `project link` moves the checkout onto the daemon work branch.**
+This one went from `master` to the work branch -- same HEAD sha, clean tree,
+nothing lost. It was NOT moved back, deliberately: Skip's rule is that a
+checkout commits and pushes only while a daemon-managed branch is checked out,
+so restoring `master` would switch sync off for that checkout and undo the
+repair. It is still an unrequested visible change to a real directory and it
+will happen to all 8. Flagged to the chief; not proceeding until answered.
+
+**Finding 2: the "18 rootless projects" number came from an instrument that
+could not tell an absent field from an empty one.** The audit tested
+`(documentRoots || []).length === 0`, which reports a MISSING key as rootless.
+Re-measured across all 18: **the key is absent in 18 and explicitly `[]` in
+none.** The disposable fixture had an explicit `[]`, so the two are genuinely
+different record shapes and had been conflated. `documentRootsToDeclare`
+preserves both, so the fix is unaffected -- but the count means "18 records
+carry no documentRoots key", not what was previously reported.
+
+## 2026-08-26 — HARD STOP: an open source room publishes conflict markers
+
+Relinking the second real directory deviated at the restore check and the run
+halted there. The cause is a defect, not the instrument.
+
+**What happened.** The server's published source became **239 bytes of
+conflicted text against 72 on disk**, carrying git conflict markers rendered
+into the document, including a `>>>>>>> accepted server source for
+<project>:<file>` line.
+
+**Mechanism.** `server/lib/source-room-daemon.mjs` three-way merges the live
+room text against the incoming accepted server source with `git merge-file`.
+On conflict it accepts `status === 1`, keeps stdout **with the markers in it**,
+and that becomes the published source. `hasConflictMarkers()` exists in the
+same file and does not gate publication.
+
+**A READ is enough to trigger it.** The room was opened only to read. The room
+is server-side and outlives the client, holding the text it had; the disk
+restore then arrived as incoming and conflicted against it. So a person with
+the browser editor merely OPEN on a file, while anyone edits that file on disk,
+can get conflict markers published into the document. That is the
+two-people-editing-the-same-file case, and it fails.
+
+**NOT established.** The two earlier runs did the same sequence and restored
+cleanly. The visible difference is a 25-30s gap between room read and restore
+where the failing run had sub-second, which points at a race on whether the
+room flushes before the incoming revision lands (fresh vs stale merge base).
+Two observations, no isolating test. Do not repeat this as a cause.
+
+**State: everything restored.** All three touched projects (1 disposable
+fixture, 2 real) verified across disk, server AND room: local == server
+byte-identical, room == local, zero conflict markers, zero canary markers,
+checkouts clean.
+
+**Queue: 7 eligible directories untouched, 1 attempted and fully rolled back.**
+No further relinks pending the chief's word.
+
+Runner used: `scratch/relink-one.mjs` (gitignored, regenerable, a tool not a
+resumption point). It rechecks every precondition at action time, crosses the
+source room rather than reading `/source/` and calling that the browser, and
+restores before asserting so a failed arrival cannot leave an edit behind.
+
+## 2026-08-26 — isolated: the conflict-marker publication, and a second defect
+
+**The markers did not predate the run.** The conflict hunk carried the canary
+written by the runner in that same run.
+
+**First failing node.** `server/lib/source-room-daemon.mjs`,
+`applyAcceptedSourceMutation`. On conflict `mergeText` returns
+`conflicted: true` AND the marker-laden stdout, and the caller runs
+`replaceYText(room.ytext, merged.text)` **unconditionally**. The markers are in
+the shared Yjs document -- what viewers see, what the room flushes -- before
+`room.blocked = merged.conflicted` is assigned. `blocked` is set after the fact
+and gates nothing; `hasConflictMarkers()` sits in the same file and is never
+consulted here. `reconcileRoomToRevision` has the same shape.
+
+**Red test: branch `room-conflict-proof`, `54cb7f2c1`.**
+`node --import tsx --test server/lib/source-room-never-publishes-conflict-markers.test.mjs`
+Deterministic and offline. Red on main, green with a one-line guard (verified,
+then reverted), so it is satisfiable rather than impossible. Held on a branch so
+main's suite is not red while the repair is chosen. It asserts ONLY that
+conflicted output never reaches the document -- not which side wins.
+
+**A SECOND defect, found by the timing sweep and not yet diagnosed.** With a
+room open, a disk edit at a 0s gap is **silently lost** -- the server keeps the
+room's text, no conflict, no error. At 15s and 30s it is clean. And with two
+sides editing the SAME line deterministically, the published document carries
+the browser edit and **not** the disk edit. The disk author's work vanishes with
+no warning. **The node that drops it is NOT established** -- do not repeat a
+cause for this one.
+
+**Repair options reported to the chief, none implemented, none choosing a
+winner:** (1) don't write conflicted output into the room; set `blocked` and
+record through the existing `recordHeldEdit` hook; (2) gate the flush path on
+`hasConflictMarkers()`; (3) the deletion option -- drop the three-way merge and
+treat divergence as a held edit, which changes semantics. Leaning (1).
+
+Harnesses `scratch/room-conflict-repro.mjs` and
+`scratch/room-divergent-repro.mjs` are force-added on that branch.
+Disposable project verified consistent across disk, server and room.
+
+## 2026-08-26 — the conflict-marker fix, on branch `room-conflict-proof`
+
+**`baf8eb86f`.** On a conflicted merge both `applyAcceptedSourceMutation` and
+`reconcileRoomToRevision` now keep the room's own text and report through the
+existing `noteRoomIsHolding` hook. No winner chosen; non-conflicting merges
+untouched. The gate covers both paths and asserts recoverability directly --
+the person's text is still in the room, `blocked` is set, the held edit is
+recorded.
+
+```
+node --import tsx --test server/lib/source-room-never-publishes-conflict-markers.test.mjs
+```
+2/2 green with the fix, 2/2 red without. Neighbouring room test green. eslint,
+tsc -b, lint:guards clean.
+
+**The counterfactual is what made the gate real.** The reconcile test first
+PASSED against unfixed code: `headChanged` takes POSITIONAL arguments and was
+being handed an options object, so `revision` was undefined and
+`reconcileRoomToRevision` returned at its first guard. Written down because the
+same mistake is available to anyone extending these tests.
+
+**`lint:guards` follows git tracking, not the filesystem.** It flagged the two
+repro harnesses for WebSocket construction outside the transport library;
+untracking them cleared it and they remain on disk. They are regenerable tools,
+so they belong on the "logs, not resumption points" side of the repo rule. They
+were deliberately NOT added to the guard's ALLOWED list, which is for product
+sites.
+
+**The live disposable proof cannot be produced yet, for a specific reason.** The
+disposable project never produced markers even BEFORE the fix
+(`publishedConflicted: false`), so a clean run after the fix cannot distinguish
+the fixed state from the state it was already in. Markers were only observed on
+a real project and real projects are frozen. The deterministic gate is the check
+that does distinguish. Live confirmation needs a deploy, which is the chief's
+lane; the branch is not on `main`.
+
+**Still open:** the zero-gap silent disk-edit loss. Pre-fix disposable run:
+`publishedHasDiskEdit: false` -- the disk author's edit gone, no markers, no
+error. Cause NOT established.
+
+## 2026-08-26 — the zero-gap disk-loss IS the WrongHead lockout
+
+Traced on a disposable project, sampling published source AND revision identity
+every 2s rather than looking once at the end:
+
+```
+ 29s  === BROWSER EDIT (socket held open) ===
+ 36s  rev=79d2db9  seq=11031      <- the browser edit becomes a revision
+ 37s  === DISK EDIT ===
+ 39s..81s  rev=79d2db9 seq=11031 published=BROWSER   (45s, unchanged)
+```
+
+**The disk edit never became a revision at all** -- two revisions in the whole
+run. So the loss is upstream of the room, and the conflict-marker fix does not
+touch it.
+
+**Causal evidence, daemon log, timestamps matching the run:**
+```
+09:25:33Z  proposal not accepted: WrongHead
+09:26:19Z  announced 79d2db9, fetched 82b077a
+09:26:19Z  proposal not accepted: WrongHead
+```
+
+**First failing node.** `pushRevision` in `daemon/git-project-sync.mjs`. On
+`WrongHead` it calls `onWrongHead` -- a no-op default with ZERO callers -- then
+`headChanged`, which parks the new head at `refs/tlda/fetched/<project>` and
+deliberately does not apply it. The checkout's branch never advances, so every
+later proposal is rejected identically. `git-sync-manager` logs one warning and
+stops.
+
+**Consequence: once anyone edits in the browser, the disk collaborator is locked
+out permanently** -- not for that edit, for all of them -- and the only trace is
+a daemon log line nobody sees.
+
+**This is deliberate design and was NOT changed.** The comment above
+`headChanged` states it: the accepted revision is parked, local is
+authoritative, divergence is theirs to resolve. That replaced an earlier
+behaviour that committed dirty trees unasked. The design is coherent; what is
+missing is a path back, and choosing one is merge semantics -- Skip's call.
+
+**Options reported, none implemented:** (1) wire `onWrongHead` to surface the
+lockout -- decides nothing, and a lockout nobody can see is the worst property
+of the current state; (2) re-parent the proposal onto the fetched head, which is
+last-writer-wins; (3) drop the parking rule and fast-forward a clean checkout,
+which re-opens what parking was added to stop.
+
+**Note for whoever unfreezes relinks: relinking does not fix this.** Any project
+whose browser edits are ahead of its checkout is already locked out, relinked or
+not.
+
+Harness: `scratch/disk-loss-trace.mjs` (untracked -- the websocket-boundary
+guard follows git tracking, and this is a regenerable tool).
+
+## 2026-08-26 - lockout proof on branch `lockout-proof`, and the repair path
+
+**`48bce44d4`.** Three tests, and the third is why the first two mean anything:
+
+```
+node --import tsx --test daemon/a-locked-out-checkout-still-lands-its-edit.test.mjs
+```
+- RED: a disk edit lands after the browser published, keeping BOTH sides.
+  Fails on the production failure verbatim -- `{"ok":false,"status":"WrongHead"}`
+  -- reproduced offline with a real pre-receive hook carrying the server's own
+  ancestry rule.
+- RED: a same-line conflict is HELD and named, not silently dropped. Separate on
+  purpose: loss and held-divergence look identical from outside, so a fix that
+  discarded the conflicting side would pass a test that could not tell them
+  apart.
+- GREEN CONTROL: the identical harness with the published head still an ancestor
+  lands the edit on today's code. Without it a broken fixture and a real defect
+  are the same colour.
+
+Both tests also assert the person's checkout and index are untouched.
+
+**THE REPAIR PATH, verified mechanically, not proposed from reading.**
+`git merge-tree --write-tree <acceptedHead> <localFilteredCommit>` merges the
+two entirely in the object database -- no working tree, no index, no checkout
+mutation, so none of the five things `d60d18573` removed comes back. Then
+`git commit-tree <mergedTree> -p <acceptedHead> -p <local>` yields a commit the
+ancestry rule accepts, because the accepted head is a parent.
+
+| case | exit | result |
+|---|---|---|
+| different files changed | 0 | both edits present; accepted head an ancestor; 0/0 tree/index |
+| same line changed | 1 | conflicted paths at stages 1/2/3; 0/0 tree/index |
+
+**The zero-exit case is the positive control and it matters here.** The LEGACY
+`git merge-tree` prints `changed in both` for any file both sides touched, which
+is not a conflict report -- see the memory `merge-tree-changed-in-both-is-not-a-conflict`.
+The `--write-tree` form does not share that failure: exit 0 on genuinely clean,
+1 only on a real conflict. Checked, not assumed.
+
+**The deletion that comes with it:** `onWrongHead`, a parameter with zero
+callers, goes -- replaced by the merge path rather than kept as a second way to
+signal the same thing.
+
+Not implemented; awaiting the chief. Real projects and relinks frozen.
+
+**Process note:** a shell heredoc hung a turn for six minutes. Commit messages
+now go through a file and `git commit -F`. Not the tests -- the heredoc.
+
+## 2026-08-26 - lockout FIXED on branch `lockout-proof` (`8333b3c53`)
+
+**The gate boundary was stated wrong first time and the chief caught it.**
+`commitSettledTree()` DOES commit the tracked disk edit and advance the work
+branch -- existing, wanted behaviour -- so "the checkout is untouched" was
+false, and asserting a clean worktree/index proved nothing because a clean tree
+is exactly what committing produces. The real line: **the app-owned merge commit
+must never become checkout HEAD.** The gate asserts that directly, plus that
+HEAD did not quietly absorb the other side, plus that the accepted head stays
+parked and reachable so "held" means recoverable.
+
+**The missing case was the ordinary one:** same file, non-overlapping lines. A
+fix handling only different-file edits would leave the everyday collaboration
+path locked out and the earlier tests could not tell the difference.
+
+**Implementation.** On WrongHead the accepted head is parked as before; then
+`merge-tree --write-tree accepted local` merges entirely in the object database
+and `commit-tree` builds a two-parent commit. No working tree, no index, no
+branch -- none of the five mutations `d60d18573` removed comes back. ONE retry,
+never a loop. Conflict returns `conflict-held` naming the paths, both sides
+recoverable, no winner chosen. `onWrongHead` (zero callers) deleted.
+
+An exit code other than 0 or 1 from `merge-tree` is RETHROWN, not reported as a
+conflict: a bug in the invocation must not become a story about two authors.
+
+**Results.** Gate 4/4 green with the fix, 3 red + 1 green control without.
+
+| file | parent | with implementation |
+|---|---|---|
+| `git-project-sync` | 8 pass / 2 fail | 8 pass / 2 fail, same two |
+| `git-project-mirror-unrelated` | 3 pass / 4 fail | 3 pass / 4 fail, same four |
+
+**All six are PRE-EXISTING failures on main; none is a regression.** The QMD one
+is baseline too -- byte-identical both sides, `lecture.html` unexpectedly
+included. The `d60d18573` boundary guard "a would-be conflict is parked instead
+of being left unresolved in the checkout" passes on BOTH sides, which is the one
+this change could plausibly have breached.
+
+eslint, tsc -b, lint:guards clean.
+
+**Two things for someone else.** `main`'s daemon suite is red: six failing tests
+across those two files, unrelated to this work. And both files LEAK AN OPEN
+HANDLE -- they need `--test-force-exit` to terminate, which is why an aggregate
+run sits with idle workers instead of finishing. Reproduces at the parent, so
+not from this work.
+
+## 2026-08-26 - correction, and the manager-test classification
+
+**`26bf217b3`: a malformed `merge-tree` success now THROWS.** Exit 0 means git
+merged cleanly, so output that is not a tree id means this code is wrong.
+Returning `{ok:false}` let `pushRevision` label it `conflict-held` -- telling a
+person their collaborator's edit conflicted when nothing of the kind happened,
+indistinguishable from a real conflict in every surface. **Only exit 1 may
+produce `conflict-held`.** The same rule was already written one paragraph
+lower for the exit-code check; it had been applied on the throw path only.
+
+Counterfactual drives it through `runGit`, not a repository, because the thing
+under test is git answering WRONGLY, which a real git will not do on demand. It
+asserts the error fails as itself, is not dressed as a conflict, and that
+nothing was committed from the malformed output. Red pre-correction, green
+after. Gate now **5/5**.
+
+**The two manager tests, each in its own process, `--test-force-exit`, 60s
+inner / ~90s outer, both sides:**
+
+| test | parent | implementation |
+|---|---|---|
+| `two projects sharing one checkout...` | timed out 60000ms | timed out 60000ms |
+| `initial project link...` | timed out 60000ms | timed out 60000ms |
+
+Identical failure mode and duration. **Not regressions** -- which was a live
+risk, since the implementation adds a merge and a second push on the WrongHead
+path and could plausibly have stalled here.
+
+**NOT established: what they actually are.** These are timeouts, not assertion
+failures. "Not mine" is proved; "known baseline failure" is not. This is also
+the file that needs `--test-force-exit` to terminate at all, so a 60s hang is a
+statement about the run, not the behaviour. Do not inherit these as classified.
+
+**A measurement error of my own, recorded because it nearly shipped:** the first
+run of these printed `pass 0 / fail 0` and I almost reported it. The outer loop
+was killing the process before the summary line -- the tests HAD run and timed
+out. A zero from a runner you cut off is not a measurement. Read the per-test
+lines, not the counts.
+
+**Standing hole, not mine and unowned:** `main`'s daemon suite carries six
+assertion failures and at least two hanging tests across three files, plus an
+open-handle leak in two of them. An aggregate run over that directory can
+neither come back clean nor terminate.
+
+## 2026-08-26 - channel-silent restart task: two findings, one open question
+
+Picked up `fleet:d733-mt9lerth` after the sync work integrated on main
+(`3aeaf31f0` + `0753bb8a2` + `6482a9187` + `ad422e67a`, verified independently:
+merge path present, `onWrongHead` gone, malformed-throw present, all 5 gate
+tests on main).
+
+**Finding 1: the code the brief asks to replace was deleted 24 minutes AFTER
+the task was delegated.** `596c08fad` "Suggest restart instead of killing on
+channel silence" landed 00:51; the delegation was 00:27. It removed the
+`rpcRestart` call from the `channel-silent` remedy and replaced it with
+`suggestRestart: () => terminalRpc.notifyConnectionDisconnected({ agent_id })`
+-- a message into the live session, no lifecycle action.
+
+**That commit has NO BODY.** Subject line only, on a behaviour change to the
+notification remedy. Same shape as `37bf5ad3b` (wake marks an agent dead), which
+AGENTS.md records. Nothing in the record says whether it was asked for.
+
+Net: criterion 1 ("never calls kill-session/rpcRestart") is ALREADY satisfied on
+main; criterion 2 ("existing restart-mcp hibernate/wake path is used") is NOT.
+Half the task was done by someone else while it sat assigned here.
+
+**Finding 2: criteria 1 and 2 cannot both hold, and it is not a wording
+quibble.** There is NO separate `hibernate` verb -- hibernate IS `kill-session`,
+killing the tmux session while the agent row stays alive. So
+`tlda-dev restart-mcp` -> lifecycle `restart` -> `rpcRestart` -> `kill-session`
++ `wakeMint`. **The restart-mcp hibernate/wake path and `rpcRestart` are the
+same code.** Do not "resolve" this by picking one; it needs a decision.
+
+**Open question put to the chief, not decided here:**
+(a) wire `channel-silent` to a real restart -- resolve the mint as `restart-mcp`
+does, call lifecycle `restart` with `mint_id` and `wait_until_complete`. Reads
+criterion 3's "live tmux session survives" as *the agent is running afterwards*.
+Also fixes the bug the deleted comment documented: the old remedy passed
+`{agent_id}` alone, which `wakeMint` cannot resolve, so it killed the session and
+threw, leaving agents DOWN -- observed twice on the live daemon in four minutes.
+(b) leave main as it is and close the task as done by `596c08fad`, which is what
+the current code's own comment argues: "Silence authorizes a message to the
+existing session, not a lifecycle action."
+
+Nothing written pending the answer.
+
+**Also still true and unowned:** main's daemon suite carries six assertion
+failures and at least two hanging tests across three files, plus an open-handle
+leak in two of them. An aggregate run over that directory can neither come back
+clean nor terminate, which means a regression there lands invisibly.
+
+**And the sync fix is NOT live:** it is on main, but the running daemon does not
+have this code. Until the daemon restarts, the lockout is still happening.
+
+## 2026-08-26 - the lockout fix VERIFIED LIVE, and two false alarms of my own
+
+Testing serves `ad422e67a`; daemon-testing restarted from that SHA.
+
+**The result, on a disposable project, real path, browser socket held open:**
+```
+63s..81s  rev=4b8dd17  seq=11208  published=BOTH
+VERDICT: the disk edit was PUBLISHED -- the ordinary two-person case now lands
+```
+Both edits in the published source, no WrongHead, no conflict-held, clean
+admission. That case was a permanent lockout this morning.
+
+**The conflict path is live and correct too**, from the daemon's own log:
+```
+10:45:17  holding -- the accepted source and this checkout both changed doc.md
+10:45:17  proposal not accepted: conflict-held
+```
+
+**TWO FALSE ALARMS, BOTH MINE, recorded because they nearly went out as
+findings.**
+
+**1.** The original reproduction returned "disk edit NEVER PUBLISHED" and I was
+one step from reporting the fix broken. It edits the SAME LINE from both sides,
+so it is the conflict case and not publishing is correct. **The harness verdict
+text predates the fix and reads a correct hold as a failure.** The daemon log
+caught it.
+
+**2.** The "ordinary case" I then built also came back not-published. Two
+defects in my own harness: the edits landed on ADJACENT LINES, which genuinely
+conflict in any three-way merge, and the browser edit was DOUBLE-APPLIED -- the
+accepted head read `bravo-FROM-BROWSER-FROM-BROWSER`. Separating the edits by
+eight lines and applying the browser side to the BASE text rather than to
+whatever the room held is what produced the real answer.
+
+**Both times the instrument was wrong and the code was right, and both times
+the false reading looked exactly like the defect I had spent the morning
+chasing.** If you inherit these harnesses: `scratch/disk-loss-trace.mjs` tests
+the CONFLICT case and its verdict wording is stale;
+`scratch/disk-ordinary-trace.mjs` is the one that tests the ordinary case.
+
+**Harness improvement:** `scratch/relink-one.mjs` now checks the published
+source for conflict markers BY NAME. On the run that halted the sweep it noticed
+that damage only as `restore-server` failing to converge -- the symptom furthest
+from the cause.
+
+**Sweep resumed** under the chief lifting the freeze. Index 0 --- the directory
+that halted it before --- passed clean: roots absent and unchanged, HEAD
+unchanged, ancestry holds, edit reached server in 13s and the source room,
+restored local and server, checkout clean.
+
+## 2026-08-26 - SWEEP HALTED at index 6: the relink fix is incomplete for LaTeX
+
+**6 of 7 attempted. Indices 0-5 clean** (roots absent and unchanged, HEAD
+unchanged, ancestry holds, edit reached server 10-13s and crossed the source
+room, restored byte-identically both sides, checkouts clean; branches moved to
+the daemon work branch as ruled intended).
+
+**Index 6: `DEVIATION at roots-unchanged: absent -> set:1`.** The relink wrote
+`[{"path":"main.tex","format":"svg"}]` onto a project that declared nothing --
+the exact invention this task existed to stop.
+
+**CAUSE, upstream of the guard.** `cli/tlda.mjs:737` builds
+`projectDocumentRoots` with `normalizeDocumentRoots(documentRoots, {mainFile,
+format})`. Measured:
+
+```
+normalizeDocumentRoots([], { mainFile: 'main.tex', format: 'svg' })
+  -> [{"path":"main.tex","format":"svg"}]
+```
+
+It SYNTHESISES a root from the main file when the list is empty -- before
+`documentRootsToDeclare` is called. The guard then receives the invented root as
+`supplied` and correctly passes it through. **Right function, wrong input.** The
+unit gate tests the function in isolation and is still green; it could never
+have caught this.
+
+**The six passes before it proved nothing about this path.** The MARKDOWN branch
+never PATCHes document-roots at all -- on already-exists it logs and pushes.
+Only the LaTeX/svg branch PATCHes. Index 6 was the first LaTeX project in the
+queue and therefore the first real exercise of the changed code. The queue was
+six markdown and one LaTeX, and that should have been read before treating the
+run as reassurance.
+
+**This exact path was flagged earlier in this same file and not closed:** "my
+live check missed it because markdown returns before that fallback."
+
+**NOT REVERTIBLE THROUGH THE API, and this is the part that matters:**
+
+```
+PATCH /api/projects/<p>/document-roots  {documentRoots: []}
+  -> 400 {"error":"documentRoots must be a non-empty array"}
+```
+
+A project can EXIST with no roots -- 18 do -- but the API cannot set it back to
+that. **The state is reachable and not settable.** One real project now declares
+`main.tex` where it declared nothing before, with no documented route to undo
+it. Content, HEAD, branch and revision untouched; only the declaration changed.
+No edit was made -- the deviation halted before the disposable-edit step.
+
+**Smallest repair, NOT implemented, pending the chief:** do not PATCH when the
+effective declaration is empty. Keeping an empty declaration means not writing
+one, which is also what the server's own 400 says from the other side. It leaves
+`normalizeDocumentRoots` alone for the creation path.
+
+## 2026-08-26 - LaTeX relink gate + repair (`4ed102ad1`, branch `latex-relink-gate`)
+
+```
+node --import tsx --test cli/relinking-a-latex-project-declares-nothing.test.mjs
+```
+2/2 green with the repair, 1 red + 1 green control without. Neighbouring relink
+tests 6/6. eslint, tsc -b, lint:guards clean.
+
+**Repair:** the PATCH is skipped unless roots were named on the command line or
+the project already declares some. Normalization and creation untouched --
+`normalizeDocumentRoots` still invents for creation, which is right there.
+
+**API facts the gate had to be corrected against, and they are findings:**
+- creating with a `mainFile` declares it immediately
+- an explicit `documentRoots: []` alongside a mainFile is OVERRIDDEN, not honoured
+- a declaration must include the project mainFile
+- a LaTeX project reaches the rootless state ONLY by being created without a mainFile
+
+The first two runs of the gate were red on MY FIXTURES, not on the bug.
+
+**RESTORATION: THERE IS NO SUPPORTED PATH.** Checked, not assumed. Two writers:
+- `PATCH /:name/document-roots` -- the only setter, rejects empty at the top of
+  the handler (`!Array.isArray || length === 0` -> 400); 400 for `null` too
+- `server/routes/projects.mjs:482` -- APPEND-ONLY adoption, `[...existing, root]`
+
+No DELETE, no reset, no clear. The only route producing "declares nothing" is
+creation without a mainFile, and re-creating an existing project means deleting
+it, which takes its history. Not a restoration.
+
+**What the change cost, MEASURED:** with nothing declared the roots come from
+the include graph. Run over the real checkout:
+
+```
+files:   figures/bounds.png, figures/compliance.png, intro.tex, main.tex, method.tex, refs.bib
+derived: [{"path":"main.tex","format":"svg"}]
+now:     ["main.tex"]        same set: true
+```
+
+The declaration names exactly what the graph would derive; `intro.tex` and
+`method.tex` are `\input`s and are not roots either way. Content, history, HEAD,
+branch, revision untouched; no edit was made. **The record is now PINNED where
+it was previously COMPUTED** -- a real difference if the document structure
+changes later, and the honest residue of the mistake. One project.
+
+**Another instrument error caught before reporting:** the first derivation
+printed `{}` and nearly went out as "derives nothing". `documentRootsIn` is
+ASYNC and was not awaited -- that was a Promise.
+
+## 2026-08-26 - canary against the deployed repair, and a correction to my own claim
+
+**Index 6 passes** against `b4097808f`: roots `set:1` unchanged, HEAD unchanged,
+branch unchanged, ancestry holds, edit reached server 17s and the source room,
+restored both sides, clean.
+
+**But index 6 can no longer test the case that failed** -- the earlier run wrote
+`main.tex` into it and that is not revertible. Audited every other rootless
+LaTeX project: **four exist, none eligible.** One is a paper (excluded
+absolutely); the other three have DIRTY checkouts holding someone else's
+uncommitted work.
+
+**Disposable LaTeX canary instead** (`scratch/latex-rootless-canary.mjs`):
+created rootless, relinked with no source and no roots, roots `empty` before AND
+after, bound to the work branch, edit reached server in 16s and the source room,
+restored, clean. **Counterfactual with the pre-repair CLI: red** -- dies in 3s on
+`documentRoots must be a non-empty array`, no push.
+
+**THE CORRECTION. The gate does NOT cover the invention that damaged the real
+project, and the first commit body implied it did.** Its pre-repair red is:
+
+```
+AssertionError: the CLI reached a known stage rather than dying quietly
+  actual: 'exited'   expected: 'reached-stage'
+  Error: documentRoots must be a non-empty array
+```
+
+Red because the CLI ABORTS, not because it declared `main.tex`.
+
+**Reproducing the invention needs a record with a mainFile AND no declared
+roots, and no supported route creates one.** Creating with a mainFile declares
+it immediately; the relink does not set a mainFile (checked both canary projects
+afterwards -- `mainFile` still absent). The 18 rootless projects are legacy
+state from older code.
+
+So the invention is prevented BY CONSTRUCTION -- with no declared roots
+`alreadyDeclares` is false and no PATCH is issued -- which is an argument about
+the code, not a test result. Commit body amended to say so: **`00ef09842`**
+(was `2ee8fa102`).
+
+**If that path should be tested rather than argued:** extract the
+skip-the-PATCH decision into a named function and test it with a record shaped
+`{ mainFile: "main.tex", documentRoots: undefined }`. Small refactor, NOT done.
+
+Worktrees in play: `latex-relink-gate` (gate + repair), `pre-repair-cli`
+(detached at the parent, for counterfactuals), `lockout-proof`,
+`room-conflict-proof`.
+
+## 2026-08-26 - Skip's two decisions, and a regression I shipped this morning
+
+**His words, read from his own thread after the relayed IDs did not resolve:**
+- 10:58:16 EDT **"4 mark"** -> mark the affected file in the editor
+- 10:58:19 EDT **"5 fine"** -> the relink branch switch stays
+
+**Citation note:** the two IDs relayed (3379495, 3379496) both resolve to
+`classroom-pm`'s own Bash ACTIVITY, not to Skip. The substance was right; only
+the IDs were wrong. Recorded because a wrong ID is how an approval gets
+laundered -- the next reader checks it, finds someone else's shell command, and
+either believes it anyway or discards a real decision.
+
+**`9ef2fd6e5` on branch `held-edit-mark`.**
+
+**THE MARK USED TO HAPPEN BY ACCIDENT, and my own fix removed it.** The
+conflicted merge wrote git's markers into the document; the client saw
+`<<<<<<<` in its buffer and set `heldConflictFile` itself. Keeping markers out
+of the document -- the point of the earlier change -- deleted the only signal
+the person had, so **a held edit became indistinguishable from a successful sync
+from inside the editor.** That is a regression shipped this morning and not
+noticed at the time; his answer closes it.
+
+- **Server:** both conflict-shaped paths broadcast `status: 'conflict'` naming
+  the file.
+- **Client:** that branch existed and was DEAD for the room path -- no server
+  code ever sent it -- and its text said "resolve the markers", which are no
+  longer there. It now marks the file and says the edit is held and safe.
+
+**Asserted AT THE SOCKET, not at `room.blocked`:** a flag the server sets and
+never sends is the same as no signal. Counterfactual: remove only the broadcast,
+keep the hold -> red with `frames seen: ["update:"]`.
+
+Room tests 4/4; tsc -b and lint:guards clean; eslint on the touched files
+identical to main (49 problems, 43 errors, 6 warnings, all pre-existing in
+`FleetSourceEditorShape.tsx`).
+
+**NOT DONE, deliberately visible:** nobody has seen this rendered. The mark
+reuses the existing conflict bar, whose ours/theirs buttons stay disabled
+without markers while `resolved` stays enabled. Whether that bar is the right
+control for a held-without-markers file is a look-at-it judgement.
+
+Worktrees: `held-edit-mark`, `latex-relink-gate`, `lockout-proof`,
+`room-conflict-proof`, `pre-repair-cli`.
+
+## 2026-08-26 - symlink closure push (`52ad7ea4f`, branch `symlink-closure`)
+
+**Mechanism, measured before touching anything:**
+```
+ls-tree HEAD -- scratch/book/figs/plot.png   ->  (nothing)
+ls-tree HEAD -- scratch/book/figs            ->  120000 blob ...
+ls-tree HEAD -- lectures/figs/plot.png       ->  100644 blob ...
+```
+Git does not traverse a symlink in a tree. The closure records the
+through-the-link path; the immutable check finds nothing and kills the push,
+naming a file that is committed and present.
+
+**Fix:** a member with no tree entry has its prefixes walked nearest-first;
+where one is a `120000` blob, read the target and rebuild the remainder onto it,
+repeating for nested links. A real directory in that position means the
+remainder genuinely is not there. Escaping or cyclic links resolve to nothing
+and fall through to the check unchanged. **The symlink itself joins the
+members** -- committed blob, and the built document needs it. The target is
+carried ONCE at its canonical path, same blob (asserted: materialising bytes at
+the virtual path would pass the main test and put a drifting second copy of
+every figure in every revision).
+
+Pre-fix 1 pass / 2 fail; post-fix 3/3. Neighbouring `git-project-sync` 8/2 --
+the same two pre-existing failures established this morning. eslint, tsc -b,
+lint:guards clean. Nothing of Skip's touched.
+
+**THE UNVERIFIABLE CRITERION, recorded so nobody inherits it as covered.** The
+immutable check is untouched, but no fixture reaches it after this repair.
+
+- My first version of that test asserted it still refuses a genuinely absent
+  file. **It did not hold the line** -- a file that does not exist never becomes
+  a closure member, because the closure is scanned against a materialisation of
+  the SETTLED TREE. Proved by replacing the check with `continue`: **all three
+  tests still passed.**
+- An escaping symlink does not reach it either: the link materialises pointing
+  outside the temporary tree, so the file is missing rather than a member.
+
+**The in-repo symlink was the one route to that check, and resolving it is what
+this change does.** Enforcement is therefore unverified and possibly
+unreachable. NOT deleted and not proposed for deletion -- a backstop nobody can
+trigger is a decision, not a cleanup.
+
+The third test now pins the real containment behaviour: nothing from outside the
+repository is carried in, and its absence does not stop the document publishing.
+
+### Amended to `8b3b719ef` — criterion 3 proven, not caveated
+
+The chief rejected the caveat and was right. `runGit` reaches the check
+directly.
+
+| | result |
+|---|---|
+| with the fix, check intact | **4 pass / 0 fail** |
+| check replaced with `continue` | **3 pass / 1 fail** — only the immutable-check test |
+| pre-fix code | 1 pass / 2 fail — `immutable closure member is absent` |
+
+**How it reaches the check:** `runGit` passes through to real git, and
+`read-tree --empty` flips a flag. That command runs immediately before the
+verification loop, so it marks the end of closure construction SEMANTICALLY
+rather than by counting calls — a count would shift the moment anyone adds a git
+call. After the flag, `ls-tree` for the document returns empty and the unchanged
+check refuses it by name. It also asserts NO PROPOSAL reached the remote: a
+check that threw after pushing would satisfy the rejection and still ship the
+incomplete document.
+
+Production comment shortened to the invariant (seven lines, no route claims).
+The test-file header was corrected too — it said no fixture reaches the check,
+true when written and false after this amend.
+
+All five criteria met. Neighbouring `git-project-sync` unchanged at 8/2.

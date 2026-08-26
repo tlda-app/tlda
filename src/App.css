@@ -302,16 +302,25 @@ body.tlda-pan-mode * {
   height: 100%;
 }
 
+/* Every standalone chat panel is a positioning context: tldraw's HTMLContainer
+   inside it is `position: absolute`, and against a static parent it resolves
+   against the page — which put the index chat at viewport x=0 while its box sat
+   centred. One rule, so no caller has to know. */
+.standalone-chat-panel {
+  position: relative;
+}
+
+/* The box the chat sits in: a size and a centre, and nothing else. The panel
+   draws its own border and background, so the ones that used to be here were the
+   old chat's box left standing around the new one. Skip, 2026-08-25: "the old
+   shitty one's box is thill there. can we get this centered like the old one was
+   and get rid of that old box?" */
 .index-top-chat {
   width: min(860px, 100%);
   height: 260px;
   margin: 0 auto 20px;
   display: flex;
   flex-direction: column;
-  border: 1px solid #e2e8f0;
-  border-radius: 0;
-  background: #fff;
-  overflow: hidden;
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   font-size: 11px;
   font-weight: 300;
@@ -724,8 +733,6 @@ body.tlda-pan-mode * {
 }
 
 .tl-theme__dark .index-top-chat {
-  border-color: var(--tl-color-divider);
-  background: var(--tl-color-panel);
   color: var(--tl-color-text-1);
 }
 
