@@ -594,7 +594,10 @@ async function cmdScratch() {
     }
   }
   const projectMetadata = await api('GET', `/api/projects/${name}`)
-  const linked = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, projectMetadata })
+  // `--server` governs this command's git remote as well as its API calls. It
+  // used to govern only the API, so a scratch aimed at a preview was created
+  // there and its content pushed to the configured server.
+  const linked = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, projectMetadata, server: getFlag('server') || null })
   printSubmittedRevision(linked.submission)
 
   // Auto-join book
@@ -694,6 +697,7 @@ async function cmdCreate() {
       sourceDir: dir,
       acceptContainedServerHistory,
       preflightOnly: true,
+      server: getFlag('server') || null,
       ...linkedRemote,
     })
     if (binding.alreadyLinked) console.log(dim(`Project "${name}" is already linked to ${dir}.`))
