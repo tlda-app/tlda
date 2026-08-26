@@ -308,6 +308,32 @@ three routes **concurrently into one document**. Serial-and-same-file still
 never overlapped in time. Skip: *"not that you can AVOID TESTING THE STUFF
 THAT'S ACTUALLY HARD"*.
 
+### It takes ONE browser edit on a brand-new project — reproduced in 4 minutes
+
+Not accumulated damage. On `sync-trio`, created minutes earlier, disk and
+browser writing the same document concurrently:
+
+```
+cycle 1   disk 9.2s      browser 8.0s     both landed
+cycle 2   disk NEVER     browser 0.4s
+
+daemon:   sync-trio: announced a1f9f51, fetched 0820202
+          sync-trio: proposal not accepted: WrongHead
+server head 08202028364c   local tip e277177bd5a8   NOT an ancestor
+```
+
+**Cycle one works, cycle two the disk collaborator is finished.** That is the
+whole lifetime of a collaboration: one edit each.
+
+**Standing reproduction:** `sync-trio` with the demo running all three routes
+concurrently. `sync-watch` is left in the diverged state as evidence and cannot
+recover — relink does not fix a diverged checkout, only a fresh project does.
+
+**Do not read the remote leg's `remote pull` failures as part of this.** Measured:
+that is the demo's own remote leg racing its own disk leg — a pull refuses while
+a local edit is uncommitted, which is ordinary git. The checkout is clean between
+cycles. It is a real thing two people can hit; it is not the lockout.
+
 ## THE DEMO NEEDS `--watch` OR IT RUNS THREE CYCLES AND EXITS
 
 `const CYCLES = Number(valueOf('--cycles', has('--watch') ? Infinity : 3))`.
