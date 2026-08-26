@@ -38,24 +38,9 @@ export function HighlighterSlider() {
   const isEmbed = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('embed')
   // Default ON. Toggled from the prefs menu (server-backed pref).
   const [zoneEnabled, setZoneEnabled] = useState(() => getPref('hl-zone-enabled'))
-  // DESIGN DECISION: the TOC width and this slider's width are ONE width, and
-  // they stay linked. Skip, 2026-08-26: "i want the linked TOC/slider area
-  // width", "plz make that happen and document it as a design decision", and
-  // the reason -- "the rationale---this is the part of your screen that doesn't
-  // like, behave normally".
-  //
-  // So this is not two components sharing a number by accident. That shared
-  // width IS the reserved edge-control region: the strip where interacting with
-  // the document is deliberately not ordinary document interaction. Widening the
-  // TOC widens the region, because they are the same region.
-  //
-  // A previous commit on this branch split them, on the theory that the width
-  // was the cause of highlighter strokes dying at the right edge. Skip rejected
-  // that and it is reverted. The strip behaving differently is the feature; what
-  // was broken is that it did so INVISIBLY -- see handlePointerDown and
-  // handlePointerUp below.
-  //
-  // getZoneWidth is the one reader. Do not reintroduce a second width here.
+  // Third copy of this default, and the one that had diverged furthest: it read
+  // the legacy localStorage key directly and never consulted the pref, so it
+  // carried its own 60 and its own 20/250 clamp. getZoneWidth is the one reader.
   const [zoneWidth, setZoneWidth] = useState(() => getZoneWidth())
   // subscribePref fires synchronously in-tab the instant the pref changes — no polling.
   useEffect(() => subscribePref(() => setZoneEnabled(getPref('hl-zone-enabled'))), [])

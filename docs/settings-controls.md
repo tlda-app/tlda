@@ -153,22 +153,3 @@ safe to introduce because the seven prose surfaces already declared `1.5` and th
 profile default *is* `1.5`, so nothing moved until the number moved. Where that is
 impossible, say the exact delta: making the touch target real took a coarse-pointer
 agents row from 24px to 28px.
-
-## TODO: the zone-width control does not match the region it sets
-
-Skip, 2026-08-26: *"so look like the actual control in settings is fucked up and
-doesn't seem to map well to the actual width of the thing."*
-
-The setting is `toc-hover-zone-width`, and the region it sets is the reserved
-edge-control strip — the TOC panel and the highlighter slider share one width
-**by design**, see `getZoneWidth` in `src/panels/TocTab.tsx`. What he is
-reporting is that moving the control does not correspond to the width that
-appears on screen.
-
-**Recorded, not diagnosed.** Nobody has yet measured the control's value against
-the rendered strip, so which of the two is wrong is unknown, and this entry does
-not guess. Skip's instruction at the time was to record it and leave the control
-alone.
-
-Measured while it was written, on the deployed build: the rendered strip was
-250 × 547 px, and `toc-hover-zone-width` defaults to 250.
