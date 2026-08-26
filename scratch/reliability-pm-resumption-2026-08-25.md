@@ -308,6 +308,32 @@ three routes **concurrently into one document**. Serial-and-same-file still
 never overlapped in time. Skip: *"not that you can AVOID TESTING THE STUFF
 THAT'S ACTUALLY HARD"*.
 
+### SIX OF SKIP'S CHECKOUTS ARE ALREADY IN THIS STATE — swept 2026-08-26
+
+Read-only sweep of the 49 bindings under `~/work` in `testing`:
+
+| class | count |
+|---|---|
+| **safe** — off their work branch but the tip can still fast-forward | **35** |
+| **DIVERGED — cannot sync, relink will not fix** | **6** |
+| binding points at a directory that no longer exists | 6 |
+| already on their work branch | 2 |
+
+**The discriminator is exact and cheap: is the checkout's tip an ANCESTOR of the
+project head?** Yes → it can catch up, relink is safe. No → the lineages have
+split and there is no automatic way back. Where the daemon had never fetched a
+head locally, ask the server for `source-head` and test against that; where the
+server has no head at all there is nothing to diverge from.
+
+**Two of the six are Skip's own working documents and one is the shared `tlda`
+checkout itself.** Names are deliberately not in this file — the rule is that
+his projects are not named in a message or a file to anyone but him. The
+classification travels as shas.
+
+**Nothing was relinked and nothing should be.** Relink is unsafe on a diverged
+checkout and can report `Submitted` while doing nothing. Recovery for a diverged
+checkout is unsolved; work it out on a copy first.
+
 ### It takes ONE browser edit on a brand-new project — reproduced in 4 minutes
 
 Not accumulated damage. On `sync-trio`, created minutes earlier, disk and
