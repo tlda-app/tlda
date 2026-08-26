@@ -239,9 +239,15 @@ function sourceRoomGitManager(project) {
   manager = createGitSyncManager({
     bindingsFile: join(getProjectDir(project), '.source-room', 'git-bindings.json'),
     daemonId: sourceRoomDaemonKey(project),
-    server: `http://127.0.0.1:${PORT}`,
+    // The scheme has to be the LISTENER'S. These were hardcoded `http://`, so on
+    // a TLS preview -- which is what `tlda-dev serve` stands up -- the server
+    // talked to itself over a scheme it was not listening on. The push does not
+    // error in a way anyone sees: it comes back `queued`, and no document ever
+    // mounts, which is what has been blocking browser verification of anything
+    // document-bound. See localServerBaseUrl, defined with the TLS detection.
+    server: localServerBaseUrl(),
     token: process.env.TLDA_TOKEN_RW || getRwToken() || 'source-room-local',
-    remoteUrlFor: name => new URL(`/git/${encodeURIComponent(name)}`, `http://127.0.0.1:${PORT}`),
+    remoteUrlFor: name => new URL(`/git/${encodeURIComponent(name)}`, localServerBaseUrl()),
   })
   sourceRoomGitManagers.set(project, manager)
   return manager
@@ -5274,6 +5280,18 @@ const useTls = existsSync(TLS_CERT) && existsSync(TLS_KEY)
 const TLS_CERT_TAILNET = process.env.TLDA_TLS_CERT_TAILNET || join(homedir(), '.config/tlda/tailnet.pem')
 const TLS_KEY_TAILNET  = process.env.TLDA_TLS_KEY_TAILNET  || join(homedir(), '.config/tlda/tailnet-key.pem')
 const hasTailnetCert = existsSync(TLS_CERT_TAILNET) && existsSync(TLS_KEY_TAILNET)
+
+/**
+ * How this server reaches itself.
+ *
+ * One reader for the scheme, so an internal caller cannot disagree with the
+ * listener about what it is. `useTls` decides both, and it is the same constant
+ * the listener below is built from.
+ *
+ * Lazily called, never evaluated at module load: the source-room git manager is
+ * constructed on first push, long after this file has finished initialising.
+ */
+const localServerBaseUrl = () => `${useTls ? 'https' : 'http'}://127.0.0.1:${PORT}`
 
 let server
 if (useTls) {
