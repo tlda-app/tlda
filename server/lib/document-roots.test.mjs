@@ -16,7 +16,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { computeDocumentRoots } from './document-roots.mjs'
+import { computeDocumentRoots, formatForDocumentPath } from './document-roots.mjs'
+
+test('a document\'s format comes from the file, not from a literal', () => {
+  // The chat click-adopt path appended `format: 'markdown'` for whatever was
+  // clicked, so a .tex adopted as a root was recorded as markdown -- which then
+  // selected the markdown closure for it and lost its figures by a second route.
+  assert.equal(formatForDocumentPath('paper.tex'), 'svg')
+  assert.equal(formatForDocumentPath('notes.md'), 'markdown')
+  assert.equal(formatForDocumentPath('lecture.qmd'), 'qmd')
+  assert.equal(formatForDocumentPath('deck.html'), 'html')
+  assert.equal(formatForDocumentPath('sub/dir/Paper.TEX'), 'svg', 'case and directory do not change the answer')
+  // Not a document at all, so not adoptable as one.
+  assert.equal(formatForDocumentPath('figures/plot.png'), null)
+  assert.equal(formatForDocumentPath(''), null)
+})
 
 function repo(files) {
   const dir = mkdtempSync(join(tmpdir(), 'docroots-'))

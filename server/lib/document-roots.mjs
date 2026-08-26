@@ -57,6 +57,21 @@ const DOCUMENT_FORMATS = new Map([
 /** Extensions whose contents can point at other files. */
 const SCANNABLE = new Set(['.tex', '.md', '.markdown', '.qmd'])
 
+/**
+ * The format of a document, from the file itself.
+ *
+ * Exported so the one place that still *stores* a root does not have to invent
+ * its own answer. The chat click-adopt path appended `format: 'markdown'`
+ * literally, whatever was clicked, so a `.tex` adopted as a root was recorded as
+ * markdown -- which then selected the markdown closure for it and lost its
+ * figures by a second route.
+ *
+ * Null for a path that is not a document at all.
+ */
+export function formatForDocumentPath(file) {
+  return DOCUMENT_FORMATS.get(path.extname(String(file || '')).toLowerCase()) || null
+}
+
 const normalize = value => String(value || '').replace(/\\/g, '/').replace(/^\.?\/+/, '')
 
 /**
