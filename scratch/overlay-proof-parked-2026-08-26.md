@@ -22,8 +22,34 @@ all. That is a blanket prohibition; his words put **write access** in charge
 instead — layers are selectable surfaces, and whether you may write one is a matter
 of access.
 
-**Proving the routing would have certified the wrong thing.** `classroom-pm` is
-re-opening the design against his words and will supply a new definition of done.
+**Proving the routing would have certified the wrong thing.**
+
+### The settled spec (2026-08-26, supersedes the five behaviours)
+
+Task `fleet:2b6f-mtaaclz6`, head **`f6948f235`**. Verify on the branch:
+
+- independently selectable visible layers
+- **exactly one** write target
+- **common/class is writable and is the default**
+- private **Mine** room writable only by its owner
+- teacher views student layers **read-only**
+- the layer menu becomes a **move-to-layer** menu **only when a canvas selection is
+  active**
+- a moved annotation **preserves position** and lands in the target room
+- **no automatic tool-based routing** — this is the point Skip's words changed
+- unauthorized WebSocket upgrades are **refused**
+
+**On that last one — read this before reporting it.** It is **branch behaviour,
+newly implemented**, not current-`main` behaviour and **not a regression check**.
+The builder wire-proved 3 refusals and 4 accesses. **If it fails, that is a branch
+feature failure.** Reporting it as a regression would be wrong, and it is the kind
+of wrong verdict that gets acted on.
+
+**This supersedes the earlier statement in this file that isolation is by room
+naming rather than enforcement.** That was true of `main` when written; the branch
+adds the enforcement. Both statements are correct about their own subject, which is
+exactly how a stale note misleads — so: **naming-only on `main`, enforced on the
+branch.**
 
 **What is still good below, because none of it depends on which layer a mark lands
 in:** the transport blocker (§1), the staged setup, the identity route, and the
@@ -86,9 +112,10 @@ indistinguishable from a broken overlay, which is the observation the run rests 
 Behaviour 4 can be added in the same sitting: teacher path is
 `?project=<book>&course=<courseId>`, read-only by construction.
 
-**State, not test:** isolation is by room naming, not enforcement — `/sync/:room`
-has no per-room check. "The second student does not see it" means not shown, not
-refused.
+**Isolation — corrected, see §0.** On **`main`** it is by room naming, not
+enforcement: `/sync/:room` has no per-room check, so "not shown" rather than
+"refused". **On the branch, refusal is implemented and is a thing to verify.** Do
+not carry the `main` statement onto the branch; that is the whole distinction.
 
 ## 2. Three rig traps — all produce an empty canvas, two silently
 
