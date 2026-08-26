@@ -321,3 +321,57 @@ test('CONTROL: with no browser edit ahead, the same harness lands the disk edit'
   assert.match((await git(remote, ['show', `${landed[0]}:main.md`])).stdout, /bravo-FROM-DISK/,
     'carrying the disk edit')
 })
+
+test('a broken merge-tree invocation is never reported as an author conflict', async () => {
+  // THE FAILURE THIS CLOSES. `merge-tree --write-tree` exiting 0 means git
+  // merged the two cleanly, so output that is not a tree id means THIS CODE is
+  // wrong -- a bad invocation, a git without `--write-tree`, a stub. An earlier
+  // version returned that as `{ ok: false }`, and `pushRevision` turns any
+  // not-ok merge into `conflict-held`. So a bug here told the person their
+  // collaborator's edit conflicted with theirs when nothing of the kind had
+  // happened, and it would have looked exactly like a real conflict in every
+  // surface that reports one.
+  //
+  // Driven through `runGit` rather than a repository, because the thing under
+  // test is what happens when git answers WRONGLY -- which a real git will not
+  // do on demand.
+  const calls = []
+  const sync = createGitProjectSync({
+    sourceDir: '/nonexistent-on-purpose',
+    project: 'paper',
+    daemonId: 'daemon-a',
+    bindingId: 'paper',
+    remote: '/nonexistent-remote',
+    log: { info() {}, warn() {}, error() {} },
+    runGit: async (args) => {
+      calls.push(args.join(' '))
+      if (args[0] === 'push') {
+        const error = new Error('rejected')
+        error.stderr = 'remote: WrongHead 94e0b441efa9742169e25fd6d20b921078b2eedf\n'
+        throw error
+      }
+      if (args[0] === 'fetch') return { stdout: '', stderr: '' }
+      if (args[0] === 'rev-parse') return { stdout: `${'a'.repeat(40)}\n`, stderr: '' }
+      // EXIT 0 -- a success -- carrying something that is not a tree id.
+      if (args[0] === 'merge-tree') return { stdout: 'error: unknown option `write-tree\'\n', stderr: '' }
+      return { stdout: '', stderr: '' }
+    },
+  })
+
+  await assert.rejects(
+    () => sync.pushRevision('b'.repeat(40)),
+    error => {
+      assert.match(error.message, /merge-tree reported success but wrote no tree/,
+        `it fails as itself: ${error.message}`)
+      assert.doesNotMatch(error.message, /conflict/i,
+        'and it is not dressed up as a conflict')
+      return true
+    },
+    'a malformed merge-tree success must throw rather than resolve',
+  )
+
+  // And it must never have become a commit: committing a tree id that is not a
+  // tree id would push something arbitrary.
+  assert.equal(calls.some(call => call.startsWith('commit-tree')), false,
+    'nothing was committed from the malformed output')
+})

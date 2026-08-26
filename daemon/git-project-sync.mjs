@@ -471,7 +471,17 @@ export function createGitProjectSync({
     try {
       const result = await git(['merge-tree', '--write-tree', accepted, revision])
       const tree = String(result.stdout || '').trim().split('\n')[0]
-      if (!/^[0-9a-f]{40}$/.test(tree)) return { ok: false, conflicted: [], reason: `merge-tree wrote no tree: ${tree}` }
+      // THROWN, never returned as a conflict. Exit 0 means git merged the two
+      // cleanly, so output that is not a tree id is this code being wrong --
+      // a bad invocation, a git that does not support `--write-tree`, a stubbed
+      // runner. Returning it as `ok: false` let `pushRevision` label it
+      // `conflict-held`, which tells the person their collaborator's edit
+      // conflicts with theirs when nothing of the kind happened. An
+      // implementation failure must never be reported as a fact about two
+      // authors, and that is the same rule as the exit-code check below.
+      if (!/^[0-9a-f]{40}$/.test(tree)) {
+        throw new Error(`merge-tree reported success but wrote no tree for ${accepted.slice(0, 7)}+${revision.slice(0, 7)}: ${JSON.stringify(tree.slice(0, 80))}`)
+      }
       return { ok: true, tree }
     } catch (error) {
       // Exit 1 is the answer "these genuinely conflict", not a failure to run.
@@ -524,7 +534,6 @@ export function createGitProjectSync({
           head: accepted,
           revision,
           conflicted: merge.conflicted || [],
-          reason: merge.reason,
         }
       }
 
