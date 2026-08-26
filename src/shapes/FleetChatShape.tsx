@@ -35,7 +35,7 @@ import { renderActivityGroup, renderThreadRows, scheduleTimeLabel, waitingElapse
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { initVoice, setVoiceTarget, clearVoiceTarget, completeMessageSend, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording, dumpVoiceTarget } from '../voice.mjs'
+import { initVoice, setVoiceTarget, clearVoiceTarget, completeMessageSend, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording, onRecordingChange, dumpVoiceTarget } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, oldestBufferedEventTimestamp, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, sendKey, getLastEventId, convertChatEvent } from '../fleet/fleet-data.mjs'
 // Deliberately NOT calling forgetPanel() on unmount: a panel's tail state
@@ -5845,6 +5845,29 @@ function FleetChatInner({ shape }: { shape: any }) {
     ta.style.height = `${Math.min(ta.scrollHeight, 140)}px`
   }
 
+  // Dictation from the composer itself. Skip, 2026-08-25: "we will need a mic
+  // button somewhere; i'm suggesting just to the right of the composer."
+  //
+  // It is on the rail with the other composer controls rather than to the right,
+  // because the right edge of the composer is the send hint's -- it is absolutely
+  // positioned there -- and every other control that acts on the composer already
+  // lives on this rail. Say the word and it moves.
+  //
+  // The panel is the chat on every surface now, including the project index and
+  // the inbox, where there is no Right Shift to hold. This is that capability
+  // coming back: the index page had a mic before its own chat was replaced.
+  const [composerRecording, setComposerRecording] = useState(() => isRecording())
+  useEffect(() => onRecordingChange(setComposerRecording), [])
+
+  const toggleComposerVoice = () => {
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (ta && !isRecording()) {
+      ta.focus()
+      setVoiceTarget(ta, composerVoiceTargetSnapshotRef.current?.() ?? undefined)
+    }
+    toggleRecording()
+  }
+
   const toggleComposerClear = () => {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
@@ -5876,6 +5899,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     if (action === 'bottom') {
       scrollToBottom()
+      return
+    }
+    if (action === 'mic') {
+      toggleComposerVoice()
       return
     }
     if (action.startsWith('terminal-')) {
@@ -7182,6 +7209,29 @@ function FleetChatInner({ shape }: { shape: any }) {
               aria-label="Cycle chat traffic filter"
             >
               <ComposerTrafficGlyph mode={composerTrafficMode} />
+            </button>
+            <button
+              className={`fleet-composer-mic-toggle${composerRecording ? ' recording' : ''}`}
+              data-composer-rail-action="mic"
+              data-composer-rail-label={composerRecording ? 'Stop' : 'Dictate'}
+              onPointerDown={stopEventPropagation}
+              // pointerup rather than click: it fires for mouse, finger and
+              // stylus alike, and needs no cast to hand the event on.
+              onPointerUp={(e) => {
+                stopEventPropagation(e)
+                activateComposerRailAction('mic', null)
+              }}
+              title={composerRecording ? 'Stop dictation' : 'Dictate'}
+              aria-label={composerRecording ? 'Stop dictation' : 'Start dictation'}
+              aria-pressed={composerRecording}
+            >
+              {/* The same mark the index page's own mic used before the real chat
+                  replaced it, so it is the glyph he already knows. */}
+              <svg width="12" height="12" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill="currentColor" stroke="none" />
+                <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
+                <line x1="9" y1="14" x2="9" y2="16" />
+              </svg>
             </button>
             {(composerHasText || canUnclearComposer) && (
               <button
