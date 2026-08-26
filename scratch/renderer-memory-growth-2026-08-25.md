@@ -2023,3 +2023,57 @@ invisible to the JS heap, lands in exactly the `malloc` bucket that holds the
 flat, the next step is to drive the reproduction toward his conditions — chat
 traffic and voice on — until it grows, and take a heap snapshot there, where the
 tab can be frozen for as long as it takes.
+
+---
+
+## 2026-08-26 — the ordering controls, and a retraction
+
+**Retracted: "offline stops the growth."** That earlier run stacked timer and rAF
+suppression alongside the WebSocket block, so it could not attribute the effect.
+Run in isolation, the network condition contributes nothing.
+
+Socket closure was **confirmed, not assumed**: the blocked-constructor counter went
+1 (self-test) → 2 thirty-nine seconds after arming. An app only constructs a
+replacement socket after the previous one has closed. It then held at 2, so nothing
+was reconnecting behind the block. The pooled browser exposes no CDP and the
+server's room accounting (`resident 896 / idle 896`) cannot isolate one tab, so
+neither of those could have answered this.
+
+Renderer 72131, project `leak-probe-mem`, one tab, one continuous sampler across
+every boundary.
+
+| phase | window | footprint | slope |
+|---|---|---|---|
+| online, timers live | 15:26:49 → 15:41:14 | 184 → 525 MB | 23.7 MB/min |
+| socket blocked, timers live | 15:43:16 → 15:53:25 | 596 → 1043 MB | **44 MB/min** |
+| socket blocked, timers suppressed | 15:57:31 → 16:02:32 | 1123 → 1123 MB | **0 MB/min** |
+
+JS heap stayed flat throughout (52–74 MB) and node count flat (927–981), so the
+accumulation is neither JS nor DOM — consistent with the anonymous-mapping owner
+recorded above, and now shown independent of network input.
+
+**Conclusion so far:** the driver is work the tab schedules on its own clock. The
+sync path is ruled out as the driver.
+
+### Why the timer suppression has to clear the existing id space
+
+Patching `setTimeout`/`setInterval` blocks only *new* timers; the app's
+already-registered intervals keep firing. That self-tests as "armed" and measures
+nothing, and is the likely fault in the earlier stacked run. The arm above cleared
+**16,518** existing ids, and self-tested in both directions — timers fired before
+the patch, did not fire after.
+
+### Instrument failure worth remembering
+
+The first renderer-identification ballast silently did nothing: the eval threw
+`SyntaxError` (multiple statements in one `pw eval`) with output suppressed. No pid
+moved, which reads exactly like "both tabs share one renderer." Re-run as a single
+expression it moved one pid 310 → 819 MB. Identify a renderer by making it move,
+and check the allocation actually happened.
+
+### Open — the separation not yet done
+
+"Timers" above means `setInterval` + `setTimeout` + `requestAnimationFrame`
+together. Which one carries the growth is **not yet established**. Second tab
+(renderer 59846, socket connected) is baselining for the ladder: kill `setInterval`
+only, then add `rAF`, then `setTimeout`.
