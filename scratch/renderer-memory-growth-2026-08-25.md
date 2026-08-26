@@ -1686,6 +1686,48 @@ the shared pool.
 
 **Status: no owner, no measurement, deliberately not pursued.**
 
+
+### 23:40 — the Mini is at load 55; what that does and does not cost
+
+`app-tester` retracted their own attribution of the pool wedge (they had blamed
+their 748-page tab; it wedged again on a **1-page** probe from a fresh browser).
+The real state, which I verified independently rather than taking on faith:
+
+```
+load average   55.32  46.61  32.64   (climbing)
+claude procs   48
+node procs     103
+total procs    614
+memory free    33%
+```
+
+**The ordering control is on hold.** A null result under this measures
+starvation, not suppression — the same class as the unarmed control earlier,
+one layer out.
+
+**What survives, and why.** The sibling control is a **paired** measurement: app
+renderer and non-app renderer, same machine, same instants, both arms under
+whatever load existed. **Shared confounds cancel in a differential.** Load can
+depress or inflate an absolute rate; it cannot make one process gain 121 MB while
+the process beside it gains nothing. *The app's renderer drifts and a non-app
+renderer in the same browser does not* stands, and the attribution rests on that.
+
+**What is soft, marked as such:**
+
+- **The absolute rates — 1.1, 1.4, 1.9 MB/min.** Single-arm numbers; load moves
+  them. I have been quoting these as though solid and they are not.
+- **Any null measured under saturation**, including the offline result if re-run
+  tonight.
+- **The load during my earlier runs is unknown.** It is recorded nowhere and I am
+  not assuming it was quiet. The weak point in my favour: the drift held the same
+  direction across 14:35→19:11, and load varies over hours, so an artifact would
+  more likely wander.
+
+**My own contribution to the load: none, checked rather than asserted.** No
+background samplers looping on the Mini, both browser rigs reaped, profile
+directories deleted. The only live process of mine is the 5-minute sampler on the
+**Fly** box.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
