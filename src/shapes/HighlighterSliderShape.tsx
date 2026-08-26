@@ -159,6 +159,22 @@ export function HighlighterSlider() {
   // No stopPropagation — tl-canvas__in-front parent already calls markEventAsHandled
   const handlePointerDown = (e: React.PointerEvent) => {
     if (isTouch && e.pointerType !== 'pen') return
+    // An invisible control does not act.
+    //
+    // This zone is a bare rectangle over the right of the document with
+    // `pointerEvents: all` and nothing drawn in it until the pointer has been
+    // tracked into it — `showSlider` is `cursorY !== null`, set by enter/move.
+    // A press arriving without that is a press on nothing the user can see, and
+    // it used to arm the slider, take pointer capture, and on release change
+    // their tool. Skip: there was NO visible ribbon when the dot and the tool
+    // exit happened.
+    //
+    // So the zone acts only while its UI is on screen. Nothing here is tool
+    // dependent, so the slider still changes tools from every tool — which is
+    // the constraint that ruled out switching pointer events off for drawing
+    // tools. Hover still arrives, so the control is reached exactly as before;
+    // what is gone is acting on a press when there is nothing to press.
+    if (cursorY === null) return
 
     const now = Date.now()
     if (now - lastTapTime.current < 400) {
@@ -197,18 +213,16 @@ export function HighlighterSlider() {
     if (dragging && dragIdx !== null) {
       activateSlot(dragIdx)
     } else if (!dragging && dragStartY) {
-      // One behaviour for every tool: a tap activates the slot under the cursor.
-      //
-      // It used to special-case highlight and eraser and drop you into `select`
-      // instead — the only path here that changes tools without the user
-      // choosing a slot. That is what Skip hit: "IT DOES A DOT THEN KICKS YOU
-      // OUT OF THE FKING TOOL", and it reads as a programmatic pointer-up
-      // because from the outside the stroke just ends and the tool is gone.
-      //
-      // The rule is his: "tit's for changing toolks", "if it doesn't work for
-      // all tools, it's fucking useless". A control for changing tools does the
-      // same thing from every tool; it does not quietly exit two of them.
-      activateSlot(activeIdx)
+      // A tap toggles the drawing tools and enters the others. This is the
+      // control's own behaviour and it is deliberate; what was wrong is that a
+      // STROKE could reach it. It cannot now — see handlePointerDown, which
+      // only arms while the slider is on screen.
+      const cur = editor.getCurrentToolId()
+      if (cur === 'highlight' || cur === 'eraser') {
+        editor.setCurrentTool('select')
+      } else {
+        activateSlot(activeIdx)
+      }
     }
     setDragging(false)
     setDragIdx(null)
