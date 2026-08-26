@@ -59,34 +59,48 @@ function roomTree(root, project) {
   return working
 }
 
+/**
+ * Build a daemon over a fresh room tree. `held` collects every held-edit
+ * record, so a test can assert the divergence was REPORTED and not merely
+ * left in the room where nobody would learn of it.
+ */
+function daemonOver(root, revisions, held) {
+  roomTree(root, 'paper')
+  return createSourceRoomDaemon({
+    projectDir: project => join(root, project),
+    readProject: async name => ({ name, mainFile: 'doc.md' }),
+    sourceLifecycleStore: async () => ({
+      gitRepository: async () => ({ head: async () => null }),
+      readCurrentFile: async () => ({ content: Buffer.from(BASE) }),
+      readRevisionFile: async (revisionId) => Buffer.from(revisions[revisionId] ?? ''),
+    }),
+    readClientSourceManifest: async () => ['doc.md'],
+    gitSyncManagerForProject: () => ({
+      bindSource: () => {},
+      sync: async () => {},
+      queuePaths: () => {},
+      headChanged: async () => ({ ok: true }),
+      standOnWorkBranch: async () => ({ ok: true, status: 'stood' }),
+    }),
+    recordHeldEdit: async (project, record) => { held.push({ project, ...record }) },
+    pushDelayMs: 5,
+    log: { info() {}, warn() {}, error() {} },
+  })
+}
+
+/** Assert the shared document is readable text, not a merge to be resolved. */
+function assertNotConflicted(published, where) {
+  assert.doesNotMatch(published, CONFLICT_MARKERS,
+    `${where}: the document must never carry conflict markers; a reader sees this text:\n---\n${published}\n---`)
+  assert.doesNotMatch(published, /accepted server source for/,
+    `${where}: git merge-file's label must never reach the document`)
+}
+
 test('an accepted revision that conflicts with the room never publishes conflict markers', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-room-conflict-'))
+  const held = []
   try {
-    roomTree(root, 'paper')
-
-    // `heldRevision` -> text. The room holds r1; r2 is what disk accepted.
-    const revisions = { r1: BASE, r2: FROM_DISK }
-
-    const daemon = createSourceRoomDaemon({
-      projectDir: project => join(root, project),
-      readProject: async name => ({ name, mainFile: 'doc.md' }),
-      sourceLifecycleStore: async () => ({
-        gitRepository: async () => ({ head: async () => null }),
-        readCurrentFile: async () => ({ content: Buffer.from(BASE) }),
-        readRevisionFile: async (revisionId) => Buffer.from(revisions[revisionId] ?? ''),
-      }),
-      readClientSourceManifest: async () => ['doc.md'],
-      gitSyncManagerForProject: () => ({
-        bindSource: () => {},
-        sync: async () => {},
-        queuePaths: () => {},
-        headChanged: async () => ({ ok: true }),
-        standOnWorkBranch: async () => ({ ok: true, status: 'stood' }),
-      }),
-      pushDelayMs: 5,
-      log: { info() {}, warn() {}, error() {} },
-    })
-
+    const daemon = daemonOver(root, { r1: BASE, r2: FROM_DISK }, held)
     const room = await daemon.getRoom('paper', 'doc.md')
     room.heldRevision = 'r1'
 
@@ -104,16 +118,47 @@ test('an accepted revision that conflicts with the room never publishes conflict
       files: [{ path: 'doc.md', content: Buffer.from(FROM_DISK).toString('base64') }],
     })
 
-    const published = room.ytext.toString()
+    assertNotConflicted(room.ytext.toString(), 'applyAcceptedSourceMutation')
 
-    assert.doesNotMatch(
-      published,
-      CONFLICT_MARKERS,
-      `the document must never carry conflict markers; a reader sees this text:\n---\n${published}\n---`,
-    )
-    // And the marker text must not be what a viewer would read, by any route.
-    assert.doesNotMatch(published, /accepted server source for/,
-      'git merge-file\'s label must never reach the document')
+    // NEITHER SIDE IS LOST. The room keeps what the person typed, the accepted
+    // revision is still the accepted revision, and the divergence is REPORTED
+    // rather than sitting in a room nobody is told about.
+    assert.match(room.ytext.toString(), /bravo-FROM-BROWSER/,
+      'the text the person typed is still in the room')
+    assert.equal(room.blocked, true, 'the room is marked blocked')
+    assert.equal(held.length, 1, `the held edit was recorded (saw ${JSON.stringify(held)})`)
+    assert.equal(held[0].file, 'doc.md')
+
+    daemon.closeAll()
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('reconciling a stale room onto a conflicting revision never publishes conflict markers', async () => {
+  // THE SECOND PATH, and it is reached differently: a room that was closed and
+  // reopened, or was open when a revision landed, is brought up to date through
+  // `reconcileRoomToRevision` rather than the accepted-update handler. Same
+  // merge, same marker-laden stdout, so the same rule has to hold -- and one
+  // test covering one path would have left the other free to publish markers.
+  const root = mkdtempSync(join(tmpdir(), 'tlda-room-reconcile-'))
+  const held = []
+  try {
+    const daemon = daemonOver(root, { r1: BASE, r2: FROM_DISK }, held)
+    const room = await daemon.getRoom('paper', 'doc.md')
+    room.heldRevision = 'r1'
+    room.ydoc.transact(() => {
+      room.ytext.delete(0, room.ytext.length)
+      room.ytext.insert(0, FROM_BROWSER)
+    })
+
+    // POSITIONAL, not an options object. Passing `{ project, sourceRevision }`
+    // left `revision` undefined, `reconcileRoomToRevision` returned at its
+    // first guard, and this test passed against the UNFIXED code -- a gate that
+    // could not go red. Its counterfactual is what caught that.
+    await daemon.headChanged('paper', 'r2')
+
+    assertNotConflicted(room.ytext.toString(), 'reconcileRoomToRevision')
+    assert.match(room.ytext.toString(), /bravo-FROM-BROWSER/,
+      'the text the person typed is still in the room')
 
     daemon.closeAll()
   } finally { rmSync(root, { recursive: true, force: true }) }
