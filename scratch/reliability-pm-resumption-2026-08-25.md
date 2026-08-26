@@ -1860,3 +1860,45 @@ The test-file header was corrected too — it said no fixture reaches the check,
 true when written and false after this amend.
 
 All five criteria met. Neighbouring `git-project-sync` unchanged at 8/2.
+
+## 2026-08-26 - the room that is a project's FIRST writer (`2acf732ca`, branch `room-first-writer`)
+
+Diagnosis only; no repair. Preserved failure on
+`~/worktrees/app-tester-overlay-proof`, preview :5191.
+
+```
+project record   sourceRevision (NONE), acceptSeq null, mainFile main.md
+project source   git repo with NO COMMITS
+room working     main.md UNTRACKED, zero commits,
+                 HEAD -> refs/heads/tlda/<project>, and NO REFS AT ALL
+server.log       proposal not accepted: not-on-work-branch
+                 proposal not accepted: empty-checkout
+```
+
+**THE PROJECT NEVER HAD A HEAD -- not a missing fetch.** The unborn branch is
+the tell: `standOnWorkBranch` starts the branch at the project head and there
+was none.
+
+- **Did the room write before `standOnWorkBranch`?** No. `not-on-work-branch`
+  precedes `empty-checkout`, so the stand ran first. The order held.
+- **Does the branch/head exist?** Branch exists as a symbolic HEAD and is
+  UNBORN; `for-each-ref` returns nothing.
+- **The exact call that never ran: `git add`.** `settledCommit()` stages tracked
+  paths only, so an untracked file in a zero-commit tree gives an empty tree with
+  no HEAD -> `empty-checkout`, repeating on every later settle.
+
+**A gap between two decisions that are each right alone:** `d60d18573` (stage
+tracked only; stated cost is that a new file waits for the author's `git add`)
+and `de356e277` (stand on the project branch, correct when a head exists). My own
+comment in the latter names this case as a reassurance about linking a new
+directory -- it is also the description of this failure.
+
+**A person's checkout never hits it because they run `git add`. A source room has
+no author at a keyboard.**
+
+**The repro is two tests, and the second is why the first means something:** an
+unstaged new file in a PERSON'S checkout stays theirs, and it passes on today's
+code -- so "just stage everything" cannot satisfy both.
+
+Out of bounds per the chief: restoring the deleted app-owned `add -A` exception,
+and materialising missing files.
