@@ -46,11 +46,16 @@ if (cmd === 'pw') {
   process.exit(0)
 }
 
-// The one dev bring-up command. `tlda-dev serve [--sandbox] [--project X] [--port N]`
+// The one dev bring-up command.
+// `tlda-dev serve [--sandbox] [--gated] [--project X] [--port N]`
 // stands up THIS worktree's branch as an isolated, reachable, tokenless stack with
 // the SPA config pointed at the reachable host. `--sandbox` is its fully-isolated
 // mode (own DB/projects/chat + a daemon wired ONLY to this sandbox). It delegates
 // to the real robust `server start` detach, so it survives the launching agent.
+//
+// `--gated` turns real token gating on for that preview and prints the read and
+// RW tokens. Without it a preview is ungated, which means every caller resolves
+// as an instructor — so nothing student-facing can be exercised on one at all.
 if (cmd === 'serve') {
   await cmdServeWorktree(args.slice(1))
   process.exit(0)

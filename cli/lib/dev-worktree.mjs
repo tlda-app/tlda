@@ -15,9 +15,13 @@
  *     throwaway config whose database+store point at the *reachable* host:port,
  *     so the remote SPA connects back here. Single port, same origin, no CORS.
  *
- *  2. tokens: a non-standard PORT disables auth entirely (server/lib/auth.mjs).
- *     The preview runs on a free high port, so it is tokenless by construction —
- *     no `?token=` in the URL, ever.
+ *  2. tokens: a preview is tokenless because the isolated `server.yaml` written
+ *     here does not set `tokenGating`, and gating is off unless a config turns it
+ *     on. (It used to be because a non-standard port disabled auth; that escape
+ *     hatch was deliberately removed — see the header of `server/lib/auth.mjs` —
+ *     so the port has nothing to do with it now.) `--gated` opts one preview into
+ *     real token gating, for the student-facing paths that cannot be reached
+ *     without it; every preview without the flag behaves exactly as before.
  *
  *  3. cert warnings: the mkcert dev cert already carries SANs for this machine's
  *     Tailscale MagicDNS name and 100.x IP, so `https://<magicdns>:<port>` serves
@@ -34,7 +38,7 @@ import { spawn, spawnSync, execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, cpSync, rmSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { X509Certificate } from 'crypto'
+import { X509Certificate, randomBytes } from 'crypto'
 import { hasTls, resolveConfig, loadServerConfig, CONFIG_DIR } from '../../shared/config.mjs'
 import { daemonLifecycleSocketPath } from '../../shared/daemon-socket-path.mjs'
 import { resolveRepoRoot, findFreePort } from './dev-vite.mjs'
@@ -249,7 +253,18 @@ export function resolveReachableHost() {
 
 function previewConfigDir(branch) { return join(stateDir(branch), 'config') }
 
-function writePreviewConfig(branch, base, { realFleet = false } = {}) {
+/**
+ * A read/RW token pair for a gated preview.
+ *
+ * Generated per preview rather than borrowed from this machine's `tokens.json`:
+ * a preview is reachable on the tailnet and its tokens get printed and pasted
+ * around, so it must never be handing out the real ones.
+ */
+function previewTokens() {
+  return { read: randomBytes(24).toString('base64url'), rw: randomBytes(24).toString('base64url') }
+}
+
+function writePreviewConfig(branch, base, { realFleet = false, tokens = null } = {}) {
   const source = resolveConfig()
   const database = realFleet ? source.database.http : base
   // Preview servers get an isolated copy. Writing the shared config would both
@@ -260,9 +275,20 @@ function writePreviewConfig(branch, base, { realFleet = false } = {}) {
   // configured Deepgram bridge when this machine has one, and leave it absent
   // otherwise so the preview picker follows configuration the same way.
   const { deepgramBridgeUrl } = loadServerConfig()
-  writeFileSync(join(dir, 'server.yaml'), deepgramBridgeUrl
-    ? `deepgramBridgeUrl: ${JSON.stringify(deepgramBridgeUrl)}\n`
-    : '')
+  const serverYaml = []
+  if (deepgramBridgeUrl) serverYaml.push(`deepgramBridgeUrl: ${JSON.stringify(deepgramBridgeUrl)}`)
+  if (tokens) {
+    // Gating is a config decision, not an env one: setting TLDA_TOKEN_READ alone
+    // leaves `validateToken` returning 'rw' for every caller, which
+    // `classroomPrincipal` maps to instructor. So anything student-facing is
+    // unreachable on a preview until this line exists — and a test against an
+    // ungated server passes every check while proving the opposite.
+    serverYaml.push('tokenGating: true')
+    // Take the tokens from the environment only, never this machine's
+    // tokens.json, so a preview cannot fall back to the real ones.
+    serverYaml.push('tokensFromEnvironmentOnly: true')
+  }
+  writeFileSync(join(dir, 'server.yaml'), serverYaml.length ? `${serverYaml.join('\n')}\n` : '')
   writeFileSync(join(dir, 'daemon.yaml'), [
     'environments:',
     `  default: ${JSON.stringify(configName(branch))}`,
@@ -413,7 +439,14 @@ export async function cmdServeWorktree(args) {
     console.error('--real-fleet cannot be combined with --sandbox')
     process.exit(2)
   }
-  writePreviewConfig(branch, base, { realFleet })
+  // `--gated` turns on real token gating for this preview. Off by default, so
+  // every existing preview is unchanged. It exists because the student-facing
+  // paths cannot be exercised without it: ungated, `validateToken` answers 'rw'
+  // for everyone and `classroomPrincipal` short-circuits to instructor before an
+  // enrolment token is ever read — so a student check passes for the wrong
+  // reason, which is the hardest kind of green to notice.
+  const tokens = flags.has('gated') ? previewTokens() : null
+  writePreviewConfig(branch, base, { realFleet, tokens })
 
   // Delegate to the SAME robust detached spawn `tlda server start` uses — don't
   // hand-roll a parallel spawn (a hand-rolled `node … &` is exactly what dies
@@ -440,6 +473,9 @@ export async function cmdServeWorktree(args) {
       // the tailnet cert is actually issued for, and it is already computed
       // here -- so hand it over rather than making the server re-derive it.
       TLDA_SELF_BASE_URL: base,
+      // Only meaningful alongside `tokenGating: true` in the config written
+      // above; on their own these do nothing.
+      ...(tokens ? { TLDA_TOKEN_READ: tokens.read, TLDA_TOKEN_RW: tokens.rw } : {}),
     },
   })
 
@@ -541,10 +577,16 @@ export async function cmdServeWorktree(args) {
     console.log(`sandbox daemon started (pid ${daemonPid}) → ${base} (sandbox-locked, cannot reach prod)`)
   }
 
-  const url = viewerUrl(base, previewProject)
+  // A gated preview's URL carries the read token, or it opens to a 401 and the
+  // next half hour goes on working out why. Token and project params are the
+  // safe ones to hand someone; a `name=` would not be.
+  const url = tokens
+    ? `${viewerUrl(base, previewProject)}${previewProject ? '&' : '?'}token=${tokens.read}`
+    : viewerUrl(base, previewProject)
   const manifest = {
     branch, worktreeDir, base, project: previewProject, port, host: reach.host, kind: reach.kind,
-    url, pid, daemonPid, sandbox: flags.has('sandbox'), realFleet, tokenless: true, config: configName(branch),
+    url, pid, daemonPid, sandbox: flags.has('sandbox'), realFleet, tokenless: !tokens, config: configName(branch),
+    ...(tokens ? { tokens } : {}),
     projectsDir: projectsDir(branch), fleetDb: fleetDb(branch),
   }
   writeFileSync(manifestFile(branch), JSON.stringify(manifest, null, 2))
@@ -554,13 +596,24 @@ export async function cmdServeWorktree(args) {
     metadata: { pid, ports: [port], cwd: process.cwd(), worktree: worktreeDir, branch, base, daemon_pid: daemonPid },
     policy: { ttl_ms: 30 * 60_000, idle_policy: 'expire-kill-preview' },
   })
-  // `tlda-dev dev-url` reads <cwd>/.dev-url — keep it the reachable, tokenless URL.
+  // `tlda-dev dev-url` reads <cwd>/.dev-url — keep it the URL that actually
+  // opens, which on a gated preview is the one carrying the read token.
   try { writeFileSync(join(worktreeDir, '.dev-url'), url) } catch { /* non-fatal */ }
 
   if (json) { console.log(JSON.stringify(manifest, null, 2)); return }
-  console.log(`\nworktree preview up — reachable from your other devices, no token:`)
+  console.log(tokens
+    ? `\nworktree preview up — reachable from your other devices, token gating ON:`
+    : `\nworktree preview up — reachable from your other devices, no token:`)
   console.log(`  branch:  ${branch}`)
   console.log(`  ${url}\n`)
+  if (tokens) {
+    // Printed because a tester who cannot discover the read token cannot be a
+    // student, and there is nowhere else to look them up.
+    console.log(`  read token (a reader):      ${tokens.read}`)
+    console.log(`  rw token   (an instructor): ${tokens.rw}`)
+    console.log(`\n  A student also needs their enrolment token: &classroomToken=<token>`)
+    console.log(`  Both stay on the URL — they are read from it on every request.\n`)
+  }
   await printQr(url)
   console.log(`\n  stop with: tlda-dev serve stop`)
 }
@@ -574,9 +627,19 @@ export async function cmdShareWorktree(args) {
     process.exit(1)
   }
   const project = values.get('project') || values.get('0') || m.project
-  const url = viewerUrl(m.base, project)
-  console.log(`Worktree preview (${branch}) — reachable, no token:`)
+  // On a gated preview the bare URL is a 401. Share the one that opens, and say
+  // the tokens out loud — the preview's config dir does not survive a stop, so
+  // there is nowhere to look them up afterwards.
+  const base = viewerUrl(m.base, project)
+  const url = m.tokens ? `${base}${project ? '&' : '?'}token=${m.tokens.read}` : base
+  console.log(m.tokens
+    ? `Worktree preview (${branch}) — reachable, token gating ON:`
+    : `Worktree preview (${branch}) — reachable, no token:`)
   console.log(`  ${url}\n`)
+  if (m.tokens) {
+    console.log(`  read token (a reader):      ${m.tokens.read}`)
+    console.log(`  rw token   (an instructor): ${m.tokens.rw}\n`)
+  }
   await printQr(url)
 }
 
