@@ -12,6 +12,7 @@ function makeTerminalRpc({
   resolveTerminalAgent = () => ({ id: 'fleet:test', tmuxSession: 'agent-session', sessionId: 'session-1' }),
   onSessionInventoryChanged,
   execFileImpl,
+  paneText = '',
 }) {
   const calls = []
   const inventoryChanges = []
@@ -41,7 +42,7 @@ function makeTerminalRpc({
     terminalInputAllowed,
     execFileImpl: execFileImpl || (async (cmd, args) => {
       calls.push([cmd, args])
-      return { stdout: '', stderr: '' }
+      return { stdout: args.includes('capture-pane') ? paneText : '', stderr: '' }
     }),
   })
   return { rpc, calls, inventoryChanges }
@@ -141,6 +142,28 @@ test('explicit opt-in preserves terminal text injection', async () => {
   const { rpc, calls } = makeTerminalRpc({ terminalInputAllowed: true })
   await rpc.handlers['send-text']({ agent_id: 'fleet:test', text: 'hello', enter: false })
   assert.deepEqual(calls.at(-1), ['tmux', ['send-keys', '-t', '=agent-session:', '--', 'hello']])
+})
+
+test('the connection notice is submitted only at an empty harness prompt', async t => {
+  for (const [name, paneText, delivered] of [
+    ['empty harness prompt', 'ready\n❯ ', true],
+    ['shell prompt', 'skip@mini tlda % ', false],
+    ['unknown state', 'starting up', false],
+    ['busy harness', '❯ \nWorking', false],
+    ['existing draft', 'ready\n❯ keep this draft', false],
+  ]) {
+    await t.test(name, async () => {
+      const { rpc, calls } = makeTerminalRpc({ terminalInputAllowed: false, paneText })
+      const result = await rpc.notifyConnectionDisconnected({ agent_id: 'fleet:test' })
+      const setBuffer = calls.find(([, args]) => args[0] === 'set-buffer')
+      assert.equal(result.ok, delivered)
+      assert.equal(setBuffer?.[1].at(-1), delivered
+        ? 'The tlda connection seems disconnected. Consider running: tlda-dev restart-mcp fleet:test'
+        : undefined)
+      assert.equal(calls.some(([, args]) => args.includes('Enter')), delivered)
+      assert.equal(calls.some(([, args]) => args.includes('C-u')), false)
+    })
+  }
 })
 
 test('kill-session succeeds when the terminal ledger row is already absent', async () => {

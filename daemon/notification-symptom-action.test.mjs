@@ -15,32 +15,30 @@ test('the two symptoms that mean "no process I can reach" ensure a process', () 
   assert.equal(actionForSymptom('channel-closed'), 'ensure-process')
 })
 
-test('a channel that went silent gets turned off and on again', () => {
-  assert.equal(actionForSymptom('channel-silent'), 'restart')
+test('a channel that went silent suggests an explicit restart', () => {
+  assert.equal(actionForSymptom('channel-silent'), 'suggest-restart')
 })
 
 test('a live agent with no channel is ensured, not restarted', async () => {
   const calls = []
   const action = await performNotificationSymptomAction({
     symptom: 'no-channel',
-    checkAlive: async () => { calls.push('check-alive'); return true },
     ensureProcess: async () => { calls.push('ensure-process') },
-    restart: async () => { calls.push('restart') },
+    suggestRestart: async () => { calls.push('suggest-restart') },
   })
   assert.equal(action, 'wake')
   assert.deepEqual(calls, ['ensure-process'])
 })
 
-test('a live agent whose channel is silent is restarted', async () => {
+test('a live agent whose channel is silent keeps its live tmux session', async () => {
   const calls = []
   const action = await performNotificationSymptomAction({
     symptom: 'channel-silent',
-    checkAlive: async () => { calls.push('check-alive'); return true },
     ensureProcess: async () => { calls.push('ensure-process') },
-    restart: async () => { calls.push('restart') },
+    suggestRestart: async () => { calls.push('suggest-restart') },
   })
-  assert.equal(action, 'restart')
-  assert.deepEqual(calls, ['check-alive', 'restart'])
+  assert.equal(action, 'suggest-restart')
+  assert.deepEqual(calls, ['suggest-restart'])
 })
 
 // The most important row, and the one a future editor is most likely to "fix".
@@ -57,10 +55,10 @@ test('an unknown symptom does nothing rather than defaulting', () => {
   }
 })
 
-test('nothing maps to an action outside the daemon two jobs', () => {
-  const allowed = new Set(['ensure-process', 'restart', null])
+test('nothing maps outside process recovery and the restart suggestion', () => {
+  const allowed = new Set(['ensure-process', 'suggest-restart', null])
   for (const [symptom, action] of Object.entries(NOTIFICATION_SYMPTOM_ACTION)) {
-    assert.ok(allowed.has(action), `${symptom} maps to "${action}", which is not one of the daemon's two jobs`)
+    assert.ok(allowed.has(action), `${symptom} maps to unsupported action "${action}"`)
   }
 })
 

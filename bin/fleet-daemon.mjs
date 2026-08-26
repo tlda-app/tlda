@@ -893,7 +893,7 @@ async function rpcCheckAlive(args) {
 // turning it back on again, basically."
 //
 //   no process            -> make one            (wake)
-//   process, no channel   -> off and on again    (restart)
+//   process, no channel   -> suggest an explicit restart in the live session
 //   explicit refusal      -> nothing             (not a liveness fault)
 //
 // Both actions are idempotent, which is why the server keeps no memory of having
@@ -922,42 +922,8 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
   try {
     const performed = await performNotificationSymptomAction({
       symptom,
-      checkAlive: async () => {
-        const result = await terminalRpc.handlers['check-alive']({ agent_id })
-        return !!result?.alive
-      },
       ensureProcess: () => rpcWake({ fleet_id: agent_id, agent_id }),
-      restart: async () => {
-        // `fleet_id` AND `tmux_session`, and neither is belt-and-braces.
-        //
-        // `rpcRestart` forwards its own params straight to `wakeMint`, which resolves
-        // an identifier from `mint_id | mintId | fleet_id | fleetId | name` — and
-        // `agent_id` is not among them. Restarting with `{ agent_id }` alone killed
-        // the session and then threw "wake requires a local mint, fleet, or
-        // friendly-name identifier", so the agent was left DOWN by the remedy meant
-        // to restore it. Observed twice on the live daemon within four minutes of
-        // this path going live.
-        //
-        // `tmux_session` is the check that the kill actually happened: `rpcRestart`
-        // asks tmux whether the session is still listed and refuses to wake if it is,
-        // because `kill-session` answers ok for an agent it could not place. Without
-        // the name that check cannot run, which is the hole it was written to close.
-        // `resolveAgentRoute` is SYNCHRONOUS — `createAgentRouteResolver` returns a
-        // plain function — so `.catch()` on its result is a TypeError, not a
-        // rejection handler. Written that way it threw before `rpcRestart` ran.
-        // Harmless as failures go, because nothing was killed, but the restart
-        // remedy did not happen at all.
-        let route = null
-        try {
-          route = resolveAgentRoute({ agent_id })
-        } catch (e) {
-          // Not fatal: without a session name `rpcRestart` loses its did-the-kill-
-          // happen check, which is worth reporting rather than worth aborting the
-          // remedy for.
-          log.warn(`[notification-symptom] ${agent_id}: no local route for the restart: ${e?.message || e}`)
-        }
-        await rpcRestart({ agent_id, fleet_id: agent_id, tmux_session: route?.tmux_session })
-      },
+      suggestRestart: () => terminalRpc.notifyConnectionDisconnected({ agent_id }),
     })
     return { ok: true, agent_id, symptom, recorded: true, acted: true, action: performed }
   } catch (e) {
