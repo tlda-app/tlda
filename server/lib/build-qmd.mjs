@@ -20,7 +20,7 @@ import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
 
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
-import { getBuildReporter } from './build-runner.mjs'
+import { getBuildReporter, streamChildOutput } from './build-runner.mjs'
 import { buildPerSlideDocuments } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
@@ -236,7 +236,10 @@ function stampFigureUrls(html, stamp = Date.now()) {
  * make a build mutate the tree the version is taken from, so the whole tree is
  * copied first and the render runs against the copy.
  */
-async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject = false } = {}) {
+// `project` is carried only to label the output stream. It is separate from
+// `mainFile` on purpose: a project renders several roots, and a stream labelled
+// by the root would report the same build under changing names.
+async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject = false, project = null } = {}) {
   const target = wholeProject ? [] : [mainFile]
   addLog(`[qmd] quarto render${wholeProject ? '' : ` ${mainFile}`}`)
   let result
@@ -246,11 +249,21 @@ async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject =
     // `--to html` changed nothing for a plain document and silently overrode a
     // deck. That is what made a `format: revealjs` talk render as a scrolling
     // page with no <div class="reveal"> in it at all.
-    result = await execFileAsync(
+    // The longest single command in this codebase, and until now the quietest:
+    // a large render runs for minutes with quarto narrating to a buffer nobody
+    // reads until it finishes. Streaming it is what tells the build queue this
+    // is a slow build rather than a stalled one.
+    const running = execFileAsync(
       quarto,
       ['render', ...target],
       { cwd: outDir, timeout: RENDER_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
     )
+    const detachOutput = streamChildOutput(running.child, project || mainFile)
+    try {
+      result = await running
+    } finally {
+      detachOutput()
+    }
   } catch (e) {
     // Quarto reports the actual chunk/YAML error on stderr. The exec error
     // message alone is "Command failed", which names nothing an author can act
@@ -314,9 +327,9 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   const nativeTldaProject = isNativeTldaProject(outDir)
   const rootsToRender = nativeTldaProject ? mainFiles : qmdRootsToRender(mainFiles, srcDir, changedFiles)
   if (nativeTldaProject) {
-    await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true })
+    await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true, project: name })
   } else {
-    for (const root of rootsToRender) await renderInOutput(quarto, outDir, root, addLog)
+    for (const root of rootsToRender) await renderInOutput(quarto, outDir, root, addLog, { project: name })
   }
 
   if (nativeTldaProject) {

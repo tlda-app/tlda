@@ -44,6 +44,7 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
 export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'buildMaxConcurrency',
   'buildPriority',
+  'buildStallTimeoutMs',
   // The subscription slots every agent is minted with, and how loud each one
   // starts. Read by the server at mint. It belongs here rather than in
   // daemon.yaml because the server is not allowed to read daemon.yaml, and

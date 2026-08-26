@@ -130,6 +130,71 @@ let _reporter = _directReporter
 export function setBuildReporter(r) { _reporter = r || _directReporter }
 export function getBuildReporter() { return _reporter }
 
+/**
+ * Where a running build's output goes, line by line, WHILE it runs.
+ *
+ * Deliberately not a method on the reporter above. That reporter STAGES its
+ * calls in the worker and ships them in one lump at the end, which is correct
+ * for what it carries -- shape writes and project patches that must not land
+ * before the build is published -- and exactly wrong for output, whose whole
+ * value is arriving during.
+ *
+ * This is also the build queue's liveness signal, and that is why it is a
+ * stream rather than a heartbeat: a tick tells you a process exists, output
+ * tells you what it is doing, and TeX already narrates every pass. It was being
+ * buffered by `exec` and read only after the command finished.
+ *
+ * Null by default so a direct in-process build stays silent as before.
+ */
+let _outputSink = null
+export function setBuildOutputSink(fn) { _outputSink = typeof fn === 'function' ? fn : null }
+export function getBuildOutputSink() { return _outputSink }
+
+/**
+ * Feed a command's output to the sink at most once a second.
+ *
+ * Throttled because a large render emits a great deal of text and the fix for
+ * builds locking up must not become an IPC flood. The most recent line is the
+ * informative one, so the throttle keeps that and counts what it dropped rather
+ * than queueing.
+ *
+ * Returns a detach function; callers attach it to a child process's stdio.
+ */
+export function streamChildOutput(child, name, { intervalMs = 1000, now = Date.now } = {}) {
+  if (!child || !_outputSink) return () => {}
+  let lastLine = ''
+  let dropped = 0
+  let lastSent = 0
+  const flush = force => {
+    if (!lastLine) return
+    const at = now()
+    if (!force && at - lastSent < intervalMs) return
+    lastSent = at
+    const line = lastLine
+    const skipped = dropped
+    lastLine = ''
+    dropped = 0
+    try { _outputSink(name, line, skipped) } catch { /* output must never fail a build */ }
+  }
+  const onData = chunk => {
+    // Keep the last NON-EMPTY line: TeX pads its output with blank lines and a
+    // blank final line would report the build as silent while it is working.
+    const lines = String(chunk).split('\n').map(l => l.trimEnd()).filter(Boolean)
+    if (!lines.length) return
+    if (lastLine) dropped += 1
+    dropped += lines.length - 1
+    lastLine = lines[lines.length - 1]
+    flush(false)
+  }
+  child.stdout?.on('data', onData)
+  child.stderr?.on('data', onData)
+  return () => {
+    flush(true)
+    child.stdout?.off?.('data', onData)
+    child.stderr?.off?.('data', onData)
+  }
+}
+
 export function assertLatexBuildHasNoErrors(errors) {
   if (errors.length > 0) {
     throw new Error(`LaTeX produced ${errors.length} error(s); keeping the last successful render`)
@@ -543,7 +608,9 @@ let buildIdCounter = 0
 // `bin/a-failed-format-dump-says-what-it-could-not-resolve-test.mjs` crosses it.
 export function trackedExec(buildId, cmd, opts = {}) {
   return new Promise((resolve, reject) => {
+    let detachOutput = () => {}
     const child = execCb(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts, detached: false }, (err, stdout, stderr) => {
+      detachOutput()
       const children = buildChildProcesses.get(buildId)
       if (children) children.delete(child)
       if (err) {
@@ -570,6 +637,11 @@ export function trackedExec(buildId, cmd, opts = {}) {
     })
     if (!buildChildProcesses.has(buildId)) buildChildProcesses.set(buildId, new Set())
     buildChildProcesses.get(buildId).add(child)
+    // `exec` buffers stdout and hands it over only once the command has
+    // finished, so a pass that takes two minutes said nothing for two minutes
+    // and the build looked identical to a stalled one. The stream was always on
+    // the child object; nothing read it.
+    detachOutput = streamChildOutput(child, buildId)
   })
 }
 

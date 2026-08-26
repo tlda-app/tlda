@@ -7,7 +7,7 @@
 // writes) are shipped back to the parent over IPC, which performs them in the
 // server process where the live rooms actually are. See setBuildReporter.
 
-import { runBuild, finalizeBuildVersion, setBuildReporter } from '../server/lib/build-runner.mjs'
+import { runBuild, finalizeBuildVersion, setBuildReporter, setBuildOutputSink } from '../server/lib/build-runner.mjs'
 import { initProjectStore, readProject, projectDir, sourceLifecycleStore, setProjectPathOverride } from '../server/lib/project-store.mjs'
 import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
@@ -88,6 +88,19 @@ setBuildReporter({
   mirrorShadow:    (name, hash, sourceRevision, acceptSeq) => stageReport('mirrorShadow', [name, hash, sourceRevision, acceptSeq]),
   recordRevisionPhase: (name, sourceRevision, phase, state, result) => stageReport('recordRevisionPhase', [name, sourceRevision, phase, state, result]),
 })
+
+// Output goes out IMMEDIATELY -- `sendReport`, not `stageReport`.
+//
+// Everything above is staged and shipped in one lump when the build publishes,
+// which is right for shape writes and project patches: they must not land
+// before the build they describe. Output is the opposite. Its entire value is
+// arriving while the build runs, and staging it would reproduce exactly the
+// silence this exists to end.
+//
+// `sendReport` has been defined in this file and called from nowhere. The
+// receiving side discards `t: 'report'` too, so this wire was severed at both
+// ends -- see the handler in build-dispatch.mjs, which now keeps it.
+setBuildOutputSink((name, line, skipped) => sendReport('buildOutput', [name, line, skipped]))
 
 /**
  * Whether this revision's changes reach anything the render reads.

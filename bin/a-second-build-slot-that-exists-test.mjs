@@ -43,8 +43,8 @@ function harness(options) {
 
 {
   const { queue, running } = harness(undefined)
-  queue.dispatchBuild('alpha', { sourceRevision: 'a1', acceptSeq: 1 })
-  queue.dispatchBuild('beta', { sourceRevision: 'b1', acceptSeq: 1 })
+  queue.admitBuild('alpha', { revision: 'a1', daemonId: 'd1', branch: 'main' })
+  queue.admitBuild('beta', { revision: 'b1', daemonId: 'd1', branch: 'main' })
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(running.length, 2,
@@ -63,8 +63,8 @@ function harness(options) {
 
 {
   const { queue, running } = harness({ maxConcurrency: undefined, priority: 10 })
-  queue.dispatchBuild('alpha', { sourceRevision: 'a1', acceptSeq: 1 })
-  queue.dispatchBuild('beta', { sourceRevision: 'b1', acceptSeq: 1 })
+  queue.admitBuild('alpha', { revision: 'a1', daemonId: 'd1', branch: 'main' })
+  queue.admitBuild('beta', { revision: 'b1', daemonId: 'd1', branch: 'main' })
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(running.length, 2,
@@ -81,8 +81,8 @@ function harness(options) {
 
 {
   const { queue, running } = harness({ maxConcurrency: 1 })
-  queue.dispatchBuild('alpha', { sourceRevision: 'a1', acceptSeq: 1 })
-  queue.dispatchBuild('beta', { sourceRevision: 'b1', acceptSeq: 1 })
+  queue.admitBuild('alpha', { revision: 'a1', daemonId: 'd1', branch: 'main' })
+  queue.admitBuild('beta', { revision: 'b1', daemonId: 'd1', branch: 'main' })
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(running.length, 1,
@@ -95,7 +95,7 @@ function harness(options) {
 
 {
   const { queue, running } = harness({ maxConcurrency: 3 })
-  for (const name of ['alpha', 'beta', 'gamma']) queue.dispatchBuild(name, { sourceRevision: 'r', acceptSeq: 1 })
+  for (const name of ['alpha', 'beta', 'gamma']) queue.admitBuild(name, { revision: `r-${name}`, daemonId: 'd1', branch: 'main' })
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(running.length, 3, 'a configured 3 runs three')

@@ -376,6 +376,15 @@ const STARTER_SERVER_YAML = `# tlda server settings. The file itself is required
 buildMaxConcurrency: 2
 # buildPriority: []
 
+# How long a build may produce NO OUTPUT before its slot is taken back.
+# A silence threshold, not a duration limit: builds stream their output, so a
+# ten-minute render and a ten-second one both keep talking. That is what makes
+# one number safe for every format -- no wall-clock limit can tell a large qmd
+# render from a stuck tex pass, because the render legitimately runs longer.
+# Held by the server, not the worker: a suspended worker's own timers are
+# suspended with it, which is why the per-command timeouts never fired.
+# buildStallTimeoutMs: 90000
+
 # Optional http(s) telemetry page linked from the project index.
 # telemetryUrl: https://example.ts.net:3031/d/tlda/overview
 `
