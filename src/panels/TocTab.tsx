@@ -758,24 +758,16 @@ export function DarkModeToggle() {
 const ZONE_WIDTH_EVENT = 'zone-width-change'
 export const ZONE_WIDTH_MIN = 20
 export const ZONE_WIDTH_MAX = 250  // full panel width — at max, no expand animation
-// Skip, 2026-08-26: "pref default should be like 50 btw", because "i'm like,
-// seeing jose constantly open the thing. things are calibrated too much for
-// massive monitors" -- "since that's my usual". Watching someone else use it on
-// a normal screen is the evidence; a region wide enough to be unmissable on his
-// display is wide enough to be opened by accident on anyone else's.
-//
-// This reverses his own earlier call, and that one is kept here rather than
-// deleted so nobody reads the change as a lost setting: 2026-08-18, "make th
-// eTOC hover region as wide as possile" / "shit as visible as possible", for a
-// first-time reader on someone else's machine. The width was the whole panel
-// then. Same goal, better information about whose screen it lands on.
+// Skip, 2026-08-18: "make th eTOC hover region as wide as possile" / "shit as
+// visible as possible", for a first-time reader on someone else's machine. The
+// widest the zone goes is the panel itself, so that is the default; the slider
+// still narrows it for anyone who wants the expand animation back.
 //
 // The value that actually reaches a reader is the pref default in
 // preferences.ts, because getPref falls back to it rather than reporting the
 // pref unset. This constant is the clamp target and the non-finite fallback;
-// the two must agree. MIN and MAX are unchanged -- the slider still reaches the
-// full panel for anyone who wants it.
-export const ZONE_WIDTH_DEFAULT = 50
+// the two must agree.
+export const ZONE_WIDTH_DEFAULT = ZONE_WIDTH_MAX
 
 export function normalizeZoneWidth(value: unknown): number {
   const parsed = Number(value)
