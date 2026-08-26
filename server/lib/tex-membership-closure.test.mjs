@@ -28,6 +28,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { withReferencedRoots } from '../../cli/lib/source-files.mjs'
+import { isSourceFilePath } from '../../shared/source-manifest.mjs'
 import { scanTexDependencyClosure } from '../../shared/tex-deps.mjs'
 
 function tree(files) {
@@ -64,6 +65,48 @@ test('the CLI link path reaches a tex root\'s PNG and PDF figures', () => {
     assert.ok(members.has('figures/plot.png'), `PNG figure is a member (got ${[...members].join(', ')})`)
     assert.ok(members.has('figures/diagram.pdf'), `PDF figure is a member (got ${[...members].join(', ')})`)
     assert.ok(members.has('sections/intro.tex'), 'and the included section too')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a PDF figure is a member through the DECLARED root, with nothing chat-shared', () => {
+  // The live bug, and the one that made "a later push loses unchanged TeX
+  // figures" true. `isSourceFilePath` admits anything in `referencedRoots`
+  // whatever its extension and otherwise falls back to `SOURCE_EXTENSIONS`,
+  // which lists `.png .jpg .svg .eps` and NOT `.pdf` -- presumably because a
+  // `.pdf` is usually the compiled paper. Measured before the fix:
+  //
+  //   figures/plot.png      IS source
+  //   figures/diagram.pdf   NOT source
+  //
+  // So the figure was never pushed while the .tex beside it arrived intact.
+  //
+  // The seed here is the DECLARED root, the way an ordinary project has one.
+  // Nothing is chat-shared, because the closure used to run only over
+  // chat-shared paths -- which is exactly why an ordinary project got nothing.
+  const dir = tree({
+    'main.tex': PAPER,
+    'sections/intro.tex': String.raw`\section{Intro}`,
+    'figures/plot.png': 'png bytes',
+    'figures/diagram.pdf': 'pdf bytes',
+  })
+  writeFileSync(join(dir, 'main.pdf'), 'the compiled paper')
+  writeFileSync(join(dir, 'main.aux'), 'aux')
+  try {
+    // Asserted through `isSourceFilePath`, the predicate that actually decides
+    // what gets pushed -- NOT through `referencedRoots`. An earlier version of
+    // this test checked the intermediate set, passed, and the real predicate
+    // still said NOT source, because `isBuildJunkPath` ran before membership
+    // was consulted. Checking the step before the answer is how a green test
+    // ships a live bug.
+    const ctx = withReferencedRoots(dir, { format: 'svg', mainFile: 'main.tex', referencedRoots: ['main.tex'] })
+    assert.equal(isSourceFilePath('figures/diagram.pdf', ctx), true, 'the PDF figure is a source file')
+    assert.equal(isSourceFilePath('figures/plot.png', ctx), true, 'and the PNG')
+    // The other half of the rule, and the reason .pdf is on the junk list at
+    // all. Skip: "a pdf with no corresponding tex or svg is a source" -- the
+    // compiled paper is included by nothing, so the graph excludes it without
+    // needing to look for a companion file.
+    assert.equal(isSourceFilePath('main.pdf', ctx), false, 'the compiled paper is still not a source file')
+    assert.equal(isSourceFilePath('main.aux', ctx), false, 'and neither is build junk generally')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

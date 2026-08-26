@@ -47,27 +47,39 @@ export function withReferencedRoots(dir, context = {}) {
     if (typeof abs !== 'string' || !abs) continue
     const rel = relative(dir, abs)
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue
-    const projectRelative = rel.split(sep).join('/')
-    roots.add(projectRelative)
-    // Membership is closed under references, so a root drags in what it refers
-    // to, and what those refer to. This is the same walk that already backs
-    // markdown pushes and chat file-share rather than a second traversal — the
-    // seed differs, the edge-following does not.
-    //
-    // A `.tex` root took `continue` here and dragged in NOTHING. The push path
-    // has always branched on the extension and walked the tex closure
-    // (`daemon/git-project-sync.mjs`), so the two sides disagreed about what a
-    // tex document is made of, and the side that disagreed is the one that
-    // decides membership. A figure is reached only through `\includegraphics`,
-    // so it was reachable at push and invisible here.
-    //
-    // Same traversal, chosen by extension, exactly as the push path chooses it.
-    const closureFor = /\.tex$/i.test(projectRelative) ? scanTexDependencyClosure
-      : /\.(?:md|markdown|qmd)$/i.test(projectRelative) ? scanMarkdownDependencyClosure
+    roots.add(rel.split(sep).join('/'))
+  }
+
+  // Membership is closed under references: a root drags in what it refers to,
+  // and what those refer to.
+  //
+  // **Closed over EVERY root, not just the chat-shared seeds.** The declared
+  // document roots arrive here already in `referencedRoots` (put there by
+  // `sourceManifestContext`), and the walk used to run only over the paths that
+  // came in from chat -- so a project's own documents were members while the
+  // things they include were not.
+  //
+  // That is how a PDF figure went missing. `isSourceFilePath` admits anything in
+  // this set whatever its extension, and falls back to `SOURCE_EXTENSIONS`
+  // otherwise -- which lists `.png .jpg .svg .eps` and NOT `.pdf`, presumably
+  // because a `.pdf` is usually the compiled paper. So `\includegraphics{fig.pdf}`
+  // was not a source file, was never pushed, and the built document lost the
+  // figure while the `.tex` beside it arrived intact. Measured before this
+  // change: figures/diagram.pdf NOT source, figures/plot.png IS source.
+  //
+  // Adding `.pdf` to that extension list would have swept the built paper back
+  // in. The rule that a file a document actually INCLUDES is a member is the one
+  // that separates them, and it already existed.
+  //
+  // The traversal is chosen by extension, exactly as the push path chooses it
+  // (`daemon/git-project-sync.mjs`), rather than being a second walk.
+  for (const root of [...roots]) {
+    const closureFor = /\.tex$/i.test(root) ? scanTexDependencyClosure
+      : /\.(?:md|markdown|qmd)$/i.test(root) ? scanMarkdownDependencyClosure
         : null
     if (!closureFor) continue
     try {
-      const closure = closureFor(projectRelative, dir)
+      const closure = closureFor(root, dir)
       // `files` already unions the assets on the tex side; taking both is
       // harmless there and required on the markdown side.
       for (const rel of [...closure.files, ...(closure.assets || [])]) roots.add(rel)
