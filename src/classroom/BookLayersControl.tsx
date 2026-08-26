@@ -20,9 +20,16 @@ import './BookLayersControl.css'
 // has the book's layer and nothing else, so there is no choice to make and no
 // control: the book is exactly what it was for them.
 //
-// He also said the menu becomes a move-to-layer menu when an annotation is
-// selected. That is a separate commit; it is not stubbed here, because a control
-// offering an action nothing performs is worse than one that does not offer it.
+// Skip, 02:09 EDT: "and prob on selection the layer menu becomes a move-to-layer
+// menu", "like if you have selected an annotation". So it is one control with two
+// readings rather than two controls:
+//
+//   nothing selected      where do my next marks go
+//   annotation selected   move these to layer X
+//
+// Which is what makes his opening question answerable — "so students cant submit
+// their stuff to the common layer?" Work privately on your own layer, select it,
+// move it to the class's.
 
 /** Two stacked layers, with the named one filled and the other an outline. */
 function LayersIcon({ upper }: { upper: boolean }) {
@@ -46,12 +53,25 @@ interface BookLayersControlProps {
   state: BookLayerState
   onVisibilityChange: (id: BookLayerId, visible: boolean) => void
   onTargetChange: (id: BookLayerId) => void
+  /** How many annotations are selected on the write target. */
+  selectionCount: number
+  onMoveSelection: (id: BookLayerId) => void
+  /** Set when a move could not be completed. Nothing was lost — it is still where it was. */
+  moveError?: string
 }
 
-export function BookLayersControl({ state, onVisibilityChange, onTargetChange }: BookLayersControlProps) {
+export function BookLayersControl({
+  state,
+  onVisibilityChange,
+  onTargetChange,
+  selectionCount,
+  onMoveSelection,
+  moveError,
+}: BookLayersControlProps) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const target = state.layers.find(l => l.id === state.target)
+  const moving = selectionCount > 0
 
   useEffect(() => {
     if (!open) return
@@ -68,40 +88,57 @@ export function BookLayersControl({ state, onVisibilityChange, onTargetChange }:
         className="bookLayersBadge"
         onClick={() => setOpen(o => !o)}
         onPointerDown={event => event.stopPropagation()}
-        title={`Writing to: ${target?.label ?? ''}`}
+        title={moving ? `Move ${selectionCount} to a layer` : `Writing to: ${target?.label ?? ''}`}
       >
         <LayersIcon upper={state.target !== 'common'} />
-        <span className="bookLayersBadgeLabel">{target?.label}</span>
+        <span className="bookLayersBadgeLabel">
+          {moving ? `Move ${selectionCount}` : target?.label}
+        </span>
       </span>
       {open && (
         <div className="bookLayersPopup" onPointerDown={event => event.stopPropagation()}>
-          {state.layers.map(layer => (
-            <div key={layer.id} className={`bookLayersOption${state.target === layer.id ? ' active' : ''}`}>
-              <button
-                type="button"
-                className="bookLayersOptionName"
-                disabled={!layer.targetable}
-                aria-pressed={state.target === layer.id}
-                onClick={() => { onTargetChange(layer.id); setOpen(false) }}
-                title={layer.targetable ? `Write to ${layer.label}` : `${layer.label} is not yours to write`}
-              >
-                <LayersIcon upper={layer.id !== 'common'} />
-                <span>{layer.label}</span>
-              </button>
-              <label className="bookLayersOptionEye" title={`Show ${layer.label}`}>
-                <input
-                  type="checkbox"
-                  checked={layer.visible}
-                  // The write target is what you are writing, so it cannot be
-                  // hidden. Disabled rather than absent, so the row does not
-                  // change shape as the target moves.
-                  disabled={layer.id === state.target}
-                  onChange={event => onVisibilityChange(layer.id, event.target.checked)}
-                  aria-label={`Show ${layer.label}`}
-                />
-              </label>
-            </div>
-          ))}
+          {moveError && <div className="bookLayersError">{moveError}</div>}
+          {state.layers.map(layer => {
+            // Moving offers the layers you may write, except the one the
+            // selection is already on. Writing offers the layers you may write.
+            const isSource = layer.id === state.target
+            const disabled = !layer.targetable || (moving && isSource)
+            return (
+              <div key={layer.id} className={`bookLayersOption${!moving && isSource ? ' active' : ''}`}>
+                <button
+                  type="button"
+                  className="bookLayersOptionName"
+                  disabled={disabled}
+                  aria-pressed={!moving && isSource}
+                  onClick={() => {
+                    if (moving) onMoveSelection(layer.id)
+                    else onTargetChange(layer.id)
+                    setOpen(false)
+                  }}
+                  title={
+                    moving
+                      ? (isSource ? `Already on ${layer.label}` : `Move to ${layer.label}`)
+                      : (layer.targetable ? `Write to ${layer.label}` : `${layer.label} is not yours to write`)
+                  }
+                >
+                  <LayersIcon upper={layer.id !== 'common'} />
+                  <span>{layer.label}</span>
+                </button>
+                <label className="bookLayersOptionEye" title={`Show ${layer.label}`}>
+                  <input
+                    type="checkbox"
+                    checked={layer.visible}
+                    // The write target is what you are writing, so it cannot be
+                    // hidden. Disabled rather than absent, so the row does not
+                    // change shape as the target moves.
+                    disabled={layer.id === state.target}
+                    onChange={event => onVisibilityChange(layer.id, event.target.checked)}
+                    aria-label={`Show ${layer.label}`}
+                  />
+                </label>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

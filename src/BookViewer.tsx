@@ -6,7 +6,7 @@
  * unmounts the current editor and mounts the new one.
  */
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { Tldraw } from 'tldraw'
+import { Tldraw, react } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
 import { STORE_HTTP } from './activeConfig'
 import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
@@ -15,7 +15,8 @@ import { BookContext, type BookMember, type BookContextValue } from './BookConte
 import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
 import { TeacherStudentOverlay } from './classroom/TeacherStudentOverlay'
 import { BookLayersControl } from './classroom/BookLayersControl'
-import { studentLayers, setLayerVisible, setWriteTarget, type BookLayerState } from './classroom/bookLayers'
+import { studentLayers, setLayerVisible, setWriteTarget, type BookLayerState, type BookLayerId } from './classroom/bookLayers'
+import { moveShapesToLayer, layerStore } from './classroom/moveBetweenLayers'
 import { classroomApi, type ClassroomIdentity } from './classroom/api'
 import type { SvgDocument } from './loaders/types'
 import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
@@ -37,6 +38,9 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // target is the book's own layer, so a reader who never touches the control
   // writes where they already would.
   const [layers, setLayers] = useState<BookLayerState>(studentLayers)
+  const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
+  const [trackedSelectionCount, setTrackedSelectionCount] = useState(0)
+  const [moveError, setMoveError] = useState('')
   // Pending cross-member anchor navigation: set before switchTo, consumed after load
   const pendingAnchor = useRef<string | null>(null)
 
@@ -201,6 +205,48 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const mineLayer = layers.layers.find(l => l.id === 'mine')
   const commonVisible = layers.layers.find(l => l.id === 'common')?.visible ?? true
 
+  // The editor holding whichever layer is the write target. Only that layer takes
+  // pointer input, so it is the only one a selection can be on — which is what
+  // makes "move the selection" unambiguous about where it is moving FROM.
+  const targetEditor = layers.target === 'common' ? bookEditor : overlayEditor
+  const destinationEditor = layers.target === 'common' ? overlayEditor : bookEditor
+
+  // Watch the selection on the write target, so the control can become a
+  // move-to-layer menu when there is one. Writing state from inside the
+  // subscription callback rather than the effect body is the point: the count
+  // is external state we are following, not something to recompute on render.
+  //
+  // A failed move's message is cleared here too, because a changed selection is
+  // exactly when it stops describing anything — it reported the annotations that
+  // were attempted, not the ones now in hand.
+  useEffect(() => {
+    if (!targetEditor) return
+    return react('selection on the write target', () => {
+      setTrackedSelectionCount(targetEditor.getSelectedShapeIds().length)
+      setMoveError('')
+    })
+  }, [targetEditor])
+
+  // No write target mounted yet means nothing can be selected on it. Derived
+  // rather than stored, so there is no moment where a stale count is readable.
+  const selectionCount = targetEditor ? trackedSelectionCount : 0
+
+  const moveSelectionToLayer = useCallback((destination: BookLayerId) => {
+    if (!targetEditor || !destinationEditor || destination === layers.target) return
+    const ids = targetEditor.getSelectedShapeIds()
+    try {
+      moveShapesToLayer(layerStore(targetEditor), layerStore(destinationEditor), ids)
+      setMoveError('')
+      // The destination is now where the work is, so that is where he is writing.
+      setLayers(current => setWriteTarget(current, destination))
+    } catch (error) {
+      // The move refused rather than half-completing: the annotations are still
+      // on the layer they were on. Say so, because "nothing happened" and
+      // "something was lost" look identical from here.
+      setMoveError((error as Error).message)
+    }
+  }, [targetEditor, destinationEditor, layers.target])
+
   // The book's editor, kept so the overlay above it can follow its camera and
   // its tool selection. Passed on to the original caller unchanged.
   const handleEditorMount = useCallback((editor: Editor | null) => {
@@ -244,11 +290,15 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
               bookEditor={bookEditor}
               visible={mineLayer?.visible ?? false}
               isWriteTarget={layers.target === 'mine'}
+              onEditorMount={setOverlayEditor}
             />
             <BookLayersControl
               state={layers}
               onVisibilityChange={(id, visible) => setLayers(current => setLayerVisible(current, id, visible))}
-              onTargetChange={id => setLayers(current => setWriteTarget(current, id))}
+              onTargetChange={id => { setMoveError(''); setLayers(current => setWriteTarget(current, id)) }}
+              selectionCount={selectionCount}
+              onMoveSelection={moveSelectionToLayer}
+              moveError={moveError}
             />
           </>
         )}
