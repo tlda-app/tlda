@@ -1789,3 +1789,48 @@ control for a held-without-markers file is a look-at-it judgement.
 
 Worktrees: `held-edit-mark`, `latex-relink-gate`, `lockout-proof`,
 `room-conflict-proof`, `pre-repair-cli`.
+
+## 2026-08-26 - symlink closure push (`52ad7ea4f`, branch `symlink-closure`)
+
+**Mechanism, measured before touching anything:**
+```
+ls-tree HEAD -- scratch/book/figs/plot.png   ->  (nothing)
+ls-tree HEAD -- scratch/book/figs            ->  120000 blob ...
+ls-tree HEAD -- lectures/figs/plot.png       ->  100644 blob ...
+```
+Git does not traverse a symlink in a tree. The closure records the
+through-the-link path; the immutable check finds nothing and kills the push,
+naming a file that is committed and present.
+
+**Fix:** a member with no tree entry has its prefixes walked nearest-first;
+where one is a `120000` blob, read the target and rebuild the remainder onto it,
+repeating for nested links. A real directory in that position means the
+remainder genuinely is not there. Escaping or cyclic links resolve to nothing
+and fall through to the check unchanged. **The symlink itself joins the
+members** -- committed blob, and the built document needs it. The target is
+carried ONCE at its canonical path, same blob (asserted: materialising bytes at
+the virtual path would pass the main test and put a drifting second copy of
+every figure in every revision).
+
+Pre-fix 1 pass / 2 fail; post-fix 3/3. Neighbouring `git-project-sync` 8/2 --
+the same two pre-existing failures established this morning. eslint, tsc -b,
+lint:guards clean. Nothing of Skip's touched.
+
+**THE UNVERIFIABLE CRITERION, recorded so nobody inherits it as covered.** The
+immutable check is untouched, but no fixture reaches it after this repair.
+
+- My first version of that test asserted it still refuses a genuinely absent
+  file. **It did not hold the line** -- a file that does not exist never becomes
+  a closure member, because the closure is scanned against a materialisation of
+  the SETTLED TREE. Proved by replacing the check with `continue`: **all three
+  tests still passed.**
+- An escaping symlink does not reach it either: the link materialises pointing
+  outside the temporary tree, so the file is missing rather than a member.
+
+**The in-repo symlink was the one route to that check, and resolving it is what
+this change does.** Enforcement is therefore unverified and possibly
+unreachable. NOT deleted and not proposed for deletion -- a backstop nobody can
+trigger is a decision, not a cleanup.
+
+The third test now pins the real containment behaviour: nothing from outside the
+repository is carried in, and its absence does not stop the document publishing.
