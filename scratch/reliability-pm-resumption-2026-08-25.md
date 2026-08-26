@@ -190,6 +190,46 @@ in it; `app-librarian` reached the same conclusion independently.
 the same file still gates on `format === 'markdown'`. Same disease, but it
 decides what counts as *changed*, so widening it is not a membership fix.
 
+### THE SUITE IS RED AND NOBODY RUNS IT — measured 2026-08-26
+
+**`npm test` on `main`: 323 passed, 62 failed, 18 timed out, 403 total. Exit
+code 1.** Not a sample — every file the runner discovers, run once. Complete
+list of all 80 by name was written to
+`scratchpad/suite-report.md` at the time; regenerate with `npm test` rather than
+trusting that file, which is not tracked.
+
+**It is not that the gate cannot fail.** `bin/run-test-suite.mjs` sets
+`process.exitCode = 1` and did. I reported the opposite for an hour because I
+ended my shell command with an `echo` and read the echo's status — the third
+exit-code misread of the night, which makes it a pattern and not an accident.
+
+**15 of the 62 are one class: tests calling an API deleted on 2026-08-20.**
+`f6d0f9089` "Delete parallel server source authority" removed `bootstrap`,
+`submit`, `readAuthority`, `prepareOperation` and `acceptBundle`; **none is
+defined anywhere in non-test code now.** The tests were left behind and throw on
+their first line.
+
+**They cannot be ported, and this is the part that decides what to do.** The
+lifecycle store today is **read-and-record only** — `isAncestor`, `readRevision`,
+`readRevisionFile`, `readCurrentFile`, `listRevisionLifecycles`,
+`recordRevisionAdmission`, `recordRevisionPhase`. **There is no way to create a
+revision through it at all.** That responsibility moved to git: revisions arrive
+as pushed proposal refs and are taken by `admitProposal`. So these need
+rewriting against a different mechanism, not renaming.
+
+**What is unguarded, in the tests' own words:** a bootstrap does not repeat over
+real history · a commit per accepted push · a ref that does not outrun its
+record · a refusal that names what differed · a retry that lands once · an
+accept the daemon is never told about · one file out of a big book · replica
+command not retained · source restart mid-edit.
+
+**Those are the modes that lose an edit or accept one twice**, on the path that
+takes Skip's pushes, and nothing checks any of them.
+
+**Put to Skip, not decided here:** delete them — one commit that makes a hidden
+gap visible — or rewrite against the git path, which is real work. It is his
+data path, so it is his call.
+
 ### THREE tests on `main` throw before their first assertion
 
 All call methods that no longer exist, so they protect nothing while looking
