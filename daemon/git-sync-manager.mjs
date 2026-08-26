@@ -74,7 +74,6 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       bindingId: item.bindingId,
       remote: projectRemoteUrl(item.project),
       documentRoots: item.documentRoots || [],
-      appOwnedWorkingTree: item.appOwnedWorkingTree === true,
       log,
       // sourceDir rides along because the members in `event` are project-relative
       // and the attribution lookup needs absolute paths.

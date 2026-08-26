@@ -40,6 +40,8 @@ function harness(root, head) {
   const manager = {
     bindSource: () => {},
     sync: async () => {},
+    // The room stands on its project branch like any other checkout.
+    standOnWorkBranch: async () => ({ ok: true, status: 'already-on-it' }),
     queuePaths: () => {},
     headChanged: async () => ({ ok: true }),
   }

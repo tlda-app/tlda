@@ -63,7 +63,6 @@ function twoTrees() {
   git(working, 'config', 'user.email', 'test@tlda')
   git(working, 'config', 'user.name', 'test')
   git(working, 'remote', 'add', 'tlda', bare)
-  writeFileSync(join(working, 'paper.tex'), String.raw`\documentclass{article}\begin{document}EDITED\end{document}`)
 
   return { root, working, head }
 }
@@ -74,7 +73,6 @@ function appSync(working) {
     project: 'paper',
     daemonId: 'test-daemon',
     bindingId: 'test-binding',
-    appOwnedWorkingTree: true,
     log: { info() {}, warn() {}, error() {} },
   })
 }
@@ -84,6 +82,15 @@ test('a document the editor never opened survives a browser edit', async () => {
   try {
     const sync = appSync(working)
     await sync.headChanged(head)
+    // The editor's tree is a NORMAL CHECKOUT ON THE PROJECT BRANCH, which is
+    // the whole design. Skip, 2026-08-26: "the browser editor is another
+    // daemon. like any other" / "NORMAL FUCKING PROJECT BRANCH".
+    const stood = await sync.standOnWorkBranch()
+    assert.ok(stood?.ok, `it stands on its project branch (got ${JSON.stringify(stood)})`)
+
+    // Only now does the editor write its buffer, which is the real order: the
+    // room stands on the branch, then hydrates the file it is editing.
+    writeFileSync(join(working, 'paper.tex'), String.raw`\documentclass{article}\begin{document}EDITED\end{document}`)
 
     // Settle the way an editor save does, then read what was actually
     // published. Asserting on `git status` first would measure an intermediate
@@ -101,13 +108,14 @@ test('a document the editor never opened survives a browser edit', async () => {
 })
 
 test('the edit in progress is not clobbered by bringing the tree up to date', async () => {
-  // The other half, and the reason this restores only ABSENT files. The editor
-  // writes the live buffer into this directory; a checkout of the whole tree
-  // would overwrite it and throw away the edit being typed.
+  // The other half. The editor writes the live buffer into this directory, so
+  // standing the tree on its branch must not overwrite the edit being typed.
   const { root, working, head } = twoTrees()
   try {
     const sync = appSync(working)
     await sync.headChanged(head)
+    await sync.standOnWorkBranch()
+    writeFileSync(join(working, 'paper.tex'), String.raw`\documentclass{article}\begin{document}EDITED\end{document}`)
     const paper = execFileSync('cat', [join(working, 'paper.tex')], { encoding: 'utf8' })
     assert.match(paper, /EDITED/, 'the unsaved edit is still there')
   } finally { rmSync(root, { recursive: true, force: true }) }

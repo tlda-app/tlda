@@ -49,16 +49,6 @@ export function createGitProjectSync({
   remote = 'tlda',
   branch = 'main',
   documentRoots = [],
-  // True for a working tree the APP owns — `.source-room/working`, created by
-  // ensureRepo() and written by the source room. There is no person in it, so
-  // nothing stages what the app writes there and settle must stage it itself.
-  // False, and default, for a person's own checkout, which is what every
-  // territory rule in this file is about.
-  //
-  // Ownership is a property of the directory, and this object is the one bound
-  // to the directory, so the fact lives here. The manager forwards it from the
-  // binding record; there is no second encoding.
-  appOwnedWorkingTree = false,
   log = console,
   onSubmitted = () => {},
   onWrongHead = () => {},
@@ -390,7 +380,7 @@ export function createGitProjectSync({
       // `-A` here is not a hole in the territory rule. That rule is about a
       // repository someone else owns; this branch only runs where the app is the
       // only writer.
-      await git(['add', appOwnedWorkingTree ? '-A' : '-u'], { env })
+      await git(['add', '-u'], { env })
       const tree = (await git(['write-tree'], { env })).stdout.trim()
       // An empty answer is not a tree, and passing it on produces `git
       // commit-tree  -m ...` with the argument silently missing — which is what
@@ -499,7 +489,7 @@ export function createGitProjectSync({
     // under and nothing to be dirty against. Gating it would stop the browser
     // source editor's path outright, which is the opposite of the repair.
     const head = await currentBranchRef()
-    if (!appOwnedWorkingTree && head !== workBranchRef) {
+    if (head !== workBranchRef) {
       return {
         ok: false,
         status: 'not-on-work-branch',
@@ -556,42 +546,6 @@ export function createGitProjectSync({
   // history was merged into their checkout — which left an unresolved merge in
   // it whenever the two diverged. Local is authoritative. Divergence is theirs to
   // resolve, and it does not stop the project working.
-  /**
-   * Bring an app-owned working tree up to a revision WITHOUT touching what is
-   * already on disk.
-   *
-   * **This is the browser route losing documents, and the mechanism is one
-   * line.** An app-owned tree only ever contained the files somebody had opened
-   * in the source editor. `headChanged` moved HEAD onto the project revision and
-   * deliberately left the directory alone, so HEAD held every document while the
-   * directory held one — and settle stages that directory with `git add -A`,
-   * which records every file present in HEAD and absent on disk as a
-   * **DELETION**. One browser edit therefore published a revision with the other
-   * documents removed.
-   *
-   * Measured 2026-08-26 on a throwaway two-document project: edit `paper.tex` in
-   * the editor, and `notes.md` went from 54 bytes to HTTP 404 in nine seconds,
-   * while `.source-room/working` on the box contained `paper.tex` alone.
-   *
-   * **Only files that are ABSENT are written.** A checkout of the whole tree
-   * would clobber the room's in-flight content — the editor writes the live
-   * buffer into this directory, so overwriting it from HEAD would throw away the
-   * edit being made. Absent files cannot have unsaved content, so restoring
-   * exactly those is the part that is safe and the part that is needed.
-   *
-   * The comment on `headChanged` already called this directory a VIEW of the
-   * project's source. It was not one; this makes it one.
-   */
-  async function materializeMissingFiles(revision) {
-    const listed = (await git(['ls-tree', '-r', '--name-only', revision])).stdout.split('\n').filter(Boolean)
-    const missing = listed.filter(file => !fs.existsSync(path.join(sourceDir, file)))
-    if (!missing.length) return
-    // In batches, because a project can have more files than one argv holds.
-    for (let at = 0; at < missing.length; at += 100) {
-      await git(['checkout', revision, '--', ...missing.slice(at, at + 100)])
-    }
-    log.info?.(`${project}: restored ${missing.length} file(s) into the app working tree from ${revision.slice(0, 9)}`)
-  }
 
   async function headChanged(revision = null) {
     const fetched = await fetchHead(revision)
@@ -612,10 +566,6 @@ export function createGitProjectSync({
     // `git add -A` over the working directory, so the room's content is untouched
     // and only the parent changes. A person-owned checkout keeps its own history
     // and is deliberately not reparented here.
-    if (appOwnedWorkingTree) {
-      await git(['update-ref', 'HEAD', fetched])
-      await materializeMissingFiles(fetched)
-    }
     return { ok: true, status: 'observed', revision: fetched }
   }
 
@@ -668,7 +618,22 @@ export function createGitProjectSync({
     const shortBranch = `tlda/${projectPart}`
     const branchTip = await rev(workBranchRef)
     try {
-      if (!branchTip) await git(['checkout', '-b', shortBranch])
+      if (!branchTip) {
+        // A tree with NO COMMITS AT ALL is a fresh checkout of this project, and
+        // a fresh checkout of a project starts at the project's head -- that is
+        // what cloning it would give you. Creating the branch at nothing instead
+        // produces an empty tree, and settle then refuses it as `empty-checkout`.
+        //
+        // This is the source editor's case: its tree is created empty and it is
+        // another daemon like any other, so it gets the project the same way a
+        // person's clone would. Narrowed to the no-commits case on purpose -- a
+        // person's checkout that already has history keeps starting the branch
+        // from their own HEAD, which is what they would expect.
+        const hasCommits = await rev('HEAD')
+        const projectHead = hasCommits ? null : (await rev(fetchedRef)) || (await rev(revisionRef))
+        if (projectHead) await git(['checkout', '-b', shortBranch, projectHead])
+        else await git(['checkout', '-b', shortBranch])
+      }
       else if (branchTip === await rev(revisionRef)) await git(['checkout', '-B', shortBranch])
       else await git(['checkout', shortBranch])
     } catch (error) {
