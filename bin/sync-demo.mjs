@@ -241,6 +241,19 @@ async function remoteText() {
 // error(s)". The marker has to be legal in every format this runs against.
 const lineFor = (leg, n) => `- [${leg}] SYNCDEMO-${n} at ${stamp()}`
 
+/**
+ * Whether a surface carries a specific marker -- ANCHORED, not a substring.
+ *
+ * `text.includes('SYNCDEMO-9')` is satisfied by `SYNCDEMO-99999` left in the
+ * document by an earlier run. Markers start at `Date.now() % 100000` and count
+ * up, so a short one is a live prefix of a long one and the check passes in 0ms
+ * with nothing having synced. Every marker is written followed by ` at `, so
+ * requiring that suffix makes the match exact without parsing the line.
+ */
+function hasMarker(text, marker) {
+  return String(text).includes(`${marker} at `)
+}
+
 // Where a demo line goes in the file.
 //
 // Appending to the end is wrong for LaTeX: everything after \end{document} is
@@ -387,18 +400,24 @@ async function converge(marker, destinations) {
     for (const [name, read] of [...pending]) {
       const text = await read()
       if (text === null) continue
-      if (String(text).includes(marker)) {
+      if (hasMarker(text, marker)) {
         result[name] = { ms: Date.now() - started }
         pending.delete(name)
       }
     }
     if (pending.size) await sleep(1000)
   }
+  // A destination that cannot be read is MISSING, not exempt.
+  //
+  // `unreadable` used to be its own outcome, and `bad` filtered on `missing`
+  // only -- so a surface that never answered at all never entered `pending`,
+  // never reached `failures`, and the run exited 0. `parkedText` returns null
+  // when the fetched ref does not exist, which is exactly what a browser route
+  // that published nothing looks like; `serverText` returns null on any
+  // non-2xx. Green that depends on a read failing is not green.
   for (const [name, read] of pending) {
     const text = await read()
-    result[name] = text === null
-      ? { unreadable: true, ms: Date.now() - started }
-      : { missing: true, ms: Date.now() - started }
+    result[name] = { missing: true, unreadable: text === null, ms: Date.now() - started }
   }
   return result
 }
@@ -636,6 +655,8 @@ console.log(`versions: ${startingVersions === null ? 'could not read shadow log'
 
 let n = Number(valueOf('--from', Date.now() % 100000))
 const failures = []
+// Markers that reached the server and must never leave it again.
+let witnessed = []
 const unrun = []
 // Markers that missed the window, re-checked on later cycles.
 //
@@ -757,6 +778,9 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
       r.ms !== undefined && !r.missing && !r.unreadable
         ? `${name} ${(r.ms / 1000).toFixed(1)}s`
         : r.unreadable ? `${name} UNREADABLE` : `${name} NEVER ARRIVED`)
+    // Only markers that DID arrive are worth watching for loss. One that never
+    // arrived is already a failure and would otherwise be reported twice.
+    if (result.server && !result.server.missing) witnessed.push({ marker, leg })
     const bad = Object.entries(result).filter(([, r]) => r.missing)
     console.log(`${leg.padEnd(8)} ${marker.padEnd(8)} ${parts.join('   ')}`)
     // NEVER ARRIVED says the text is not there. It does not say which half of
@@ -786,6 +810,30 @@ for (let cycle = 0; cycle < CYCLES; cycle++) {
     for (const [name] of bad) {
       pending.push({ leg, destination: name, marker, since: Date.now(), read: destinations[name] })
     }
+  }
+
+  // NOTHING THAT ARRIVED MAY GO MISSING.
+  //
+  // Every check above asks "did MY line arrive". None of them asks whether the
+  // lines already there survived. So a route whose write clobbers an earlier
+  // one -- a stale Yjs room overwriting the file, a merge dropping a side, a
+  // revision published from a partial tree -- passes every per-line check while
+  // destroying the document. That is the failure this whole demo exists for,
+  // and it was the one thing not being measured.
+  //
+  // Cheap, because the data is already here: every marker written this run must
+  // still be on the server. One that was present and is now gone is a hard
+  // failure, and it names the leg that wrote it so the loss is attributable.
+  const serverNow = await serverText(LEG_FILES.disk)
+  if (serverNow === null) {
+    failures.push('the server copy could not be read, so loss could not be checked')
+  } else {
+    const lost = witnessed.filter(entry => !hasMarker(serverNow, entry.marker))
+    for (const entry of lost) {
+      failures.push(`${entry.marker} (written by ${entry.leg}) ARRIVED AND IS NOW GONE from the server copy`)
+    }
+    // Stop re-reporting a line already counted as lost.
+    witnessed = witnessed.filter(entry => !lost.includes(entry))
   }
 
   const versions = await versionCount()
