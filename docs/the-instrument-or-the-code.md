@@ -384,6 +384,43 @@ render, which is a state the system will sit in indefinitely and by intent. So
 the alarm is not stuck; it is faithfully reporting a design as a defect, for as
 long as the design holds.
 
+### 13. Two instruments agreeing on an absence, because they share a blind spot
+
+**Independent confirmation is the strongest evidence there is — except when both
+instruments are the same kind of instrument.** Then agreement is not two
+measurements; it is one measurement taken twice, and its blind spot is confirmed
+rather than exposed.
+
+**Measured 2026-08-26.** Two agents classified the same 43 checkouts for whether
+they could still submit. The counts disagreed — 1 diverged against 6 — which is
+what made the reconciliation happen, and the reconciliation found the real error:
+one test compared `refs/tlda/project/<p>` (the chain) and the other compared
+`HEAD`. **HEAD is the right one**, because the question is whether the working
+checkout can push, and a chain ref can sit on the server's line while the
+checkout the person types in has wandered off it. The chain-based test would have
+cleared six checkouts that cannot submit.
+
+**But both tests returned the same 21 "no refs to compare", and both were
+silent on them.** Two independent agents, agreeing, on a fifth of the
+population — and the agreement was worthless, because both instruments were
+git-local and the missing refs were exactly what git-local cannot see past.
+
+**One HTTP call to the server resolved all 21**, and split them three ways:
+fifteen were bindings to projects that do not exist, three had a server-side
+revision with no local record of it, three had never synced. Three different
+dispositions, one of which — server ahead, local blind — is the shape where a
+repair overwrites.
+
+**The check: when two measurements agree, ask whether they could disagree.** If
+both read the same store, the same log, the same tree, agreement tells you
+they are consistent, not that they are right. **Reach for an instrument of a
+different kind** — the server when you have been reading git, the wire when you
+have been reading code, his screen when you have been reading the wire.
+
+**The disagreement is the useful event.** The chain-versus-HEAD error was caught
+*because* the numbers conflicted. Nothing caught the shared 21 until somebody
+asked a question neither query could answer.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see
