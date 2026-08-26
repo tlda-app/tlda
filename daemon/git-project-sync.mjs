@@ -51,7 +51,6 @@ export function createGitProjectSync({
   documentRoots = [],
   log = console,
   onSubmitted = () => {},
-  onWrongHead = () => {},
   onMirrorArrived = () => {},
   runGit = null,
 } = {}) {
@@ -452,7 +451,44 @@ export function createGitProjectSync({
   //
   // Optional because `recover()` also pushes, and a revision recovered at startup
   // has no edit cluster behind it to attribute.
-  async function pushRevision(revision, { forceRebuild = false, members = null } = {}) {
+  /**
+   * Combine the accepted head with our revision WITHOUT touching this
+   * repository's checkout, index, or branches.
+   *
+   * `merge-tree --write-tree` merges two commits entirely in the object
+   * database: it writes a tree and prints its id, and it reads nothing from the
+   * working tree and writes nothing to it or to the index. That is what makes
+   * it usable here at all -- `d60d18573` removed five mutations of a repository
+   * the app does not own, and none of them may come back.
+   *
+   * Exit 0 means a clean merge; exit 1 means a real conflict, and the stdout
+   * carries the conflicted paths. That distinction is why this uses the
+   * `--write-tree` form and not the legacy one, which prints `changed in both`
+   * for any file both sides touched -- a report that is not about conflicts at
+   * all and reads as one.
+   */
+  async function combineWithAcceptedHead(accepted, revision) {
+    try {
+      const result = await git(['merge-tree', '--write-tree', accepted, revision])
+      const tree = String(result.stdout || '').trim().split('\n')[0]
+      if (!/^[0-9a-f]{40}$/.test(tree)) return { ok: false, conflicted: [], reason: `merge-tree wrote no tree: ${tree}` }
+      return { ok: true, tree }
+    } catch (error) {
+      // Exit 1 is the answer "these genuinely conflict", not a failure to run.
+      // Anything else is a broken invocation and must not be reported as a
+      // conflict -- that would turn a bug in this code into a story about the
+      // two authors.
+      if (error?.code !== 1) throw error
+      const lines = String(error.stdout || '').split('\n')
+      const conflicted = [...new Set(lines
+        .map(line => line.match(/^\d{6} [0-9a-f]{40} [123]\t(.+)$/))
+        .filter(Boolean)
+        .map(match => match[1]))]
+      return { ok: false, conflicted }
+    }
+  }
+
+  async function pushRevision(revision, { forceRebuild = false, members = null, combined = false } = {}) {
     const proposalRef = `refs/tlda/proposals/${daemonPart}/${branchPart}/${revision}`
     try {
       const result = await git(['push', '--porcelain', remote, `${revision}:${proposalRef}`])
@@ -463,10 +499,44 @@ export function createGitProjectSync({
       const output = `${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`
       const match = output.match(/WrongHead\s+([0-9a-f]{40})/i)
       if (!match) throw error
-      const wrong = { ok: false, status: 'WrongHead', head: match[1], revision }
-      await onWrongHead(wrong)
+
+      // Park the accepted head first. This is unchanged: the person's checkout
+      // is not moved onto it, it simply becomes reachable at fetchedRef.
       await headChanged(match[1])
-      return wrong
+
+      // ONE attempt, never a loop. If a proposal built on the accepted head is
+      // ALSO rejected, the head moved again while we were working, and the next
+      // edit cluster will settle it. Retrying here would spin against a project
+      // somebody else is actively pushing to.
+      if (combined) return { ok: false, status: 'WrongHead', head: match[1], revision }
+
+      const accepted = (await rev(fetchedRef)) || match[1]
+      const merge = await combineWithAcceptedHead(accepted, revision)
+      if (!merge.ok) {
+        // HELD, and named as what it is. Both sides are recoverable: the
+        // person's work is their own commit on their branch, and the accepted
+        // head is parked at fetchedRef. Nothing is discarded and no winner is
+        // picked -- choosing one is not this code's decision to make.
+        log.warn?.(`${project}: holding — the accepted source and this checkout both changed ${merge.conflicted?.join(', ') || 'the same content'}`)
+        return {
+          ok: false,
+          status: 'conflict-held',
+          head: accepted,
+          revision,
+          conflicted: merge.conflicted || [],
+          reason: merge.reason,
+        }
+      }
+
+      // A two-parent commit whose tree is the combination. The accepted head is
+      // a parent, so the server's ancestry rule is satisfied; our revision is
+      // the other, so nothing of the person's is orphaned. It is created as a
+      // loose object and pushed -- no local ref, no branch move, no checkout.
+      const combinedRevision = (await git([
+        'commit-tree', merge.tree, '-p', accepted, '-p', revision,
+        '-m', `combine ${revision.slice(0, 7)} with accepted ${accepted.slice(0, 7)}`,
+      ])).stdout.trim()
+      return pushRevision(combinedRevision, { forceRebuild, members, combined: true })
     }
   }
 
