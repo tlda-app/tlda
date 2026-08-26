@@ -1545,3 +1545,53 @@ clean nor terminate, which means a regression there lands invisibly.
 
 **And the sync fix is NOT live:** it is on main, but the running daemon does not
 have this code. Until the daemon restarts, the lockout is still happening.
+
+## 2026-08-26 - the lockout fix VERIFIED LIVE, and two false alarms of my own
+
+Testing serves `ad422e67a`; daemon-testing restarted from that SHA.
+
+**The result, on a disposable project, real path, browser socket held open:**
+```
+63s..81s  rev=4b8dd17  seq=11208  published=BOTH
+VERDICT: the disk edit was PUBLISHED -- the ordinary two-person case now lands
+```
+Both edits in the published source, no WrongHead, no conflict-held, clean
+admission. That case was a permanent lockout this morning.
+
+**The conflict path is live and correct too**, from the daemon's own log:
+```
+10:45:17  holding -- the accepted source and this checkout both changed doc.md
+10:45:17  proposal not accepted: conflict-held
+```
+
+**TWO FALSE ALARMS, BOTH MINE, recorded because they nearly went out as
+findings.**
+
+**1.** The original reproduction returned "disk edit NEVER PUBLISHED" and I was
+one step from reporting the fix broken. It edits the SAME LINE from both sides,
+so it is the conflict case and not publishing is correct. **The harness verdict
+text predates the fix and reads a correct hold as a failure.** The daemon log
+caught it.
+
+**2.** The "ordinary case" I then built also came back not-published. Two
+defects in my own harness: the edits landed on ADJACENT LINES, which genuinely
+conflict in any three-way merge, and the browser edit was DOUBLE-APPLIED -- the
+accepted head read `bravo-FROM-BROWSER-FROM-BROWSER`. Separating the edits by
+eight lines and applying the browser side to the BASE text rather than to
+whatever the room held is what produced the real answer.
+
+**Both times the instrument was wrong and the code was right, and both times
+the false reading looked exactly like the defect I had spent the morning
+chasing.** If you inherit these harnesses: `scratch/disk-loss-trace.mjs` tests
+the CONFLICT case and its verdict wording is stale;
+`scratch/disk-ordinary-trace.mjs` is the one that tests the ordinary case.
+
+**Harness improvement:** `scratch/relink-one.mjs` now checks the published
+source for conflict markers BY NAME. On the run that halted the sweep it noticed
+that damage only as `restore-server` failing to converge -- the symptom furthest
+from the cause.
+
+**Sweep resumed** under the chief lifting the freeze. Index 0 --- the directory
+that halted it before --- passed clean: roots absent and unchanged, HEAD
+unchanged, ancestry holds, edit reached server in 13s and the source room,
+restored local and server, checkout clean.
