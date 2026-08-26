@@ -1495,3 +1495,53 @@ lines, not the counts.
 assertion failures and at least two hanging tests across three files, plus an
 open-handle leak in two of them. An aggregate run over that directory can
 neither come back clean nor terminate.
+
+## 2026-08-26 - channel-silent restart task: two findings, one open question
+
+Picked up `fleet:d733-mt9lerth` after the sync work integrated on main
+(`3aeaf31f0` + `0753bb8a2` + `6482a9187` + `ad422e67a`, verified independently:
+merge path present, `onWrongHead` gone, malformed-throw present, all 5 gate
+tests on main).
+
+**Finding 1: the code the brief asks to replace was deleted 24 minutes AFTER
+the task was delegated.** `596c08fad` "Suggest restart instead of killing on
+channel silence" landed 00:51; the delegation was 00:27. It removed the
+`rpcRestart` call from the `channel-silent` remedy and replaced it with
+`suggestRestart: () => terminalRpc.notifyConnectionDisconnected({ agent_id })`
+-- a message into the live session, no lifecycle action.
+
+**That commit has NO BODY.** Subject line only, on a behaviour change to the
+notification remedy. Same shape as `37bf5ad3b` (wake marks an agent dead), which
+AGENTS.md records. Nothing in the record says whether it was asked for.
+
+Net: criterion 1 ("never calls kill-session/rpcRestart") is ALREADY satisfied on
+main; criterion 2 ("existing restart-mcp hibernate/wake path is used") is NOT.
+Half the task was done by someone else while it sat assigned here.
+
+**Finding 2: criteria 1 and 2 cannot both hold, and it is not a wording
+quibble.** There is NO separate `hibernate` verb -- hibernate IS `kill-session`,
+killing the tmux session while the agent row stays alive. So
+`tlda-dev restart-mcp` -> lifecycle `restart` -> `rpcRestart` -> `kill-session`
++ `wakeMint`. **The restart-mcp hibernate/wake path and `rpcRestart` are the
+same code.** Do not "resolve" this by picking one; it needs a decision.
+
+**Open question put to the chief, not decided here:**
+(a) wire `channel-silent` to a real restart -- resolve the mint as `restart-mcp`
+does, call lifecycle `restart` with `mint_id` and `wait_until_complete`. Reads
+criterion 3's "live tmux session survives" as *the agent is running afterwards*.
+Also fixes the bug the deleted comment documented: the old remedy passed
+`{agent_id}` alone, which `wakeMint` cannot resolve, so it killed the session and
+threw, leaving agents DOWN -- observed twice on the live daemon in four minutes.
+(b) leave main as it is and close the task as done by `596c08fad`, which is what
+the current code's own comment argues: "Silence authorizes a message to the
+existing session, not a lifecycle action."
+
+Nothing written pending the answer.
+
+**Also still true and unowned:** main's daemon suite carries six assertion
+failures and at least two hanging tests across three files, plus an open-handle
+leak in two of them. An aggregate run over that directory can neither come back
+clean nor terminate, which means a regression there lands invisibly.
+
+**And the sync fix is NOT live:** it is on main, but the running daemon does not
+have this code. Until the daemon restarts, the lockout is still happening.
