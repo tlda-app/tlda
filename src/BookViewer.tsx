@@ -13,6 +13,7 @@ import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocume
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
 import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
+import { TeacherStudentOverlay } from './classroom/TeacherStudentOverlay'
 import { classroomApi, type ClassroomIdentity } from './classroom/api'
 import type { SvgDocument } from './loaders/types'
 import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
@@ -180,6 +181,9 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
 
   const activeMember = members[activeIndex]
   const roomId = activeMember ? `doc-${activeMember.key}` : ''
+  // Which course's roster a teacher flicks through. Read once: changing student
+  // rewrites the URL, and re-reading it here would fight that.
+  const courseId = useMemo(() => new URLSearchParams(window.location.search).get('course') || '', [])
 
   // The book's editor, kept so the overlay above it can follow its camera and
   // its tool selection. Passed on to the original caller unchanged.
@@ -213,6 +217,17 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
             key={`${activeMember.key}:${identity.studentId}`}
             bookRoomId={roomId}
             studentId={identity.studentId}
+            bookEditor={bookEditor}
+          />
+        )}
+        {/* The teacher reads one student's layer at a time, flicking between
+            them. Only when a course is named — the book itself belongs to no
+            course, so without one there is no roster to flick through. */}
+        {!loading && document && identity?.role === 'instructor' && courseId && (
+          <TeacherStudentOverlay
+            key={`${activeMember.key}:${courseId}`}
+            bookRoomId={roomId}
+            courseId={courseId}
             bookEditor={bookEditor}
           />
         )}
