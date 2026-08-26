@@ -71,56 +71,6 @@ So on a rejected push:
 The frozen release-candidate interval is defined in
 [Frozen release candidate](release-candidate.md).
 
-## The front door is not in the machine being deployed
-
-`fly.live.toml` has two process groups. `app` carries the volume, so it has to
-stop to be redeployed — one volume means no blue/green, and `fleet.db` is on it.
-`edge` is the tailnet node and the front door, carries nothing, and the app
-deploy leaves it alone:
-
-```bash
-fly deploy -c fly.live.toml --process-groups app
-```
-
-**That flag is the deploy.** Without it, `fly deploy` updates both groups and the
-tailnet name goes down with them, which is the thing this arrangement exists to
-stop.
-
-Behind the tailnet node, `scripts/fly-edge-proxy.mjs` is a TCP pipe that **waits**
-for the app machine instead of answering 502. While the app machine is being
-replaced a connection is held, not refused, so a browser sees one slow request
-rather than a dead page. The wait is `TLDA_EDGE_HOLD_SECONDS`; past it the
-connection is dropped with a line in `fly logs`.
-
-The measured app-machine gap on 2026-08-18 was about 60 seconds — machine stop
-03:11:45Z, serving 03:12:45Z. A cold start on this box has been measured near 90s.
-
-### The .ts.net name must not move
-
-The tldraw licence is bound to `*.cormorant-matrix.ts.net`, and Skip has that URL
-open. The node keeps its identity because the edge volume holds the *existing*
-`tailscaled.state` — it is the same node, on a different machine, not a new one.
-
-**Seed it before the first edge boot.** A fresh tailscaled registers a new node,
-Tailscale names it `tlda-fly-1`, and the URL moves:
-
-```bash
-fly volumes create edge_ts_state -c fly.live.toml -r sjc -s 1
-# copy the node state off the app machine's volume onto the edge volume, then
-fly deploy -c fly.live.toml            # both groups, once
-```
-
-Every deploy after that names `--process-groups app`.
-
-### What the move costs
-
-`server/lib/tailscale-peers.mjs` shells out to `tailscale status --json` in the
-app container to stamp a chat sender's machine name onto message metadata. There
-is no tailscaled in that container any more, so the lookup returns null and the
-stamp is omitted. It is omitted, never guessed wrong — that module is
-fail-visible by construction. Closing it means either the edge publishing its
-peer map or the app machine holding a tailnet node of its own without `serve`.
-
 ## A daemon/server change has no atomic landing
 
 A deploy ships the server. It does not ship the daemons that talk to it.
