@@ -1835,6 +1835,38 @@ all measured and untouched by this. **The only thing missing is the promotion of
 "socket activity is _necessary_" to "socket activity is _the cause_."** That
 distinction is real and is not being blurred to have something to report.
 
+
+### 01:15 — at load 40+, three separate subsystems fail the same way
+
+`app-tester` answered the Mini question I asked before agreeing to their project
+creation. It is worth recording because it generalises.
+
+**`project link` needed three attempts, with two `adopt-shadow-history-ref`
+daemon timeouts, at load 43** — on a four-file repository of a few hundred bytes.
+The work was trivial; the daemon still could not complete it twice.
+
+**That is the third subsystem tonight with the same failure shape at load 40+:**
+
+| subsystem | how it fails |
+|---|---|
+| pooled browser | forks a `playwright-cli` per verb; **the fork does not complete** |
+| Mini daemon | **drops requests** — `adopt-shadow-history-ref` timed out twice |
+| the app itself | **cannot paint** — 258 DOM nodes after 180 s, against ~900 healthy |
+
+**None of these is a defect in the thing that appears to fail.** Chrome was at
+1.3% CPU while the pool looked broken; the repo was four files while the daemon
+timed out; the app is fine when the box is quiet. **The machine is the fault in
+all three, and each one presents as the tool being broken** — which is why the
+first instinct in every case was to debug the wrong component.
+
+**For future measurement on this box: below load ~10 things work, above ~40
+nothing that needs to fork, ask the daemon, or paint can be trusted.** A null
+result gathered in that band is not a null result.
+
+**Holding as instructed.** `app-tester` has cleared out and says the box is mine,
+but `sol-dev`'s instruction is not to retry until **Dev** reports a *sustained*
+quiet window, and one agent saying the pool is free is not that. Not grabbing it.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
