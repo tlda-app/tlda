@@ -140,4 +140,35 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
     'with the threshold set to 0, a silent build is never stopped')
 }
 
-console.log('ok — a stalled build gives its slot back, a talkative slow one does not')
+// ---------------------------------------------------------------------------
+// 4. THE WIRE, with a real child process.
+//
+// Everything above drives the queue with synthetic messages, which proves the
+// queue and says nothing about whether a real build actually produces any. That
+// is the sender-and-receiver-but-no-wire shape this repository keeps being
+// bitten by, and here it would be invisible: the queue would be correct, no
+// build would ever emit anything, and every build would look stalled at 90s.
+//
+// `exec` buffers stdout and hands it over only when the command exits. So this
+// asserts TIMING, not content -- a line has to arrive while the command is
+// still running. Buffered output would deliver all three at the end and still
+// satisfy any assertion that only counted them.
+
+{
+  const { setBuildOutputSink, trackedExec } = await import('../server/lib/build-runner.mjs')
+  const seen = []
+  const startedAt = Date.now()
+  setBuildOutputSink((name, line) => seen.push({ at: Date.now() - startedAt, name, line }))
+
+  await trackedExec('probe', "sh -c 'echo first; sleep 1; echo second'")
+  const elapsed = Date.now() - startedAt
+  setBuildOutputSink(null)
+
+  assert.ok(seen.length >= 1, `the sink received output from a real command (saw ${seen.length})`)
+  assert.ok(seen[0].at < elapsed - 300,
+    `THE WIRE: output arrives WHILE the command runs, not buffered to the end `
+    + `(first line at +${seen[0].at}ms of a ${elapsed}ms command)`)
+  assert.equal(seen[0].name, 'probe', 'and it is labelled with the build it came from')
+}
+
+console.log('ok — a stalled build gives its slot back, a talkative slow one does not, and output really streams')
