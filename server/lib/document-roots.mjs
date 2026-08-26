@@ -96,12 +96,13 @@ async function trackedFiles(sourceDir) {
  * edge does not merely lose a link -- it promotes the included file to a root,
  * so a chapter shows up as a document of its own.
  */
-async function edgesFrom(sourceDir, file) {
+async function edgesFrom(file, read) {
   const ext = path.extname(file).toLowerCase()
   if (!SCANNABLE.has(ext)) return []
   let content
   try {
-    content = await readFile(path.join(sourceDir, file), 'utf8')
+    content = await read(file)
+    if (content == null) return []
   } catch {
     // Listed on the branch but unreadable here. It contributes no edges, which
     // leaves it a root -- the honest answer, since nothing can be shown to
@@ -120,23 +121,37 @@ async function edgesFrom(sourceDir, file) {
       return [base, ...(dep.implicit || []).map(suffix => base.endsWith(suffix) ? base : `${base}${suffix}`)]
     })
   }
-  return scanMarkdownDeps(content, path.join(sourceDir, dir)).map(dep => resolve(dep.ref))
+  // `scanMarkdownDeps` takes a base directory only to fill in each dep's
+  // absolute path, which is not used here -- the edge is resolved above from
+  // `ref`, in posix terms, so the graph does not depend on where the tree is
+  // mounted. That independence is the point: the same graph has to answer
+  // identically for a checkout and for a materialized directory on the server.
+  return scanMarkdownDeps(content, dir).map(dep => resolve(dep.ref))
 }
 
 /**
- * The project's documents: nodes in the include graph with no incoming edge.
+ * The documents in a tree: nodes in the include graph with no incoming edge.
  *
- * Returns `[{ path, format }]`, ordered as the branch lists them so the result
- * is stable between calls rather than dependent on scan order.
+ * Takes the file list rather than discovering it, because WHERE the tree is
+ * differs by caller and getting that wrong is silent. The server's
+ * `projects/<name>/source` is a materialized directory and **not a git work
+ * tree** — `git ls-files` there exits non-zero and lists nothing — so a version
+ * of this that only knew how to run `ls-files` would have returned "this
+ * project has no documents" on the one machine that serves them. Measured on
+ * the live box before this was split.
+ *
+ * `read(file)` returns the file's text, or null/throws if unreadable.
+ *
+ * Returns `[{ path, format }]`, in the order the listing gave, so the result is
+ * stable between calls rather than dependent on scan order.
  */
-export async function computeDocumentRoots(sourceDir) {
-  const files = await trackedFiles(sourceDir)
+export async function documentRootsIn(files, read) {
   const candidates = files.filter(file => DOCUMENT_FORMATS.has(path.extname(file).toLowerCase()))
   if (candidates.length === 0) return []
 
   const included = new Set()
   await Promise.all(files.map(async file => {
-    for (const target of await edgesFrom(sourceDir, file)) {
+    for (const target of await edgesFrom(file, read)) {
       // A file that includes ITSELF is not thereby a non-root. Left-recursive
       // input is a broken document, not a chapter of something else, and
       // counting it would make the document vanish from the project.
@@ -147,4 +162,16 @@ export async function computeDocumentRoots(sourceDir) {
   return candidates
     .filter(file => !included.has(file))
     .map(file => ({ path: file, format: DOCUMENT_FORMATS.get(path.extname(file).toLowerCase()) }))
+}
+
+/**
+ * The documents on a git work tree's branch.
+ *
+ * The adapter for a checkout — a daemon-side or CLI-side tree, where the branch
+ * is what `git ls-files` reports. Not usable on the server; see
+ * `documentRootsIn`.
+ */
+export async function computeDocumentRoots(sourceDir) {
+  const files = await trackedFiles(sourceDir)
+  return documentRootsIn(files, file => readFile(path.join(sourceDir, file), 'utf8'))
 }

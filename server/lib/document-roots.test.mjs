@@ -16,7 +16,26 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { computeDocumentRoots, formatForDocumentPath } from './document-roots.mjs'
+import { computeDocumentRoots, documentRootsIn, formatForDocumentPath } from './document-roots.mjs'
+
+test('the graph works on a listing with no git anywhere', async () => {
+  // The case that nearly shipped broken. The server's projects/<name>/source is
+  // a MATERIALIZED DIRECTORY, not a git work tree -- measured on the live box,
+  // `git ls-files` there exits non-zero and lists nothing. A version that only
+  // knew how to run `ls-files` would have answered "this project has no
+  // documents" on the one machine that serves them, and answered it silently.
+  //
+  // So the graph takes the listing and a reader, and this drives it with
+  // neither a repo nor a filesystem.
+  const tree = {
+    'main.tex': String.raw`\documentclass{article}\begin{document}\input{ch1}\includegraphics{fig.png}\end{document}`,
+    'ch1.tex': String.raw`\section{One}`,
+    'fig.png': 'png bytes',
+    'notes.md': '# Notes',
+  }
+  const roots = await documentRootsIn(Object.keys(tree), file => tree[file] ?? null)
+  assert.deepEqual(roots.map(root => root.path).sort(), ['main.tex', 'notes.md'])
+})
 
 test('a document\'s format comes from the file, not from a literal', () => {
   // The chat click-adopt path appended `format: 'markdown'` for whatever was
