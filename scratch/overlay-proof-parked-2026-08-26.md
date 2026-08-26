@@ -73,6 +73,28 @@ land:
 | internal HTTP/HTTPS scheme — the one diagnosed below | `fb5b14d0b` |
 | `--server` git-remote routing | `0f8da75ef` |
 | tokenless Basic username | `fc379cb0f` |
+| **self-remote dialled loopback, whose cert git does not trust** | **`e5701db4e`** |
+
+**Four, not three.** The fourth surfaced only by standing the rig up and driving it
+after the first three landed: the push reached `https://127.0.0.1:<port>` and died
+on `SSL certificate problem: unable to get local issuer certificate`.
+
+**Why loopback specifically.** A TLS preview serves **two certs by SNI** —
+`localhost`/`127.0.0.1`/`::1` get the mkcert developer cert, every other name gets
+the tailnet cert — and **git's CA store has Let's Encrypt but not the mkcert root**.
+So a self-push at loopback could never validate. The fix hands the cert-valid URL
+over in **`TLDA_SELF_BASE_URL`** rather than disabling verification.
+
+**The trap that follows, and it is the one to watch:** the repair is only in effect
+when the preview is started through `cmdServeWorktree`, which sets that variable.
+**Start a server another way and the self-push silently reverts to loopback** — same
+fault, except everyone now believes it is fixed. **If a mount fails, check
+`TLDA_SELF_BASE_URL` before reporting anything.**
+
+**And the shape worth carrying:** the scheme fix changed the *error message* without
+changing the *cause* — `Empty reply from server` became a certificate error, both
+meaning "the server could not talk to itself". A new error after a fix is not
+evidence the fix worked.
 
 **Worth keeping:** the scheme fault below was real but was **not sufficient on its
 own**. A single confident root cause would have been wrong here — not because the
