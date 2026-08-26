@@ -355,7 +355,10 @@ export function createSourceRoomDaemon({
     if (!merged.conflicted && merged.text !== room.ytext.toString()) replaceYText(room.ytext, merged.text)
     room.heldRevision = revision
     room.blocked = merged.conflicted
-    if (merged.conflicted) await noteRoomIsHolding(room, `the live editor and revision ${revision} both changed ${room.filePath}`)
+    if (merged.conflicted) {
+      await noteRoomIsHolding(room, `the live editor and revision ${revision} both changed ${room.filePath}`)
+      broadcast(room, { type: 'status', status: 'conflict', file: room.filePath, sourceRevision: revision })
+    }
     return { ok: true, conflicted: merged.conflicted }
   }
 
@@ -606,6 +609,15 @@ export function createSourceRoomDaemon({
       persistRoom(room)
       if (merged.conflicted) {
         await noteRoomIsHolding(room, `the live editor and the accepted source both changed ${room.filePath}`)
+        // MARK THE FILE IN THE EDITOR. Skip, 2026-08-26 10:58:16 EDT, asked for
+        // exactly this when two people change the same lines.
+        //
+        // It needs saying because the room used to mark the file by ACCIDENT:
+        // the conflicted merge text was written into the document, the client
+        // saw `<<<<<<<` and set `heldConflictFile` itself. Keeping the markers
+        // out of the document -- which is the point -- removed the only signal
+        // the person had, so the room now says it rather than leaking it.
+        broadcast(room, { type: 'status', status: 'conflict', file: room.filePath, sourceRevision: room.heldRevision })
         conflicted.push(room.filePath)
       } else applied.push(room.filePath)
       if (!merged.conflicted && room.ytext.toString() !== incoming) noteLocalChange(room)

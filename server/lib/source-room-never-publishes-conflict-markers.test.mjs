@@ -163,3 +163,54 @@ test('reconciling a stale room onto a conflicting revision never publishes confl
     daemon.closeAll()
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('a held edit is announced to the editor so the file can be marked', async () => {
+  // SKIP ASKED FOR THIS, 2026-08-26 10:58:16 EDT: when two people change the
+  // same lines, mark the affected file in the editor.
+  //
+  // It needs its own test because the mark used to happen BY ACCIDENT. The
+  // conflicted merge text was written into the document, the client saw
+  // `<<<<<<<` in its own buffer and marked the file itself. Keeping the markers
+  // out of the document -- the fix above -- removed the only signal the person
+  // had, so the room has to say it. A silent hold and a successful sync look
+  // identical from the editor, which is the failure this closes.
+  //
+  // Asserted at the SOCKET, not at `room.blocked`. A flag the server sets and
+  // never sends is the same as no signal at all.
+  const root = mkdtempSync(join(tmpdir(), 'tlda-room-held-mark-'))
+  const held = []
+  try {
+    const daemon = daemonOver(root, { r1: BASE, r2: FROM_DISK }, held)
+    const room = await daemon.getRoom('paper', 'doc.md')
+    room.heldRevision = 'r1'
+
+    // A connected editor. `sendJson` writes to anything with readyState 1.
+    const frames = []
+    room.clients.add({ readyState: 1, send: (payload) => frames.push(JSON.parse(payload)) })
+
+    room.ydoc.transact(() => {
+      room.ytext.delete(0, room.ytext.length)
+      room.ytext.insert(0, FROM_BROWSER)
+    })
+
+    await daemon.applyAcceptedSourceMutation({
+      project: 'paper',
+      previousRevision: 'r1',
+      sourceRevision: 'r2',
+      files: [{ path: 'doc.md', content: Buffer.from(FROM_DISK).toString('base64') }],
+    })
+
+    const conflictFrames = frames.filter(frame => frame?.type === 'status' && frame.status === 'conflict')
+    assert.equal(conflictFrames.length, 1,
+      `the editor was told the file is held (frames seen: ${JSON.stringify(frames.map(f => f.type + ':' + (f.status ?? '')))})`)
+    assert.equal(conflictFrames[0].file, 'doc.md',
+      'and told WHICH file, so the mark lands on the right one rather than the whole project')
+
+    // The document itself is still clean -- the mark replaces the markers, it
+    // does not accompany them.
+    assert.doesNotMatch(room.ytext.toString(), CONFLICT_MARKERS,
+      'and the document still carries no conflict markers')
+
+    daemon.closeAll()
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
