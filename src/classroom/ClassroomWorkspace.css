@@ -30,12 +30,3 @@
 .classroomRegistration input { padding: 9px 10px; border: 1px solid #aaa59a; border-radius: 6px; font: inherit; }
 .classroomRegistration button { width: fit-content; min-height: 38px; padding: 7px 12px; border: 1px solid #aaa59a; border-radius: 6px; background: #f7f6f2; color: inherit; }
 .classroomTokenResult code { overflow-wrap: anywhere; padding: 10px; background: #f7f6f2; }
-
-/* The layers control: which layers are shown, and which one takes your marks.
- * Sits on the markingLifecycle bar so it carries the same weight as the
- * controls beside it rather than introducing a second style. */
-.bookLayersControl { top: 12px; right: auto; left: 12px; }
-.bookLayersControlTitle { opacity: .7; }
-.bookLayersControlRow { display: inline-flex; align-items: center; gap: 4px; }
-.bookLayersControlName[aria-pressed='true'] { border-color: currentColor; font-weight: 600; }
-.bookLayersControlEye { display: inline-flex; align-items: center; }
