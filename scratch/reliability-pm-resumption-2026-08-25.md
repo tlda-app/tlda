@@ -308,6 +308,30 @@ three routes **concurrently into one document**. Serial-and-same-file still
 never overlapped in time. Skip: *"not that you can AVOID TESTING THE STUFF
 THAT'S ACTUALLY HARD"*.
 
+### THE REPAIRABLE SET IS 1, NOT 35 — and two reasons nobody had looked at
+
+Re-evaluating the 35 "safe" candidates at action time:
+
+| | count |
+|---|---|
+| project returns **HTTP 404** — it does not exist on the server | **16** |
+| project exists but declares **no documentRoots** | **18** |
+| project exists with roots that can be passed back unchanged | **1** |
+
+**My classification error, recorded so nobody inherits it.** I called those 16
+*safe* on the reasoning "the server has no head, so there is nothing to diverge
+from". **A 404 is not "no head", it is "no project".** Those are stale bindings
+pointing at projects that are gone — cleanup, not repair. Distinguish *asked and
+got no head* from *asked and got no project*; they are one HTTP status apart and
+mean opposite things.
+
+**And the hazard that stops the other 18.** `tlda project link` takes document
+roots **POSITIONALLY**. There is no relink-in-place that preserves them. So
+relinking a project that declares none means **choosing** roots and writing them
+into its record — inventing exactly the stored declaration that caused every
+document-loss bug in this file. **Do not do that per-project to get a repair
+through.** It reads as a gap in the verb, not something to work around.
+
 ### WHAT RELINK ACTUALLY DOES, measured on disposable projects
 
 **Safe class — it repairs, and the repair is verifiable.** Throwaway put in the
