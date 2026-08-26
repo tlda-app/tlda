@@ -1902,3 +1902,42 @@ code -- so "just stage everything" cannot satisfy both.
 
 Out of bounds per the chief: restoring the deleted app-owned `add -A` exception,
 and materialising missing files.
+
+### Fixed: `7fe597586` on `room-first-writer`
+
+The room stages what it owns through `track-path` (the verb the adopt-a-root
+path already uses) before `queuePaths`. Both first-writer paths: `submitFiles`
+and the room flush. Deletions still ride the settle's `add -u`; nothing touches
+a person's checkout.
+
+**Signature correction:** the real call is `remoteOperation(project, operation,
+params)` -- THREE POSITIONAL ARGS, not `(project, { operation, path })`. The
+object form would have hit `unsupported Git remote operation`.
+
+**ANSWERED IS NOT STAGED, and it cost a diagnosis.** `trackPath` returns
+`{ inRepo: false }` WITHOUT THROWING when the path does not textually match
+git's `--show-toplevel` -- a realpath difference is enough. Wrapped in
+try/catch it reported success while the file stayed `?? main.md`. The result is
+now checked rather than the absence of an exception. The fixture must
+`realpathSync` its temp root or it measures the macOS `/var` vs `/private/var`
+prefix instead of the behaviour.
+
+**Three tests at three layers, and the first draft had the wrong one carrying
+the requirement:**
+- MECHANISM: untracked file in a zero-commit tree -> `empty-checkout`. That
+  layer is RIGHT to refuse and must keep refusing.
+- BOUNDARY: an unstaged new file in a PERSON'S checkout stays theirs. Passes on
+  both sides, so "stage everything" cannot satisfy the file.
+- REQUIREMENT: through the real `createSourceRoomDaemon` over the real
+  `createGitSyncManager` -- only watcher and remote replaced -- a first document
+  becomes a proposal.
+
+Pre-fix 2 pass / 1 fail; post-fix 3/3. Before the fix the requirement test logs
+`not-on-work-branch` then `empty-checkout` -- the same pair in the same order as
+the preserved `server.log`.
+
+**NOT DONE: the :5191 mount gate.** That preview serves `f87cafdbf` from
+`~/worktrees/app-tester-overlay-proof`, which is APP-TESTER'S worktree.
+Re-running it against this fix means putting this branch into their preview and
+restarting it -- moving another contributor's environment. Asked the chief to
+either authorise it or hand it to app-tester with the branch name.
