@@ -10,6 +10,57 @@ doer's record; chief questions go to `sol-dev`, not to whoever reads this.
 **Relative to:** 2026-08-26 01:35 EDT. `testing` serves `29db651fb`; `main` is
 `f1101cfe9`. `pic` is **closed** — see below, do not deploy or configure it.
 
+## 2026-08-26 03:00–03:40: HIS CHECKOUTS CANNOT SUBMIT, AND HOW WE MISCOUNTED IT
+
+**The edit-to-browser watcher failed on a routine check** — not served after
+120s. Daemon log, three times over three hours:
+`live-watcher-probe: proposal not accepted: not-on-work-branch`. The checkout
+sat on `main`; the work branch existed and was not checked out. **`settle()`
+declines by name when the work branch isn't checked out, and tells the person
+typing nothing.**
+
+**Relink repairs it — proven end to end on the disposable probe:** `main` →
+`tlda/live-watcher-probe`, tree clean, loop closed in **10.2s**. Done *before*
+touching anything else so the result attributed.
+
+**Population, and the correction that matters.** I first compared
+`refs/tlda/project/<p>` against `refs/tlda/fetched/<p>` — the **chain** against
+the server head — and got 1 diverged. `reliability-pm` got 6. Same directories,
+same minute, different ref:
+
+```
+chain vs fetched  (mine)   safe 21   diverged 1   no refs 21
+HEAD  vs fetched  (theirs) safe 15   diverged 7   no refs 21
+```
+
+**HEAD-based is correct and mine was wrong.** The question is whether the
+*working checkout* can submit — that is HEAD's lineage. A chain ref can sit on
+the server's line while the checkout the person types in has wandered off it.
+**My test would have cleared six of his checkouts that cannot push.**
+`sol-dev` ruled HEAD-vs-current-server-head governs.
+
+**The 21 neither instrument could classify — resolved by asking the server**,
+which has no local refs to be blind about:
+
+```
+no such project on the server   15   ← debris, nothing to repair
+server has a sourceRevision      3   ← server ahead, local blind: LOOK, do not sweep
+exists, never synced             3   ← relink trivially safe
+```
+
+**Both git-local instruments returned the same silent 21 and would have forever.
+Agreement on an absence is not corroboration — it can mean a shared blind spot.**
+
+**Status: all writes held.** `reliability-pm` is executing per-checkout repairs.
+I relinked only the disposable probe and nothing of his.
+
+**Also stopped:** a `dev-preview` daemon from `app-tester`'s worktree that was
+holding `FLEET_DAEMON_KEY=mini:testing` alongside the real one. Verified the
+target twice before killing; watcher after was 10.4s against 10.2s before, so it
+was never implicated in the sync failure. **And a `pic` daemon IS running**
+(pid 96898, from the shared checkout, started 08-25 14:09) — my earlier "there
+is no daemon for that environment" was true when measured and is now false.
+
 ## THE LIVE THURSDAY BLOCKER: a colon in a student's project name 404s
 
 **Every real student's work fails to render in the marking pane, and the demo
