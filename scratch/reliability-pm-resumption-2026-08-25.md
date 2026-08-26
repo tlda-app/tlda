@@ -93,6 +93,72 @@ submission failed, and let the revision be re-proposed — which is safe because
 sync re-derives. **Not written. Waiting on his ruling and on what the threshold
 should be**, since a legitimate build on that box runs for minutes.
 
+## DONE 2026-08-26: documents are computed from the branch, and tex figures are members
+
+Two commits, both on `main`, **neither deployed**.
+
+### `7f975b8e6` — a project's documents are the include graph's roots
+
+Skip specified it in three messages: *"document roots is just a computed
+property of the git branch"*, *"create the directed include graph. roots are
+roots"*, *"xr = link"*. Also, flatly: **"THERE IS NO FUCKING PRIMARY ANYTHING."**
+
+`server/lib/document-roots.mjs` computes it from `git ls-files` — the branch,
+not a directory walk, so build output and editor scratch are not documents.
+**One rule for every format**: a node with no incoming include edge. I had
+written a `\documentclass` predicate first and deleted it; it was a second rule
+for the same thing.
+
+**`\externaldocument` is not an edge, and that is the test that matters.** Two
+papers cross-referencing each other would otherwise form a cycle with nothing
+pointing in from outside — **zero roots, every document in the project gone at
+once.** Verified rather than assumed: `scanTexDeps` collects eight edge kinds
+and xr is not among them. Counterfactualled — adding xr as an edge turns that
+test red.
+
+**Still to do here:** the GET endpoint returning the list, pointing the call
+sites at it, and deleting the stored `documentRoots` field. The stored field is
+written once at link time from whatever `--root` arguments the CLI got and
+**nothing ever recomputes it**.
+
+### `f159432a6` — a tex document's figures are members of its project
+
+Traced at the chief's request, after a reproduced build losing unchanged tex
+figures.
+
+**Membership closed over references for markdown only.** Both `withReferencedRoots`
+(CLI link) and `sourceMembershipContext` (server) tested the extension and
+`continue`d on anything not `.md`, so **a `.tex` root dragged in nothing**. The
+push path has always walked `scanTexDependencyClosure`, so the two sides
+disagreed about what a tex document is made of — and the disagreeing side is the
+one that decides membership.
+
+**Figures specifically**, because a `.png`/`.pdf` is reached by exactly one edge,
+`\includegraphics`. So the traversal never running on tex roots loses precisely
+the figures while the `.tex` and `.bib` arrive by other means.
+
+**Counterfactual:** with the old guard, `referencedRoots` came back as exactly
+`['main.tex']` — the seed and nothing else.
+
+**`referencedSourcePaths` is chat/part metadata and was NEVER the carrier for
+figure dependencies.** Empty is correct behaviour there. Do not look for figures
+in it; `app-librarian` reached the same conclusion independently.
+
+**Left for the chief to rule on, deliberately:** `collectProjectSourceHashes` in
+the same file still gates on `format === 'markdown'`. Same disease, but it
+decides what counts as *changed*, so widening it is not a membership fix.
+
+### THREE tests on `main` throw before their first assertion
+
+All call methods that no longer exist, so they protect nothing while looking
+green-adjacent. **Nothing runs the suite together**, which is why they survive.
+
+| test | calls | state |
+|---|---|---|
+| `bin/a-second-build-slot-that-exists-test.mjs` | `queue.dispatchBuild` | **fixed** in `fcb4400bd` |
+| `server/lib/build-instance.test.mjs` | `lifecycle.bootstrap` | still red, not mine |
+| `server/lib/source-lifecycle.test.mjs` | `store.prepareOperation` — **zero** non-test files define it | still red, not mine |
+
 ## A DEPLOY LOOKS EXACTLY LIKE AN OUTAGE FROM OUTSIDE. CHECK THE VERSION FIRST
 
 2026-08-26 01:49–02:15Z: three deploys landed back to back — machine versions
