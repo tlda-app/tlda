@@ -7,6 +7,59 @@ session works *from* this, and `scratch/` is gitignored. See `AGENTS.md`
 The design is in `docs/the-sync-model.md`, which is tracked and is the thing to
 read first. This file is only what is *not* in the code or the commits.
 
+## DONE 2026-08-26: builds stream their output, and a silent build loses its slot
+
+`fcb4400bd`, on `main`, **not deployed** — the chief owns the release path and
+none is awake. Typecheck and lint clean; the build-queue tests pass.
+
+**The fault.** A slot came back only when the worker process *exited*, with no
+bound anywhere. A worker suspended in state `T` held one for 34 minutes. An
+in-process timeout can never catch this — a suspended worker's timers are
+suspended too, which is why `timeout: 120000` on every command in
+`build-runner.mjs` never fired. The bound is now held by the parent.
+
+**Silence, not duration, and that is Skip's constraint not a preference.** He
+put it directly: a tex build should take *"ten fifteen seconds"* while a large
+qmd render legitimately runs minutes, so no wall-clock number separates slow
+from stuck. His answer: *"the idea that we're not streaming updates is, like,
+it's stupid. I mean, we can watch the tex build ... happening in standard out."*
+
+**Nothing had to be invented, which is the part to keep.** `exec` buffers stdout
+and hands it over only when the command ends, so TeX narrates the whole build
+into a buffer opened after it is over. And **both ends of the wire to carry it
+already existed and were both dead** — `sendReport` in the worker was defined and
+never called; `relayMessage` discarded `t: 'report'` outright.
+
+**Deliberately NOT a method on the existing build reporter.** That reporter
+*stages* its calls and ships them in one lump at publish, which is correct for
+shape writes that must not land early and exactly wrong for output. Putting
+output on it would have reproduced the silence it exists to end.
+
+**A stall settles as `failed`, never `killed`** — killed is for something
+somebody asked to stop. The revision is proposed again, safe because sync
+re-derives.
+
+Threshold: `buildStallTimeoutMs`, default **90s**, `0` disables. It is in the
+closed config allow-list, so it is settable.
+
+### TWO TESTS ON `main` THAT CANNOT RUN
+
+Both call methods that do not exist, so they throw before their first assertion
+and have been protecting nothing.
+
+- **`bin/a-second-build-slot-that-exists-test.mjs`** — called
+  `queue.dispatchBuild`, the *dispatcher's* verb, against the *queue* object.
+  **Fixed in `fcb4400bd`; it passes now.** This is the guard on the `k >= 2`
+  correctness bound, so that bound has never actually been checked.
+- **`server/lib/build-instance.test.mjs`** — calls `lifecycle.bootstrap`, which
+  exists nowhere in the lifecycle store. **Still red, not mine, untouched.** It
+  imports only `build-instance.mjs` and `project-store.mjs`, neither of which
+  this work changed.
+
+**Worth a sweep nobody has done:** these two were found by running build-related
+tests one at a time. Nothing runs them together, so a test that throws on line
+one is indistinguishable from one that passes.
+
 ## `buildMaxConcurrency: 1` IS NOT IN EFFECT AND KEEPS REVERTING
 
 Skip, 2026-08-26 ~01:4xZ: *"I feel like we went to one build process because we
