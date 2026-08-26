@@ -31,7 +31,6 @@ import {
 // getRole import removed (unused)
 import { cleanupHtmlShapeData } from './shapes/HtmlPageShape'
 import { SPATIAL_MAP_ZOOM_STEPS } from './spatialDocumentWorld'
-import { applyHtmlSelectionToHighlight } from './htmlSelection'
 
 export type ReloadResult = {
   failedPages: number[]
@@ -933,10 +932,6 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
             processRibbonHighlight(editor, shape.id as any, document.name, document.pages)
             return
           }
-          if (applyHtmlSelectionToHighlight(editor, shape.id)) {
-            processHighlightFeedback(editor, shape.id, document.name)
-            return
-          }
           snapHighlighterToText(editor, shape.id, document.name, document.targets)
           processHighlightFeedback(editor, shape.id, document.name)
         }
@@ -956,22 +951,6 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
         // Safety fallback: process after 5s regardless
         setTimeout(() => { if (!done) processShape() }, 5000)
       }
-    }
-  })
-
-  // Slider zone guard: cancel highlight/draw tool when pointer_down is in the slider zone.
-  // This prevents strokes from starting when the user interacts with the ghost slider.
-  const SLIDER_ZONE_WIDTH = 250
-  editor.on('event', (event: any) => {
-    if (event.name !== 'pointer_down' || event.type !== 'pointer') return
-    if (!event.point) return
-    const w = window.innerWidth
-    const h = window.innerHeight
-    const inZone = event.point.x >= w - SLIDER_ZONE_WIDTH && event.point.y >= h * 0.1 && event.point.y <= h * 0.9
-    if (!inZone) return
-    const tool = editor.getCurrentToolId()
-    if (tool === 'highlight' || tool === 'draw' || tool === 'eraser') {
-      editor.cancel()
     }
   })
 
