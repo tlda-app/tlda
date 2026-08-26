@@ -7,6 +7,31 @@ session works *from* this, and `scratch/` is gitignored. See `AGENTS.md`
 The design is in `docs/the-sync-model.md`, which is tracked and is the thing to
 read first. This file is only what is *not* in the code or the commits.
 
+## THE DEMO NEEDS `--watch` OR IT RUNS THREE CYCLES AND EXITS
+
+`const CYCLES = Number(valueOf('--cycles', has('--watch') ? Infinity : 3))`.
+
+**Without `--watch` it stops after about six minutes.** I restarted it six times
+across one night without the flag, found it stopped each time, and each time
+read that as a crash or an outage. It is the documented default and my own timer
+brief carries the correct command; I dropped the flag from it every time.
+
+The command, in full, which is the one to paste:
+
+```sh
+node bin/sync-demo.mjs --project sync-watch --legs disk,remote \
+  --file paper.tex --remote-file notes.md \
+  --checkout ~/worktrees/sync-watch --fixtures ~/worktrees/sync-watch-fixtures \
+  --watch --every 120000 --timeout 240000
+```
+
+**`--fixtures` is not optional either** — omit it and the bare remote is created
+*inside* the synced checkout, where it becomes project content. That now refuses
+rather than running (`01b5656b6`).
+
+**Healthy baseline, measured 2026-08-26 ~01:0xZ over 4 cycles:** disk 9.8s /
+8.6s, remote 9.7s / 8.5s, 4/4 pages rendering, 0 late, 0 lost, checkout clean.
+
 ## LIVE, 2026-08-25 23:40Z: THE BOX IS OFF THE TAILNET. The app is fine
 
 **Symptom:** `tlda-fly.cormorant-matrix.ts.net` resolves to nothing, the fleet
