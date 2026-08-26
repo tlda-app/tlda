@@ -23,11 +23,14 @@ primary_region = "sjc"
   # hostname must stay inside *.cormorant-matrix.ts.net — the tldraw license is
   # bound to that domain and a *.fly.dev name would lose the canvas.
   TS_HOSTNAME = "tlda-pic"
+  # The course is student-facing. Funnel exposes this licensed hostname publicly;
+  # server.yaml's token gate remains the application boundary.
+  TS_FUNNEL = "1"
 
-# No [http_service] — like live and stable, this server is NOT exposed on the
-# public internet. Access is tailnet-only via `tailscale serve`; see
-# scripts/fly-entrypoint-live.sh. No public service means no autostop, so the
-# machine stays running on its CMD and its persistent volume.
+# No [http_service] — public access uses `tailscale funnel` on the licensed
+# *.cormorant-matrix.ts.net hostname; see scripts/fly-entrypoint-live.sh. No Fly
+# public service means no autostop, so the machine stays running on its CMD and
+# its persistent volume.
 [[vm]]
   size = "performance-2x"
   memory = "4096"
