@@ -2186,3 +2186,37 @@ was running when this was written.
 Plausibility only, not evidence: `react-virtuoso` renders the chat list, and
 `docs/chat-rendering.md` exists because writes there trigger observers that
 trigger writes.
+
+#### The reciprocal: both links necessary, neither sufficient
+
+| condition | `rAF` live | window | footprint | slope |
+|---|---|---|---|---|
+| baseline | both | 16:29:09 → 16:37:22 | 360 → 521 MB | 19.6 MB/min |
+| `ResizeObserver` blocked | `FpsScheduler` only | 16:41:25 → 16:49:30 | 629 → 634 MB | **0.6 MB/min** |
+| `FpsScheduler` blocked | `ResizeObserver` only | 16:53:30 → 17:01:30 | 640 → 662 MB | **2.75 MB/min** |
+
+Blocking either link nearly stops it; neither alone reproduces the baseline.
+
+**This corrects the section above.** The `ResizeObserver` block alone was read as
+naming the offending callback. It is one arm of a two-arm test, and the second arm
+does not support that: the observer is **necessary, not uniquely responsible**. The
+growth needs the round trip — observer schedules a frame → frame runs the tldraw
+render/throttle path → something accumulates. Cut it anywhere and it stops.
+
+Reciprocal state verified rather than assumed: with `FpsScheduler` blocked, 22
+registrations in 5 s and **0 blocked**, so all 22 are the observer's and it is
+firing freely at ~4.4/s. Tab alive, heap 56 MB, nodes 1451 → 1157 as the list
+virtualised down with rendering stopped.
+
+**Supported now:** a re-entrant loop between the chat list's resize observation and
+the render path, ~3.5–4.4 frames/second on an untouched tab, each pass leaking a
+small anonymous allocation. Fits the whole measured picture — footprint climbing
+with JS heap and nodes flat, thousands of small anonymous mappings, death at 15 GB
+rather than slowdown.
+
+**Still not established:** what the allocation *is*. Naming the chain is not naming
+the object or its retainer.
+
+**Retracted:** the claim that closing this needed a CDP-attachable browser. It did
+not. The in-page `rAF` wrapper recovered the stacks because the loop re-registers
+every frame.
