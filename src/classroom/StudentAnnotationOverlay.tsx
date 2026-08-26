@@ -108,7 +108,6 @@ export function StudentAnnotationOverlay({
     <div
       className="studentAnnotationOverlay"
       data-capturing={capturing ? 'true' : 'false'}
-      aria-hidden={!capturing}
     >
       <Tldraw
         store={store}
