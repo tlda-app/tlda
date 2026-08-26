@@ -195,7 +195,12 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     const runtime = runtimes.get(project)
     if (runtime) {
       Object.assign(runtime.item, value)
-      if (Object.hasOwn(definedMetadata, 'documentRoots')) runtime.sync.setDocumentRoots(value.documentRoots || [])
+      // No `setDocumentRoots` any more: the sync computes a project's documents
+      // from the tree it is about to publish, so there is nothing to push into
+      // it when the stored list changes. The stored list was a snapshot of link
+      // time that nothing recomputed, and it decided what a published revision
+      // CONTAINED -- so once it fell behind the branch, a revision went out
+      // missing documents that were sitting in the tree.
     }
     return { linked: !existing, project, ...value }
   }

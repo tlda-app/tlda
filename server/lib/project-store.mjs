@@ -26,8 +26,7 @@ import { ProjectLifecycleStatusIndex, UNKNOWN_PROJECT_LIFECYCLE_STATUS } from '.
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { scanTexDependencyClosure } from '../../shared/tex-deps.mjs'
-import { documentRootsIn } from './document-roots.mjs'
-import { normalizeDocumentRoots } from '../../shared/document-roots.mjs'
+import { documentRootsIn, normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 
 let projectsDir = null
 let projectFilesDb = null

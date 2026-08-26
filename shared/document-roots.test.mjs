@@ -11,12 +11,12 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { computeDocumentRoots, documentRootsIn, formatForDocumentPath } from './document-roots.mjs'
+import { documentRootsIn, formatForDocumentPath } from './document-roots.mjs'
 
 test('the graph works on a listing with no git anywhere', async () => {
   // The case that nearly shipped broken. The server's projects/<name>/source is
@@ -51,6 +51,26 @@ test('a document\'s format comes from the file, not from a literal', () => {
   assert.equal(formatForDocumentPath(''), null)
 })
 
+
+// The listing is an input to the graph, so the test supplies one. This walks the
+// real files it just wrote -- the point is to exercise the graph over a real
+// tree, not to stub it.
+function listing(dir) {
+  const out = []
+  const walk = (sub) => {
+    for (const entry of readdirSync(join(dir, sub), { withFileTypes: true })) {
+      if (entry.name === '.git') continue
+      const rel = sub ? `${sub}/${entry.name}` : entry.name
+      if (entry.isDirectory()) walk(rel)
+      else out.push(rel)
+    }
+  }
+  walk('')
+  return out
+}
+
+const rootsIn = dir => documentRootsIn(listing(dir), file => readFileSync(join(dir, file), 'utf8'))
+
 function repo(files) {
   const dir = mkdtempSync(join(tmpdir(), 'docroots-'))
   execFileSync('git', ['init', '-q'], { cwd: dir })
@@ -74,7 +94,7 @@ test('an included chapter is not a document', async () => {
     'intro.tex': String.raw`\section{Intro}`,
   })
   try {
-    assert.deepEqual(paths(await computeDocumentRoots(dir)), ['paper.tex'])
+    assert.deepEqual(paths(await rootsIn(dir)), ['paper.tex'])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -88,7 +108,7 @@ test('xr is a LINK, not an include: two papers that reference each other are two
     'b.tex': String.raw`\documentclass{article}\usepackage{xr}\externaldocument{a}\begin{document}y\end{document}`,
   })
   try {
-    assert.deepEqual(paths(await computeDocumentRoots(dir)), ['a.tex', 'b.tex'])
+    assert.deepEqual(paths(await rootsIn(dir)), ['a.tex', 'b.tex'])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -101,7 +121,7 @@ test('an include is resolved relative to the file that writes it', async () => {
     'book/ch1.tex': String.raw`\chapter{One}`,
   })
   try {
-    assert.deepEqual(paths(await computeDocumentRoots(dir)), ['book/main.tex'])
+    assert.deepEqual(paths(await rootsIn(dir)), ['book/main.tex'])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -113,7 +133,7 @@ test('assets are never documents, whoever points at them', async () => {
     'refs.bib': '@article{x}',
   })
   try {
-    assert.deepEqual(paths(await computeDocumentRoots(dir)), ['paper.tex'])
+    assert.deepEqual(paths(await rootsIn(dir)), ['paper.tex'])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -124,20 +144,29 @@ test('every format takes the same rule, and several documents are several docume
     'fig.png': 'not really a png',
   })
   try {
-    const roots = await computeDocumentRoots(dir)
+    const roots = await rootsIn(dir)
     assert.deepEqual(paths(roots), ['notes.md', 'paper.tex'])
     assert.equal(roots.find(root => root.path === 'notes.md').format, 'markdown')
     assert.equal(roots.find(root => root.path === 'paper.tex').format, 'svg')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('an untracked file is not a document', async () => {
-  // The reason this reads the branch rather than walking the directory: a walk
-  // reports build output and editor scratch as documents.
+test('a file outside the listing is not a document, whatever is on disk', async () => {
+  // The listing is the caller's answer to "what is on the branch", and it is
+  // what decides. The daemon passes `git ls-tree` of the tree it is publishing,
+  // so untracked build output and editor scratch are not documents; the server
+  // passes a walk of the materialized tree, which is that tree by construction.
+  //
+  // Asserted through the contract rather than through git, because a version of
+  // this that shelled out to `ls-files` could not run on the server at all --
+  // that directory is not a work tree.
   const dir = repo({ 'paper.tex': String.raw`\documentclass{article}` })
   try {
     writeFileSync(join(dir, 'stray.tex'), String.raw`\documentclass{article}`)
-    assert.deepEqual(paths(await computeDocumentRoots(dir)), ['paper.tex'])
+    const declared = await documentRootsIn(['paper.tex'], file => readFileSync(join(dir, file), 'utf8'))
+    assert.deepEqual(paths(declared), ['paper.tex'], 'a file the listing omits is not a document')
+    assert.deepEqual(paths(await rootsIn(dir)), ['paper.tex', 'stray.tex'],
+      'and a listing that includes it makes it one -- the listing decides, not the extension')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -146,6 +175,6 @@ test('a document that includes itself is still a document', async () => {
   // Counting the self-edge would make it vanish from the project entirely.
   const dir = repo({ 'loop.tex': String.raw`\documentclass{article}\input{loop}` })
   try {
-    assert.deepEqual(paths(await computeDocumentRoots(dir)), ['loop.tex'])
+    assert.deepEqual(paths(await rootsIn(dir)), ['loop.tex'])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

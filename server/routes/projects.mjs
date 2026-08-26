@@ -61,8 +61,7 @@ import { readSharedDocumentThroughOwner } from '../lib/document-association-sour
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
 import { requireClassroomDocumentAccess } from './classroom.mjs'
-import { normalizeDocumentRoots } from '../../shared/document-roots.mjs'
-import { formatForDocumentPath } from '../lib/document-roots.mjs'
+import { formatForDocumentPath, normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 
 const router = Router()
 const execFileAsync = promisify(execFile)

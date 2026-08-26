@@ -5,6 +5,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { scanTexDependencyClosure } from '../shared/tex-deps.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
+import { documentRootsIn } from '../shared/document-roots.mjs'
 import { isQuartoRenderOutput, isSourceFilePath } from '../shared/source-manifest.mjs'
 
 const execFile = promisify(execFileCb)
@@ -101,11 +102,6 @@ export function createGitProjectSync({
   const sharedRef = `refs/tlda/source/${projectPart}`
   const fetchedRef = `refs/tlda/fetched/${projectPart}`
   let chain = Promise.resolve()
-  let configuredRoots = []
-  function setDocumentRoots(values = []) {
-    configuredRoots = [...new Set(values.map(value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '')).filter(Boolean))]
-  }
-  setDocumentRoots(documentRoots)
 
   async function git(args, options = {}) {
     if (runGit) return runGit(args, options)
@@ -208,13 +204,32 @@ export function createGitProjectSync({
       await git(['archive', '--format=tar', `--output=${archive}`, workingCommit])
       await execFile('tar', ['-xf', archive, '-C', extracted], { timeout: 30000 })
       const paths = (await git(['ls-tree', '-r', '--name-only', workingCommit])).stdout.split('\n').filter(Boolean)
-      const candidates = configuredRoots.length
-        ? configuredRoots
-        : paths.filter(file => DOCUMENT_FILE.test(file))
+      // **The documents are computed from the tree being published, not read
+      // from a stored list.**
+      //
+      // Skip, 2026-08-26: *"document roots is just a computed property of the
+      // git branch"* / *"create the directed include graph. roots are roots"*.
+      //
+      // `configuredRoots` is the stored `documentRoots`, written once at link
+      // time and appended to by the chat click-adopt path. Nothing recomputes
+      // it, so it is a snapshot of the moment somebody linked the project — and
+      // it seeds the projection, which decides what a published revision
+      // CONTAINS. A stored list that has fallen behind the branch therefore
+      // publishes a revision missing documents that are sitting in the tree.
+      //
+      // It also used to hard-throw when a stored root had since left the tree,
+      // which fails the whole settle for every document because one entry in a
+      // list nobody maintains went stale.
+      //
+      // The graph answers from the tree instead: a document is a node nothing
+      // includes. That is strictly better than the old no-roots-configured
+      // fallback too, which took every `.tex`/`.md`/`.qmd` in the tree and so
+      // treated an `\input`-ed chapter as a document of its own.
+      const computed = await documentRootsIn(paths, async file => {
+        try { return await fs.promises.readFile(path.join(extracted, file), 'utf8') } catch { return null }
+      })
+      const candidates = computed.map(root => root.path)
       if (!candidates.length) throw new Error(`${project}: no document roots in settled tree`)
-      for (const candidate of candidates) {
-        if (!paths.includes(candidate)) throw new Error(`${project}: configured document root is absent: ${candidate}`)
-      }
       const qmdRoots = candidates.filter(file => /\.qmd$/i.test(file))
       const qmdFiles = qmdRoots.length
         ? paths.filter(file =>
@@ -653,6 +668,5 @@ export function createGitProjectSync({
     members: () => serialized(members),
     fetchHead,
     pushRevision,
-    setDocumentRoots,
   }
 }
