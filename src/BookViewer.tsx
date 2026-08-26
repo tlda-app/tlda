@@ -205,11 +205,18 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const mineLayer = layers.layers.find(l => l.id === 'mine')
   const commonVisible = layers.layers.find(l => l.id === 'common')?.visible ?? true
 
-  // The editor holding whichever layer is the write target. Only that layer takes
-  // pointer input, so it is the only one a selection can be on — which is what
-  // makes "move the selection" unambiguous about where it is moving FROM.
-  const targetEditor = layers.target === 'common' ? bookEditor : overlayEditor
-  const destinationEditor = layers.target === 'common' ? overlayEditor : bookEditor
+  // Which canvas holds which layer. Named rather than derived by complement:
+  // "the other editor" is only the right destination while there are exactly
+  // two layers, and a teacher's view already has three. This stays correct when
+  // one is added; a complement silently moves the work to the wrong place.
+  const editorForLayer = useCallback((id: BookLayerId) => (
+    id === 'common' ? bookEditor : overlayEditor
+  ), [bookEditor, overlayEditor])
+
+  // Only the write target takes pointer input, so it is the only layer a
+  // selection can be on — which is what makes "move the selection" unambiguous
+  // about where it is moving FROM, with no rule needed to say so.
+  const targetEditor = editorForLayer(layers.target)
 
   // Watch the selection on the write target, so the control can become a
   // move-to-layer menu when there is one. Writing state from inside the
@@ -232,6 +239,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const selectionCount = targetEditor ? trackedSelectionCount : 0
 
   const moveSelectionToLayer = useCallback((destination: BookLayerId) => {
+    const destinationEditor = editorForLayer(destination)
     if (!targetEditor || !destinationEditor || destination === layers.target) return
     const ids = targetEditor.getSelectedShapeIds()
     try {
@@ -245,7 +253,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       // "something was lost" look identical from here.
       setMoveError((error as Error).message)
     }
-  }, [targetEditor, destinationEditor, layers.target])
+  }, [targetEditor, editorForLayer, layers.target])
 
   // The book's editor, kept so the overlay above it can follow its camera and
   // its tool selection. Passed on to the original caller unchanged.
