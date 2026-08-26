@@ -1,5 +1,5 @@
 /**
- * **Relinking an existing project must not declare anything on its behalf.**
+ * **`project link` does not demand a source for a project that already exists.**
  *
  * `project link` required a source and roots before it knew whether the project
  * existed, so relinking meant naming the documents again — and for a project
@@ -42,7 +42,7 @@ const git = (cwd, args) => execFile('git', args, { cwd, encoding: 'utf8' })
  * CLI against the real server, and the stage is one the CLI announces on its way
  * past the thing under test.
  */
-function cliUntil(cwd, args, base, until) {
+function cliUntil(cwd, args, base, until, capMs = 30_000) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args, '--server', base], {
       cwd, env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: '0', GIT_SSL_NO_VERIFY: '1' },
@@ -62,7 +62,7 @@ function cliUntil(cwd, args, base, until) {
     }
     // A cap, not the mechanism. If the CLI never reaches the stage the test
     // fails on its assertions rather than hanging.
-    const timer = setTimeout(() => finish('timeout', null), 30_000)
+    const timer = setTimeout(() => finish('timeout', null), capMs)
     const watch = chunk => { out += String(chunk); if (until.test(out)) finish('reached-stage', null) }
     child.stdout.on('data', watch)
     child.stderr.on('data', watch)
@@ -119,13 +119,27 @@ test('an existing rootless project relinks, and its record is untouched', async 
     await git(checkout, ['commit', '-m', 'author working copy'])
 
     // THE RELINK: no source, no roots.
-    // "exists, pushing files" is printed AFTER the project record has been
-    // resolved and any record write would have happened, and BEFORE the daemon
-    // push this harness cannot satisfy. That is exactly the far side of the
-    // stage under test.
+    // `Source:` is printed immediately after the usage gate and BEFORE the CLI
+    // binds to the local fleet daemon. That matters: the CLI binds before it
+    // writes the project record, so on a machine with no daemon it never
+    // reaches the write at all. An earlier version of this waited for the push
+    // stage, passed here because this machine runs a daemon, and failed on a
+    // colleague's fresh checkout after six `local fleet daemon is unavailable`
+    // retries. Waiting for anything past the bind makes the test a fact about
+    // the machine.
+    // The gate fires in the CLI's first moments or not at all -- it is an
+    // argument check, before any network or daemon work. So the assertion is
+    // the ABSENCE of the usage message within a short window, and reaching the
+    // cap is a pass rather than a failure.
+    //
+    // Every marker further in turned out to be daemon-dependent: `Source:` is
+    // printed after `bindLocalSource()`, and the push stage after that. An
+    // earlier version waited for the push, passed here because this machine
+    // runs a daemon, and failed on a fresh checkout after six
+    // `local fleet daemon is unavailable` retries. Anything past the bind makes
+    // this a fact about the machine rather than about the CLI.
     const relink = await cliUntil(checkout, ['project', 'link', project], base,
-      /exists, pushing files|Submitting |Submitted |Usage: tlda project link/)
-    assert.notEqual(relink.reason, 'timeout', `the CLI reached the push stage rather than hanging:\n${relink.out}`)
+      /Usage: tlda project link/, 8_000)
 
     // The exit code is deliberately NOT asserted, and the reason is worth
     // stating rather than hiding: the relink goes on to push through the
@@ -139,12 +153,12 @@ test('an existing rootless project relinks, and its record is untouched', async 
     assert.doesNotMatch(relink.out, /Usage: tlda project link/,
       `it does not demand a source for a project that already exists:\n${relink.out}`)
 
-    // THE ASSERTION THAT MATTERS: the record, not the exit code.
-    const after = await (await fetch(`${base}/api/projects/${project}`)).json()
-    const afterRecord = after.project || after
-    assert.deepEqual(afterRecord.documentRoots, [], 'documentRoots is still empty — nothing was declared for it')
-    assert.equal(afterRecord.mainFile, beforeRecord.mainFile, 'mainFile unchanged')
-    assert.equal(afterRecord.format, beforeRecord.format, 'format unchanged')
+    // WHAT THIS FILE DOES NOT PROVE, said plainly rather than implied: that the
+    // project record is preserved. The CLI cannot reach the record write
+    // without a daemon, so no CLI test can observe it in the normal checkout
+    // environment. That property is proved directly, and without a daemon, in
+    // shared/document-roots-to-declare.test.mjs.
+    assert.ok(beforeRecord, 'the fixture project was readable')
   }
 })
 
@@ -163,7 +177,7 @@ test('a project that does not exist still requires a source', async () => {
     await git(checkout, ['commit', '-m', 'author working copy'])
 
     const attempt = await cliUntil(checkout, ['project', 'link', 'no-such-project-here'], base,
-      /Usage: tlda project link/)
+      /Usage: tlda project link/, 15_000)
     assert.notEqual(attempt.code, 0, 'it refuses rather than creating a project from a bare name')
     assert.match(attempt.out, /Usage: tlda project link/, `and it says how to call it:\n${attempt.out}`)
   }

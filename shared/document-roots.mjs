@@ -183,3 +183,33 @@ export async function documentRootsIn(files, read) {
 }
 
 
+
+
+/**
+ * The document roots a `project link` should DECLARE.
+ *
+ * Lives here, beside `normalizeDocumentRoots`, because it is the same question:
+ * what does this project say its documents are. It was previously inline in the
+ * CLI as a two-branch expression, which made it untestable without a running
+ * daemon -- the CLI binds to the daemon before it writes the record, so nothing
+ * short of a full environment could observe the answer.
+ *
+ * The rule, and the whole reason it is a named function:
+ *
+ *   - roots were supplied  -> declare those
+ *   - CREATING a project   -> derive from the main file, because a new project
+ *                             has no declaration to preserve
+ *   - RELINKING an existing project -> **whatever it already declares, including
+ *                             nothing**
+ *
+ * That last case is the one that had no expression before. An existing project
+ * declaring no roots is answering the question, not failing to; deriving roots
+ * for it writes a declaration on its behalf during what is supposed to be a
+ * repair.
+ */
+export function documentRootsToDeclare({ supplied = [], existing = [], mainFile = null, projectExists = false } = {}) {
+  const suppliedRoots = Array.isArray(supplied) ? supplied.filter(Boolean) : []
+  if (suppliedRoots.length) return suppliedRoots
+  if (projectExists) return Array.isArray(existing) ? existing : []
+  return mainFile ? normalizeDocumentRoots([mainFile], { mainFile, format: 'svg' }) : []
+}
