@@ -1,13 +1,43 @@
-# Chief of staff resumption point — `bhief-4`, 2026-08-23
+# Resumption point — `bhief-4`, started 2026-08-23
 
 Force-added under `scratch/` deliberately: this is a resumption point, not a report.
 `scratch/` is gitignored, so an untracked copy would not survive. See `AGENTS.md`
 §"Repository workflow".
 
-**Relative to:** 2026-08-25 07:50 EDT. `testing` and `pic` both serve
-`3b109f87b`. **`f1335d096` IS serving** — confirmed by ancestry against the
-deployed sha, not by push output. The editor no longer shows stale text or
-overwrites newer content.
+**I am no longer chief. `sol-dev` is** — Skip, 2026-08-25. Everything below is a
+doer's record; chief questions go to `sol-dev`, not to whoever reads this.
+
+**Relative to:** 2026-08-26 01:35 EDT. `testing` serves `29db651fb`; `main` is
+`f1101cfe9`. `pic` is **closed** — see below, do not deploy or configure it.
+
+## THE LIVE THURSDAY BLOCKER: a colon in a student's project name 404s
+
+**Every real student's work fails to render in the marking pane, and the demo
+fixtures hide it.** A student id is `<course>:<login>`, so a submission project
+name carries a colon. `req.path` is not url-decoded, and both `/docs`
+middlewares read the project name straight out of it, while the client fetches
+under `encodeURIComponent`. Found by `classroom-thursday`; I confirmed it
+independently on the live box:
+
+```
+submission-probe-hw-b-probe-course-b:probe-four   (buildStatus success, 1 page)
+bare      /docs/…:probe-four/homework/hw5-rvs-markov-biased.html   200  137,170 b
+encoded   /docs/…%3Aprobe-four/…                                   404       21 b
+```
+
+The demo fixtures are `d-ada` and `d-bo` — no colon — which is why this survived.
+
+**Fix: `25f970e33` on branch `classroom-docs-decode`, off `main` at `29db651fb`.**
+One file, 38 lines, mostly comment, encoded traversal refused and tested.
+**Committed, NOT merged, NOT deployed.** Its author states plainly that the wire
+is unproven — the tests exercise the decode logic, not the route — and offered to
+stand up a local server and request both forms. **That check has not been run.**
+
+**A trap on the way in, which cost me a false negative I nearly sent:** testing a
+colon project whose build had *failed* returns 404 for **both** forms, which
+reads as a clean refutation. It is not — nothing exists at either path. You need
+a colon project that actually built before bare returns 200. Only one on the box
+did.
 
 ## The overnight run: what the source editor was doing
 
