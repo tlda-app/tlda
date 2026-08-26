@@ -161,27 +161,68 @@ export function createSourceRoomDaemon({
    */
   async function standRoomOnProjectBranch(project, workingDir) {
     const gitSync = gitSyncManagerForProject(project)
+    const git = (...args) => spawnSync('git', args, { cwd: workingDir, encoding: 'utf8' })
+    const lines = result => String(result.stdout || '').split('\n').filter(Boolean)
+
     let stood = await gitSync.standOnWorkBranch(project)
     if (stood?.ok) return stood
-  
-    const colliding = /untracked working tree files would be overwritten/i.test(stood?.reason || '')
-    if (colliding) {
+
+    // WHICH FILES ARE IN THE WAY, computed rather than parsed out of git's
+    // error text.
+    //
+    // Git refuses a checkout with two different sentences -- "untracked working
+    // tree files would be overwritten" and "Your local changes to the following
+    // files would be overwritten" -- and an earlier version of this matched only
+    // the first. Measured on the live box: 13 room trees are untracked-only, 1
+    // is modified-tracked, 2 have no project branch at all. Matching one
+    // sentence left the modified one falling back into the silent drop this
+    // exists to close, and `ls-files --others` would not have listed it anyway.
+    //
+    // So the collision set is derived: files the target commit carries that are
+    // also dirty here. That covers both sentences without depending on either,
+    // and it is NARROW -- only files that actually collide are touched, where
+    // before every untracked file in the tree was moved on the strength of a
+    // justification that covered one of them.
+    const target = lines(git('rev-parse', '--verify', '--quiet', `refs/heads/tlda/${project}`))[0]
+      || lines(git('rev-parse', '--verify', '--quiet', `refs/tlda/fetched/${project}`))[0]
+    if (!target) {
+      // No branch and no fetched head: adoption failed upstream and there is
+      // nothing to stand on. Reported as itself rather than as a collision.
+      log.warn?.(`[source-room] ${project}: NOT SYNCING — no project branch or fetched head to stand on (${stood?.status || 'unknown'})`)
+      return { ok: false, status: stood?.status || 'no-project-head', reason: `${project} has no project branch to stand on` }
+    }
+
+    const carried = new Set(lines(git('ls-tree', '-r', '--name-only', target)))
+    const dirty = [...lines(git('ls-files', '--others', '--exclude-standard')), ...lines(git('diff', '--name-only'))]
+    const colliding = [...new Set(dirty.filter(file => carried.has(file)))]
+
+    if (colliding.length) {
+      // MOVED, never deleted. This app does not delete things, and a file that
+      // turns out to have mattered is still on disk. The room's own file is a
+      // projection of its Yjs document, which is authoritative and is rewritten
+      // on hydration, so preserving it costs nothing.
+      //
+      // These directories accumulate, one per collision per room, and nothing
+      // sweeps them. Left deliberately: a stray directory is recoverable and a
+      // swept one is not. This note is here so the next person finds a reason
+      // rather than a mystery.
       const preserved = join(workingDir, '..', `working-preserved-${Date.now()}`)
       try {
-        const listed = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: workingDir, encoding: 'utf8' })
-        const untracked = String(listed.stdout || '').split('\n').filter(Boolean)
-        for (const file of untracked) {
-          const from = join(workingDir, file)
+        for (const file of colliding) {
           const to = join(preserved, file)
           mkdirSync(dirname(to), { recursive: true })
-          renameSync(from, to)
+          renameSync(join(workingDir, file), to)
         }
-        if (untracked.length) log.info?.(`[source-room] ${project}: preserved ${untracked.length} untracked file(s) in ${preserved} to stand on the project branch`)
+        // A tracked file that was moved aside is still "modified" as far as the
+        // index is concerned -- restore it from HEAD so the checkout is clean.
+        git('checkout', '--', ...colliding)
+        log.info?.(`[source-room] ${project}: preserved ${colliding.length} colliding file(s) in ${preserved} to stand on the project branch`)
         stood = await gitSync.standOnWorkBranch(project)
       } catch (error) {
         return { ok: false, status: 'preserve-failed', reason: `${project} could not be moved onto its project branch: ${error.message}` }
       }
     }
+
     if (!stood?.ok) {
       log.warn?.(`[source-room] ${project}: NOT SYNCING — could not stand on its project branch (${stood?.status || 'unknown'}): ${stood?.reason || 'unknown'}`)
     }
