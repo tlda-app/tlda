@@ -1357,3 +1357,51 @@ not.
 
 Harness: `scratch/disk-loss-trace.mjs` (untracked -- the websocket-boundary
 guard follows git tracking, and this is a regenerable tool).
+
+## 2026-08-26 - lockout proof on branch `lockout-proof`, and the repair path
+
+**`48bce44d4`.** Three tests, and the third is why the first two mean anything:
+
+```
+node --import tsx --test daemon/a-locked-out-checkout-still-lands-its-edit.test.mjs
+```
+- RED: a disk edit lands after the browser published, keeping BOTH sides.
+  Fails on the production failure verbatim -- `{"ok":false,"status":"WrongHead"}`
+  -- reproduced offline with a real pre-receive hook carrying the server's own
+  ancestry rule.
+- RED: a same-line conflict is HELD and named, not silently dropped. Separate on
+  purpose: loss and held-divergence look identical from outside, so a fix that
+  discarded the conflicting side would pass a test that could not tell them
+  apart.
+- GREEN CONTROL: the identical harness with the published head still an ancestor
+  lands the edit on today's code. Without it a broken fixture and a real defect
+  are the same colour.
+
+Both tests also assert the person's checkout and index are untouched.
+
+**THE REPAIR PATH, verified mechanically, not proposed from reading.**
+`git merge-tree --write-tree <acceptedHead> <localFilteredCommit>` merges the
+two entirely in the object database -- no working tree, no index, no checkout
+mutation, so none of the five things `d60d18573` removed comes back. Then
+`git commit-tree <mergedTree> -p <acceptedHead> -p <local>` yields a commit the
+ancestry rule accepts, because the accepted head is a parent.
+
+| case | exit | result |
+|---|---|---|
+| different files changed | 0 | both edits present; accepted head an ancestor; 0/0 tree/index |
+| same line changed | 1 | conflicted paths at stages 1/2/3; 0/0 tree/index |
+
+**The zero-exit case is the positive control and it matters here.** The LEGACY
+`git merge-tree` prints `changed in both` for any file both sides touched, which
+is not a conflict report -- see the memory `merge-tree-changed-in-both-is-not-a-conflict`.
+The `--write-tree` form does not share that failure: exit 0 on genuinely clean,
+1 only on a real conflict. Checked, not assumed.
+
+**The deletion that comes with it:** `onWrongHead`, a parameter with zero
+callers, goes -- replaced by the merge path rather than kept as a second way to
+signal the same thing.
+
+Not implemented; awaiting the chief. Real projects and relinks frozen.
+
+**Process note:** a shell heredoc hung a turn for six minutes. Commit messages
+now go through a file and `git commit -F`. Not the tests -- the heredoc.
