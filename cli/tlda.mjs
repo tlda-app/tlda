@@ -620,9 +620,11 @@ async function cmdCreate() {
   // into its record. That is the stored declaration that has caused every
   // document-loss bug in this area, and a repair should not manufacture one.
   //
-  // Measured 2026-08-26 while classifying checkouts for repair: of 35
-  // repair candidates, 18 were existing projects declaring no roots, and this
-  // check was the only thing stopping them being relinked.
+  // Found 2026-08-26 while classifying bound checkouts for repair: existing
+  // projects that declare no roots are common, and this check was the only
+  // thing preventing them being relinked at all. (The candidate counts from
+  // that sweep are not repeated here -- they moved as the classification was
+  // corrected, and a number in a comment goes stale where the rule does not.)
   //
   // So: roots are required to CREATE a project and optional to relink one. An
   // existing project keeps the declaration it has, including an empty one.
@@ -1039,8 +1041,8 @@ async function cmdLink() {
   // A RELINK NEEDS NO SOURCE, because the project already says what its
   // documents are. Requiring one here meant the only way to relink a project
   // that declares no roots was to invent some and write them into its record --
-  // manufacturing the stored declaration that has caused every document-loss
-  // bug in this area. Roots are required to CREATE, optional to relink.
+  // and a repair that manufactures a declaration is the shape of defect this
+  // area has produced before. Roots are required to CREATE, optional to relink.
   if (!source) {
     const name = getPositional(0)
     const existing = name ? await api('GET', `/api/projects/${encodeURIComponent(name)}`).catch(() => null) : null
