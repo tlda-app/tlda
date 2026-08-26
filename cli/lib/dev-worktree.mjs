@@ -54,7 +54,7 @@ const PREVIEW_PORT_MAX = 5299
 const SERVE_HELP = `tlda-dev serve — run THIS worktree as an isolated preview
 
 Usage:
-  tlda-dev serve [start] [--sandbox] [--real-fleet] [--project NAME] [--port N] [--no-build]
+  tlda-dev serve [start] [--sandbox] [--real-fleet] [--gated] [--project NAME] [--port N] [--no-build]
   tlda-dev serve stop [--json]
   tlda-dev serve status [--all] [--json]
   tlda-dev serve url [--project NAME]

@@ -18,11 +18,12 @@ injected config, plus a few dev-only verbs. Read-only mirrors (doc status, …)
 forward to \`tlda\`. Raw \`server\`/\`daemon\` lifecycle is DISABLED here — a worktree
 daemon could target the real fleet; use \`serve\` instead.
 
-  serve [start] [--sandbox] [--project NAME] [--port N] [--no-build]
+  serve [start] [--sandbox] [--real-fleet] [--gated] [--project NAME] [--port N] [--no-build]
                      The ONE dev bring-up command. Stands up THIS worktree's branch
                      as a preview, REACHABLE from your other devices (Tailscale
                      MagicDNS host, valid cert), SPA config pointed at that host,
-                     and NO token (a non-standard port disables auth). Delegates to
+                     and tokenless by default. \`--gated\` creates fresh read/RW
+                     tokens and enables token gating for the preview. Delegates to
                      the real robust \`tlda server start\` detach, so it survives the
                      launching agent exiting. Isolated (own projects/DB/chat).
                      \`--sandbox\` also brings up a fleet-daemon wired ONLY to this
