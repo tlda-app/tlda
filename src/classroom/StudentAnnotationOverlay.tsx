@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useState, useRef } from 'react'
+import { useMemo, useEffect, useState } from 'react'
 import { Tldraw, react, type Editor } from 'tldraw'
 import { useSync } from '@tldraw/sync'
 import { STORE_WS } from '../activeConfig'
@@ -31,45 +31,36 @@ import './StudentAnnotationOverlay.css'
 // second copy of the book in the student's room rather than a transparent sheet
 // over the first.
 
-// Tools whose gestures make or remove marks. While one of these is selected the
-// overlay takes pointer input, so the stroke lands in the student's room. Under
-// every other tool the overlay is inert and the book beneath is fully live —
-// text selection, the reading tools and panning all keep working, which they
-// would not if a transparent canvas sat over the book catching everything.
-const MARK_MAKING_TOOLS = new Set(['draw', 'highlight', 'eraser', 'math-note', 'voice-note'])
-
 interface StudentAnnotationOverlayProps {
   /** The room the book itself is synced to — the layer the whole class shares. */
   bookRoomId: string
-  /** Whose overlay to show. The teacher passes a student's id to read theirs. */
+  /** Whose overlay this is. The teacher names a student to see theirs. */
   studentId: string
   /** The book's editor. Supplies the camera and the current tool. */
   bookEditor: Editor | null
-  /** True when this overlay may be drawn on — false when reading someone else's. */
-  writable?: boolean
+  /** Whether this layer is shown at all. Hiding shows nothing and deletes nothing. */
+  visible: boolean
+  /** Whether marks land here. Exactly one layer is the write target. */
+  isWriteTarget: boolean
 }
 
 export function StudentAnnotationOverlay({
   bookRoomId,
   studentId,
   bookEditor,
-  writable = true,
+  visible,
+  isWriteTarget,
 }: StudentAnnotationOverlayProps) {
   const roomId = studentOverlayRoomId(bookRoomId, studentId)
   const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
   const shapeUtils = useMemo(() => createDocumentShapeUtils(), [])
-  const [capturing, setCapturing] = useState(false)
-  // The tool the overlay should be in. Kept out of state deliberately: it is
-  // read inside the camera reaction, and a re-render per tool change would
-  // remount nothing useful.
-  const toolRef = useRef('select')
 
   const syncUri = useMemo(() => () => appendToken(`${STORE_WS}/sync/${roomId}`), [roomId])
   const store = useSync({ uri: syncUri, shapeUtils, assets: INLINE_ASSETS })
 
-  // Follow the book's camera. The book owns it — panning and zooming happen down
-  // there, because this canvas only takes input while a mark-making tool is
-  // active and no panning happens under those.
+  // Follow the book's camera, so the layers stay registered with each other. The
+  // book owns it: panning is a view operation and belongs to the document, not
+  // to whichever layer happens to be the write target.
   useEffect(() => {
     if (!bookEditor || !overlayEditor) return
     return react('mirror book camera onto overlay', () => {
@@ -80,34 +71,36 @@ export function StudentAnnotationOverlay({
     })
   }, [bookEditor, overlayEditor])
 
-  // Follow the book's tool selection, and take pointer input only for the tools
-  // that make marks. The student picks a tool on the book's own toolbar; this
-  // decides where the resulting gesture lands.
+  // Follow the book's tool selection, whatever it is.
+  //
+  // Skip: "so like in photoshop or whatever, you select any number of layers to
+  // be visible and one to be the current write target." The tool never chooses
+  // the destination — pen, highlighter and eraser all act on the write target,
+  // and this canvas is that target or it is not.
   useEffect(() => {
-    if (!bookEditor) return
+    if (!bookEditor || !overlayEditor || !isWriteTarget) return
     return react('follow book tool selection', () => {
       const toolId = bookEditor.getCurrentToolId()
-      toolRef.current = toolId
-      setCapturing(writable && MARK_MAKING_TOOLS.has(toolId))
+      if (overlayEditor.getCurrentToolId() !== toolId) overlayEditor.setCurrentTool(toolId)
     })
-  }, [bookEditor, writable])
-
-  useEffect(() => {
-    if (!overlayEditor || !capturing) return
-    if (overlayEditor.getCurrentToolId() !== toolRef.current) overlayEditor.setCurrentTool(toolRef.current)
-  }, [overlayEditor, capturing])
+  }, [bookEditor, overlayEditor, isWriteTarget])
 
   useEffect(() => {
     if (!overlayEditor) return
-    overlayEditor.updateInstanceState({ isReadonly: !writable })
-  }, [overlayEditor, writable])
+    overlayEditor.updateInstanceState({ isReadonly: !isWriteTarget })
+  }, [overlayEditor, isWriteTarget])
 
   if (store.status !== 'synced-remote') return null
 
+  // Kept mounted when hidden rather than unmounted: hiding a layer hides it, and
+  // a layer that is torn down and rebuilt on every toggle is a different thing
+  // wearing the same name — it would drop the write target's tool state and
+  // re-sync the room each time someone glanced away.
   return (
     <div
       className="studentAnnotationOverlay"
-      data-capturing={capturing ? 'true' : 'false'}
+      data-capturing={isWriteTarget ? 'true' : 'false'}
+      data-visible={visible ? 'true' : 'false'}
     >
       <Tldraw
         store={store}

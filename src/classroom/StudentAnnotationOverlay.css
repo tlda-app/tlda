@@ -13,8 +13,18 @@
   background: transparent;
 }
 
+/* The write target takes pointer input. Exactly one layer does, and which one
+ * is a selection the reader made — never inferred from the tool they picked. */
 .studentAnnotationOverlay[data-capturing='true'] {
   pointer-events: auto;
+}
+
+/* Hiding a layer hides it. It deletes nothing, and it changes nobody else's
+ * view. `visibility` rather than `display` so the canvas keeps its box and
+ * comes back without re-measuring. */
+.studentAnnotationOverlay[data-visible='false'] {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* tldraw paints its own surface; over the book it must not. */

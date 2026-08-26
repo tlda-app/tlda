@@ -14,6 +14,8 @@ import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
 import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
 import { TeacherStudentOverlay } from './classroom/TeacherStudentOverlay'
+import { BookLayersControl } from './classroom/BookLayersControl'
+import { studentLayers, setLayerVisible, setWriteTarget, type BookLayerState } from './classroom/bookLayers'
 import { classroomApi, type ClassroomIdentity } from './classroom/api'
 import type { SvgDocument } from './loaders/types'
 import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
@@ -31,6 +33,10 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const [loading, setLoading] = useState(true)
   const [bookEditor, setBookEditor] = useState<Editor | null>(null)
   const [identity, setIdentity] = useState<ClassroomIdentity | null>(null)
+  // Which layers are shown, and which one takes the reader's marks. Default
+  // target is the book's own layer, so a reader who never touches the control
+  // writes where they already would.
+  const [layers, setLayers] = useState<BookLayerState>(studentLayers)
   // Pending cross-member anchor navigation: set before switchTo, consumed after load
   const pendingAnchor = useRef<string | null>(null)
 
@@ -192,6 +198,9 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // no course named, no roster, no overlay.
   const courseId = useMemo(() => new URLSearchParams(window.location.search).get('course') || '', [])
 
+  const mineLayer = layers.layers.find(l => l.id === 'mine')
+  const commonVisible = layers.layers.find(l => l.id === 'common')?.visible ?? true
+
   // The book's editor, kept so the overlay above it can follow its camera and
   // its tool selection. Passed on to the original caller unchanged.
   const handleEditorMount = useCallback((editor: Editor | null) => {
@@ -213,19 +222,35 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       <div className="book-viewer">
         {loading && <div className="book-loading">Loading {activeMember?.name}...</div>}
         {!loading && document && (
-          <SvgDocumentEditor key={activeMember.key} document={document} roomId={roomId} onEditorMount={handleEditorMount} />
-        )}
-        {/* A student reading the book gets their own layer over it. Everyone
-            reads the book's room; only this student writes theirs. Nobody else
-            in the book — Skip, a colleague, anyone without an enrolment token —
-            gets an overlay at all, and the book behaves exactly as before. */}
-        {!loading && document && identity?.role === 'student' && (
-          <StudentAnnotationOverlay
-            key={`${activeMember.key}:${identity.studentId}`}
-            bookRoomId={roomId}
-            studentId={identity.studentId}
-            bookEditor={bookEditor}
+          <SvgDocumentEditor
+            key={activeMember.key}
+            document={document}
+            roomId={roomId}
+            annotationsHidden={!commonVisible}
+            onEditorMount={handleEditorMount}
           />
+        )}
+        {/* A student reading the book has two layers: the book's, which the
+            whole class shares and everyone may write, and their own. Which one
+            takes their marks is a selection they make — never inferred from the
+            tool they picked. A reader without an enrolment token has one layer,
+            so no overlay and no control, and the book is unchanged for them. */}
+        {!loading && document && identity?.role === 'student' && (
+          <>
+            <StudentAnnotationOverlay
+              key={`${activeMember.key}:${identity.studentId}`}
+              bookRoomId={roomId}
+              studentId={identity.studentId}
+              bookEditor={bookEditor}
+              visible={mineLayer?.visible ?? false}
+              isWriteTarget={layers.target === 'mine'}
+            />
+            <BookLayersControl
+              state={layers}
+              onVisibilityChange={(id, visible) => setLayers(current => setLayerVisible(current, id, visible))}
+              onTargetChange={id => setLayers(current => setWriteTarget(current, id))}
+            />
+          </>
         )}
         {/* The teacher reads one student's layer at a time, flicking between
             them. Only when a course is named — the book itself belongs to no

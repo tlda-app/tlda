@@ -81,13 +81,16 @@ export function TeacherStudentOverlay({ bookRoomId, courseId, bookEditor }: Teac
   if (!student) return null
 
   return <>
-    {/* Mounted read-only: he is reading their layer, not drawing in it. */}
+    {/* Visible, never the write target: he is reading their layer, not drawing
+        in it. Marks he returns to a student are written where marking already
+        writes them. */}
     <StudentAnnotationOverlay
       key={`${bookRoomId}:${student.id}`}
       bookRoomId={bookRoomId}
       studentId={student.id}
       bookEditor={bookEditor}
-      writable={false}
+      visible
+      isWriteTarget={false}
     />
     {/* Same bar, same weight, as the marking view's student stepper. */}
     <aside className="markingLifecycle" aria-label="Student layer">
