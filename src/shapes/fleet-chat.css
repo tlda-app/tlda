@@ -4168,6 +4168,30 @@ body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: ca
   display: block;
   flex: 0 0 auto;
 }
+/* Dictation, on the composer rail with the other composer controls. Same base as
+   its neighbours — without it a button carries the browser's default grey fill
+   and border, which is what it looked like the first time it rendered. */
+.fleet-chat-shape .fleet-composer-mic-toggle {
+  order: 2;
+  pointer-events: auto;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: var(--ui-tone-dormant);
+  transition: opacity 0.3s, color 0.2s;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+}
+/* Recording is the one state on this rail worth showing at rest — everything
+   else here is an affordance; this is "your microphone is open". */
+.fleet-chat-shape .fleet-composer-mic-toggle.recording {
+  color: #dc2626;
+  opacity: var(--ui-tone-full);
+}
+
 .fleet-chat-shape .fleet-composer-clear-toggle {
   order: 4;
   pointer-events: auto;
