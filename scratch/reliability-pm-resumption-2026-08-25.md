@@ -1860,3 +1860,151 @@ The test-file header was corrected too — it said no fixture reaches the check,
 true when written and false after this amend.
 
 All five criteria met. Neighbouring `git-project-sync` unchanged at 8/2.
+
+## 2026-08-26 - the room that is a project's FIRST writer (`2acf732ca`, branch `room-first-writer`)
+
+Diagnosis only; no repair. Preserved failure on
+`~/worktrees/app-tester-overlay-proof`, preview :5191.
+
+```
+project record   sourceRevision (NONE), acceptSeq null, mainFile main.md
+project source   git repo with NO COMMITS
+room working     main.md UNTRACKED, zero commits,
+                 HEAD -> refs/heads/tlda/<project>, and NO REFS AT ALL
+server.log       proposal not accepted: not-on-work-branch
+                 proposal not accepted: empty-checkout
+```
+
+**THE PROJECT NEVER HAD A HEAD -- not a missing fetch.** The unborn branch is
+the tell: `standOnWorkBranch` starts the branch at the project head and there
+was none.
+
+- **Did the room write before `standOnWorkBranch`?** No. `not-on-work-branch`
+  precedes `empty-checkout`, so the stand ran first. The order held.
+- **Does the branch/head exist?** Branch exists as a symbolic HEAD and is
+  UNBORN; `for-each-ref` returns nothing.
+- **The exact call that never ran: `git add`.** `settledCommit()` stages tracked
+  paths only, so an untracked file in a zero-commit tree gives an empty tree with
+  no HEAD -> `empty-checkout`, repeating on every later settle.
+
+**A gap between two decisions that are each right alone:** `d60d18573` (stage
+tracked only; stated cost is that a new file waits for the author's `git add`)
+and `de356e277` (stand on the project branch, correct when a head exists). My own
+comment in the latter names this case as a reassurance about linking a new
+directory -- it is also the description of this failure.
+
+**A person's checkout never hits it because they run `git add`. A source room has
+no author at a keyboard.**
+
+**The repro is two tests, and the second is why the first means something:** an
+unstaged new file in a PERSON'S checkout stays theirs, and it passes on today's
+code -- so "just stage everything" cannot satisfy both.
+
+Out of bounds per the chief: restoring the deleted app-owned `add -A` exception,
+and materialising missing files.
+
+### Fixed: `7fe597586` on `room-first-writer`
+
+The room stages what it owns through `track-path` (the verb the adopt-a-root
+path already uses) before `queuePaths`. Both first-writer paths: `submitFiles`
+and the room flush. Deletions still ride the settle's `add -u`; nothing touches
+a person's checkout.
+
+**Signature correction:** the real call is `remoteOperation(project, operation,
+params)` -- THREE POSITIONAL ARGS, not `(project, { operation, path })`. The
+object form would have hit `unsupported Git remote operation`.
+
+**ANSWERED IS NOT STAGED, and it cost a diagnosis.** `trackPath` returns
+`{ inRepo: false }` WITHOUT THROWING when the path does not textually match
+git's `--show-toplevel` -- a realpath difference is enough. Wrapped in
+try/catch it reported success while the file stayed `?? main.md`. The result is
+now checked rather than the absence of an exception. The fixture must
+`realpathSync` its temp root or it measures the macOS `/var` vs `/private/var`
+prefix instead of the behaviour.
+
+**Three tests at three layers, and the first draft had the wrong one carrying
+the requirement:**
+- MECHANISM: untracked file in a zero-commit tree -> `empty-checkout`. That
+  layer is RIGHT to refuse and must keep refusing.
+- BOUNDARY: an unstaged new file in a PERSON'S checkout stays theirs. Passes on
+  both sides, so "stage everything" cannot satisfy the file.
+- REQUIREMENT: through the real `createSourceRoomDaemon` over the real
+  `createGitSyncManager` -- only watcher and remote replaced -- a first document
+  becomes a proposal.
+
+Pre-fix 2 pass / 1 fail; post-fix 3/3. Before the fix the requirement test logs
+`not-on-work-branch` then `empty-checkout` -- the same pair in the same order as
+the preserved `server.log`.
+
+**NOT DONE: the :5191 mount gate.** That preview serves `f87cafdbf` from
+`~/worktrees/app-tester-overlay-proof`, which is APP-TESTER'S worktree.
+Re-running it against this fix means putting this branch into their preview and
+restarting it -- moving another contributor's environment. Asked the chief to
+either authorise it or hand it to app-tester with the branch name.
+
+### Amended to `bef19e701` — staging failure THROWS
+
+The chief held integration and was right: `trackRoomFile` warned and carried on,
+so both callers could report success for a file that can never become a
+revision. **That is the exact shape described three lines above it in the same
+function** -- answered is not staged -- and then done anyway.
+
+- `trackRoomFile` now throws on a `remoteOperation` error AND on
+  `answer.tracked` false. The bytes are already persisted to the room tree and
+  its Yjs document, so failing costs nothing, and `flushRoom`'s catch schedules
+  the retry.
+- `submitFiles` answers **409 naming the file** instead of `202 queued`.
+
+**Negative control, and it bites:** `track-path` answers
+`{ inRepo: false, tracked: false, path: null }` -- the literal shape `trackPath`
+returns -- and the test asserts the answer is not 202, says `ok: false`, names
+*was not staged*, and that NOTHING was queued. Restoring warn-and-continue turns
+that test and only that test red (3 pass / 1 fail).
+
+4/4 with the fix. eslint, tsc -b, lint:guards clean.
+
+**Handed to app-tester** (`chat` 3386910) for the preserved :5191 mount gate:
+branch, commit, what to expect, and that a staging failure now surfaces as a
+loud 409 rather than a silent stall -- so they send the message rather than work
+around it. Their worktree and preview untouched.
+
+**Branches awaiting the chief:** `symlink-closure` at `d0b98a013`,
+`room-first-writer` at `bef19e701`, `held-edit-mark` at `9ef2fd6e5`,
+`latex-relink-gate` at `00ef09842`.
+
+### `bef19e701` GATE-PASSED by app-tester, and one expectation of mine was wrong
+
+Their evidence: `pages 1 · build success · sourceRevision 5467a69b6658` on the
+FIRST sample at t+8s, `/docs/.../index.html -> 200`, and in the room
+`git log f36f635 "tlda settled edit cluster"` with **0 dirty paths** where it was
+previously `?? main.md`, zero commits, unborn HEAD. **`empty-checkout` appears
+nowhere in the run.**
+
+**MY EXPECTATION WAS WRONG.** I told them BOTH `proposal not accepted` lines
+should stop. Only `empty-checkout` was ever mine to remove.
+`not-on-work-branch` still appears once, early, and it is ORDERING not fault:
+
+```
+source-room-daemon   bindSource(...)
+                     await gitSync.sync([projectRecord])   <- settles ONCE here
+                     standRoomOnProjectBranch(...)
+git-sync-manager:198 await settleEditCluster()             <- inside sync()'s start()
+```
+
+`sync()` settles once through `start()` BEFORE the caller stands the tree on the
+work branch. On a fresh room tree HEAD is still `main`, so that settle is
+correctly refused; the stand then happens and the next settle publishes. On an
+established room it never appears. Transient by construction: one refused
+attempt, one log line.
+
+**NOT FIXED, deliberately.** A one-line reorder in a path that has just started
+working, nobody has reported it, and it costs nothing. Belongs in the record, not
+in a commit, unless the chief asks.
+
+**No 409 fired** -- `trackPath` genuinely staged in their environment.
+app-tester's point that it stayed quiet FOR A REASON rather than being
+unreachable is the right distinction and I would have skipped it.
+
+**The six behaviour checks are NOT run:** they need `bef19e701` merged into the
+classroom head by its owner. app-tester declined to run them on a locally-merged
+variant because a mount pass on a variant is not a gate pass. Correct call.
