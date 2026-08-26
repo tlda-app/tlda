@@ -97,7 +97,7 @@ import {
 import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
-import { actionForSymptom } from '../daemon/notification-symptom-action.mjs'
+import { actionForSymptom, performNotificationSymptomAction } from '../daemon/notification-symptom-action.mjs'
 import {
   createJsonlProcessBindingReconciler,
   jsonlProcessBindingSignature,
@@ -919,59 +919,47 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
     return { ok: true, agent_id, symptom, recorded: true, acted: false, action: null }
   }
 
-  // WHICH of the daemon's two jobs is decided HERE, by asking this machine
-  // whether the process exists — not by the symptom. That is the spec's table:
-  // no process -> make one; a process that is not responding -> off and on
-  // again. The server reports what its socket did and selects nothing, so a
-  // closed channel over a live process is still "not responding" and still
-  // earns a restart.
-  let alive = false
   try {
-    const result = await terminalRpc.handlers['check-alive']({ agent_id })
-    alive = !!result?.alive
-  } catch (e) {
-    // The liveness question is the one this daemon exists to answer, so failing
-    // to answer it is reported rather than guessed. Guessing alive restarts a
-    // process that may not exist; guessing dead starts a second one.
-    log.warn(`[notification-symptom] ${agent_id}: check-alive failed: ${e?.message || e}`)
-    return { ok: false, agent_id, symptom, recorded: true, acted: false, error: `check-alive failed: ${e?.message || e}` }
-  }
-
-  try {
-    if (!alive) {
-      await rpcWake({ fleet_id: agent_id, agent_id })
-      return { ok: true, agent_id, symptom, recorded: true, acted: true, action: 'wake' }
-    }
-    // `fleet_id` AND `tmux_session`, and neither is belt-and-braces.
-    //
-    // `rpcRestart` forwards its own params straight to `wakeMint`, which resolves
-    // an identifier from `mint_id | mintId | fleet_id | fleetId | name` — and
-    // `agent_id` is not among them. Restarting with `{ agent_id }` alone killed
-    // the session and then threw "wake requires a local mint, fleet, or
-    // friendly-name identifier", so the agent was left DOWN by the remedy meant
-    // to restore it. Observed twice on the live daemon within four minutes of
-    // this path going live.
-    //
-    // `tmux_session` is the check that the kill actually happened: `rpcRestart`
-    // asks tmux whether the session is still listed and refuses to wake if it is,
-    // because `kill-session` answers ok for an agent it could not place. Without
-    // the name that check cannot run, which is the hole it was written to close.
-    // `resolveAgentRoute` is SYNCHRONOUS — `createAgentRouteResolver` returns a
-    // plain function — so `.catch()` on its result is a TypeError, not a
-    // rejection handler. Written that way it threw before `rpcRestart` ran.
-    // Harmless as failures go, because nothing was killed, but the restart
-    // remedy did not happen at all.
-    let route = null
-    try {
-      route = resolveAgentRoute({ agent_id })
-    } catch (e) {
-      // Not fatal: without a session name `rpcRestart` loses its did-the-kill-
-      // happen check, which is worth reporting rather than worth aborting the
-      // remedy for.
-      log.warn(`[notification-symptom] ${agent_id}: no local route for the restart: ${e?.message || e}`)
-    }
-    await rpcRestart({ agent_id, fleet_id: agent_id, tmux_session: route?.tmux_session })
-    return { ok: true, agent_id, symptom, recorded: true, acted: true, action: 'restart' }
+    const performed = await performNotificationSymptomAction({
+      symptom,
+      checkAlive: async () => {
+        const result = await terminalRpc.handlers['check-alive']({ agent_id })
+        return !!result?.alive
+      },
+      ensureProcess: () => rpcWake({ fleet_id: agent_id, agent_id }),
+      restart: async () => {
+        // `fleet_id` AND `tmux_session`, and neither is belt-and-braces.
+        //
+        // `rpcRestart` forwards its own params straight to `wakeMint`, which resolves
+        // an identifier from `mint_id | mintId | fleet_id | fleetId | name` — and
+        // `agent_id` is not among them. Restarting with `{ agent_id }` alone killed
+        // the session and then threw "wake requires a local mint, fleet, or
+        // friendly-name identifier", so the agent was left DOWN by the remedy meant
+        // to restore it. Observed twice on the live daemon within four minutes of
+        // this path going live.
+        //
+        // `tmux_session` is the check that the kill actually happened: `rpcRestart`
+        // asks tmux whether the session is still listed and refuses to wake if it is,
+        // because `kill-session` answers ok for an agent it could not place. Without
+        // the name that check cannot run, which is the hole it was written to close.
+        // `resolveAgentRoute` is SYNCHRONOUS — `createAgentRouteResolver` returns a
+        // plain function — so `.catch()` on its result is a TypeError, not a
+        // rejection handler. Written that way it threw before `rpcRestart` ran.
+        // Harmless as failures go, because nothing was killed, but the restart
+        // remedy did not happen at all.
+        let route = null
+        try {
+          route = resolveAgentRoute({ agent_id })
+        } catch (e) {
+          // Not fatal: without a session name `rpcRestart` loses its did-the-kill-
+          // happen check, which is worth reporting rather than worth aborting the
+          // remedy for.
+          log.warn(`[notification-symptom] ${agent_id}: no local route for the restart: ${e?.message || e}`)
+        }
+        await rpcRestart({ agent_id, fleet_id: agent_id, tmux_session: route?.tmux_session })
+      },
+    })
+    return { ok: true, agent_id, symptom, recorded: true, acted: true, action: performed }
   } catch (e) {
     // Reported, not thrown, and NOT death. The server is not waiting on this and
     // decides nothing from it; a remedy that failed is this machine's problem to
