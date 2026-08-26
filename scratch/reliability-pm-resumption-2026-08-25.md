@@ -1304,3 +1304,56 @@ lane; the branch is not on `main`.
 **Still open:** the zero-gap silent disk-edit loss. Pre-fix disposable run:
 `publishedHasDiskEdit: false` -- the disk author's edit gone, no markers, no
 error. Cause NOT established.
+
+## 2026-08-26 — the zero-gap disk-loss IS the WrongHead lockout
+
+Traced on a disposable project, sampling published source AND revision identity
+every 2s rather than looking once at the end:
+
+```
+ 29s  === BROWSER EDIT (socket held open) ===
+ 36s  rev=79d2db9  seq=11031      <- the browser edit becomes a revision
+ 37s  === DISK EDIT ===
+ 39s..81s  rev=79d2db9 seq=11031 published=BROWSER   (45s, unchanged)
+```
+
+**The disk edit never became a revision at all** -- two revisions in the whole
+run. So the loss is upstream of the room, and the conflict-marker fix does not
+touch it.
+
+**Causal evidence, daemon log, timestamps matching the run:**
+```
+09:25:33Z  proposal not accepted: WrongHead
+09:26:19Z  announced 79d2db9, fetched 82b077a
+09:26:19Z  proposal not accepted: WrongHead
+```
+
+**First failing node.** `pushRevision` in `daemon/git-project-sync.mjs`. On
+`WrongHead` it calls `onWrongHead` -- a no-op default with ZERO callers -- then
+`headChanged`, which parks the new head at `refs/tlda/fetched/<project>` and
+deliberately does not apply it. The checkout's branch never advances, so every
+later proposal is rejected identically. `git-sync-manager` logs one warning and
+stops.
+
+**Consequence: once anyone edits in the browser, the disk collaborator is locked
+out permanently** -- not for that edit, for all of them -- and the only trace is
+a daemon log line nobody sees.
+
+**This is deliberate design and was NOT changed.** The comment above
+`headChanged` states it: the accepted revision is parked, local is
+authoritative, divergence is theirs to resolve. That replaced an earlier
+behaviour that committed dirty trees unasked. The design is coherent; what is
+missing is a path back, and choosing one is merge semantics -- Skip's call.
+
+**Options reported, none implemented:** (1) wire `onWrongHead` to surface the
+lockout -- decides nothing, and a lockout nobody can see is the worst property
+of the current state; (2) re-parent the proposal onto the fetched head, which is
+last-writer-wins; (3) drop the parking rule and fast-forward a clean checkout,
+which re-opens what parking was added to stop.
+
+**Note for whoever unfreezes relinks: relinking does not fix this.** Any project
+whose browser edits are ahead of its checkout is already locked out, relinked or
+not.
+
+Harness: `scratch/disk-loss-trace.mjs` (untracked -- the websocket-boundary
+guard follows git tracking, and this is a regenerable tool).
