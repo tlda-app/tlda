@@ -141,12 +141,6 @@ if (FIXTURES === CHECKOUT || FIXTURES.startsWith(CHECKOUT + path.sep)) {
   process.exit(2)
 }
 const SERVER = getServerUrl().replace(/\/$/, '')
-// Mirrors the daemon's own default in git-sync-manager.mjs, which is
-// `Math.max(15, Number(item.pollSeconds) || 60)`. Nothing in the tree sets
-// pollSeconds outside a test, so 60 is what production uses. Duplicated rather
-// than imported because this is a label on the demo's output, and a wrong label
-// is better than a demo that will not start when that module moves.
-const REMOTE_POLL_SECONDS = 60
 
 const args = process.argv.slice(2)
 const has = flag => args.includes(flag)
@@ -610,16 +604,19 @@ if (has('--setup')) {
 console.log(`server:   ${SERVER}`)
 console.log(`project:  ${PROJECT}  (${SERVER}/?project=${PROJECT})`)
 console.log(`legs:     ${LEGS.join(', ')}`)
-// The two ingresses are not comparable and the output puts them side by side,
-// which reads as one being slow. A disk edit is WATCHED and seen immediately; a
-// git-remote edit is POLLED on a timer that defaults to 60s and is configured
-// nowhere in the tree, so that leg carries a 0-60s wait before anything starts.
+// This said "remote is polled every 60s, so that leg's floor is one poll" and
+// that was wrong twice over, so it is worth stating what is actually true.
 //
-// Said here because the numbers are read by people who did not write this: a
-// 60s remote leg cost an evening of looking for a fault in the daemon, and the
-// daemon was parked in kevent waiting for the timer the whole time.
+// The daemon does poll a linked remote on a 60s timer -- but only when the
+// BINDING carries a `remote`, which this project's does not, and `writeOnRemote`
+// does not wait for it either way: it calls `tlda project remote pull`. So the
+// remote leg here is triggered, not polled, and its timings are directly
+// comparable to disk. Measured over nine cycles: disk 8.5-12s, remote 8.5-10.2s.
+//
+// The wrong label was committed for an hour and handed to another agent as an
+// explanation for a gap that no longer existed once both build slots were free.
 if (LEGS.includes('remote')) {
-  console.log(`          remote is polled every ${REMOTE_POLL_SECONDS}s, so that leg's floor is one poll -- it is not comparable to disk`)
+  console.log(`          remote is pulled explicitly by this demo, not polled -- both legs are directly comparable`)
 }
 
 // Preconditions, each because its absence looks exactly like a leg that does
