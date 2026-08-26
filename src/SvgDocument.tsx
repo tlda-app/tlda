@@ -274,6 +274,11 @@ export function createDocumentShapeUtils() {
   return [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))]
 }
 
+// The rendered document — what the pages and figures are made of. Everything
+// else in a document's room is somebody's annotation, which is what makes
+// "hide this layer" expressible without a second store to put marks in.
+const BOOK_DOCUMENT_SHAPE_TYPES = new Set(['html-page', 'svg-page', 'svg-figure', 'zoomable-image'])
+
 // Sync server URL for @tldraw/sync shape CRDT (WebSocket) — same as SYNC_SERVER
 const SHAPE_SYNC_SERVER = SYNC_SERVER
 
@@ -304,6 +309,8 @@ interface SvgDocumentEditorProps {
   initialCamera?: { x: number; y: number; z: number; page?: string }
   classroomMarking?: boolean
   classroomGrading?: Omit<ClassroomGradingSurfaceProps, 'editor' | 'submissionShapeId' | 'solutionShapeId'>
+  /** Hide this room's annotations, leaving the document. The book's layer, switched off. */
+  annotationsHidden?: boolean
   onEditorMount?: (editor: Editor | null) => void
 }
 
@@ -433,7 +440,7 @@ function EmergencyDumpRescue({ editor, documentName }: { editor: Editor; documen
   )
 }
 
-export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, onEditorMount }: SvgDocumentEditorProps) {
+export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, annotationsHidden = false, onEditorMount }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
 
@@ -795,8 +802,12 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
       if (shape.type === 'fleet-video') return undefined
       if (!isMyFleetShape(shape)) return 'hidden' as const
     }
+    // Hiding this room's annotation layer. The document itself is not part of
+    // that layer and stays: hiding the class's marks must not hide the book
+    // they are written on.
+    if (annotationsHidden && !BOOK_DOCUMENT_SHAPE_TYPES.has(shape.type)) return 'hidden' as const
     return undefined
-  }, [])
+  }, [annotationsHidden])
 
   const shapeUtils = useMemo(() => {
     const all = createDocumentShapeUtils();
