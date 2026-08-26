@@ -251,6 +251,29 @@ function withShapeErrorBoundary<T extends new (...args: any[]) => any>(Util: T):
   return Wrapped
 }
 
+// The shape utilities a canvas in this app registers.
+//
+// This was inline in SvgDocumentEditor until a second canvas needed it: a
+// student's annotation overlay renders over the book, and a room's shapes are
+// only readable by a canvas registering the same utils. The two canvases have
+// to agree, and they agree by sharing one list rather than by two lists being
+// kept in step. The server half is `server/lib/sync-rooms.mjs` and is unchanged.
+export function createDocumentShapeUtils() {
+  // Suppress the default hover/selection indicator on highlight shapes —
+  // it draws a blue path outline that competes with our text glow effect
+  class QuietHighlightShapeUtil extends HighlightShapeUtil {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    override indicator() { return null as any }
+  }
+  const utils = defaultShapeUtils.map(u =>
+    u === HighlightShapeUtil ? QuietHighlightShapeUtil : u
+  )
+  // Wrap every custom shape util with an error boundary so a single broken shape
+  // renders an error placeholder instead of crashing the entire app.
+  const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetReportArtifactShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, PlaybackFrameShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil]
+  return [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))]
+}
+
 // Sync server URL for @tldraw/sync shape CRDT (WebSocket) — same as SYNC_SERVER
 const SHAPE_SYNC_SERVER = SYNC_SERVER
 
@@ -263,7 +286,7 @@ function useSignalInit(projectName: string) {
 }
 
 // Inline base64 asset store (for image uploads via AssetToolbarItem)
-const INLINE_ASSETS = {
+export const INLINE_ASSETS = {
   upload: async (_asset: any, file: File) => {
     const reader = new FileReader()
     const src = await new Promise<string>((resolve) => {
@@ -776,19 +799,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   }, [])
 
   const shapeUtils = useMemo(() => {
-    // Suppress the default hover/selection indicator on highlight shapes —
-    // it draws a blue path outline that competes with our text glow effect
-    class QuietHighlightShapeUtil extends HighlightShapeUtil {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      override indicator() { return null as any }
-    }
-    const utils = defaultShapeUtils.map(u =>
-      u === HighlightShapeUtil ? QuietHighlightShapeUtil : u
-    )
-    // Wrap every custom shape util with an error boundary so a single broken shape
-    // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetReportArtifactShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, PlaybackFrameShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil]
-    const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
+    const all = createDocumentShapeUtils();
     (window as any).__tldraw_shape_utils__ = all
     return all
   }, [])
