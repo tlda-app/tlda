@@ -1915,6 +1915,101 @@ was the cause"** — the same trap as the unarmed tab, wearing the opposite answ
 thing it cannot explain is why the growth lands in **one tab** rather than the
 browser as a whole.
 
+
+## MEASURED REPORT — 2026-08-26, current deployed build `b4097808f`
+
+Run after the Mini restart, on a **quiet box** (load 3), against the **current
+deployed build**, on a **disposable project**. `qtm285` not touched.
+
+### 1. Exact reproduction
+
+Pooled Playwright browser, disposable project, default fleet layout. Renderer
+identified by **ballast** (208 → 415 MB on a 220 MB allocation), never by
+inspection. Page verified rendered: **962 DOM nodes, 9 shapes, 3 canvases,
+2 iframes.**
+
+### 2. Memory growth over time
+
+```
+15:26  184 MB        15:33  289 MB
+15:28  256 MB        15:35  373 MB
+15:30  306 MB        15:37  446 MB
+```
+
+**184 → 446 MB in 10 minutes ≈ 26 MB/min**, with the sawtooth (289 after 306).
+JS heap over the same span: **31 → 54 MB.** Nodes 912 → 962.
+
+**And the periodic sample understates it badly.** `vmmap` reports
+**physical footprint peak 2.9 GB** for this renderer against a current 383 MB.
+**A two-minute sampling interval never saw a 2.9 GB excursion.** That matters for
+"lockups": a transient multi-gigabyte spike locks the machine even when the tab
+recovers.
+
+**Rate is build-dependent.** Last night's build: 1.1–1.9 MB/min sustained. Today:
+~26 MB/min. Skip's own tab: 30–220 MB/min, reaching 12–15 GB in ~90 minutes.
+
+### 3. First retained owner / allocation evidence
+
+**Not the JS heap** — 54 MB while the process holds 446 MB.
+**Not sampled allocation** — `Memory.getSamplingProfile`, armed *before*
+navigation, captured **63.8 MB live** across a load in which a renderer grew
+**2.8 GB**. The memory does not pass through the sampled allocator.
+
+**It is anonymous VM regions, accumulating in count:**
+
+```
+pooled tab (growing)   Memory Tag 253   4,655 regions   114 MB resident  100 MB dirty
+                       Memory Tag 255     929 regions   120 MB resident  120 MB dirty
+                       shared memory       70 regions    31 MB resident
+Skip's renderer        anonymous          2,605 regions  1,050 MB
+```
+
+The tag-253 regions are `SM=NUL`, 0 K resident — **address-space reservations**,
+so the committed share is smaller than the count suggests. **The finest owner I
+can name is "thousands of small anonymous mappings, growing in number."** The
+allocation site itself is **unsymbolizable**: release Chrome is stripped and
+`atos` resolves every address to `ChromeMain + offset`.
+
+### 4. Slows, or dies?
+
+**Dies.** Two renderer crashes, ~90 minutes apart, at **15 GB and 12 GB**,
+confirmed from Chrome's own crash dumps — `ptype`, `--type=renderer`,
+`renderer_foreground`, each timestamped to the minute its renderer vanished. It
+is not a tab that gets sluggish; it is a tab that is killed.
+
+### 5. Ruled out, each by measurement
+
+- **JS heap** — flat while the process climbs.
+- **JS allocation** — 6.3 MB in 240 s on Skip's tab.
+- **Listener registrations** — `getEventListeners`: `document` 79 in both samples.
+- **DOM / canvas / shapes / iframes** — byte-for-byte constant across samples in
+  which footprint rose 903 → 918 MB.
+- **Images** — zero. **Voice PCM backlog** — capped by construction at 64 MB.
+- **The machine and Chrome itself** — a sibling renderer in the same browser gained
+  nothing over 80 minutes while the app's tab gained 121 MB.
+- **Skip's "is it debugging?"** — the same sibling shared his debugging
+  configuration and stayed flat. *Limit:* the protocol retains per target, so this
+  weakens rather than closes it.
+- **A rig artifact I nearly reported as the finding.** A standalone browser hit
+  **2.8 GB with a 5.5 GB peak** on a 300-node onboarding page — `shared memory`,
+  2.7 GB virtual, 2.4 GB swapped, 52 regions. **The pooled tab's shared memory is
+  40 MB.** So that blowup is specific to my standalone launch, **not the app**.
+  Recorded so nobody chases it.
+
+### 6. The exact remaining causal gap
+
+**Socket/sync activity is correlated and may be necessary. It is not established
+as the cause.**
+
+Clearing every timer: no effect. Suppressing `requestAnimationFrame` (2,072 calls
+blocked): no effect. **Taking the app offline: the drift stopped** — 445 → 446 MB
+over 35 minutes where it had been climbing ~1 MB/min.
+
+**Why that is not yet cause:** the offline run had timers and rAF still
+suppressed, and the pre-existing sockets were never confirmed closed at OS level.
+**The ordering control — offline from a cold tab — has never completed.** Five
+attempts, every one an environmental failure, none a result.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
