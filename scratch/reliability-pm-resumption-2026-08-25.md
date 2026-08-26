@@ -160,8 +160,20 @@ tailscale ... up --authkey="$TS_AUTHKEY" --hostname="${TS_HOSTNAME:-tlda-fly}" .
 
 So a dead key does not stop the machine — **the app comes up perfectly with no
 tailnet name, and the only signal is one echo line in the entrypoint log.** That
-is why this presents as a total outage of a completely healthy server. The route
-stays restart-fragile until the secret is replaced.
+is why this presents as a total outage of a completely healthy server.
+
+**CORRECTION, measured 2026-08-26 01:49Z: it does NOT break on every restart, and
+I told Skip it would.** The box was redeployed (version 1316 → 1317, up 1 min)
+and came back **authenticated** — `tailscale status` shows `tlda-fly ...
+davidahirshberg@`, no logged-out error. The reason: `tailscaled --state` persists
+to `$PERSIST/tailscale/tailscaled.state`, Skip's manual login wrote a valid node
+key there, and `tailscale up --authkey=<dead>` fail-softs **without clobbering
+the good state**.
+
+**What would still lose it:** a fresh machine, or anything that wipes that
+volume — the persisted state is the only thing holding the login, and the stored
+secret is still dead. So replacing `TS_AUTHKEY` is still worth doing, but it is
+not the standing per-restart hazard I described.
 
 **Recovery needs Skip and only Skip:** a Tailscale login click, or a fresh
 `TS_AUTHKEY`. Neither is mintable from here. Generate a fresh URL with
