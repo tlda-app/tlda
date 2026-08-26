@@ -2438,19 +2438,25 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     // once across 120 samples at 20Hz. Ask whether a row actually moved, using
     // the same measurement and the same 0.5px threshold as the layout effect
     // below -- getBoundingClientRect rather than entry.contentRect, for the
-    // reason recorded there.
+    // reason recorded there. The last height seen per row lives in this
+    // observer's own closure rather than in heightByKeyRef: the effect below
+    // owns that map and writes it on its own schedule, and reading a ref here
+    // would be a ref access during render.
+    const lastObservedHeight = new Map<string, number>()
     rowResizeObserverRef.current = new ResizeObserver(entries => {
+      let moved = false
       for (const entry of entries) {
         const row = entry.target as HTMLElement
         const key = row.dataset.chatItemKey
         if (!key) continue
         const nextHeight = row.getBoundingClientRect().height
         if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue
-        const previousHeight = heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
-        if (Math.abs(nextHeight - previousHeight) <= 0.5) continue
-        setGeometryVersion(version => version + 1)
-        return
+        const previousHeight = lastObservedHeight.get(key)
+        if (previousHeight !== undefined && Math.abs(nextHeight - previousHeight) <= 0.5) continue
+        lastObservedHeight.set(key, nextHeight)
+        moved = true
       }
+      if (moved) setGeometryVersion(version => version + 1)
     })
   }
   useEffect(() => () => rowResizeObserverRef.current?.disconnect(), [])
