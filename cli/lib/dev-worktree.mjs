@@ -433,6 +433,13 @@ export async function cmdServeWorktree(args) {
       PROJECTS_DIR: projectsDir(branch),
       TLDA_FLEET_DB: fleetDb(branch),
       TLDA_FLEET_SERVER: realFleet ? '' : base,
+      // The URL the server should use to reach ITSELF over git. It cannot be
+      // loopback under TLS: the listener answers `127.0.0.1`/`localhost` SNI
+      // with the mkcert cert, whose root git does not trust, so a self-push
+      // dies on `unable to get local issuer certificate`. `base` is the host
+      // the tailnet cert is actually issued for, and it is already computed
+      // here -- so hand it over rather than making the server re-derive it.
+      TLDA_SELF_BASE_URL: base,
     },
   })
 

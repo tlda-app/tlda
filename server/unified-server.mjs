@@ -73,6 +73,7 @@ import { admitProposal, initBuildDispatcher, killAllDispatchedBuilds, recoverBui
 import { migrateAllProjectParts } from './lib/migrate-project-parts.mjs'
 import { createGitHttpHandler } from './lib/git-http.mjs'
 import { parseHistorySeedRef } from '../shared/history-seed-ref.mjs'
+import { selfBaseUrl } from '../shared/self-base-url.mjs'
 import { listProposalRefs, parseDaemonProposalRef } from './lib/git-proposals.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
@@ -5288,10 +5289,16 @@ const hasTailnetCert = existsSync(TLS_CERT_TAILNET) && existsSync(TLS_KEY_TAILNE
  * listener about what it is. `useTls` decides both, and it is the same constant
  * the listener below is built from.
  *
+ * The HOST is not ours to guess under TLS. The SNI callback below answers
+ * loopback with the mkcert cert deliberately, and git does not trust that root,
+ * so a self-push at `127.0.0.1` fails on the issuer. A preview hands over the
+ * cert-valid URL it already computed, in `TLDA_SELF_BASE_URL`.
+ *
  * Lazily called, never evaluated at module load: the source-room git manager is
  * constructed on first push, long after this file has finished initialising.
  */
-const localServerBaseUrl = () => `${useTls ? 'https' : 'http'}://127.0.0.1:${PORT}`
+const localServerBaseUrl = () =>
+  selfBaseUrl({ supplied: process.env.TLDA_SELF_BASE_URL, useTls, port: PORT })
 
 let server
 if (useTls) {
