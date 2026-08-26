@@ -372,9 +372,40 @@ async function writeOnRemote(line) {
   // there and reached neither the server nor the checkout in 90s. That was the
   // harness asking for behaviour the app does not claim, not a sync failure —
   // which is exactly why the leg now exercises the path that does exist.
-  execFileSync('tlda', ['project', 'remote', 'pull', 'origin', '--project', PROJECT], {
-    cwd: CHECKOUT, encoding: 'utf8', timeout: 300_000, stdio: 'pipe',
-  })
+  // A PULL THAT CONFLICTS IS THE FINDING, NOT A BROKEN FIXTURE.
+  //
+  // Two people editing one document is what this demonstrates, so a merge
+  // conflict here is the product's real behaviour and it gets reported as such.
+  // What must not happen is leaving the conflict in the checkout: an unresolved
+  // merge SILENTLY HALTS ALL SETTLING for the project -- every route, not just
+  // this one -- so a demo that walked away would wedge the thing it is watching
+  // and every later cycle would measure the wedge instead of the product.
+  //
+  // So: report it, then put the checkout back so the next cycle still means
+  // something. `--abort` is safe here because this merge is one the demo itself
+  // started seconds earlier; it is not somebody's in-progress work.
+  try {
+    execFileSync('tlda', ['project', 'remote', 'pull', 'origin', '--project', PROJECT], {
+      cwd: CHECKOUT, encoding: 'utf8', timeout: 300_000, stdio: 'pipe',
+    })
+  } catch (error) {
+    const output = `${error.stdout || ''}${error.stderr || ''}${error.message || ''}`
+    if (!/conflict|unmerged/i.test(output)) throw error
+    try {
+      execFileSync('git', ['merge', '--abort'], { cwd: CHECKOUT, stdio: 'pipe' })
+    } catch {
+      // Swallowed deliberately: `merge --abort` exits non-zero when there is no
+      // merge in progress, which is one of the two states this can be in and is
+      // not a failure. The other state -- a merge that IS in progress and could
+      // not be aborted -- shows up immediately as the conflicted checkout the
+      // next cycle reports, so nothing is hidden by not raising here.
+    }
+    throw new Error(
+      'CONCURRENT EDIT CONFLICT: pulling the linked remote collided with a local edit of the same document. '
+      + 'The merge was aborted so the checkout is not left conflicted -- an unresolved merge silently stops the '
+      + 'daemon settling ANY route for this project.',
+    )
+  }
 }
 
 const WRITERS = { disk: writeOnDisk, browser: writeInBrowser, remote: writeOnRemote }
