@@ -227,16 +227,8 @@ export function HighlighterSlider() {
     setDragging(false)
     setDragIdx(null)
     setDragStartY(0)
-    // The cursor is NOT cleared here. It used to be, which hid the slider the
-    // instant you let go — while the pointer was still sitting in the zone. So
-    // the next press found `cursorY === null`: a live control with nothing
-    // drawn, which is the state Skip described and the one the guard in
-    // handlePointerDown now refuses to act on. Clearing on release would turn
-    // that guard into "your second tap does nothing".
-    //
-    // Presence is what the UI tracks: handlePointerLeave clears it when the
-    // pointer actually leaves, and the blur handler clears it when the window
-    // does.
+    setCursorY(null)
+    setCursorX(null)
     if (hudFadeRef.current) clearTimeout(hudFadeRef.current)
     hudFadeRef.current = setTimeout(() => setShowHud(false), 500)
   }
