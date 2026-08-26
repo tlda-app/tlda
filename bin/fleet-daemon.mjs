@@ -725,7 +725,7 @@ async function loadLocallyBoundProjects() {
 // failed link leaves nothing behind. A link that half-succeeds and leaves the
 // paper starting from version one is the old broken behaviour wearing a success
 // message.
-async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null, forceRebuild = false, acceptContainedServerHistory = false, preflightOnly = false }) {
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null, forceRebuild = false, acceptContainedServerHistory = false, preflightOnly = false, server = null }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
 
   const status = sourceSync.bindingStatus(project, sourceDir)
@@ -799,6 +799,9 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     kind,
     remote,
     mirrorMode,
+    // Only when the caller named one. Absent, the binding carries no server and
+    // the manager falls back to the daemon's, which is every ordinary link.
+    ...(server ? { server } : {}),
     ...(effectiveRoots ? { documentRoots: effectiveRoots } : {}),
   })
   try {

@@ -32,7 +32,16 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   function record(project) { return records().find(item => item.project === project) || null }
 
   function projectRemoteUrl(project) {
-    let remoteUrl = remoteUrlFor ? remoteUrlFor(project) : new URL(`/git/${encodeURIComponent(project)}`, server)
+    // A project bound with an explicit server pushes THERE. `--server` names the
+    // server for that command, and the git remote is part of what that command
+    // does -- it was governing the API call while the remote still came from the
+    // daemon's own config, so `tlda project scratch --server <preview>` created
+    // the project on the preview and pushed its content to the configured
+    // server instead. The binding is where a project's other facts already live,
+    // so this needs no new record.
+    const bound = load()[project]
+    const base = (bound && typeof bound === 'object' && bound.server) || server
+    let remoteUrl = remoteUrlFor ? remoteUrlFor(project) : new URL(`/git/${encodeURIComponent(project)}`, base)
     if (remoteUrl instanceof URL && token) { remoteUrl.username = safeRefPart(daemonId); remoteUrl.password = token }
     return remoteUrl.toString()
   }
@@ -352,6 +361,10 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   }
 
   return {
+    // The remote a push would use for a project. Readable because it is the
+    // thing `--server` is meant to govern, so it is what a check about that
+    // contract has to look at.
+    projectRemoteUrl,
     bindSource,
     unbindSource,
     sync,
