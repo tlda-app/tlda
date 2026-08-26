@@ -1183,3 +1183,45 @@ none.** The disposable fixture had an explicit `[]`, so the two are genuinely
 different record shapes and had been conflated. `documentRootsToDeclare`
 preserves both, so the fix is unaffected -- but the count means "18 records
 carry no documentRoots key", not what was previously reported.
+
+## 2026-08-26 — HARD STOP: an open source room publishes conflict markers
+
+Relinking the second real directory deviated at the restore check and the run
+halted there. The cause is a defect, not the instrument.
+
+**What happened.** The server's published source became **239 bytes of
+conflicted text against 72 on disk**, carrying git conflict markers rendered
+into the document, including a `>>>>>>> accepted server source for
+<project>:<file>` line.
+
+**Mechanism.** `server/lib/source-room-daemon.mjs` three-way merges the live
+room text against the incoming accepted server source with `git merge-file`.
+On conflict it accepts `status === 1`, keeps stdout **with the markers in it**,
+and that becomes the published source. `hasConflictMarkers()` exists in the
+same file and does not gate publication.
+
+**A READ is enough to trigger it.** The room was opened only to read. The room
+is server-side and outlives the client, holding the text it had; the disk
+restore then arrived as incoming and conflicted against it. So a person with
+the browser editor merely OPEN on a file, while anyone edits that file on disk,
+can get conflict markers published into the document. That is the
+two-people-editing-the-same-file case, and it fails.
+
+**NOT established.** The two earlier runs did the same sequence and restored
+cleanly. The visible difference is a 25-30s gap between room read and restore
+where the failing run had sub-second, which points at a race on whether the
+room flushes before the incoming revision lands (fresh vs stale merge base).
+Two observations, no isolating test. Do not repeat this as a cause.
+
+**State: everything restored.** All three touched projects (1 disposable
+fixture, 2 real) verified across disk, server AND room: local == server
+byte-identical, room == local, zero conflict markers, zero canary markers,
+checkouts clean.
+
+**Queue: 7 eligible directories untouched, 1 attempted and fully rolled back.**
+No further relinks pending the chief's word.
+
+Runner used: `scratch/relink-one.mjs` (gitignored, regenerable, a tool not a
+resumption point). It rechecks every precondition at action time, crosses the
+source room rather than reading `/source/` and calling that the browser, and
+restores before asserting so a failed arrival cannot leave an edit behind.
