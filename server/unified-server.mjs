@@ -79,6 +79,7 @@ import { createClassroomRouter, requireClassroomDocumentAccess } from './routes/
 import { ClassroomStore } from './lib/classroom-store.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
+import { classroomRoomAccess } from '../shared/classroom-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
@@ -5387,12 +5388,45 @@ server.on('upgrade', async (req, socket, head) => {
     const docName = url.pathname.slice(6)
     if (!docName) { socket.destroy(); return }
     const sessionId = url.searchParams.get('sessionId') || `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    // Who may be in this room, and whether they may write it.
+    //
+    // Until now this path took the room name and connected: the shared read
+    // token admitted every room, so a private layer was separated by its name
+    // rather than by a decision. That is fine while every room is the same kind
+    // of thing and stops being fine the moment one of them is a student's.
+    //
+    // The book and its common layer stay open to the read link — Skip: "we just
+    // need to make sure acces to student jnfo is token gated" — so the only new
+    // refusal is on a student's own layer. A browser WebSocket cannot set
+    // headers, so the enrolment token arrives on the URL like the bearer one.
+    const classroomStore = app?.locals?.classroomStore
+    const enrolmentToken = url.searchParams.get('classroomToken')
+    const enrolled = enrolmentToken && classroomStore
+      ? classroomStore.studentForToken(enrolmentToken)
+      : null
+    const access = classroomRoomAccess({
+      roomId: docName,
+      tokenLevel: validateToken(extractToken(req)),
+      studentId: enrolled?.id ?? null,
+    })
+    if (access === 'deny') {
+      console.warn(`[sync] refused "${docName}" session=${sessionId} enrolled=${enrolled?.id ?? 'none'}`)
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
     const room = await getOrCreateRoom(docName)
     const remoteAddr = req.socket.remoteAddress
     const remotePort = req.socket.remotePort
     syncWss.handleUpgrade(req, socket, head, (ws) => {
       trackWs(ws, { kind: 'sync', docName, sessionId, remoteAddr, remotePort })
-      room.handleSocketConnect({ sessionId, socket: ws })
+      // Server-enforced, not advisory: sync-core's own documentation for this
+      // parameter is `isReadonly: !userHasEditPermission`. A read-only session
+      // is refused writes by the room rather than by the client choosing not to
+      // send them.
+      room.handleSocketConnect({ sessionId, socket: ws, isReadonly: access === 'read' })
       ws.addEventListener('close', (ev) => {
         if (ev.code === 4099) {
           console.error(`[sync] Client rejected from "${docName}" session=${sessionId}: code=4099 reason="${ev.reason}"`)
