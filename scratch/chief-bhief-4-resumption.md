@@ -82,7 +82,20 @@ stale tip and reports success, which is the trap. **The only known way back is a
 fresh checkout.** `repo-doctor` is untried, not ruled out. Which chain wins is a
 design decision for daylight, not a patch.
 
-## THURSDAY / `pic`: THERE IS NO DAEMON FOR THAT ENVIRONMENT
+## `pic` — SUPERSEDED 2026-08-26 BY SKIP. NOT A BLOCKER.
+
+**Skip, via `sol-dev`, message 3361766:** *"`pic` is not in use now. Stop carrying
+its old code/empty project list as an active classroom blocker or release
+warning. It will receive fresh code when the class is actually put there. Do not
+deploy or configure pic now."*
+
+**So: do not deploy `pic`, do not configure it, do not load its daemon, and do
+not raise its stale code as a Thursday risk.** I pushed this as the top blocker
+for hours and it is not one. The section below is kept because the *findings*
+are true and someone will need them when the class is actually put there — but
+its framing as urgent is wrong and superseded.
+
+### What was found (still true, no longer urgent)
 
 **This is why the course book has never built, and it is upstream of everything
 else.** One `fleet-daemon` runs on this machine and it is `daemon-testing`.
