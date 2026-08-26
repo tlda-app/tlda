@@ -1775,6 +1775,45 @@ needs someone to check it against that reason.
 deploys still delete the maps their own profiles reference — but "all" is no
 longer accurate.
 
+
+### 01:00 — the ordering control is not obtainable on this machine tonight
+
+Four attempts, four environmental failures. **Each was caught rather than
+reported as a result**, which is the only reason this entry is a status and not a
+retraction.
+
+| attempt | what happened |
+|---|---|
+| pooled browser | daemon wedged; the arm **never reached the page** |
+| pooled browser | arm eval timed out; left an **unarmed tab**, not sampled |
+| standalone headless | onboarding state only, 35 MB vs 858 MB headed — **measures headless** |
+| standalone headed | **app did not render**: 258 DOM nodes after 180 s at load 48, vs ~900 healthy |
+
+**The fourth is the guard working as designed.** The rig refuses to arm unless
+the app rendered and self-tests that the blocked `WebSocket` constructor actually
+throws. It printed `APP DID NOT RENDER — refusing to arm` instead of returning a
+number. **A flat line from an unarmed or half-loaded page is indistinguishable
+from a successful suppression** — and a successful suppression is precisely the
+result this control exists to produce. Without the guard, every one of these four
+failures would have looked like confirmation.
+
+**Why it cannot be done now:** the Mini went `7 → 38 → 48 → 17` within twenty
+minutes. The control needs thirty minutes of quiet; the app currently cannot
+finish painting in three. The pool's specific failure is **fork-per-call** — each
+verb forks a `playwright-cli` for one CDP round trip — so a standalone CDP rig
+routes around that. **Nothing routes around the app not painting.**
+
+**Cleaned up:** standalone Chrome killed (0 processes), profile directory
+deleted, pooled tab released. Nothing of mine runs on the Mini. The Fly sampler
+continues per instruction.
+
+**What stands regardless**, so this is not read as the leak being unestablished:
+the leak, the ~90-minute crash cycle, the ruled-out list, the unattributed
+`malloc`, the reproduction across two cold starts, and the sibling control are
+all measured and untouched by this. **The only thing missing is the promotion of
+"socket activity is _necessary_" to "socket activity is _the cause_."** That
+distinction is real and is not being blurred to have something to report.
+
 ## Next action
 
 When his tab comes back: measure `LayoutCount` and `RecalcStyleCount` rates
