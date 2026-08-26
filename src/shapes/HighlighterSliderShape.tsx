@@ -58,7 +58,6 @@ export function HighlighterSlider() {
 
   // Derive activeIdx reactively from editor state — shared source of truth with button-slider
   const activeToolId = useValue('toolId', () => editor.getCurrentToolId(), [editor])
-  const isDrawingTool = activeToolId === 'highlight' || activeToolId === 'draw' || activeToolId === 'eraser'
   const activeColorName = useValue('colorName', () =>
     (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || 'yellow',
     [editor]
@@ -255,7 +254,7 @@ export function HighlighterSlider() {
       style={{
         position: 'absolute', right: 0, top: tocBottom || '10%', bottom: '10%', width: zoneWidth,
         zIndex: 999, cursor: 'pointer', touchAction: 'none',
-        pointerEvents: isDrawingTool ? 'none' : 'all',
+        pointerEvents: 'all',
       }}
     >
       {/* Slider dots at cursor position */}
