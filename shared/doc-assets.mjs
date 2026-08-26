@@ -26,11 +26,28 @@ export const BARE_METADATA = new Set([
   'source-map.json', 'theorem-map.json',
 ])
 
+/**
+ * The texBase of a project's primary tex target, or null.
+ *
+ * Read from `targets`, which is what the build actually recorded. It used to be
+ * derived from a single configured file with `main.tex` as a default, and that
+ * is wrong in both directions: on a project with two documents it answered for
+ * whichever one that field named, and on a project with no such document it
+ * returned a confident `main` for a document that does not exist. The second is
+ * how an asset lookup silently resolved to a name nothing had ever built.
+ *
+ * Null when nothing has built, which every caller already handles -- there is no
+ * default, because a guessed document name is the defect.
+ */
+function texBaseOf(project) {
+  const targets = Array.isArray(project?.targets) ? project.targets : []
+  return targets.map(target => target?.texBase).find(Boolean) || null
+}
+
 /** basename of the project's primary tex target (e.g. 'bregman-lower-bound'), or null. */
 export function primaryTexBase(projectsDir, name) {
   try {
-    const project = JSON.parse(readFileSync(join(projectsDir, name, 'project.json'), 'utf8'))
-    return (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
+    return texBaseOf(JSON.parse(readFileSync(join(projectsDir, name, 'project.json'), 'utf8')))
   } catch {
     return null
   }
