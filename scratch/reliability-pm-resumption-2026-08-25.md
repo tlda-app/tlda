@@ -308,6 +308,34 @@ three routes **concurrently into one document**. Serial-and-same-file still
 never overlapped in time. Skip: *"not that you can AVOID TESTING THE STUFF
 THAT'S ACTUALLY HARD"*.
 
+### WHAT RELINK ACTUALLY DOES, measured on disposable projects
+
+**Safe class — it repairs, and the repair is verifiable.** Throwaway put in the
+exact precondition (off its work branch, no edits, tip an ancestor):
+
+```
+before   branch=main            tip IS an ancestor
+after    branch=tlda/sync-safe  clean   tip IS an ancestor   → repaired
+```
+
+**Diverged class — it reports success and leaves the checkout broken:**
+
+```
+Submitted ab7fba3 through the daemon Git remote      <- reported success
+after: on its branch, clean, tip is NOT an ancestor  <- still cannot sync
+```
+
+**So the post-check is the only thing that separates them** — the command prints
+`Submitted` either way. Repairing without re-testing ancestry afterwards
+produces a report of a fixed checkout that still cannot push.
+
+**A trap that nearly produced a false conclusion:** run from the wrong
+directory, `tlda project link` fails with *"already has version history on this
+server; adopting another copy is a different operation"*. That is the guard
+working correctly — refusing to adopt a **different copy** — not evidence that
+relink is broken for projects with history. **Run it from inside the bound
+checkout**, and check `Source:` in its output before believing any result.
+
 ### SIX OF SKIP'S CHECKOUTS ARE ALREADY IN THIS STATE — swept 2026-08-26
 
 Read-only sweep of the 49 bindings under `~/work` in `testing`:
