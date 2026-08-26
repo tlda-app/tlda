@@ -1941,3 +1941,33 @@ the preserved `server.log`.
 Re-running it against this fix means putting this branch into their preview and
 restarting it -- moving another contributor's environment. Asked the chief to
 either authorise it or hand it to app-tester with the branch name.
+
+### Amended to `bef19e701` — staging failure THROWS
+
+The chief held integration and was right: `trackRoomFile` warned and carried on,
+so both callers could report success for a file that can never become a
+revision. **That is the exact shape described three lines above it in the same
+function** -- answered is not staged -- and then done anyway.
+
+- `trackRoomFile` now throws on a `remoteOperation` error AND on
+  `answer.tracked` false. The bytes are already persisted to the room tree and
+  its Yjs document, so failing costs nothing, and `flushRoom`'s catch schedules
+  the retry.
+- `submitFiles` answers **409 naming the file** instead of `202 queued`.
+
+**Negative control, and it bites:** `track-path` answers
+`{ inRepo: false, tracked: false, path: null }` -- the literal shape `trackPath`
+returns -- and the test asserts the answer is not 202, says `ok: false`, names
+*was not staged*, and that NOTHING was queued. Restoring warn-and-continue turns
+that test and only that test red (3 pass / 1 fail).
+
+4/4 with the fix. eslint, tsc -b, lint:guards clean.
+
+**Handed to app-tester** (`chat` 3386910) for the preserved :5191 mount gate:
+branch, commit, what to expect, and that a staging failure now surfaces as a
+loud 409 rather than a silent stall -- so they send the message rather than work
+around it. Their worktree and preview untouched.
+
+**Branches awaiting the chief:** `symlink-closure` at `d0b98a013`,
+`room-first-writer` at `bef19e701`, `held-edit-mark` at `9ef2fd6e5`,
+`latex-relink-gate` at `00ef09842`.
