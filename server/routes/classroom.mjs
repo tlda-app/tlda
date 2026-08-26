@@ -297,6 +297,21 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     res.json(row)
   })
 
+  // Who the caller is, by their token alone.
+  //
+  // The book surface needs this: a student reading the book has no assignment
+  // in hand, but their annotations go to a room named for them, so the page has
+  // to know who they are before it can open one. Same rule as `/mine` above —
+  // the id comes from the token and the request cannot name anyone else.
+  //
+  // An instructor gets `role: 'instructor'` and no student id; they choose whose
+  // overlay to read, and that choice is checked where it is made.
+  router.get('/me', (req, res) => {
+    const p = req.classroomPrincipal
+    if (p.role !== 'student') return res.json({ role: p.role })
+    res.json({ role: 'student', studentId: p.studentId, courseId: p.courseId })
+  })
+
   router.get('/assignments/:assignmentId/submissions/:studentId', (req, res) => {
     const { assignmentId, studentId } = req.params
     if (!canReadStudent(req.classroomPrincipal, assignmentId, studentId, store)) return res.status(403).json({ error: 'Forbidden' })

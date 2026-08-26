@@ -12,6 +12,8 @@ import { STORE_HTTP } from './activeConfig'
 import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
+import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
+import { classroomApi, type ClassroomIdentity } from './classroom/api'
 import type { SvgDocument } from './loaders/types'
 import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 import type { Editor } from 'tldraw'
@@ -26,6 +28,8 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const [activeIndex, setActiveIndex] = useState(0)
   const [document, setDocument] = useState<SvgDocument | null>(null)
   const [loading, setLoading] = useState(true)
+  const [bookEditor, setBookEditor] = useState<Editor | null>(null)
+  const [identity, setIdentity] = useState<ClassroomIdentity | null>(null)
   // Pending cross-member anchor navigation: set before switchTo, consumed after load
   const pendingAnchor = useRef<string | null>(null)
 
@@ -154,6 +158,19 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     window.postMessage({ type: 'tlda-navigate', anchor, shapeId: null, targetFile: activeMember?.key || null, __bookRouted: true }, '*')
   }, [loading, members, activeIndex])
 
+  // Who is reading, if anyone enrolled is. Asked once, and only when the reader
+  // arrived with an enrolment token — a book opened without one is an ordinary
+  // book and must not start asking a classroom API about its reader.
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).get('classroomToken')) return
+    let cancelled = false
+    classroomApi.me()
+      .then(next => { if (!cancelled) setIdentity(next) })
+      // Not enrolled, or the token no longer resolves. The book stays a book.
+      .catch(() => { if (!cancelled) setIdentity(null) })
+    return () => { cancelled = true }
+  }, [])
+
   const ctx = useMemo<BookContextValue>(() => ({
     bookName,
     members,
@@ -163,6 +180,13 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
 
   const activeMember = members[activeIndex]
   const roomId = activeMember ? `doc-${activeMember.key}` : ''
+
+  // The book's editor, kept so the overlay above it can follow its camera and
+  // its tool selection. Passed on to the original caller unchanged.
+  const handleEditorMount = useCallback((editor: Editor | null) => {
+    setBookEditor(editor)
+    onEditorMount?.(editor)
+  }, [onEditorMount])
 
   // Empty book (no resolvable members): show blank canvas
   if (members.length === 0) {
@@ -178,7 +202,19 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       <div className="book-viewer">
         {loading && <div className="book-loading">Loading {activeMember?.name}...</div>}
         {!loading && document && (
-          <SvgDocumentEditor key={activeMember.key} document={document} roomId={roomId} onEditorMount={onEditorMount} />
+          <SvgDocumentEditor key={activeMember.key} document={document} roomId={roomId} onEditorMount={handleEditorMount} />
+        )}
+        {/* A student reading the book gets their own layer over it. Everyone
+            reads the book's room; only this student writes theirs. Nobody else
+            in the book — Skip, a colleague, anyone without an enrolment token —
+            gets an overlay at all, and the book behaves exactly as before. */}
+        {!loading && document && identity?.role === 'student' && (
+          <StudentAnnotationOverlay
+            key={`${activeMember.key}:${identity.studentId}`}
+            bookRoomId={roomId}
+            studentId={identity.studentId}
+            bookEditor={bookEditor}
+          />
         )}
       </div>
     </BookContext.Provider>
