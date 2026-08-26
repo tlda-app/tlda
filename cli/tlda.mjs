@@ -75,7 +75,7 @@ import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
-import { normalizeDocumentRoots } from '../shared/document-roots.mjs'
+import { documentRootsToDeclare, normalizeDocumentRoots } from '../shared/document-roots.mjs'
 
 // --- Argument parsing ---
 
@@ -955,9 +955,22 @@ async function cmdCreate() {
 
   const mainFile = mainArg || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
-  const effectiveDocumentRoots = projectDocumentRoots.length > 0
-    ? projectDocumentRoots
-    : normalizeDocumentRoots([mainFile], { mainFile, format: 'svg' })
+  // AN EXISTING PROJECT'S EMPTY DECLARATION IS AN ANSWER, NOT A GAP.
+  //
+  // This fell back to deriving roots from the main file whenever none were
+  // supplied, and the relink path then PATCHes the result -- so relinking a
+  // project that declares no roots wrote one in on its behalf. Making the roots
+  // argument optional got past the usage gate and walked straight into this:
+  // the invention moved one step later rather than going away.
+  //
+  // Only relinking is affected. Creating a project still derives roots from the
+  // main file, because a new project has no declaration to preserve.
+  const effectiveDocumentRoots = documentRootsToDeclare({
+    supplied: projectDocumentRoots,
+    existing: projectDocumentRoots,
+    mainFile,
+    projectExists: rootArgs.length === 0 && Boolean(existingRecord),
+  })
 
   await bindLocalSource()
   console.log(dim(`  Source: ${dir}`))
