@@ -983,7 +983,12 @@ async function cmdCreate() {
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
-      await api('PATCH', `/api/projects/${name}/document-roots`, { documentRoots: effectiveDocumentRoots })
+      // An existing project that declares nothing keeps declaring nothing: the
+      // way to keep an empty declaration is not to write one.
+      const alreadyDeclares = ((existingRecord?.documentRoots) || []).length > 0
+      if (rootArgs.length || alreadyDeclares) {
+        await api('PATCH', `/api/projects/${name}/document-roots`, { documentRoots: effectiveDocumentRoots })
+      }
       updatedExistingProject = true
       console.log(`Project "${name}" exists, pushing files.`)
     } else {
