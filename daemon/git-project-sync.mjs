@@ -630,6 +630,14 @@ export function createGitProjectSync({
         // person's checkout that already has history keeps starting the branch
         // from their own HEAD, which is what they would expect.
         const hasCommits = await rev('HEAD')
+        // No flag, and no caller opting in. A checkout with no commits is a
+        // fresh checkout of this project, and a fresh checkout of a project
+        // starts at the project's head -- that is simply what checking a
+        // project out means, for the editor and for a person alike.
+        //
+        // It does not change linking a NEW directory as a new project: there is
+        // no project head yet, so this resolves to null and the branch is
+        // unborn exactly as before.
         const projectHead = hasCommits ? null : (await rev(fetchedRef)) || (await rev(revisionRef))
         if (projectHead) await git(['checkout', '-b', shortBranch, projectHead])
         else await git(['checkout', '-b', shortBranch])
