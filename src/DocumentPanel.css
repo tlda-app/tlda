@@ -228,7 +228,7 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
      ever set by applyZoneWidth(), which runs from ZoneWidthThumbControl in the
      prefs panel, so someone who has never opened settings gets this literal and
      nothing else. Keep it equal to ZONE_WIDTH_DEFAULT in TocTab.tsx. */
-  width: var(--zone-width, 50px);
+  width: var(--zone-width, 250px);
   pointer-events: all;
   z-index: 0;
 }
