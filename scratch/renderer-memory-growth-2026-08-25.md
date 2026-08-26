@@ -2220,3 +2220,55 @@ the object or its retainer.
 **Retracted:** the claim that closing this needed a CDP-attachable browser. It did
 not. The in-page `rAF` wrapper recovered the stacks because the loop re-registers
 every frame.
+
+## 2026-08-26 — the repair, and why its proofs did not run
+
+**Branch `fix/chat-row-ro-gate`, commit `3951720d3`**, worktree
+`~/worktrees/chat-row-ro-gate`. Gates the row `ResizeObserver` callback on a real
+height change, using the same `getBoundingClientRect()` and the same 0.5px test
+as the layout effect fifteen lines below.
+
+- `tsc -b --force` clean, **and proven able to go red** — an injected
+  `const x: number = "…"` produced `TS2322` at the right line.
+- `npm run build` clean, `✓ built in 3m 7s`. **Patch verified in the shipped
+  artifact**: `dist/index.html` names `assets/index-D0Ae8y4t.js`, whose sourcemap
+  contains the code and comment.
+- lint **+1**, not 0: 45 → 46 `Cannot access refs during render`, from
+  `heightByKeyRef.current` inside the observer callback. **Not cheaply avoidable**
+  — the observer must exist before rows mount, because ref callbacks run before
+  effects; create it in a `useEffect` and the ref finds `null` and nothing is ever
+  observed.
+
+### The three behavioural proofs did NOT run
+
+No page could be produced that has **both a document and the fleet chat panel** in
+front of the patched build. Each route failed for a different pre-existing reason:
+
+| target | failure |
+|---|---|
+| `leak-probe-mem` on vite dev | root error boundary, reproducible — a pre-existing `fleet-docview` shape whose layer is undefined in dev. The deployed app renders the same room fine. |
+| `scratch-rowprobe` via `project scratch` | created live, **never built**; `buildStatus: unknown`, docs 404 |
+| `pw setup --project <new>` | does **not** create a project — 404 |
+| `tlda-dev serve` default scratch project | `pages: 0`, `lastBuild: null`, **`archived: true`** |
+| `serve --project leak-probe-mem` | *"no such project under `server/projects`"* — the preview serves the **local** projects dir. `--real-fleet` shares the fleet store, **not documents** |
+| preview root | *"No documents found. Use `tlda create`"* — **no such command**; stale hint |
+
+**First failing step:** the preview's isolated projects directory holds exactly one
+project, created `archived: true` and never built.
+
+**Not attempted, deliberately:** hand-building a project directory inside the
+shared checkout, and deleting the shape that crashes the dev render. The first
+invents infrastructure; the second destroys data to make a test pass.
+
+### For whoever picks this up
+
+`tlda-dev serve --real-fleet --no-build` from the worktree is the right tool and
+serves the patched bundle correctly on :5192 — the gap is only a renderable
+project inside it. The proof that matters most is **delayed row-height growth**:
+a row that grows after being positioned must still remeasure and push the row
+below. A gate on remeasurement is exactly the shape of fix that flattens the
+memory graph by breaking that, and no memory chart would show it.
+
+**Side effect caused while hunting for a renderable project:** an automated tab was
+pointed at **`fleet-workspace`**, which applies the fleet layout preset and writes
+fleet shapes into that shared room. Not swept back out.
