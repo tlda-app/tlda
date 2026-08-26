@@ -180,6 +180,44 @@ enforcement: `/sync/:room` has no per-room check, so "not shown" rather than
 "refused". **On the branch, refusal is implemented and is a thing to verify.** Do
 not carry the `main` statement onto the branch; that is the whole distinction.
 
+## 1b. Fifth fault — the room never staged its own first file (`bef19e701`)
+
+After all four transport faults were fixed, the mount still failed:
+
+```
+server.log   proposal not accepted: empty-checkout
+room tree    ?? main.md   (untracked)   zero commits   unborn HEAD
+project      pages 0 · sourceRevision NONE
+```
+
+**A project whose first file comes from the source editor could never publish.**
+`settledCommit` stages **tracked changes only** — `d60d18573` removed `add -A`
+deliberately, since the app must not stage files in a repository it does not own,
+the accepted cost being that a person's new file waits for their own `git add`.
+**A source room has no author at a keyboard**, so nothing ever staged its file:
+empty tree, `empty-checkout`, on every settle forever. `bef19e701` has the room
+stage what it owns via `track-path` before queueing.
+
+**Verified on this rig:** `pages 1 · build success · rev 5467a69b6658` on the first
+sample, `/docs/…` → 200, and the room tree showing `f36f635 "tlda settled edit
+cluster"` with **0 dirty paths**.
+
+### `not-on-work-branch` appears once and is NOT a fault — do not chase it
+
+Traced by `reliability-pm`. `sync()` runs one settle through `start()` **before**
+the caller stands the tree on the work branch:
+
+```
+source-room-daemon.mjs   gitSync.bindSource(…)
+                         await gitSync.sync([record])      ← settles ONCE here
+                         await standRoomOnProjectBranch(…)
+```
+
+On a **fresh** room HEAD is still `main`, so that first settle is correctly refused
+and logs the line; the stand then happens and the next settle publishes. On an
+**established** room the tree is already on the branch and the line never appears.
+**Transient by construction — one refused settle and one log line.**
+
 ## 2. Three rig traps — all produce an empty canvas, two silently
 
 The most reusable thing here. **All three look identical to a feature that simply
