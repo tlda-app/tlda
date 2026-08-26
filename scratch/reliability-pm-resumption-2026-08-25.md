@@ -1834,3 +1834,29 @@ trigger is a decision, not a cleanup.
 
 The third test now pins the real containment behaviour: nothing from outside the
 repository is carried in, and its absence does not stop the document publishing.
+
+### Amended to `8b3b719ef` — criterion 3 proven, not caveated
+
+The chief rejected the caveat and was right. `runGit` reaches the check
+directly.
+
+| | result |
+|---|---|
+| with the fix, check intact | **4 pass / 0 fail** |
+| check replaced with `continue` | **3 pass / 1 fail** — only the immutable-check test |
+| pre-fix code | 1 pass / 2 fail — `immutable closure member is absent` |
+
+**How it reaches the check:** `runGit` passes through to real git, and
+`read-tree --empty` flips a flag. That command runs immediately before the
+verification loop, so it marks the end of closure construction SEMANTICALLY
+rather than by counting calls — a count would shift the moment anyone adds a git
+call. After the flag, `ls-tree` for the document returns empty and the unchanged
+check refuses it by name. It also asserts NO PROPOSAL reached the remote: a
+check that threw after pushing would satisfy the rejection and still ship the
+incomplete document.
+
+Production comment shortened to the invariant (seven lines, no route claims).
+The test-file header was corrected too — it said no fixture reaches the check,
+true when written and false after this amend.
+
+All five criteria met. Neighbouring `git-project-sync` unchanged at 8/2.
