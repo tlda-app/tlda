@@ -95,9 +95,21 @@ export function subscribeCanPresent(fn: () => void): () => void {
   return () => { presentListeners.delete(fn) }
 }
 
-/** Append ?token=xxx to a URL (for WebSocket or other URL-based auth) */
+/**
+ * Append ?token=xxx to a URL (for WebSocket or other URL-based auth).
+ *
+ * The enrolment token rides along when there is one. A browser WebSocket cannot
+ * set headers, so the sync path cannot use `x-tlda-student-token` the way the
+ * classroom API does — and without it the server sees an anonymous read-token
+ * visitor and refuses the student their own layer. Same value, same source: the
+ * `classroomToken` already on the page URL.
+ */
 export function appendToken(url: string): string {
-  if (!_token) return url
+  const classroomToken = new URLSearchParams(window.location.search).get('classroomToken')
+  const parts: string[] = []
+  if (_token) parts.push(`token=${_token}`)
+  if (classroomToken) parts.push(`classroomToken=${encodeURIComponent(classroomToken)}`)
+  if (parts.length === 0) return url
   const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}token=${_token}`
+  return `${url}${sep}${parts.join('&')}`
 }

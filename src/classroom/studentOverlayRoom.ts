@@ -1,10 +1,8 @@
 // Where a student's own annotations live.
 //
-// The book's room is the layer the whole class shares; this names the room that
-// holds one student's marks over it. Derived from the book's room rather than
-// stored anywhere: the overlay is a coordinate on a book the caller already
-// named, the same way AGENTS.md reads `eiv-paper@0b77278` — so there is nothing
-// to keep in step and nothing to reconcile if a book is renamed.
-export function studentOverlayRoomId(bookRoomId: string, studentId: string): string {
-  return `${bookRoomId}::student::${studentId}`
-}
+// The name is built in `shared/classroom-rooms.mjs` because the server parses
+// what the client builds — it decides from this name whether a caller may enter
+// the room at all. Two encodings that agree today are two that disagree after a
+// rename, and the disagreement would show up as a student locked out of their
+// own layer.
+export { studentOverlayRoomId } from '../../shared/classroom-rooms.mjs'
