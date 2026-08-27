@@ -2220,3 +2220,243 @@ the object or its retainer.
 **Retracted:** the claim that closing this needed a CDP-attachable browser. It did
 not. The in-page `rAF` wrapper recovered the stacks because the loop re-registers
 every frame.
+
+## 2026-08-26 — the repair, and why its proofs did not run
+
+**Branch `fix/chat-row-ro-gate`, commit `3951720d3`**, worktree
+`~/worktrees/chat-row-ro-gate`. Gates the row `ResizeObserver` callback on a real
+height change, using the same `getBoundingClientRect()` and the same 0.5px test
+as the layout effect fifteen lines below.
+
+- `tsc -b --force` clean, **and proven able to go red** — an injected
+  `const x: number = "…"` produced `TS2322` at the right line.
+- `npm run build` clean, `✓ built in 3m 7s`. **Patch verified in the shipped
+  artifact**: `dist/index.html` names `assets/index-D0Ae8y4t.js`, whose sourcemap
+  contains the code and comment.
+- lint **+1**, not 0: 45 → 46 `Cannot access refs during render`, from
+  `heightByKeyRef.current` inside the observer callback. **Not cheaply avoidable**
+  — the observer must exist before rows mount, because ref callbacks run before
+  effects; create it in a `useEffect` and the ref finds `null` and nothing is ever
+  observed.
+
+### The three behavioural proofs did NOT run
+
+No page could be produced that has **both a document and the fleet chat panel** in
+front of the patched build. Each route failed for a different pre-existing reason:
+
+| target | failure |
+|---|---|
+| `leak-probe-mem` on vite dev | root error boundary, reproducible — a pre-existing `fleet-docview` shape whose layer is undefined in dev. The deployed app renders the same room fine. |
+| `scratch-rowprobe` via `project scratch` | created live, **never built**; `buildStatus: unknown`, docs 404 |
+| `pw setup --project <new>` | does **not** create a project — 404 |
+| `tlda-dev serve` default scratch project | `pages: 0`, `lastBuild: null`, **`archived: true`** |
+| `serve --project leak-probe-mem` | *"no such project under `server/projects`"* — the preview serves the **local** projects dir. `--real-fleet` shares the fleet store, **not documents** |
+| preview root | *"No documents found. Use `tlda create`"* — **no such command**; stale hint |
+
+**First failing step:** the preview's isolated projects directory holds exactly one
+project, created `archived: true` and never built.
+
+**Not attempted, deliberately:** hand-building a project directory inside the
+shared checkout, and deleting the shape that crashes the dev render. The first
+invents infrastructure; the second destroys data to make a test pass.
+
+### For whoever picks this up
+
+`tlda-dev serve --real-fleet --no-build` from the worktree is the right tool and
+serves the patched bundle correctly on :5192 — the gap is only a renderable
+project inside it. The proof that matters most is **delayed row-height growth**:
+a row that grows after being positioned must still remeasure and push the row
+below. A gate on remeasurement is exactly the shape of fix that flattens the
+memory graph by breaking that, and no memory chart would show it.
+
+**Side effect caused while hunting for a renderable project:** an automated tab was
+pointed at **`fleet-workspace`**, which applies the fleet layout preset and writes
+fleet shapes into that shared room. Not swept back out.
+
+## 2026-08-26 (later) — the patched bundle, and what its proofs did and did not show
+
+Branch `fix/chat-row-ro-gate`. `9c5bf5f13` restructures the comparison so the
+observer keeps last-seen heights in its **own closure** rather than reading
+`heightByKeyRef` — lint **45**, equal to unmodified `main` (the earlier form was
+46). Better on the merits too: the layout effect owns that map and writes it on
+its own schedule. `c4ee70a07` merges `main` for the preview seeder.
+
+**The rig that finally worked**, after six failed routes recorded above:
+`tlda-dev serve start --real-fleet --no-build`, then unarchive its own scratch
+project — the route is `PATCH /api/projects/:name/archive` with
+`{"archived":false}`. There is **no** `PATCH /api/projects/:name`. Result: 1255
+nodes, 7 chat rows, patched bundle, no crash.
+
+### Proof 1 — idle self-scheduling: GREEN
+
+294 observe / 276 unobserve per 5 s unpatched, against **0 / 0** patched, both on
+**stable idle geometry**. Counter verified live (a fresh observer incremented it).
+
+**Correction to how this was first read.** Re-measured later the patched tab
+showed **40 observe / 37 unobserve per 5 s** — because **the patch gates the state
+bump, not the `observe()` calls.** The inline ref still re-observes every row on
+every render, so observation tracks *genuine* renders; the 40 was live chat
+arriving with rows going 7 → 11. The green stands (idle vs idle), but "0
+observes" is **not** a general property of the patched build.
+
+### Proof 2 — delayed row-height growth: GREEN, with a RED
+
+| condition | row grew | row below moved |
+|---|---|---|
+| patched, observation live | 300 px | **300 px**, exact |
+| patched, chat-row observation blocked | 300 px | **0 px** |
+
+The red is the point: the test can fail, so the pass means something. This is the
+proof that mattered — a gate on remeasurement is exactly the fix that flattens
+memory by breaking layout, and no memory chart would show it.
+
+### Proof 3 — slope: INCONCLUSIVE
+
+First 18 min looked favourable (1.05 vs 2.10 MB/min). **Extended to 22 min it
+converged: patched 2.44, unpatched 2.26.** The early advantage was a short-window
+artifact.
+
+**And the comparison is confounded anyway.** The patched tab was **ingesting live
+fleet chat** (rows 7 → 11) while the control sat **static at 3 rows**. Accumulated
+messages are real retained memory. Two tabs, two projects, two bundles, unequal
+chat activity — the paired timing controls machine noise and none of that.
+
+**So: not "flattens", not "does not flatten".** The rig cannot separate the patch
+from unequal ingestion.
+
+**The memory evidence still rests on the same-tab suppression** — one tab, one
+process, one variable toggled, same wall clock: **2.26 → 0.14 MB/min**. That is
+the measurement to extend, not this one.
+
+### What would settle proof 3
+
+Patched and unpatched bundles of the **same** project, matched row counts, an idle
+window with no chat arriving — or a longer same-tab suppression run.
+
+## 2026-08-26 (later still) — the matched build-vs-build control
+
+Two isolated previews differing by **exactly one commit**: patched `c4ee70a07`
+(port 5192) against its unpatched parent `ff070725a` (port 5193), each
+`tlda-dev serve --real-fleet --no-build` with its own seeded, unarchived project.
+Both bundles verified: the patched sourcemap contains the new code, the control's
+contains **zero** occurrences. Renderers identified by ballast — patched 40261,
+control 49343. All schedulers live, no in-page suppression, no deployed tab.
+
+### Observation churn — DECISIVE
+
+10-second windows, taken minutes apart on the two previews:
+
+| build | observe / 10s | unobserve / 10s | row set changed during window | rows | counter proven working |
+|---|---|---|---|---|---|
+| **unpatched parent `ff070725a`** | **807** | 806 | no | 13 | yes |
+| **patched `c4ee70a07`** | **1** | 0 | no | 10 | yes |
+
+Both windows had a **stable row set** (row keys identical at start and end), and
+both counters were proven live in the same call by constructing a fresh observer
+and watching the count move. So 1-vs-807 is the loop present against the loop
+absent, on the same rig, same project shape, same fleet, differing by one commit.
+
+**This is the cleanest evidence in the whole investigation** and it does not
+depend on footprint at all.
+
+### Memory slope — still NOT established
+
+| | window | footprint | slope | rows |
+|---|---|---|---|---|
+| patched | 19:46:41 → 20:02:05 | 294 → 546 MB | 16.4 MB/min | 7,7,7,7,9,8 |
+| control | 19:46:41 → 20:02:05 | 453 → 676 MB | 14.5 MB/min | 7,5,7,10,10,10 |
+
+Patched is **slightly higher**, not lower. But both previews grow ~15 MB/min from
+something common to both, and the loop's own contribution measured ~2 MB/min in
+the same-tab suppression test — so **this rig cannot resolve the effect it was
+built to measure.** It is underpowered, not negative. Row counts also drifted
+apart (control 10 vs patched 8), so ingestion was not perfectly matched either.
+
+**Standing conclusion: the loop is proven stopped; the memory improvement is not
+proven.** Do not claim one.
+
+## 2026-08-27 — A-B-A retires the memory attribution
+
+Fresh **deployed** tab (renderer 12781), 2 static rows, chat-row observation
+toggled within one tab and one process. Rows never changed. The A′ arm is the
+control the earlier two-arm tests lacked.
+
+| arm | condition | window | footprint | slope |
+|---|---|---|---|---|
+| A | observation live | 08:59:15 → 09:11:28 | 253 → 315 MB | **5.08 MB/min** |
+| B | observation blocked | 09:13:31 → 09:21:59 | 321 → 335 MB | **1.65 MB/min** |
+| A′ | observation restored | 09:24:04 → 09:32:04 | 338 → 347 MB | **1.13 MB/min** |
+
+**Restoring the loop did not restore the growth.** So the A→B drop is **burst
+decay, not suppression**. Blocking was verified firing in both directions (34
+chat-row observes suppressed per 6 s in B; 118 observes per 6 s on restore).
+
+### What this retires
+
+**The memory attribution to the row-observation loop is not supported.** The
+2026-08-26 same-tab result (2.26 → 0.14 MB/min) that the whole memory claim
+rested on was almost certainly this same artifact — a burst ending during the
+suppressed arm. It had **no A′ arm**, so it could not tell the two apart.
+
+Also retired: the reading, from two hours earlier, that "loop hot and memory flat
+contradicts the attribution." That was equally a short-window inference and was
+false within the hour — the same tab then grew 5 MB/min with nothing changed.
+
+### What survives, unaffected
+
+The loop is real and the shipped fix stops it — **807 observe/10 s against 1**,
+matched builds one commit apart, stable row sets, counters proven live. That is a
+count, not a slope, and no amount of burstiness touches it. `e65067f41` and
+`32512862e` landed as a **correctness repair with memory explicitly unmeasured**,
+which is exactly the right framing and is now the only defensible one.
+
+### Still open, and now the main thread
+
+- **The driver of the original 26 MB/min reproduction is unidentified.** It is not
+  the row-observation loop on this evidence.
+- **A residual ~1.1–1.7 MB/min** persists with the loop suppressed, on a tab whose
+  two rows are both `__status__`. Not chat ingestion. Unattributed.
+- **Growth arrives in bursts.** Any A/B without a return arm measures burst phase,
+  not the variable. **Require A-B-A here.**
+
+## 2026-08-27 — 26 MB/min retired as a steady-rate premise
+
+**The figure this investigation was built on was a 10-minute window** (184 → 446 MB,
+08-25). Everything since says 10 minutes is *inside* the burst timescale, so it
+measured an excursion, not a rate.
+
+Measured today, deployed build, disposable project, one renderer:
+
+| tab | window | slope |
+|---|---|---|
+| 2 rows, no fleet layout | 12 min | ~1 MB/min |
+| 6 rows + 27 fleet shapes | **first 4 min** | **11.4 MB/min** |
+| same tab | **full 12 min** | **1.9 MB/min** |
+
+285 → 344 → 306 → 308. The 11.4 was an excursion, and I recorded it as a rate one
+step before catching it — the same error the A-B-A had caught hours earlier.
+
+### What is retained
+
+- **Fatal accumulation is real.** Two `renderer_foreground` crash dumps, **15 GB and
+  12 GB**, ~90 minutes apart. The tab dies; it does not merely slow.
+- **Growth scales with fleet-layout contents.** Same build, server, project and
+  process: 2 rows/no layout ≈ 1 MB/min; 6 rows + 27 shapes ≈ 2 MB/min with far
+  larger excursions. The driver is proportional to what the layout holds, not a
+  fixed background cost. Consistent with the original tab having ~18 rows.
+
+### What is retired
+
+- **26 MB/min as a steady rate.** Do not quote it. Any comparison built on
+  minute-scale slopes — every one in this file before today — measured burst phase
+  as much as the variable under test.
+- **The earlier `rAF` suppression result.** It has the same defect as the row-loop
+  result the A-B-A overturned: a suppression arm with **no return arm**. It is not
+  evidence and is not to be cited. If `rAF` is tested again it starts from scratch
+  as A-B-A.
+
+### The standing instrument
+
+6-hour sampler, 5-minute cadence, fleet-layout tab on the deployed build. Minutes
+cannot answer this — the excursions are larger than the effects being hunted.
+Candidates are A-B-A'd against a *trend*, never against a window.

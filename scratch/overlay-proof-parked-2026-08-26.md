@@ -1,235 +1,173 @@
-# Student-overlay proof — parked, blocker diagnosed — 2026-08-26
+# Classroom student-layers gate — current as of 2026-08-27 (rewritten)
 
-`app-tester` (`fleet:2b6fe909`), for `classroom-pm`. A parked overlay proof with its
-blocker diagnosed, and three rig traps that are the reusable part.
+`app-tester` (`fleet:2b6fe909`), for `classroom-pm` (`fleet:b65105ef`) and `sol-dev`
+(`fleet:9d6d09a5`).
 
-## 0. STOP — the target behaviour changed. Do not resume against §1's spec
+**Rewritten in full.** The previous revision said *"0 of 6 checks run, waiting on a
+gating flag"* — that flag landed, six checks ran, two defects were found and fixed,
+and the environment has since been destroyed. Nothing of the old status survives, so
+patching it would have left a document disagreeing with itself.
 
-**Superseded 2026-08-26 02:05 EDT, before anything was proved.** Skip:
+## Status in one line
 
-> the idea is anyone should be able to write to any layer they have write access to
+**Environment rebuilt on `:5190`, gated, at head `6404d0106`.** Teacher mount and
+canvas rendering now pass; **the Mine-select crash is back and blocks routing**, with
+both of its fixes verifiably present in the build.
 
-> its supposed to be a spatial communication tool
+## Status detail, 2026-08-27
 
-and, just before:
-
-> so students cant submit their stuff to the common layer? can they write it directly?
-
-**So "a student's mark lands in their own overlay and nowhere else" is not the
-model.** The branch routes every mark-making tool into the private overlay
-automatically, which makes it impossible for a student to write the common layer at
-all. That is a blanket prohibition; his words put **write access** in charge
-instead — layers are selectable surfaces, and whether you may write one is a matter
-of access.
-
-**Proving the routing would have certified the wrong thing.**
-
-### The settled spec (2026-08-26, supersedes the five behaviours)
-
-Task `fleet:2b6f-mtaaclz6`, head **`f6948f235`**. Verify on the branch:
-
-- independently selectable visible layers
-- **exactly one** write target
-- **common/class is writable and is the default**
-- private **Mine** room writable only by its owner
-- teacher views student layers **read-only**
-- the layer menu becomes a **move-to-layer** menu **only when a canvas selection is
-  active**
-- a moved annotation **preserves position** and lands in the target room
-- **no automatic tool-based routing** — this is the point Skip's words changed
-- unauthorized WebSocket upgrades are **refused**
-
-**On that last one — read this before reporting it.** It is **branch behaviour,
-newly implemented**, not current-`main` behaviour and **not a regression check**.
-The builder wire-proved 3 refusals and 4 accesses. **If it fails, that is a branch
-feature failure.** Reporting it as a regression would be wrong, and it is the kind
-of wrong verdict that gets acted on.
-
-**This supersedes the earlier statement in this file that isolation is by room
-naming rather than enforcement.** That was true of `main` when written; the branch
-adds the enforcement. Both statements are correct about their own subject, which is
-exactly how a stale note misleads — so: **naming-only on `main`, enforced on the
-branch.**
-
-**What is still good below, because none of it depends on which layer a mark lands
-in:** the transport blocker (§1), the staged setup, the identity route, and the
-three rig traps (§2). Whatever the design becomes, it still needs two enrolled
-students in a preview that can accept content.
-
-## 1. Student-overlay proof — parked
-
-Branch `classroom-student-overlay`, head **`9a38e5d6a`**. **Behaviours 1, 2 and 3
-are neither established nor refuted** — there was never a rendered book to draw on.
-Not "the overlay didn't work." **And per §0 they are no longer the thing to prove.**
-
-### Blocker: RESOLVED 2026-08-26 — three faults, not one
-
-Source push into a TLS preview is **fixed and proven end to end** (a real document
-mounted and rendered KaTeX). It took **three distinct faults**, all of which had to
-land:
-
-| fault | commit |
+| test | result |
 |---|---|
-| internal HTTP/HTTPS scheme — the one diagnosed below | `fb5b14d0b` |
-| `--server` git-remote routing | `0f8da75ef` |
-| tokenless Basic username | `fc379cb0f` |
-| **self-remote dialled loopback, whose cert git does not trust** | **`e5701db4e`** |
+| teacher mounts by credential (RW + `?course=`, **no** classroom token) | **PASS** — `← Student A · 1 of 2 →` |
+| the private canvas renders | **PASS** — 47 elements with `.tl-canvas`, was 1 and none |
+| pointer strokes route by target | **HALF** — Class routes (12→13, Mine 0); **Mine unreachable** |
+| move to layer | blocked behind the crash |
+| teacher sees A's marks | not re-run |
 
-**Four, not three.** The fourth surfaced only by standing the rig up and driving it
-after the first three landed: the push reached `https://127.0.0.1:<port>` and died
-on `SSL certificate problem: unable to get local issuer certificate`.
+**The crash**: fresh load, canvas rendering, select `Mine`, **no drawing and no
+dwell** → `Cannot read properties of undefined (reading '__unsafe__getWithoutCapture')`,
+error boundary catches a render throw, pill and overlay leave the page. Fires at the
+click; it **no longer needs a reconnect**.
 
-**Why loopback specifically.** A TLS preview serves **two certs by SNI** —
-`localhost`/`127.0.0.1`/`::1` get the mkcert developer cert, every other name gets
-the tailnet cert — and **git's CA store has Let's Encrypt but not the mkcert root**.
-So a self-push at loopback could never validate. The fix hands the cert-valid URL
-over in **`TLDA_SELF_BASE_URL`** rather than disabling verification.
+**It tracks `isWriteTarget` becoming true, not the canvas existing** — the teacher
+view mounts the same component with a real canvas and `isWriteTarget={false}` and does
+not throw. Narrowing only; the reported call site is the camera path, which runs
+regardless of write target, so trigger and throwing frame may differ.
 
-**Check `TLDA_SELF_BASE_URL` before the mount gate — but for the right reason.**
+## 1. Established — do not re-derive
 
-**I first wrote this as a general warning that any other launcher silently reverts.
-That is wrong, and corrected here so nobody inherits it.** Verified in
-`shared/self-base-url.mjs`:
+Held by `classroom-pm` as settled unless something contradicts them.
+
+| # | check | result |
+|---|---|---|
+| 1 | control exists and is scoped | student sees the **Class** pill; unenrolled reader sees **no pill**, book unchanged |
+| 3 | visibility independent of write target | both halves; hide/un-hide loses nothing |
+| 5 | teacher, in part | flick A→B→A **without remount**; teacher **cannot** draw into a student layer |
+| 6 | isolation | **room isolation only — via editor-API marks, not drawn strokes** |
+
+**That check-6 caveat travels with the result.** It has been stated upward twice. If
+it is ever repeated as "isolation is proven", say so — the drawn-stroke property is
+exactly what the canvas fault prevented anyone from closing.
+
+**Check 5's evidence for "no remount" is a marker set on `window`** before clicking
+`→`, still present after. That is the cheap form of the check and it is conclusive.
+
+## 2. What the rebuilt environment must prove, in this order
+
+1. **Teacher view mounts with RW + `?course=` and no classroom token** — the defect
+   being fixed now.
+2. **The private canvas actually renders** — `.tl-canvas` present *inside* the
+   overlay container, not merely a container. The licence-key fix has never been
+   seen in a browser.
+3. **Real pointer strokes route by selected target** — draw to Class, B sees it;
+   draw to Mine, B does not; switch and repeat; **then pen, highlighter and eraser
+   each in turn.** Never once exercised. This is what Skip corrected the design for.
+4. **Move to layer** — draw on Mine, select, move to Class; position holds, B sees it.
+5. **Teacher sees Student A's marks.**
+
+## 3. The two defects found, and their fixes
+
+| defect | symptom | fixed at |
+|---|---|---|
+| overlay disposed its own editor | selecting **Mine** threw `Cannot read properties of undefined (reading '__unsafe__getWithoutCapture')`; overlay **and** the pill left the page, reload the only way back | `88e3c6455` |
+| overlay passed no `licenseKey` | tldraw renders its container and stops — real `tl-container`, correct size, healthy store, **no `.tl-canvas`** | `3869d3abe` |
+
+**The crash was timing-dependent (124.7s, 89.6s) because it needed a reconnect
+first**, not because selecting Mine was slow. Pre-fix the component returned `null`
+until `synced-remote`, so any reconnect unmounted the canvas and disposed the editor
+while the camera reactor kept writing to it.
+
+**Verified fixed:** two fresh loads at 90s and 150s dwell, four Class↔Mine switches,
+and `getWithoutCapture` counted **2 in the pre-fix log, 0 in three post-fix logs** —
+with the pre-fix log used as the positive control for the grep.
+
+**`3869d3abe` also gave the overlay the app's tool set**, which it never had. So a
+tool that previously did nothing may now behave, and that is part of what item 3
+above is testing.
+
+**Open teacher-mount defect (found here, being fixed):** identity is fetched only
+when the URL carries `classroomToken` —
 
 ```js
-if (explicit) return explicit.replace(/\/+$/, '')
-return `${useTls ? 'https' : 'http'}://127.0.0.1:${port}`
+if (!new URLSearchParams(window.location.search).get('classroomToken')) return
 ```
 
-With `useTls` false the self-call is **plain HTTP to loopback and never meets a
-certificate**, which is correct and is what an ordinary deployed server does. The
-fault exists only for a **TLS** listener with no supplied URL — i.e. a TLS server
-launched outside `tlda-dev serve`, which is not a supported configuration. The
-file's own comment says it: *"Everything else keeps loopback, which is correct for
-plain HTTP and is what a server that was told nothing should assume."*
+An instructor authenticates with the **RW bearer token** and has no enrolment token,
+so `identity` stays null and `TeacherStudentOverlay` never mounts. **No error, no
+surface — silently absent reads as never built.** Adding any classroom token mounts
+it at once (`← Student A · 1 of 2 →`), because the rw level short-circuits to
+instructor. `/api/classroom/me` already returns `{"role":"instructor"}` for the RW
+token, so identity should follow the credential, not a query parameter.
 
-**So the check stays, with a better justification:** the variable's presence proves
-you came up through the **intended launcher**. That distinguishes *"the rig started
-the supported way"* from *"the rig started somehow"* — the same distinction that
-cost a night when a `--detach` worktree derived the project name `HEAD` and produced
-a silent empty canvas.
+## 4. Rig facts — each of these cost a wrong reading
 
-**And the shape worth carrying:** the scheme fix changed the *error message* without
-changing the *cause* — `Empty reply from server` became a certificate error, both
-meaning "the server could not talk to itself". A new error after a fix is not
-evidence the fix worked.
+- **The overlay mounts only inside `BookViewer`**, which needs `format: "book"` with
+  a **non-empty `members`** array. A single-doc project renders the ordinary canvas
+  with no overlay and no control. **I nearly filed that as "no pill".** Open the
+  **book** project, not the member doc.
+- **The teacher view also needs `?course=`**, read from the URL with **no fallback**,
+  deliberately — absent means no roster and no overlay.
+- **`--gated` is genuinely in the shared `tlda-dev serve --help`** (checked
+  2026-08-27, not merely accepted silently). **Still confirm an unauthenticated
+  request returns 401** before believing a preview is gated.
+- **The built-in seeder cannot seed a gated preview** — it posts unauthenticated and
+  reports *"scratch project not seeded"*. Create the project with the RW token.
+- **`serve stop` discards the whole sandbox** — projects, classroom DB, config. Only
+  `daemon-cfg/` survives. Config must be written and tokens printed **at every start**.
+- **Rebuilding the client is enough to ship a fix; no restart needed.** Assets are
+  served from `dist/`, so `npx vite build` in the worktree updates the running
+  preview and **the sandbox survives**. Confirm by comparing the bundle name in
+  `dist/index.html` against what the server returns.
 
-**Worth keeping:** the scheme fault below was real but was **not sufficient on its
-own**. A single confident root cause would have been wrong here — not because the
-evidence for it was bad, but because two more faults sat behind it. When a fix
-lands whose subject does not match your diagnosis, that is worth asking about
-rather than assuming either that you were wrong or that you were right.
+## 5. Instrument traps — every one of these produced a false or empty reading
 
-**Still required before resuming: a branch head merged with current main.**
-`f6948f235` predates all three commits, so a preview built from it fails exactly as
-described below. Do **not** merge into a throwaway worktree and test that — the
-gate is on the actual branch.
+- **A second fault can certify the first one fixed.** The crash fix was verified on
+  2026-08-26 by two fresh loads at 90s and 150s dwell, four target switches, and a
+  positive-controlled grep returning **0**. **All of it was worthless**: that build
+  had the licence-key fault, so the overlay had **no canvas and therefore no live
+  editor to dispose**. The crash had nothing to fire on. The moment the canvas
+  rendered, it came back on the first click. **The green measured the absence of a
+  canvas, not the presence of a fix** — and every element of that verification was
+  individually sound. **Before believing a fix, establish that the thing it repairs
+  is capable of failing in the build you tested.**
 
-### The original diagnosis (fault 1 of 3)
+- **Synthetic `PointerEvent`s do not drive this tldraw.** Dispatching a full
+  down/move/up sequence creates nothing, with or without `setPointerCapture` stubbed.
+  Do not report a drawing result from them.
+- **`playwright-cli` has no coordinate mouse.** `drag` takes `startTarget`/`endTarget`
+  **elements**, not points. Verbs are element-based: `click`, `drag`, `hover`,
+  `check`/`uncheck`, `fill`, `find`, `eval`.
+- **`check`/`uncheck` work where a synthetic `.click()` on the input silently does
+  not.** A direct `.click()` left the box `checked: true` and I nearly filed
+  "the toggle is inert".
+- **The React fiber walk climbs past the overlay and returns the *class* editor.**
+  Tell them apart by shape count, not by which container you started from — and a
+  shape you create through it lands on the class layer.
+- **The pw console log is shared across every tab in the pooled browser**, including
+  other agents'. Entries for `play.google.com`, `mistral.ai`, `appleid.apple.com` are
+  not your page. **Do not read or report them.**
+- **`ls -t` on `.playwright-cli/` returns a months-old log**; it misled me twice.
+  Take the path the `pw console` output names, or `find -mmin -N`.
+- **Always positive-control a grep for an error string** against a log known to
+  contain it. `0` from a wrong path and `0` from a fixed bug look identical.
 
-Every source push fails, including `tlda-dev serve`'s own seeder:
+## 6. Not defects — checked, and each looked like one
 
-```
-proposal not accepted: empty-checkout
-git push … http://source-room-…@127.0.0.1:5190/git/<project> …
-fatal: unable to access 'http://127.0.0.1:5190/git/<project>/': Empty reply from server
-```
+- **`Show <layer>` disabled while that layer is the write target.** Deliberate:
+  `disabled={layer.id === state.target}`, *"the write target is what you are writing,
+  so it cannot be hidden."* Reading the comment is what stopped the false report.
+- **A blank Mine layer is correct**, per Skip — *"layers are just transparent sheets
+  over the common/doc layer."* The defect was never emptiness; it was that there was
+  **no drawable surface**.
+- **Benign console noise on a preview:** `/api/build-info` **503**, `page-N.svg`
+  **404**, `…/macros` **404**.
 
-The server pushes to itself over `http://` while the preview listens on `https://`:
+## 7. Environment housekeeping
 
-```
-http://127.0.0.1:5190/api/health    →  000  "Empty reply from server"   ← the git error, verbatim
-https://127.0.0.1:5190/api/health   →  200
-https://127.0.0.1:5190/git/…        →  401  (route exists, wants the push's auth)
-```
+**Three rectangles were left on the shared class layer** of the disposable book
+project by my probing. `classroom-pm` asked that they stay — they are the only
+class-layer content to test routing against — and be cleared once routing is proven.
+**They are gone with the preview**, so the rebuilt environment starts clean and will
+need new content seeded for item 3.
 
-The project is created, the push returns **`202 {"ok":true,"status":"queued"}`**,
-and nothing lands — `pages 0`, no `sourceRevision`, indefinitely. **The API reports
-success.** `classroom-pm` traced the construction to
-`daemon/git-sync-manager.mjs:35` (`new URL('/git/<project>', server)`) and
-escalated to `sol-dev`; `tlda-dev serve` has no flag to disable TLS.
-
-### What is staged and ready
-
-- Worktree `~/worktrees/app-tester-overlay-proof`, branch
-  `app-tester-overlay-proof` at `9a38e5d6a`, `node_modules` symlinked, built clean.
-- Preview **up and healthy (200)** on `https://davids-mac-mini.cormorant-matrix.ts.net:5190`,
-  launched detached. Left running deliberately — restarting costs a 4-minute build.
-- The author's worktree `~/worktrees/student-overlay` was **not touched** and is clean.
-- Classroom router mounted at `/api/classroom`.
-
-### Identity, for whoever resumes
-
-**`?classroomToken=<raw token>` — not `?name=`.** Read at call time from the query
-string into the `x-tlda-student-token` header. **`?name=` gives a named but
-unenrolled reader, which is the *no overlay* case** — it is the reflex here and it
-would quietly test the wrong thing. Course/student creation calls are in
-`classroom-pm`'s message `3362618`; `assignments` requires `dueAt`, `students`
-require `displayName` and `enrollmentToken`, and only a SHA-256 of the token is
-kept, so a token not captured at creation cannot be recovered.
-
-Two separate browser contexts for the two students: nothing is cached per identity,
-so one tab *can* switch by editing the parameter — but then a stale tab is
-indistinguishable from a broken overlay, which is the observation the run rests on.
-
-Behaviour 4 can be added in the same sitting: teacher path is
-`?project=<book>&course=<courseId>`, read-only by construction.
-
-**Isolation — corrected, see §0.** On **`main`** it is by room naming, not
-enforcement: `/sync/:room` has no per-room check, so "not shown" rather than
-"refused". **On the branch, refusal is implemented and is a thing to verify.** Do
-not carry the `main` statement onto the branch; that is the whole distinction.
-
-## 1b. Fifth fault — the room never staged its own first file (`bef19e701`)
-
-After all four transport faults were fixed, the mount still failed:
-
-```
-server.log   proposal not accepted: empty-checkout
-room tree    ?? main.md   (untracked)   zero commits   unborn HEAD
-project      pages 0 · sourceRevision NONE
-```
-
-**A project whose first file comes from the source editor could never publish.**
-`settledCommit` stages **tracked changes only** — `d60d18573` removed `add -A`
-deliberately, since the app must not stage files in a repository it does not own,
-the accepted cost being that a person's new file waits for their own `git add`.
-**A source room has no author at a keyboard**, so nothing ever staged its file:
-empty tree, `empty-checkout`, on every settle forever. `bef19e701` has the room
-stage what it owns via `track-path` before queueing.
-
-**Verified on this rig:** `pages 1 · build success · rev 5467a69b6658` on the first
-sample, `/docs/…` → 200, and the room tree showing `f36f635 "tlda settled edit
-cluster"` with **0 dirty paths**.
-
-### `not-on-work-branch` appears once and is NOT a fault — do not chase it
-
-Traced by `reliability-pm`. `sync()` runs one settle through `start()` **before**
-the caller stands the tree on the work branch:
-
-```
-source-room-daemon.mjs   gitSync.bindSource(…)
-                         await gitSync.sync([record])      ← settles ONCE here
-                         await standRoomOnProjectBranch(…)
-```
-
-On a **fresh** room HEAD is still `main`, so that first settle is correctly refused
-and logs the line; the stand then happens and the next settle publishes. On an
-**established** room the tree is already on the branch and the line never appears.
-**Transient by construction — one refused settle and one log line.**
-
-## 2. Three rig traps — all produce an empty canvas, two silently
-
-The most reusable thing here. **All three look identical to a feature that simply
-does not work**, and two give no reason at all.
-
-| trap | symptom | reality |
-|---|---|---|
-| **`tlda-dev serve start` dies with its shell** | prints a pid, then `Shutting down... Server closed cleanly` as the command returns | process-group death. Launch it detached (`nohup … &`) |
-| **`--detach` worktree derives the project name `HEAD`** | seeding fails `HTTP 400 {"error":"name must be lowercase alphanumeric with hyphens"}` | the name is uppercase. Check out a **named lowercase branch** |
-| **TLS preview rejects all source content** | `202 queued`, then `pages 0` forever | `http://` self-push against an `https://` listener (§1) |
-
-**The cost of the pair is worse than either.** Trap 2 was my own error and trap 3 is
-a real defect, and they present the same way — so a rig that never came up is
-indistinguishable from a branch that does nothing. Any "the feature is absent"
-report from a fresh preview should first prove the preview could render **anything**.
+**Never `serve stop` this preview** while it is the reviewable classroom environment.
