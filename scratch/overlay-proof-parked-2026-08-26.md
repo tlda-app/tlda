@@ -244,10 +244,30 @@ content, per §5.
 `classroom-student-overlay` is **22 ahead of `main` and 15 behind**. The 6/6 above is
 against the unmerged branch, so **it goes stale at the merge**.
 
-Re-run on the merged head: **2 and 4** at minimum — they exercise the reactive path
-that all three faults lived in — and **5**, which is cheap and whose mount already
-broke once for a reason nothing in the reactive path predicts. Fifteen commits are
-enough to disturb `unified-server.mjs` or the editor path, both of which have moved
-under this branch before.
+**The gate is settled at 2, 4 and 5** — `sol-dev`, 2026-08-27, superseding an earlier
+2-and-4 instruction. For 5: **teacher mount by RW credential, and the A=1/B=0 flick
+control.**
+
+Why those three and not all six:
+
+- **2 and 4** exercise the reactive path all three faults lived in.
+- **5** is the only check that has **already failed once**, and it failed for a reason
+  nothing in the reactive path predicts — a `classroomToken` gate on the identity
+  fetch. Its mount depends on `/api/classroom/me` and `BookViewer`'s identity effect,
+  and 15 commits are enough to disturb `unified-server.mjs`.
+- **1 and 3 are excluded on coverage, not economy:** they are pure client-side layer
+  state with no server or reactive surface between them and the pill, so those commits
+  cannot reach them without also breaking 2 — which would catch it.
+- **6 is largely re-established by 4**: the moved mark visible to B at A's coordinates
+  is already a cross-user read of the class room.
+
+**The A=1/B=0 control is the load-bearing half of 5** and must be re-run with it. A
+single count would pass while proving nothing.
 
 Do not merge or deploy from here; that is not this agent's call.
+
+**Probe branch `classroom-overlay-toolfollow-probe` (`196194a5f`) is finished with** —
+confirmed 2026-08-27 that no worktree holds it, it is not in this fixture's history,
+and the served bundle contains the tool-follow reactor and not the probe's
+`DIAGNOSTIC` marker. **Check the exact branch name**: a substring grep for `probe`
+matches sixteen unrelated worktrees here.
