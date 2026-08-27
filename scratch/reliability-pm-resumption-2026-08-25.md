@@ -2235,3 +2235,59 @@ related.
   the browser editor's edits are LOST, the linked remote cannot write.
 
 Next candidate if the chief wants it: the browser loss, now cheap to reproduce.
+
+## 2026-08-27 - browser-editor loss: it is the DAMAGE the conflict fix left behind
+
+**THE NODE.** `server/lib/source-room-daemon.mjs:413`, `noteLocalChange`:
+
+```js
+room.blocked = hasConflictMarkers(room.ytext.toString())
+if (room.blocked) { persistRoom(room); return }   // never queued
+```
+
+Every local edit re-derives `blocked` from whether the room text contains
+conflict markers, and returns before queuing. `hasConflictMarkers` has exactly
+TWO occurrences in the file -- its definition and this line. **Nothing anywhere
+removes markers from a room's text.** A room that once held them can never
+publish again.
+
+**Read from the live room, not inferred:**
+
+```
+blocked: false            (persisted state, not yet re-derived)
+room text CONTAINS conflict markers:
+    <<<<<<< live room for sync-trio:paper.tex
+    - [browser] SYNCDEMO-69410 at 2026-08-26T06:07:49.411Z
+    =======
+    - [disk] SYNCDEMO-69409 at 2026-08-26T06:07:49.408Z
+    >>>>>>> accepted server source for sync-trio:paper.tex
+```
+
+**Dated 2026-08-26 06:07 -- BEFORE the conflict fix deployed.** The fix stopped
+new contamination and did not clean what was already in the rooms. Every browser
+edit since lands in the Yjs doc, is visible in the editor, and is never queued.
+Explains every symptom including **no hold recorded** -- this early return is not
+the merge path at all.
+
+**TWO THINGS I GOT WRONG, both caught before reporting:**
+
+1. **First hypothesis wrong.** I told the chief it was two trees,
+   last-writer-wins. Built it: it PASSES once the fixture installs the server's
+   real ancestry hook -- the WrongHead merge already covers it. Without the hook
+   the bare remote accepts anything and the test measures the fixture. Driving
+   the room's Yjs doc directly also passes. Neither reproduces the live loss.
+2. **Nearly reported the conflict fix as missing from the deployed build.**
+   `git show "$SHA:path"` failed on shell expansion, `grep -c` counted the error
+   as `0`, and I read "0 guard sites" as absent. With braces and a positive
+   control: deployed file is 779 lines and the guard IS there. **A zero from a
+   failed command is not a measurement.**
+
+**The smallest repair is probably already built and unlanded:** `held-edit-mark`
+(`9ef2fd6e5`) marks a held file in the editor -- the missing signal -- and the
+existing conflict bar's *resolved* control is how a person clears the markers so
+the room can publish again. That addresses the SILENCE. It does not clean rooms
+already contaminated, and clearing those is editing someone's document, so it is
+not mine to choose. Put to the chief.
+
+Tests written (branch `browser-edit-loss`, uncommitted): two-tree case and
+room-Yjs case, both PASS -- they document what is NOT the cause.
