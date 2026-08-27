@@ -10,10 +10,17 @@ patching it would have left a document disagreeing with itself.
 
 ## Status in one line
 
-**6/6 pass on `ae0dd16fb`** (branch `classroom-student-overlay`), against a gated
-fixture on `:5190`. **The branch has not merged** — it is 22 ahead of `main` and 15
-behind, so **this result goes stale at the merge** and 2 and 4 need re-running on the
-merged head.
+**6/6 on `ae0dd16fb`, and gates 2, 4 and 5 re-confirmed on the merged head
+`975a06052`** — the merge did not disturb the feature. Gated fixture on `:5190` is up,
+on the merged head, with content. **Not merged to `main` and not deployed; that is not
+this agent's call.**
+
+**Re-run on the merged head, 2026-08-27:** gate 2 both directions across pen,
+highlighter and eraser with the non-target layer never moving; gate 4 move-to-layer
+with **both rects matched exactly** (`704,564 150x30`, `684,574 160x35`); gate 5
+mounting on the RW credential with **`hasClassroomToken: false`**, the **A=1 / B=0**
+flick control, read-only, and no remount. No crash — **six console logs across the
+window at 0, against 2 in the crash log**.
 
 ## Results, 2026-08-27
 
@@ -205,6 +212,22 @@ token, so identity should follow the credential, not a query parameter.
   **trigger fired** (so it isn't a crash avoided by never reaching the state), the
   **instrument is alive** (fire a synthetic error through your own hook afterwards),
   and the **grep is positive-controlled** against a log known to contain the string.
+- **A zero from your own tooling deserves the same suspicion as a zero from the system
+  under test.** This is not the bundle-hash trap — it is one level further back. A
+  mangled shell expansion checking the merged head returned **0 for the mirror helper,
+  0 for tool-follow and 0 for the licence key**, which reads as *the merge silently
+  dropped the entire fix*. **The tell: a zero too dramatic for the change that
+  preceded it.** A merge does not usually delete three unrelated things at once.
+  **Control every grep both ways** — a string that cannot exist should return 0, one
+  that must exist should return non-zero — before believing either answer.
+- **Grep every log in the window, not "the latest".** `ls -t` returned a months-old
+  file here, and a `goto` starts a new console log, so one run can span several. Six
+  logs covered one 30-minute session.
+- **`console.error` hooks do not survive a page navigation.** A hook armed on the
+  student page says nothing about the teacher page. Say which instrument covered which
+  span rather than reporting one clean result.
+- **A substring match on a common word is not a check.** `git worktree list | grep
+  probe` matched **sixteen** unrelated worktrees. Match the exact name.
 
 ## 6. Not defects — checked, and each looked like one
 
