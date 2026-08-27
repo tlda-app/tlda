@@ -14,6 +14,9 @@ export interface HtmlPageEntry {
   tocLevel?: string
   group?: string
   groupIndex?: number
+  slideIndex?: number
+  indexh?: number
+  indexv?: number
   tabLabel?: string
   source?: {
     type?: string
@@ -23,6 +26,13 @@ export interface HtmlPageEntry {
 }
 
 const tabSpacing = 24  // horizontal gap between side-by-side tabs
+
+function pageUrl(info: HtmlPageEntry, basePath: string): string {
+  const url = info.url || basePath + info.file
+  if (info.slideIndex == null) return url
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}_tldaH=${info.indexh ?? info.slideIndex}&_tldaV=${info.indexv ?? 0}`
+}
 
 export async function loadHtmlDocument(
   name: string,
@@ -63,7 +73,7 @@ export function createHtmlDocumentFromPageInfo(
         : `page:${name}-ch-${tldrawPageIdx}`
       const pageName = info.title || info.file.replace(/\.html$/, '').replace(/-/g, ' ')
       pages.push({
-        src: info.url || basePath + info.file,
+        src: pageUrl(info, basePath),
         bounds: new Box(0, 0, info.width, info.height),
         assetId: AssetRecordType.createId(pageId),
         shapeId: createShapeId(pageId),
@@ -86,7 +96,7 @@ export function createHtmlDocumentFromPageInfo(
         const gp = pageInfos[i]
         const pageId = `${name}-page-${i}`
         pages.push({
-          src: gp.url || basePath + gp.file,
+          src: pageUrl(gp, basePath),
           bounds: new Box(left, 0, gp.width, gp.height),
           assetId: AssetRecordType.createId(pageId),
           shapeId: createShapeId(pageId),
