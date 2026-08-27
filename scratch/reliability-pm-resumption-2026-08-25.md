@@ -2008,3 +2008,39 @@ unreachable is the right distinction and I would have skipped it.
 **The six behaviour checks are NOT run:** they need `bef19e701` merged into the
 classroom head by its owner. app-tester declined to run them on a locally-merged
 variant because a mount pass on a variant is not a gate pass. Correct call.
+
+## 2026-08-27 - disposition, measured (not recalled)
+
+`main` = `67e62b396` · testing serves `b5b6eb4e5` (ref `main`).
+
+**Different shas, SAME CODE.** Main is 8 commits ahead and all 8 are four slide
+changes plus their four reverts; `main^{tree}` and `b5b6eb4e5^{tree}` are
+IDENTICAL. Checked the DEPLOYED TREE by grepping `b5b6eb4e5` directly rather
+than assuming main implies running.
+
+**Live in the deployed tree:** symlink closure push (`merge-tree --write-tree`,
+3 sites); room stages its first file (`trackRoomFile`, 3 sites, and app-tester's
+:5191 gate passed -- `pages 1 · build success`, room shows
+`tlda settled edit cluster` with 0 dirty paths, `empty-checkout` absent); relink
+declares nothing; conflict markers never published; the lockout fix.
+
+**STALE AND IT IS THE ONE SKIP ASKED FOR:** `held-edit-mark` `9ef2fd6e5` is not
+on main and not deployed -- grep of the deployed tree for its broadcast returns
+**0 sites**. That is his "4 mark" (10:58:16 EDT). 3/3 green re-run. Base
+`5c269b44f` vs main `67e62b396`, but the trees are identical so it applies
+cleanly.
+
+**While it is unlanded a person whose edit is held sees NOTHING, and that is a
+regression I introduced** -- keeping markers out of the document removed the only
+signal the editor had. The deployed build has the first half without the second.
+
+**Open operational defects:**
+1. `main`'s daemon suite cannot come back clean. Re-measured on current main:
+   `git-project-sync` 8 pass / 2 fail (QMD execution inputs; configured document
+   roots exclude unrelated broken TeX). `git-project-mirror-unrelated` 3/4 fail
+   yesterday. Both need `--test-force-exit` to terminate. Unowned, not mine.
+   **A regression in `daemon/` lands invisibly.**
+2. One project's document-roots pinned where it was computed -- my error, no
+   supported route back, measured cost nil. No action exists.
+3. `not-on-work-branch` once per first-writer room bind: ordering, not fault.
+   Not fixing unless asked.
