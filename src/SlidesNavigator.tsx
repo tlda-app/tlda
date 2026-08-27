@@ -25,7 +25,7 @@ interface SlidesNavigatorProps {
 const fragmentState = new Map<string, { total: number; current: number }>()
 
 /** Navigate camera to center on a specific slide */
-function navigateToSlide(editor: Editor, document: SvgDocument, index: number) {
+function navigateToSlide(editor: Editor, document: SvgDocument, index: number, animate = true) {
   const page = document.pages[index]
   if (!page) return
   const vp = editor.getViewportScreenBounds()
@@ -38,7 +38,11 @@ function navigateToSlide(editor: Editor, document: SvgDocument, index: number) {
     y: -page.bounds.y,
     z,
   }
-  editor.setCamera(target)
+  if (animate) {
+    editor.setCamera(target, { animation: { duration: 350 } })
+  } else {
+    editor.setCamera(target)
+  }
 }
 
 function getDeckSyncShapeId(document: SvgDocument): string | null {
@@ -149,7 +153,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
         editor.store.update(page.shapeId, (s) => ({ ...s, ...updates }))
       }
     }
-    navigateToSlide(editor, document, 0)
+    navigateToSlide(editor, document, 0, false)
     window.document.body.classList.add('slides-mode')
     return () => {
       window.document.body.classList.remove('slides-mode')
@@ -157,10 +161,10 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     }
   }, [editor, document])
 
-  const goToSlide = useCallback((index: number) => {
+  const goToSlide = useCallback((index: number, animate = true) => {
     const clamped = Math.max(0, Math.min(index, totalSlides - 1))
     setCurrentSlide(clamped)
-    navigateToSlide(editor, document, clamped)
+    navigateToSlide(editor, document, clamped, animate)
     const page = document.pages[clamped]
     setFragmentInfo(page ? fragmentState.get(page.shapeId) ?? null : null)
     const shapeId = getDeckSyncShapeId(document)
@@ -181,7 +185,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
 
   useEffect(() => {
     const refitCurrentSlide = () => {
-      goToSlide(currentSlide)
+      goToSlide(currentSlide, false)
     }
     window.addEventListener('resize', refitCurrentSlide)
     window.visualViewport?.addEventListener('resize', refitCurrentSlide)
