@@ -468,28 +468,25 @@ async function refreshSvgProjectParts(editor: Editor, document: SvgDocument) {
  * Called when a reload signal arrives from the MCP server after a rebuild.
  */
 /**
- * Bring the slide shapes into line with the page count the build just produced.
+ * Bring the slide shapes into line with the layout the build just produced.
  *
- * Only touches anything when the count actually changed — recreating shapes on
- * every rebuild would churn the store and disturb the canvas for no reason. The
- * layout object is mutated in place so every later reader, including the URL
- * swap immediately after, sees the new page set.
+ * A rebuild can change deck dimensions without changing the slide count. Read
+ * fresh page-info on every completed build; createSlidesShapes only writes the
+ * store when count, bounds, dimensions, or URLs actually changed. The layout
+ * object is mutated in place so every later reader, including the URL swap
+ * immediately after, sees the new page set.
  */
-async function reconcileSlideCount(editor: Editor, document: SvgDocument): Promise<void> {
+async function reconcileSlideLayout(editor: Editor, document: SvgDocument): Promise<void> {
   try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}`)
-    if (!res.ok) return
-    const cfg = await res.json()
-    const newCount: number = cfg.pages ?? document.pages.length
-    if (newCount <= 0 || newCount === document.pages.length) return
-
     const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
     const fresh = await loadSlidesDocument(document.name, basePath)
+    if (fresh.pages.length <= 0) return
+    const previousCount = document.pages.length
     document.pages.length = 0
     document.pages.push(...fresh.pages)
     document.slideInfo = fresh.slideInfo
     createSlidesShapes(editor, document)
-    console.log(`[Reload] Slide count changed (\u2192 ${newCount}); reconciled slide shapes`)
+    console.log(`[Reload] Slide layout refreshed (${previousCount} \u2192 ${fresh.pages.length}); reconciled slide shapes`)
   } catch (e) {
     // A failed reconcile must not stop the content swap below: updated slides
     // beat no update at all.
@@ -531,7 +528,7 @@ export async function reloadPages(
     //
     // Same shape as the count refresh the SVG path does below, and for the same
     // reason.
-    await reconcileSlideCount(editor, document)
+    await reconcileSlideLayout(editor, document)
     return reloadHtmlPages(editor, document)
   }
   if (HTML_PAGE_FORMATS.has(document.format || '')) return reloadHtmlPages(editor, document)
