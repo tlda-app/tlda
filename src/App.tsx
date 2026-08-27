@@ -271,7 +271,7 @@ function DocumentApp() {
               window.history.replaceState({}, '', newUrl.toString())
               const roomId = `doc-${name}`
               setState({ phase: 'loading', message: `Loading ${name}...`, roomId })
-              loadDocument(name, roomId, manifest[name])
+              loadDocument(name, roomId, undefined, true)
             } else {
               setState({ phase: 'picker', manifest })
             }
@@ -285,6 +285,16 @@ function DocumentApp() {
     }
   }, [])
 
+  /**
+   * `knownConfig` may ONLY be a config that came back from `fetchDocConfig`.
+   *
+   * A `manifest.json` entry is not a document config. `generateManifest` emits
+   * name/pages/format/dates and nothing else — measured on the deployed box,
+   * 0 of 1074 entries carry `targets` — so a manifest entry handed in here
+   * loads an SVG project with no targets, and the layout throws because a
+   * page's filename is keyed on the tex base and cannot be invented. Every
+   * document opened from the picker took that path.
+   */
   async function loadDocument(projectName: string, roomId: string, knownConfig?: DocConfig, includePageInfo = false) {
     // Bump generation and abort any in-flight load
     const gen = ++loadGeneration
@@ -517,7 +527,7 @@ function DocumentApp() {
             window.history.replaceState({}, '', newUrl.toString())
             const roomId = `doc-${key}`
             setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId })
-            loadDocument(key, roomId, config)
+            loadDocument(key, roomId, undefined, true)
           }} />
         </div>
       )
