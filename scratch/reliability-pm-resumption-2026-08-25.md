@@ -2342,3 +2342,49 @@ room. Not done.
 
 **Unexplained and unattributed:** disk latency 17-35s -> 66-82s across the two
 runs, same project, same edits.
+
+### THE BROWSER LOSS FOUND: every room's save path 409s on the deployed build
+
+The chief was right that stripping marker text over the websocket was NOT the
+resolution control. The real one does not use the websocket at all:
+`resolveConflict` -> `writeSource` -> **POST `/api/projects/<p>/source-room/files`**
+(the `submitFiles` route).
+
+**Exercising it on disposable `sync-trio`:**
+```
+before: blocked = true | markers = false
+POST /source-room/files -> 409
+  "sync-trio: /app/server/projects/sync-trio/.source-room/working/paper.tex
+   was not staged ({"inRepo":false,"tracked":false,"path":null})"
+```
+
+**Not one project — every one tested:**
+```
+sync-rootless   409 ... was not staged
+sync-watch      409 ... was not staged
+sync-proof      409 ... was not staged
+```
+
+`trackPath` reports the room's OWN working file as `inRepo: false` — the file it
+exists to stage, inside the directory the room owns.
+
+**THIS IS THE BROWSER LOSS.** Before the `trackRoomFile` change this warned and
+carried on: `submitFiles` answered **202 queued** while nothing was staged, so
+the edit was accepted, never committed, and vanished with no signal — exactly
+"admitted, built, absent, no hold recorded". The change did not cause it; it
+converted it into a visible 409, which is why it is findable now.
+
+**Two candidate causes, NOT distinguished:** (a) the room working dir is not a
+git repo on that box, so `--show-toplevel` fails and `repoPathFor` returns
+`inRepo:false`; (b) the path string does not match the toplevel reported.
+Cannot run git on the fly box from here. app-tester's preview staged FINE, so it
+is environment-specific and `/app/server/projects/...` is what differs.
+
+**Did NOT instrument the four `blocked` writers** — this fails before that
+question arises, and `blocked` is downstream of a room that cannot save at all.
+
+Marker-to-visible-hold change stays separate and undeployed on
+`browser-edit-loss`.
+
+**Treat as urgent: on the deployed build, saving from the browser editor does not
+work for any project tested.**
