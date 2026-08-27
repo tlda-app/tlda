@@ -6,12 +6,18 @@
  * unmounts the current editor and mounts the new one.
  */
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { Tldraw } from 'tldraw'
+import { Tldraw, react } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
 import { STORE_HTTP } from './activeConfig'
 import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
+import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
+import { TeacherStudentOverlay } from './classroom/TeacherStudentOverlay'
+import { BookLayersControl } from './classroom/BookLayersControl'
+import { studentLayers, setLayerVisible, setWriteTarget, type BookLayerState, type BookLayerId } from './classroom/bookLayers'
+import { moveShapesToLayer, layerStore } from './classroom/moveBetweenLayers'
+import { classroomApi, type ClassroomIdentity } from './classroom/api'
 import type { SvgDocument } from './loaders/types'
 import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 import type { Editor } from 'tldraw'
@@ -26,6 +32,15 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const [activeIndex, setActiveIndex] = useState(0)
   const [document, setDocument] = useState<SvgDocument | null>(null)
   const [loading, setLoading] = useState(true)
+  const [bookEditor, setBookEditor] = useState<Editor | null>(null)
+  const [identity, setIdentity] = useState<ClassroomIdentity | null>(null)
+  // Which layers are shown, and which one takes the reader's marks. Default
+  // target is the book's own layer, so a reader who never touches the control
+  // writes where they already would.
+  const [layers, setLayers] = useState<BookLayerState>(studentLayers)
+  const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
+  const [trackedSelectionCount, setTrackedSelectionCount] = useState(0)
+  const [moveError, setMoveError] = useState('')
   // Pending cross-member anchor navigation: set before switchTo, consumed after load
   const pendingAnchor = useRef<string | null>(null)
 
@@ -154,6 +169,28 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     window.postMessage({ type: 'tlda-navigate', anchor, shapeId: null, targetFile: activeMember?.key || null, __bookRouted: true }, '*')
   }, [loading, members, activeIndex])
 
+  // Who is reading, asked once.
+  //
+  // Identity follows the CREDENTIAL, not a query parameter. This used to run
+  // only when the URL carried `classroomToken`, which silently excluded the one
+  // reader who never has one: an instructor authenticates with the RW bearer
+  // token, so identity stayed null and the teacher view never mounted. No error,
+  // no message — the feature simply was not there, which reads as never built.
+  //
+  // `/api/classroom/me` is the authority on this and answers from whatever
+  // credential the request carries: instructor for an RW token, a student for an
+  // enrolment token, and 401 for a reader with neither — which is an ordinary
+  // reader, and the catch below leaves them an ordinary book.
+  useEffect(() => {
+    let cancelled = false
+    classroomApi.me()
+      .then(next => { if (!cancelled) setIdentity(next) })
+      // 401 for a reader with no classroom credential, which is most readers.
+      // The book stays a book: no overlay, no control, nothing changed for them.
+      .catch(() => { if (!cancelled) setIdentity(null) })
+    return () => { cancelled = true }
+  }, [])
+
   const ctx = useMemo<BookContextValue>(() => ({
     bookName,
     members,
@@ -163,6 +200,76 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
 
   const activeMember = members[activeIndex]
   const roomId = activeMember ? `doc-${activeMember.key}` : ''
+  // Which course's roster a teacher flicks through. Read once: changing student
+  // rewrites the URL, and re-reading it here would fight that.
+  //
+  // No default, deliberately, and this differs from the other two readers of
+  // `?course=` — classroom registration and the gradebook both fall back to a
+  // single named course. That is harmless while there is one course and becomes
+  // a wrong roster with no error the moment there are two, which on this path
+  // means showing a teacher the wrong students' work. Absent means absent here:
+  // no course named, no roster, no overlay.
+  const courseId = useMemo(() => new URLSearchParams(window.location.search).get('course') || '', [])
+
+  const mineLayer = layers.layers.find(l => l.id === 'mine')
+  const commonVisible = layers.layers.find(l => l.id === 'common')?.visible ?? true
+
+  // Which canvas holds which layer. Named rather than derived by complement:
+  // "the other editor" is only the right destination while there are exactly
+  // two layers, and a teacher's view already has three. This stays correct when
+  // one is added; a complement silently moves the work to the wrong place.
+  const editorForLayer = useCallback((id: BookLayerId) => (
+    id === 'common' ? bookEditor : overlayEditor
+  ), [bookEditor, overlayEditor])
+
+  // Only the write target takes pointer input, so it is the only layer a
+  // selection can be on — which is what makes "move the selection" unambiguous
+  // about where it is moving FROM, with no rule needed to say so.
+  const targetEditor = editorForLayer(layers.target)
+
+  // Watch the selection on the write target, so the control can become a
+  // move-to-layer menu when there is one. Writing state from inside the
+  // subscription callback rather than the effect body is the point: the count
+  // is external state we are following, not something to recompute on render.
+  //
+  // A failed move's message is cleared here too, because a changed selection is
+  // exactly when it stops describing anything — it reported the annotations that
+  // were attempted, not the ones now in hand.
+  useEffect(() => {
+    if (!targetEditor) return
+    return react('selection on the write target', () => {
+      setTrackedSelectionCount(targetEditor.getSelectedShapeIds().length)
+      setMoveError('')
+    })
+  }, [targetEditor])
+
+  // No write target mounted yet means nothing can be selected on it. Derived
+  // rather than stored, so there is no moment where a stale count is readable.
+  const selectionCount = targetEditor ? trackedSelectionCount : 0
+
+  const moveSelectionToLayer = useCallback((destination: BookLayerId) => {
+    const destinationEditor = editorForLayer(destination)
+    if (!targetEditor || !destinationEditor || destination === layers.target) return
+    const ids = targetEditor.getSelectedShapeIds()
+    try {
+      moveShapesToLayer(layerStore(targetEditor), layerStore(destinationEditor), ids)
+      setMoveError('')
+      // The destination is now where the work is, so that is where he is writing.
+      setLayers(current => setWriteTarget(current, destination))
+    } catch (error) {
+      // The move refused rather than half-completing: the annotations are still
+      // on the layer they were on. Say so, because "nothing happened" and
+      // "something was lost" look identical from here.
+      setMoveError((error as Error).message)
+    }
+  }, [targetEditor, editorForLayer, layers.target])
+
+  // The book's editor, kept so the overlay above it can follow its camera and
+  // its tool selection. Passed on to the original caller unchanged.
+  const handleEditorMount = useCallback((editor: Editor | null) => {
+    setBookEditor(editor)
+    onEditorMount?.(editor)
+  }, [onEditorMount])
 
   // Empty book (no resolvable members): show blank canvas
   if (members.length === 0) {
@@ -178,7 +285,50 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       <div className="book-viewer">
         {loading && <div className="book-loading">Loading {activeMember?.name}...</div>}
         {!loading && document && (
-          <SvgDocumentEditor key={activeMember.key} document={document} roomId={roomId} onEditorMount={onEditorMount} />
+          <SvgDocumentEditor
+            key={activeMember.key}
+            document={document}
+            roomId={roomId}
+            annotationsHidden={!commonVisible}
+            onEditorMount={handleEditorMount}
+          />
+        )}
+        {/* A student reading the book has two layers: the book's, which the
+            whole class shares and everyone may write, and their own. Which one
+            takes their marks is a selection they make — never inferred from the
+            tool they picked. A reader without an enrolment token has one layer,
+            so no overlay and no control, and the book is unchanged for them. */}
+        {!loading && document && identity?.role === 'student' && (
+          <>
+            <StudentAnnotationOverlay
+              key={`${activeMember.key}:${identity.studentId}`}
+              bookRoomId={roomId}
+              studentId={identity.studentId}
+              bookEditor={bookEditor}
+              visible={mineLayer?.visible ?? false}
+              isWriteTarget={layers.target === 'mine'}
+              onEditorMount={setOverlayEditor}
+            />
+            <BookLayersControl
+              state={layers}
+              onVisibilityChange={(id, visible) => setLayers(current => setLayerVisible(current, id, visible))}
+              onTargetChange={id => { setMoveError(''); setLayers(current => setWriteTarget(current, id)) }}
+              selectionCount={selectionCount}
+              onMoveSelection={moveSelectionToLayer}
+              moveError={moveError}
+            />
+          </>
+        )}
+        {/* The teacher reads one student's layer at a time, flicking between
+            them. Only when a course is named — the book itself belongs to no
+            course, so without one there is no roster to flick through. */}
+        {!loading && document && identity?.role === 'instructor' && courseId && (
+          <TeacherStudentOverlay
+            key={`${activeMember.key}:${courseId}`}
+            bookRoomId={roomId}
+            courseId={courseId}
+            bookEditor={bookEditor}
+          />
         )}
       </div>
     </BookContext.Provider>

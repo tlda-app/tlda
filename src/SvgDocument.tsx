@@ -251,6 +251,44 @@ function withShapeErrorBoundary<T extends new (...args: any[]) => any>(Util: T):
   return Wrapped
 }
 
+// The shape utilities a canvas in this app registers.
+//
+// This was inline in SvgDocumentEditor until a second canvas needed it: a
+// student's annotation overlay renders over the book, and a room's shapes are
+// only readable by a canvas registering the same utils. The two canvases have
+// to agree, and they agree by sharing one list rather than by two lists being
+// kept in step. The server half is `server/lib/sync-rooms.mjs` and is unchanged.
+export function createDocumentShapeUtils() {
+  // Suppress the default hover/selection indicator on highlight shapes —
+  // it draws a blue path outline that competes with our text glow effect
+  class QuietHighlightShapeUtil extends HighlightShapeUtil {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    override indicator() { return null as any }
+  }
+  const utils = defaultShapeUtils.map(u =>
+    u === HighlightShapeUtil ? QuietHighlightShapeUtil : u
+  )
+  // Wrap every custom shape util with an error boundary so a single broken shape
+  // renders an error placeholder instead of crashing the entire app.
+  const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetReportArtifactShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, PlaybackFrameShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil]
+  return [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))]
+}
+
+// The tools a canvas in this app registers.
+//
+// Shared for the same reason as the shape utilities: a student's annotation
+// layer follows whatever tool the book is in, because the tool never chooses
+// which layer a mark lands on. A canvas that had not registered `math-note`
+// would be asked to enter a tool it has never heard of.
+export const DOCUMENT_TOOLS = [
+  BrowseTool, PenTool, SoftAxisHandTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, PlaybackTool, TerminalTool, RibbonEraserTool, RibbonHighlightTool,
+]
+
+// The rendered document — what the pages and figures are made of. Everything
+// else in a document's room is somebody's annotation, which is what makes
+// "hide this layer" expressible without a second store to put marks in.
+const BOOK_DOCUMENT_SHAPE_TYPES = new Set(['html-page', 'svg-page', 'svg-figure', 'zoomable-image'])
+
 // Sync server URL for @tldraw/sync shape CRDT (WebSocket) — same as SYNC_SERVER
 const SHAPE_SYNC_SERVER = SYNC_SERVER
 
@@ -263,7 +301,7 @@ function useSignalInit(projectName: string) {
 }
 
 // Inline base64 asset store (for image uploads via AssetToolbarItem)
-const INLINE_ASSETS = {
+export const INLINE_ASSETS = {
   upload: async (_asset: any, file: File) => {
     const reader = new FileReader()
     const src = await new Promise<string>((resolve) => {
@@ -281,6 +319,8 @@ interface SvgDocumentEditorProps {
   initialCamera?: { x: number; y: number; z: number; page?: string }
   classroomMarking?: boolean
   classroomGrading?: Omit<ClassroomGradingSurfaceProps, 'editor' | 'submissionShapeId' | 'solutionShapeId'>
+  /** Hide this room's annotations, leaving the document. The book's layer, switched off. */
+  annotationsHidden?: boolean
   onEditorMount?: (editor: Editor | null) => void
 }
 
@@ -410,7 +450,7 @@ function EmergencyDumpRescue({ editor, documentName }: { editor: Editor; documen
   )
 }
 
-export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, onEditorMount }: SvgDocumentEditorProps) {
+export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, annotationsHidden = false, onEditorMount }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
 
@@ -772,31 +812,21 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
       if (shape.type === 'fleet-video') return undefined
       if (!isMyFleetShape(shape)) return 'hidden' as const
     }
+    // Hiding this room's annotation layer. The document itself is not part of
+    // that layer and stays: hiding the class's marks must not hide the book
+    // they are written on.
+    if (annotationsHidden && !BOOK_DOCUMENT_SHAPE_TYPES.has(shape.type)) return 'hidden' as const
     return undefined
-  }, [])
+  }, [annotationsHidden])
 
   const shapeUtils = useMemo(() => {
-    // Suppress the default hover/selection indicator on highlight shapes —
-    // it draws a blue path outline that competes with our text glow effect
-    class QuietHighlightShapeUtil extends HighlightShapeUtil {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      override indicator() { return null as any }
-    }
-    const utils = defaultShapeUtils.map(u =>
-      u === HighlightShapeUtil ? QuietHighlightShapeUtil : u
-    )
-    // Wrap every custom shape util with an error boundary so a single broken shape
-    // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetReportArtifactShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, PlaybackFrameShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil]
-    const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
+    const all = createDocumentShapeUtils();
     (window as any).__tldraw_shape_utils__ = all
     return all
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = isPhoneViewport()
-  const tools = useMemo(() => [
-    BrowseTool, PenTool, SoftAxisHandTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, PlaybackTool, TerminalTool, RibbonEraserTool, RibbonHighlightTool,
-  ], [])
+  const tools = useMemo(() => DOCUMENT_TOOLS, [])
 
   // --- @tldraw/sync: shape CRDT sync ---
   const syncUri = useMemo(
