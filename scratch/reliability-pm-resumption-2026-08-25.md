@@ -2100,3 +2100,47 @@ bind more than one project; must the daemon surface the silence). The link
 timeout is a defect and offered to the chief.
 
 Disposable `sync-demo-0827` project and checkout left in place as evidence.
+
+## 2026-08-27 - one checkout, one project (`f49bfcb97`, branch `one-checkout-one-project`)
+
+Skip settled it: *"maybe let's just disallow that"* / *"is there a reason not
+to?"* / *"like, just clone right?"* (3407544, 3407547, 3407551, read directly).
+
+**A NUMBER I REPORTED WAS WRONG, and the truth is worse.** I said "at most 10 of
+27 can sync." The inventory measures the actual state: **2 of 27 are syncing.**
+Most shared checkouts stand on `main` or `master`, so EVERY project in those
+groups is silent -- not just the loser of a two-way race.
+
+**Answering his question:** no reason not to. The case for sharing is two papers
+in one repository, and a clone gets that -- history is shared through the remote
+and each project stands on its own branch. Sharing buys one directory and costs
+all-but-one project silently not syncing.
+
+**Rejection lives in `bindSource`**, which already refused the mirror image (one
+project, two checkouts). Bind is the one point every route reaches: CLI, source
+room, server-side room manager.
+
+**An existing test asserted the disallowed behaviour and was REWORKED, not
+deleted.** `two projects sharing one checkout submit to their owning project
+remotes` -- the shared directory was never its subject; it checks that each
+project submits to ITS OWN remote via `remoteUrlFor`. It still does, with two
+checkouts, each accepted head built/pushed/fetched from its owner.
+
+**The silent failure is DEMONSTRATED, not asserted:** a third test shows one
+project syncing and the other answering `not-on-work-branch` with a clean
+working tree, so the guard cannot later be read as fussiness.
+
+**`bin/shared-checkout-inventory.mjs`** lists each shared checkout, what it
+stands on, and SYNCING vs SILENT per project (`--json` available). READS ONLY --
+relinks nothing, clones nothing. Whose clone goes where is not a script's call.
+
+Gate: new tests 3/3; removing the guard reddens the rejection test and only that
+one; `git-sync-manager` 6 pass / 3 fail, the same three as baseline. eslint,
+tsc -b, lint:guards clean.
+
+**Memory corrected:** `two-projects-can-share-one-checkout` recorded sharing as a
+supported fact. It now leads with his decision and keeps the existing-state
+detail as the migration list.
+
+**Still open, unowned:** `project link` on a NEW project loops on
+`adopt-shadow-history-ref` timing out -- what stopped the stylized demo.
