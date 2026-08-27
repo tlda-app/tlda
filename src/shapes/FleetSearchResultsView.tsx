@@ -92,6 +92,8 @@ export function FleetSearchResultsView({
   onOpenChatForResult,
   onStartAgentDrag,
   onStartDrag,
+  hasMore = false,
+  onLoadMore,
 }: {
   results: any[]
   loading: boolean
@@ -104,8 +106,23 @@ export function FleetSearchResultsView({
   onOpenChatForResult: (result: any) => void
   onStartAgentDrag?: (e: React.PointerEvent, value: string, displayName: string, color: string) => void
   onStartDrag?: (e: React.PointerEvent, type: 'agent' | 'msg', value: string, displayName: string, color: string, content?: string) => void
+  /** The server has another page. Only the chat card pages; the search panel
+   *  passes neither of these and keeps its per-group controls untouched. */
+  hasMore?: boolean
+  onLoadMore?: () => void
 }) {
   const resultGroups = groupFleetSearchResults(results)
+  // The card pages and owns one control; the panel does not page and keeps its
+  // per-group ones.
+  const paging = typeof onLoadMore === 'function'
+  const locallyHidden = resultGroups.reduce(
+    (total, group) => total + (expandedSearchGroups[group.id] ? 0 : Math.max(0, group.results.length - SEARCH_GROUP_INITIAL_LIMIT)),
+    0,
+  )
+  const showLoadMore = hasMore || locallyHidden > 0
+  // His word for these is messages, and that is what they are unless the search
+  // turned up something else as well.
+  const loadMoreNoun = resultGroups.length === 1 ? resultGroups[0].label.toLowerCase() : 'results'
   const renderResult = (r: any, i: number, groupId: string) => {
     const text = r.text ?? r.snippet ?? ''
     const rawEvent = r.source === 'session'
@@ -203,7 +220,7 @@ export function FleetSearchResultsView({
               <span className="fleet-search-section-detail">{group.detail}</span>
             </div>
             {visible.map((r: any, i: number) => renderResult(r, i, group.id))}
-            {hidden > 0 && (
+            {hidden > 0 && !paging && (
               <button
                 type="button"
                 className="fleet-search-group-more"
@@ -219,6 +236,34 @@ export function FleetSearchResultsView({
           </section>
         )
       })}
+      {/* One control, and it does the thing it is named after.
+          Skip, 2026-08-27: "it says more. you click more and you see 'show ore
+          messages' which you click and then get more messages ... like, just
+          show 'show more messages' in the first place. why the indirection"
+          The indirection was two controls in series: `More` fetched the next
+          page, and the page's extra rows landed BEHIND each group's own
+          "Show N more" -- so fetching more messages produced another button
+          rather than messages. This expands every group and fetches in the same
+          click, and it is the only control on the card, so there is nothing left
+          to click twice. */}
+      {paging && showLoadMore && (
+        <button
+          type="button"
+          className="fleet-search-group-more fleet-search-load-more"
+          onPointerDown={(e) => stopEventPropagation(e)}
+          onPointerUp={(e) => {
+            stopEventPropagation(e)
+            setExpandedSearchGroups(prev => {
+              const next = { ...prev }
+              for (const group of resultGroups) next[group.id] = true
+              return next
+            })
+            if (hasMore) onLoadMore?.()
+          }}
+        >
+          Show more {loadMoreNoun}
+        </button>
+      )}
     </>
   )
 }
