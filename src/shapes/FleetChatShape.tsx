@@ -2363,10 +2363,9 @@ function SemanticChatOperationView({
           agents={renderCtx.getAgents?.() || []}
           onOpenChatForResult={openChatForResult}
           onStartAgentDrag={(e, value, displayName, color) => startCanonicalPillDrag(e, 'agent', value, displayName, color)}
+          hasMore={!loading && !error && hasMore}
+          onLoadMore={() => { void loadSearch(false) }}
         />
-        {!loading && !error && hasMore ? (
-          <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void loadSearch(false) }}>More</button>
-        ) : null}
       </div>
     </div>
   )
