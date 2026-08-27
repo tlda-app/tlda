@@ -2460,3 +2460,54 @@ step before catching it — the same error the A-B-A had caught hours earlier.
 6-hour sampler, 5-minute cadence, fleet-layout tab on the deployed build. Minutes
 cannot answer this — the excursions are larger than the effects being hunted.
 Candidates are A-B-A'd against a *trend*, never against a window.
+
+## 2026-08-27 (afternoon) — the signal has structure at three timescales
+
+Measuring the deployed fleet-layout tab (renderer 12781) for 2.5 hours at 20-second
+resolution established that **there is no single "memory growth rate" here.** The
+signal releases at three different periods, and at each scale an instrument that
+does not know about the next one manufactures a clean-looking result.
+
+| scale | behaviour | what it breaks |
+|---|---|---|
+| ~20 s | ±4 MB wobble | any single sample |
+| ~10 min | sawtooth, 50–80 MB releases | **every slope in this file before today** — a 5-min sample lands at random tooth phase |
+| **~2.5 h** | **deep release, −145 MB** | **the floor metric itself** |
+
+### The floor metric, and its limit
+
+A leak on a sawtooth is a **rising floor**, not a rising sample. 10-minute
+closed-bucket minima over 2.5 h:
+
+```
+391 444 427 443 429 477 495 509 539 541 551 558 577 592 601 | 517
+ └ settling ┘ └────────── climb ≈1.7 MB/min ───────────┘   └ post deep release
+```
+
+**But floors oscillate too.** At 13:26:42 one sample went **670 → 525 (−145 MB)**,
+far beyond the frequent 50–80 MB releases. So a rising floor over 40 minutes is
+*also* not proof of a leak — it can be the climb of the slower tooth.
+
+### The `rAF` A-B-A is VOID
+
+The deep release **landed inside arm A′**, which is the entire reason A′'s floor
+fell. Arms were: A baseline 2.67 MB/min, B (`rAF` suppressed) 1.2, A′ disrupted.
+**The table is not published — its rows may be phases of one oscillation.**
+
+**One result survives it, because it is a direction and not a rate:** under arm B
+the floor **kept rising with the render loop fully stopped** (541 → 551 → 558 →
+577). **`rAF` is not the sole driver.** That contradicts the retired single-window
+result which made it look like the whole story.
+
+### First genuine leak estimate
+
+Measured *across* the deep release rather than between fast ones: post-release
+floor **517** against early floors **427–429** about two hours earlier —
+**≈ +88 MB / 2 h ≈ 0.7 MB/min**. One observation, so an estimate, not a rate.
+Softened by: the earliest floors were still settling, and rows went 5 → 7.
+
+### What any future arm costs
+
+Deep releases arrive **~once per 2.5 h**. A valid arm needs several of them, so
+**hours per arm**. Anything shorter samples tooth phase at some scale. The required
+timescale has now grown by an order of magnitude three times in one day.
