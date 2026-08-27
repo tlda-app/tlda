@@ -10,10 +10,29 @@ patching it would have left a document disagreeing with itself.
 
 ## Status in one line
 
-**The preview at `:5191` is gone — connection refused, verified.** Four checks are
-established, three need re-running on a canvas that could not previously render, and
-**work is held until `classroom-pm` sends the head**: the builder is fixing the
-teacher-mount defect, so rebuilding now means rebuilding twice.
+**Environment rebuilt on `:5190`, gated, at head `6404d0106`.** Teacher mount and
+canvas rendering now pass; **the Mine-select crash is back and blocks routing**, with
+both of its fixes verifiably present in the build.
+
+## Status detail, 2026-08-27
+
+| test | result |
+|---|---|
+| teacher mounts by credential (RW + `?course=`, **no** classroom token) | **PASS** — `← Student A · 1 of 2 →` |
+| the private canvas renders | **PASS** — 47 elements with `.tl-canvas`, was 1 and none |
+| pointer strokes route by target | **HALF** — Class routes (12→13, Mine 0); **Mine unreachable** |
+| move to layer | blocked behind the crash |
+| teacher sees A's marks | not re-run |
+
+**The crash**: fresh load, canvas rendering, select `Mine`, **no drawing and no
+dwell** → `Cannot read properties of undefined (reading '__unsafe__getWithoutCapture')`,
+error boundary catches a render throw, pill and overlay leave the page. Fires at the
+click; it **no longer needs a reconnect**.
+
+**It tracks `isWriteTarget` becoming true, not the canvas existing** — the teacher
+view mounts the same component with a real canvas and `isWriteTarget={false}` and does
+not throw. Narrowing only; the reported call site is the camera path, which runs
+regardless of write target, so trigger and throwing frame may differ.
 
 ## 1. Established — do not re-derive
 
@@ -101,6 +120,16 @@ token, so identity should follow the credential, not a query parameter.
   `dist/index.html` against what the server returns.
 
 ## 5. Instrument traps — every one of these produced a false or empty reading
+
+- **A second fault can certify the first one fixed.** The crash fix was verified on
+  2026-08-26 by two fresh loads at 90s and 150s dwell, four target switches, and a
+  positive-controlled grep returning **0**. **All of it was worthless**: that build
+  had the licence-key fault, so the overlay had **no canvas and therefore no live
+  editor to dispose**. The crash had nothing to fire on. The moment the canvas
+  rendered, it came back on the first click. **The green measured the absence of a
+  canvas, not the presence of a fix** — and every element of that verification was
+  individually sound. **Before believing a fix, establish that the thing it repairs
+  is capable of failing in the build you tested.**
 
 - **Synthetic `PointerEvent`s do not drive this tldraw.** Dispatching a full
   down/move/up sequence creates nothing, with or without `setPointerCapture` stubbed.
