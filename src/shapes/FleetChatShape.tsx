@@ -2429,7 +2429,35 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   // measurement the moment any of them actually changes size.
   const rowResizeObserverRef = useRef<ResizeObserver | null>(null)
   if (!rowResizeObserverRef.current && typeof ResizeObserver !== 'undefined') {
-    rowResizeObserverRef.current = new ResizeObserver(() => setGeometryVersion(v => v + 1))
+    // A ResizeObserver delivers an observation the moment observe() is called,
+    // not only when a row resizes -- and the row ref below re-observes every
+    // mounted row on every render, because it is an inline callback whose
+    // identity changes each time, so React detaches and reattaches it. Bumping
+    // geometryVersion unconditionally therefore made each render schedule the
+    // next one: 294 observe() calls in 5s against geometry that did not change
+    // once across 120 samples at 20Hz. Ask whether a row actually moved, using
+    // the same measurement and the same 0.5px threshold as the layout effect
+    // below -- getBoundingClientRect rather than entry.contentRect, for the
+    // reason recorded there. The last height seen per row lives in this
+    // observer's own closure rather than in heightByKeyRef: the effect below
+    // owns that map and writes it on its own schedule, and reading a ref here
+    // would be a ref access during render.
+    const lastObservedHeight = new Map<string, number>()
+    rowResizeObserverRef.current = new ResizeObserver(entries => {
+      let moved = false
+      for (const entry of entries) {
+        const row = entry.target as HTMLElement
+        const key = row.dataset.chatItemKey
+        if (!key) continue
+        const nextHeight = row.getBoundingClientRect().height
+        if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue
+        const previousHeight = lastObservedHeight.get(key)
+        if (previousHeight !== undefined && Math.abs(nextHeight - previousHeight) <= 0.5) continue
+        lastObservedHeight.set(key, nextHeight)
+        moved = true
+      }
+      if (moved) setGeometryVersion(version => version + 1)
+    })
   }
   useEffect(() => () => rowResizeObserverRef.current?.disconnect(), [])
 
