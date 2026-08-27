@@ -315,6 +315,48 @@ teaching the bot to acknowledge, are both behaviour changes rather than repairs,
 and §"What is not settled" item 1 already asks whether the timeout should differ
 by harness kind — which is the same question arriving from the other side.
 
+## Errata: an MCP can hold an open socket it never logged in on
+
+**Fixed 2026-08-27.** The errata above is about the server mistaking a bot's
+socket for an MCP. This is the other direction: a real MCP, in a live session,
+holding a real open `/ws/fleet` socket that the server has never seen a `login`
+on — so `_tldaAgentId` is unset, `openMcpSocketsForAgent` finds nothing, and the
+server correctly reports `no-open-mcp-socket` → `no-channel` about a socket that
+is sitting right there.
+
+The chain, each link measured rather than inferred:
+
+| link | what it does |
+|---|---|
+| `sendDurableFleet` | a login that misses its deadline returns `{queued: true}` |
+| `sendCoalescedDurable` | **retains** a queued entry, pinned to that exact payload |
+| `loginRouteFields()` | is **not constant** — `cwd` and `project` follow the agent's working directory, and `detectedTmux` is an `execSync` with a 3s timeout that answers `null` when it loses |
+| next reconnect | payloads differ → the transport throws **synchronously** |
+| `startChannelWS` `onOpen` | did not catch it, and `ResilientWS` invokes `onOpen` from its `'open'` listener with no catch either |
+| result | socket **open**, zero login frames, no channel, no log line |
+
+The transport's throw is right: a keyed durable operation reuses one
+`operation_id` on retry, and the server dedupes on it, so a second payload under
+the first one's identity would be a lie about what was queued. **The call site
+was wrong.** Changed route facts are a *different* operation and now get their
+own identity, by putting the facts in the coalesce key. Identical facts still
+coalesce, so the "resume the queued login rather than duplicate it" property the
+key was added for (`cfd134da5`) is unchanged.
+
+**Recovery was a coincidence, which is why it looked intermittent.** The retained
+entry matches again if the agent's `cwd` happens to return to what it was, and a
+manual `login()` re-sends over the connected channel. Nothing in the code
+recovered it.
+
+**And the daemon could not have recovered it either**, which is the second half
+and is *not* fixed here. `no-channel` maps to `ensure-process`, and the process
+was never the problem: `wakeMint` finds the session alive and returns
+`{alreadyAlive: true}` **silently**. Measured that day: **42 `no-channel`
+symptoms for one agent, with no wake recorded against any of them** — a log that
+reads like a daemon ignoring the report rather than one whose remedy did not
+apply. The daemon now says which of the two it did. Whether it should do
+something *else* is open point 7.
+
 ## What is not settled
 
 These are open, and they are Skip's or an owner's to settle rather than an
@@ -393,6 +435,20 @@ implementer's to infer.
    control-plane trace and **the `dead` one appends nothing at all**. The most
    consequential branch is the silent one, so an investigation finds no record of
    the decision that stopped the notification.
+
+7. **What the daemon should do about `no-channel` when the process is alive.**
+   Today: `ensure-process`, which no-ops. §"Liveness" gives the daemon a second
+   job for exactly this shape — *process exists but is not responding* →
+   hibernate and wake — and `no-channel` on a live session is that shape observed
+   from the server's side. It is not mapped there, deliberately: the comment on
+   `NOTIFICATION_SYMPTOM_ACTION` reasons that a restart destroys the live tmux
+   session and the turn in it, and that reasoning was written about
+   `channel-silent`. Whether it also governs `no-channel` — where the MCP is not
+   slow but structurally absent from the server's view — has not been decided by
+   anyone. The two candidates are `suggest-restart` (a message into the live
+   session, which is what a human does today and what recovered it) and leaving
+   it alone. **This is a behaviour question, so it is recorded rather than
+   guessed.**
 
 Adjacent to this and already written down: the daemon↔server durable message
 protocol has its own set of unspecified states — silent ack refusal, attempt

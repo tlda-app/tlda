@@ -129,6 +129,39 @@ function loginRouteFields() {
   };
 }
 
+// The coalesce key for a channel login, and the payload is part of it.
+//
+// A keyed durable operation retains ONE identity per key and reuses it on
+// retry, so the transport refuses a changed payload under that identity —
+// correctly, because the server dedupes on operation_id and a second payload
+// under the first one's id is a lie about what was queued.
+//
+// `loginRouteFields()` is not constant across calls. `cwd` and `project` follow
+// the agent's working directory, and `detectedTmux` comes from an `execSync`
+// with a 3s timeout that answers `null` when it loses the race. So keying only
+// on the agent id promises a stable payload that this call site cannot deliver:
+// once a login returns `{queued: true}` — which is what a login that missed its
+// deadline returns, i.e. exactly the reconnect this runs on — the entry is
+// retained pinned to those facts, and the NEXT reconnect throws
+// "payload changed" synchronously out of `onOpen`.
+//
+// Nothing catches it there. The socket stays OPEN, the server receives zero
+// login frames, so it never sets `_tldaAgentId` and `openMcpSocketsForAgent`
+// finds nothing: a live process holding an open socket, reported as
+// `no-open-mcp-socket` → `no-channel`, forever, until someone calls `login()`
+// by hand. Measured on 2026-08-27: 42 `no-channel` symptoms for one agent in a
+// day, with no wake in the daemon log against any of them.
+//
+// Including the facts in the key makes changed facts a DIFFERENT operation with
+// its own id, which is what they are. Identical facts still coalesce, so the
+// "resume the queued login rather than duplicate it" property this key was
+// added for is unchanged; only the unrepresentable case stops being an
+// exception thrown into an event handler.
+export function channelLoginCoalesceKey(agentId, loginBody) {
+  const facts = crypto.createHash('sha256').update(JSON.stringify(loginBody)).digest('hex').slice(0, 12);
+  return `channel-login:${agentId}:${facts}`;
+}
+
 // Resolve a chat-like message body from the tool args. Two forms:
 //   - { [bodyField] } : an inline string → body = value, no source provenance.
 //   - { file, selector } : read the markdown file (agent-side — the file is on
@@ -2666,7 +2699,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       // id resolved from the mint store above) has no activeAgentId() yet and
       // the durable send died with "no transport identity" — login could never
       // establish the identity the transport was asking it for.
-      : mcpFleetTransport.durable('login', loginBody, { agentId: shellId, coalesceKey: `channel-login:${shellId}` }))
+      : mcpFleetTransport.durable('login', loginBody, { agentId: shellId, coalesceKey: channelLoginCoalesceKey(shellId, loginBody) }))
       ?.catch(e => ({ error: e.message }));
     if (!serverResult) {
       return { content: [{ type: 'text', text: [
@@ -5870,9 +5903,18 @@ function startChannelWS({ bootstrap = false } = {}) {
         metadata: { kind: harnessFromEnv().kind },
       };
       const loginAgentId = activeAgentId();
-      const loginPromise = mcpFleetTransport.durable('login', loginBody, {
-        coalesceKey: `channel-login:${loginAgentId}`,
-      });
+      // In a try: `durable()` resolves the coalesce entry SYNCHRONOUSLY, so a
+      // throw here escapes into ResilientWS's 'open' listener, which has no
+      // catch — the socket is left open and unregistered and the stderr line
+      // below never runs. Report it and let the flush retry instead.
+      let loginPromise = null;
+      try {
+        loginPromise = mcpFleetTransport.durable('login', loginBody, {
+          coalesceKey: channelLoginCoalesceKey(loginAgentId, loginBody),
+        });
+      } catch (e) {
+        process.stderr.write(`[fleet-channel] login send refused for ${loginAgentId}: ${e.message}\n`);
+      }
       loginPromise
         ?.then(() => flushFleetTransport({ limit: 100 }))
         ?.catch(e => process.stderr.write(`[fleet-channel] re-login/flush failed: ${e.message}\n`));

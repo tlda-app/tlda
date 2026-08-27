@@ -923,12 +923,29 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
   }
 
   try {
+    // `ensure-process` converges by being a no-op when the process is already
+    // there, and that no-op is the overwhelmingly common outcome for
+    // `no-channel`: the agent is sitting in a live tmux session and it is the
+    // SOCKET that is gone, not the process. `wakeMint` returns
+    // `{ alreadyAlive: true }` and logs nothing, so the log showed 42
+    // `no-channel` lines for one agent on 2026-08-27 with no record beside any
+    // of them of what this machine did about it — reading as a daemon that
+    // ignored the report rather than one whose remedy did not apply.
+    //
+    // Saying so is not a change of remedy. Whether a live process with no
+    // channel should escalate past `ensure-process` is a behaviour question and
+    // belongs to docs/notifications-and-liveness.md §"What is not settled".
+    let wakeResult = null
     const performed = await performNotificationSymptomAction({
       symptom,
-      ensureProcess: () => rpcWake({ fleet_id: agent_id, agent_id }),
+      ensureProcess: async () => { wakeResult = await rpcWake({ fleet_id: agent_id, agent_id }); return wakeResult },
       suggestRestart: () => terminalRpc.notifyConnectionDisconnected({ agent_id }),
     })
-    return { ok: true, agent_id, symptom, recorded: true, acted: true, action: performed }
+    if (performed) {
+      log.warn(`[notification-symptom] ${agent_id}: ${symptom} -> ${performed}`
+        + (performed === 'wake' ? ` (${wakeResult?.alreadyAlive ? 'no-op: process already alive' : 'started a process'})` : ''))
+    }
+    return { ok: true, agent_id, symptom, recorded: true, acted: true, action: performed, already_alive: wakeResult?.alreadyAlive ?? null }
   } catch (e) {
     // Reported, not thrown, and NOT death. The server is not waiting on this and
     // decides nothing from it; a remedy that failed is this machine's problem to
