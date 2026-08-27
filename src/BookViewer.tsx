@@ -11,11 +11,10 @@ import { SvgDocumentEditor } from './SvgDocument'
 import { STORE_HTTP } from './activeConfig'
 import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
-import { BookContext, type BookMember, type BookContextValue } from './BookContext'
+import { BookContext, type BookMember, type BookContextValue, type BookLayersValue } from './BookContext'
 import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
 import { TeacherStudentOverlay } from './classroom/TeacherStudentOverlay'
-import { BookLayersControl } from './classroom/BookLayersControl'
-import { studentLayers, setLayerVisible, setWriteTarget, type BookLayerState, type BookLayerId } from './classroom/bookLayers'
+import { readerLayers, studentLayers, teacherLayers, setLayerVisible, setWriteTarget, type BookLayerState, type BookLayerId } from './classroom/bookLayers'
 import { moveShapesToLayer, layerStore } from './classroom/moveBetweenLayers'
 import { classroomApi, type ClassroomIdentity } from './classroom/api'
 import type { SvgDocument } from './loaders/types'
@@ -37,7 +36,15 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // Which layers are shown, and which one takes the reader's marks. Default
   // target is the book's own layer, so a reader who never touches the control
   // writes where they already would.
-  const [layers, setLayers] = useState<BookLayerState>(studentLayers)
+  //
+  // Starts at the one layer every reader has. What else they have depends on
+  // identity, and identity is asked for asynchronously, so this is the state
+  // before the answer arrives rather than a guess at it.
+  const [layers, setLayers] = useState<BookLayerState>(readerLayers)
+  // The student an instructor is currently reading, reported up by the overlay
+  // that flicks through them. It is a layer of theirs, so the layer state has
+  // to know about it.
+  const [readStudent, setReadStudent] = useState<{ id: string; displayName: string } | null>(null)
   const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
   const [trackedSelectionCount, setTrackedSelectionCount] = useState(0)
   const [moveError, setMoveError] = useState('')
@@ -191,12 +198,28 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     return () => { cancelled = true }
   }, [])
 
-  const ctx = useMemo<BookContextValue>(() => ({
-    bookName,
-    members,
-    activeIndex,
-    switchTo,
-  }), [bookName, members, activeIndex, switchTo])
+  // Which layers this reader has. Derived from what rooms they actually have,
+  // not from their role: a student has the book's and their own; an instructor
+  // reading a student has the book's and that student's; everyone else has the
+  // book's alone. The control that offers the choice keys on this set, so an
+  // instructor is offered exactly the choices an instructor has rather than
+  // being excluded from the feature.
+  //
+  // The set is derived; the two selections over it are the reader's and are
+  // held. So the base is computed, and the held selections are dropped at the
+  // moment the base changes — during render rather than in an effect, so no
+  // frame is ever drawn offering choices from the previous reader's layers.
+  const baseLayers = useMemo(() => {
+    if (identity?.role === 'student') return studentLayers()
+    if (identity?.role === 'instructor' && readStudent) return teacherLayers(readStudent.id, readStudent.displayName)
+    return readerLayers()
+  }, [identity?.role, readStudent])
+
+  const [layersBase, setLayersBase] = useState(baseLayers)
+  if (layersBase !== baseLayers) {
+    setLayersBase(baseLayers)
+    setLayers(baseLayers)
+  }
 
   const activeMember = members[activeIndex]
   const roomId = activeMember ? `doc-${activeMember.key}` : ''
@@ -212,6 +235,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const courseId = useMemo(() => new URLSearchParams(window.location.search).get('course') || '', [])
 
   const mineLayer = layers.layers.find(l => l.id === 'mine')
+  const studentLayer = layers.layers.find(l => l.id === 'student')
   const commonVisible = layers.layers.find(l => l.id === 'common')?.visible ?? true
 
   // Which canvas holds which layer. Named rather than derived by complement:
@@ -264,6 +288,27 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     }
   }, [targetEditor, editorForLayer, layers.target])
 
+  // The layer state and the two selections over it, handed to the surface that
+  // draws the ordinary controls. Nothing here is conditional on who is reading:
+  // one layer means the control has nothing to offer and does not appear, which
+  // is the same rule for every reader.
+  const layersValue = useMemo<BookLayersValue>(() => ({
+    state: layers,
+    setVisible: (id, visible) => setLayers(current => setLayerVisible(current, id, visible)),
+    setTarget: id => { setMoveError(''); setLayers(current => setWriteTarget(current, id)) },
+    selectionCount,
+    moveSelection: moveSelectionToLayer,
+    moveError,
+  }), [layers, selectionCount, moveSelectionToLayer, moveError])
+
+  const ctx = useMemo<BookContextValue>(() => ({
+    bookName,
+    members,
+    activeIndex,
+    switchTo,
+    layers: layersValue,
+  }), [bookName, members, activeIndex, switchTo, layersValue])
+
   // The book's editor, kept so the overlay above it can follow its camera and
   // its tool selection. Passed on to the original caller unchanged.
   const handleEditorMount = useCallback((editor: Editor | null) => {
@@ -299,25 +344,15 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
             tool they picked. A reader without an enrolment token has one layer,
             so no overlay and no control, and the book is unchanged for them. */}
         {!loading && document && identity?.role === 'student' && (
-          <>
-            <StudentAnnotationOverlay
-              key={`${activeMember.key}:${identity.studentId}`}
-              bookRoomId={roomId}
-              studentId={identity.studentId}
-              bookEditor={bookEditor}
-              visible={mineLayer?.visible ?? false}
-              isWriteTarget={layers.target === 'mine'}
-              onEditorMount={setOverlayEditor}
-            />
-            <BookLayersControl
-              state={layers}
-              onVisibilityChange={(id, visible) => setLayers(current => setLayerVisible(current, id, visible))}
-              onTargetChange={id => { setMoveError(''); setLayers(current => setWriteTarget(current, id)) }}
-              selectionCount={selectionCount}
-              onMoveSelection={moveSelectionToLayer}
-              moveError={moveError}
-            />
-          </>
+          <StudentAnnotationOverlay
+            key={`${activeMember.key}:${identity.studentId}`}
+            bookRoomId={roomId}
+            studentId={identity.studentId}
+            bookEditor={bookEditor}
+            visible={mineLayer?.visible ?? false}
+            isWriteTarget={layers.target === 'mine'}
+            onEditorMount={setOverlayEditor}
+          />
         )}
         {/* The teacher reads one student's layer at a time, flicking between
             them. Only when a course is named — the book itself belongs to no
@@ -328,6 +363,8 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
             bookRoomId={roomId}
             courseId={courseId}
             bookEditor={bookEditor}
+            visible={studentLayer?.visible ?? true}
+            onStudentChange={setReadStudent}
           />
         )}
       </div>
