@@ -2044,3 +2044,59 @@ signal the editor had. The deployed build has the first half without the second.
    supported route back, measured cost nil. No action exists.
 3. `not-on-work-branch` once per first-writer room bind: ordering, not fault.
    Not fixing unless asked.
+
+## 2026-08-27 - the two sync demos, and two live defects neither of them expected
+
+Skip, 3407093: *"i want to see stuff exercised in a demo; perhaps one stylized
+and one playing back a previously-problematic editing session like my last one
+with jose"*. Read his message directly and went to the record.
+
+### DEMO 2 - the replay. `scratch/jose-replay.mjs`. Disposable, never his.
+
+```
+his project's checkout    HEAD = tlda/<a DIFFERENT project of his>
+his project's work branch = tlda/<his project>      ON WORK BRANCH: false
+daemon log 2026-08-25     proposal not accepted: not-on-work-branch  (x3)
+```
+
+**Two projects share one checkout; it stands on the other one's branch; his
+never syncs.** Fleet-wide: **10 checkouts carry 27 projects**, so at most 10 of
+those 27 can be on their own work branch -- **at least 17 cannot sync now.** Nine
+projects logged the line in one burst today; nine of ten sampled are genuinely
+off-branch, on `main`, `master`, and real feature branches.
+
+**Two supported things that cannot both hold.** Sharing a checkout is supported;
+syncing requires standing on that project's branch; a checkout stands on one
+branch. The losing project FAILS SILENTLY -- edit commits, tree clean, nothing
+errors, only a daemon log line.
+
+**CORRECTION to the 08-27 disposition above:** I called `not-on-work-branch`
+"transient by construction, not fixing." True of the SOURCE-ROOM BIND case I had
+looked at; I generalised from one case to a message I had only seen in one
+place. Not true here.
+
+### DEMO 1 - the stylized one never ran, and why is the second defect
+
+`tlda project link` on a BRAND-NEW disposable project never completes. Looped
+**7 attempts** on `daemon request timed out: adopt-shadow-history-ref`, the
+daemon re-running the seed each time with the work GROWING:
+
+```
+gaps between successive "prepared ... project history" lines
+20.8s -> 20.6s -> 22.3s -> 24.3s -> 28.3s -> 36.2s -> 57.2s
+```
+
+After ~3 minutes: `sourceRevision: NONE`, `pages: 0`, `acceptSeq: null`, and the
+checkout LEFT ON `main` rather than its work branch -- i.e. the failure lands in
+exactly the state demo 2 is about. Stopped it; looping, not progressing.
+
+Path is `prepareHistorySeed` -> `pushHistorySeed` ->
+`sendMsgWithReply('adopt-shadow-history-ref')`. The server handler EXISTS
+(`unified-server.mjs:9998`), so not a severed wire. **NOT established which side
+is slow** -- the daemon log records the prepare and nothing about the reply.
+
+**Neither fixed.** The shared-checkout one is a product decision (may a checkout
+bind more than one project; must the daemon surface the silence). The link
+timeout is a defect and offered to the chief.
+
+Disposable `sync-demo-0827` project and checkout left in place as evidence.
