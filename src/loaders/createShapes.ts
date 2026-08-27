@@ -234,12 +234,15 @@ export function createHtmlShapes(
       changed = true
       continue
     }
+    const isSlide = page.src.includes('_tldaH=') || page.src.includes('_tldaDeck=1')
     const viewport = existing.parentId === editor.getCurrentPageId()
       ? editor.getViewportPageBounds()
       : null
-    const h = viewport && existing.y + existing.props.h < viewport.minY
-      ? Math.max(existing.props.h, viewport.maxY - existing.y + 1)
-      : existing.props.h
+    const h = isSlide
+      ? page.bounds.h
+      : viewport && existing.y + existing.props.h < viewport.minY
+        ? Math.max(existing.props.h, viewport.maxY - existing.y + 1)
+        : existing.props.h
     if (
       existing.parentId === targetPageId &&
       existing.x === page.bounds.x &&
