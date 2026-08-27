@@ -64,6 +64,53 @@ limit: 30)` returns `Bounded query returned ≥30 results — too many to return
 one call. Narrow your time range.` Lowest priority of the three; note it so the
 footer and the behaviour stop disagreeing.
 
+## Defect 4 — an empty two-party thread is reported as an empty corpus
+
+This is the one that produced the "visibility-unavailable" reading of four
+agents whose history is fully intact.
+
+`thread(agent: "dmitry-fix")` answers:
+
+> No messages found for the given criteria. Selector "dmitry-fix" resolves to
+> fleet:8c86de6d, but no indexed fleet messages were found in environment
+> "testing".
+
+`thread(filter: "from:dmitry-fix")` returns messages immediately, and
+`search(query: "from:dmitry-fix")` returns five. The history is indexed and
+readable.
+
+**The two-party read being empty is correct** — the caller and that agent never
+exchanged messages. What is wrong is the sentence: it describes an absent
+**corpus** when the truth is an absent **pair**, so the reader concludes the
+agent's activity is invisible.
+
+The correct wording already exists on the sibling path. `thread(filter:)` prints:
+
+> ↳ This is dmitry-fix talking to the whole fleet, which is what you asked for …
+> For the conversation between you and dmitry-fix, ask for `me <> dmitry-fix` or
+> `agent: "dmitry-fix"`.
+
+So the fix is to say, on the empty two-party result, that the pair is empty and
+name the route to that agent's wider traffic. Do not change what the query
+returns — the result is right; only the sentence is wrong.
+
+## Defect 5 — the `project:` parameter is inert
+
+`search`'s `project` parameter is documented as "List agents who worked in a
+project/working directory by chronological recency." Measured:
+
+- `search(query: "zzqqxwv", project: "tlda")` → "No results". No agent rows.
+- `search(query: "dmitry-fix", project: "tlda")` and
+  `search(query: "dmitry-fix", project: "synth-randomization")` → **identical
+  five rows**, and identical to the same query with no `project` at all.
+
+Same query, different project, same result set — the parameter changes nothing
+on this path, and no call produced an agent listing. This is the first half of
+the Monday workflow (which agents worked in this project), and it does not work.
+
+Establish whether the listing exists anywhere before building one. If it was
+deleted, say so and cite the commit rather than writing a replacement.
+
 ## Standing constraints
 
 - Verify on the real search surfaces — the MCP `search()` tool and the in-app
