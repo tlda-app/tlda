@@ -130,18 +130,69 @@ Checks that were run, including the ones that failed first:
 
 ## What is NOT established
 
-**What writes the height downward.** The parent handler cannot — with
-`minH = current.props.h` it only ever grows. So a second writer resets slide
-heights, and the live cycle is that reset racing the ratchet. I had a store
-listener ready to name the writer and its `source` (local vs remote), and
-Skip's tab closed mid-probe; the probe project has only one participant and
-does not show the reset. Candidates I did not confirm: `createSlidesShapes` in
-`src/loaders/createShapes.ts`, which unconditionally rewrites a slide's `h` to
-`page.bounds.h`, and a remote Yjs record from another participant.
+**What writes the height downward — now pinned by value, not by identity.**
+
+The live PIC samples are not a scatter. Fitting `H_{n+1} = H_n/2 + c` to
+consecutive observed rungs gives a constant c on both slides:
+
+    slide-8, from 2256/2296/2316/2326:  c = 1168.0, 1168.0, 1168.0
+    slide-9, from 1294/1426/…/1549:     c = 779.0, 779.0, 779.0, 778.5, 778.5
+
+So the values in Skip's tab are exactly the rungs of the feedback law measured
+on the rig — the law is confirmed on his surface and not only on mine. Their
+fixed points are 2336 and 1558.
+
+Running one rung backwards from the lowest observed value gives what the height
+had just been reset **to**:
+
+    slide-8:  (1691 - 1168) * 2 = 1046
+    slide-9:  (1294 -  779) * 2 = 1030
+
+Every **unmounted** slide on that canvas sat at exactly **1000** — the authored
+height. So the downward writer resets a slide to its authored height, and the
+1691/1294 I sampled were never a reset value at all, they were the first rung
+of the climb back up. That is the loader asserting `page.bounds.h`, which is
+what `createSlidesShapes` does unconditionally and what `createHtmlShapes` does
+for slide URLs.
+
+**Still not measured:** which of those two ran, and whether the write arrived
+as `source: 'user'` or `'remote'`. That needs a store listener on a tab where
+the bounce is live. See the next section for why I could not open one.
+
+**One related thing the reverts missed.** `b5b6eb4e5` "Reset migrated slide
+heights" (2026-08-27 14:20, an hour before the four rejected patches) added
+`h = isSlide ? page.bounds.h : …` to `createHtmlShapes` — a downward writer for
+slide heights on the HTML branch. The reverts `f96a67575..67e62b396` cover the
+four later commits only; `b5b6eb4e5` is live on `main`. I did not touch it —
+flagging it because it widened this exact disagreement on the same day, and a
+revert series that stops short of the first commit in a theme is the shape this
+repo already warns about.
 
 Removing the loop's gain makes the ratchet a bounded two-step settle whatever
-resets it, so the continuous bounce goes either way. I am not claiming the
-resetting half is diagnosed.
+resets it, so the continuous bounce goes either way.
+
+## Why I did not open a browser on PIC
+
+Asked to take this route without Skip's tab, I did not, and the two reasons are
+both hard:
+
+- **The shared pool cannot make a read-only session.** `tlda-dev pw` appends
+  `pw=1` to every URL, and `FleetIconPill.tsx:403` treats `pw=1` or
+  `navigator.webdriver` as `automatedSession`, which selects the `3-col` preset
+  and writes **six fleet shapes** into that project's synced room, once per
+  launch, with nothing removing them. `qtm285-lecture-1` is a live course
+  project. AGENTS.md is explicit that a browser goes at a disposable project,
+  never one someone works in.
+- **And it would measure nothing anyway.** PIC's docs are gated:
+  `page-info.json` and the slide HTML both return **401** for me, and
+  `~/.config/tlda/tokens.json` holds tokens for a different server (401 there
+  too). An unauthenticated session loads the app shell (200) but no slide
+  iframe, so no reveal, no reports, and no bounce. That is the
+  environment-where-nothing-happens failure, and reporting from it would be
+  worse than not running it.
+
+Note the 401 bodies parse as clean JSON (`{"error":"Unauthorized"}`); read as
+content rather than by status code they look like an empty result.
 
 **Two writers still own one fact.** `createSlidesShapes` asserts the authored
 `page.bounds.h` (700 on the probe deck); the measurement asserts the content
