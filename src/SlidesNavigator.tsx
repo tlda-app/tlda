@@ -29,12 +29,13 @@ function navigateToSlide(editor: Editor, document: SvgDocument, index: number, a
   const page = document.pages[index]
   if (!page) return
   const vp = editor.getViewportScreenBounds()
-  // Presentation mode preserves slide scale by fitting width only. Tall slides
-  // are allowed to overflow vertically on the TLDraw canvas.
-  const z = Math.min(1, vp.width / page.width)
+  // Keep the whole slide visible and centered. Width-only fitting clips decks
+  // whose authored aspect ratio is taller than the browser viewport, which
+  // makes adjacent slides appear to jump between centered and cut off.
+  const z = Math.min(1, vp.width / page.width, vp.height / page.height)
   const target = {
     x: -page.bounds.x + (vp.width / z - page.width) / 2,
-    y: -page.bounds.y,
+    y: -page.bounds.y + (vp.height / z - page.height) / 2,
     z,
   }
   if (animate) {
