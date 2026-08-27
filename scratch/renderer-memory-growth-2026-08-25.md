@@ -2511,3 +2511,60 @@ Softened by: the earliest floors were still settling, and rows went 5 → 7.
 Deep releases arrive **~once per 2.5 h**. A valid arm needs several of them, so
 **hours per arm**. Anything shorter samples tooth phase at some scale. The required
 timescale has now grown by an order of magnitude three times in one day.
+
+## 2026-08-27 — six-hour baseline: the leak, measured
+
+Deployed build, fleet-layout tab (renderer 12781), clean and unsuppressed —
+verified, not assumed: `rAF` firing, no chat-row filter, no WebSocket block, no
+timer suppression. **1,019 samples at 20 s, 10:54:30 → 16:48:16.** Rows 5–7
+throughout. Peak 807 MB.
+
+### The instrument correction that made the measurement possible
+
+I had flagged only drops **>100 MB** as "deep releases" and concluded they arrive
+**once per 2.5 h**. That was an artifact of an arbitrary cutoff. The actual
+distribution of single-step drops is a **continuum** — 52, 58, 70, 71, 73, 75, 78,
+80, 90, 92, 145 MB — so there is **no distinct deep-release class**, and releases
+arrive roughly **every 30 minutes**, not every 2.5 hours.
+
+That turned one usable post-release floor into **eleven**.
+
+### Post-release floors — the leak
+
+| time | floor | | time | floor |
+|---|---|---|---|---|
+| 10:55:11 | 391 | | 13:28:26 | 517 |
+| 11:12:27 | 431 | | 13:45:03 | 572 |
+| 11:18:18 | 427 | | 15:25:16 | 648 |
+| 11:28:38 | 443 | | 15:27:02 | 654 |
+| 11:49:17 | 477 | | 16:15:07 | 652 |
+| 13:26:42 | 525 | | | |
+
+**391 → 652 over 5 h 20 m ≈ 0.82 MB/min.** Post-settling only (13:26 onward):
+525 → 652 ≈ 0.75 MB/min. Whole-run vs post-settling **agree** — the first time in
+this investigation that two derivations of a rate have.
+
+**Why this one is trustworthy where none of the earlier rates were.** Each floor
+is taken immediately *after* a release, so sawtooth phase cannot produce the
+sequence; and eleven events cannot be one burst landing in one window. Both
+failure modes that generated every retraction in this file are excluded by
+construction rather than by hope.
+
+**So: there is a real leak on this configuration, ≈0.8 MB/min at the floor.**
+
+### Open
+
+- The last three floors — 648, 654, 652 — are **flat over the final hour**. Either
+  a working set stabilising or a third false plateau; two earlier ones broke
+  upward. **Not called.**
+- Release cadence is **not uniform**: no release at all between 11:49 and 13:26
+  (1 h 37 m), then several clustered. So an arm cannot be sized on a fixed cadence.
+- At 0.8 MB/min a tab reaches 15 GB in ~10 months, so **this configuration does
+  not explain the observed deaths.** Whatever kills Skip's tab is larger and is
+  still unidentified. Growth scales with fleet-layout contents; his tab has far
+  more.
+
+### Cost of any future causal arm — corrected downward
+
+An A-B-A arm must span several release events. At ~1 per 30 min that is **~2–3 h
+per arm**, not the 5–6 h I quoted from the bad cadence figure.
