@@ -25,9 +25,13 @@ interface TeacherStudentOverlayProps {
   courseId: string
   /** The book's editor, so the overlay follows its camera. */
   bookEditor: Editor | null
+  /** Whether the student's layer is shown — the layer control's selection. */
+  visible?: boolean
+  /** Which student is being read, so the layer control can name their layer. */
+  onStudentChange?: (student: { id: string; displayName: string } | null) => void
 }
 
-export function TeacherStudentOverlay({ bookRoomId, courseId, bookEditor }: TeacherStudentOverlayProps) {
+export function TeacherStudentOverlay({ bookRoomId, courseId, bookEditor, visible = true, onStudentChange }: TeacherStudentOverlayProps) {
   const [roster, setRoster] = useState<StatusRow[]>([])
   const [index, setIndex] = useState(0)
   const [error, setError] = useState('')
@@ -49,6 +53,13 @@ export function TeacherStudentOverlay({ bookRoomId, courseId, bookEditor }: Teac
   }, [courseId, requested])
 
   const student = roster[index]
+
+  // Report who is being read. The layer control names their layer, and it is
+  // mounted with the ordinary controls rather than here, so it has no other way
+  // to know which student the flicking has landed on.
+  useEffect(() => {
+    onStudentChange?.(student ? { id: student.id, displayName: student.displayName } : null)
+  }, [student, onStudentChange])
 
   // The URL follows what he is looking at, so a reload lands back here and the
   // link is shareable — but flicking never navigates. Same rule as the marking
@@ -81,15 +92,15 @@ export function TeacherStudentOverlay({ bookRoomId, courseId, bookEditor }: Teac
   if (!student) return null
 
   return <>
-    {/* Visible, never the write target: he is reading their layer, not drawing
-        in it. Marks he returns to a student are written where marking already
-        writes them. */}
+    {/* Shown or hidden by the layer control, never the write target: he is
+        reading their layer, not drawing in it. Marks he returns to a student
+        are written where marking already writes them. */}
     <StudentAnnotationOverlay
       key={`${bookRoomId}:${student.id}`}
       bookRoomId={bookRoomId}
       studentId={student.id}
       bookEditor={bookEditor}
-      visible
+      visible={visible}
       isWriteTarget={false}
     />
     {/* Same bar, same weight, as the marking view's student stepper. */}

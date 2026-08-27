@@ -107,6 +107,7 @@ import { SyncErrorPill } from './pills/SyncErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
+import { BookLayersSlot } from './classroom/BookLayersSlot'
 import { FollowingBadge } from './pills/FollowingBadge'
 import { FleetIconPill } from './pills/FleetIconPill'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
@@ -745,9 +746,13 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
 
   const components = useMemo<TLComponents>(
     () => {
-      const chrome = isPresentation
-        ? <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
-        : <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><RibbonLane /><ProvenancePanel /><ProvenanceInline /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
+      // One chrome, every format. Presenting a document is a way of looking at
+      // it, not a different application, so it carries the controls the document
+      // carries. This used to be a ternary on `isPresentation` that dropped
+      // RibbonLane, ProvenancePanel and ProvenanceInline — three of twenty-one —
+      // which is what made the presentation surface's controls "not the usual
+      // ones."
+      const chrome = <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><RibbonLane /><ProvenancePanel /><ProvenanceInline /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
       return {
         PageMenu: null,
         SharePanel: null,
@@ -756,11 +761,14 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         // on a phone (Skip's call). The phone control scheme is the bottom-right
         // button cluster instead. iPad/tablet presentation keeps normal chrome.
         Toolbar: () => IS_PHONE ? null : <FormatToolbar format={document.format} />,
-        HelperButtons: () => isPresentation ? null : <PenHelperButtons format={document.format} />,
+        // Same buttons while presenting. Exiting pen mode is not something a
+        // presenter needs less than a reader does, and the comment above already
+        // said presentation keeps normal chrome while the code removed it.
+        HelperButtons: () => <PenHelperButtons format={document.format} />,
         InFrontOfTheCanvas: () => chrome,
       }
     },
-    [document, projectName, isPresentation]
+    [document, projectName]
   )
 
   // Stable doc info — only changes when a different document loads
@@ -1114,6 +1122,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         {storeWithStatus.status === 'synced-remote' && storeWithStatus.connectionStatus === 'offline' && (
           <span className="sync-offline-badge" title="Connection lost — signals and sync paused">⚡ offline</span>
         )}
+        <BookLayersSlot />
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <PlaybackPill state={playbackState} />
         {editorRef.current && (

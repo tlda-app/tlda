@@ -40,6 +40,21 @@ export interface BookLayerState {
 }
 
 /**
+ * The layers a reader has with no second room of their own: just the book's.
+ *
+ * One layer is no choice, so the control that offers the choice does not appear
+ * — which is a fact about the layers, not about who is reading. An instructor
+ * reading the book alone is in this state for the same reason an unenrolled
+ * reader is, and both may write the common layer: "xommon means fucking common."
+ */
+export function readerLayers(): BookLayerState {
+  return {
+    layers: [{ id: 'common', label: 'Class', visible: true, targetable: true }],
+    target: 'common',
+  }
+}
+
+/**
  * The layers an enrolled student has: the book's, and their own.
  *
  * Default write target is the common layer, because that is the book's normal

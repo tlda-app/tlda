@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react'
+import type { BookLayerState, BookLayerId } from './classroom/bookLayers'
 
 export interface BookMember {
   key: string       // project name (manifest key)
@@ -9,11 +10,33 @@ export interface BookMember {
   sessionAt?: number  // timestamp of last push with session tag (for hot session)
 }
 
+/**
+ * The reader's layers, and the two selections over them, passed to whichever
+ * surface is drawing the chrome.
+ *
+ * It travels through the context rather than being rendered where the state
+ * lives because the control belongs with the ordinary controls, and the surface
+ * that owns those is the document editor — including when that editor is
+ * presenting. Mounting it beside the state instead is what confined it to the
+ * book's own top-left corner and kept it off the presentation surface entirely.
+ */
+export interface BookLayersValue {
+  state: BookLayerState
+  setVisible: (id: BookLayerId, visible: boolean) => void
+  setTarget: (id: BookLayerId) => void
+  /** How many annotations are selected on the write target. */
+  selectionCount: number
+  moveSelection: (id: BookLayerId) => void
+  /** Set when a move could not be completed. Nothing was lost. */
+  moveError?: string
+}
+
 export interface BookContextValue {
   bookName: string
   members: BookMember[]
   activeIndex: number
   switchTo: (index: number) => void
+  layers?: BookLayersValue
 }
 
 export const BookContext = createContext<BookContextValue | null>(null)

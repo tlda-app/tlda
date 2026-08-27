@@ -4,11 +4,11 @@
  * borrowing another component's class names couples two things that only look
  * alike. */
 
+/* Sits in the pills row with the other pills rather than pinned to a corner of
+ * its own. `relative` is for the popup below it, which is the only positioning
+ * this control needs once it is placed by its container like everything else. */
 .bookLayersControl {
-  position: fixed;
-  top: 12px;
-  left: 12px;
-  z-index: 500;
+  position: relative;
   pointer-events: all;
 }
 
@@ -36,8 +36,10 @@
 .bookLayersIcon { display: block; }
 
 .bookLayersPopup {
+  /* Upward, like AnnotationVisibilityPill's, because the pills row it now sits
+   * in is near the bottom of the viewport. */
   position: absolute;
-  top: calc(100% + 6px);
+  bottom: calc(100% + 6px);
   left: 0;
   width: max-content;
   max-width: min(280px, calc(100vw - 48px));
