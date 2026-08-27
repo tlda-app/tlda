@@ -1,0 +1,6 @@
+---
+title: Sample Course
+---
+
+A course with no tooling in common with any other, used to check that classroom
+setup is general.

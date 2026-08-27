@@ -8,16 +8,16 @@
  */
 
 import { resolve, relative, basename, dirname, join, delimiter } from 'path'
-import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
+import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
-import { homedir, hostname } from 'os'
+import { homedir, hostname, tmpdir } from 'os'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, readForUpload, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
 import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
-import { renderQtm285HomeworkVariants } from './lib/classroom-qtm285-render.mjs'
+import { renderHomeworkVariants } from './lib/classroom-render.mjs'
 import {
   loadCliConfig, saveCliConfig, loadServerConfig, initConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
@@ -224,7 +224,7 @@ const COMMAND_HELP = {
   bot:     'tlda bot [list|start|restart|stop|status|log|uninstall] [name]\n\n  One launchd bot manager keeps every declared bot running. Start and stop refuse; restart terminates the selected bot process and the manager returns it. Config apply reconciles the declaration.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
-  classroom: 'tlda classroom setup --course <id> --course-title "Title" --assignment <id> --assignment-title "Title" --due <iso> --homework-root <dir> --homework <path> [--project-prefix <prefix>] [--source <project>] [--handout <project>] [--solutions <project>] [--quarto-bin <path>]\n\n  Instructor setup for the first classroom loop.\n  Generates handout and solution HTML artifacts from one authoritative QTM homework QMD using the existing QTM handout generator, Quarto, and solution filter; materializes source/handout/solution as ordinary Git checkouts linked through the project-link daemon path; records the source and transform pair on the assignment; then freezes the generated handout through the existing classroom template route.\n\n  Prints the registration, gradebook, problem-marking, and student-work paths. No printed URL contains a name parameter.',
+  classroom: 'tlda classroom setup --course <id> --course-title "Title" --assignment <id> --assignment-title "Title" --due <iso> --homework-root <dir> --homework <path> --handout-generator <path> [--solution-filter <path>] [--support-file <path>]… [--extension <name>]… [--project-prefix <prefix>] [--source <project>] [--handout <project>] [--solutions <project>] [--quarto-bin <path>] [--work-dir <dir>]\n\n  Instructor setup for the first classroom loop.\n  Generates handout and solution HTML artifacts from one authoritative homework QMD using the course\'s own handout generator, Quarto, and solution filter; materializes source/handout/solution as ordinary Git checkouts linked through the project-link daemon path; records the source and transform pair on the assignment; then freezes the generated handout through the existing classroom template route.\n\n  The course supplies its own tooling, all relative to --homework-root:\n    --handout-generator  Required. Run as `<generator> <master.qmd> <handout.qmd>` to rewrite the\n                         master into the student handout. Required rather than defaulted: without\n                         one there is no way to know which blocks hold solutions, and rendering the\n                         master unchanged would publish them.\n    --solution-filter    Quarto Lua filter applied to the solution render.\n    --support-file       Any further file the tooling reads. Repeatable.\n    --extension          Quarto extension under _extensions/ to copy and enable. Repeatable.\n\n  Progress for each step goes to stderr as it happens; a Quarto render of a real chapter takes minutes.\n\n  Prints the registration, gradebook, problem-marking, and student-work paths. No printed URL contains a name parameter.',
   daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service. Stop refuses because unloading the job from an agent shell strands it; use restart or uninstall.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model <provider-model>] [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         With no model or kind, uses the configured default model. --model names\n         a provider model directly; --kind then defaults to codex. Run in a\n         terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Non-interactive calls report the local tmux\n         session and local mint id; they do not claim a fleet-recipient binding.',
   'repo-doctor': 'tlda project repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
@@ -241,6 +241,7 @@ const VALUE_FLAGS = new Set([
   'course', 'course-title', 'assignment', 'assignment-title', 'due',
   'source', 'handout', 'solutions', 'solutions-version', 'handout-filter', 'solution-filter',
   'homework-root', 'homework', 'project-prefix', 'quarto-bin',
+  'handout-generator', 'support-file', 'extension', 'work-dir',
 ])
 
 const SPAWN_BOOLEAN_FLAGS = new Set([
@@ -267,6 +268,17 @@ function getFlag(name, defaultVal = null) {
 
 function hasFlag(name) {
   return args.includes(`--${name}`)
+}
+
+// getFlag returns the first occurrence; a repeatable flag needs every one.
+function getFlagAll(name) {
+  const values = []
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== `--${name}`) continue
+    const next = args[i + 1]
+    if (next && !next.startsWith('--')) values.push(next)
+  }
+  return values
 }
 
 function formatCommandRows(rows) {
@@ -2864,15 +2876,39 @@ async function cmdClassroomSetup() {
   const solutionsDocKey = getFlag('solutions') || `${projectPrefix}-solutions`
   const solutionsVersion = getFlag('solutions-version')
   const quartoBin = getFlag('quarto-bin') || 'quarto'
+  const handoutGenerator = requiredClassroomSetupFlag('handout-generator')
+  const outDir = getFlag('work-dir')
+    ? resolve(getFlag('work-dir'))
+    : mkdtempSync(join(tmpdir(), 'tlda-classroom-'))
 
-  const rendered = await renderQtm285HomeworkVariants({
+  const started = Date.now()
+  const elapsed = () => `${String(Math.round((Date.now() - started) / 1000)).padStart(4)}s`
+  const onProgress = ({ message, raw }) => {
+    if (raw) {
+      for (const line of message.split('\n')) {
+        if (line.trim()) process.stderr.write(`${dim(`  ${elapsed()} │ ${line.trim()}`)}\n`)
+      }
+      return
+    }
+    process.stderr.write(`${dim(elapsed())} ${message}\n`)
+  }
+
+  console.log(`Working in ${outDir}`)
+  const rendered = await renderHomeworkVariants({
     sourceRoot: homeworkRoot,
+    outDir,
     homeworkPath,
+    title: courseTitle,
     outputStem: assignmentId,
     quartoBin,
+    handoutGenerator,
+    solutionFilter: getFlag('solution-filter'),
+    supportFiles: getFlagAll('support-file'),
+    extensions: getFlagAll('extension'),
+    onProgress,
   })
   const handoutFilter = getFlag('handout-filter') || rendered.handoutGenerator
-  const solutionFilter = getFlag('solution-filter') || rendered.solutionFilter
+  const solutionFilter = rendered.solutionFilter
   const bookDir = join(rendered.outDir, '_book')
   const projectRoot = join(rendered.outDir, '.classroom-projects')
   const sourceDir = join(projectRoot, sourceDocKey)
@@ -2886,6 +2922,7 @@ async function cmdClassroomSetup() {
   copyHtmlProjectFiles(bookDir, handoutDir, rendered.handoutOutput, rendered.solutionOutput)
   copyHtmlProjectFiles(bookDir, solutionDir, rendered.solutionOutput, rendered.handoutOutput)
 
+  onProgress({ message: `Linking project 1 of 3: ${sourceDocKey}` })
   await linkClassroomGitProject({
     name: sourceDocKey,
     title: `${assignmentTitle} source`,
@@ -2894,6 +2931,7 @@ async function cmdClassroomSetup() {
     sourceDir,
     documentRoots: [rendered.homeworkPath],
   })
+  onProgress({ message: `Linking project 2 of 3: ${templateDocKey}` })
   await linkClassroomGitProject({
     name: templateDocKey,
     title: `${assignmentTitle} handout`,
@@ -2902,6 +2940,7 @@ async function cmdClassroomSetup() {
     sourceDir: handoutDir,
     documentRoots: [rendered.handoutOutput],
   })
+  onProgress({ message: `Linking project 3 of 3: ${solutionsDocKey}` })
   await linkClassroomGitProject({
     name: solutionsDocKey,
     title: `${assignmentTitle} solutions`,
@@ -2911,6 +2950,7 @@ async function cmdClassroomSetup() {
     documentRoots: [rendered.solutionOutput],
   })
 
+  onProgress({ message: `Recording course, assignment, and frozen handout` })
   const course = await api('POST', '/api/classroom/courses', { id: courseId, title: courseTitle })
   const assignment = await api('POST', `/api/classroom/courses/${encodeURIComponent(courseId)}/assignments`, {
     id: assignmentId,

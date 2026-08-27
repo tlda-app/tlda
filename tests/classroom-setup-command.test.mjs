@@ -6,8 +6,12 @@ import net from 'node:net'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
-import { generateQtm285ClassroomFixture } from './helpers/qtm285-fixture.mjs'
+import { fileURLToPath } from 'node:url'
 import { daemonLifecycleSocketPath } from '../shared/daemon-socket-path.mjs'
+
+// A course that shares no tooling with any other, so setup special-cased to one
+// course cannot pass here.
+const COURSE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/classroom-course')
 
 function runCli(args, { cwd = process.cwd(), env = {} } = {}) {
   return new Promise(resolve => {
@@ -109,7 +113,6 @@ function daemonServer(configDir, envName = 'testing') {
 
 test('classroom setup posts course, assignment, and frozen handout through existing API routes', async () => {
   const fixture = await classroomServer()
-  const sourceRoot = fs.mkdtempSync(join(os.tmpdir(), 'tlda-qtm285-setup-source-'))
   const configDir = fs.mkdtempSync(join(os.tmpdir(), 'tlda-classroom-config-'))
   fs.writeFileSync(join(configDir, 'daemon.yaml'), `environments:
   default: testing
@@ -121,7 +124,6 @@ test('classroom setup posts course, assignment, and frozen handout through exist
 `)
   const daemon = await daemonServer(configDir)
   try {
-    generateQtm285ClassroomFixture({ outDir: sourceRoot })
     const result = await runCli([
       '--env', 'testing',
       'classroom', 'setup',
@@ -132,16 +134,23 @@ test('classroom setup posts course, assignment, and frozen handout through exist
       '--assignment', 'hw1',
       '--assignment-title', 'Homework 1',
       '--due', '2026-09-01T20:00:00Z',
-      '--homework-root', sourceRoot,
-      '--homework', 'homework/week0-homework.qmd',
+      '--homework-root', COURSE,
+      '--homework', 'homework/hw1.qmd',
+      '--handout-generator', 'bin/make-handout.py',
+      '--solution-filter', 'homework/solution-callout.lua',
       '--project-prefix', 'hw1',
       '--solutions-version', 'solutions-rev',
     ], { env: { TLDA_CONFIG_DIR: configDir, TLDA_ENV: 'testing' } })
     assert.equal(result.code, 0, result.stderr)
     assert.match(result.stdout, /Classroom setup complete/)
+    // Emitting nothing for the length of a render reads as a hang.
+    assert.match(result.stderr, /Rendering solutions: homework\/hw1\.qmd/)
+    assert.match(result.stderr, /Generating handout source with bin\/make-handout\.py/)
+    assert.match(result.stderr, /Linking project 1 of 3: hw1-source/)
+    assert.match(result.stderr, /Linking project 3 of 3: hw1-solutions/)
     assert.match(result.stdout, /Handout frozen: hw1-handout@handout-rev/)
     assert.match(result.stdout, /Source: hw1-source/)
-    assert.match(result.stdout, /Generated from: homework\/week0-homework\.qmd/)
+    assert.match(result.stdout, /Generated from: homework\/hw1\.qmd/)
     assert.match(result.stdout, /Filters: handout=bin\/make-handout\.py; solution=homework\/solution-callout\.lua/)
     assert.match(result.stdout, /Solutions: hw1-solutions@solutions-rev/)
     assert.match(result.stdout, /Registration: \?workspace=classroom-register&course=qtm285/)
@@ -157,14 +166,14 @@ test('classroom setup posts course, assignment, and frozen handout through exist
       'POST /api/classroom/courses/qtm285/assignments',
       'PUT /api/classroom/assignments/hw1/template',
     ])
-    assert.deepEqual(fixture.requests[0].body, { name: 'hw1-source', title: 'Homework 1 source', mainFile: 'homework/week0-homework.qmd', format: 'qmd' })
+    assert.deepEqual(fixture.requests[0].body, { name: 'hw1-source', title: 'Homework 1 source', mainFile: 'homework/hw1.qmd', format: 'qmd' })
     assert.deepEqual(fixture.requests[2].body, { name: 'hw1-handout', title: 'Homework 1 handout', mainFile: 'hw1-handout.html', format: 'html' })
     assert.deepEqual(fixture.requests[4].body, { name: 'hw1-solutions', title: 'Homework 1 solutions', mainFile: 'hw1-solution.html', format: 'html' })
     assert.equal(daemon.calls.length, 3)
     assert.deepEqual(daemon.calls.map(call => call.op), ['project-source-link', 'project-source-link', 'project-source-link'])
     assert.deepEqual(daemon.calls.map(call => call.params.project), ['hw1-source', 'hw1-handout', 'hw1-solutions'])
     assert.deepEqual(daemon.calls.map(call => call.params.documentRoots), [
-      ['homework/week0-homework.qmd'],
+      ['homework/hw1.qmd'],
       ['hw1-handout.html'],
       ['hw1-solution.html'],
     ])
@@ -175,10 +184,10 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     const handoutHtml = fs.readFileSync(join(handoutDir, 'hw1-handout.html'), 'utf8')
     const solutionHtml = fs.readFileSync(join(solutionDir, 'hw1-solution.html'), 'utf8')
     assert.match(solutionHtml, /callout-solution/)
-    assert.match(solutionHtml, /It.s biggest for list 3 and smallest for list 2/)
+    assert.match(solutionHtml, /Fifty-five/)
     assert.doesNotMatch(handoutHtml, /callout-solution/)
-    assert.doesNotMatch(handoutHtml, /It.s biggest for list 3 and smallest for list 2/)
-    assert.match(handoutHtml, /exr-calculations-1/)
+    assert.doesNotMatch(handoutHtml, /Fifty-five/)
+    assert.match(handoutHtml, /ans-sum/)
     assert.deepEqual(fixture.requests[6].body, { id: 'qtm285', title: 'QTM 285' })
     assert.deepEqual(fixture.requests[7].body, {
       id: 'hw1',
@@ -193,7 +202,6 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     assert.deepEqual(fixture.requests[8].body, { templateDocKey: 'hw1-handout' })
   } finally {
     await daemon.close()
-    fs.rmSync(sourceRoot, { recursive: true, force: true })
     fs.rmSync(configDir, { recursive: true, force: true })
     await fixture.close()
   }
@@ -203,8 +211,8 @@ test('classroom setup help documents the required instructor procedure', async (
   const result = await runCli(['classroom', 'setup', '--help'])
   assert.equal(result.code, 0, result.stderr)
   assert.match(result.stdout, /tlda classroom setup --course <id>/)
-  assert.match(result.stdout, /--homework-root <dir> --homework <path>/)
-  assert.match(result.stdout, /one authoritative QTM homework QMD/)
+  assert.match(result.stdout, /--homework-root <dir> --homework <path> --handout-generator <path>/)
+  assert.match(result.stdout, /one authoritative homework QMD using the course's own handout generator/)
   assert.match(result.stdout, /ordinary Git checkouts linked through the project-link daemon path/)
   assert.match(result.stdout, /freezes the generated handout/)
 })
