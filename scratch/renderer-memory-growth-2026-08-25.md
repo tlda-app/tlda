@@ -2568,3 +2568,53 @@ construction rather than by hope.
 
 An A-B-A arm must span several release events. At ~1 per 30 min that is **~2–3 h
 per arm**, not the 5–6 h I quoted from the bad cadence figure.
+
+## 2026-08-27 — the fatal mechanism, measured live (read-only)
+
+**Every reproduction attempt in this file was measuring the wrong thing.**
+
+Read-only inspection of the already-open session on the Air (no navigation, no
+interaction, no reload, no allocation — the sanctioned CDP/`ps` path):
+
+```
+16:55:54   12.7 GB
+16:57:20   12.9 GB
+16:58:45   13.0 GB      ≈ 105–140 MB/min
+```
+
+Physical footprint **12.6–13.0 GB with peak == current**: at its maximum and still
+climbing. Crash dumps were **15 GB and 12 GB**. At this rate that tab reaches crash
+scale in **~15–20 minutes**.
+
+| surface | rate |
+|---|---|
+| best local reproduction (fleet layout, 27 shapes, 1-page scratch doc) | **0.8 MB/min** |
+| the live failing tab (large document project) | **~105–140 MB/min** |
+
+**~175× apart.** The 0.8 MB/min ambient leak measured over six hours is real but is
+**not** what kills the tab.
+
+### What the driver is not
+
+**Fleet-layout scale.** His *other* tlda tab matches my probe almost exactly —
+25 shapes vs 27, 3 canvases vs 3, 1501 nodes vs 1137, heap 100 MB vs 114 — and
+behaves normally. Scaling the fleet layout further would have been wasted work;
+measuring first is what avoided it.
+
+**The distinguishing variable is the large document project**, the one axis never
+varied because every attempt scaled the fleet layout instead.
+
+### Corroborating, both read-only
+
+- A CDP `Runtime.evaluate` against his tabs **timed out at 120 s** — consistent
+  with the reported lockups. Not retried; hammering his browser is not acceptable.
+- Renderer list: one process at 13.0 GB, every other ≤205 MB. Identification is
+  unambiguous by size, so no ballast (which would have meant allocating inside his
+  tab) was needed or attempted.
+
+### Method note
+
+The 15 GB figure had always come from **crash dumps** — evidence that death
+happened, with no growth curve. This is the first time the approach to death has
+been *measured*. It took reading his real surface rather than building a rig; five
+hours of rig-building never came within two orders of magnitude.
