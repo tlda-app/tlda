@@ -4519,6 +4519,10 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     // talking to the whole fleet, and agents have acted on instructions in it
     // that were addressed to somebody else — so the result says so.
     let oneSidedName = null;
+    // Set when the read is a two-party one — `agent: X`, or the `me <> X` it is
+    // sugar for. An empty result there means the PAIR is empty, which is a fact
+    // about the caller and X and not about X's history.
+    let pairName = null;
 
     let resolvedSince, resolvedUntil;
     try {
@@ -4733,6 +4737,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           // The resolve stays for the display name and the provenance trail.
           const agent = await resolveAgent(args.agent).catch(() => null);
           if (agent) { resolvedAgents.set(agent.id, agent); primaryId = agent.id; }
+          pairName = args.agent;
           await fetchEventsForFilter(normalizeThreadFilterExpression(`me <> ${args.agent}`));
         } else {
           const rawThreadFilter = args.filter;
@@ -4760,6 +4765,16 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           // `search`; scope may not.
           const bareFrom = /^\s*from:\s*([^\s&|!()]+)\s*$/.exec(filterExpression);
           if (bareFrom && bareFrom[1] !== 'me') oneSidedName = bareFrom[1];
+          // `filter: "me <> X"` is the expression `agent: X` compiles to, so an
+          // empty result there is the same absent pair and gets the same
+          // sentence. Written here rather than only on the `agent:` branch
+          // because the defect is the reading, not the argument name.
+          const barePair = /^\s*([^\s&|!()]+)\s*<>\s*([^\s&|!()]+)\s*$/.exec(filterExpression);
+          if (barePair) {
+            const [, left, right] = barePair;
+            if (left === 'me' && right !== 'me') pairName = right;
+            else if (right === 'me' && left !== 'me') pairName = left;
+          }
           await fetchEventsForFilter(filterExpression);
         }
       } catch (e) {
@@ -4802,8 +4817,16 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         const names = threadUnresolvedNames.map(n => `"${n}"`).join(', ');
         return { content: [{ type: 'text', text: `No messages found. ${names} ${threadUnresolvedNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.${mistypedKeyHint(threadUnresolvedNames)}` }] };
       }
-      if (args.agent && primaryId) {
-        return { content: [{ type: 'text', text: `No messages found for the given criteria. Selector "${args.agent}" resolves to ${primaryId}, but no indexed fleet messages were found in environment "${activeEnvName()}". Pass env explicitly to read another environment.` }] };
+      // An empty two-party read used to print "no indexed fleet messages were
+      // found", which describes an absent CORPUS when the truth is an absent
+      // PAIR — so four agents whose history is fully indexed were reported to
+      // Skip as visibility-unavailable. The result is right; only the sentence
+      // was wrong. Say which of the two it is, and name the route to that
+      // agent's wider traffic, the way the `from:` note on the sibling path
+      // names the route back to the pair.
+      if (pairName) {
+        const resolvedTo = primaryId ? ` (${primaryId})` : '';
+        return { content: [{ type: 'text', text: `No messages between you and "${pairName}"${resolvedTo} in environment "${activeEnvName()}". This is the two-party conversation, so an empty result means you two have not exchanged messages — it is not a statement about ${pairName}'s history, which may be extensive. For everything ${pairName} said to the whole fleet, ask for \`filter: "from:${pairName}"\`. Pass env explicitly to read another environment.` }] };
       }
       return { content: [{ type: 'text', text: `No messages found for the given criteria in environment "${activeEnvName()}". Pass env explicitly to read another environment.` }] };
     }
