@@ -2198,3 +2198,40 @@ reproduces on demand, twice per run, on a disposable project.**
 
 The remote leg fails on a `git merge` in the linked-remote pull -- NOT diagnosed,
 not claimed related.
+
+### Stylized demo FINAL — 3 cycles on disposable `sync-trio`
+
+| leg | result |
+|---|---|
+| disk | **3/3 arrived** — 25.8s, 17.3s, 35.3s |
+| browser | **0/3 arrived** — 6 convergence failures (server AND parked) |
+| remote | **0/3 could write** — `git merge --no-edit refs/remotes/origin/tlda/sync-trio` fails every cycle |
+| output | 3/3 render, slowest page 7.1-7.8s |
+
+**The browser leg is LOSS, not a short window.** The demo's own words: *"still
+absent 455s after the window closed"*, and 248s, and 10s. Verified
+independently: both earlier browser markers still absent from the published
+source, every disk marker present.
+
+**No hold recorded on any cycle** -- no `holding` line, refusal and conflict
+ledgers empty throughout. NOT the conflict-hold behaving correctly. Edits are
+admitted, builds succeed, the text is not in the document.
+
+**This is the silent concurrent-edit loss logged above as open with two
+observations and no isolating test. It now reproduces 3/3 on demand.**
+
+**Disk latency worth its own line:** 17-35s against 10-16s measured earlier the
+same day. Consistent with the server being the slow side on the adopt RPC,
+though NOT tied together.
+
+**Remote leg fails on a plain merge** and the demo classifies those three as
+*did not run* rather than scoring them failures. NOT diagnosed, not claimed
+related.
+
+**Both demos Skip asked for now exist and both found something:**
+- replay (`scratch/jose-replay.mjs`) -- why a real two-person session did not
+  work: one checkout, two projects, one work branch. Settled, now disallowed.
+- stylized (`bin/sync-demo.mjs`) -- sync as it stands: disk works but slowly,
+  the browser editor's edits are LOST, the linked remote cannot write.
+
+Next candidate if the chief wants it: the browser loss, now cheap to reproduce.
