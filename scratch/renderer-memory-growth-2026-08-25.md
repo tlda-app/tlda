@@ -2374,3 +2374,47 @@ apart (control 10 vs patched 8), so ingestion was not perfectly matched either.
 
 **Standing conclusion: the loop is proven stopped; the memory improvement is not
 proven.** Do not claim one.
+
+## 2026-08-27 — A-B-A retires the memory attribution
+
+Fresh **deployed** tab (renderer 12781), 2 static rows, chat-row observation
+toggled within one tab and one process. Rows never changed. The A′ arm is the
+control the earlier two-arm tests lacked.
+
+| arm | condition | window | footprint | slope |
+|---|---|---|---|---|
+| A | observation live | 08:59:15 → 09:11:28 | 253 → 315 MB | **5.08 MB/min** |
+| B | observation blocked | 09:13:31 → 09:21:59 | 321 → 335 MB | **1.65 MB/min** |
+| A′ | observation restored | 09:24:04 → 09:32:04 | 338 → 347 MB | **1.13 MB/min** |
+
+**Restoring the loop did not restore the growth.** So the A→B drop is **burst
+decay, not suppression**. Blocking was verified firing in both directions (34
+chat-row observes suppressed per 6 s in B; 118 observes per 6 s on restore).
+
+### What this retires
+
+**The memory attribution to the row-observation loop is not supported.** The
+2026-08-26 same-tab result (2.26 → 0.14 MB/min) that the whole memory claim
+rested on was almost certainly this same artifact — a burst ending during the
+suppressed arm. It had **no A′ arm**, so it could not tell the two apart.
+
+Also retired: the reading, from two hours earlier, that "loop hot and memory flat
+contradicts the attribution." That was equally a short-window inference and was
+false within the hour — the same tab then grew 5 MB/min with nothing changed.
+
+### What survives, unaffected
+
+The loop is real and the shipped fix stops it — **807 observe/10 s against 1**,
+matched builds one commit apart, stable row sets, counters proven live. That is a
+count, not a slope, and no amount of burstiness touches it. `e65067f41` and
+`32512862e` landed as a **correctness repair with memory explicitly unmeasured**,
+which is exactly the right framing and is now the only defensible one.
+
+### Still open, and now the main thread
+
+- **The driver of the original 26 MB/min reproduction is unidentified.** It is not
+  the row-observation loop on this evidence.
+- **A residual ~1.1–1.7 MB/min** persists with the loop suppressed, on a tab whose
+  two rows are both `__status__`. Not chat ingestion. Unattributed.
+- **Growth arrives in bursts.** Any A/B without a return arm measures burst phase,
+  not the variable. **Require A-B-A here.**
