@@ -111,6 +111,51 @@ the Monday workflow (which agents worked in this project), and it does not work.
 Establish whether the listing exists anywhere before building one. If it was
 deleted, say so and cite the commit rather than writing a replacement.
 
+## The arithmetic control for Defect 1
+
+Sharper than the original reproduction, and it is the red/green test to use.
+One explicitly bounded one-hour window:
+
+```
+search(query: "timeout",
+       since: "2026-08-27T22:00:00Z",
+       before: "2026-08-27T23:00:00Z",
+       limit: 100)
+```
+
+Header: `26 results (8 fleet, 14 session) — since 2026-08-27T22:00:00.000Z —
+before 2026-08-27T23:00:00.000Z`.
+
+**8 + 14 = 22, and 26 rows print.** The four uncounted rows are exactly the four
+dated outside the window — 8/25, 8/25, 8/11, 8/9. So one call demonstrates both
+halves of the defect at once, in arithmetic: the rows that escape the bound are
+precisely the rows missing from the tally.
+
+**Green is `8 + 14 = 22` printed rows, all inside the window.** Red is any
+printed row outside it, or a total that exceeds the sum of the parts.
+
+It also sharpens which rows are at fault. `[session] [user] <agent>` rows in
+that result **do** obey the bound; only `[session] [undefined]` rows escape it.
+Document content is the offender, not session JSONL — consistent with
+`searchProjectContent` being the uninstrumented call.
+
+## Defect 3, characterized — `limit` is a hard error, and the advice is wrong
+
+The bounded-call error threshold is **whatever `limit` the caller passed**:
+
+- `limit: 30` → `Bounded query returned ≥30 results — too many to return in one call.`
+- `limit: 5` → `Bounded query returned ≥5 results — too many to return in one call.`
+- `limit: 100` → returns 26 rows.
+
+So `limit` is being treated as an error threshold rather than a page size, and
+the remedy the message names — "Narrow your time range" — is the wrong one. The
+range was already one hour; what fixed it was raising `limit`. Combined with the
+footer on every full page ("bound it with since:/before:, which returns the full
+range"), a caller who follows the printed advice is sent from a working query to
+a failing one and then told to do the thing that will not help.
+
+Unassigned. Small, but it is user-facing text that misdirects.
+
 ## Standing constraints
 
 - Verify on the real search surfaces — the MCP `search()` tool and the in-app
