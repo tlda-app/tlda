@@ -31,6 +31,50 @@ import './StudentAnnotationOverlay.css'
 // second copy of the book in the student's room rather than a transparent sheet
 // over the first.
 
+/**
+ * Observe one editor and write to another, without the write landing inside the
+ * observation.
+ *
+ * A `react()` whose function writes to what it also reads can be walked while it
+ * is still capturing. `@tldraw/state`'s `startCapturingParents` clears the
+ * parent SET but leaves `child.parents` holding the previous run's entries —
+ * only `stopCapturingParents` truncates it — so for the whole duration of a
+ * reaction that array is half-updated. A write opens a transaction, the commit
+ * flushes the scheduler, the scheduler walks reactors, and `haveParentsChanged`
+ * dereferences a slot that is in flux:
+ *
+ *   TypeError: Cannot read properties of undefined
+ *              (reading '__unsafe__getWithoutCapture')
+ *
+ * It reads as a destroyed editor and is not. `Editor._cameraOptions` is a class
+ * field, never reassigned and never deleted, so a disposed editor still has one;
+ * the `undefined` is an entry in a reactor's parent list.
+ *
+ * The rule this encodes: **observe the source, never the sink.** `observe` is
+ * the only thing captured, and the write is deferred past the end of the
+ * reaction, where reads capture nothing because no frame is on the stack.
+ *
+ * Measured 2026-08-27: two reactors here had the read-then-write shape and only
+ * one of them ever threw. Having the shape and not firing is not the same as
+ * being safe — the quiet one is the same defect waiting on a different flush —
+ * so both go through here.
+ */
+function mirror(name: string, observe: () => unknown, write: () => void): () => void {
+  let queued = false
+  let stopped = false
+  const stop = react(name, () => {
+    observe()
+    if (queued) return
+    queued = true
+    queueMicrotask(() => {
+      queued = false
+      // The reactor may have been torn down between queueing and running.
+      if (!stopped) write()
+    })
+  })
+  return () => { stopped = true; stop() }
+}
+
 interface StudentAnnotationOverlayProps {
   /** The room the book itself is synced to — the layer the whole class shares. */
   bookRoomId: string
@@ -67,7 +111,7 @@ export function StudentAnnotationOverlay({
   // to whichever layer happens to be the write target.
   useEffect(() => {
     if (!bookEditor || !overlayEditor) return
-    return react('mirror book camera onto overlay', () => {
+    return mirror('mirror book camera onto overlay', () => bookEditor.getCamera(), () => {
       const camera = bookEditor.getCamera()
       const current = overlayEditor.getCamera()
       if (current.x === camera.x && current.y === camera.y && current.z === camera.z) return
@@ -83,7 +127,7 @@ export function StudentAnnotationOverlay({
   // and this canvas is that target or it is not.
   useEffect(() => {
     if (!bookEditor || !overlayEditor || !isWriteTarget) return
-    return react('follow book tool selection', () => {
+    return mirror('follow book tool selection', () => bookEditor.getCurrentToolId(), () => {
       const toolId = bookEditor.getCurrentToolId()
       if (overlayEditor.getCurrentToolId() !== toolId) overlayEditor.setCurrentTool(toolId)
     })
@@ -97,16 +141,16 @@ export function StudentAnnotationOverlay({
   // The store goes to <Tldraw> with its status attached, exactly as the book's
   // editor does — tldraw owns the not-yet-synced state itself.
   //
-  // This used to return null until `synced-remote`, which meant a reconnect
-  // unmounted the canvas and disposed its editor mid-session. That is the whole
-  // cause of the crash on selecting this layer, not a symptom of it: the editor
-  // died, the reference to it did not, and the camera reactor kept writing to a
-  // corpse. Defending the reactor would have left the layer silently vanishing
-  // on every reconnect instead.
+  // This used to return null until `synced-remote`, so a reconnect unmounted the
+  // canvas and rebuilt it mid-session. That is worth not doing on its own —
+  // a layer that vanishes and re-syncs whenever the socket blinks is not a layer
+  // — but it was NOT the cause of the crash on selecting this layer. That was
+  // the read-then-write reactor shape described above, and disposal had nothing
+  // to do with it.
   //
-  // Kept mounted when hidden, for the same reason: hiding a layer hides it, and
-  // a layer torn down and rebuilt on every toggle is a different thing wearing
-  // the same name.
+  // Kept mounted when hidden for the same reason: hiding a layer hides it, and a
+  // layer torn down and rebuilt on every toggle is a different thing wearing the
+  // same name.
   return (
     <div
       className="studentAnnotationOverlay"
@@ -129,14 +173,13 @@ export function StudentAnnotationOverlay({
         licenseKey={LICENSE_KEY}
         tools={tools}
         hideUi
-        // The teardown half is load-bearing, not tidiness. This canvas unmounts
-        // whenever its room's sync status leaves `synced-remote` — a reconnect is
-        // enough — and that disposes the editor. Without clearing the reference,
-        // the camera reactor below goes on calling `setCamera` on a dead editor,
-        // whose `_cameraOptions` is undefined, and the render throws
-        // `Cannot read properties of undefined (reading '__unsafe__getWithoutCapture')`,
-        // taking the overlay AND the layers control off the page. tldraw runs
-        // what `onMount` returns when the editor goes.
+        // tldraw runs what `onMount` returns when the editor goes, so the
+        // teardown is where the reference is dropped. Nothing may hold a
+        // disposed editor — not this component and not BookViewer above it.
+        //
+        // This is hygiene, not a crash fix. It was written believing a retained
+        // dead editor caused the throw on selecting this layer; it did not. See
+        // `mirror` above for what did.
         onMount={editor => {
           setOverlayEditor(editor)
           onEditorMount?.(editor)
