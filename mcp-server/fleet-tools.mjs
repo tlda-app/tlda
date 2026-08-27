@@ -4401,6 +4401,17 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           text = parts.join(' | ');
         }
         return { timestamp: r.timestamp, text };
+      } else if (r.source === 'project') {
+        // Project document content. It has no role and no agent, so the session
+        // branch below rendered it as `[session] [undefined] ` — a row that
+        // named neither what it was nor where it came from.
+        const where = [r.project, r.page ? `page ${r.page}` : '', r.file || r.label || '']
+          .filter(Boolean).join(' · ');
+        const parts = [];
+        if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString(undefined, displayZoneOptions()));
+        parts.push(`[document] ${where}`);
+        parts.push(snippet);
+        return { timestamp: r.timestamp, text: parts.join(' | ') };
       } else {
         // session source
         const agentName = tag(r.agentId, r.agentName, r.agentNameNow) || r.agentId || '';
@@ -4442,10 +4453,15 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
 
     const fleetCount = results.filter(r => r.source === 'fleet').length;
     const sessionCount = results.filter(r => r.source === 'session').length;
+    // Document rows are a third source. The tally covered only the two that
+    // searchAll returns, so five printed document rows headed "0 fleet, 0 session".
+    const documentCount = results.filter(r => r.source === 'project').length;
     const projectAgentCount = results.filter(r => r.type === 'project_agent').length;
+    const sourceTally = [`${fleetCount} fleet`, `${sessionCount} session`];
+    if (documentCount > 0) sourceTally.push(`${documentCount} document`);
     let header = projectAgentCount > 0
       ? `${projectAgentCount} project-agent result${projectAgentCount === 1 ? '' : 's'} in chronological recency order`
-      : `${results.length} results (${fleetCount} fleet, ${sessionCount} session)`;
+      : `${results.length} results (${sourceTally.join(', ')})`;
     if (sinceTs) header += ` — since ${sinceTs}`;
     if (beforeTs) header += ` — before ${beforeTs}`;
     if (contextWindow > 0) header += ` — with ${contextWindow} context messages`;

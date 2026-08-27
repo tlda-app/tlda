@@ -7297,15 +7297,23 @@ async function dispatchFleetWsMessage(ws, msg) {
           results = results.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, msg.limit || 50)
         }
       }
-      if (msg.eventType) results = results.filter(r => r.type === msg.eventType || r.role === msg.eventType)
-      if (messageFilter) {
-        const filtered = []
-        for (const row of results) {
-          if (await matchesMessageNode(messageFilter, row)) filtered.push(row)
+      // One filter for every row in the result, whatever source it came from.
+      // Document rows are merged in below, AFTER this point, so when these two
+      // passes were written inline here they applied to nothing but the store's
+      // rows — `type:chat` returned 22 document rows out of 25.
+      const applyRowFilters = async (rows) => {
+        let out = msg.eventType ? rows.filter(r => r.type === msg.eventType || r.role === msg.eventType) : rows
+        if (messageFilter) {
+          const filtered = []
+          for (const row of out) {
+            if (await matchesMessageNode(messageFilter, row)) filtered.push(row)
+          }
+          out = filtered
         }
-        results = filtered
-        if (!resolvedAgentIds.length) resolvedAgentIds = [...await collectPrefilterIds(messageFilter)]
+        return out
       }
+      results = await applyRowFilters(results)
+      if (messageFilter && !resolvedAgentIds.length) resolvedAgentIds = [...await collectPrefilterIds(messageFilter)]
       const naturalAgentOnly = !!(msg.naturalAgentQueries?.length || msg.naturalAgentQuery) && !msg.naturalTextQuery && !msg.filterExpression
       if (naturalAgentOnly && !resolvedAgentIds.length) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
@@ -7344,10 +7352,16 @@ async function dispatchFleetWsMessage(ws, msg) {
         results = [...agentResults, ...results]
       }
       if (hasText && !msg.historyOnly && !msg.eventOnly) {
-        const documentRows = await searchProjectContent(msg.query || '', {
+        // The date bound goes to this path too. `since`/`before` arrive as their
+        // own fields rather than in the filter AST, so nothing else applies them
+        // here — a `since: 1d` header sat over rows from weeks earlier. Bounding
+        // in the store also means an out-of-window project costs no file reads.
+        const documentRows = await applyRowFilters(await searchProjectContent(msg.query || '', {
           limit: msg.limit || 50,
           currentProject: msg.currentProject || null,
-        })
+          since: msg.since || null,
+          before: msg.before || null,
+        }))
         if (documentRows.length) {
           const seen = new Set(results.map(r => `${r.source}:${r.id}`))
           for (const row of documentRows) {
