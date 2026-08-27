@@ -2332,3 +2332,45 @@ the measurement to extend, not this one.
 
 Patched and unpatched bundles of the **same** project, matched row counts, an idle
 window with no chat arriving — or a longer same-tab suppression run.
+
+## 2026-08-26 (later still) — the matched build-vs-build control
+
+Two isolated previews differing by **exactly one commit**: patched `c4ee70a07`
+(port 5192) against its unpatched parent `ff070725a` (port 5193), each
+`tlda-dev serve --real-fleet --no-build` with its own seeded, unarchived project.
+Both bundles verified: the patched sourcemap contains the new code, the control's
+contains **zero** occurrences. Renderers identified by ballast — patched 40261,
+control 49343. All schedulers live, no in-page suppression, no deployed tab.
+
+### Observation churn — DECISIVE
+
+10-second windows, taken minutes apart on the two previews:
+
+| build | observe / 10s | unobserve / 10s | row set changed during window | rows | counter proven working |
+|---|---|---|---|---|---|
+| **unpatched parent `ff070725a`** | **807** | 806 | no | 13 | yes |
+| **patched `c4ee70a07`** | **1** | 0 | no | 10 | yes |
+
+Both windows had a **stable row set** (row keys identical at start and end), and
+both counters were proven live in the same call by constructing a fresh observer
+and watching the count move. So 1-vs-807 is the loop present against the loop
+absent, on the same rig, same project shape, same fleet, differing by one commit.
+
+**This is the cleanest evidence in the whole investigation** and it does not
+depend on footprint at all.
+
+### Memory slope — still NOT established
+
+| | window | footprint | slope | rows |
+|---|---|---|---|---|
+| patched | 19:46:41 → 20:02:05 | 294 → 546 MB | 16.4 MB/min | 7,7,7,7,9,8 |
+| control | 19:46:41 → 20:02:05 | 453 → 676 MB | 14.5 MB/min | 7,5,7,10,10,10 |
+
+Patched is **slightly higher**, not lower. But both previews grow ~15 MB/min from
+something common to both, and the loop's own contribution measured ~2 MB/min in
+the same-tab suppression test — so **this rig cannot resolve the effect it was
+built to measure.** It is underpowered, not negative. Row counts also drifted
+apart (control 10 vs patched 8), so ingestion was not perfectly matched either.
+
+**Standing conclusion: the loop is proven stopped; the memory improvement is not
+proven.** Do not claim one.
