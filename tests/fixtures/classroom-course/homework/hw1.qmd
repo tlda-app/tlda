@@ -1,0 +1,21 @@
+---
+title: Homework 1
+---
+
+{{< include shared-preamble.qmd >}}
+
+::: {#exr-sum .callout-exercise}
+Add the first ten positive integers.
+:::
+
+::: {.callout-solution}
+Fifty-five, by pairing the ends.
+:::
+
+::: {#exr-mean .callout-exercise}
+State the mean of a fair die.
+:::
+
+::: {.callout-solution}
+Three and a half.
+:::

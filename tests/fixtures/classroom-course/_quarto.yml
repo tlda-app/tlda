@@ -1,0 +1,7 @@
+project:
+  type: book
+book:
+  title: Sample Course
+  chapters:
+    - index.qmd
+    - homework/hw1.qmd
