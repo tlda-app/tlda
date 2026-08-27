@@ -598,18 +598,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     if (!iframe?.contentWindow) return
     htmlIframeElements.set(shape.id, iframe)
     readPageInert(iframe)
-    if (isSlide) {
-      // Reveal vertically centers a slide again whenever a lazy image finishes
-      // loading. In a split tlda deck that makes the visible page jump after it
-      // has already appeared. Split slides keep one stable top edge instead.
-      const doc = iframe.contentDocument
-      if (doc && !doc.getElementById('tlda-stable-slide-origin')) {
-        const style = doc.createElement('style')
-        style.id = 'tlda-stable-slide-origin'
-        style.textContent = '.reveal .slides > section { top: 0 !important; }'
-        doc.head.appendChild(style)
-      }
-    }
     iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
     // Bind any rgl WebGL figures in this deck to the shared orientation props.
     // Runs on every load, including the remount that follows the viewport-gated
@@ -617,7 +605,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     // return to its render-time orientation mid-session.
     detachRglSyncRef.current?.()
     detachRglSyncRef.current = attachRglFigureSync(editor, shape.id, iframe)
-  }, [isDark, isSlide, shape.id, editor, readPageInert])
+  }, [isDark, shape.id, editor, readPageInert])
 
   // Listen for height reports from iframe content
   // Read current height from the store (not the closure) to avoid stale delta calculations
@@ -1131,51 +1119,32 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const current = editor.store.get(shape.id) as any
         if (!current) return
         const isSlideShape = current.props.url?.includes('_tldaDeck=1') || current.props.url?.includes('_tldaH=')
-        const minH = isSlideShape ? current.props.h : 200
-        const newH = Math.max(minH, 200, Math.round(e.data.height))
-        const documentW = isSlideShape ? null : htmlPageDocumentWidth(iframeRef.current)
+        // A Reveal slide has authored dimensions. Its document height changes
+        // again when each lazy image loads; accepting that report grows the
+        // canvas shape after it is visible and makes the presentation jump.
+        if (isSlideShape) return
+        const newH = Math.max(200, Math.round(e.data.height))
+        const documentW = htmlPageDocumentWidth(iframeRef.current)
         const newW = documentW ? Math.max(current.props.w, documentW) : current.props.w
         if (Math.abs(newH - current.props.h) > 5 || Math.abs(newW - current.props.w) > 5) {
           editor.store.update(shape.id, (s: any) => ({
             ...s,
             props: { ...s.props, w: newW, h: newH },
           }))
-          if (isSlideShape) {
-            const slideShapes = editor.getCurrentPageShapes()
-              .filter((s: any) => s.type === 'html-page' && (s.props?.url?.includes('_tldaDeck=1') || s.props?.url?.includes('_tldaH=')))
-            const bounds = slideShapes.reduce((acc: Box | null, s: any) => {
-              const h = s.id === shape.id ? newH : s.props.h
-              const box = new Box(s.x, s.y, s.props.w, h)
-              return acc ? acc.union(box) : box
-            }, null)
-            if (bounds) {
-              editor.setCameraOptions({
-                constraints: {
-                  bounds,
-                  padding: { x: 16, y: 16 },
-                  origin: { x: 0, y: 0 },
-                  initialZoom: 'default',
-                  baseZoom: 'default',
-                  behavior: 'free',
-                },
-              })
-            }
-          } else {
-            const bounds = htmlPageBoundsOnCurrentPage(editor, shape.id, newW, newH)
-            if (bounds) {
-              const cam = editor.getCamera()
-              editor.setCameraOptions({
-                constraints: {
-                  bounds,
-                  padding: { x: 100, y: 50 },
-                  origin: { x: 0.5, y: 0 },
-                  initialZoom: 'fit-x-100',
-                  baseZoom: 'default',
-                  behavior: 'free',
-                },
-              })
-              editor.setCamera({ x: cam.x, y: cam.y, z: cam.z })
-            }
+          const bounds = htmlPageBoundsOnCurrentPage(editor, shape.id, newW, newH)
+          if (bounds) {
+            const cam = editor.getCamera()
+            editor.setCameraOptions({
+              constraints: {
+                bounds,
+                padding: { x: 100, y: 50 },
+                origin: { x: 0.5, y: 0 },
+                initialZoom: 'fit-x-100',
+                baseZoom: 'default',
+                behavior: 'free',
+              },
+            })
+            editor.setCamera({ x: cam.x, y: cam.y, z: cam.z })
           }
         }
       }
