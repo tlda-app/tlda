@@ -598,6 +598,18 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     if (!iframe?.contentWindow) return
     htmlIframeElements.set(shape.id, iframe)
     readPageInert(iframe)
+    if (isSlide) {
+      // Reveal vertically centers a slide again whenever a lazy image finishes
+      // loading. In a split tlda deck that makes the visible page jump after it
+      // has already appeared. Split slides keep one stable top edge instead.
+      const doc = iframe.contentDocument
+      if (doc && !doc.getElementById('tlda-stable-slide-origin')) {
+        const style = doc.createElement('style')
+        style.id = 'tlda-stable-slide-origin'
+        style.textContent = '.reveal .slides > section { top: 0 !important; }'
+        doc.head.appendChild(style)
+      }
+    }
     iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
     // Bind any rgl WebGL figures in this deck to the shared orientation props.
     // Runs on every load, including the remount that follows the viewport-gated
@@ -605,7 +617,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     // return to its render-time orientation mid-session.
     detachRglSyncRef.current?.()
     detachRglSyncRef.current = attachRglFigureSync(editor, shape.id, iframe)
-  }, [isDark, shape.id, editor, readPageInert])
+  }, [isDark, isSlide, shape.id, editor, readPageInert])
 
   // Listen for height reports from iframe content
   // Read current height from the store (not the closure) to avoid stale delta calculations
