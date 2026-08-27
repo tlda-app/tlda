@@ -169,15 +169,24 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     window.postMessage({ type: 'tlda-navigate', anchor, shapeId: null, targetFile: activeMember?.key || null, __bookRouted: true }, '*')
   }, [loading, members, activeIndex])
 
-  // Who is reading, if anyone enrolled is. Asked once, and only when the reader
-  // arrived with an enrolment token — a book opened without one is an ordinary
-  // book and must not start asking a classroom API about its reader.
+  // Who is reading, asked once.
+  //
+  // Identity follows the CREDENTIAL, not a query parameter. This used to run
+  // only when the URL carried `classroomToken`, which silently excluded the one
+  // reader who never has one: an instructor authenticates with the RW bearer
+  // token, so identity stayed null and the teacher view never mounted. No error,
+  // no message — the feature simply was not there, which reads as never built.
+  //
+  // `/api/classroom/me` is the authority on this and answers from whatever
+  // credential the request carries: instructor for an RW token, a student for an
+  // enrolment token, and 401 for a reader with neither — which is an ordinary
+  // reader, and the catch below leaves them an ordinary book.
   useEffect(() => {
-    if (!new URLSearchParams(window.location.search).get('classroomToken')) return
     let cancelled = false
     classroomApi.me()
       .then(next => { if (!cancelled) setIdentity(next) })
-      // Not enrolled, or the token no longer resolves. The book stays a book.
+      // 401 for a reader with no classroom credential, which is most readers.
+      // The book stays a book: no overlay, no control, nothing changed for them.
       .catch(() => { if (!cancelled) setIdentity(null) })
     return () => { cancelled = true }
   }, [])
