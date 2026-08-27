@@ -2922,6 +2922,24 @@ async function cmdClassroomSetup() {
   copyHtmlProjectFiles(bookDir, handoutDir, rendered.handoutOutput, rendered.solutionOutput)
   copyHtmlProjectFiles(bookDir, solutionDir, rendered.solutionOutput, rendered.handoutOutput)
 
+  // Only the server and daemon calls are retried. Rendering is minutes of Quarto
+  // per variant and depends on nothing that a retry would change, so a daemon
+  // timeout on the last link used to re-render the whole assignment — which is
+  // what a caller sees as a command that never finishes.
+  await finishCliOperation('classroom setup', () => publishClassroomAssignment({
+    rendered, courseId, courseTitle, assignmentId, assignmentTitle, dueAt,
+    sourceDocKey, templateDocKey, solutionsDocKey, solutionsVersion,
+    handoutFilter, solutionFilter, sourceDir, handoutDir, solutionDir, onProgress,
+  }))
+}
+
+// Re-runnable: creating a project that exists is ignored, git init and an empty
+// commit converge, and each link is the same call with the same bytes.
+async function publishClassroomAssignment({
+  rendered, courseId, courseTitle, assignmentId, assignmentTitle, dueAt,
+  sourceDocKey, templateDocKey, solutionsDocKey, solutionsVersion,
+  handoutFilter, solutionFilter, sourceDir, handoutDir, solutionDir, onProgress,
+}) {
   onProgress({ message: `Linking project 1 of 3: ${sourceDocKey}` })
   await linkClassroomGitProject({
     name: sourceDocKey,
@@ -2990,7 +3008,7 @@ ${formatCommandRows(CLASSROOM_COMMANDS)}`)
     return
   }
   switch (sub) {
-    case 'setup': await finishCliOperation('classroom setup', cmdClassroomSetup); break
+    case 'setup': await cmdClassroomSetup(); break
     default:
       console.error(`Unknown tlda classroom subcommand: ${sub}`)
       process.exit(1)
