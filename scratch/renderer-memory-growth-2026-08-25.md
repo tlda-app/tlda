@@ -2618,3 +2618,49 @@ The 15 GB figure had always come from **crash dumps** — evidence that death
 happened, with no growth curve. This is the first time the approach to death has
 been *measured*. It took reading his real surface rather than building a rig; five
 hours of rig-building never came within two orders of magnitude.
+
+## 2026-08-27 — one hour read-only on the live heavy tab: it is SIZE, not rate
+
+Sampler ran to completion: 65 samples, `vmmap -summary` at 60 s, 16:55:54 →
+18:04:55, read-only throughout (no navigation, interaction, reload, allocation;
+no CDP evals after the one that timed out). **Renderer survived** — pid 78031
+alive at start and end.
+
+**The curve took only four values all hour:**
+
+```
+min 12.7 GB   max 13.0 GB   first 12.7   last 12.9
+distinct: 12.7 / 12.8 / 12.9 / 13.0
+```
+
+**No post-release floor sequence exists for this tab.** At 0.1 GB resolution
+nothing in the hour qualifies as a release: the whole run sits in a **300 MB
+band**, *smaller* than the 50–145 MB releases resolvable on the 0.5 GB probe tab
+and barely above quantisation. The floor method that finally worked at 0.5 GB has
+no purchase at 13 GB.
+
+| | resting size | over the window |
+|---|---|---|
+| local probe (fleet layout, 27 shapes, 1-page doc) | ~0.5 GB after 6 h | floor 391 → 652 MB, 11 releases, ≈0.8 MB/min |
+| **live heavy document tab** | **~12.9 GB** | **flat, no releases, no net growth in 67 min** |
+
+### What this changes
+
+**The question is not "what leaks at N MB/min".** Over a full hour that tab leaked
+nothing measurable. It is **why a tab retains ~13 GB at rest** — a retained
+working set, not an accumulation rate. The crash dumps at 15 GB and 12 GB now read
+as a tab parked near 13 GB taking an occasional burst on top, rather than a steady
+climb crossing a ceiling.
+
+The single dynamic event all hour was the opening burst, 12.7 → 13.0 GB in ~3
+minutes. **I extrapolated it to "15 GB in 15 minutes" and withdrew that within
+minutes** — on the full hour it is one excursion inside the band. That is the same
+short-window error this file documents at three other timescales.
+
+### Identification — inferential, not confirmed
+
+pid 78031 at 13.0 GB, every other renderer ≤205 MB; his two tlda tabs are one
+normal fleet-layout project (which matches the local probe closely and is
+healthy) and one large document project. Strong circumstantial identification.
+**Not confirmed** — the CDP evaluate that would have confirmed it timed out at
+120 s, consistent with the reported lockups, and was not retried.
