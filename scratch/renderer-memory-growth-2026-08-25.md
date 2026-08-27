@@ -2418,3 +2418,45 @@ which is exactly the right framing and is now the only defensible one.
   two rows are both `__status__`. Not chat ingestion. Unattributed.
 - **Growth arrives in bursts.** Any A/B without a return arm measures burst phase,
   not the variable. **Require A-B-A here.**
+
+## 2026-08-27 — 26 MB/min retired as a steady-rate premise
+
+**The figure this investigation was built on was a 10-minute window** (184 → 446 MB,
+08-25). Everything since says 10 minutes is *inside* the burst timescale, so it
+measured an excursion, not a rate.
+
+Measured today, deployed build, disposable project, one renderer:
+
+| tab | window | slope |
+|---|---|---|
+| 2 rows, no fleet layout | 12 min | ~1 MB/min |
+| 6 rows + 27 fleet shapes | **first 4 min** | **11.4 MB/min** |
+| same tab | **full 12 min** | **1.9 MB/min** |
+
+285 → 344 → 306 → 308. The 11.4 was an excursion, and I recorded it as a rate one
+step before catching it — the same error the A-B-A had caught hours earlier.
+
+### What is retained
+
+- **Fatal accumulation is real.** Two `renderer_foreground` crash dumps, **15 GB and
+  12 GB**, ~90 minutes apart. The tab dies; it does not merely slow.
+- **Growth scales with fleet-layout contents.** Same build, server, project and
+  process: 2 rows/no layout ≈ 1 MB/min; 6 rows + 27 shapes ≈ 2 MB/min with far
+  larger excursions. The driver is proportional to what the layout holds, not a
+  fixed background cost. Consistent with the original tab having ~18 rows.
+
+### What is retired
+
+- **26 MB/min as a steady rate.** Do not quote it. Any comparison built on
+  minute-scale slopes — every one in this file before today — measured burst phase
+  as much as the variable under test.
+- **The earlier `rAF` suppression result.** It has the same defect as the row-loop
+  result the A-B-A overturned: a suppression arm with **no return arm**. It is not
+  evidence and is not to be cited. If `rAF` is tested again it starts from scratch
+  as A-B-A.
+
+### The standing instrument
+
+6-hour sampler, 5-minute cadence, fleet-layout tab on the deployed build. Minutes
+cannot answer this — the excursions are larger than the effects being hunted.
+Candidates are A-B-A'd against a *trend*, never against a window.
