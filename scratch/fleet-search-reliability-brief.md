@@ -156,6 +156,43 @@ a failing one and then told to do the thing that will not help.
 
 Unassigned. Small, but it is user-facing text that misdirects.
 
+## Defect 6 — the document merge bypasses EVERY filter, not just dates
+
+This generalizes Defect 1 and is probably the most user-visible thing here.
+Defect 1 is not "the date bound was forgotten". It is that document rows are
+merged in **after** the filter runs and are subject to none of it.
+
+Measured, `search(query: "search type:chat", limit: 25)`:
+
+- header: `25 results (3 fleet, 0 session)`
+- **22 of the 25 printed rows are `[session] [undefined]` document rows**
+- only 3 are actual chat messages
+
+A `type:chat` query returned 22 non-chat rows and 3 chats. At `limit: 3` it
+returns **zero chats** — the document rows take every slot.
+
+**The mechanism is the handler's ordering.** In the `fleet-search` block:
+
+1. `fleetStore.searchAll(...)`
+2. `if (msg.eventType) results = results.filter(...)`
+3. `if (messageFilter) { ... matchesMessageNode ... }` ← the filter runs here
+4. `if (hasText && !historyOnly && !eventOnly) { documentRows merged }` ← **after**
+5. `results.sort(by score).slice(0, limit)`
+
+So document rows never meet `type:`, `role:`, `from:`, `to:`, `since:` or
+`before:` — and then they compete for the limit on score. Both the date leak and
+this are the same line.
+
+**Consequence for the fix, and it changes the scope.** Threading `since`/`before`
+into `searchProjectContent` fixes one symptom of a filter that is bypassed
+wholesale. Either the document rows are subject to the same filter as everything
+else, or they are excluded when a message filter is present.
+
+**Where the product decision starts, and it is Skip's.** Whether document
+content belongs in fleet search results *at all* — and whether it should be able
+to outrank chat on score — is a decision about what search is for. The repair is
+that a filter must filter. Do not resolve the wider question by implementing it.
+
 ## Standing constraints
 
 - Verify on the real search surfaces — the MCP `search()` tool and the in-app
