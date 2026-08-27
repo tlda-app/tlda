@@ -2291,3 +2291,54 @@ not mine to choose. Put to the chief.
 
 Tests written (branch `browser-edit-loss`, uncommitted): two-tree case and
 room-Yjs case, both PASS -- they document what is NOT the cause.
+
+### Rerun after resolving: THE MARKER PATH IS NOT THE WHOLE CAUSE
+
+**Correction first:** `held-edit-mark` IS on main now as `5c73851c8` (2 broadcast
+sites, client text present) and is NOT deployed (0 sites in `b5b6eb4e5`). My
+earlier "not on main" was true when measured and landed since. Branch
+`browser-edit-loss` rebased onto main so the mark path exists.
+
+**The change:** marker-blocked `noteLocalChange` no longer returns silently -- it
+enters the same hold path a conflicting merge uses (`noteRoomIsHolding` + the
+existing conflict broadcast), so the file is marked and the person can use the
+resolution control that exists. It resolves nothing itself. Red/green: restoring
+the silent return fails on *"the editor was told the file is held"*. 4/4 in that
+file, neighbouring room tests 4/4, eslint clean.
+
+**Markers resolved in disposable `sync-trio` only**, keeping BOTH sides -- only
+the three marker lines dropped, 8680 -> 8575 bytes.
+
+**Then all three legs rerun, and the browser leg STILL never arrives. 0/3.**
+
+```
+disk     66.1s · 79.7s · 81.8s     (was 17-35s earlier the same day)
+browser  NEVER ARRIVED x3
+remote   COULD NOT WRITE x3
+```
+
+Room afterwards:
+```
+blocked           : TRUE
+markers in room   : false        <- NOT the marker path
+browser text      : present in the room
+published         : has disk marks, not the browser's
+sourceSyncRefusals: 0   sourceSyncConflicts: 0   daemon hold lines: 0
+```
+
+`recordHeldEdit` IS wired on the deployed build (checked the deployed tree).
+**So the room is blocked, holding the person's text, and nothing recorded it
+anywhere.**
+
+**At the limit of what is established:** `flushRoom` returns early whenever
+`room.blocked`, so a blocked room publishes nothing, and `blocked` is reachable
+in a state no ledger, log line, or editor mark reflects. My change closes ONE
+route (markers). There is at least one other and I have NOT established which --
+four writes to `room.blocked`: rehydration from persisted state (line 293), the
+two merge paths, and the marker line; only the merge paths report.
+
+**NOT guessing which.** Next step is instrumenting which write set it in the live
+room. Not done.
+
+**Unexplained and unattributed:** disk latency 17-35s -> 66-82s across the two
+runs, same project, same edits.
