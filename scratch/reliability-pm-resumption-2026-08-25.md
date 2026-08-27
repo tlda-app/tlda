@@ -2144,3 +2144,57 @@ detail as the migration list.
 
 **Still open, unowned:** `project link` on a NEW project loops on
 `adopt-shadow-history-ref` timing out -- what stopped the stylized demo.
+
+## 2026-08-27 - which side is slow, and the stylized demo reproduces the open loss
+
+### `adopt-shadow-history-ref`: THE SERVER
+
+`daemon/machine-rpc.mjs:180` -- `requestWithReply({ timeoutMs = 15000 })`, whose
+error text is the literal string the CLI printed. The adopt passes no override,
+so **the daemon waits 15s for the server** and gives up.
+
+That places it AFTER the daemon's own work: `prepareHistorySeed` and
+`pushHistorySeed` both finish before the send, so the 20.8s -> 57.2s growth is
+each CLI retry re-running the prepare -- a consequence, not the cause.
+
+The handler (`unified-server.mjs:9998`) answers on BOTH paths, success and
+`catch`, with a comment saying it does so precisely to stop the daemon timing
+out. So **no reply arrived within 15s at all**.
+
+**Not a global stall:** live HTTP measured 530ms / 935ms / 306ms on
+`/api/projects/...` and 335ms on `/api/build-info`.
+
+**NOT isolated:** handler-slow vs message-waited. Next step is a local harness
+timing the handler on a fresh project. Not done.
+
+### The stylized demo ran (on already-linked disposable `sync-trio`)
+
+Running it against an already-linked project sidesteps the broken link path
+entirely -- the demo did NOT need that defect fixed first.
+
+```
+cycle 1   disk 25.8s OK     browser NEVER ARRIVED    remote COULD NOT WRITE
+cycle 2   disk 17.3s OK     browser NEVER ARRIVED    remote COULD NOT WRITE
+```
+
+**Browser leg checked directly rather than trusting the demo's verdict.** Its
+edits ARE admitted (`id=11306`) and the build succeeds, but in the published
+source:
+
+```
+SYNCDEMO-32002 (disk)    PRESENT
+SYNCDEMO-32005 (disk)    PRESENT
+SYNCDEMO-32003 (browser) absent
+SYNCDEMO-32006 (browser) absent
+```
+
+**No hold recorded either time** -- no `holding` line, `sourceSyncRefusals` and
+`sourceSyncConflicts` both empty. So NOT the conflict-hold working as designed.
+All three legs write the same file, so the instrument looks in the right place.
+
+**This is the silent concurrent-edit loss recorded above as separate and open.**
+Yesterday: two observations, no isolating test, and I said so. **It now
+reproduces on demand, twice per run, on a disposable project.**
+
+The remote leg fails on a `git merge` in the linked-remote pull -- NOT diagnosed,
+not claimed related.
