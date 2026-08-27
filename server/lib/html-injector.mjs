@@ -903,14 +903,30 @@ const SLIDES_BRIDGE_SCRIPT = `
       var slide = Reveal.getCurrentSlide();
       if (!slide) return;
       var scale = Reveal.getScale ? Reveal.getScale() : 1;
-      var rect = slide.getBoundingClientRect();
-      var h = Math.max(
-        rect.height / (scale || 1),
-        slide.scrollHeight || 0,
-        slide.offsetHeight || 0,
-        document.body ? document.body.scrollHeight : 0,
-        document.documentElement ? document.documentElement.scrollHeight : 0
+      // Measure the slide, never the document. body.scrollHeight and
+      // documentElement.scrollHeight are a function of the height the PARENT
+      // last applied from this very report: reveal centres .slides in the
+      // viewport, so half the container falls below the content and counts into
+      // both. Measured on an 18-slide deck at container heights 1000..3000, they
+      // came back as H/2 + 1562 — so every report asked for more than it had just
+      // been given, and the parent's minH = current.props.h clamp meant the
+      // height could only climb. That is the continuous bounce: a ratchet whose
+      // gaps halve, which stalls against the parent's 5px gate and restarts from
+      // the bottom whenever anything perturbs the height.
+      //
+      // scrollHeight and offsetHeight are in the deck's authored coordinate
+      // space and do not move with the container — measured constant across the
+      // same 1000..3000 sweep, in both directions. Because .slides is centred,
+      // content that overflows its slide element by d needs d of room above it
+      // as well, so the box that shows all of it is 2*scrollHeight - offsetHeight
+      // (and just offsetHeight when nothing overflows). That value is what the
+      // old ratchet was blindly climbing towards: it settles at the same height,
+      // in two writes instead of an unbounded chase.
+      var deckH = Math.max(
+        2 * (slide.scrollHeight || 0) - (slide.offsetHeight || 0),
+        slide.offsetHeight || 0
       );
+      var h = deckH * (scale || 1);
       window.parent.postMessage({
         type: 'tlda-resize',
         shapeId: shapeId,
