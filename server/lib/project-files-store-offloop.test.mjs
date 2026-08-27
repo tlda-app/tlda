@@ -114,6 +114,36 @@ test('project metadata reads and updates run through the project files worker', 
   }
 })
 
+test('document content search obeys since/before on the timestamp its rows carry', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-document-search-bound-'))
+  const root = join(tempRoot, 'projects')
+  const write = (name, lastBuild) => {
+    mkdirSync(join(root, name, 'source'), { recursive: true })
+    writeFileSync(join(root, name, 'project.json'), JSON.stringify({ name, title: name, lastBuild }))
+    writeFileSync(join(root, name, 'source', 'main.tex'), 'quartolinkgroups appears in both projects')
+  }
+  write('recent', '2026-08-27T00:00:00.000Z')
+  write('ancient', '2026-08-09T00:00:00.000Z')
+  const client = new ProjectFilesStoreClient(root)
+  try {
+    await client.ready()
+    await client.replace('recent', ['main.tex'])
+    await client.replace('ancient', ['main.tex'])
+    const names = (rows) => rows.map(row => row.project).sort()
+    // Unbounded first: the control. Without it a bounded empty result proves nothing.
+    assert.deepEqual(names(await client.searchContent('quartolinkgroups')), ['ancient', 'recent'])
+    assert.deepEqual(names(await client.searchContent('quartolinkgroups', { since: '2026-08-26T00:00:00.000Z' })), ['recent'])
+    assert.deepEqual(names(await client.searchContent('quartolinkgroups', { before: '2026-08-26T00:00:00.000Z' })), ['ancient'])
+    assert.deepEqual(names(await client.searchContent('quartolinkgroups', {
+      since: '2026-08-01T00:00:00.000Z',
+      before: '2026-08-26T00:00:00.000Z',
+    })), ['ancient'])
+  } finally {
+    await client.close()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('document associations mix primary, materialized, and daemon-fed shared text', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-document-associations-'))
   const root = join(tempRoot, 'projects')

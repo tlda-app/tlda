@@ -231,14 +231,34 @@ function documentAssociations(projectName, requestedDocuments) {
     .sort((a, b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target))
 }
 
+// The timestamp a document row carries, and the only one it has: the project's,
+// not the file's. Bounding uses the same field the row displays, so a returned
+// row can never show a date outside the header's window.
+const projectSearchTimestamp = (project) =>
+  project.lastBuild || project.updatedAt || project.createdAt || null
+
+// Same rule as the fleet path's SQL (`message-filter-sql.mjs` cases since/before):
+// `>= since`, `< before`, and a row with no timestamp is not excluded by a bound.
+const withinSearchBound = (timestamp, since, before) => {
+  if (!timestamp) return true
+  if (since && timestamp < since) return false
+  if (before && timestamp >= before) return false
+  return true
+}
+
 function searchContent(query, options = {}) {
   const q = normalizeSearchText(query)
   if (q.length < 2) return []
   const limit = Number(options.limit) > 0 ? Number(options.limit) : 50
   const currentProject = String(options.currentProject || '').trim()
+  const since = String(options.since || '').trim() || null
+  const before = String(options.before || '').trim() || null
   const terms = q.toLowerCase().split(/\s+/).filter(Boolean)
   const projects = listProjects()
     .filter(p => p?.name && !p.archived)
+    // The bound is project-granular, so it is applied before the file reads
+    // rather than after: an out-of-window project costs no disk at all.
+    .filter(p => withinSearchBound(projectSearchTimestamp(p), since, before))
     .slice(0, 200)
   const rows = []
   for (const project of projects) {
@@ -249,7 +269,7 @@ function searchContent(query, options = {}) {
       const score = documentSearchScore(entry, q, terms, currentProject)
       if (score <= 0) continue
       const snippet = documentSearchExcerpt(entry.text || entry.label || entry.title, q, terms)
-      const timestamp = project.lastBuild || project.updatedAt || project.createdAt || null
+      const timestamp = projectSearchTimestamp(project)
       rows.push({
         source: 'project',
         type: 'document_content',
