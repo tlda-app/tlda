@@ -189,3 +189,12 @@ running `c0b09c200` with a deck whose project resolves to `slides` format, and
 on it — arrow left/right across a slide boundary and across a fragment, a
 click on the next-slide control, and a pen stroke that survives navigating away
 and back. Everything else in this report is measured.
+
+**And the trap in setting that up.** The gate is `SvgDocument.tsx:483`,
+`document.format === 'slides'`, which is what renders `SlideNavWrapper` at
+line 1585. It is false on `qtm285-slides-probe` today. But that project still
+shows **18 shapes with `…-slide-N` ids**, which is what `createSlidesShapes`
+produces — leftovers persisted in the synced room from when it was in slides
+format, not evidence the client is in slides mode now. Anyone preparing this
+gate will see slide shapes on the canvas and reasonably conclude the surface is
+right. **Check for `.slides-navigator` in the DOM, not for slide shapes.**
