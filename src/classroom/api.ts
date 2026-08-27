@@ -25,7 +25,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json()
 }
 
+export type ClassroomIdentity =
+  | { role: 'student'; studentId: string; courseId: string }
+  | { role: 'instructor' }
+
 export const classroomApi = {
+  // Who the caller is, from their token. The book surface needs this before it
+  // can open the student's own annotation room, and there is no assignment in
+  // hand there to ask through.
+  me: () => request<ClassroomIdentity>('/me'),
   register: (courseId: string, body: { displayName: string; universityLogin: string }) => request<RegisteredStudent>(`/courses/${encodeURIComponent(courseId)}/register`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   }),
