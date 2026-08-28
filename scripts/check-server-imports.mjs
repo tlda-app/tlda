@@ -64,6 +64,12 @@ const SPECIFIER_PATTERNS = [
   /^\s*(?:import|export)(?![\w$])[^'"`;]{0,400}?\bfrom\s*['"]([^'"]+)['"]/gm,
   /^\s*import\s*['"]([^'"]+)['"]/gm,
   /^\s*(?:const|let|var)?[^'"`;]{0,120}?\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/gm,
+  // `createRequire(import.meta.url)` is how an ESM file reaches a CommonJS
+  // package. It is still a production dependency, and the live image still
+  // has to install it from the shipped manifest. Keep this anchored to a
+  // statement so prose and template literals that mention `require(...)` do
+  // not become imports.
+  /^\s*(?:(?:const|let|var)\s+[^=;\n]{1,200}=\s*)?require\s*\(\s*['"]([^'"]+)['"]\s*\)/gm,
 ]
 
 export function specifiersIn(source) {
