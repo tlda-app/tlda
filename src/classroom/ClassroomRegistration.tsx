@@ -11,6 +11,14 @@ export function ClassroomRegistration() {
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
+  const continueUrl = registration ? (() => {
+    const next = new URL(window.location.href)
+    next.searchParams.delete('workspace')
+    next.searchParams.set('project', courseId)
+    next.searchParams.set('classroomToken', registration.enrollmentToken)
+    return next.toString()
+  })() : null
+
   const register = async (event: React.FormEvent) => {
     event.preventDefault()
     if (submitting) return
@@ -38,6 +46,7 @@ export function ClassroomRegistration() {
       <code>{registration.enrollmentToken}</code>
       <button type="button" onClick={() => navigator.clipboard.writeText(registration.enrollmentToken)}>Copy token</button>
       <p>Keep this token. It identifies your classroom work, and the server cannot show it again.</p>
+      {continueUrl && <a className="classroomContinueLink" href={continueUrl}>Continue to class</a>}
     </section>}
   </main>
 }
