@@ -2388,3 +2388,55 @@ Marker-to-visible-hold change stays separate and undeployed on
 
 **Treat as urgent: on the deployed build, saving from the browser editor does not
 work for any project tested.**
+
+## 2026-08-27 - THE BROWSER LOSS, ROOT-CAUSED AND FIXED (`repo-path-canonical`)
+
+**Root cause (chief established read-only on fly, I confirmed the boundary):**
+`/app/server/projects` is a SYMLINK to `/app/server/persist/projects`
+(`fly-entrypoint-live.sh`). `git rev-parse --show-toplevel` answers with the
+canonical persist path; the room asks about the projects path. `repoPathFor`
+compared them AS STRINGS, so it answered `inRepo: false` about the room's own
+working file and `trackPath` refused to stage it.
+
+**`b3190cd4a`** canonicalises BOTH sides through `realpathSync` and KEEPS the raw
+comparison alongside, so it can only widen. A failing `realpathSync` falls back
+to the raw value rather than throwing.
+
+**Four tests, two of them controls that matter as much:** non-symlinked path
+judged exactly as before, and a path genuinely outside the repository STILL
+REFUSED -- a repair answering `inRepo:true` for everything would satisfy the
+symlink cases while deleting the refusal `trackPath` is built on.
+Counterfactual: reverting fails both symlink tests, leaves both controls green.
+
+**THIS CLASS HAS BITTEN BEFORE.** `server/lib/build-runner.mjs:1645` already
+records it: the same symlink, the same unresolved-vs-resolved comparison, which
+*"silently froze shadow commits after the 2026-06-14 persist migration"*.
+Second occurrence, different file. The shape to look for is any string
+comparison against `--show-toplevel` or a configured project dir.
+
+**`864d03218` -- the topology rig** (`scratch/fly-topology-room-save.mjs`).
+A local server WITHOUT the symlink cannot show this defect at all, so the rig
+builds it and tells the server the symlink path. It drives the REAL resolution
+endpoint (`POST /source-room/files`), not a websocket write -- that shortcut hid
+this for a round. It asserts the symlink resolves elsewhere BEFORE measuring.
+
+```
+without the canonicalisation   409 "was not staged"
+with it                        202 SAVED
+                               room blocked: false | markers present: false
+```
+
+Both of the chief's conditions verified POSITIVELY from the room's sync frame.
+
+**NOT DONE:** the three-leg demo on the isolated server -- disk and remote need a
+DAEMON watching a bound checkout and the harness server has none. The legs can
+run against live testing, but that box lacks this fix, so rerunning there now
+would measure the old code. Needs this on a server with a daemon; chief's lane.
+
+**Process note:** the typecheck "hung" twice because TWO `tsc -b` runs were
+colliding over the same build info -- my own doing from backgrounding then
+re-running. One instance -> TSC=0 in normal time.
+
+Branches, all gated, none deployed: `repo-path-canonical`,
+`browser-edit-loss` (marker-to-visible-hold, TSC=0 GUARDS=0),
+`one-checkout-one-project`.
