@@ -106,14 +106,41 @@ error; non-empty pair unaffected.
   events there is no row to render a card from. The missing ingredient is session
   activity ingestion on the preview — not the serve flags.
 
-- **The panel counterfactual is now confirmed on the running app**, not only in
-  code. `.fleet-search-load-more` absent from the panel (0 matches); per-group
-  controls unchanged — `Show 56 more conversation` takes conversation rows 6 → 62
-  and then disappears, while `Show 21 more documents` remains. `paging` is false
-  because `FleetSearchShape.tsx:913` passes neither `hasMore` nor `onLoadMore`.
-  Driven by dispatching real `pointerdown`/`pointerup` on the actual elements
-  (the shape sits at `x=24039`, outside the viewport, so Playwright actionability
-  cannot reach it) — **the real React handlers, not a canvas gesture.**
+- ~~**The panel counterfactual is now confirmed on the running app.**~~
+  **RETRACTED 2026-08-27 21:25 EDT — the pass was vacuous. `features-pm` caught
+  it on their own change, disclaiming a result in their favour.**
+
+  The claim rested on `.fleet-search-load-more` being **absent** from the panel.
+  But `fleet-search-load-more` does not exist on `main` at all — `git grep -c`
+  returns **0 on `main`, 1 on `search-card-one-control`** — and the preview's
+  manifest names branch `main`, project `scratch-main`. **A zero that cannot go
+  non-zero distinguishes nothing.**
+
+  I checked the bundle actually served: `:5192` now serves
+  `index-Dnv9k6Ki.js`, which is a **different hash** from the
+  `index-D3dZ2b5t.js` the agent grepped, and it contains **0** matches for
+  `fleet-search-load-more` against **1** for `fleet-search-group-more` — so the
+  grep works and the absence is real for that build. The bundle identity was
+  verified at one moment and the panel measured at another, on a port that
+  **three manifests claim** (`main`, `classroom-controls-verify`,
+  `fix/chat-row-ro-gate`), with `main`'s own manifest pointing at the
+  `classroom-controls-verify` worktree.
+
+  **So the counterfactual is UNRUN, not passed.** Re-running it requires pinning
+  the bundle hash to the same observation as the panel measurement — the bundle
+  is the only thing that separates three servers sharing a port.
+
+  What survives, because it is about the store rather than the build: the 100
+  ranked results across 5 types, and the absence of session tool-call activity.
+  The interaction method also stands on its own terms — real
+  `pointerdown`/`pointerup` on the actual elements, not a canvas gesture — it
+  simply drove a build that could not contain the change.
+
+- **`features-pm`'s label fix IS committed** — `39b8b466c`, branch tip
+  `eef131811`, `loadMoreNoun = hasConversation ? 'messages' : 'results'` at line
+  130. I relayed an agent's stale read claiming it lived only in a working
+  directory. **I had `39b8b466c` in my own branch survey earlier and did not
+  reconcile it before passing the contradiction on.**
 
 - **Defect 1 was reproduced on the in-app surface too**, which closes the gap
   `search-date-bound` left open. Pre-fix: `type:tool_use search` in the panel
