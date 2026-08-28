@@ -2716,11 +2716,19 @@ async function cmdShare() {
     const host = new URL(sel.base).host
     console.error(red(`Read token rejected by ${host} (HTTP ${probe.status}).`))
     console.error()
-    console.error(`This machine's read token is not ${bold(getActiveEnvName())}'s read token — ${host} is a`)
-    console.error('different box with its own secrets, so this link would fail for whoever you gave it to.')
-    console.error()
-    console.error(`Supply that box's read token and re-run this command:`)
-    console.error(`  ${dim(`TLDA_TOKEN_READ=<${getActiveEnvName()} read token> <this command>`)}`)
+    // Say which token was rejected. Supplying one explicitly and having it
+    // refused is a different fact from this machine holding the wrong one, and
+    // telling someone to supply a token they just supplied is a false diagnosis.
+    if (process.env.TLDA_TOKEN_READ) {
+      console.error(`The token in ${bold('TLDA_TOKEN_READ')} is not ${bold(getActiveEnvName())}'s read token.`)
+      console.error(`This link would fail for whoever you gave it to. Check the read token for ${bold(getActiveEnvName())}.`)
+    } else {
+      console.error(`This machine's read token is not ${bold(getActiveEnvName())}'s read token — ${host} is a`)
+      console.error('different box with its own secrets, so this link would fail for whoever you gave it to.')
+      console.error()
+      console.error(`Supply that box's read token and re-run this command:`)
+      console.error(`  ${dim(`TLDA_TOKEN_READ=<${getActiveEnvName()} read token> <this command>`)}`)
+    }
     process.exit(1)
   }
 
