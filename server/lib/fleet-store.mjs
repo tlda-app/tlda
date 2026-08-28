@@ -5912,6 +5912,22 @@ export class FleetStore {
     `).all(lineageId).map(row => row.fleet_id);
   }
 
+  // `idx_session_entries_ts` is built out of band by
+  // bin/build-session-history-index.mjs, not in the boot-path index block, so a
+  // database can legitimately be without it. `INDEXED BY` a missing index is a
+  // hard SQLite error rather than a slower plan, so anything naming it has to
+  // ask first. Memoized: an index is not dropped under a running store, and the
+  // check would otherwise run on every bounded search.
+  _hasIndex(name) {
+    this._indexPresence = this._indexPresence || new Map();
+    if (!this._indexPresence.has(name)) {
+      this._indexPresence.set(name, !!this.db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?"
+      ).get(name));
+    }
+    return this._indexPresence.get(name);
+  }
+
   resolveAgentSelector(selector) {
     selector = typeof selector === 'string' ? { fragment: selector } : (selector || {});
     const baseFragment = (selector.fragment || '').trim().toLowerCase();
@@ -6135,7 +6151,38 @@ export class FleetStore {
         const eventHistoryIndex = effectiveHistoryMode && !hasAgent && !eFilter ? 'INDEXED BY idx_events_ts' : '';
         const searchTable = explicitActivitySearch ? 'activity_events_fts' : 'events_fts';
         const snippetCol = effectiveHistoryMode ? 'substr(e.text, 1, 120) as snippet' : `snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet`;
+        // A `since`/`before` bound cannot stop the FTS walk. The bound is tested
+        // after the matched row is joined, so LIMIT no longer terminates the
+        // scan: SQLite reads the term's entire posting list — 400,862 rows for
+        // `the` on the live store — to discover the few hundred inside the
+        // window. Unbounded, the same query stops at the first `limit` matches.
+        // That is why a bound looks like it "turns the search into a scan"
+        // while every EXPLAIN QUERY PLAN still reports an index seek.
+        //
+        // FTS5 does honour a rowid range, so the bound goes to the match side
+        // as well, as min()/max() of id over exactly the rows the bound admits.
+        // Those are a lower and an upper bound on every row this query can
+        // return, so the result set is unchanged by construction — no
+        // assumption that id and timestamp agree. Measured on the live store,
+        // `the` over one day: events 15.83s -> 0.07s, sessions 8.41s -> 0.10s,
+        // same rows.
+        //
+        // min() over the filtered set, NOT the id of its earliest row. The two
+        // differ, because id is assigned at insert and timestamp is not, and
+        // the second is not a lower bound: it drops in-window rows in 15 of 60
+        // day-windows on this corpus, 2016 of them in the worst one.
+        const eRowidClauses = [];
+        const eRowidParams = [];
+        if (since) {
+          eRowidClauses.push(`${searchTable}.rowid >= (SELECT min(id) FROM events INDEXED BY idx_events_ts WHERE timestamp >= ?)`);
+          eRowidParams.push(since);
+        }
+        if (before) {
+          eRowidClauses.push(`${searchTable}.rowid <= (SELECT max(id) FROM events INDEXED BY idx_events_ts WHERE timestamp < ?)`);
+          eRowidParams.push(before);
+        }
         const hasEventPreFilter = !effectiveHistoryMode && eClauses.length > 0;
+        const eventPreWhere = [...eClauses, ...eRowidClauses].join(' AND ');
         const eventSql = effectiveHistoryMode ? `
         SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.text, e.metadata, e.agent_id,
                (SELECT json_group_array(agent_id) FROM recipients WHERE event_id = e.id) as "to_json",
@@ -6149,7 +6196,7 @@ export class FleetStore {
                ${snippetCol}, ${searchTable}.rank as fts_rank
         FROM ${searchTable}
         JOIN events e ON e.id = ${searchTable}.rowid
-        ${eventWhere ? `${eventWhere} AND` : 'WHERE'} ${searchTable} MATCH ?
+        WHERE ${eventPreWhere} AND ${searchTable} MATCH ?
         ORDER BY ${searchTable}.rank
         LIMIT ?
       ` : `
@@ -6171,7 +6218,7 @@ export class FleetStore {
         const eventParams = effectiveHistoryMode
           ? eParams
           : hasEventPreFilter
-            ? [...eParams.slice(0, -1), ftsQuery, candidateLimit]
+            ? [...eParams.slice(0, -1), ...eRowidParams, ftsQuery, candidateLimit]
             : [ftsQuery, candidateLimit, ...eParams];
         eventRows = this.db.prepare(eventSql).all(...eventParams).map(r => ({
           source: 'fleet',
@@ -6223,7 +6270,23 @@ export class FleetStore {
       sParams.push(effectiveHistoryMode ? limit : candidateLimit);
       const sessionWhere = sClauses.length ? `WHERE ${sClauses.join(' AND ')}` : '';
       const sSnippetCol = effectiveHistoryMode ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
+      // The same rowid bound as the events branch above, for the same reason.
+      // Gated on the index existing, because without it the floor lookup is
+      // itself the scan this is removing.
+      const sRowidClauses = [];
+      const sRowidParams = [];
+      if (this._hasIndex('idx_session_entries_ts')) {
+        if (since) {
+          sRowidClauses.push('session_entries_fts.rowid >= (SELECT min(id) FROM session_entries INDEXED BY idx_session_entries_ts WHERE timestamp >= ?)');
+          sRowidParams.push(since);
+        }
+        if (before) {
+          sRowidClauses.push('session_entries_fts.rowid <= (SELECT max(id) FROM session_entries INDEXED BY idx_session_entries_ts WHERE timestamp < ?)');
+          sRowidParams.push(before);
+        }
+      }
       const hasSessionPreFilter = !effectiveHistoryMode && sClauses.length > 0;
+      const sessionPreWhere = [...sClauses, ...sRowidClauses].join(' AND ');
       const sessionSql = effectiveHistoryMode ? `
         SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
                ${sSnippetCol}, 0 as fts_rank
@@ -6235,7 +6298,7 @@ export class FleetStore {
                ${sSnippetCol}, session_entries_fts.rank as fts_rank
         FROM session_entries_fts
         JOIN session_entries s ON s.id = session_entries_fts.rowid
-        ${sessionWhere ? `${sessionWhere} AND` : 'WHERE'} session_entries_fts MATCH ?
+        WHERE ${sessionPreWhere} AND session_entries_fts MATCH ?
         ORDER BY session_entries_fts.rank
         LIMIT ?
       ` : `
@@ -6256,7 +6319,7 @@ export class FleetStore {
       const sessionParams = effectiveHistoryMode
         ? sParams
         : hasSessionPreFilter
-          ? [...sParams.slice(0, -1), ftsQuery, candidateLimit]
+          ? [...sParams.slice(0, -1), ...sRowidParams, ftsQuery, candidateLimit]
           : [ftsQuery, candidateLimit, ...sParams];
       sessionRows = this.db.prepare(sessionSql).all(...sessionParams).map(r => ({
         source: 'session',
