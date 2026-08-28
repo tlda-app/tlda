@@ -1151,7 +1151,7 @@ const SLIDES_BRIDGE_SCRIPT = `
     var xrefs = document.querySelectorAll('a.quarto-xref');
     for (var i = 0; i < xrefs.length; i++) {
       var xref = xrefs[i];
-      if (!/^#\/?fig-/.test(xref.getAttribute('href') || '')) continue;
+      if (!/^#\\/?fig-/.test(xref.getAttribute('href') || '')) continue;
       if (xref.getAttribute('data-tlda-xref-bound')) continue;
       xref.setAttribute('data-tlda-xref-bound', '1');
       window.tippy(xref, {
@@ -1167,7 +1167,7 @@ const SLIDES_BRIDGE_SCRIPT = `
         content: (function(link) {
           return function() {
             var href = link.getAttribute('href') || '';
-            var id = href.replace(/^#\/?/, '');
+            var id = href.replace(/^#\\/?/, '');
             var note = id && document.getElementById(id);
             if (!note) return '';
             return note.children && note.children.length ? note.innerHTML : note.outerHTML;
