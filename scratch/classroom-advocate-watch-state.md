@@ -215,6 +215,50 @@ success.
 and nobody noticed, because every HTTP signal on it is green. The build step that
 writes `source`/`toc.json` has been silently skipping projects for two weeks.
 
+## 21:46Z — BOOK IS BACK AND STILL BLANK. My prediction was WRONG.
+
+Box on `5784f5787` (all five fixes verified as ancestors). `classroom-hw1-handout`'s
+push worked: **`lastBuild` moved to 21:43:51Z** — first time all night —
+`acceptSeq` 33, build `success`.
+
+**Steps 1–3 pass and are NOT sufficient:**
+- `page-info.json` 200, **3 entries**
+- **3/3 carry `source` blocks** (`format: qmd`, correct chapter paths)
+- pages 200 with content: 28,185 / 1,796 / 42,144 chars
+- `toc.json` **200**
+- console: `Found 3 HTML pages` · `HTML document ready (3 pages, 3 TLDraw pages)`
+
+**Step 4 FAILS.** `.playwright-cli/page-2026-08-28T21-45-51-756Z.png` — empty
+canvas, **1 shape, 1×1 px, empty**.
+
+**THE `source`-BLOCK LEAD IS DEAD.** I predicted source blocks ⇒ renders. Wrong.
+I only tested in the confirming direction and never opened a *rendering* project
+without `source`. Then I did: **`pic-install` has 1/1 source + `toc.json` 200 and
+is also 1×1 blank.**
+
+**What is actually true, n=5, observation not theory:**
+
+| project | shapes | renders |
+|---|---|---|
+| `qtm285-lecture-1` — slide deck (`slideIndex`/`group`/`groupIndex`) | 8 @ 1076×834 | ✅ |
+| `qtm285-book` | 1 @ 1×1 | ❌ |
+| `qtm285-hw-minus-1` | 1 @ 1×1 | ❌ |
+| `pic-schedule` | 1 @ 1×1 | ❌ |
+| `pic-install` | 1 @ 1×1 | ❌ |
+
+**Only the slide deck renders. Every plain HTML-page project is blank**, whatever
+its source/toc/content. **The gap is in the canvas, not the build** — same gap
+that made HW−1 blank at 21:03Z. Not a content or `_quarto.yml` question.
+
+**Confirmed improvement from the deploy:** the book no longer shows the crash
+dialog with the red **`Reset data`** button (which erases the user's work). The
+same broken state now reads **"Building qtm285-book…"**. `3e1cab370` did what my
+evidence argued for.
+
+**Lesson for me, twice over now:** do not offer a correlation as a gate until it
+has been tested in the direction that would falsify it — a rendering project
+*without* the feature, not just a blank one with it.
+
 ## Superseded: the Continue re-check (done — passed)
 
 At 16:0x the box served `gitSha c09e3943d` — **the old bundle**. Read out of
