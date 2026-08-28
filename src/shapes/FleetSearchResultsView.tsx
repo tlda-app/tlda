@@ -198,7 +198,11 @@ export function FleetSearchResultsView({
           {queryError}
         </div>
       )}
-      {!loading && searched && results.length === 0 && (
+      {/* `!queryError` because a failed search has no result count to report.
+          Without it the panel prints the error AND "no results" together, which
+          still tells the reader the corpus is empty when what is known is only
+          that the query did not complete. */}
+      {!loading && !queryError && searched && results.length === 0 && (
         <div style={{ padding: '12px 10px', opacity: 0.3, textAlign: 'center', fontSize: 10 }}>
           no results
         </div>
