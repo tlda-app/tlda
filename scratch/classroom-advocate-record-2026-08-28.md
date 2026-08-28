@@ -98,6 +98,29 @@ the project. Both boxes were current — `pic` `5784f5787`, `testing` `196dd5929
 **Live question:** why `createHtmlPageShapes` commits nothing while the loader
 reports three pages, silently, on `pic` and not on `testing`.
 
+### Reproduced on a fresh project, 22:50Z — it is not three wedged rooms
+
+`mp-pic-probe`, a disposable project built on `pic` for this (`success`, 3 pages,
+`renderedFormat: html`), opened in a browser:
+
+```
+pages   [ { id: "page:page", name: "Page 1" } ]
+shapes  [ { id: "shape:doc-version--sentinel", type: "doc-version", w: 1, h: 1 } ]
+document records: document 1 · page 1 · shape/doc-version 1
+```
+
+**Zero `html-page` shapes on a brand-new project. Reproducible on demand.**
+
+Against `mp-probe-three` on `testing` — same shape of project — which has three
+`page` records and three `html-page` shapes at 800×1200. **Same project kind: works
+on `testing`, fails on `pic`.** `qtm285-lecture-1` works on `pic` and is a *slide
+deck*, i.e. the other loader. **So the split is the HTML-page path on `pic`.**
+
+**Not a second symptom:** no fleet shapes were written in the probe room either,
+but `FleetIconPill.tsx` returns early at `if (!getDocumentPageBounds(mainEditor))
+return` — with no `html-page` shapes there are no bounds, so the layout never runs.
+Consequence of the missing pages, not evidence the room rejects writes.
+
 For `qtm285-book` this is true **with every upstream signal green**: `page-info.json`
 200 with 3 entries, all 3 carrying `source` blocks, `toc.json` 200, pages serving
 28,497 / 1,820 / 42,365 characters, and the console logging
@@ -126,6 +149,19 @@ cause may be older than them.
   node_modules/.bin/playwright-cli -s=shared screenshot
   node_modules/.bin/playwright-cli -s=shared eval "() => …"
   ```
+
+  **And the workaround has its own trap, which nearly cost the night's most
+  important answer.** With more than one agent in the shared browser, **tab indices
+  shift as agents join and `(current)` moves under you.** At 22:49Z my `eval` on
+  `mp-pic-probe` returned 24 records, three pages and three `html-page` shapes —
+  the renders-fine answer. It was another agent's tab:
+  `tlda-fly…/?project=mp-probe-three&pwtab=fleet_204b5b57`. **I would have reported
+  their `testing` control as my `pic` probe result — the exact inverse conclusion,
+  on the fork that decides where the fix goes.**
+
+  **Return `location.href` from inside every eval and check it against what you
+  asked for.** Nothing else catches this. It is the third distinct way the shared
+  browser produced an answer about the wrong subject tonight.
 - **`tlda build` is documented and does not exist.** `cli/tlda.mjs:221` advertises
   *"Trigger a rebuild without pushing files"*; there is no `cmdBuild` and no
   dispatcher case. Belongs in `docs/naming-errata.md`.
