@@ -35,7 +35,8 @@ import { StandaloneChatPanel } from '../fleet/StandaloneChatPanel'
 import { buildFleetDmFilter } from '../../shared/filter-semantics.mjs'
 import type { VoiceTargetHandle } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetIdentity, fleetEphemeral } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetIdentity, fleetEphemeral, receiveFilterEvents } from '../fleet-data-adapter'
+import { subscribeChat } from '../fleet/chat-subscription.mjs'
 import { ProjectContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { onReloadSignal } from '../useYjsSync'
@@ -367,6 +368,11 @@ export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
   }
 }
 
+// How many messages the inbox subscription asks the server for. The panel shows
+// threads rather than rows, so this is the pool the threads are grouped from —
+// the same kind of panel-sized window as UNREAD_RAIL_PAGE in FleetChatShape.
+const INBOX_PAGE = 200
+
 function FleetInboxInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const docCtx = useContext(ProjectContext)
@@ -423,7 +429,23 @@ function FleetInboxInner({ shape }: { shape: any }) {
     () => (myName || myId ? [[['to', myName || myId!]], [['from', myName || myId!]]] : null),
     [myId, myName],
   )
-  const events = useFleetEvents(filter)
+  // The inbox reads its own server-fed buffer, the same way a chat panel does.
+  // Without a bufferKey `useFleetEvents` filters the browser's global event
+  // store, and nothing has fed that store received mail since b51f60a93 removed
+  // the global intake — every remaining writer is this tab's own optimistic
+  // send. So the inbox could only ever show messages the tab itself sent, and
+  // showed "no messages yet" to an identity holding delivered mail.
+  const bufferKey = filter ? `inbox:${shape.id}` : null
+  const events = useFleetEvents(filter, undefined, bufferKey)
+  useEffect(() => {
+    if (!filter || !bufferKey) return
+    return subscribeChat(
+      filter,
+      INBOX_PAGE,
+      (rows, meta) => { receiveFilterEvents(bufferKey, rows, meta) },
+      { humanId: myId, humanName: myName, correlationKey: bufferKey },
+    )
+  }, [filter, bufferKey, myId, myName])
   // Which thread is open (partnerId), or null = thread list.
   const [openPartner, setOpenPartner] = useState<string | null>(null)
   const [openItemKey, setOpenItemKey] = useState<string | null>(null)
