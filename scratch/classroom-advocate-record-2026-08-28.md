@@ -14,7 +14,7 @@ before leaning on any of it.
 | # | criterion | state | evidence |
 |---|---|---|---|
 | 1 | public enrollment registers a student, Continue opens the book | **PASSES** | registered through the real form in a browser; `Continue to class` present, `href` carries `project=qtm285-book`. `page-2026-08-28T21-20-43-612Z.png` |
-| 2 | book visibly renders Intro → HW−1 → HW0 | **FAILS** | serves perfectly, draws nothing. `page-2026-08-28T21-45-51-756Z.png` |
+| 2 | book visibly renders Intro → HW−1 → HW0 | **PASSES** (23:00Z) | student profile, `localStorage` cleared, read-token link → three named chapters, real content. `page-2026-08-28T22-54-01-476Z.png`. Root cause in §2a |
 | 3 | HW−1 setup/photo/template/Submit | **PASSES** (PM closed it) | submit wire proven by me; handout download closed by the PM |
 | 4 | student photo → receipt | **PASSES** | upload 200 → receipt → project built in 6 s → **70 bytes in, 70 bytes out** |
 | 5 | instructor list shows the submission | **PASSES** | panel renders the rows. `page-2026-08-28T21-21-44-181Z.png` |
@@ -22,7 +22,52 @@ before leaning on any of it.
 **Criterion 2 is the only one open, and it is not a build problem.** The bytes are
 correct and served; the canvas does not draw them.
 
-## 2. The render defect — the open one
+## 2a. ROOT CAUSE, and the sentence that outlives tonight
+
+**Found by `classroom-blank-401`; I confirmed the repair and the acceptance test.**
+
+**Document page shapes are created by the client and written into the synced room.
+A read-only reader cannot create them. So a project whose shapes were never
+persisted by a read-write session is blank for every reader, permanently.**
+
+**Publishing a project is not finished until someone with write access has opened
+it once.** This is invisible: the build succeeds, the bytes serve, `page-info.json`
+is correct, and every HTTP check passes. `pic-schedule` sat unrenderable from
+**2026-08-13 to 2026-08-28** on exactly this.
+
+**The repair, one authenticated page load per project.** Measured before → after:
+
+| project | before | after |
+|---|---|---|
+| `qtm285-book` | 1 page, 0 `html-page` | 3 named chapters, `html-page` 863×15429 / 800×1200 / 800×1200 |
+| `qtm285-hw-minus-1` | 1 page, 0 `html-page` | "Homework −1: Setting Up", 800×891 |
+| `pic-install` | 1 page, 0 `html-page` | "Install tlda Classroom", 800×1200 |
+| `pic-schedule` | 1 page, 0 `html-page` | "QTM 285 · Fall 2026 development schedule", 800×2391 |
+
+**Zero fleet shapes written on any of them.**
+
+### The remedy has a trap that makes it look like it failed
+
+**`/auth/login?token=<RW>&redirect=…` does NOT give you a read-write session.**
+`initToken()` (`src/authToken.ts`) reads `?token=` from the **final** URL; the
+redirect target carries none, so it falls back to `localStorage.tlda_token` — any
+older read token — and the fetch patch injects that over the RW cookie. Running the
+`/auth/login` form on `qtm285-book` changed nothing at all.
+
+**Use the token on the page URL:** `/?project=<name>&token=<RW>`.
+
+**And clear `localStorage` before any student-view acceptance test**, or a stale
+read token from a previous visit makes it pass falsely.
+
+### The protection that is now gone
+
+Zero fleet shapes all night was **not** discipline — `FleetIconPill` returns early
+at `if (!getDocumentPageBounds(mainEditor)) return`, and a blank room has no bounds.
+**Persisting the page shapes gave these rooms bounds, so an automated visit will now
+write fleet furniture into them.** Stop pointing browsers at them; server-side reads
+are the safe instrument from here.
+
+## 2. The render defect — how it was characterised, wrong turns included
 
 **Five projects opened in a real browser. Only the slide deck renders.**
 
