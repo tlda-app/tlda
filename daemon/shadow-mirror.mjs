@@ -136,6 +136,79 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
   return { mirrorShadowRef, prepareHistorySeed, containsCommits }
 }
 
+// How many times to re-ask for a confirmation that never came. Each ask costs
+// one `sendMsgWithReply` timeout, so this is a time budget expressed in asks
+// rather than a count anyone tunes: four asks against the daemon's 15s reply
+// timeout is a minute of waiting for a server that is behind.
+export const HISTORY_ADOPTION_CONFIRM_ATTEMPTS = 4
+
+/**
+ * Put a project's history on the server and come back with it confirmed.
+ *
+ * **Only the confirmation is retried.** The seed is prepared once and pushed
+ * once; if the answer does not arrive, this asks again for the SAME immutable
+ * ref rather than rebuilding anything. Adopting a ref twice promotes the same
+ * commit, so re-asking is safe — the bytes were already delivered and it was
+ * only the answer that went missing.
+ *
+ * Failing the whole link instead is what this replaces, and it was expensive in
+ * a way that made a slow server slower. `project link`'s CLI-side retry re-runs
+ * the entire command, so every lost confirmation cost another
+ * `prepareHistorySeed` — `git archive`, `tar -xf`, a filtered repository built
+ * in a temp dir — and another `pushHistorySeed` to the server. Measured
+ * 2026-08-27, against a server whose store queue was saturated: one `project
+ * link` did six full seed-and-push cycles in eleven minutes and never
+ * succeeded, and several such commands were running at once. The retry was
+ * feeding the queue that was eating the confirmations.
+ *
+ * An ANSWER, including a negative one, is definitive and ends this immediately.
+ * Only the absence of an answer is retried, because only the absence is the
+ * thing re-asking can fix.
+ */
+export async function seedAndConfirmHistory({
+  project,
+  prepareSeed,
+  pushSeed,
+  confirmAdoption,
+  attempts = HISTORY_ADOPTION_CONFIRM_ATTEMPTS,
+  log = console,
+}) {
+  const history = await prepareSeed()
+  try {
+    if (history.empty) return { seeded: false, history }
+    const pushed = await pushSeed(history)
+    let unanswered = null
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      let adopted
+      try {
+        adopted = await confirmAdoption({ head: history.head, ref: pushed.ref })
+      } catch (error) {
+        unanswered = error
+        log.warn?.(`${project}: history adoption unconfirmed (ask ${attempt}/${attempts}): ${error.message}; asking again for the ref already pushed`)
+        continue
+      }
+      if (!adopted?.ok) throw new Error(`${project} was not linked: the server did not confirm its history`)
+      // DO NOT GATE ON `adopted.versions`. It looks like the confirmation that
+      // history landed and it is not one: the server fills it from
+      // `listVersions`, which runs `git log -n <limit>` and then drops entries
+      // whose message is exactly `init` AFTER that limit. `init` is an ordinary
+      // first-commit message, so an ordinary repository adopts correctly and
+      // reports 0. Measured 2026-08-27 on a disposable repo committed with
+      // `-m init`: the server logged "adopted <head> — 0 version(s)" for a
+      // history that had in fact landed.
+      //
+      // `adoptShadowHistoryRef` already makes the real check, by asking git for
+      // HEAD in the shadow repo and throwing when the ref landed no commit —
+      // and it takes care NOT to ask listVersions, for this exact reason. A
+      // gate here would re-break what that avoided.
+      return { seeded: true, adopted, history, pushed }
+    }
+    throw unanswered
+  } finally {
+    await history.cleanup?.()
+  }
+}
+
 export async function prepareProjectHistorySeed({ project, sourceDir, seedBranch = null, seedRevision = 'HEAD', documentRoots = [], log = console }) {
   const roots = [...new Set(documentRoots.map(value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '')).filter(Boolean))]
   if (!roots.length) return { ok: true, empty: true, project, sourceDir }
