@@ -844,6 +844,8 @@ const SLIDES_BRIDGE_SCRIPT = `
 
     slideBackground = slideBackground || readSlideBackground();
 
+    bindXrefHovers();
+
     // Legacy per-slide iframes lock to one slide. Deck-mode iframes keep the
     // whole Reveal instance alive and are driven by parent messages.
     if (!deckMode) Reveal.slide(indexh, indexv, 0);
@@ -1142,6 +1144,37 @@ const SLIDES_BRIDGE_SCRIPT = `
       tldaSlidePostTouches(e);
     }, { passive: true });
     document.addEventListener('touchcancel', function() { tldaSlideLastTouch = null; }, { passive: true });
+  }
+
+  function bindXrefHovers() {
+    if (typeof window.tippy !== 'function') return;
+    var xrefs = document.querySelectorAll('a.quarto-xref');
+    for (var i = 0; i < xrefs.length; i++) {
+      var xref = xrefs[i];
+      if (!/^#\/?fig-/.test(xref.getAttribute('href') || '')) continue;
+      if (xref.getAttribute('data-tlda-xref-bound')) continue;
+      xref.setAttribute('data-tlda-xref-bound', '1');
+      window.tippy(xref, {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) { return el.closest('section.slide') || el.parentElement; },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'light-border',
+        placement: 'bottom-start',
+        content: (function(link) {
+          return function() {
+            var href = link.getAttribute('href') || '';
+            var id = href.replace(/^#\/?/, '');
+            var note = id && document.getElementById(id);
+            if (!note) return '';
+            return note.children && note.children.length ? note.innerHTML : note.outerHTML;
+          };
+        })(xref),
+      });
+    }
   }
 
   if (document.readyState === 'loading') {
