@@ -9,7 +9,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Tldraw, react } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
 import { STORE_HTTP } from './activeConfig'
-import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
+import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue, type BookLayersValue } from './BookContext'
 import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
@@ -18,7 +18,7 @@ import { readerLayers, studentLayers, teacherLayers, setLayerVisible, setWriteTa
 import { moveShapesToLayer, layerStore } from './classroom/moveBetweenLayers'
 import { classroomApi, type ClassroomIdentity } from './classroom/api'
 import type { SvgDocument } from './loaders/types'
-import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
+import { HTML_PAGE_FORMATS, viewFormat } from '../shared/document-formats.mjs'
 import type { Editor } from 'tldraw'
 
 interface BookViewerProps {
@@ -57,7 +57,24 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
 
     try {
       let doc: SvgDocument
-      if (HTML_PAGE_FORMATS.has(member.format || '')) {
+      // Skip, 2026-08-27: "yes i want lecture decs to be like, added as like
+      // accessories to the book", and "think of like classrooom as an overlay?
+      // ... can apply to books, talks, etc."
+      //
+      // So a deck reaches the reader as a member, and the member is viewed by
+      // the same question App.tsx asks of a standalone document. Before this,
+      // a deck member fell past the HTML branch into createSvgDocumentLayout,
+      // which wants LaTeX targets a deck has never had and throws without them
+      // — and a document from that path carries no `format`, so nothing
+      // downstream could tell it was a deck.
+      //
+      // Ordered before the HTML test on purpose: `qmd` is in HTML_PAGE_FORMATS,
+      // and a qmd that rendered to a deck is exactly the case that has to reach
+      // the slides loader rather than the scrolling one.
+      const shownAs = viewFormat(member)
+      if (shownAs === 'slides') {
+        doc = await loadSlidesDocument(member.key, member.basePath)
+      } else if (HTML_PAGE_FORMATS.has(member.format || '')) {
         const compareDoc = new URLSearchParams(window.location.search).get('compareDoc')
         if (compareDoc) {
           const compareBasePath = `/docs/${encodeURIComponent(compareDoc)}/`

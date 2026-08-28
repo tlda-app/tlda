@@ -332,6 +332,7 @@ function DocumentApp() {
             key,
             name: memberConfig.name || key,
             format: memberConfig.format,
+            renderedFormat: memberConfig.renderedFormat,
             pages: memberConfig.pages,
             basePath: memberConfig.basePath,
             ...((memberConfig as any).sessionAt && { sessionAt: (memberConfig as any).sessionAt }),
