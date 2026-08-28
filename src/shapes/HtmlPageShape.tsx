@@ -11,7 +11,8 @@ import {
 } from 'tldraw'
 import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { appendToken } from '../authToken'
+import { appendToken, canPresent, isPresentPermissionKnown } from '../authToken'
+import { runMeasuredGeometryWrite } from '../measuredGeometryWrite'
 import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
 import { htmlIframeElements } from '../htmlIframeRegistry'
 import { recordPlaceDeparture } from '../placeStack'
@@ -1124,10 +1125,15 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const documentW = isSlideShape ? null : htmlPageDocumentWidth(iframeRef.current)
         const newW = documentW ? Math.max(current.props.w, documentW) : current.props.w
         if (Math.abs(newH - current.props.h) > 5 || Math.abs(newW - current.props.w) > 5) {
-          editor.store.update(shape.id, (s: any) => ({
-            ...s,
-            props: { ...s.props, w: newW, h: newH },
-          }))
+          runMeasuredGeometryWrite({
+            permissionKnown: isPresentPermissionKnown(),
+            mayWrite: canPresent(),
+          }, () => {
+            editor.store.update(shape.id, (s: any) => ({
+              ...s,
+              props: { ...s.props, w: newW, h: newH },
+            }))
+          })
           if (isSlideShape) {
             const slideShapes = editor.getCurrentPageShapes()
               .filter((s: any) => s.type === 'html-page' && (s.props?.url?.includes('_tldaDeck=1') || s.props?.url?.includes('_tldaH=')))
