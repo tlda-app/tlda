@@ -13,7 +13,17 @@ export async function loadSlidesDocument(
   console.log(`Loading slides document from ${basePath}`)
 
   const infoUrl = basePath + 'page-info.json'
-  const pageInfos: SlidePageEntry[] = await fetch(infoUrl).then(r => r.json())
+  // Same gate, same failure as htmlLoader: /docs/* answers 401 with a JSON body,
+  // so an unchecked r.json() hands this a non-array and the deck loads empty.
+  const response = await fetch(infoUrl)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(`${response.status} ${body.error || response.statusText || 'could not load page-info.json'}`.trim())
+  }
+  const pageInfos: SlidePageEntry[] = await response.json()
+  if (!Array.isArray(pageInfos)) {
+    throw new Error(`page-info.json for "${name}" is not a list of pages`)
+  }
 
   console.log(`Found ${pageInfos.length} slides`)
 
