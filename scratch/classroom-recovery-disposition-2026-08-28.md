@@ -224,6 +224,50 @@ All of these were confidently held at some point tonight and are refuted:
 `[FetchAsync] N/M pages rendered` counts the text-selection overlay, so a
 working project reports `0/18`.
 
+## In a daemon-bound checkout, saving a file publishes it
+
+**`classroom-hw1-handout` never ran `tlda project push` for the solution
+removal.** The daemon committed, pushed and built on its own — `acceptSeq 37`,
+`a2308b7`, built 23:30:25Z — and the build was finished before they went
+looking for it.
+
+**On a live student surface that is a loaded gun**, and nothing in the workflow
+says so. **Anyone editing in such a checkout merely to inspect a change has
+already shipped it.**
+
+It also produced a near-miss worth keeping, because it is unfalsifiable from
+outside: they diffed against `git show HEAD:` for a "before" and got a perfect
+match — **the daemon had already committed the edit, so HEAD *was* the after.**
+Had they trusted it they would have reported "prose preserved" from a
+comparison of a file with itself. They caught it and refetched the real before
+from the box.
+
+## The solution exposure, and how it was missed for four hours
+
+**The published homework pages carried the worked solutions to students** — 19
+on HW0 with the arithmetic in them, 1 on HW−1 — in the raw read-token HTML,
+with no CSS hiding them.
+
+**Why it survived so long: the artifact everyone verified was the wrong one.**
+The downloadable zip was the *filtered handout* and it was clean, checked twice.
+**The published page is the *master*, and nobody fetched it.** I found the
+mechanism on HW−1 hours earlier, saw one block whose answer was *"any photo of
+anything"*, called it harmless and **never counted the other chapter.** One page
+sampled, conclusion generalised.
+
+**The fix, and why the obvious one was wrong.** Adding the course's
+`solution-callout.lua` looks like the fix and is not: it is
+`quarto.Callout({… collapse = true})`, **a disclosure widget rather than a
+removal**, so it converts a visible leak into a collapsed one that *looks*
+handled. The course's real filter is `encrypt-solutions`, whose own docs say
+that without `SOLUTION_WEEK_KEYS` it falls back to the same collapsed callout —
+and the tlda build sets no such variable. **The fix was to publish the generated
+handout instead of the master**, using the generator that already existed.
+
+**Acceptance was deliberately two-sided**, because a page stripped of questions
+*and* answers passes a naive check: zero `callout-solution` **and** the
+exercises still present, with visible-text length compared before and after.
+
 ## A standing defect found tonight, with no owner
 
 **A project can be permanently unrenderable while every HTTP signal on it is
