@@ -35,10 +35,16 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
             ? { role: 'student', studentId: 'grace', courseId: 'qtm285', layerScope: 'student' }
           : null
     },
-    submitSubmissionSource: async (contentRef, snapshot) => {
-      for (const file of snapshot.files) {
-        await writeSourceFileAsync(contentRef, file.path, Buffer.from(file.content, 'base64'))
-      }
+    // ACCEPTS THE SNAPSHOT AND MATERIALISES NOTHING, because that is what the
+    // real `sourceRoomDaemon.submitFiles` does: it writes the room's own tree
+    // and queues a revision, and it never touches `sourceDir(project)`.
+    //
+    // This stub used to call `writeSourceFileAsync` itself — the exact call
+    // production had dropped in `83cd0b0d6`. So the export assertion below could
+    // not fail: the double was supplying the missing behaviour, and the suite
+    // stayed green while a real submission exported as nothing but a README.
+    // A stub more capable than the collaborator it stands in for is not a test.
+    submitSubmissionSource: async (contentRef) => {
       builds.push(contentRef)
       if (buildError) setImmediate(() => updateProject(contentRef, { buildStatus: 'error' }))
       return { status: 200, body: { ok: true } }
