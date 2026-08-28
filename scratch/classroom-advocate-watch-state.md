@@ -105,6 +105,42 @@ throwaway-course caution was wrong and is dropped.
 - Committed but deliberately NOT deployed: `3e1cab370` (401 → visible error
   instead of a blank book — this is my D4) and `67ecf5422`.
 
+## 21:05Z — VISUAL PROOF, the thing Skip demanded
+
+Screenshots taken through `playwright-cli -s=shared` (see tooling note below).
+
+- **🔴 `qtm285-hw-minus-1` renders BLANK.**
+  `.playwright-cli/page-2026-08-28T21-03-08-825Z.png` — empty canvas.
+  DOM: **1 `.tl-shape`, 1×1 px, empty innerHTML.** `page-info.json` declares
+  `800×1000`. Not off-camera; the shape is collapsed to nothing.
+- **✅ `qtm285-lecture-1` renders correctly.**
+  `.playwright-cli/page-2026-08-28T21-03-59-011Z.png` — "Lecture 1 / Introduction",
+  page 1/18, QR, nav arrows. DOM: 8 shapes, six at 1076×834 with content.
+- **So the render path works.** The failure is specific to `qtm285-hw-minus-1`.
+
+**`FetchAsync N/M pages rendered` is NOT a render signal.** `src/editorSetup.ts:339`
+— it counts the **text-selection overlay**, and its own comment says so: *"not
+needed for visual rendering"*. `qtm285-lecture-1` reports `0/18` **and renders
+fine**. I raised a false alarm off that line; do not use it to judge blankness.
+`page-N.svg` and `toc.json` 404 on every project on the box, working ones
+included — it is not a discriminator either.
+
+**TOOLING, and it is why nobody could look at a page all day:**
+`tlda-dev pw` warns *"could not locate playwright-cli tab-select implementation"*
+and forwards every verb to an `about:blank` marker tab while `goto` navigates a
+different one. **`tab-select` exists and works.** Bypass the pool:
+
+```sh
+node_modules/.bin/playwright-cli -s=shared tab-list
+node_modules/.bin/playwright-cli -s=shared tab-select <n>
+node_modules/.bin/playwright-cli -s=shared screenshot
+node_modules/.bin/playwright-cli -s=shared eval "() => …"
+```
+
+The detection bug is in `cli/lib/pw.mjs`. Fleet shapes written by my two loads:
+believed **zero** — `qtm285-lecture-1` showed the *"Set up your workspace"* prompt
+rather than an applied layout, and none of its 8 shapes are fleet panels.
+
 ## Superseded: the Continue re-check (done — passed)
 
 At 16:0x the box served `gitSha c09e3943d` — **the old bundle**. Read out of
