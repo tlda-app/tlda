@@ -7,7 +7,7 @@
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
 import { join, basename } from 'path'
-import { sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
+import { sourceDir as getSourceDir, outputDir as getOutputDir, projectDir, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { generateSlidesPageInfo } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
@@ -45,13 +45,48 @@ async function writeSourceScope(name, srcDir) {
   )
 }
 
+/**
+ * Run a format builder with its log captured to `build.log`.
+ *
+ * `publishBuildDiagnostics` already carries `build.log` out of a failed build's
+ * instance before the instance is removed — but only if something wrote one,
+ * and nothing did. These builders logged to `console.log` alone, so a failed
+ * markdown or .qmd build left no log, no errors and no recorded reason: the
+ * `logMissing` that made an outage undiagnosable. The wire existed and had
+ * nothing on it.
+ *
+ * `projectDir` is the build INSTANCE while a build runs, which is where both
+ * the diagnostics path (on failure) and the publish swap (on success) read it
+ * from. Written in a `finally` because the failure is the case that needs it.
+ */
+async function withBuildLog(name, run) {
+  const lines = []
+  const addLog = (message) => {
+    lines.push(String(message))
+    console.log(message)
+  }
+  try {
+    return await run(addLog)
+  } catch (e) {
+    lines.push(`[build] ${e?.message || String(e)}`)
+    throw e
+  } finally {
+    try {
+      writeFileSync(join(projectDir(name), 'build.log'), `${lines.join('\n')}\n`)
+    } catch (writeError) {
+      // Never let recording the reason replace the thing being recorded.
+      console.error(`[build] could not write build.log for ${name}: ${writeError?.message || writeError}`)
+    }
+  }
+}
+
 export async function buildMarkdown(name) {
-  await buildMarkdownDocument(name, (msg) => console.log(msg))
+  await withBuildLog(name, (addLog) => buildMarkdownDocument(name, addLog))
   await getBuildReporter().regenerateBookTocs(name)
 }
 
 export async function buildQmd(name, options = {}) {
-  await buildQmdDocument(name, (msg) => console.log(msg), options)
+  await withBuildLog(name, (addLog) => buildQmdDocument(name, addLog, options))
   await getBuildReporter().regenerateBookTocs(name)
 }
 
