@@ -2511,3 +2511,44 @@ rebase, rerun combined gates, REPORT BEFORE LANDING.
 Worktrees now: `room-fixes-on-theirs` (live), `integrate-room-fixes` (held,
 carries my dropped implementation), `repo-path-canonical`, `browser-edit-loss`,
 `one-checkout-one-project`, plus older proof worktrees.
+
+### Rebased onto their commit `83491bc5a` — ALL GREEN, holding for the word to land
+
+`room-fixes-on-theirs`: `691abb71e` -> `f2ed7d9ae` -> `ccaba8f94`.
+
+**The rebase was the real test and it passed.** My symlink gate was 2 pass /
+2 fail before their fix and is GREEN on it -- their implementation verified by a
+gate written independently of it, which is worth more than either of us checking
+our own work.
+
+```
+focused tests (symlink gate + room tests)   8 pass / 0 fail
+topology rig   POST /source-room/files -> 202  · markers absent · blocked false
+neighbouring room tests                     4 pass / 0 fail
+tsc=0   guards=0   eslint=0
+```
+
+**The room-save path is now proved by something committed.** They were explicit
+that their commit exercises the classroom UPLOAD path only and that the room save
+was proved by my run rather than their commit. On the rebased tree the rig covers
+it. Both entry points now have committed coverage.
+
+Branch carries: four symlink controls, topology rig + guard allowance,
+visible-hold change, pin commit. Carries NO change to `shared/git-remotes.mjs` --
+mine dropped and staying dropped.
+
+**Their box evidence settled what I could not** (no git on fly, two candidate
+causes I could not separate):
+```
+lrwxrwxrwx /app/server/projects -> /app/server/persist/projects
+pwd                            -> /app/server/projects/.../working
+git rev-parse --show-toplevel  -> /app/server/persist/projects/.../working
+```
+
+**THIS CLASS HAS NOW BITTEN THREE TIMES:** `build-runner.mjs:1645` (silently
+froze shadow commits after the 2026-06-14 persist migration), their classroom
+hand-in 500, my room-save 409. The shape is any string comparison against
+`--show-toplevel` or a configured project dir.
+
+**Not landed.** main has moved twice under me today, so re-check immediately
+before the fast-forward rather than trusting a stale reading.
