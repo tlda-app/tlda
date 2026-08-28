@@ -184,7 +184,10 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
     // per project, so no second publication of this project can interleave, and
     // the function already awaits git reads inside the same transaction.
     for (const item of staging) {
-      await cp(join(instanceProject, item), join(transaction, `new-${item}`), { recursive: true })
+      await cp(join(instanceProject, item), join(transaction, `new-${item}`), {
+        recursive: true,
+        verbatimSymlinks: true,
+      })
     }
     writeFileSync(join(transaction, 'publication.json'), JSON.stringify({
       version: 1, project: name, expectedHead, sourceRevision,

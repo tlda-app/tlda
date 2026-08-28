@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
 import { materializeBuildInstance } from './build-instance.mjs'
-import { closeProjectStore, createProject, initProjectStore, sourceDir, sourceLifecycleStore } from './project-store.mjs'
+import { closeProjectStore, createProject, initProjectStore, setProjectPathOverride, sourceDir, sourceLifecycleStore } from './project-store.mjs'
+import { commitSnapshot, shadowRepoDir } from './shadow-repo.mjs'
 
 test('concurrent same-project instances read immutable revisions and cannot share private writes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-build-instance-test-'))
@@ -66,6 +67,41 @@ test('materializes tracked symbolic links as links', async () => {
     assert.equal(lstatSync(link).isSymbolicLink(), true)
     assert.equal(readlinkSync(link), '_quarto_book.yml')
   } finally {
+    if (instance) rmSync(instance.root, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('version snapshots keep a build instance relative symlink relative', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-shadow-relative-link-test-'))
+  let instance
+  const name = 'course'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'index.qmd', format: 'qmd' })
+    const lifecycle = await sourceLifecycleStore(name)
+    const git = await lifecycle.gitRepository()
+    const revision = await git.acceptRevision({
+      project: name,
+      files: [
+        { path: 'index.qmd', content: 'placeholder' },
+        { path: 'lectures/lecture.qmd', content: '# Lecture' },
+      ],
+      message: 'relative-link snapshot',
+    })
+    instance = await materializeBuildInstance({ name, sourceRevision: revision, lifecycle, temporaryRoot: root })
+    unlinkSync(join(instance.source, 'index.qmd'))
+    mkdirSync(join(instance.source, 'lectures'), { recursive: true })
+    symlinkSync('lectures/lecture.qmd', join(instance.source, 'index.qmd'))
+    setProjectPathOverride(name, instance.project)
+
+    const result = await commitSnapshot(name, revision)
+
+    assert.equal(result.status, 'committed')
+    assert.equal(readlinkSync(join(shadowRepoDir(name), 'index.qmd')), 'lectures/lecture.qmd')
+  } finally {
+    setProjectPathOverride(name, null)
+    await closeProjectStore()
     if (instance) rmSync(instance.root, { recursive: true, force: true })
     rmSync(root, { recursive: true, force: true })
   }
