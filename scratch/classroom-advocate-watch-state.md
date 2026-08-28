@@ -80,7 +80,32 @@ throwaway-course caution was wrong and is dropped.
   index is not behind `requireRead`, so no cookie is set. Superseded by the
   `/auth/login` form above. Caught by running it before it was used.
 
-## Pending: the Continue re-check after the deploy lands
+## STATUS 20:50Z — deploy landed, book down
+
+- **Deploy landed 20:41:02Z: `d41f6839e`**, bundle `assets/index-DZAEa7P8.js`.
+  Took 96 min (box was at load average 60). My stalled-deploy flag was answered:
+  the deploy was genuinely still running — PM showed the server-side log still
+  being written. Neither documented failure mode applied.
+- **D2 app-code half CONFIRMED FIXED in the shipped bundle** (I read it, not the
+  sha): `t = n.get("project")`, ternary `a && t`, `set("project", t)`.
+- **🔴 `qtm285-book` is DOWN.** Was serving at 19:30Z; 404 by 20:45Z.
+  `page-info.json`, `Lecture0-prose.html`, `week0-homework.html` all 404;
+  `hw-minus-1-setup.html` still 200. Project record still says `pages: 3` and a
+  successful `lastBuild: 18:50:32Z` — **the record reads healthy while nothing
+  serves.**
+  Cause (PM, from `classroom-hw1-handout`): `tlda project push` **mirrors the
+  directory, not the tracked tree**, so a checkout carrying untracked stale render
+  artifacts (`_cache/`, `*_files/`, `.quarto/`) went into project source; the build
+  failed and **cleared published output on the way down**, with no rollback to the
+  last good render. Restore in flight to last good source rev `3f35c92b9a4c…`.
+- **My open action:** confirm independently when the book serves again —
+  `page-info.json` 200 with three entries, each page returning content. The PM
+  explicitly asked that this come from me rather than from them or the agent who
+  broke it. Watch `b4m6cclzn` is running.
+- Committed but deliberately NOT deployed: `3e1cab370` (401 → visible error
+  instead of a blank book — this is my D4) and `67ecf5422`.
+
+## Superseded: the Continue re-check (done — passed)
 
 At 16:0x the box served `gitSha c09e3943d` — **the old bundle**. Read out of
 `assets/index-BfWOAdpN.js` (named by `index.html`), the registration component is:
