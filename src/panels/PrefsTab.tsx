@@ -32,6 +32,7 @@ import {
   getReadabilityProfiles,
   type ReadabilityProfile,
 } from '../readabilityProfile'
+import { ClassroomDeviceTransferSettings } from '../classroom/ClassroomDeviceTransfer'
 
 type DeviceRecord = { lastSeen: string }
 
@@ -219,6 +220,8 @@ function IdentitySectionBody({
           </div>
         ))}
       </PrefSubsection>
+
+      <ClassroomDeviceTransferSettings />
     </>
   )
 }

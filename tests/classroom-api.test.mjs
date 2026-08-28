@@ -17,12 +17,16 @@ async function serverFixture() {
   store.submit({ assignmentId: 'hw1', studentId: 'ada', contentRef: 'hw1-ada' })
   store.addFeedback({ id: 'draft', assignmentId: 'hw1', studentId: 'ada', title: 'Draft', text: 'Private.' })
   const app = express(); app.use(express.json())
-  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: () => true, resolveTemplateVersion(docKey) {
+  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: req => req.headers.authorization === 'Bearer read-access', resolveTemplateVersion(docKey) {
     if (docKey !== 'hw1-handout') throw new Error('template document not found')
     return 'build-abc'
-  }, resolvePrincipal(req) {
+  }, resolvePrincipal(req, classroomStore) {
     const role = req.headers['x-test-role']
-    return role === 'instructor' ? { role } : role === 'ada' ? { role: 'student', studentId: 'ada', courseId: 'qtm285' } : role === 'grace' ? { role: 'student', studentId: 'grace', courseId: 'qtm285' } : null
+    if (role === 'instructor') return { role }
+    if (role === 'ada') return { role: 'student', studentId: 'ada', courseId: 'qtm285' }
+    if (role === 'grace') return { role: 'student', studentId: 'grace', courseId: 'qtm285' }
+    const student = classroomStore.studentForToken(req.headers['x-tlda-student-token'])
+    return student ? { role: 'student', studentId: student.id, courseId: student.courseId } : null
   } }))
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)) })
   const base = `http://127.0.0.1:${server.address().port}/api/classroom`
@@ -59,6 +63,7 @@ test('a student can register their name and university login and receive a token
   try {
     let response = await f.request('/courses/qtm285/register', '', {
       method: 'POST',
+      headers: { authorization: 'Bearer read-access' },
       body: JSON.stringify({ displayName: 'Katherine Johnson', universityLogin: 'kjohn42' }),
     })
     assert.equal(response.status, 201)
@@ -70,9 +75,91 @@ test('a student can register their name and university login and receive a token
 
     response = await f.request('/courses/qtm285/register', '', {
       method: 'POST',
+      headers: { authorization: 'Bearer read-access' },
       body: JSON.stringify({ displayName: 'Someone Else', universityLogin: 'kjohn42' }),
     })
     assert.equal(response.status, 409)
+  } finally { f.close() }
+})
+
+test('a student transfers their enrollment to one new device without exposing or replacing either credential', async () => {
+  const f = await serverFixture()
+  try {
+    let response = await f.request('/courses/qtm285/device-transfer', 'ada', {
+      method: 'POST',
+      headers: { authorization: 'Bearer read-access' },
+      body: JSON.stringify({ returnPath: '/?project=course-book&classroomToken=ada-secret&name=someone-else' }),
+    })
+    assert.equal(response.status, 201)
+    const transfer = await response.json()
+    const transferUrl = new URL(transfer.transferUrl)
+    const transferCode = transferUrl.searchParams.get('transfer')
+    assert.equal(transferUrl.searchParams.get('workspace'), 'classroom-transfer')
+    assert.equal(transferUrl.searchParams.get('course'), 'qtm285')
+    assert.equal(transferUrl.searchParams.get('token'), 'read-access')
+    assert.equal(transferUrl.searchParams.get('project'), 'course-book')
+    assert.equal(transferUrl.searchParams.has('name'), false)
+    assert.ok(transferCode?.length > 30)
+    assert.equal(transferUrl.searchParams.has('classroomToken'), false)
+    assert.doesNotMatch(transfer.transferUrl, /ada-secret/)
+    assert.match(transfer.qrSvg, /^<svg /)
+    assert.doesNotMatch(transfer.qrSvg, /ada-secret|classroomToken/)
+
+    response = await f.request('/courses/qtm285/device-transfer/redeem', '', {
+      method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
+    })
+    assert.equal(response.status, 200)
+    const redeemed = await response.json()
+    assert.equal(redeemed.student.id, 'ada')
+    assert.notEqual(redeemed.enrollmentToken, 'ada-secret')
+    assert.equal(f.store.studentForToken('ada-secret').id, 'ada', 'the first device was logged out')
+    assert.equal(f.store.studentForToken(redeemed.enrollmentToken).id, 'ada')
+
+    response = await f.request('/me', '', { headers: { 'x-tlda-student-token': redeemed.enrollmentToken } })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { role: 'student', studentId: 'ada', courseId: 'qtm285' })
+
+    response = await f.request('/courses/qtm285/device-transfer/redeem', '', {
+      method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
+    })
+    assert.equal(response.status, 409, 'the transfer code replayed')
+  } finally { f.close() }
+})
+
+test('device transfer rejects instructor, anonymous, wrong-course and expired attempts', async () => {
+  const f = await serverFixture()
+  try {
+    f.store.upsertCourse({ id: 'other', title: 'Other course' })
+    assert.equal((await f.request('/courses/qtm285/device-transfer', 'instructor', { method: 'POST' })).status, 403)
+    assert.equal((await f.request('/courses/qtm285/device-transfer', '', { method: 'POST' })).status, 401)
+    assert.equal((await f.request('/courses/other/device-transfer', 'ada', { method: 'POST' })).status, 403)
+
+    let response = await f.request('/courses/qtm285/device-transfer', 'ada', { method: 'POST', headers: { authorization: 'Bearer read-access' } })
+    const transferCode = new URL((await response.json()).transferUrl).searchParams.get('transfer')
+    assert.equal((await f.request('/courses/qtm285/device-transfer/redeem', '', {
+      method: 'POST', body: JSON.stringify({ transferCode }),
+    })).status, 401, 'a transfer redeemed without the class read bearer')
+    response = await f.request('/courses/other/device-transfer/redeem', '', {
+      method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
+    })
+    assert.equal(response.status, 404)
+    response = await f.request('/courses/qtm285/device-transfer/redeem', '', {
+      method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
+    })
+    assert.equal(response.status, 200, 'a wrong-course attempt consumed the transfer code')
+
+    f.store.createDeviceTransfer({
+      studentId: 'ada',
+      courseId: 'qtm285',
+      transferCode: 'expired-code',
+      createdAt: '2026-08-27T23:00:00.000Z',
+      expiresAt: '2026-08-27T23:10:00.000Z',
+    })
+    response = await f.request('/courses/qtm285/device-transfer/redeem', '', {
+      method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode: 'expired-code' }),
+    })
+    assert.equal(response.status, 410)
+    assert.equal(f.store.studentForToken('expired-code'), null)
   } finally { f.close() }
 })
 

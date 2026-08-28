@@ -30,3 +30,8 @@
 .classroomRegistration input { padding: 9px 10px; border: 1px solid #aaa59a; border-radius: 6px; font: inherit; }
 .classroomRegistration button { width: fit-content; min-height: 38px; padding: 7px 12px; border: 1px solid #aaa59a; border-radius: 6px; background: #f7f6f2; color: inherit; }
 .classroomTokenResult code { overflow-wrap: anywhere; padding: 10px; background: #f7f6f2; }
+.classroomDeviceTransferSettings { display: grid; gap: 8px; }
+.classroomDeviceTransferResult { display: grid; justify-items: start; gap: 7px; font-size: 10px; color: #6b7280; }
+.classroomDeviceTransferResult img { width: 150px; height: 150px; background: white; }
+.classroomDeviceTransferResult a { overflow-wrap: anywhere; color: inherit; }
+.classroomDeviceTransferRedeem .classroomContinueLink { width: fit-content; padding: 8px 12px; border: 1px solid #aaa59a; border-radius: 6px; background: #f7f6f2; color: inherit; }
