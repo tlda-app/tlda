@@ -13,8 +13,7 @@
   ],
   "activationEvents": [
     "onCommand:tldaClassroom.zipForSubmission",
-    "onCommand:tldaClassroom.submit",
-    "onLanguage:quarto"
+    "onCommand:tldaClassroom.submit"
   ],
   "main": "./extension.js",
   "scripts": {
