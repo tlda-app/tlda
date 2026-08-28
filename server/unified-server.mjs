@@ -6460,6 +6460,18 @@ async function dispatchFleetWsMessage(ws, msg) {
           }
           agentFleetConnections.set(msg.agent_id, ws)
           ws._tldaAgentId = msg.agent_id
+          // BOTH fields, because notification eligibility needs both. This path
+          // (b940c4c9e) claimed the new socket with the agent id alone, which was
+          // the whole identity a socket had. `6a430a9b5` added `_tldaClientKind`
+          // the next day and set it only on the fresh-login path, so a replayed
+          // login produced a socket that `openFleetSocketsForAgent` finds and
+          // `isMcpChannelSocket` then rejects -- `no-open-mcp-socket` for a live
+          // MCP sitting right there, which the daemon answers with `ensure-process`
+          // and a no-op because the process was never the problem.
+          //
+          // Read from `msg` rather than the destructured `kind`/`metadata`: those
+          // are bound in the login branch below, which a replay never reaches.
+          ws._tldaClientKind = msg.kind || msg.metadata?.kind || null
         }
         sendFleetResponseFrame(ws, { id, result: previous.payload })
         msg._fleetReplied = true
