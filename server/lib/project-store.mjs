@@ -8,7 +8,7 @@
  *   build.log     — last build log
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync, renameSync } from 'fs'
 import { access, cp, mkdir, open as openFile, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises'
 import { join, relative, dirname } from 'path'
 import { createHash, randomUUID } from 'crypto'
@@ -32,6 +32,7 @@ let projectsDir = null
 let projectFilesDb = null
 let projectLifecycleStatusIndex = null
 const projectPathOverrides = new Map()
+const sourceReplacementLocks = new Map()
 
 export function setProjectPathOverride(name, root = null) {
   if (root) projectPathOverrides.set(name, root)
@@ -764,6 +765,43 @@ export async function writeSourceFileAsync(name, filePath, content) {
   }
   await writeFile(full, content)
   return true
+}
+
+export async function replaceSourceFilesAsync(name, files) {
+  const replace = async () => {
+    const source = sourceDir(name)
+    const transaction = join(projectDir(name), `.source-replace-${randomUUID()}`)
+    const replacement = join(transaction, 'source')
+    const previous = join(transaction, 'previous')
+    await mkdir(replacement, { recursive: true })
+    try {
+      for (const file of files) {
+        const full = resolveContainedPath(replacement, file.path)
+        await mkdir(dirname(full), { recursive: true })
+        await writeFile(full, file.content)
+      }
+
+      const hadSource = existsSync(source)
+      if (hadSource) renameSync(source, previous)
+      try {
+        renameSync(replacement, source)
+      } catch (error) {
+        if (hadSource) renameSync(previous, source)
+        throw error
+      }
+    } finally {
+      await rm(transaction, { recursive: true, force: true })
+    }
+  }
+
+  const prior = sourceReplacementLocks.get(name) || Promise.resolve()
+  const current = prior.then(replace, replace)
+  sourceReplacementLocks.set(name, current)
+  try {
+    return await current
+  } finally {
+    if (sourceReplacementLocks.get(name) === current) sourceReplacementLocks.delete(name)
+  }
 }
 
 export function validateSourceFilePath(name, filePath) {
