@@ -247,7 +247,53 @@ synced room, not just in memory.
 **Criterion 6 — no deployment.** A worktree preview is not a deploy. Nothing
 was pushed to any deploy remote and PIC was never touched.
 
-### The counterfactual, and one honest wrinkle
+### Width: Skip is right, and there is no authored-vs-rendered distinction
+
+He expects **1290**, from the iPad Pro. Checked, and the answer is that the two
+things I had been calling different widths are **one number copied unchanged**:
+
+    Reveal.initialize({ width: 1290 })      the deck's authored width
+      -> page-info.json  width: 1290        readDeckDimensions() greps that block
+      -> shape.props.w   1290               layoutPageBounds copies page.width, no scaling
+      -> iframe.clientWidth 1290            the iframe is the shape
+      -> Reveal.getConfig().width 1290
+
+All five measured equal on the rebuilt deck. So a slide shape is exactly as wide
+as the deck was authored, and 1290 is that number for his deck.
+
+**My earlier 1050 was my own deck, not a finding about his.** Quarto's revealjs
+default is 1050 and I had not authored a width; the harness meanwhile used 1290,
+copied from what I had measured on his canvas. **That mismatch was the entire
+"wrinkle" below** — a 1050-authored deck driven in a 1290 container — and it was
+mine, not the fix's.
+
+Rebuilt at `width: 1290`, everything is consistent:
+
+| H (container) | old law | new law | old grows? | new grows? |
+|---|---|---|---|---|
+| 700 | 1673 | 2382 | yes | yes |
+| 1000 | 1691 | 2382 | yes | yes |
+| 1400 | 1891 | 2382 | yes | yes |
+| 1900 | 2141 | 2382 | yes | yes |
+| 2382 | 2382 | 2382 | **no** | **no** |
+| 1400 (coming back down) | 1891 | 2382 | yes | yes |
+
+`old = H/2 + 1191` with c constant to the unit across four heights, fixed point
+2·1191 = **2382**. `new` is **2382 at every container height including 700** —
+container-independent, with none of the height-bound jump the mismatched run
+showed. And the app settles that slide at **2382**, matching exactly.
+
+**Does the fixed-point comparison change? No.** At both widths the two laws
+agree at the fixed point — 2475 at width 1050, 2382 at width 1290 — and they
+always did; that was the original finding. What differs is only the path to it:
+the old law approaches by a halving ladder that any reset restarts, the new one
+returns it immediately from any container height.
+
+One thing worth knowing for future comparisons: heights across widths are **not
+related by a scale factor**. 1050 gave 2475 and 1290 gave 2382 for the same
+source, because a wider slide wraps less text and so needs less height.
+
+### The counterfactual at the mismatched width, kept for the record
 
 Holding a container at fixed heights against the same server, the **old**
 expression grows at every height tested — `old = H/2 + 1520`, so
@@ -255,12 +301,11 @@ expression grows at every height tested — `old = H/2 + 1520`, so
 back down. That is the ratchet, on this deck, confirmed independently of the
 PIC measurement.
 
-**The wrinkle:** that harness ran at a 1290px container, and the app's slide
-shapes are **1050 wide** (`shapeW: 1050`). Reveal's scale is width-bound, so
-the harness's absolute numbers (fixed point 3041) are not the app's (2475).
-The *shape* of the result carries — old grows at every height, new stops — but
-the numbers do not transfer between the two widths, and I am not presenting
-them as if they did.
+**Superseded by the section above.** That harness ran at a 1290px container
+while *that* deck was authored 1050 wide, so it was the wrong width for the
+deck under test, not a second valid geometry. Its numbers (fixed point 3041)
+describe neither the app nor his deck. The re-run at a matching 1290 is the
+one to read.
 
 An earlier attempt at this sweep **inside** the app failed to measure and I am
 recording it rather than dropping it: setting the shape's height and reading
