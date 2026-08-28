@@ -128,11 +128,70 @@ check belongs wherever a person is told a publication succeeded — the
 `classroom setup` output and the build card are the two places that currently
 claim success while this can be false.
 
-**Operationally, tonight's rule stands and is written down:** open each newly
-published project once with an rw token, on the **page URL**
+**Operationally:** open the project with an rw token on the **page URL**
 (`/?project=<name>&token=<RW>`) — *not* `/auth/login?token=…&redirect=…`, which
 drops the token before `initToken()` reads it and silently falls back to
 whatever `localStorage` holds.
+
+### And it is once per PUBLISH, not once per project
+
+**I first wrote this rule as a one-time setup step. That is wrong, and the
+correction matters more than the original because it attaches to every content
+change rather than to project creation.**
+
+**Two mechanisms, both read off `main` and both verified by me:**
+
+`src/measuredGeometryWrite.ts:13` — the measured geometry write is gated on
+write permission:
+
+```js
+if (!permission.mayWrite || !write) return false
+```
+
+and `HtmlPageShape.tsx:428` supplies `mayWrite: canPresent()`. **A read-only
+student can never write a measured geometry.**
+
+`src/loaders/createShapes.ts:241` — an **existing non-slide** shape keeps its
+persisted height:
+
+```js
+const h = isSlide
+  ? page.bounds.h        // slides adopt the newly declared height
+  : … existing.props.h   // everything else keeps what is persisted
+```
+
+**So a height newly declared in `page-info.json` is never adopted by a room
+that already holds the shape.** Slides are exempt; ordinary pages are not.
+
+**Measured on `tlda-pic`, declared against persisted:**
+
+| project / page | declared | persisted |
+|---|---|---|
+| `qtm285-hw-minus-1` | 800 × **1000** | 800 × **891** |
+| `qtm285-book` / `Lecture0-prose` | 800 × 1200 | **863 × 15429** |
+| `qtm285-book` / both homework pages | 800 × 1200 | 800 × 1200 |
+| `pic-install` | 800 × 1200 | 800 × 1200 |
+
+**`Lecture0-prose` at 15429 shows the mechanism working as intended** — a
+measured height for a long chapter, persisted, correctly diverged from the
+declaration. **`qtm285-hw-minus-1` at 891 is the problem:** that was measured
+against an 84 KB page which is now 1.2 MB, and the room will hold 891 until a
+write-capable visitor opens it. The two homework pages sitting exactly at the
+declared 1200 have evidently never been measured, and both were republished
+tonight.
+
+**What is NOT established, and must not be inferred from the mismatch:**
+whether a shape shorter than its content clips visibly or the page scrolls
+inside its frame. The shapes are `isLocked: true`, which makes clipping
+plausible, **but nobody has looked** — and looking means an automated browser
+on a live room, which now writes fleet shapes. **A number that disagrees is not
+a symptom a student can see until someone sees it.**
+
+**So the rule is: after any publish that changes a non-slide page, a
+write-capable session must open the project before students do.** For a course
+that rebuilds homework and lectures continuously that is a step attached to
+every content change, not a setup task — and it is the same first-reader defect
+in different clothes, surviving the fix to the first one.
 
 ## Scope
 
