@@ -1184,6 +1184,8 @@ const SLIDES_BRIDGE_SCRIPT = `
       if (!link) return;
       var href = link.getAttribute('href') || '';
       if (href.charAt(0) !== '#') return;
+      var targetFile = link.getAttribute('data-tlda-target-file');
+      if (!targetFile) return;
       var anchor = href.slice(1);
       while (anchor.charAt(0) === '/') anchor = anchor.slice(1);
       if (!anchor) return;
@@ -1192,7 +1194,7 @@ const SLIDES_BRIDGE_SCRIPT = `
         window.parent.postMessage({
           type: 'tlda-navigate',
           shapeId: shapeId,
-          targetFile: null,
+          targetFile: targetFile,
           targetPath: null,
           targetTitle: ((link.textContent || '').trim()) || null,
           anchor: anchor,

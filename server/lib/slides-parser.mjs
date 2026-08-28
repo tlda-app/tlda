@@ -307,16 +307,37 @@ function referencedFigureTargets(slideHtml, fullHtml) {
     copies.join('\n') + '\n</div>'
 }
 
+function annotateSplitXrefTargets(slideHtml, targetFileById) {
+  return slideHtml.replace(/<a\b[^>]*class="[^"]*\bquarto-xref\b[^"]*"[^>]*>/gi, tag => {
+    const href = /href="#\/?([^"]+)"/.exec(tag)
+    if (!href) return tag
+    let id
+    try { id = decodeURIComponent(href[1]) } catch { id = href[1] }
+    const targetFile = targetFileById.get(id)
+    if (!targetFile || /\sdata-tlda-target-file=/.test(tag)) return tag
+    const escaped = targetFile.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    return tag.slice(0, -1) + ` data-tlda-target-file="${escaped}">`
+  })
+}
+
 export function buildPerSlideDocuments(html, deckFilename) {
   const split = splitDeckIntoSlides(html)
   if (!split) return null
   const { prefix, suffix, width, height, slides } = split
   const base = String(deckFilename).replace(/\.html$/i, '')
+  const targetFileById = new Map()
+  for (let i = 0; i < slides.length; i++) {
+    const ids = /\sid="([^"]+)"/g
+    for (let match = ids.exec(slides[i].outerHtml); match; match = ids.exec(slides[i].outerHtml)) {
+      targetFileById.set(match[1], `${base}-slide-${i}.html`)
+    }
+  }
   return slides.map((s, i) => {
     const filename = `${base}-slide-${i}.html`
+    const slideHtml = annotateSplitXrefTargets(s.outerHtml, targetFileById)
     return {
       filename,
-      html: `${prefix}\n${s.outerHtml}\n${referencedFigureTargets(s.outerHtml, html)}\n${suffix}`,
+      html: `${prefix}\n${slideHtml}\n${referencedFigureTargets(slideHtml, html)}\n${suffix}`,
       pageInfo: {
         file: filename,
         width,
