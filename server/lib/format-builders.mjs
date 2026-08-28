@@ -85,8 +85,11 @@ export async function buildMarkdown(name) {
   await getBuildReporter().regenerateBookTocs(name)
 }
 
-export async function buildQmd(name, options = {}) {
-  await withBuildLog(name, (addLog) => buildQmdDocument(name, addLog, options))
+// Takes no options, like its three siblings. The worker passes `changedFiles`
+// to every builder and the others have always ignored it: it decides whether to
+// build at all (build-decision.mjs), not how much of a project to render.
+export async function buildQmd(name) {
+  await withBuildLog(name, (addLog) => buildQmdDocument(name, addLog))
   await getBuildReporter().regenerateBookTocs(name)
 }
 

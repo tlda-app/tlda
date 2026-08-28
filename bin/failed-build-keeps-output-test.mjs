@@ -27,11 +27,15 @@ const GOOD_PAGE_INFO = [{ file: 'index.html', width: 800, height: 1200, title: '
 const QMD = '---\ntitle: Good\n---\n\nThe last good render.\n'
 
 /**
- * @param {string[]} documentRoots — what the project declares it renders.
- *   `mainFile` exists in both halves, so `missingDeclaredMainFile` passes and the
+ * @param {object} options
+ * @param {string[]} options.documentRoots — what the project declares it renders.
+ *   `mainFile` exists in every case, so `missingDeclaredMainFile` passes and the
  *   verdict is made inside the builder, which is where the defect is.
+ * @param {string[]} options.sourceRoots — which of them actually exist in source.
+ * @param {string} options.edit — the one file the second revision changes. It is
+ *   what `qmdRootsToRender` reads to decide how much of the project to render.
  */
-async function runBuild(documentRoots) {
+async function runBuild({ documentRoots, sourceRoots = ['index.qmd'], edit = 'index.qmd' }) {
   const root = mkdtempSync(join(tmpdir(), 'tlda-failed-build-output-'))
   await initProjectStore(root)
   createProject({ name: NAME, mainFile: 'index.qmd', format: 'qmd' })
@@ -45,13 +49,14 @@ async function runBuild(documentRoots) {
   writeFileSync(join(live, 'relevant-files.json'), JSON.stringify({ files: ['index.qmd'] }))
 
   const git = await (await sourceLifecycleStore(NAME)).gitRepository()
+  const qmd = (root, extra = '') => ({ path: root, content: `${QMD}${extra}` })
   const base = await git.acceptRevision({
-    project: NAME, files: [{ path: 'index.qmd', content: QMD }], message: 'base',
+    project: NAME, files: sourceRoots.map((root) => qmd(root)), message: 'base',
   })
   await git.advanceHead(NAME, base, null)
   const proposal = await git.acceptRevision({
     project: NAME, parent: base,
-    files: [{ path: 'index.qmd', content: `${QMD}\nEdited.\n` }],
+    files: sourceRoots.map((root) => qmd(root, root === edit ? '\nEdited.\n' : '')),
     message: 'edit',
   })
 
@@ -92,6 +97,7 @@ async function runBuild(documentRoots) {
   const published = {
     pageInfo: read(join(live, 'page-info.json')),
     indexHtml: read(join(live, 'index.html')),
+    html: (root) => read(join(live, root.replace(/\.qmd$/, '.html'))),
   }
   const buildLog = read(join(root, NAME, 'build.log'))
   await closeProjectStore()
@@ -102,7 +108,7 @@ async function runBuild(documentRoots) {
 // so this is not the missing-main refusal in the worker -- the builder itself
 // decides it has nothing to render, which is the verdict that used to reach the
 // publisher as success.
-const failed = await runBuild(['index.qmd', 'chapter-that-does-not-exist.qmd'])
+const failed = await runBuild({ documentRoots: ['index.qmd', 'chapter-that-does-not-exist.qmd'] })
 
 // The requirement, asserted before the mechanism that delivers it.
 assert.equal(failed.published.indexHtml, GOOD_HTML,
@@ -130,7 +136,7 @@ assert.match(failed.buildLog, /chapter-that-does-not-exist\.qmd/,
 // The counterfactual, same fixture, one declaration different: a build that CAN
 // render must still publish and replace the render. This half is what proves the
 // refusal above is a verdict rather than publishing being broken outright.
-const good = await runBuild(['index.qmd'])
+const good = await runBuild({ documentRoots: ['index.qmd'] })
 assert.ok(
   good.seen.some((entry) => entry.method === 'publishBuildInstance'),
   'a successful build must still publish',
@@ -142,4 +148,30 @@ assert.notEqual(good.published.indexHtml, GOOD_HTML,
   'a successful build must replace the previous render with the new one')
 assert.ok(good.published.pageInfo, 'a successful build must publish a page-info.json')
 
-console.log('a failed build keeps the last good render; a good build replaces it')
+// A project with more than one document root, where the revision touches only
+// one of them. The publish swaps `output/` WHOLESALE and the build instance's
+// `output/` starts empty, so a render of only the changed root leaves the other
+// root with no HTML anywhere -- an incomplete tree that is not publishable.
+//
+// This is the property that made the outage permanent rather than momentary:
+// with it broken, a project whose output is gone can never rebuild itself from
+// its own source, however many times it is pushed.
+const partial = await runBuild({
+  documentRoots: ['index.qmd', 'chapter.qmd'],
+  sourceRoots: ['index.qmd', 'chapter.qmd'],
+  edit: 'index.qmd',
+})
+// `notEqual(GOOD_HTML)` as well as non-null: the fixture seeds index.html, so a
+// build that failed and preserved the old render satisfies mere presence. What
+// is under test is that this build PUBLISHED.
+assert.ok(partial.published.html('index.qmd'), 'the edited root must be published')
+assert.notEqual(partial.published.html('index.qmd'), GOOD_HTML,
+  'the edited root must be the new render, not the preserved previous one')
+assert.ok(partial.published.html('chapter.qmd'),
+  'a root the revision did not touch must still be published -- the swap is wholesale, so a partial render publishes a project with a missing document')
+assert.equal(
+  JSON.parse(partial.published.pageInfo).length, 2,
+  'both document roots must appear in the published page-info.json',
+)
+
+console.log('a failed build keeps the last good render; a good build replaces it; a partial render still publishes a whole project')
