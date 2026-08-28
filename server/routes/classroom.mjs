@@ -4,7 +4,7 @@ import { extractToken, validateToken } from '../lib/auth.mjs'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
-import { createProject, readProject, sourceDir, sourceLifecycleStore } from '../lib/project-store.mjs'
+import { createProject, readProject, sourceDir, sourceLifecycleStore, writeSourceFileAsync } from '../lib/project-store.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
@@ -368,6 +368,24 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
           sourceManifest: files.map(file => file.path).sort(),
         })
         if (!accepted?.body?.ok) throw new Error(accepted?.body?.error || accepted?.body?.status || 'source snapshot was not accepted')
+        // AND MATERIALISE IT, because the room's git tree is not what anything
+        // downstream reads. `sourceDir(contentRef)` is: the build runner takes
+        // it as `srcDir`, the marking view reads what that render produced, and
+        // the instructor export walks it directly.
+        //
+        // This is not a second authority over the bytes. The room submit above
+        // is what makes them a revision; this is the working tree that revision
+        // is materialised into, which every ordinary project has for the same
+        // reason and by the same call.
+        //
+        // It was here until `83cd0b0d6` swapped `writeSourceFileAsync` for the
+        // room submit and did not put it back. Measured on a fixture after that:
+        // the settle commits within five seconds and `source/` is still empty a
+        // minute later, so a submission that uploaded 200 and read back fine
+        // exported as nothing but a README — no qmd, no photo.
+        for (const file of files) {
+          await writeSourceFileAsync(contentRef, file.path, Buffer.from(file.content, 'base64'))
+        }
         const submission = store.submit({ assignmentId, studentId, contentRef, answerIds: inspection.answerIds })
         settled = true
         // The record is written before the render is asked for: a build that
