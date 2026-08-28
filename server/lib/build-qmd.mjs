@@ -307,11 +307,19 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   const mainFiles = qmdDocumentRootPaths(project)
   const mainFile = mainFiles[0]
 
+  // Throw, don't return. A normal return is how a builder says it BUILT, and
+  // the worker reads it that way: it publishes the instance, whose `output/` is
+  // created empty by materializeBuildInstance and never seeded from the live
+  // one. So a build that rendered nothing swapped an empty directory over the
+  // last good render and took the whole document down. The existence guard in
+  // publishBuildInstance cannot catch it — the directory IS there, it is just
+  // empty, which is the state nobody thought to distinguish.
+  //
+  // The worker's catch is the path that already does the right thing here:
+  // diagnostics out, nothing published, `build_failed` recorded.
   for (const root of mainFiles) {
     if (!existsSync(join(srcDir, root))) {
-      addLog(`[qmd] document root not found: ${root}`)
-      await reporter.updateProject(name, { buildStatus: 'error' })
-      return
+      throw new Error(`[qmd] document root not found: ${root}`)
     }
   }
 
@@ -362,10 +370,11 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   for (const root of mainFiles) {
     const sourceOutputFile = qmdOutputFileForSource(root)
     const outputFile = qmdRenderedOutputFileForSource(outDir, root)
+    // Throws for the reason the root check above throws: a render that produced
+    // no document is a failed build, and returning normally publishes the empty
+    // instance over the last good render.
     if (!outputFile) {
-      addLog(`[qmd] render produced neither ${sourceOutputFile} nor _book/${sourceOutputFile}`)
-      await reporter.updateProject(name, { buildStatus: 'error' })
-      return
+      throw new Error(`[qmd] render produced neither ${sourceOutputFile} nor _book/${sourceOutputFile}`)
     }
     const renderedPath = join(outDir, outputFile)
 

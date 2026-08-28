@@ -854,13 +854,15 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
 
   addLog(`[markdown] Reading ${srcFile}`)
 
+  // Throws rather than returning: a normal return tells the build worker this
+  // build succeeded, and it then publishes the instance — whose `output/` is
+  // empty — over the last good render. A document whose source cannot be read
+  // did not build. See the same change in build-qmd.mjs.
   let source
   try {
     source = readFileSync(srcFile, 'utf8')
   } catch (e) {
-    addLog(`[markdown] Error reading source: ${e.message}`)
-    await reporter.updateProject(name, { buildStatus: 'error', pages: 0 })
-    return
+    throw new Error(`[markdown] Error reading source ${srcFile}: ${e.message}`)
   }
 
   mkdirSync(outDir, { recursive: true })
