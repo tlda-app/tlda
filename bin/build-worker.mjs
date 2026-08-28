@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { materializeBuildInstance } from '../server/lib/build-instance.mjs'
 
 const BUILD_PRIORITY = Number(process.env.TLDA_BUILD_PRIORITY ?? 10)
+const BUILD_HEARTBEAT_MS = Number(process.env.TLDA_BUILD_HEARTBEAT_MS) || 15_000
 if (Number.isFinite(BUILD_PRIORITY)) {
   try {
     const low = osConstants.priority.PRIORITY_LOW
@@ -153,6 +154,10 @@ process.on('message', async (msg) => {
   }
   if (msg?.t !== 'build') return
   let instanceRoot = null
+  const heartbeat = BUILD_HEARTBEAT_MS > 0
+    ? setInterval(() => process.send?.({ t: 'heartbeat' }), BUILD_HEARTBEAT_MS)
+    : null
+  heartbeat?.unref?.()
   // Declared out here so the catch can reach it: the log that explains a
   // failure lives in the instance, and the instance is removed in `finally`.
   let instanceProject = null
@@ -250,6 +255,7 @@ process.on('message', async (msg) => {
     process.send?.({ t: 'done', ok: false, error: e?.message || String(e) })
     setImmediate(() => process.exit(1))
   } finally {
+    if (heartbeat) clearInterval(heartbeat)
     if (instanceRoot) {
       setProjectPathOverride(msg.name, null)
       try {

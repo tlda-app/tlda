@@ -18,12 +18,12 @@
 // command in `build-runner.mjs` never fired. The bound has to be held by the
 // parent.
 //
-// **The signal is silence, not duration**, and that distinction is the reason
+// **The signal is worker silence, not renderer silence or duration**, and that distinction is the reason
 // this is testable at all. A wall-clock limit cannot separate a stalled tex
 // pass from a large qmd render that legitimately runs for minutes -- Skip put
 // exactly that objection: a tex build should take *"ten fifteen seconds"* while
-// a render can run far longer. Builds stream their output, so a healthy build
-// of any length keeps talking, and only a stopped one goes quiet.
+// a render can run far longer. The worker heartbeat remains live even when a
+// renderer is quiet, and only a stopped worker goes quiet.
 //
 // Asserted here as behaviour: a worker that says nothing loses its slot, and a
 // worker that keeps talking keeps it however long it runs.
@@ -110,16 +110,16 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
   await tick()
   const worker = running[0]
 
-  // Work lasting many times the threshold, narrating as it goes. Never silent
-  // for a whole threshold, so it must survive.
+  // Work lasting many times the threshold with no renderer output. The worker
+  // heartbeat alone keeps it alive.
   for (let step = 0; step < 12; step += 1) {
-    worker.handlers.onMessage({ t: 'report', m: 'buildOutput', a: ['slow-render', `[quarto] page ${step}`] })
+    worker.handlers.onMessage({ t: 'heartbeat' })
     await new Promise(resolve => setTimeout(resolve, 80))
   }
   await tick()
 
   assert.equal(worker.cancelled, false,
-    'a build running many times the threshold, streaming throughout, is left alone -- silence is the signal, not duration')
+    'a build running many times the threshold, heartbeating throughout, is left alone -- worker silence is the signal, not duration')
   assert.equal(running.length, 1, 'and nothing else was started in its place')
 }
 
@@ -171,4 +171,4 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
   assert.equal(seen[0].name, 'probe', 'and it is labelled with the build it came from')
 }
 
-console.log('ok — a stalled build gives its slot back, a talkative slow one does not, and output really streams')
+console.log('ok — a stalled build gives its slot back, a heartbeating slow one does not, and output really streams')
