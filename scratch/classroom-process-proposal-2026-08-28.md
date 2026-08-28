@@ -1,6 +1,9 @@
 # Classroom process proposal — QTM 285
 
 Author: `classroom-process-proposal` (fleet:856f4225). Written 2026-08-28, 20:00–20:20 UTC.
+Revised 20:14–20:30 UTC after `alassroom-pm` supplied the `pic` tokens. Every
+fact in this revision was re-measured by me with those tokens; where I disagree
+with what I was handed, the disagreement is stated with the measurement.
 
 **What this is:** the full-process proposal Skip asked for at 15:34:47 — writing,
 deploying, and teaching. It is a runbook over mechanisms that already exist. It
@@ -14,11 +17,17 @@ leaning on any of it; a measurement is a timestamp, not a state.
 
 Measured by me, from the shared checkout on `mini`, `main` at `d41f6839e`:
 
-| box | serves | `gitSha` at 19:58Z | built | public A record (advocate, 19:55Z) |
+| box | serves | `gitSha` | built | public A record (advocate, 19:55Z) |
 |---|---|---|---|---|
 | `tlda-pic` | the course | `c09e3943d` | 19:09:30Z | `208.111.34.11`, `208.111.35.209` |
 | `tlda-pic-dev` | nobody | `e0220ac74` | 14:33:30Z | none |
 | `tlda-fly` (testing) | the fleet | `594900c02` | 12:58:46Z | none |
+
+The `tlda-pic` row was read at 19:58:31Z and **re-read unchanged at 20:23:55Z**.
+`alassroom-pm` was deploying `d41f6839e` to that box during this revision; as of
+20:23:55Z it had not landed. **Whoever reads this must re-read
+`/api/build-info` rather than trust the row** — that is the whole point of §4,
+Failure 4, and this table is the first thing in the document that goes stale.
 
 Two facts fall straight out of that table.
 
@@ -40,10 +49,36 @@ Also measured, 20:02:51Z, against `tlda-pic`:
 - `GET /auth/login` with no token → 400; with a bogus token → 401. The route is
   live and validating.
 
-**Unknown, and it is the first thing anyone should establish:** whether course
-`qtm285` exists in `ClassroomStore` on `tlda-pic`. I hold no `pic` token —
-`tlda --env pic project list` → `Unauthorized` — so I cannot answer it, and
-neither could the advocate. This is F3 from advocate findings 1, still open.
+**Advocate F3 is closed, and the answer is yes.** Measured by me at 20:14:03Z
+with the `pic` RW token: `GET /api/classroom/courses/qtm285/assignments` → 200,
+one assignment `hw-minus-1-setup`, "Homework −1: Setting Up", due
+`2026-09-03T23:59:00-04:00`. The course record exists on the box students hit.
+
+**Two things I found in that record that nobody had named.**
+
+**The assignment was not created by `tlda classroom setup`.** Its
+`templateDocKey`, `templateVersion`, `solutionsDocKey`, `solutionsVersion`,
+`handoutFilter` and `solutionFilter` are **all `null`**; only `sourceDocKey`
+(`qtm285`), `id`, `title` and `dueAt` are populated. `cmdClassroomSetup` always
+sends `solutionsDocKey`, `handoutFilter` and `solutionFilter` in its `POST
+…/assignments` body, and `--handout-generator` is a required flag, so a
+setup-created assignment cannot have those three null. This record has the shape
+of a bare `POST /api/classroom/courses/qtm285/assignments`. `alassroom-pm` read
+the same nulls as "the `PUT …/template` step never completed"; the nulls are
+wider than that step, and the distinction matters because it changes what has to
+happen next — not *re-freeze the template* but *run the generate/link/freeze
+pipeline at all*. **Either way the live consequence is the same and it is the
+point: there is no frozen handout for HW−1 on `tlda-pic`, and nothing detected
+that.**
+
+**A read token alone cannot list assignments.** With the read token the same
+request is **401**, not 200 — `classroomPrincipal`
+(`server/routes/classroom.mjs:113-117`) returns `instructor` for `rw`, a student
+for a valid enrolment token, and otherwise **`null`**. So an unenrolled visitor
+holding only the shared read token sees nothing of the assignment surface, and
+registration is the only way in. That is coherent design, not a defect, but it
+means **any rehearsal that checks the student surface with the RW token is
+checking the instructor's view** and will not reproduce what a student sees.
 
 ## 1. The decoupling Skip asked for already exists, twice
 
@@ -70,6 +105,42 @@ its own sync room and annotations (`tlda project book --help`).
 **So the decoupling is not something to build. It is something to use.** The
 deliverable is which command to run, in what order, against which box — and what
 students have while a long render is still going.
+
+### On `tlda-pic`, the full book is not slow. It has never produced a page
+
+Found by the fleet advocate, re-run by `alassroom-pm`, and re-run again by me at
+20:23:55Z with the RW token:
+
+| project | roots | pages | `lastBuild` | created |
+|---|---|---|---|---|
+| `pic` — the full book | 72 | **0** | **`null`** | 2026-08-12T21:15:31Z |
+| `qtm285-book` | 3 | 3 | 2026-08-28T18:50:32Z | 2026-08-28T18:17:26Z |
+| `pic-install` | 0 | 1 | 2026-08-28T18:59:41Z | 2026-08-13T11:46:03Z |
+
+**State the claim as `lastBuild: null` and `pages: 0`, never as "it has been
+building for sixteen days."** `pic` also reports `buildStatus: building` and
+`buildPhase: build`, and nothing refreshes those fields — a build that died
+mid-run is indistinguishable from one still going, and a status that cannot go
+stale-visible reads as current forever. `alassroom-pm` drew that line and it is
+the right one; the facts that survive it are facts about output. Sixteen days is
+the age of the project record, which is a different claim.
+
+**The control is what makes this a finding rather than a broken query:** the
+builder on that box works. `qtm285-book` built to success in the same window and
+`pic-install` built nine minutes later. This is specific to the 72-root book, not
+to the build system.
+
+**This strengthens §1 rather than qualifying it.** Skip's premise — *"the book
+takes forever to build, that's just reality"* — is generous to us. On this box
+the honest statement is that **routing anything through `pic` routes it through
+something nobody has seen finish**, so the assembled-project path is not an
+optimisation, it is the difference between working and not.
+
+**Ruling from `alassroom-pm`, stated as theirs:** the full book is **not** on
+tonight's critical path. Every item named for midnight — enrollment, the book
+page, HW−1, submission, the instructor list — is served by `qtm285-book` and
+needs `pic` for nothing. `pic` is a real problem and a separate one, for a day
+when it is not competing with a class.
 
 ## 2. The four artifacts
 
@@ -112,7 +183,8 @@ document covers `testing` and `stable` only; `pic` is absent from it and from
 | **Owner** | Instructor (Skip), or an agent acting for him with the `pic` RW token. |
 | **What it writes** | Three linked Git projects (`-source`, `-handout`, `-solutions`), then `POST /api/classroom/courses`, `POST …/assignments`, `PUT …/template`. |
 | **Cost** | One chapter render. The help text says minutes, and that is the per-chapter figure. |
-| **Rollback** | **Unknown.** I found no command that removes a course, an assignment, or a frozen template. `tlda project delete` removes a project. Whether re-running `setup` with the same ids is idempotent I did not test, and I will not test it against the live course box. |
+| **Rollback** | **Unknown, and there is a live example of the cost.** I found no command that removes a course, an assignment, or a frozen template. `tlda project delete` removes a project. Whether re-running `setup` with the same ids converges or duplicates I did not test, and I will not test it against the live course box. |
+| **Partial success is undetected** | The `hw-minus-1-setup` record on `tlda-pic` carries `templateDocKey`, `solutionsDocKey`, `handoutFilter` and `solutionFilter` all `null` (§0). Something wrote a course and an assignment and none of the generate/link/freeze pipeline, and nothing anywhere reports that. **The check is one request:** `GET /api/classroom/courses/<id>/assignments` with the RW token, and require `templateDocKey` to be non-null before calling setup done. |
 | **Depends on** | (a) only for app behaviour. It does not build or need the book. |
 
 **This is the step that produces the enrollment link, and the link it produces is
@@ -165,28 +237,61 @@ broken link in; it just fails to require the working one. Fixing the CLI line
 does not require touching the test, though the test should then assert the
 parameters that matter.
 
-**The two link shapes that work.** Both are constructed from mechanisms I read,
-and **neither is emitted by any command that exists** — that is the gap.
+**The link to use, and it is the one to put in front of students.** This is the
+literal string sol-dev asked for, with `<READ>` standing in for the `pic` read
+token, which does not belong in this file:
 
 ```
-https://tlda-pic.cormorant-matrix.ts.net/?workspace=classroom-register&course=qtm285&project=<book>&token=<READ>
+https://tlda-pic.cormorant-matrix.ts.net/auth/login?token=<READ>&redirect=%2F%3Fworkspace%3Dclassroom-register%26course%3Dqtm285%26project%3Dqtm285-book
 ```
 
-```
-https://tlda-pic.cormorant-matrix.ts.net/auth/login?token=<READ>&redirect=%2F%3Fworkspace%3Dclassroom-register%26course%3Dqtm285%26project%3D<book>
-```
-
-The first relies on the `initToken` fetch patch. The second uses `loginRoute`
-(`server/lib/auth.mjs:101-117`), which validates the token, sets the
-`tlda_token` cookie, and 302s to `redirect` — it is the same shape
+`loginRoute` (`server/lib/auth.mjs:101-117`) validates the token, sets the
+`tlda_token` cookie, and 302s to `redirect`. It is the same shape
 `tlda project share` already emits (`viewerLoginUrl`,
-`cli/lib/share-url.mjs:131`), which is why I prefer it: it is the established
-path and it survives a student who lands with JavaScript still loading.
+`cli/lib/share-url.mjs:131`), it does not depend on client JavaScript, and it is
+the established path. **No command emits it for the registration workspace** —
+`viewerLoginUrl` can only build `redirect=/?project=<name>`. That is the gap.
 
-**Unverified:** I have not driven either URL end to end, because I hold no `pic`
-read token. What I verified is each mechanism in the chain, separately, from
-source and from live HTTP status codes. That is sender and receiver; the wire is
-untested. Whoever holds the token should drive one link and report the result.
+I verified the route is live on `tlda-pic` at 20:02:51Z: no token → 400, bogus
+token → 401.
+
+#### Correction: the bare `?token=` form also works, and the reason it was thought not to matters
+
+`alassroom-pm` relayed, from the advocate, that a bare `?token=` on the SPA index
+returns 200 with no `Set-Cookie` and the register POST therefore 401s. **The
+first half is right and the conclusion does not follow.** Measured by me against
+`tlda-pic` at 20:18Z, using a course id that does not exist so that no student is
+created — the 404 `Course not found` check at
+`server/routes/classroom.mjs:241` sits *after* the 401 check at line 236, so the
+status code separates the two cleanly:
+
+| request to `POST /api/classroom/courses/zzz-no-such-course/register` | result |
+|---|---|
+| no credential | **401** |
+| read token in `Authorization: Bearer` | **404 Course not found** |
+| read token as `?token=` on the request URL | **404 Course not found** |
+
+A read token in the header passes the gate. And the browser sends that header:
+**the bundle `tlda-pic` actually serves** — `/assets/index-BfWOAdpN.js`, the one
+named by its `index.html` — contains the `initToken` patch verbatim,
+`window.fetch=function(...)` injecting `Bearer`, and the
+`localStorage.setItem("tlda_token", …)` fallback beside it. I downloaded and
+grepped the deployed bundle rather than a local build.
+
+**So the bare form works in a browser and fails under `curl`, because `curl`
+runs no JavaScript.** That is an instrument answering a question nobody asked:
+the thing being tested is a client-side fetch patch, and the client was never
+run. It is worth writing down because both the advocate's original F2 mechanism
+and this correction to it were derived from tools that cannot see the patch.
+
+**Use `/auth/login` anyway.** Not because the other form is broken, but because
+it does not depend on the patch running, on `localStorage`, or on the shell being
+ungated — and a link handed to sixty students should have the fewest live parts.
+
+**What is still untested:** nobody has driven either URL through a real browser
+with an empty profile and pressed Continue. I could not — `tlda-dev pw acquire`
+refused at the session tab cap (6/6) and I did not reap another agent's tab. That
+is stage 6 and it remains the one step no measurement here substitutes for.
 
 ### (c) Small demo / fixture publication — one chapter, minutes
 
@@ -237,14 +342,14 @@ be filled in by the PM, not guessed by me.**
 |---|---|---|---|---|
 | 1 | Author / edit | The course repo's `homework/*.qmd`, ordinary Git | Instructor | none |
 | 2 | Fast preview | `quarto render <one chapter>` — the same single-file render the fixture does | Author | Chapter renders nonblank |
-| 3 | Classroom feature QA | Exercise the surface on a **throwaway course on `tlda-pic`** | Dev / advocate | Named below |
+| 3 | Classroom feature QA | Exercise the surface on `tlda-pic`, **with the read token, not the RW one** — the RW token makes you the instructor (`classroomPrincipal`) and hides everything a student would hit | Dev / advocate | Named below |
 | 4 | Content publication | `tlda --env pic classroom setup …` | Instructor | Setup prints a link whose host is `tlda-pic` |
 | 5 | App release | `git push /Users/skip/work/deploy/pic HEAD:refs/heads/main` | Chief of staff | `/api/build-info` reports the pushed sha |
-| 6 | Pre-class rehearsal | Drive the real student link on `tlda-pic` from a browser profile with no cookies | Dev / advocate | Register → Continue → chapter loads |
+| 6 | Pre-class rehearsal | Drive the real student link on `tlda-pic` from a browser profile with no cookies **and no `localStorage`** | Dev / advocate | Register → Continue → chapter loads **nonblank** |
 | 7 | Live class | The student link; the book members already published | Instructor | — |
 | 8 | Fallback | Below | Instructor | — |
 | 9 | Submission | Positron extension → `POST /api/classroom/…` (`c09e3943d`) | Student | Receipt visible to student |
-| 10 | Instructor confirmation | `?workspace=classroom-gradebook&course=<id>` on `tlda-pic` | Instructor | Submitted names appear |
+| 10 | Instructor confirmation | `/auth/login?token=<RW>&redirect=…workspace=classroom-gradebook&course=<id>` on `tlda-pic` — verified working by `alassroom-pm` at ~20:10Z: 302 sets the cookie, `GET /api/classroom/courses/qtm285/status` with cookie only returns 200 with rows distinguishing `ungraded` from `not-submitted` | Instructor | Submitted names appear |
 
 **Live-class fallback (stage 8).** The property that makes a fallback possible is
 in §2(d): members are independent and the classroom records are separate from
@@ -257,8 +362,9 @@ all of them. So, in order:
    `tlda-pic` is the single course box. Naming this as a gap is the honest
    deliverable; proposing a second box is architecture and Skip's decision.
 
-## 4. Recurrence: which step catches each of today's four failures
+## 4. Recurrence: which step catches each of today's failures
 
+Four were named in my brief; a fifth is added below from the advocate's work.
 This is the part Skip will read hardest, so each row names one step and what it
 would have returned.
 
@@ -292,14 +398,35 @@ the course on `pic-dev` proves nothing about `pic`.
 
 **Failure 4 — app code not deployed.**
 Caught at **stage 5**, by `curl /api/build-info` on `tlda-pic` and comparing
-`gitSha` to the commit that carries the fix. **This one is still live.**
-`tlda-pic` served `c09e3943d` at 19:58Z and the registration fix is `d41f6839e`.
-No amount of correct linking fixes stage 4 while stage 5 is behind.
+`gitSha` to the commit that carries the fix. **Still live when I last looked:**
+`tlda-pic` served `c09e3943d` at 19:58:31Z and again, unchanged, at 20:23:55Z;
+the registration fix is `d41f6839e`. `alassroom-pm` was deploying it during this
+revision, so this is the one line in the document most likely to be false by the
+time you read it — **re-read `/api/build-info` instead of believing it.** The
+process point is unaffected: no amount of correct linking fixes stage 4 while
+stage 5 is behind.
 
-**The shape all four share:** each was verified against something other than the
+**Failure 5 — a blank book page means 401, not unbuilt.**
+Found by the fleet advocate. `src/loaders/htmlLoader.ts:44` is
+`await fetch(infoUrl).then(r => r.json())` with **no `r.ok` check**. A 401 body
+parses to `{error:"Unauthorized"}`, and the page loop is
+`while (i < pageInfos.length)` — `undefined` on an object, so `0 < undefined` is
+false and the loop runs **zero times**. No throw, no error, blank canvas. I read
+both lines; a fix is in flight from `classroom-blank-401`.
+
+**The process consequence, which outlives the fix:** *blank* and *absent* are not
+the same observation, and on this box the cheap discriminator is one request —
+fetch `page-info.json` **with the token** before concluding content is missing.
+This is the failure that cost the most today, because it made present content
+look absent and sent people to rebuild what was already there. It is also the
+exact shape §2's `buildStatus` warning describes, one layer up: an instrument
+that answers without measuring.
+
+**The shape all five share:** each was verified against something other than the
 thing a student touches — a terminal's output, a dev box, a developer's browser,
-a merged commit. Every catch above is the same move: read the surface the student
-reads, from a position that has none of the author's advantages.
+a merged commit, a JSON body nobody checked the status of. Every catch above is
+the same move: read the surface the student reads, from a position that has none
+of the author's advantages.
 
 ## 5. What I am not proposing, and why
 
@@ -325,15 +452,28 @@ layer is to state what would be deleted instead. Applying it:
 3. Whether `pic` should gate on `testing` the way `stable` does. Currently it
    does not. Skip's call.
 
+**Resolved since the first draft** (all re-measured by me at 20:14–20:24Z with
+the `pic` tokens): course `qtm285` exists on `tlda-pic` with one assignment;
+`qtm285-book` is built, 3 pages, `html`; the `/auth/login` instructor path works;
+and the full book project `pic` has `pages: 0` and `lastBuild: null`.
+
 **Open unknowns, stated as unknowns:**
 
-- Whether course `qtm285` exists on `tlda-pic`. Unanswerable without the token.
 - How to remove or amend a course, assignment, or frozen template. I found no
   command.
 - Whether re-running `tlda classroom setup` with the same ids converges or
-  duplicates. Untested, and I will not test it on the live course box.
-- How long a full book build actually takes. Quoted as "forever" by Skip and
-  "minutes" per chapter by the help text; I measured neither.
-- `~/work/dot-claude/reference/lane-app.md`, which `CLAUDE.md` imports and my
-  brief told me to read in full, **does not exist on this machine.** I read
-  `AGENTS.md` and the global contract instead.
+  duplicates. **Untested deliberately** — the only honest test is against the
+  live course box and it is not worth the risk tonight.
+- Why the `pic` book has never produced a page. `pages: 0` and `lastBuild: null`
+  are what I can assert; the cause is not established and `buildStatus` cannot
+  supply it.
+- How long a full book build actually takes **when it succeeds**. Not measurable
+  here, because on this box it has not.
+- Whether either registration link works end to end in a browser with an empty
+  profile. The pooled browser was at its tab cap; see §2(b).
+
+**One finding, not an unknown:** `~/work/dot-claude/reference/lane-app.md` **does
+not exist on this machine**, and `CLAUDE.md` imports it — so the project's own
+instruction file has a dangling import, and every agent told to read it reads
+nothing. My brief sent me there. I read `AGENTS.md` and the global contract
+instead.
