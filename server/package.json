@@ -34,6 +34,7 @@
     "node-pty": "^1.1.0",
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
+    "qrcode-terminal": "^0.12.0",
     "tsx": "^4.22.4",
     "wink-eng-lite-web-model": "^1.8.1",
     "wink-nlp": "^2.4.0",
