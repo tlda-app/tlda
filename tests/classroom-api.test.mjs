@@ -17,7 +17,7 @@ async function serverFixture() {
   store.submit({ assignmentId: 'hw1', studentId: 'ada', contentRef: 'hw1-ada' })
   store.addFeedback({ id: 'draft', assignmentId: 'hw1', studentId: 'ada', title: 'Draft', text: 'Private.' })
   const app = express(); app.use(express.json())
-  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: req => req.headers.authorization === 'Bearer read-access', resolveTemplateVersion(docKey) {
+  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: req => req.headers.authorization === 'Bearer read-access', resolveManifestAccess: req => req.query.token === 'read-access', resolveTemplateVersion(docKey) {
     if (docKey !== 'hw1-handout') throw new Error('template document not found')
     return 'build-abc'
   }, resolvePrincipal(req, classroomStore) {
@@ -79,6 +79,32 @@ test('a student can register their name and university login and receive a token
       body: JSON.stringify({ displayName: 'Someone Else', universityLogin: 'kjohn42' }),
     })
     assert.equal(response.status, 409)
+  } finally { f.close() }
+})
+
+test('a class-scoped web app manifest carries only the class, project, and ordinary read bearer', async () => {
+  const f = await serverFixture()
+  try {
+    assert.equal((await f.request('/courses/qtm285/manifest.webmanifest?project=course-book', '')).status, 401)
+    const response = await f.request('/courses/qtm285/manifest.webmanifest?project=course-book&token=read-access', '')
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'application/manifest+json; charset=utf-8')
+    const manifest = await response.json()
+    assert.equal(manifest.name, 'QTM 285')
+    assert.equal(manifest.display, 'standalone')
+    const start = new URL(manifest.start_url, 'https://class.example')
+    assert.equal(start.searchParams.get('project'), 'course-book')
+    assert.equal(start.searchParams.get('course'), 'qtm285')
+    assert.equal(start.searchParams.get('token'), 'read-access')
+    assert.equal(start.searchParams.has('classroomToken'), false)
+    assert.equal(manifest.icons.length, 1)
+    assert.match(manifest.icons[0].src, /^\/api\/classroom\/courses\/qtm285\/icon\.svg\?token=read-access$/)
+    assert.doesNotMatch(JSON.stringify(manifest), /ada-secret|classroomToken/)
+
+    const icon = await f.request(manifest.icons[0].src.replace('/api/classroom', ''), '')
+    assert.equal(icon.status, 200)
+    assert.equal(icon.headers.get('content-type'), 'image/svg+xml; charset=utf-8')
+    assert.match(await icon.text(), />Q2<\/text>/)
   } finally { f.close() }
 })
 

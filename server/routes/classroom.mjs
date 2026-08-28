@@ -16,6 +16,44 @@ const QRCode = require('qrcode-terminal/vendor/QRCode')
 const QRErrorCorrectLevel = require('qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel')
 const DEVICE_TRANSFER_TTL_MS = 10 * 60 * 1000
 
+function xmlText(value) {
+  return String(value).replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;',
+  })[character])
+}
+
+function courseInitials(course) {
+  const words = String(course.title || course.id).trim().split(/\s+/).filter(Boolean)
+  return (words.length > 1 ? `${words[0][0]}${words.at(-1)[0]}` : words[0]?.slice(0, 2) || 'TL').toUpperCase()
+}
+
+export function classroomWebManifest({ course, project, readToken }) {
+  const start = new URL('/', 'http://tlda.invalid')
+  start.searchParams.set('project', project)
+  start.searchParams.set('course', course.id)
+  start.searchParams.set('token', readToken)
+  const icon = new URL(`/api/classroom/courses/${encodeURIComponent(course.id)}/icon.svg`, 'http://tlda.invalid')
+  icon.searchParams.set('token', readToken)
+  return {
+    id: `/?course=${encodeURIComponent(course.id)}`,
+    name: course.title,
+    short_name: course.id,
+    description: `${course.title} in tlda`,
+    start_url: `${start.pathname}${start.search}`,
+    scope: '/',
+    display: 'standalone',
+    background_color: '#f7f7f4',
+    theme_color: '#f7f7f4',
+    icons: [{ src: `${icon.pathname}${icon.search}`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
+  }
+}
+
+export function classroomIconSvg(course) {
+  const label = xmlText(courseInitials(course))
+  const title = xmlText(course.title)
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-labelledby="title"><title id="title">${title}</title><rect width="192" height="192" rx="38" fill="#f7f7f4"/><path d="M44 48h104v96H44z" fill="#fff" stroke="#262626" stroke-width="8"/><text x="96" y="111" text-anchor="middle" font-family="system-ui,sans-serif" font-size="42" font-weight="700" fill="#262626">${label}</text></svg>`
+}
+
 export function classroomTransferQrSvg(value) {
   const qr = new QRCode(-1, QRErrorCorrectLevel.M)
   qr.addData(value)
@@ -177,8 +215,25 @@ async function frozenTemplateSource(store, assignmentId, resolveTemplateSource) 
   }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null } = {}) {
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null } = {}) {
   const router = Router()
+  router.get('/courses/:courseId/manifest.webmanifest', (req, res) => {
+    if (!resolveManifestAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
+    const course = store.getCourse(req.params.courseId)
+    if (!course) return res.status(404).json({ error: 'Course not found' })
+    const project = String(req.query.project || '').trim()
+    if (!project) return res.status(400).json({ error: 'project is required' })
+    const readToken = extractToken(req)
+    res.set('Cache-Control', 'private, no-store')
+    res.type('application/manifest+json').send(classroomWebManifest({ course, project, readToken }))
+  })
+  router.get('/courses/:courseId/icon.svg', (req, res) => {
+    if (!resolveManifestAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
+    const course = store.getCourse(req.params.courseId)
+    if (!course) return res.status(404).json({ error: 'Course not found' })
+    res.set('Cache-Control', 'private, no-store')
+    res.type('image/svg+xml').send(classroomIconSvg(course))
+  })
   router.post('/courses/:courseId/register', (req, res) => {
     if (!resolveRegistrationAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
     const displayName = String(req.body?.displayName || '').trim()
