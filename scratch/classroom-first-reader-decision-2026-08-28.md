@@ -17,11 +17,20 @@ reopened read-only: it renders. `pic-schedule` sat unrenderable from
 ## What makes it a decision rather than a bug fix
 
 **The book's own room is the layer the whole class sees.** That is the shipped
-design and it is yours — `StudentAnnotationOverlay.tsx` quotes you on it:
+design and it is yours. **Skip → `classroom-pm`, 2026-08-10, 13:00:09–13:00:19
+EDT**, read in order:
 
-> maybe that just is the normal layer… the normal layer for the book
+> **13:00:09** — for the common layer… maybe that just is the normal layer.
+> …my public layer or everyone's layer.
+>
+> **13:00:13** — Right? Like, **the normal layer for the book.**
+>
+> **13:00:19** — And then, like, each student can experience their class layer
+> as, like, an overlay on that.
 
-> each student can experience their class layer as, like, an overlay on that
+*(`StudentAnnotationOverlay.tsx` paraphrases this and dates it 9 August. The
+code comment's date is wrong; the exchange is 10 August. Cited here from the
+thread rather than from the comment.)*
 
 The topology today: the book is `doc-<member>`, one room per member document,
 shared. A student's annotations are a **separate** private room
@@ -50,6 +59,23 @@ someone opens it read-write. Nothing else about the topology changes.
   and the `sync-rooms.mjs` schema to match **exactly**, so this adds a second
   writer of a record type the client currently owns alone. That is the real
   price and it is not trivial.
+- **And a live defect makes A sharper than it looks: a mark on the shared layer
+  may not be retractable.** Reported 2026-08-08 — deleting a shape in the
+  browser reports success, the shape disappears in that session, and **it is
+  back on reload**; deleting the same ids through the shape API does persist.
+  `classroom-pm` raised this to you in the same 13:00 exchange, in these terms:
+  *"On the book's shared layer it's worse — you'd write something for the whole
+  class and not be able to take it back."*
+
+  **Status, as far as I can establish: unresolved.** No commit anywhere claims
+  to fix it, the original note says explicitly that it does not identify the
+  root cause, and **I did not re-test it tonight** — the browser half needs a
+  session I am not opening on the recovered rooms. So I am reporting it as
+  *not known fixed*, not as *confirmed live*.
+
+  It bears on this choice because **A makes the shared layer the place the class
+  writes**, and if a mark there cannot be taken back that is a property of the
+  option, not a separate bug. It is worth settling before or with A, not after.
 
 ### B — a read-only client renders the document locally, without syncing
 
