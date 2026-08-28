@@ -202,7 +202,73 @@ that — most plausibly by having the build put real per-slide content heights i
 is a design decision about ownership, not a bug fix, so it is written down here
 rather than built.
 
-## Interaction surfaces — what I can and cannot say
+## The gates, run — on a real slides surface with the fix loaded
+
+Superseding the "could not run" section below, which stood until Skip said to
+test however I wanted.
+
+**The surface.** `tlda-dev serve --sandbox` stands up this worktree's `main` as
+an isolated preview with its own projects dir and DB — a server running
+`c0b09c200` **without a deploy**. On it, a disposable 6-slide reveal deck
+(`slide-bounce-probe`), built by the project's own `buildQmd`, two of whose
+slides overflow the authored 700px box.
+
+**Positive control that the fix is actually loaded**, since a deployed sha is
+not a loaded module: fetching a slide off that server,
+
+    grep -c "2 * (slide.scrollHeight"                       -> 1
+    grep -c "documentElement ? document.documentElement…"   -> 0
+
+**Criterion 3 — no continuous bounce.** Parked on the tall slides, twice for
+12s and once for 15s after a full reload: **0 height writes, 1 distinct height
+vector**. Heights `[700, 700, 2475, 1856, 700, 700]`, unchanged throughout.
+Forcing a reset to the authored 700 produced **exactly one write**, `700 →
+2475`, and then silence — which is the property that makes the bounce
+impossible whatever does the resetting.
+
+(The deck has 6 slides, so "slide 9 and later" has no literal counterpart here.
+What it stands for — a slide whose content overflows the authored box — is
+covered by the two that do.)
+
+**Criterion 4 — tabs/clicks and arrows.**
+
+| action | result |
+|---|---|
+| ArrowRight ×3 | 1/6 → 2/6 → 3/6 → 4/6, camera moved each time |
+| ArrowRight across a fragment | 5/6 → 5/6(1/2) → 5/6(2/2) → 6/6; the fragment step moved no camera, correctly |
+| next-slide button, real `.click()`, from a non-last slide | 3/6 → 4/6, camera moved, not disabled |
+| next-slide button on the last slide | correctly disabled, no movement |
+
+**Criterion 5 — permanent pen marks.** A real stroke through tldraw's own
+pointer pipeline with the `draw` tool: 0 → 1 draw shape, survived four
+navigations, and still present after a **full page reload** — so it is in the
+synced room, not just in memory.
+
+**Criterion 6 — no deployment.** A worktree preview is not a deploy. Nothing
+was pushed to any deploy remote and PIC was never touched.
+
+### The counterfactual, and one honest wrinkle
+
+Holding a container at fixed heights against the same server, the **old**
+expression grows at every height tested — `old = H/2 + 1520`, so
+`oldGrows: true` at H = 700, 1000, 1400, 1900, 2475 and again at 1400 coming
+back down. That is the ratchet, on this deck, confirmed independently of the
+PIC measurement.
+
+**The wrinkle:** that harness ran at a 1290px container, and the app's slide
+shapes are **1050 wide** (`shapeW: 1050`). Reveal's scale is width-bound, so
+the harness's absolute numbers (fixed point 3041) are not the app's (2475).
+The *shape* of the result carries — old grows at every height, new stops — but
+the numbers do not transfer between the two widths, and I am not presenting
+them as if they did.
+
+An earlier attempt at this sweep **inside** the app failed to measure and I am
+recording it rather than dropping it: setting the shape's height and reading
+back 1.4s later always returned `H = 2475`, because the patched code had
+already corrected it. The instrument answered; it did not measure the state I
+asked about.
+
+## Interaction surfaces — the argument that preceded the gates above
 
 Slide tabs and clicks, arrow navigation, the edge tap zones and permanent
 pen/highlighter marks are all parent-side, in `SlidesNavigator.tsx` and
