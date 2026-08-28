@@ -1,3 +1,9 @@
+# What this deployment calls itself in the browser tab. dist/ is one built
+# artifact every deployment serves, so the title cannot be baked in per
+# deployment; the server rewrites it on the way out. The installed web app
+# takes the same name from dist-overrides/manifest.webmanifest.
+appName: PIC
+
 # Server settings for this deployment. Installed to ~/.config/tlda/server.yaml
 # by scripts/fly-entrypoint-live.sh. These were fly.*.toml [env] variables until
 # an unset one presented as a missing feature instead of an error.
