@@ -36,9 +36,9 @@
 
 import { spawn, spawnSync, execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, cpSync, rmSync, readdirSync, statSync } from 'fs'
-import { join } from 'path'
+import { basename, join } from 'path'
 import { homedir } from 'os'
-import { X509Certificate, randomBytes } from 'crypto'
+import { X509Certificate, createHash, randomBytes } from 'crypto'
 import { hasTls, resolveConfig, loadServerConfig, CONFIG_DIR } from '../../shared/config.mjs'
 import { daemonLifecycleSocketPath } from '../../shared/daemon-socket-path.mjs'
 import { resolveRepoRoot, findFreePort } from './dev-vite.mjs'
@@ -79,8 +79,18 @@ export function worktreeRoot() {
   return git(['rev-parse', '--show-toplevel']) || process.cwd()
 }
 
+// A detached worktree has no branch name to key on: `--abbrev-ref HEAD` answers
+// the literal string "HEAD", identically in every detached worktree on the box,
+// so all of them shared one state dir and `serve status` answered about whichever
+// one wrote last. The worktree root path is the key instead — unique per worktree
+// and, unlike the commit sha, unchanged when HEAD moves, so a running preview's
+// state does not become unreachable the moment you check out something else.
 export function worktreeBranch() {
-  return git(['rev-parse', '--abbrev-ref', 'HEAD']) || 'detached'
+  const named = git(['rev-parse', '--abbrev-ref', 'HEAD'])
+  if (named && named !== 'HEAD') return named
+  const root = worktreeRoot()
+  const digest = createHash('sha1').update(root).digest('hex').slice(0, 8)
+  return `detached-${sanitize(basename(root)).slice(0, 16)}-${digest}`
 }
 
 // The MAIN checkout (parent of the shared .git dir), regardless of which worktree
