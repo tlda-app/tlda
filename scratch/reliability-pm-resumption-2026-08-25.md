@@ -2440,3 +2440,42 @@ re-running. One instance -> TSC=0 in normal time.
 Branches, all gated, none deployed: `repo-path-canonical`,
 `browser-edit-loss` (marker-to-visible-hold, TSC=0 GUARDS=0),
 `one-checkout-one-project`.
+
+## 2026-08-27 - integration HELD: someone else is fixing the same file, better
+
+Integration prepared and fully verified on `integrate-room-fixes`, rebased onto
+current main `1053124f3` (main moved from `4ca3673a7` mid-work; four commits
+landed, none touching my files). Five commits, focused tests 8/8, topology gate
+202 / BOTH CONDITIONS HOLD, tsc=0, guards=0, eslint clean.
+
+**`git merge --ff-only` ABORTED and was right to.** The shared checkout has an
+UNCOMMITTED change to `shared/git-remotes.mjs` -- the exact file my fix touches,
+not there when I started. Landing mine would have overwritten work in progress.
+
+**Their implementation is better than mine on three counts:**
+1. They canonicalise the path HANDED TO GIT, not just the comparison --
+   *"`ls-files -- <abs>` on a symlinked spelling is an error, not a miss."* Mine
+   still passes the symlinked spelling to `git add`. My tests pass on macOS, so
+   I did not catch it: a gap in my gate, not proof mine is safe.
+2. They handle a path whose LEAF DOES NOT EXIST YET (deepest resolvable ancestor
+   + re-append). Mine falls back to the raw string, silently reinstating the bug
+   for any caller asking about a file it is about to create.
+3. They found a consequence I missed: a student's hand-in wrote bytes, failed to
+   stage, and the upload answered **500** with nothing recorded; plus the
+   clicked-markdown adoption path failing the same way.
+
+**TAKE THEIRS.** Not landing a narrower competing implementation over uncommitted
+better work.
+
+**What of mine is additive:** the four-test symlink gate (including the controls:
+non-symlinked unaffected, outside-the-repo STILL REFUSED) and the topology rig.
+**Ran their implementation against both: 4/4 and 202 / both conditions.**
+
+**Correction on my own record:** the visible-hold change was UNCOMMITTED on its
+branch -- the branch carried only tests. Landing it as it stood would have given
+tests without the fix. Committed now. That is the "reported uncommitted work as
+done" failure and it was mine.
+
+**Their change is uncommitted and one `rm` from gone** -- the thing to protect
+first. Nothing of theirs touched: I copied their file into my worktree to test
+it and restored mine immediately.
