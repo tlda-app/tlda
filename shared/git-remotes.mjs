@@ -1,7 +1,36 @@
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
+import { realpath } from 'node:fs/promises'
+import path from 'node:path'
 
 const execFile = promisify(execFileCb)
+
+/**
+ * The path with every symlink resolved, for a path that need not exist yet.
+ *
+ * `realpath` refuses a missing leaf, and callers legitimately ask about a file
+ * they are on their way to creating. So the deepest ancestor that does resolve
+ * is resolved and the rest re-appended — which is enough, because what has to
+ * agree with git is the DIRECTORY chain, and that exists whenever the repository
+ * does. A path with nothing resolvable is returned unchanged, so a caller with
+ * no filesystem behind it (a unit test with an injected `run`) compares exactly
+ * the strings it did before.
+ */
+async function canonicalPath(target) {
+  const tail = []
+  let head = target
+  for (;;) {
+    try {
+      const resolved = await realpath(head)
+      return tail.length ? path.join(resolved, ...tail) : resolved
+    } catch {
+      const parent = path.dirname(head)
+      if (parent === head) return target
+      tail.unshift(path.basename(head))
+      head = parent
+    }
+  }
+}
 
 export function createGitRemotes({ sourceDir, run = execFile } = {}) {
   if (!sourceDir) throw new Error('sourceDir is required')
@@ -144,9 +173,25 @@ export function createGitRemotes({ sourceDir, run = execFile } = {}) {
     if (!absolutePath) throw new Error('path is required')
     const toplevel = await output(['rev-parse', '--show-toplevel']).catch(() => null)
     if (!toplevel) return { inRepo: false, tracked: false, path: null }
-    const inRepo = absolutePath === toplevel || absolutePath.startsWith(`${toplevel}/`)
+    // BOTH SIDES CANONICAL, because git answers with the physical path and the
+    // caller's path need not be spelled that way. On the live box
+    // `server/projects` is a symlink to `server/persist/projects`, so a room
+    // tree reached through it compared `/app/server/projects/…` against git's
+    // `/app/server/persist/projects/…` and every file in every project came
+    // back `inRepo: false` — the same directory, two spellings.
+    //
+    // What that cost: a student's hand-in wrote its bytes, failed to stage, and
+    // the upload answered 500 with nothing recorded. Reproduced on testing three
+    // times out of three, and the clicked-markdown adoption path next door
+    // reports `not-in-repo` for the same reason.
+    //
+    // git gets the canonical path too, not just the comparison: `ls-files --
+    // <abs>` on a symlinked spelling is an error, not a miss.
+    const resolved = await canonicalPath(absolutePath)
+    const resolvedTop = await canonicalPath(toplevel)
+    const inRepo = resolved === resolvedTop || resolved.startsWith(`${resolvedTop}/`)
     if (!inRepo) return { inRepo: false, tracked: false, path: null }
-    const tracked = await output(['ls-files', '--full-name', '--error-unmatch', '--', absolutePath]).catch(() => null)
+    const tracked = await output(['ls-files', '--full-name', '--error-unmatch', '--', resolved]).catch(() => null)
     return { inRepo: true, tracked: Boolean(tracked), path: tracked || null }
   }
 
@@ -171,7 +216,9 @@ export function createGitRemotes({ sourceDir, run = execFile } = {}) {
     const before = await repoPathFor(absolutePath)
     if (!before.inRepo) return before
     if (before.tracked) return before
-    await git(['add', '--', absolutePath])
+    // Canonical here too: `repoPathFor` has just established the path is in the
+    // repository under its resolved spelling, and `git add` refuses the other one.
+    await git(['add', '--', await canonicalPath(absolutePath)])
     return repoPathFor(absolutePath)
   }
 
