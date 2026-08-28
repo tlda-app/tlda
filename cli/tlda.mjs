@@ -370,7 +370,9 @@ function printPushBuildStatus(result, unchangedMessage = 'No changes detected.')
 export function retryableCliOperationError(error) {
   const status = Number(error?.status || error?.cause?.status || 0)
   if (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500) return true
-  return /Server not reachable|Request timed out|local fleet daemon is unavailable|ended without a result|ECONNRESET|EPIPE|socket hang up/i
+  // Load-bearing: the daemon errors below are matched by text, so changing one
+  // of these messages without changing this pattern silently stops retrying.
+  return /Server not reachable|Request timed out|local daemon .* (?:timed out|failed)|ended without a result|ECONNREFUSED|ENOENT|ECONNRESET|EPIPE|socket hang up/i
     .test(error?.message || String(error))
 }
 
@@ -3665,7 +3667,10 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
       reject(error)
     }
     const timer = timeoutMs == null ? null : setTimeout(() => {
-      fail(new Error(`local daemon ${op} timed out; use \`tlda doctor yolo\` only for break-glass repair`))
+      // Name the op and the bound. A classroom setup hit this on
+      // adopt-shadow-history-ref repeatedly while the daemon was up; the old
+      // text sent the reader after the daemon instead of after the stalled call.
+      fail(new Error(`local daemon ${op} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
     socket.setEncoding('utf8')
     socket.on('connect', () => {
@@ -3699,9 +3704,15 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
     })
     socket.on('error', error => {
       if (timer) clearTimeout(timer)
-      const message = error.code === 'ENOENT' || error.code === 'ECONNREFUSED'
-        ? `local fleet daemon is unavailable; start it with \`tlda daemon start\` or use \`tlda doctor yolo\` for break-glass repair`
-        : `local fleet daemon ${op} failed: ${error.message}`
+      // Report the errno and the socket rather than diagnosing the daemon.
+      // ECONNREFUSED means nothing accepted this connection, which a saturated
+      // listener produces as readily as an absent one. ENOENT is the one case
+      // where the socket really is not there, and it now says exactly that.
+      const message = error.code === 'ENOENT'
+        ? `local daemon ${op} failed: no socket at ${socketPath} (ENOENT)`
+        : error.code === 'ECONNREFUSED'
+          ? `local daemon ${op} failed: connection refused at ${socketPath} (ECONNREFUSED)`
+          : `local daemon ${op} failed: ${error.message}`
       fail(new Error(message))
     })
     socket.on('close', () => {
