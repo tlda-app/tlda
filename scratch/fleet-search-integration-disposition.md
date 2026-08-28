@@ -90,11 +90,38 @@ error; non-empty pair unaffected.
   groups these rows in its own `doc` group, and it sends the same
   `since`/`before`/`filterExpression` on the same `fleet-search` payload. **That
   is a structural argument, not a run, and it is not being called verified.**
-- **A card with a second page may be unreachable on a preview at all.**
-  `--sandbox` gives a daemon (project content) but no real fleet history;
-  `--real-fleet` gives history but no daemon, so no document and no canvas.
-  Neither gives both. This is a gap in how anyone verifies a card change, not one
-  agent's misconfiguration.
+- ~~**A card with a second page may be unreachable on a preview at all.**~~
+  **WRONG — corrected 2026-08-27 21:15 EDT. Do not act on the struck claim.**
+  A preview *can* have both. Measured on `:5192`, same page, same minute: canvas
+  up on project `scratch-main` (12 shapes, 5 fleet shapes, a `fleet-docview`)
+  **and** a search panel returning 100 ranked results across 5 types, including
+  messages timestamped that evening. The two-flag table it rested on does not
+  hold, and I spread it — it was a plausible reading of one failed attempt, and I
+  put it in this document without testing it.
+
+  **The real blocker is narrower.** That preview's store carries chat and reports
+  but **no session tool-call activity**. A search card is a chat row carrying a
+  tool-call event (`_toolName`, `src/fleet/convert-chat-event.mjs:101`; any tool
+  whose name contains `search` qualifies, `activity-render.mjs:96`). With no such
+  events there is no row to render a card from. The missing ingredient is session
+  activity ingestion on the preview — not the serve flags.
+
+- **The panel counterfactual is now confirmed on the running app**, not only in
+  code. `.fleet-search-load-more` absent from the panel (0 matches); per-group
+  controls unchanged — `Show 56 more conversation` takes conversation rows 6 → 62
+  and then disappears, while `Show 21 more documents` remains. `paging` is false
+  because `FleetSearchShape.tsx:913` passes neither `hasMore` nor `onLoadMore`.
+  Driven by dispatching real `pointerdown`/`pointerup` on the actual elements
+  (the shape sits at `x=24039`, outside the viewport, so Playwright actionability
+  cannot reach it) — **the real React handlers, not a canvas gesture.**
+
+- **Defect 1 was reproduced on the in-app surface too**, which closes the gap
+  `search-date-bound` left open. Pre-fix: `type:tool_use search` in the panel
+  returned **only** the documents group, 22 rows — the document path ignoring
+  `type:` exactly as it ignored the date bound. And the two surfaces **disagree
+  about the same rows**: the panel header counts them ("22 ranked results across
+  1 type") while the MCP tally says `0 fleet, 0 session`. Same rows, two counts.
+  The in-app **green** is still not taken — that needs a preview carrying the fix.
 - **No live stall was caught in the act.** The 88s queue figures are cumulative
   over the current uptime, and a 20-minute sampling window stayed quiet.
 
