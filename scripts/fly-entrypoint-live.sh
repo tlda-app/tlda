@@ -65,6 +65,19 @@ echo "[entrypoint] installing committed config for deployment '$TLDA_DEPLOYMENT'
 cp "$DEPLOYMENT_DIR/server.yaml" /root/.config/tlda/server.yaml
 cp "$DEPLOYMENT_DIR/daemon.yaml" /root/.config/tlda/daemon.yaml
 
+# Static files this deployment serves in place of the ones in dist/ — the icon
+# set and the web manifest, so the class sites carry their own mark rather than
+# tlda's. The built dist/ is one artifact shared by every deployment, and the
+# names it serves (tlda-mark.svg, apple-touch-icon.png, tlda-icon-{192,512}.png,
+# manifest.webmanifest) are written into index.html at build time, so an
+# override replaces the file rather than adding a name.
+#
+# A deployment with no dist-overrides/ directory is left exactly as built.
+if [ -d "$DEPLOYMENT_DIR/dist-overrides" ]; then
+  echo "[entrypoint] applying dist overrides for deployment '$TLDA_DEPLOYMENT': $(ls "$DEPLOYMENT_DIR/dist-overrides" | tr '\n' ' ')"
+  cp -R "$DEPLOYMENT_DIR/dist-overrides/." /app/dist/
+fi
+
 # --- Tailscale: join Skip's tailnet so the server is reachable privately ---
 # The mounted state is the durable node identity. TS_AUTHKEY is needed only for
 # first registration; a revoked setup key must not take an already-authorized
