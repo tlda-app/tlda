@@ -13,10 +13,18 @@
 // it: `void` makes "I know this is a promise and I am dropping it" legible in a
 // diff, where a bare statement is indistinguishable from a forgotten `await`.
 //
-// Assigning without awaiting (`const a = store.getAgent(id)`) is REJECTED even
-// though `const p = store.share(e); await p` is a legal shape, because the
-// rejected form is the exact catastrophic case above and the legal form is rare
-// enough to write as `await` directly.
+// Assigning without awaiting (`const a = store.getAgent(id)`) is judged by what
+// the binding is then READ for, by this same test: `const a = store.getAgent(id);
+// return a.dead` is the catastrophic case above and is rejected, while
+// `const p = store.share(e); p.catch(…); return p` hands the promise on and is
+// accepted. A binding nothing reads is a dropped promise, so it is rejected too.
+//
+// This used to reject every assignment, on the grounds that the legal shape was
+// rare enough to write as `await` directly. It is not: holding the promise to
+// attach a side `.catch` AND return it — so an ignored caller cannot raise an
+// unhandled rejection while an awaiting caller still sees the real result — has
+// no `await` form, because awaiting changes when the rest of the function runs.
+// See `markAgentNotAlive` in server/unified-server.mjs.
 
 import { FLEET_STORE_ASYNC_METHODS } from '../server/lib/fleet-store-async-methods.mjs'
 
@@ -124,14 +132,46 @@ export default {
 
     // Walk out through parentheses and optional-chaining wrappers, which sit
     // between the call and whatever actually consumes it.
+    //
+    // A conditional is transparent for the same reason: `cond ? a : store.x()`
+    // has the value of whichever BRANCH ran, so the promise goes exactly where
+    // the conditional goes, and asking the branch what consumed it is asking the
+    // wrong node. The `test` is deliberately not transparent — a call in that
+    // position is being read as a boolean, which is the truthiness bug the rule
+    // exists to catch.
     function consumer(node) {
       let child = node
       let parent = child.parent
-      while (parent && (parent.type === 'ChainExpression' || parent.type === 'TSNonNullExpression')) {
+      while (parent && (
+        parent.type === 'ChainExpression'
+        || parent.type === 'TSNonNullExpression'
+        || (parent.type === 'ConditionalExpression' && parent.test !== child)
+      )) {
         child = parent
         parent = parent.parent
       }
       return { parent, child }
+    }
+
+    // `const p = store.x()` is rejected on its own — see the header — because it
+    // is indistinguishable from the reaping bug at the point of assignment. What
+    // distinguishes them is what the binding is then USED for, so ask that:
+    // every read of it must itself be a promise consumer, by the same test.
+    //
+    // `const a = store.share(e); return a.dead` still reports: `.dead` is a
+    // property read, not `.then`. What this admits is the shape the header calls
+    // rare and this file has anyway — hold the promise, attach a `.catch` so an
+    // ignored rejection is not unhandled, and return it so a caller that DOES
+    // care still awaits the real result. Collapsing that to `await` would change
+    // behaviour, so there is no version of it the old rule could accept.
+    //
+    // A binding with no reads at all is a dropped promise, not a consumed one.
+    function bindingConsumesPromise(declarator) {
+      if (declarator.id?.type !== 'Identifier') return false
+      const [variable] = context.sourceCode.getDeclaredVariables(declarator)
+      if (!variable) return false
+      const reads = variable.references.filter(ref => ref.isRead())
+      return reads.length > 0 && reads.every(ref => isConsumed(ref.identifier))
     }
 
     function isConsumed(node) {
@@ -159,6 +199,8 @@ export default {
             && outer.callee.object?.name === 'Promise'
             && PROMISE_COMBINATORS.has(outer.callee.property?.name)
         }
+        case 'VariableDeclarator':
+          return parent.init === child && bindingConsumesPromise(parent)
         case 'CallExpression':
           // Handed to `Promise.resolve(…)` / `Promise.reject(…)`, which is a real
           // way this codebase adapts a maybe-promise before `.then`ing it. Only

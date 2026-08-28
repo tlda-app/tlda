@@ -25,7 +25,7 @@ const config = {
   rules: { 'tlda/await-fleet-store': 'error' },
 }
 
-const wrap = (body) => `async function f(id, e) {\n${body}\n}\n`
+const wrap = (body) => `async function f(id, e, c) {\n${body}\n}\n`
 
 // Must be REJECTED. Each is a way a promise gets treated as a value.
 const MUST_CATCH = {
@@ -42,6 +42,16 @@ const MUST_CATCH = {
   // MUST_ALLOW note below describes, in the opposite direction.
   'truthiness test': 'if (fleetStore.markRead(id)) return 2',
   'reached through a property': 'const s = { fleetStore }; s.fleetStore.share(e)',
+  // A conditional is transparent to the rule, so these check that being a
+  // branch of one buys nothing on its own — what matters is still where the
+  // conditional's own value lands.
+  'conditional branch, then used as an object': 'const a = c ? null : fleetStore.share(e); return a.dead',
+  'conditional branch, bare statement': 'c ? fleetStore.share(e) : null',
+  'conditional test — truthiness, one ternary out': 'return fleetStore.markRead(id) ? 1 : 2',
+  // A binding nothing ever reads is a dropped promise. It has no unsafe USE to
+  // find, so a rule that asks "is every read safe" says yes vacuously.
+  'assigned and never read': 'const a = fleetStore.share(e)',
+  'assigned, read once safely and once not': 'const a = fleetStore.share(e); a.catch(() => {}); return a.dead',
 }
 
 // Must be ACCEPTED. Each hands the promise somewhere that handles one.
@@ -65,6 +75,15 @@ const MUST_ALLOW = {
   // Real shape in unified-server.mjs: adapt a maybe-promise, then handle it.
   'wrapped in Promise.resolve': 'Promise.resolve(fleetStore.share(e)).then(() => {})',
   'wrapped, optional-called': 'Promise.resolve(fleetStore?.share?.(e)).catch(() => {})',
+  // Real shapes in unified-server.mjs, all three of which the rule reported
+  // while the code was correct. The first two are one `queryPage` lambda whose
+  // body picks a query by ternary; the third is markAgentNotAlive holding the
+  // durable write so ignored observation callers cannot raise an unhandled
+  // rejection while lifecycle callers still await the real result.
+  'conditional branch, awaited': 'await (c ? Promise.resolve() : fleetStore.share(e))',
+  'conditional branch in an arrow body': 'return [e].map(x => c ? Promise.resolve() : fleetStore.share(x))',
+  'held for a side catch, then returned':
+    'const p = c ? Promise.resolve() : fleetStore.share(e); p.catch(() => {}); return p',
 }
 
 const failures = []
