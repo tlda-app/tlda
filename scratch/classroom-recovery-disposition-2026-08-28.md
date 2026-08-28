@@ -268,6 +268,37 @@ handout instead of the master**, using the generator that already existed.
 *and* answers passes a naive check: zero `callout-solution` **and** the
 exercises still present, with visible-text length compared before and after.
 
+## An acceptance criterion can be a lying instrument too
+
+**The sharpest self-inflicted lesson of the night, and it belongs with the
+others because it is the same disease from the other side.**
+
+Fixing the orphan `qtm285-hw-minus-1` produced a 1.2 MB self-contained page
+where an 83 KB externally-linked one had been. I called that a regression and
+set acceptance as: **"byte size back in the same order as the book's
+chapters."**
+
+That was met exactly — 51,317 bytes — **and the resulting page referenced four
+stylesheets that all 404**, because a single-file project has no sibling
+directory to serve `index_files/` from. **51 KB correct and 51 KB broken are
+indistinguishable to a byte count**, and the byte count was what I asked for.
+
+**The criterion was a proxy for "renders like a normal page" and the proxy
+passed on a page that does not render.** Every other lying instrument recorded
+here — `.tl-page` counts, `N/M pages rendered`, `buildStatus: success` over a
+destroyed render — fooled somebody who inherited it. **This one was built into
+the gate, by the person writing the gate.**
+
+**The corrected criterion, which is the durable form:** *every asset the page
+references resolves* — fetch each one and confirm 200, or confirm there are
+none. **"Does it work", not "is it about the right size."**
+
+**And the diagnosis under it was wrong in the same direction.** I called
+`embed-resources` a category error — a download's settings inherited by a
+served page. That holds for a project with sibling asset directories. **A
+single-file project has none, so self-contained is the only correct mode**, and
+the page I reopened was already right.
+
 ## A standing defect found tonight, with no owner
 
 **A project can be permanently unrenderable while every HTTP signal on it is
