@@ -2636,6 +2636,29 @@ async function cmdOpen() {
   }
 }
 
+/**
+ * Ask the box named in a share URL whether its token authenticates.
+ *
+ * `/auth/login` answers 302 for a token the box accepts and 401 for one it does
+ * not, so this is the whole question in one request. Three outcomes, and the
+ * third is not the second: `ok: false` means the box answered and rejected the
+ * token; `ok: null` means nothing answered, which says nothing about the token
+ * and must not be reported as a bad link.
+ */
+async function probeLoginUrl(url, { timeoutMs = 10000 } = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { method: 'GET', redirect: 'manual', signal: controller.signal })
+    if (res.status === 401 || res.status === 400) return { ok: false, status: res.status }
+    return { ok: true, status: res.status }
+  } catch (e) {
+    return { ok: null, error: e.name === 'AbortError' ? `no response in ${timeoutMs / 1000}s` : e.message }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function cmdShare() {
   // Three shapes (Skip-confirmed):
   //   (no arg) → index page (root `/`, docName=null)
@@ -2680,10 +2703,34 @@ async function cmdShare() {
     hasTls,
   })
   const url = viewerLoginUrl(sel.base, name, readToken)
+
+  // The token comes from this machine's tokens.json, which holds exactly one
+  // pair, while `daemon.yaml` names several environments that are separate boxes
+  // with their own secrets. So the printed link authenticates only when the
+  // target box happens to share this machine's token — true for the default
+  // environment, false for any other, and invisible either way: a rejected link
+  // renders as a blank page rather than an error. Ask the box in the URL whether
+  // this token works before handing the URL to anyone.
+  const probe = await probeLoginUrl(url)
+  if (probe.ok === false) {
+    const host = new URL(sel.base).host
+    console.error(red(`Read token rejected by ${host} (HTTP ${probe.status}).`))
+    console.error()
+    console.error(`This machine's read token is not ${bold(getActiveEnvName())}'s read token — ${host} is a`)
+    console.error('different box with its own secrets, so this link would fail for whoever you gave it to.')
+    console.error()
+    console.error(`Supply that box's read token and re-run this command:`)
+    console.error(`  ${dim(`TLDA_TOKEN_READ=<${getActiveEnvName()} read token> <this command>`)}`)
+    process.exit(1)
+  }
+
   const unavailable = sel.shareable === false
   console.log(`${bold(sel.label)}${unavailable ? ` ${dim('(not reachable from other devices)')}` : ''}`)
   console.log(`  ${cyan(url)}`)
   if (sel.note) console.log(`  ${dim(sel.note)}`)
+  if (probe.ok === null) {
+    console.log(`  ${yellow(`Unverified: could not reach ${new URL(sel.base).host} to check the token (${probe.error}).`)}`)
+  }
   console.log()
   if (!unavailable) {
     await printQr(url)
