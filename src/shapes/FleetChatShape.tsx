@@ -5090,6 +5090,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         // toggled, so `.semantic-chat-operation` -- emitted only by that card --
         // no longer contains a `.pretty-expand-btn`, and the ownership check
         // that used to disambiguate the two went with it.
+        //
+        // This says nothing about the search card having no way to reveal more.
+        // It does, and the controls are React, in FleetSearchResultsView -- so
+        // they are invisible to a grep for `.pretty-expand-btn` and this comment
+        // reads as though the affordance is gone. It nearly sent an agent to
+        // investigate a deletion that had not happened.
         const moreRows = expandBtn.parentElement?.querySelector('.pretty-more-rows') as HTMLElement
         if (moreRows) {
           const wasExpanded = moreRows.style.display !== 'none'
