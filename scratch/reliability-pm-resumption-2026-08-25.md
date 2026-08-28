@@ -2667,3 +2667,46 @@ find"* -- while their own three tests passed. A run of just theirs would have
 reported green on a tree that had silently lost the stronger gate.
 
 **Open and unlanded:** `one-checkout-one-project` at `c770d33d1`.
+
+### LANDED: the one-checkout guard, `6e3833169`. Session close.
+
+Verified independently: `6e3833169` is on main, the bind guard is in main's tree,
+its tests are present, the inventory script is ABSENT from main, and the shared
+checkout is clean.
+
+## WHERE THINGS STAND AT HIBERNATE (2026-08-27)
+
+**Landed today, all verified against main rather than taken on report:**
+- symlinked project path -> `83491bc5a` (classroom-submission-store's fix; my
+  gate went 2/4 -> 4/4 on it) plus `fa71aff14`, `853dced15`, `76860c0ef` (my
+  gate, topology rig, visible-hold, pin commit)
+- one checkout carries one project -> `6e3833169`
+- earlier: symlink closure push, room-stages-its-first-file, relink declares
+  nothing, conflict markers never published, the WrongHead lockout
+
+**NOT deployed.** Everything above is on local `main` only. The browser-editor
+save fix in particular is NOT on the box: **until it deploys, saving from the
+browser editor still fails for every project.**
+
+**Open, unowned, and named:**
+1. `main`'s daemon suite cannot come back clean -- `git-sync-manager` 6/3,
+   `git-project-sync` 8/2, plus files needing `--test-force-exit` to terminate.
+   A regression in `daemon/` lands invisibly.
+2. The stylized demo's REMOTE leg fails every cycle on
+   `git merge --no-edit refs/remotes/origin/tlda/<p>`. Undiagnosed.
+3. Disk-leg latency 17-35s -> 66-82s across two runs, unattributed; the box was
+   at load ~43 at one point (54 playwright chromium processes) and ~15 later.
+4. `adopt-shadow-history-ref`: closed as not reproducible. If it recurs, the
+   named next step is logging elapsed time on the timeout.
+5. One project's document-roots record pinned where it was computed -- my error,
+   no supported route back, measured cost nil.
+
+**Method notes worth keeping from today:**
+- *"A missing test file is not a failing test; it is a passing suite with a hole
+  in it."* (classroom-submission-store, about my gate.)
+- A zero from a failed command is not a measurement -- `git show "$SHA:path"`
+  failed on shell expansion and `grep -c` counted the error as 0.
+- Advance a dirty shared checkout with `merge --ff-only` FROM it; moving the ref
+  from elsewhere leaves staged reversions behind.
+- The symlink/realpath class has bitten three times now: build-runner, the
+  classroom hand-in 500, the room-save 409.
