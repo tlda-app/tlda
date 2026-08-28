@@ -110,10 +110,8 @@ function studentToken(req) {
   return req.headers['x-tlda-student-token'] || null
 }
 
-export function classroomPrincipal(req, store) {
-  const level = validateToken(extractToken(req))
+export function classroomPrincipal(req, store, level = validateToken(extractToken(req))) {
   if (level === 'rw') return { role: 'instructor' }
-  if (level !== 'read') return null
   const student = store.studentForToken(studentToken(req))
   return student ? { role: 'student', studentId: student.id, courseId: student.courseId, layerScope: student.layerScope } : null
 }
