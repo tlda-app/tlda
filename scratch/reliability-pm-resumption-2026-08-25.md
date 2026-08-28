@@ -2589,3 +2589,43 @@ and a symptom is not a mandate.
 **Litter created, disclosed:** disposable projects on testing --
 `sync-demo-0827`, `adopt-probe-0827`, `-2`, `-3` -- plus checkouts under
 `~/worktrees`. All mine. Not deleted: deleting a project is destructive.
+
+### LANDED and verified independently — plus a near-miss worth remembering
+
+sol-dev integrated the three commits as `fa71aff14`, `853dced15`, `76860c0ef`,
+on top of `83491bc5a`. **Verified rather than taken on report:** all three are
+ancestors of main, all three files are in main's tree, visible-hold present, and
+the gate rerun AGAINST MAIN gives focused tests 8/8 and the topology rig 202
+with both room conditions holding.
+
+**THE NEAR-MISS.** `classroom-submission-store` shouted before anyone committed
+in the shared checkout, and the index held:
+
+```
+D  daemon/two-trees-one-project-lose-nothing.test.mjs
+D  scratch/fly-topology-room-save.mjs
+D  shared/a-symlinked-project-directory-still-stages.test.mjs
+M  bin/websocket-boundary-guard.mjs      10 deletions vs HEAD, allowance ABSENT
+M  server/lib/source-room-daemon.mjs     18 deletions vs HEAD, visible-hold ABSENT
+```
+
+**A commit from there would have deleted three landed files and reverted two
+landed changes -- five artefacts, looking like ordinary work.** Already repaired
+by the time my restore ran; I verified the end state instead of assuming it (all
+files on disk, `git diff HEAD` empty on all six paths, UI files untouched).
+
+**Cause, and sol-dev owned it:** main's ref advanced from an isolated worktree
+while the shared checkout's index still described the old tree, so files on the
+new HEAD read as staged deletions and two modified files were stale OLDER
+copies.
+
+**The rule that avoids it:** advance the shared checkout with
+`git merge --ff-only` FROM that checkout -- it refuses when it would clobber --
+rather than moving the ref from elsewhere, which does not. Whoever moves the ref
+owns bringing the worktree along; otherwise the next ordinary `git commit -a`
+there reverts whatever landed in between.
+
+**Adopt timeout: closed as not reproducible.** No code change, no
+instrumentation, per the chief and matching my own conclusion.
+
+**Still unlanded and gated:** `one-checkout-one-project` (`f49bfcb97`).
