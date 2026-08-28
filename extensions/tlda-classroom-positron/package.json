@@ -12,7 +12,8 @@
     "Education"
   ],
   "activationEvents": [
-    "onCommand:tldaClassroom.zipForSubmission"
+    "onCommand:tldaClassroom.zipForSubmission",
+    "onCommand:tldaClassroom.submit"
   ],
   "main": "./extension.js",
   "scripts": {
@@ -24,6 +25,12 @@
         "command": "tldaClassroom.zipForSubmission",
         "category": "Homework",
         "title": "Zip for submission",
+        "enablement": "resourceExtname == .qmd"
+      },
+      {
+        "command": "tldaClassroom.submit",
+        "category": "Homework",
+        "title": "Submit",
         "enablement": "resourceExtname == .qmd"
       }
     ]
