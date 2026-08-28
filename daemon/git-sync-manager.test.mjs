@@ -120,29 +120,39 @@ test('existing tlda remote is reconciled without attempting to add it again', as
   await manager.closeAll()
 })
 
-test('two projects sharing one checkout submit to their owning project remotes', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'tlda-git-shared-checkout-'))
-  const checkout = join(root, 'checkout')
+test('two projects submit to their owning project remotes', async () => {
+  // ONE CHECKOUT EACH. This used to bind both projects to a single checkout,
+  // which Skip disallowed on 2026-08-27 -- *"maybe let's just disallow that"* /
+  // *"like, just clone right?"* -- because a checkout stands on ONE work branch,
+  // so of N projects sharing it, N-1 silently never sync.
+  //
+  // The shared directory was never this test's subject: what it checks is that
+  // each project submits to ITS OWN remote through `remoteUrlFor`. That is worth
+  // keeping, so it keeps it, with the setup a person can now actually have.
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-owning-remotes-'))
+  const checkouts = { paper: join(root, 'paper-checkout'), response: join(root, 'response-checkout') }
   const remotes = {
     paper: join(root, 'paper.git'),
     response: join(root, 'response.git'),
   }
   await git(root, ['init', '--bare', remotes.paper])
   await git(root, ['init', '--bare', remotes.response])
-  await git(root, ['init', '-b', 'main', checkout])
-  await git(checkout, ['config', 'user.name', 'fixture'])
-  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
-  writeFileSync(join(checkout, 'main.tex'), 'shared source\n')
-  await git(checkout, ['add', '.'])
-  await git(checkout, ['commit', '-m', 'shared source'])
+  for (const checkout of Object.values(checkouts)) {
+    await git(root, ['init', '-b', 'main', checkout])
+    await git(checkout, ['config', 'user.name', 'fixture'])
+    await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+    writeFileSync(join(checkout, 'main.tex'), 'shared source\n')
+    await git(checkout, ['add', '.'])
+    await git(checkout, ['commit', '-m', 'shared source'])
+  }
 
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-shared', server: 'http://unused.test',
     remoteUrlFor: project => remotes[project], watch: () => testWatcher(),
     log: { info() {}, warn() {}, error() {} },
   })
-  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
-  manager.bindSource('response', checkout, { documentRoots: ['main.tex'] })
+  manager.bindSource('paper', checkouts.paper, { documentRoots: ['main.tex'] })
+  manager.bindSource('response', checkouts.response, { documentRoots: ['main.tex'] })
   await manager.sync([
     { name: 'paper', mainFile: 'main.tex' },
     { name: 'response', mainFile: 'main.tex' },
@@ -153,15 +163,19 @@ test('two projects sharing one checkout submit to their owning project remotes',
   assert.equal((await git(remotes.paper, ['rev-parse', paper.proposalRef])).stdout.trim(), paper.revision)
   assert.equal((await git(remotes.response, ['rev-parse', response.proposalRef])).stdout.trim(), response.revision)
 
-  const tree = (await git(checkout, ['rev-parse', 'HEAD^{tree}'])).stdout.trim()
-  const paperHead = (await git(checkout, ['commit-tree', tree, '-m', 'paper accepted'])).stdout.trim()
-  const responseHead = (await git(checkout, ['commit-tree', tree, '-m', 'response accepted'])).stdout.trim()
-  await git(checkout, ['push', remotes.paper, `${paperHead}:refs/tlda/source/paper`])
-  await git(checkout, ['push', remotes.response, `${responseHead}:refs/tlda/source/response`])
+  const tree = (await git(checkouts.paper, ['rev-parse', 'HEAD^{tree}'])).stdout.trim()
+  // Each accepted head is built and pushed FROM the checkout that owns it, and
+  // fetched back into that same one — which is the point now that the two are
+  // separate trees rather than one directory wearing two hats.
+  const paperHead = (await git(checkouts.paper, ['commit-tree', tree, '-m', 'paper accepted'])).stdout.trim()
+  const responseTree = (await git(checkouts.response, ['rev-parse', 'HEAD^{tree}'])).stdout.trim()
+  const responseHead = (await git(checkouts.response, ['commit-tree', responseTree, '-m', 'response accepted'])).stdout.trim()
+  await git(checkouts.paper, ['push', remotes.paper, `${paperHead}:refs/tlda/source/paper`])
+  await git(checkouts.response, ['push', remotes.response, `${responseHead}:refs/tlda/source/response`])
   await manager.headChanged('paper', paperHead)
   await manager.headChanged('response', responseHead)
-  assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/fetched/paper'])).stdout.trim(), paperHead)
-  assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/fetched/response'])).stdout.trim(), responseHead)
+  assert.equal((await git(checkouts.paper, ['rev-parse', 'refs/tlda/fetched/paper'])).stdout.trim(), paperHead)
+  assert.equal((await git(checkouts.response, ['rev-parse', 'refs/tlda/fetched/response'])).stdout.trim(), responseHead)
   await manager.closeAll()
 })
 

@@ -207,6 +207,28 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     if (existing && path.resolve(typeof existing === 'string' ? existing : existing.sourceDir) !== absolute) {
       throw new Error(`Project ${project} is already bound to another checkout`)
     }
+    // AND THE CONVERSE, which was missing: one checkout carries one project.
+    //
+    // Skip, 2026-08-27: *"maybe let's just disallow that"* / *"like, just clone
+    // right?"*
+    //
+    // A checkout stands on ONE work branch, and a project syncs only while its
+    // own branch is checked out -- *"if you have a daemon-managed branch checked
+    // out, it commits, and pushes, and all that shit. otherwise it doesn't."* So
+    // of N projects sharing a directory, N-1 never sync, and the person is told
+    // nothing: the edit commits, the tree is clean, and the only trace is a
+    // `not-on-work-branch` line in a daemon log. Measured the day this was
+    // added: 10 checkouts carried 27 projects, so at least 17 could not sync.
+    //
+    // Rejected at bind, which is the one place every route arrives -- the CLI,
+    // the source room, and the server-side room manager all come through here.
+    const taken = Object.entries(all).find(([name, value]) => name !== project
+      && path.resolve(typeof value === 'string' ? value : value.sourceDir) === absolute)
+    if (taken) {
+      throw new Error(`${absolute} is already the checkout for project ${taken[0]}. `
+        + 'One checkout carries one project: clone the repository again and link '
+        + `${project} to the new clone.`)
+    }
     const prior = existing && typeof existing === 'object' ? existing : {}
     const definedMetadata = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== undefined))
     const value = { ...prior, sourceDir: absolute, bindingId: prior.bindingId || bindingId(project, absolute), ...definedMetadata }
