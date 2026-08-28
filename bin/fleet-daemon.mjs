@@ -112,7 +112,7 @@ import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
-import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
+import { createShadowMirror, seedAndConfirmHistory } from '../daemon/shadow-mirror.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
@@ -750,21 +750,13 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
       }
     }
     if (!serverHistoryContained) {
-      const history = await shadowMirror.prepareHistorySeed({ project, sourceDir, seedBranch, seedRevision, documentRoots: documentRoots || [] })
-      try {
-        if (!history.empty) {
-          const pushed = await sourceSync.pushHistorySeed(project, history.repositoryDir, history.head)
-          const adopted = await sendMsgWithReply({
-            type: 'adopt-shadow-history-ref',
-            project,
-            head: history.head,
-            ref: pushed.ref,
-          })
-          if (!adopted?.ok) throw new Error(`${project} was not linked: the server did not confirm its history`)
-        }
-      } finally {
-        await history.cleanup?.()
-      }
+      await seedAndConfirmHistory({
+        project,
+        log,
+        prepareSeed: () => shadowMirror.prepareHistorySeed({ project, sourceDir, seedBranch, seedRevision, documentRoots: documentRoots || [] }),
+        pushSeed: history => sourceSync.pushHistorySeed(project, history.repositoryDir, history.head),
+        confirmAdoption: ({ head, ref }) => sendMsgWithReply({ type: 'adopt-shadow-history-ref', project, head, ref }),
+      })
     }
   }
 
