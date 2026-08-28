@@ -63,6 +63,41 @@ errors are the three `page-N.svg` 404s (wrong asset name universally — they 40
 identically on the rendering control) and one 403 on `/signal`, also present on the
 control.
 
+### Settled from the editor store, 22:44Z — no `html-page` shape was ever created
+
+The DOM read above left one thing open: a shape could exist in the store and fail
+to reach the DOM, which would be a different bug. It does not.
+
+`window.__tldraw_editor__`, `qtm285-book`:
+
+```js
+currentPageShapes  → [ { id: "shape:doc-version--sentinel", type: "doc-version", w: 1, h: 1 } ]
+pages              → [ { id: "page:page", name: "Page 1" } ]      // ONE page
+store.allRecords() → exactly ONE shape record, the sentinel
+```
+
+`pic-install`, independent project, identical. **`allRecords()` covers every shape
+in the store, not just the current page**, so nothing is hidden on another page.
+
+**Three conclusions:**
+
+1. **No `html-page` shape exists.** Not mis-sized, not hidden — never created. This
+   killed a fix that was about to ship against `createShapes.ts:241` ("a room whose
+   page shape was persisted with a collapsed height keeps it forever"), which needs
+   a persisted page shape that does not exist.
+2. **One tldraw page exists** while the loader logs three. Neither pages nor shapes
+   were committed.
+3. **`wm-project-layer-model` is absent too.** A working project on `testing` carries
+   *two* permanent 1×1 fixtures; both `pic` projects have only `doc-version--sentinel`.
+   A second missing thing, not a variant of the first.
+
+**Two independent `pic` projects share the signature**, so it is the code path or
+the box, not one room. A room reset fixes nothing; neither does anything pushed to
+the project. Both boxes were current — `pic` `5784f5787`, `testing` `196dd5929`.
+
+**Live question:** why `createHtmlPageShapes` commits nothing while the loader
+reports three pages, silently, on `pic` and not on `testing`.
+
 For `qtm285-book` this is true **with every upstream signal green**: `page-info.json`
 200 with 3 entries, all 3 carrying `source` blocks, `toc.json` 200, pages serving
 28,497 / 1,820 / 42,365 characters, and the console logging
