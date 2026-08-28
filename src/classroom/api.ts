@@ -11,6 +11,7 @@ export interface ProblemAnswer { studentId: string; displayName: string; layerSc
 export interface ProblemsView { assignment: Assignment; problems: { problemId: string; answers: ProblemAnswer[] }[] }
 export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[] }
 export interface RegisteredStudent { student: { id: string; courseId: string; displayName: string; layerScope: StudentLayerScope }; enrollmentToken: string }
+export interface DeviceTransfer { transferUrl: string; qrSvg: string; expiresAt: string }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const classroomToken = new URLSearchParams(window.location.search).get('classroomToken')
@@ -36,6 +37,12 @@ export const classroomApi = {
   me: () => request<ClassroomIdentity>('/me'),
   register: (courseId: string, body: { displayName: string; universityLogin: string }) => request<RegisteredStudent>(`/courses/${encodeURIComponent(courseId)}/register`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }),
+  createDeviceTransfer: (courseId: string, returnPath: string) => request<DeviceTransfer>(`/courses/${encodeURIComponent(courseId)}/device-transfer`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnPath }),
+  }),
+  redeemDeviceTransfer: (courseId: string, transferCode: string) => request<RegisteredStudent>(`/courses/${encodeURIComponent(courseId)}/device-transfer/redeem`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transferCode }),
   }),
   status: (courseId: string) => request<CourseStatus>(`/courses/${encodeURIComponent(courseId)}/status`),
   problems: (assignmentId: string) => request<ProblemsView>(`/assignments/${encodeURIComponent(assignmentId)}/problems`),

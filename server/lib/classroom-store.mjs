@@ -32,6 +32,15 @@ export class ClassroomStore {
         id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
         display_name TEXT NOT NULL, enrollment_token_hash TEXT UNIQUE NOT NULL, active INTEGER NOT NULL DEFAULT 1
       );
+      CREATE TABLE IF NOT EXISTS student_device_credentials (
+        id TEXT PRIMARY KEY,
+        student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+        transfer_code_hash TEXT UNIQUE NOT NULL,
+        device_token_hash TEXT UNIQUE,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        redeemed_at TEXT
+      );
       CREATE TABLE IF NOT EXISTS assignments (
         id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
         title TEXT NOT NULL, due_at TEXT NOT NULL, solutions_doc_key TEXT,
@@ -100,10 +109,40 @@ export class ClassroomStore {
   getStudent(id) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, active, layer_scope AS layerScope FROM students WHERE id=?').get(id) || null }
   studentForToken(token) {
     if (!token) return null
-    return this.db.prepare(`SELECT id, course_id AS courseId, display_name AS displayName, layer_scope AS layerScope FROM students
-      WHERE enrollment_token_hash=? AND active=1`).get(hashEnrollmentToken(token)) || null
+    const tokenHash = hashEnrollmentToken(token)
+    const primary = this.db.prepare(`SELECT id, course_id AS courseId, display_name AS displayName, layer_scope AS layerScope FROM students
+      WHERE enrollment_token_hash=? AND active=1`).get(tokenHash)
+    if (primary) return primary
+    return this.db.prepare(`SELECT st.id, st.course_id AS courseId, st.display_name AS displayName, st.layer_scope AS layerScope
+      FROM student_device_credentials dc JOIN students st ON st.id=dc.student_id
+      WHERE dc.device_token_hash=? AND dc.redeemed_at IS NOT NULL AND st.active=1`).get(tokenHash) || null
   }
   listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, university_login AS universityLogin, layer_scope AS layerScope FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
+
+  createDeviceTransfer({ id = crypto.randomUUID(), studentId, courseId, transferCode, createdAt = new Date().toISOString(), expiresAt }) {
+    const student = this.getStudent(studentId)
+    if (!student || !student.active || student.courseId !== courseId) throw new Error('student not found in course')
+    this.db.prepare(`INSERT INTO student_device_credentials(id,student_id,transfer_code_hash,created_at,expires_at)
+      VALUES (?,?,?,?,?)`).run(id, studentId, hashEnrollmentToken(transferCode), createdAt, expiresAt)
+    return { id, studentId, courseId, createdAt, expiresAt }
+  }
+
+  redeemDeviceTransfer({ courseId, transferCode, enrollmentToken, now = new Date().toISOString() }) {
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT dc.id,dc.student_id AS studentId,dc.expires_at AS expiresAt,dc.redeemed_at AS redeemedAt,
+        st.course_id AS courseId,st.active
+        FROM student_device_credentials dc JOIN students st ON st.id=dc.student_id
+        WHERE dc.transfer_code_hash=?`).get(hashEnrollmentToken(transferCode))
+      if (!row || row.courseId !== courseId || !row.active) return { status: 'invalid' }
+      if (row.redeemedAt) return { status: 'used' }
+      if (new Date(row.expiresAt).getTime() <= new Date(now).getTime()) return { status: 'expired' }
+      const result = this.db.prepare(`UPDATE student_device_credentials
+        SET device_token_hash=?,redeemed_at=? WHERE id=? AND redeemed_at IS NULL`)
+        .run(hashEnrollmentToken(enrollmentToken), now, row.id)
+      if (!result.changes) return { status: 'used' }
+      return { status: 'redeemed', student: this.getStudent(row.studentId) }
+    })()
+  }
 
   upsertAssignment({ id, courseId, title, dueAt, solutionsDocKey = null, solutionsVersion = null, templateDocKey = null, templateVersion = null, sourceDocKey = null, handoutFilter = null, solutionFilter = null }) {
     this.db.prepare(`INSERT INTO assignments(id,course_id,title,due_at,solutions_doc_key,solutions_version,template_doc_key,template_version,source_doc_key,handout_filter,solution_filter)

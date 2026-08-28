@@ -9,6 +9,45 @@ import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
 import crypto from 'node:crypto'
+import { createRequire } from 'node:module'
+
+const require = createRequire(import.meta.url)
+const QRCode = require('qrcode-terminal/vendor/QRCode')
+const QRErrorCorrectLevel = require('qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel')
+const DEVICE_TRANSFER_TTL_MS = 10 * 60 * 1000
+
+export function classroomTransferQrSvg(value) {
+  const qr = new QRCode(-1, QRErrorCorrectLevel.M)
+  qr.addData(value)
+  qr.make()
+  const quiet = 4
+  const size = qr.getModuleCount() + quiet * 2
+  const modules = []
+  for (let row = 0; row < qr.getModuleCount(); row++) {
+    for (let col = 0; col < qr.getModuleCount(); col++) {
+      if (qr.isDark(row, col)) modules.push(`M${col + quiet} ${row + quiet}h1v1h-1z`)
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><path fill="#fff" d="M0 0h${size}v${size}H0z"/><path fill="#000" d="${modules.join('')}"/></svg>`
+}
+
+function deviceTransferUrl(req, courseId, transferCode) {
+  const protocol = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim()
+  const origin = `${protocol}://${req.get('host')}`
+  const returnPath = String(req.body?.returnPath || '')
+  const requested = returnPath.startsWith('/') ? new URL(returnPath, origin) : null
+  const url = requested?.origin === origin ? requested : new URL('/', origin)
+  url.searchParams.delete('classroomToken')
+  url.searchParams.delete('name')
+  url.searchParams.delete('pwtab')
+  url.searchParams.delete('pw')
+  url.searchParams.set('workspace', 'classroom-transfer')
+  url.searchParams.set('course', courseId)
+  url.searchParams.set('transfer', transferCode)
+  const accessToken = extractToken(req)
+  if (accessToken) url.searchParams.set('token', accessToken)
+  return url.toString()
+}
 
 // Everything the student uploaded, in the shape they uploaded it. Deliberately
 // not listSourceFiles, which filters by client-source ownership rules — an
@@ -156,6 +195,17 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
       throw error
     }
   })
+  router.post('/courses/:courseId/device-transfer/redeem', (req, res) => {
+    if (!resolveRegistrationAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
+    const transferCode = String(req.body?.transferCode || '')
+    if (!transferCode) return res.status(400).json({ error: 'transferCode is required' })
+    const enrollmentToken = crypto.randomBytes(32).toString('hex')
+    const result = store.redeemDeviceTransfer({ courseId: req.params.courseId, transferCode, enrollmentToken })
+    if (result.status === 'invalid') return res.status(404).json({ error: 'Transfer link is invalid for this class' })
+    if (result.status === 'expired') return res.status(410).json({ error: 'Transfer link has expired' })
+    if (result.status === 'used') return res.status(409).json({ error: 'Transfer link has already been used' })
+    return res.json({ student: result.student, enrollmentToken })
+  })
   router.use((req, res, next) => {
     const principal = resolvePrincipal(req, store)
     if (!principal) return res.status(401).json({ error: 'Unauthorized' })
@@ -166,6 +216,24 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   const instructor = (req, res, next) => req.classroomPrincipal.role === 'instructor'
     ? next()
     : res.status(403).json({ error: 'Instructor access required' })
+
+  router.post('/courses/:courseId/device-transfer', (req, res) => {
+    const principal = req.classroomPrincipal
+    if (principal.role !== 'student') return res.status(403).json({ error: 'Student access required' })
+    if (principal.courseId !== req.params.courseId) return res.status(403).json({ error: 'Forbidden' })
+    const createdAt = new Date().toISOString()
+    const expiresAt = new Date(Date.parse(createdAt) + DEVICE_TRANSFER_TTL_MS).toISOString()
+    const transferCode = crypto.randomBytes(32).toString('base64url')
+    store.createDeviceTransfer({
+      studentId: principal.studentId,
+      courseId: principal.courseId,
+      transferCode,
+      createdAt,
+      expiresAt,
+    })
+    const transferUrl = deviceTransferUrl(req, principal.courseId, transferCode)
+    res.status(201).json({ transferUrl, qrSvg: classroomTransferQrSvg(transferUrl), expiresAt })
+  })
 
   router.post('/courses', instructor, (req, res) => {
     const { id, title } = req.body || {}
