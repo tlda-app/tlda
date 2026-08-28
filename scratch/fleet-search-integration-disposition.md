@@ -138,6 +138,24 @@ error; non-empty pair unaffected.
   worktrees, so they collide and `serve status` can answer about someone else's
   server. This handed an agent a stale bundle with a green-looking status.
 
+## Debris this operation created, not cleaned up
+
+**An empty project `search-card-expand-probe` (0 pages) exists on live
+`testing`.** `search-card-expand`'s `tlda project link` timed out at five
+minutes; they assumed it had failed and it had not. Confirmed present via
+`tlda project list`, not by reading `server/projects`.
+
+**Deliberately not deleted.** Removing a project on the live server is
+destructive and outward-facing, and this codebase's standing rule is that
+nothing deletes anything. The agent declined to remove it on their way out and
+escalated instead, which was the right call; I am not overriding that on my own
+authority either.
+
+For whoever decides: it is one row in the project list with no document and no
+history to lose, and it is **not the first of its kind** — `voice-sink-probe`
+(1 page) is already there from unrelated work. So this is a known pattern rather
+than a new problem, and it is cheap either to keep or to remove deliberately.
+
 ## Suggested merge order
 
 `04cacbd10` → `3bab0498b` → `afeb5db5f`, then `features-pm`'s pair when they say
