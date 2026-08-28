@@ -28,11 +28,40 @@ correct and served; the canvas does not draw them.
 
 | project | shapes drawn | renders |
 |---|---|---|
-| `qtm285-lecture-1` — slide deck (`slideIndex`/`group`/`groupIndex`) | 8 @ 1076×834 | ✅ |
-| `qtm285-book` | 1 @ **1×1**, empty | ❌ |
-| `qtm285-hw-minus-1` | 1 @ **1×1**, empty | ❌ |
-| `pic-schedule` | 1 @ **1×1**, empty | ❌ |
-| `pic-install` | 1 @ **1×1**, empty | ❌ |
+| `qtm285-lecture-1` — slide deck (`slideIndex`/`group`/`groupIndex`) | 8 @ 1076×834, real content | ✅ |
+| `qtm285-book` | **0 document shapes** | ❌ |
+| `qtm285-hw-minus-1` | **0 document shapes** | ❌ |
+| `pic-schedule` | 1 shape, 1×1 (not inspected by id) | ❌ |
+| `pic-install` | 1 shape, 1×1 (not inspected by id) | ❌ |
+
+**Correction to my own earlier shorthand, and it changes where to look.** I first
+reported these as *"one shape, 1×1, empty"*, which reads as a document page
+collapsed to nothing. Inspected by id on 2026-08-28 22:42Z, that shape is:
+
+```json
+{ "id": "shape:doc-version--sentinel", "type": "doc-version",
+  "rect": {"w":1,"h":1,"x":200,"y":50}, "opacity": "0", "children": [], "innerHTML": 0 }
+```
+
+**A deliberate zero-opacity marker, not a document page.** Confirmed identical on
+`qtm285-book` and `qtm285-hw-minus-1`; `.tl-page` count is **0** on both. I did not
+re-inspect `pic-schedule` or `pic-install` at this depth.
+
+**So the defect is that there are ZERO document page shapes, not squashed ones** —
+do not go looking at geometry code on the strength of the 1×1.
+
+**And the loader says it made them.** Same load:
+
+```
+Found 3 HTML pages
+HTML document ready (3 pages, 3 TLDraw pages)
+```
+
+**The gap sits between the loader returning and anything reaching the editor, and
+nothing throws.** No JavaScript exception on the load at all. The five console
+errors are the three `page-N.svg` 404s (wrong asset name universally — they 404
+identically on the rendering control) and one 403 on `/signal`, also present on the
+control.
 
 For `qtm285-book` this is true **with every upstream signal green**: `page-info.json`
 200 with 3 entries, all 3 carrying `source` blocks, `toc.json` 200, pages serving
