@@ -170,6 +170,60 @@ Ship these together **after** the book is verified serving. The pipeline cost
   at the end of a deadline day, when the shipped guard already removes the harm.
   Goes to Skip as a named recommendation.
 
+## THE FINDING: a read-only reader cannot create document shapes
+
+**Document page shapes are created by the CLIENT and written into the synced
+room. A read-only reader cannot create them. So a project that has never been
+opened by a read-write session renders blank for every reader, permanently.**
+
+Proved by `classroom-blank-401` on a disposable `pic` project — same box, same
+bundle, same source, one variable:
+
+| token in the URL | canvas |
+|---|---|
+| read | 1 page, still named `"Page 1"`, only `doc-version` 1×1 — **blank** |
+| rw | 3 pages, `html-page` **800×490, 800×1200, 800×1200** |
+
+**Then reopened with the read token alone: it renders.** One read-write visit
+persists the shapes for every subsequent reader.
+
+**Everything else from the night collapses into this.** `qtm285-lecture-1`
+rendered because its 18 shapes were already persisted — the slides loader was
+never special. The blank rooms hold exactly `document` + `page` + `doc-version`,
+with no `user` record and no fleet shapes, which is what read-only produces.
+`pic-schedule` blank since 2026-08-13 is a project nobody ever opened
+read-write. The 403 on `/api/projects/:name/signal` was that same refusal, in
+the console the whole evening.
+
+### The operational rule nobody had written down
+
+**Students open with a read token by design.** Therefore **every project a class
+opens must already have been visited read-write at least once**, or they get a
+blank canvas. Nothing checks this, nothing warns, and every server-side signal
+reads green — built, right page count, content present.
+
+**That is the exact shape of an unusable class where every layer reports fine.**
+
+**Recovery needs no deploy:** open each affected project once with the RW token.
+
+### Dead ends, so nobody re-runs them
+
+All of these were confidently held at some point tonight and are refuted:
+
+- geometry not reaching the shape (mine)
+- `createShapes.ts:241`, declared height applied only at creation
+- `defaultPageId` page-mapping
+- the `source`-block correlation — 6/6 and it did not generalise
+- client/server schema mismatch (`sync-rooms.mjs` byte-identical across the shas)
+- stale bundles on either box
+- `tokenGating` breaking a fetch (mine — right variable, wrong mechanism; the
+  gate makes the reader read-only, which is what it is for)
+
+**And two instruments that proved nothing while looking like proof:**
+`.tl-page` count is **0 on a fully working render too**; and
+`[FetchAsync] N/M pages rendered` counts the text-selection overlay, so a
+working project reports `0/18`.
+
 ## A standing defect found tonight, with no owner
 
 **A project can be permanently unrenderable while every HTTP signal on it is
