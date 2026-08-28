@@ -267,6 +267,46 @@ export function splitDeckIntoSlides(html) {
  * @param {string} html - Full rendered reveal.js HTML
  * @param {string} deckFilename - The deck's own output filename (e.g. "talk.html")
  */
+const VOID_TAGS = new Set(['img', 'input', 'br', 'hr', 'source', 'embed'])
+
+function elementOuterHtml(html, id) {
+  const quoted = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const at = html.search(new RegExp('<([a-zA-Z0-9]+)[^>]*\\sid="' + quoted + '"'))
+  if (at === -1) return null
+  const open = /^<([a-zA-Z0-9]+)/.exec(html.slice(at))
+  if (!open) return null
+  const tag = open[1].toLowerCase()
+  const openEnd = html.indexOf('>', at)
+  if (openEnd === -1) return null
+  if (VOID_TAGS.has(tag) || html[openEnd - 1] === '/') return html.slice(at, openEnd + 1)
+  const scan = new RegExp('<' + tag + '\\b|</' + tag + '>', 'gi')
+  scan.lastIndex = openEnd + 1
+  let depth = 1
+  for (let m = scan.exec(html); m; m = scan.exec(html)) {
+    depth += m[0][1] === '/' ? -1 : 1
+    if (depth === 0) return html.slice(at, m.index + m[0].length)
+  }
+  return null
+}
+
+function referencedFigureTargets(slideHtml, fullHtml) {
+  const ids = new Set()
+  const link = /<a\b[^>]*class="[^"]*\bquarto-xref\b[^"]*"[^>]*>/gi
+  for (let m = link.exec(slideHtml); m; m = link.exec(slideHtml)) {
+    const href = /href="#\/?([^"]+)"/.exec(m[0])
+    if (href && href[1].startsWith('fig-')) ids.add(decodeURIComponent(href[1]))
+  }
+  const copies = []
+  for (const id of ids) {
+    if (slideHtml.includes(`id="${id}"`)) continue
+    const node = elementOuterHtml(fullHtml, id)
+    if (node) copies.push(node.replace(/\sdata-src="/g, ' src="'))
+  }
+  if (!copies.length) return ''
+  return '\n<div id="tlda-xref-targets" hidden aria-hidden="true" style="display:none">\n' +
+    copies.join('\n') + '\n</div>'
+}
+
 export function buildPerSlideDocuments(html, deckFilename) {
   const split = splitDeckIntoSlides(html)
   if (!split) return null
@@ -276,7 +316,7 @@ export function buildPerSlideDocuments(html, deckFilename) {
     const filename = `${base}-slide-${i}.html`
     return {
       filename,
-      html: `${prefix}\n${s.outerHtml}\n${suffix}`,
+      html: `${prefix}\n${s.outerHtml}\n${referencedFigureTargets(s.outerHtml, html)}\n${suffix}`,
       pageInfo: {
         file: filename,
         width,
