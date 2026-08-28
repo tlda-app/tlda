@@ -435,7 +435,12 @@ function FleetInboxInner({ shape }: { shape: any }) {
   // the global intake — every remaining writer is this tab's own optimistic
   // send. So the inbox could only ever show messages the tab itself sent, and
   // showed "no messages yet" to an identity holding delivered mail.
-  const bufferKey = filter ? `inbox:${shape.id}` : null
+  // `chat:` prefix marks the buffer server-fed — it holds exactly the rows the
+  // server said match, with no second client-side predicate over them. Without
+  // the prefix isServerFedBufferKey is false and applyFilterEvents drops every
+  // row the subscription delivers, which is a subscribed panel that still shows
+  // nothing. Same convention as unreadRailBufferKey.
+  const bufferKey = filter ? `chat:inbox:${shape.id}` : null
   const events = useFleetEvents(filter, undefined, bufferKey)
   useEffect(() => {
     if (!filter || !bufferKey) return
