@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -214,6 +214,42 @@ test('first publication installs public source and records its authoritative rev
       build: lifecycle.listRevisionLifecycles(name)[0].build,
       version: undefined, mirror: undefined,
     })
+  } finally {
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+    rmSync(instanceRoot, { recursive: true, force: true })
+  }
+})
+
+test('publication keeps relative source and output symlinks relative', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-relative-links-'))
+  const instanceRoot = mkdtempSync(join(tmpdir(), 'tlda-build-relative-links-instance-'))
+  const name = 'course'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'index.qmd', format: 'qmd' })
+    const lifecycle = await sourceLifecycleStore(name)
+    const git = await lifecycle.gitRepository()
+    const revision = await git.acceptRevision({
+      project: name,
+      files: [{ path: 'index.qmd', content: 'lectures/lecture.qmd' }],
+      message: 'relative-link publication',
+    })
+    const built = instance(instanceRoot, name, 'relative links')
+    mkdirSync(join(built, 'source', 'lectures'), { recursive: true })
+    writeFileSync(join(built, 'source', 'lectures', 'lecture.qmd'), '# Lecture')
+    writeFileSync(join(built, 'output', 'lecture.html'), '<h1>Lecture</h1>')
+    writeFileSync(join(built, 'source', 'index.qmd'), 'placeholder')
+    writeFileSync(join(built, 'output', 'index.html'), 'placeholder')
+    unlinkSync(join(built, 'source', 'index.qmd'))
+    unlinkSync(join(built, 'output', 'index.html'))
+    symlinkSync('lectures/lecture.qmd', join(built, 'source', 'index.qmd'))
+    symlinkSync('lecture.html', join(built, 'output', 'index.html'))
+
+    await publishBuildInstance(name, revision, 1, built, [])
+
+    assert.equal(readlinkSync(join(root, name, 'source', 'index.qmd')), 'lectures/lecture.qmd')
+    assert.equal(readlinkSync(join(root, name, 'output', 'index.html')), 'lecture.html')
   } finally {
     await closeProjectStore()
     rmSync(root, { recursive: true, force: true })
