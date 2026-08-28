@@ -145,7 +145,7 @@ async function withFleet({ withRecipientSocket = true, loginKind = 'claude', res
       })
     }
     senderWs = await openFleetWs(port)
-    await fn(senderWs, rpcs)
+    await fn(senderWs, rpcs, port)
   } finally {
     daemonWs?.close(); recipientWs?.close(); senderWs?.close()
     child.kill('SIGTERM')
@@ -317,5 +317,60 @@ test('THE GATE: a delegate to a hibernating agent reaches its daemon as no-chann
     // here the server would be choosing again.
     assert.equal(hit.params.notify_text, undefined, 'a symptom report must not carry a notification to deliver')
     assert.equal(hit.params.action, undefined, 'a symptom report must not carry a remedy')
+  })
+})
+
+// A REPLAYED login must claim the new socket as an MCP, not merely as an agent.
+//
+// Two commits a day apart, both correct alone. `b940c4c9e` taught the server that
+// a durable login arriving again after an ACK-loss reconnect must claim the new
+// socket -- at the time, `_tldaAgentId` was the whole identity a socket had.
+// `6a430a9b5` then added `_tldaClientKind` and made notification eligibility
+// depend on it, setting it on the fresh-login path only.
+//
+// So a replayed login produced a half-identified socket: `openFleetSocketsForAgent`
+// finds it, `isMcpChannelSocket` rejects it, and the server reports
+// `no-open-mcp-socket` about an MCP that is connected and idle. The agent can
+// still SEND -- sending needs only the agent id -- so it looks healthy from the
+// inside while every notification addressed to it is dropped. The daemon's remedy
+// for `no-channel` is `ensure-process`, which no-ops on a live process, so nothing
+// recovers it and nothing logs it.
+//
+// The replay is reached the way production reaches it: the same `operation_id` on
+// a second socket, which is what the MCP's coalesced durable login re-sends after
+// its first attempt was queued rather than acked.
+test('a login replayed onto a new socket is still a notification target', async () => {
+  await withFleet({ withRecipientSocket: false }, async (senderWs, rpcs, port) => {
+    const login = {
+      operation_id: 'replay-login', agent_id: 'fleet:recipient',
+      machine_id: 'mini', env_name: 'testing', metadata: { kind: 'claude' },
+    }
+
+    // First login: completes normally and records the operation result.
+    const first = await openFleetWs(port)
+    await request(first, 'login-1', 'login', login)
+    await new Promise(resolve => { first.once('close', resolve); first.close() })
+
+    // The ACK-loss reconnect: same operation_id, new socket. The server takes the
+    // `previous?.kind === 'result'` branch and never runs the login handler.
+    const second = await openFleetWs(port)
+    const notified = new Promise(resolve => {
+      second.on('message', raw => {
+        const frame = JSON.parse(String(raw))
+        if (frame.event === 'channel-notification') resolve(frame)
+      })
+    })
+    await request(second, 'login-2', 'login', login)
+
+    await sendChat(senderWs, 2, 'replay-login-notice')
+
+    // Assert on the ARRIVAL, not on the absence of a symptom: a notice that
+    // reaches this socket is the whole point, and an absent symptom would also be
+    // satisfied by a server that did nothing at all.
+    const frame = await Promise.race([notified, sleep(20_000).then(() => null)])
+    assert.ok(frame, 'a replayed login must leave the socket eligible for notification; '
+      + `instead the server sent nothing to it. Daemon ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`)
+    assert.equal(frame.data.recipient, 'fleet:recipient')
+    second.close()
   })
 })
