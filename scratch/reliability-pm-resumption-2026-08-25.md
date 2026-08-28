@@ -2629,3 +2629,41 @@ there reverts whatever landed in between.
 instrumentation, per the chief and matching my own conclusion.
 
 **Still unlanded and gated:** `one-checkout-one-project` (`f49bfcb97`).
+
+### Superseded `one-checkout-one-project` -> `c770d33d1`, and cleaned up
+
+**`bin/shared-checkout-inventory.mjs` removed from the branch and from disk.**
+The chief was right that it was adjacent: Skip asked for the shared binding to be
+DISALLOWED; an inventory of the ones already there was a thing I decided to
+build, not a thing he asked for.
+
+Branch still carries (rebased onto current main): the bind guard, the test that a
+second project is rejected AND a same-project relink still works, the
+demonstration that the second project silently never syncs, and the own-remote
+test reworked onto two checkouts.
+
+```
+one-checkout tests    3 pass / 0 fail
+git-sync-manager      6 pass / 3 fail
+tsc=0  guards=0  eslint=0
+```
+**The three failures are pre-existing** -- same file run on MAIN as a control:
+6 pass / 3 fail, same three names. Not asserted from memory.
+
+**Disposable projects removed and VERIFIED ABSENT:** `sync-demo-0827`,
+`adopt-probe-0827`, `-2`, `-3` -- DELETE 200 each, GET 404 each, checkouts gone.
+**And checked that ONLY those went:** `sync-trio`, `sync-trio-fixtures`,
+`sync-rootless`, `sync-watch`, `sync-proof` all intact on disk, `sync-trio` and
+`sync-rootless` still 200. A delete is irreversible, so the check that I deleted
+only what I said I would is the one that mattered.
+
+**Worth carrying, from `classroom-submission-store`, about my work:**
+
+> *"A missing test file is not a failing test; it is a passing suite with a hole
+> in it."*
+
+They found the staged deletions because MY gate would not run -- *"Could not
+find"* -- while their own three tests passed. A run of just theirs would have
+reported green on a tree that had silently lost the stronger gate.
+
+**Open and unlanded:** `one-checkout-one-project` at `c770d33d1`.
