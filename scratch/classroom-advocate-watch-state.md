@@ -141,6 +141,46 @@ The detection bug is in `cli/lib/pw.mjs`. Fleet shapes written by my two loads:
 believed **zero** — `qtm285-lecture-1` showed the *"Set up your workspace"* prompt
 rather than an applied layout, and none of its 8 shapes are fleet panels.
 
+## 21:23Z — the book CRASHES, and it is Skip's 13:27 crash
+
+`.playwright-cli/page-2026-08-28T21-23-03-841Z.png` — `/?project=qtm285-book`
+shows a tldraw crash dialog, **not** a blank canvas:
+
+> Something went wrong · Please refresh your browser · …you may need to reset the
+> tldraw data stored on your device · **Note: Resetting will erase your current
+> project and any unsaved work.** · `Show details` · **`Reset data`** · `Refresh Page`
+
+**A student on the Continue link is offered a button that erases their work.**
+I did not click it.
+
+**Causal chain, from that load's console:**
+
+```
+404 — /docs/qtm285-book/page-info.json
+Found undefined HTML pages
+HTML document ready (undefined pages, 0 TLDraw pages)
+TypeError: Cannot read properties of undefined (reading 'bounds')
+```
+
+That TypeError is **verbatim what Skip pasted at 13:27:48 today**. His lunchtime
+crash and this are one bug: the missing status check (D4).
+
+**`3e1cab370` fixes it — I read the diff.** The guard is `if (!response.ok)`,
+general rather than 401-specific, plus an `Array.isArray` check. Deploying it
+turns the data-erasing crash dialog into a readable error, for **any** project
+whose output goes missing.
+
+**Opening the viewer does NOT trigger a build** (PM's hypothesis, disproven):
+`lastBuild`, `buildStatus`, `acceptSeq` and `page-info` all unchanged across the
+open. `acceptSeq` is now 32 with `buildStatus: error` — pushes land, builds fail.
+
+**Criteria 1, 4, 5 all PASS, confirmed visually:**
+- reg flow → `.playwright-cli/page-2026-08-28T21-20-43-612Z.png`, Continue points
+  at `project=qtm285-book` ✅
+- gradebook panel → `.playwright-cli/page-2026-08-28T21-21-44-181Z.png`, shows
+  `advocate-check-1 · ungraded · 3:57:46 PM` ✅
+- photo round trip ✅ (byte-for-byte earlier)
+
 ## Superseded: the Continue re-check (done — passed)
 
 At 16:0x the box served `gitSha c09e3943d` — **the old bundle**. Read out of
