@@ -5,16 +5,17 @@ import './ClassroomWorkspace.css'
 export function ClassroomRegistration() {
   const params = new URLSearchParams(window.location.search)
   const courseId = params.get('course') || 'qtm285'
+  const project = params.get('project')
   const [displayName, setDisplayName] = useState('')
   const [universityLogin, setUniversityLogin] = useState('')
   const [registration, setRegistration] = useState<RegisteredStudent | null>(null)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const continueUrl = registration ? (() => {
+  const continueUrl = registration && project ? (() => {
     const next = new URL(window.location.href)
     next.searchParams.delete('workspace')
-    next.searchParams.set('project', courseId)
+    next.searchParams.set('project', project)
     next.searchParams.set('classroomToken', registration.enrollmentToken)
     return next.toString()
   })() : null
