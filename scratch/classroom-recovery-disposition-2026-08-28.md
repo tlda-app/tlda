@@ -170,6 +170,39 @@ Ship these together **after** the book is verified serving. The pipeline cost
   at the end of a deadline day, when the shipped guard already removes the harm.
   Goes to Skip as a named recommendation.
 
+## A standing defect found tonight, with no owner
+
+**A project can be permanently unrenderable while every HTTP signal on it is
+green, and one has been since 2026-08-13.**
+
+`classroom-advocate` surveyed all six projects on `tlda-pic`:
+
+| project | entries carrying `source` | `toc.json` | renders |
+|---|---|---|---|
+| `qtm285-lecture-1` | 18/18 | 200 | ✅ seen |
+| `qtm285-slides` | 18/18 | 200 | — |
+| `pic-install` | 1/1 | 200 | — |
+| `deploy-probe` | 1/1 | 200 | — |
+| `qtm285-hw-minus-1` | **0/1** | **404** | ❌ 1×1 empty shape, seen |
+| `pic-schedule` | **0/1** | **404** | ❌ 1×1 empty shape, seen |
+
+`source` presence and `toc.json` presence agree on all six — two faces of the
+same missing build step.
+
+**It is falsifiable and survived an attempt.** They opened `pic-schedule`
+*because* a no-source project rendering correctly would have refuted the lead.
+It renders the same 1×1 empty shape and "No headings found" — predicted in
+advance, on a project nobody had touched.
+
+**`pic-schedule` has been in that state since 2026-08-13 and nobody noticed**,
+because `page-info.json` returns 200 and the page count is right. So whatever
+build step writes `source` and `toc.json` has been silently skipping projects
+for over two weeks.
+
+**Deliberately not chased tonight** — it is not one of the five criteria and
+starting a seventh workstream at that hour is how an evening stops converging.
+It needs an owner.
+
 ## For Skip, not for us
 
 - Whether `pic` should gate on `testing` the way `stable` does. It currently
