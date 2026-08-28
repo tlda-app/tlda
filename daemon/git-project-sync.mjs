@@ -764,6 +764,23 @@ export function createGitProjectSync({
         // It does not change linking a NEW directory as a new project: there is
         // no project head yet, so this resolves to null and the branch is
         // unborn exactly as before.
+        //
+        // ASK FOR THE HEAD BEFORE READING IT. `fetchedRef` is a local ref that
+        // only exists once something has fetched, and on a brand-new source room
+        // nothing has yet -- `ensureRepo` does `git init` and stops. So this read
+        // returned null for exactly the case the paragraph above is about, the
+        // branch was born empty, and the room's first commit was a ROOT commit
+        // unrelated to the project. Every later proposal was then rejected
+        // `WrongHead`, and `combineWithAcceptedHead` could not rescue it either:
+        // `merge-tree` on unrelated histories exits 128, which `pushRevision`
+        // rethrows, so the settle died after the caller had already been told
+        // `202 queued`. Measured on deployed 594900c02.
+        //
+        // Fetching here costs one call on the no-commits path only, and it is
+        // the same call `settle` makes anyway. It cannot invent a head: for a
+        // genuinely new project the shared ref does not exist, `fetchHead`
+        // answers null, and the branch is unborn exactly as before.
+        if (!hasCommits) { try { await fetchHead() } catch { /* no shared head yet: the branch is unborn, as before */ } }
         const projectHead = hasCommits ? null : (await rev(fetchedRef)) || (await rev(revisionRef))
         if (projectHead) await git(['checkout', '-b', shortBranch, projectHead])
         else await git(['checkout', '-b', shortBranch])
