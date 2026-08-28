@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { strFromU8, unzipSync, zipSync } from 'fflate'
 import { ClassroomStore } from '../server/lib/classroom-store.mjs'
-import { closeProjectStore, initProjectStore, readProject, sourceDir, updateProject, writeSourceFileAsync } from '../server/lib/project-store.mjs'
+import { closeProjectStore, initProjectStore, projectDir, readProject, sourceDir, updateProject, writeSourceFileAsync } from '../server/lib/project-store.mjs'
 import { createClassroomRouter } from '../server/routes/classroom.mjs'
 
 test('a common-layer student uses the real hand-in, gradebook, marking, return, and export wire', async () => {
@@ -60,7 +60,7 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
   })
 
   try {
-    const qmd = [
+    const qmdWithPhoto = [
       '---',
       'title: Homework 1',
       '---',
@@ -71,12 +71,21 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
       'My answer.',
       ':::',
       '',
+      '![My written work](written-work.jpg)',
+      '',
     ].join('\n')
-    const archive = zipSync({ 'homework.qmd': new Uint8Array(Buffer.from(qmd)) })
+    const qmd = qmdWithPhoto.replace('\n![My written work](written-work.jpg)\n', '\n')
+    const writtenWork = new Uint8Array([0xff, 0xd8, 0xff, 0xdb])
+    const retained = new Uint8Array([0x00, 0x11, 0x22, 0x33, 0xff])
+    const archiveWithPhoto = zipSync({
+      'homework.qmd': new Uint8Array(Buffer.from(qmdWithPhoto)),
+      'written-work.jpg': writtenWork,
+      'retained.dat': retained,
+    })
     const uploaded = await request('/assignments/hw1/mine/upload', 'ada', {
       method: 'POST',
       headers: { 'content-type': 'application/zip' },
-      body: archive,
+      body: archiveWithPhoto,
     })
     const uploadedBody = await uploaded.text()
     assert.equal(uploaded.status, 200, uploadedBody)
@@ -84,8 +93,64 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
     assert.equal(submission.contentRef, 'submission-hw1-ada')
     assert.deepEqual(submission.answerIds, ['ans-exr-one'])
     assert.equal((await readProject(submission.contentRef)).mainFile, 'homework.qmd')
+    assert.equal(fs.readFileSync(path.join(sourceDir(submission.contentRef), 'homework.qmd'), 'utf8'), qmdWithPhoto)
+    assert.deepEqual(fs.readFileSync(path.join(sourceDir(submission.contentRef), 'written-work.jpg')), Buffer.from(writtenWork))
+    assert.deepEqual(fs.readFileSync(path.join(sourceDir(submission.contentRef), 'retained.dat')), Buffer.from(retained))
+
+    const archive = zipSync({
+      'homework.qmd': new Uint8Array(Buffer.from(qmd)),
+      'retained.dat': retained,
+    })
+    const resubmitted = await request('/assignments/hw1/mine/upload', 'ada', {
+      method: 'POST',
+      headers: { 'content-type': 'application/zip' },
+      body: archive,
+    })
+    assert.equal(resubmitted.status, 200, await resubmitted.text())
     assert.equal(fs.readFileSync(path.join(sourceDir(submission.contentRef), 'homework.qmd'), 'utf8'), qmd)
-    assert.deepEqual(builds, ['submission-hw1-ada'])
+    assert.equal(fs.existsSync(path.join(sourceDir(submission.contentRef), 'written-work.jpg')), false)
+    assert.deepEqual(fs.readFileSync(path.join(sourceDir(submission.contentRef), 'retained.dat')), Buffer.from(retained))
+
+    const slowEntries = {
+      'homework.qmd': new Uint8Array(Buffer.from(qmd)),
+      'retained.dat': retained,
+    }
+    for (let index = 0; index < 512; index++) {
+      slowEntries[`superseded-${String(index).padStart(3, '0')}.bin`] = new Uint8Array(4 * 1024)
+    }
+    const supersededUpload = request('/assignments/hw1/mine/upload', 'ada', {
+      method: 'POST',
+      headers: { 'content-type': 'application/zip' },
+      body: zipSync(slowEntries),
+    })
+    const deadline = Date.now() + 5_000
+    while (true) {
+      const transaction = fs.readdirSync(projectDir(submission.contentRef))
+        .find(entry => entry.startsWith('.source-replace-'))
+      let staged = 0
+      try {
+        staged = transaction
+          ? fs.readdirSync(path.join(projectDir(submission.contentRef), transaction, 'source')).length
+          : 0
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error
+      }
+      if (staged > 0 && staged < Object.keys(slowEntries).length) break
+      assert.ok(Date.now() < deadline, 'superseded submission did not expose its in-progress materialisation')
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    const latestUpload = request('/assignments/hw1/mine/upload', 'ada', {
+      method: 'POST',
+      headers: { 'content-type': 'application/zip' },
+      body: archive,
+    })
+    for (const response of await Promise.all([supersededUpload, latestUpload])) {
+      assert.equal(response.status, 200, await response.text())
+    }
+    assert.equal(fs.existsSync(path.join(sourceDir(submission.contentRef), 'superseded-000.bin')), false)
+    assert.equal(fs.readFileSync(path.join(sourceDir(submission.contentRef), 'homework.qmd'), 'utf8'), qmd)
+    assert.deepEqual(fs.readFileSync(path.join(sourceDir(submission.contentRef), 'retained.dat')), Buffer.from(retained))
+    assert.deepEqual(builds, Array(4).fill('submission-hw1-ada'))
 
     const gradebook = await request('/courses/qtm285/status', 'instructor')
     assert.equal(gradebook.status, 200)
@@ -125,6 +190,9 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
     const files = unzipSync(new Uint8Array(await exported.arrayBuffer()))
     assert.match(strFromU8(files['README.md']), /Ada \(ada\) — returned/)
     assert.equal(strFromU8(files['hw1/ada/homework.qmd']), qmd)
+    assert.equal(files['hw1/ada/written-work.jpg'], undefined)
+    assert.equal(files['hw1/ada/superseded-000.bin'], undefined)
+    assert.deepEqual(Buffer.from(files['hw1/ada/retained.dat']), Buffer.from(retained))
 
     store.upsertAssignment({ id: 'hw2', courseId: 'qtm285', title: 'Homework 2', dueAt: '2026-09-08T20:00:00Z' })
     buildError = new Error('R package missing')
