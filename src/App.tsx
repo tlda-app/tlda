@@ -15,6 +15,7 @@ import { convertChatEvent } from './fleet/convert-chat-event.mjs'
 import { GradebookWorkspace } from './classroom/GradebookWorkspace'
 import { ClassroomRegistration } from './classroom/ClassroomRegistration'
 import { ClassroomDeviceTransferRedeem } from './classroom/ClassroomDeviceTransfer'
+import { useClassroomManifest } from './classroom/useClassroomManifest'
 import { ProblemMarking } from './classroom/ProblemMarking'
 import { StudentWork } from './classroom/StudentWork'
 import { MarkingLifecycle } from './classroom/MarkingLifecycle'
@@ -212,6 +213,7 @@ function parseInitialCamera(): { x: number; y: number; z: number; page?: string 
 }
 
 function DocumentApp() {
+  useClassroomManifest()
   const [state, setState] = useState<State | null>(null)
   const [initialCamera] = useState(parseInitialCamera)
   const isDark = useFleetTheme()
