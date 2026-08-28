@@ -120,7 +120,15 @@ export async function loadProofData(
   console.log(`Loading proof data from ${basePath}`)
   const cacheBust = `?t=${Date.now()}`
 
-  const proofInfo = await fetch(basePath + 'proof-info.json' + cacheBust).then(r => r.json()) as ProofInfo
+  // Same /docs/* gate as the page-info loaders. Unchecked, a 401 body reaches
+  // the loop below as a ProofInfo with no pairs and fails as "cannot read
+  // properties of undefined", which names the symptom instead of the cause.
+  const infoResponse = await fetch(basePath + 'proof-info.json' + cacheBust)
+  if (!infoResponse.ok) {
+    const body = await infoResponse.json().catch(() => ({}))
+    throw new Error(`${infoResponse.status} ${body.error || infoResponse.statusText || 'could not load proof-info.json'}`.trim())
+  }
+  const proofInfo = await infoResponse.json() as ProofInfo
 
   const highlights: ProofHighlight[] = []
   const pairs: ProofPair[] = []

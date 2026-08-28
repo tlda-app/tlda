@@ -41,7 +41,19 @@ export async function loadHtmlDocument(
   console.log(`Loading HTML document from ${basePath}`)
 
   const infoUrl = basePath + 'page-info.json'
-  const pageInfos: HtmlPageEntry[] = await fetch(infoUrl).then(r => r.json())
+  // A failed page-info fetch must not read as an empty document. The 401 body is
+  // itself valid JSON, so r.json() resolves to an object, its .length is undefined,
+  // and the page loop below runs zero times: a blank canvas, no throw, no error
+  // boundary. App.tsx matches the status in this message to raise the auth screen.
+  const response = await fetch(infoUrl)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(`${response.status} ${body.error || response.statusText || 'could not load page-info.json'}`.trim())
+  }
+  const pageInfos: HtmlPageEntry[] = await response.json()
+  if (!Array.isArray(pageInfos)) {
+    throw new Error(`page-info.json for "${name}" is not a list of pages`)
+  }
   return createHtmlDocumentFromPageInfo(name, basePath, pageInfos)
 }
 

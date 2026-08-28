@@ -1316,6 +1316,23 @@ body.text-select-mode ::selection {
   color: #64748b;
 }
 
+/* Same slot and weight as .book-loading: a member that refused to load says so
+   where the member would have been, rather than leaving the book blank. */
+.book-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 0 24px;
+  text-align: center;
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #b45309;
+}
+
+[data-theme="dark"] .book-load-error {
+  color: #fbbf24;
+}
+
 [data-theme="dark"] .book-tab-bar {
   background: #1e1e2e;
   border-bottom-color: #2e2e3e;

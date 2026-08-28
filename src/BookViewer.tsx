@@ -48,11 +48,15 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
   const [trackedSelectionCount, setTrackedSelectionCount] = useState(0)
   const [moveError, setMoveError] = useState('')
+  // Why a member failed to load. Without it a refused member renders as a book
+  // with nothing in it, which is indistinguishable from a member that is empty.
+  const [loadError, setLoadError] = useState('')
   // Pending cross-member anchor navigation: set before switchTo, consumed after load
   const pendingAnchor = useRef<string | null>(null)
 
   const loadMember = useCallback(async (member: BookMember) => {
     setLoading(true)
+    setLoadError('')
     clearDocumentStores()
 
     try {
@@ -79,7 +83,10 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
         if (compareDoc) {
           const compareBasePath = `/docs/${encodeURIComponent(compareDoc)}/`
           const [studentPages, solutionPages] = await Promise.all([
-            fetch(`${member.basePath}page-info.json`).then(response => response.json()),
+            fetch(`${member.basePath}page-info.json`).then(response => {
+              if (!response.ok) throw new Error(`${member.key} is not readable (${response.status})`)
+              return response.json()
+            }),
             fetch(`${compareBasePath}page-info.json`).then(response => {
               if (!response.ok) throw new Error(`Comparison document ${compareDoc} is not ready`)
               return response.json()
@@ -117,6 +124,8 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       setDocument(doc)
     } catch (e) {
       console.error(`Failed to load member "${member.key}":`, e)
+      setDocument(null)
+      setLoadError((e as Error).message)
     } finally {
       setLoading(false)
     }
@@ -346,6 +355,11 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     <BookContext.Provider value={ctx}>
       <div className="book-viewer">
         {loading && <div className="book-loading">Loading {activeMember?.name}...</div>}
+        {!loading && loadError && (
+          <div className="book-load-error" role="alert">
+            Could not open {activeMember?.name}: {loadError}
+          </div>
+        )}
         {!loading && document && (
           <SvgDocumentEditor
             key={activeMember.key}
