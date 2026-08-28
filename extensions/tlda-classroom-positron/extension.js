@@ -3,6 +3,7 @@ const { writeFile } = require('node:fs/promises')
 const vscode = require('vscode')
 const { buildSubmissionArchive } = require('./submission-package')
 const { ClassroomUploadError, classroomSubmissionMetadata, submitSubmissionArchive } = require('./classroom-upload')
+const { planImageDrop } = require('./image-drop')
 
 function fileNotFound(error) {
   return error && (error.code === 'FileNotFound' || error.code === 'ENOENT')
@@ -105,11 +106,67 @@ async function submitHomework(context) {
   }
 }
 
+const imageDropProvider = {
+  async provideDocumentDropEdits(document, position, dataTransfer, token) {
+    const list = await dataTransfer.get('text/uri-list')?.asString()
+    if (!list || token.isCancellationRequested) return
+
+    const dropped = []
+    for (const line of list.split(/\r?\n/)) {
+      if (!line.trim()) continue
+      try {
+        const uri = vscode.Uri.parse(line)
+        if (uri.scheme === 'file') dropped.push(uri)
+      } catch { /* a line that is not a URI is not a file we can copy */ }
+    }
+
+    const folder = vscode.Uri.joinPath(document.uri, '..')
+    const siblings = new Set((await vscode.workspace.fs.readDirectory(folder)).map(([name]) => name))
+    const plan = planImageDrop({
+      docDir: path.posix.dirname(document.uri.path),
+      dropped: dropped.map(uri => ({ fsPath: uri.path })),
+      taken: name => siblings.has(name),
+    })
+    if (!plan || token.isCancellationRequested) return
+
+    const edit = new vscode.DocumentDropEdit(new vscode.SnippetString(plan.markdown))
+    edit.title = plan.copies.length ? 'Insert photo and copy it beside the document' : 'Insert photo'
+    if (plan.copies.length) {
+      const additional = new vscode.WorkspaceEdit()
+      for (const copy of plan.copies) {
+        const from = dropped.find(uri => uri.path === copy.from)
+        additional.createFile(vscode.Uri.joinPath(folder, path.posix.basename(copy.to)), {
+          contents: await vscode.workspace.fs.readFile(from),
+          ignoreIfExists: false,
+        })
+      }
+      edit.additionalEdit = additional
+    }
+    return edit
+  },
+}
+
+// When two providers offer an edit, the editor applies the first. Ordering is score, then
+// builtin-ness, then registration time — and the score saturates at 10, so a more specific
+// selector cannot outrank Quarto's `{language:"quarto",scheme:"*"}`. Both are non-builtin, so
+// the tie falls to registration time, later wins. Registering after Quarto has activated is
+// therefore the whole ordering guarantee; without it, which provider handles a dropped photo
+// depends on extension activation order.
+async function registerImageDrop(context) {
+  await vscode.extensions.getExtension('quarto.quarto')?.activate()
+  context.subscriptions.push(
+    vscode.languages.registerDocumentDropEditProvider({ language: 'quarto' }, imageDropProvider, {
+      dropMimeTypes: ['text/uri-list'],
+    }),
+  )
+}
+
 function activate(context) {
   context.subscriptions.push(vscode.commands.registerCommand('tldaClassroom.zipForSubmission', zipForSubmission))
   context.subscriptions.push(vscode.commands.registerCommand('tldaClassroom.submit', () => submitHomework(context)))
+  return registerImageDrop(context)
 }
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, archiveForActiveHomework, classroomTokenSecretKey, submitHomework, zipForSubmission }
+module.exports = { activate, deactivate, archiveForActiveHomework, classroomTokenSecretKey, imageDropProvider, registerImageDrop, submitHomework, zipForSubmission }
