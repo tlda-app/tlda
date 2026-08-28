@@ -2552,3 +2552,40 @@ hand-in 500, my room-save 409. The shape is any string comparison against
 
 **Not landed.** main has moved twice under me today, so re-check immediately
 before the fast-forward rather than trusting a stale reading.
+
+### `adopt-shadow-history-ref`: NO REPAIR MADE, and that is the finding
+
+**It does not reproduce.** Three fresh `project link` runs creating new projects
+on testing:
+
+```
+run 1   26s   0 adopt timeouts   submitted
+run 2   31s   0 adopt timeouts   submitted
+run 3   31s   0 adopt timeouts   submitted
+```
+
+First time it looped SEVEN times, each retry re-running the seed with the work
+growing 20.8s -> 57.2s, never completing.
+
+**The visible difference is machine load: ~43 then, ~15-17 now.** Stated at its
+real strength: **load was NOT measured at the moment of the failures** -- 43.76
+was read later while investigating something else. One reading either side of a
+boundary that was not observed. A correlation noticed afterwards, not a cause.
+
+**Still stands:** the 15s deadline is daemon->server (`machine-rpc.mjs:180`,
+`requestWithReply({ timeoutMs = 15000 })`), the daemon's own work precedes the
+send, and the server handler answers on BOTH paths -- so a timeout means no
+reply inside 15s.
+
+**Deliberately did NOT raise the timeout.** No reproduction and no measurement
+from the failing window means changing it would be tuning a mechanism not shown
+to be at fault -- plus the no-magic-numbers rule. A larger deadline would also
+make the next occurrence slower and quieter rather than louder.
+
+**Named next step if it recurs:** have the daemon log elapsed time on an adopt
+timeout, so the occurrence carries its own duration. NOT built -- not asked for,
+and a symptom is not a mandate.
+
+**Litter created, disclosed:** disposable projects on testing --
+`sync-demo-0827`, `adopt-probe-0827`, `-2`, `-3` -- plus checkouts under
+`~/worktrees`. All mine. Not deleted: deleting a project is destructive.
