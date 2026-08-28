@@ -34,6 +34,71 @@ Two more symptoms of the same call, both confirmed:
 `server/lib/message-filter-sql.mjs` cases `since`/`before`. This path is the one
 that never receives them.
 
+## CORRECTION to Defect 2 — my control was wrong, and its rule is inverted
+
+**Everything in the section below is superseded.** `search-bound-scan` measured it
+and my reproduction does not survive. Read this first; the original is kept
+underneath only so the wrong claim is visible rather than quietly edited away.
+
+**The rare-term control does not reproduce.** 90 interleaved A/B pairs against the
+live operation, alternating which arm went first: `quartolinkgroups` unbounded
+median 867ms, bounded median 848ms, **zero 45s deadlines in either arm**. I
+re-ran the pair myself afterwards and it returned instantly both ways.
+
+**The rule is backwards.** I wrote that a rare term plus a bound is the failure and
+a common term survives. The common term is the expensive one — cost tracks the
+**posting list**, not the limit:
+
+| term | postings in `events_fts` | bounded | unbounded |
+|---|---|---|---|
+| `quartolinkgroups` | 2 | free | free |
+| `the` | 400,862 | **15.83s** | 1.7s |
+| `agent` | 878,126 | 14.85s cold | 2.34s |
+
+**What my timeout actually was: queueing.** The store is one worker thread serving
+one call at a time, so an expensive bounded search stalls everything behind it.
+My rare-term call was queued behind somebody else's slow query, not slow itself.
+
+**My query-plan redirect was also wrong.** I sent the doer to `EXPLAIN QUERY PLAN`
+expecting a scan. All six plans `searchAll` builds are **index seeks, bounded and
+unbounded alike** — reading the plan cannot find this defect. The instrument I
+named could not have seen the thing I asked it to look for.
+
+**The real mechanism.** The bound is tested *after* the matched row is joined, so
+`LIMIT` can no longer terminate the FTS walk. Unbounded, `ORDER BY rank LIMIT n`
+stops at the first `n` hits; bounded, SQLite reads the term's entire posting list
+to find the few rows inside the window. Cold I/O turns seconds into a timeout:
+`the` bounded is 35.68s cold on events and 24.24s on sessions — **59.9s in one
+`searchAll`, past the 45s client deadline on its own.**
+
+**The conclusion I gave Skip was right for the wrong reason.** "Applying a bound is
+what makes it expensive" holds. The evidence I offered for it did not, and a right
+conclusion resting on a wrong account is worse than no account, because it stops
+anyone looking further.
+
+**Two things this also settles:**
+
+- **The `roster` timeout is the same root**, not a roster problem. `roster` is
+  `getAliveAgents`/`resolveAgentQuery`, queued behind the same blocker.
+  `fleetStoreQueue`: `maxDepth 128`, `waitMax 88011ms`, every unrelated method's
+  max within 600ms of that same number — one blocker, everything behind it.
+- **The server keeps running after the client gives up.** `calls === settled ===
+  182,966` — nothing is cancelled — so a timed-out search holds the one thread
+  for another ~40s, charging everyone else for work whose caller has left.
+
+**The fix** puts the bound on the match side as a rowid range, which FTS5 honours,
+so the walk skips the prefix. `the` over one day: events 15.83s → **0.07s**,
+sessions 8.41s → **0.10s**, identical id sets. Branch `search-bound-rowid`,
+`04cacbd10`.
+
+**The trap it avoids, worth keeping:** the obvious floor — the id of the window's
+earliest row — is *not* a lower bound, because ids are assigned at insert and
+timestamps are not, so a late-ingested row carries a high id with an old
+timestamp. On the live store that silently drops rows in **15 of 60 day-windows on
+`events` and 23 of 60 on `session_entries`, 2016 rows in the worst.** The fix uses
+`min(id)` over exactly the rows the bound admits. Three tests, all red against the
+naive floor, checked by building it.
+
 ## Defect 2 — applying a time bound turns the search into a scan
 
 The control is decisive. Same rare term, same limit, bound the only difference:
