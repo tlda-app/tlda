@@ -59,23 +59,31 @@ someone opens it read-write. Nothing else about the topology changes.
   and the `sync-rooms.mjs` schema to match **exactly**, so this adds a second
   writer of a record type the client currently owns alone. That is the real
   price and it is not trivial.
-- **And a live defect makes A sharper than it looks: a mark on the shared layer
-  may not be retractable.** Reported 2026-08-08 — deleting a shape in the
-  browser reports success, the shape disappears in that session, and **it is
-  back on reload**; deleting the same ids through the shape API does persist.
-  `classroom-pm` raised this to you in the same 13:00 exchange, in these terms:
-  *"On the book's shared layer it's worse — you'd write something for the whole
-  class and not be able to take it back."*
+- **One open question worth settling with A, stated at the width of its
+  evidence and no wider.** A browser delete has been observed not to persist —
+  the shape disappears in the session and **is back on reload**, while deleting
+  the same ids through the shape API does persist.
 
-  **Status, as far as I can establish: unresolved.** No commit anywhere claims
-  to fix it, the original note says explicitly that it does not identify the
-  root cause, and **I did not re-test it tonight** — the browser half needs a
-  session I am not opening on the recovered rooms. So I am reporting it as
-  *not known fixed*, not as *confirmed live*.
+  **What was actually measured** (2026-08-08, `testing`): **two arrow shapes in
+  an instructor *grading* room, on a *submission* project, parented to rendered
+  page shapes.** That is the whole of the evidence.
 
-  It bears on this choice because **A makes the shared layer the place the class
-  writes**, and if a mark there cannot be taken back that is a property of the
-  option, not a separate bug. It is worth settling before or with A, not after.
+  **What is not established: whether it happens on the book's own shared
+  layer.** Different room, different project, and the marks there are not
+  necessarily parented the same way. `classroom-pm` told you at 13:00:40 that it
+  would be *"worse on the book's shared layer"* — that was their inference from
+  the same single observation, not a second measurement, and I repeated it as
+  though it were one.
+
+  **Status: no commit claims to fix it, the original note says it never found
+  the root cause, and I did not re-test it tonight** — the browser half needs a
+  session I am not opening on the rooms we just repaired.
+
+  **Why it still belongs here rather than in a bug list:** A makes the shared
+  layer the place the class writes, so *if* it applies there, it is a property
+  of the option. **Establishing whether it does is one test on a disposable
+  project** — draw a mark on a book room, delete it, reload — and that is worth
+  doing before committing to A, not after.
 
 ### B — a read-only client renders the document locally, without syncing
 
