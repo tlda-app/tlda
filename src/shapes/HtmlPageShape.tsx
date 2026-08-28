@@ -11,8 +11,8 @@ import {
 } from 'tldraw'
 import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { appendToken, canPresent, isPresentPermissionKnown } from '../authToken'
-import { runMeasuredGeometryWrite } from '../measuredGeometryWrite'
+import { appendToken, canPresent, isPresentPermissionKnown, subscribeCanPresent } from '../authToken'
+import { createMeasuredGeometryWriter } from '../measuredGeometryWrite'
 import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
 import { htmlIframeElements } from '../htmlIframeRegistry'
 import { recordPlaceDeparture } from '../placeStack'
@@ -416,8 +416,19 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const docLinkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const measuredGeometryWriterRef = useRef(createMeasuredGeometryWriter())
 
   const detachRglSyncRef = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    measuredGeometryWriterRef.current = createMeasuredGeometryWriter()
+    return subscribeCanPresent(() => {
+      measuredGeometryWriterRef.current.resolve({
+        permissionKnown: isPresentPermissionKnown(),
+        mayWrite: canPresent(),
+      })
+    })
+  }, [shape.id])
 
   // Register iframe ref for SvgFigureShape to send transform messages
   useEffect(() => {
@@ -1125,10 +1136,15 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const documentW = isSlideShape ? null : htmlPageDocumentWidth(iframeRef.current)
         const newW = documentW ? Math.max(current.props.w, documentW) : current.props.w
         if (Math.abs(newH - current.props.h) > 5 || Math.abs(newW - current.props.w) > 5) {
-          runMeasuredGeometryWrite({
+          measuredGeometryWriterRef.current.report({
             permissionKnown: isPresentPermissionKnown(),
             mayWrite: canPresent(),
           }, () => {
+            const latest = editor.store.get(shape.id)
+            if (!isHtmlPageShapeRecord(latest) || (
+              Math.abs(newH - latest.props.h) <= 5 &&
+              Math.abs(newW - latest.props.w) <= 5
+            )) return
             editor.store.update(shape.id, (s: any) => ({
               ...s,
               props: { ...s.props, w: newW, h: newH },
