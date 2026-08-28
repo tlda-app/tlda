@@ -42,6 +42,14 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
 // Like DAEMON_CONFIG_TOP_LEVEL_KEYS, a CLOSED allow-list: the server refuses to
 // start on an unknown key, so a new setting is not usable until it is named here.
 export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
+  // What this deployment calls itself in the browser tab. Absent = "tlda", the
+  // title baked into index.html at build time. It lives here rather than in the
+  // built HTML because dist/ is one artifact every deployment serves, so a
+  // deployment cannot have its own copy without that copy going stale on the
+  // next build. The manifest's `name` is the same string for the installed web
+  // app, and is a static file in that deployment's dist-overrides/ — two copies
+  // of one name, which is worth knowing when you change either.
+  'appName',
   'buildMaxConcurrency',
   'buildPriority',
   'buildStallTimeoutMs',
@@ -174,6 +182,9 @@ export function validateProjectDaemonOverrideTopLevel(root, label = 'project dae
 
 export function validateServerConfigTopLevel(root, label = 'server config') {
   const config = validateTopLevelKeys(root, SERVER_CONFIG_TOP_LEVEL_KEYS, label)
+  if (config.appName !== undefined && (typeof config.appName !== 'string' || !config.appName.trim())) {
+    throw new Error(`${label}: "appName" must be a nonempty string`)
+  }
   if (config.timezone !== undefined) validateTimeZone(config.timezone, label)
   if (config.telemetryUrl !== undefined) validateTelemetryUrl(config.telemetryUrl, label)
   if (config.deepgramBridgeUrl !== undefined) validateWebSocketUrl(config.deepgramBridgeUrl, 'deepgramBridgeUrl', label)

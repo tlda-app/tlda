@@ -5190,6 +5190,17 @@ if (existsSync(katexDir)) {
 // Serve built SPA from dist/ (Vite build output)
 // Assets use content-hashed filenames (long cache). index.html must be no-cache.
 const distDir = join(__dirname, '..', 'dist')
+
+// What this deployment calls itself in the tab. dist/ is one built artifact
+// shared by every deployment, so the title cannot be baked per deployment; the
+// SPA handler below rewrites it on the way out, in the same pass that injects
+// the config. Read once here rather than per request — it is deployment config,
+// and it does not change while the server runs.
+const appTitle = (() => {
+  const name = loadServerConfig().appName
+  return typeof name === 'string' && name.trim() ? name.trim() : null
+})()
+const escapeHtmlText = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 if (existsSync(distDir)) {
   app.use((req, res, next) => {
     try {
@@ -5255,7 +5266,9 @@ app.get('/{*path}', async (req, res) => {
     // while running, the page erroring loud is the correct, predictable behavior.
     const cfg = resolveConfig()
     const cfgScript = `<script>window.__TLDA_CONFIG__=${JSON.stringify(cfg)}</script>`
-    const rawHtml = readFileSync(indexPath, 'utf8')
+    const rawHtml = (appTitle
+      ? readFileSync(indexPath, 'utf8').replace(/<title>[^<]*<\/title>/, `<title>${escapeHtmlText(appTitle)}</title>`)
+      : readFileSync(indexPath, 'utf8'))
       .replace(/\s*<script>window\.__TLDA_CONFIG__=.*?<\/script>\s*/gs, '\n')
     const html = rawHtml.includes('<script type="module"')
       ? rawHtml.replace('<script type="module"', `${cfgScript}\n    <script type="module"`)
