@@ -23,11 +23,17 @@ Measured by me, from the shared checkout on `mini`, `main` at `d41f6839e`:
 | `tlda-pic-dev` | nobody | `e0220ac74` | 14:33:30Z | none |
 | `tlda-fly` (testing) | the fleet | `594900c02` | 12:58:46Z | none |
 
-The `tlda-pic` row was read at 19:58:31Z and **re-read unchanged at 20:23:55Z**.
-`alassroom-pm` was deploying `d41f6839e` to that box during this revision; as of
-20:23:55Z it had not landed. **Whoever reads this must re-read
-`/api/build-info` rather than trust the row** — that is the whole point of §4,
-Failure 4, and this table is the first thing in the document that goes stale.
+**Superseded at 20:50:57Z: the deploy landed.** `tlda-pic` now reports
+`gitSha d41f6839e`, `builtAt 2026-08-28T20:41:02Z`, and its `index.html` names
+`assets/index-DZAEa7P8.js` (was `index-BfWOAdpN.js`). The advocate read
+`get("project")` and the `a && t` gate out of that shipped bundle; I confirmed
+the sha and the bundle name. **Failure 4 is closed** — see §4.
+
+**The table above is left as measured, with its times, because the point it
+makes is not about `c09e3943d`.** It was true for the 92 minutes it described
+and it is false now, and nothing in it said so. **Re-read
+`/api/build-info` rather than trust any row here.** This is the third time in one
+evening a line in this document has gone stale between writing and reading.
 
 Two facts fall straight out of that table.
 
@@ -154,7 +160,8 @@ Skip's framing: separate artifacts and processes for (a) app deploy,
 |---|---|
 | **Trigger** | An app fix the classroom needs. Today: `d41f6839e`. |
 | **Command** | `git push /Users/skip/work/deploy/pic HEAD:refs/heads/main` |
-| **Owner** | The chief of staff. `AGENTS.md` §Repository workflow: nothing serializes deploys, so one agent pushes to a deploy remote, and that agent owns the release path. |
+| **Owner** | **The classroom PM (`alassroom-pm`), tonight.** `AGENTS.md` §Repository workflow requires that exactly one agent pushes to a deploy remote, because nothing serializes deploys. It names the chief of staff because that seat normally holds it — **and the seat is empty**: the advocate's roster read shows `chief` hibernating 233h, `chief-of-staff` 520h with its daemon down 8h. sol-dev's brief already assigns deployment to the PM. Naming the PM satisfies the rule (one pusher) rather than departing from it; naming an absent chief routes the one stalled critical-path item to nobody. |
+| **Cost, measured** | **96 minutes** for `d41f6839e`, against a 17-minute baseline earlier the same day on a box at load average 60 — npm install, two full vite builds, guards, a 2.4 GB Depot image, and the machine roll (`alassroom-pm`). **One of those two vite builds is dead work:** `package.json` `prepare` is `vite build && …` and `build` is `tsc -b && vite build`. I read both. Removing the duplicate is a real saving on the critical path and is not proposed here, because it is a change and this is a runbook. |
 | **Verify** | `curl -fsS https://tlda-pic.cormorant-matrix.ts.net/api/build-info` reports the pushed `gitSha`; `/api/health` returns `ok` with `store: up`. |
 | **Rollback** | Push the previous good sha to the same remote. There is no other rollback: the deploy runs in the pre-receive hook against the pushed tree. |
 | **Depends on** | Nothing in (b), (c), or (d). |
@@ -183,7 +190,7 @@ document covers `testing` and `stable` only; `pic` is absent from it and from
 | **Owner** | Instructor (Skip), or an agent acting for him with the `pic` RW token. |
 | **What it writes** | Three linked Git projects (`-source`, `-handout`, `-solutions`), then `POST /api/classroom/courses`, `POST …/assignments`, `PUT …/template`. |
 | **Cost** | One chapter render. The help text says minutes, and that is the per-chapter figure. |
-| **Rollback** | **Unknown, and there is a live example of the cost.** I found no command that removes a course, an assignment, or a frozen template. `tlda project delete` removes a project. Whether re-running `setup` with the same ids converges or duplicates I did not test, and I will not test it against the live course box. |
+| **Rollback** | **Unknown, and there is a live example of the cost.** I found no command that removes a course, an assignment, or a frozen template. `tlda project delete` exists (`cli/tlda.mjs:222`, *"Delete a project and all its data"*) — **do not run it against the course box.** `AGENTS.md` §"NOTHING IN THIS APP DELETES ANYTHING" is the standing rule, and in a runbook a named command gets run. Whether re-running `setup` with the same ids converges or duplicates I did not test, and I will not test it against the live course box. |
 | **Partial success is undetected** | The `hw-minus-1-setup` record on `tlda-pic` carries `templateDocKey`, `solutionsDocKey`, `handoutFilter` and `solutionFilter` all `null` (§0). Something wrote a course and an assignment and none of the generate/link/freeze pipeline, and nothing anywhere reports that. **The check is one request:** `GET /api/classroom/courses/<id>/assignments` with the RW token, and require `templateDocKey` to be non-null before calling setup done. |
 | **Depends on** | (a) only for app behaviour. It does not build or need the book. |
 
@@ -309,7 +316,7 @@ also writing course and assignment records. `tlda classroom setup` does both. A
 dry-render flag would be a CLI flag, not a subsystem — but it is a change, so it
 is named here and not made.
 
-### (d) Full book publication — long, and never on the critical path
+### (d) Assembling a book from members — costs nothing, blocks nothing
 
 | | |
 |---|---|
@@ -331,20 +338,61 @@ touch no member at all.
 under the shipped mechanisms they are not. Any proposal that makes them wait is
 wrong on the facts, and the two citations above are the counter.
 
+### (e) Rendering — a member, or the `pic` full build
+
+**Split out from (d) at the advocate's insistence, and they are right.** (d)'s
+guarantees — costs nothing, blocks nothing — were established for *assembly*, and
+under one heading the expensive object inherits them by adjacency. Skip's bucket
+(d) means this row, not the one above.
+
+| | |
+|---|---|
+| **Trigger** | New or changed source in a member project. |
+| **Command** | `tlda project push [name]` — see the warning in §4, Failure 6. |
+| **Owner** | Whoever owns that member. |
+| **Cost** | A 3-root member built in ~33 minutes today (`qtm285-book`, 18:17→18:50Z); a submission project built in 6 seconds. **The 72-root `pic` book has `pages: 0` and `lastBuild: null` and has never been observed to finish on this box.** |
+| **Rollback** | **None.** See Failure 6: a failed build clears the published output and there is no revert to the last good render. |
+| **On the critical path** | **No.** Per `alassroom-pm`'s ruling in §1. |
+
+**There is no way to re-render a project without pushing to it.**
+`cli/tlda.mjs:221` documents `tlda build` as *"Trigger a rebuild without pushing
+files"*. **That command does not exist**: zero occurrences of `cmdBuild` and zero
+of `case 'build'` in the dispatcher — with a positive control, `case 'share'`
+returning 1 — and running `node cli/tlda.mjs build` prints the top-level menu.
+So the only rebuild trigger is `tlda project push`, **which no-ops on an
+unchanged tree.** Together those mean **a project whose output was destroyed
+cannot be rebuilt from its existing source**, which is exactly the state
+`qtm285-book` is in tonight. `tlda build` is a candidate for
+`docs/naming-errata.md`: documented, dispatched nowhere.
+
 ## 3. The process, end to end
 
-Ownership note: I can establish **the release owner** (`AGENTS.md`: the chief of
-staff owns the deploy remote) and **the instructor** (Skip). The rest of the
-owner column is a role, not a name — **who fills it is unknown to me and should
-be filled in by the PM, not guessed by me.**
+**The three-token rule, which stages 3, 6 and 8 all depend on.** Get this wrong
+and a QA pass tests nothing while reporting a clean result:
+
+| credential | reaches |
+|---|---|
+| **read token** | the book and document surface — **and nothing of the classroom** |
+| **enrolment token** | the classroom as a student: assignments, submissions, receipts |
+| **RW token** | the instructor's view, which **hides everything a student would hit** |
+
+`classroomPrincipal` (`server/routes/classroom.mjs:113-117`) returns `instructor`
+for `rw`, a student for a valid enrolment token, and `null` otherwise — so a read
+token gets **401** on the assignment surface, measured by both me and the advocate.
+A stage-3 pass run with the read token sees 401 everywhere and can report it as
+*correctly gated* while having exercised nothing.
+
+Ownership note: **the release owner is the classroom PM tonight** (§2(a)) and the
+instructor is Skip. The rest of the owner column is a role, not a name — **who
+fills it is unknown to me and should be filled in by the PM, not guessed by me.**
 
 | # | Stage | Command / surface | Owner | Gate before the next stage |
 |---|---|---|---|---|
 | 1 | Author / edit | The course repo's `homework/*.qmd`, ordinary Git | Instructor | none |
 | 2 | Fast preview | `quarto render <one chapter>` — the same single-file render the fixture does | Author | Chapter renders nonblank |
-| 3 | Classroom feature QA | Exercise the surface on `tlda-pic`, **with the read token, not the RW one** — the RW token makes you the instructor (`classroomPrincipal`) and hides everything a student would hit | Dev / advocate | Named below |
+| 3 | Classroom feature QA | **Register a test student, then QA with that student's enrolment token** on `tlda-pic` | Dev / advocate | Named below |
 | 4 | Content publication | `tlda --env pic classroom setup …` | Instructor | Setup prints a link whose host is `tlda-pic` |
-| 5 | App release | `git push /Users/skip/work/deploy/pic HEAD:refs/heads/main` | Chief of staff | `/api/build-info` reports the pushed sha |
+| 5 | App release | `git push /Users/skip/work/deploy/pic HEAD:refs/heads/main` | **Classroom PM** (see §2(a)) | `/api/build-info` reports the pushed sha — **and the bundle name in `index.html` changes.** A sha alone does not prove the client changed |
 | 6 | Pre-class rehearsal | Drive the real student link on `tlda-pic` from a browser profile with no cookies **and no `localStorage`** | Dev / advocate | Register → Continue → chapter loads **nonblank** |
 | 7 | Live class | The student link; the book members already published | Instructor | — |
 | 8 | Fallback | Below | Instructor | — |
@@ -356,8 +404,12 @@ in §2(d): members are independent and the classroom records are separate from
 all of them. So, in order:
 
 1. A member fails to load → the other members still load. Teach from those.
-2. Registration fails → the class surface is still readable with the read token
-   alone; only student-owned layers need enrollment. Register after.
+2. Registration fails → **the book is readable with the read token, so you can
+   teach. The assignment and submission surface is not** — that needs an
+   enrolment token, so nobody can hand anything in until registration is back.
+   (Corrected at the advocate's insistence; the earlier wording said "only
+   student-owned layers need enrollment", which is softer than the 401 measured
+   on the assignment list.)
 3. The box is unreachable → **there is no fallback and I will not invent one.**
    `tlda-pic` is the single course box. Naming this as a gap is the honest
    deliverable; proposing a second box is architecture and Skip's decision.
@@ -396,15 +448,21 @@ so a 404 is proof the token was fine and the record is not there, and the two ar
 distinguishable by status code alone. `ClassroomStore` is per-server: creating
 the course on `pic-dev` proves nothing about `pic`.
 
-**Failure 4 — app code not deployed.**
+**Failure 4 — app code not deployed. CLOSED at 20:50:57Z.**
 Caught at **stage 5**, by `curl /api/build-info` on `tlda-pic` and comparing
-`gitSha` to the commit that carries the fix. **Still live when I last looked:**
-`tlda-pic` served `c09e3943d` at 19:58:31Z and again, unchanged, at 20:23:55Z;
-the registration fix is `d41f6839e`. `alassroom-pm` was deploying it during this
-revision, so this is the one line in the document most likely to be false by the
-time you read it — **re-read `/api/build-info` instead of believing it.** The
-process point is unaffected: no amount of correct linking fixes stage 4 while
-stage 5 is behind.
+`gitSha` to the commit that carries the fix. It was live for most of this
+evening — `c09e3943d` at 19:58:31Z and still at 20:23:55Z — and the deploy landed
+at `builtAt 20:41:02Z`. `tlda-pic` now serves `d41f6839e`.
+
+**The gate has to be the bundle name, not the sha.** `index.html` on that box now
+names `assets/index-DZAEa7P8.js` where it named `index-BfWOAdpN.js` before; the
+advocate read `get("project")` and the `a && t` gate out of that shipped bundle.
+A sha proves what the server checked out, not what the browser loads, and the
+client half is the half that was broken.
+
+**It took 96 minutes**, against a 17-minute baseline the same day (§2(a)). On a
+midnight deadline that is most of the remaining margin, and half of one of those
+two vite builds is dead work.
 
 **Failure 5 — a blank book page means 401, not unbuilt.**
 Found by the fleet advocate. `src/loaders/htmlLoader.ts:44` is
@@ -422,11 +480,69 @@ look absent and sent people to rebuild what was already there. It is also the
 exact shape §2's `buildStatus` warning describes, one layer up: an instrument
 that answers without measuring.
 
-**The shape all five share:** each was verified against something other than the
+**Failure 6 — a push mirrored an untracked working directory into the one surface
+students read, the build failed, and the failure cleared the published output.**
+Found by `alassroom-pm` and the advocate; the live state re-measured by me at
+20:51:36Z. This is the most expensive failure in the document and it is still
+open as I write.
+
+At 20:44Z a `tlda project push` to `qtm285-book` carried a checkout's
+**untracked** tree — `_cache/`, `*_files/`, stale `.html`, `.quarto/` — into live
+project source, **because a push mirrors the directory, not the tracked tree.**
+The build failed and took the working render down with it. Measured by me on
+`/docs/<project>/page-info.json`:
+
+| project | `page-info.json` |
+|---|---|
+| **`qtm285-book`** | **404** |
+| `qtm285-lecture-1` | 200 |
+| `qtm285-slides` | 200 |
+| `pic-install` | 200 |
+| `qtm285-hw-minus-1` | 200 |
+| `pic` | 404 (never built; §1) |
+
+Its own pages: `lectures/Lecture0-prose.html` **404**,
+`homework/week0-homework.html` **404**, `homework/hw-minus-1-setup.html` 200.
+The sibling projects are the control — same box, same machine roll, still
+serving — so this is scoped to the project whose build failed.
+
+**A correction to my own earlier measurement, because it is the same lesson
+again.** I first ran that control against `/projects/<name>/page-info.json` and
+got **200 for every project including the broken one**. That path falls through
+to the SPA shell, so I was reading `<!doctype html>` and calling it a healthy
+JSON. **The path is `/docs/<project>/page-info.json`**, and the check is worth
+nothing without it. I caught it only because a 200 contradicted a report I had
+been given; had they agreed, I would have published a clean control that measured
+the SPA index five times.
+
+Three process facts, which outlive the incident:
+
+- **There is no staging step between a working directory and the one surface
+  students read.** A push goes straight to live project source.
+- **A failed build empties published output, and there is no rollback to the last
+  good render.** Combined with (e) — no `tlda build`, and push no-ops on an
+  unchanged tree — a project in this state cannot be restored from its own
+  source.
+- **The project record reads healthy while the surface is 404.** At 20:50:57Z
+  `qtm285-book` reported `buildStatus: success`, `pages: 3`,
+  `lastBuild: 2026-08-28T18:50:32Z` — while three of its four URLs were 404.
+  `pages: 3` counts a render that no longer exists and `lastBuild` never advanced
+  past the old good build. The advocate watched that field go
+  `error → building → success` **without `lastBuild` moving and without anything
+  being served.**
+
+**So the check for "is this published?" is fetching `page-info.json` and a page,
+with a token, on `/docs/`. Never the project record.** `buildStatus: building`
+invites waiting; `buildStatus: success` invites shipping, and tonight it was
+wrong. This is the same disease as §1's `pic` row and §4's Failure 5, three times
+in one evening: a field that reads as current because nothing can make it read
+otherwise.
+
+**The shape all six share:** each was verified against something other than the
 thing a student touches — a terminal's output, a dev box, a developer's browser,
-a merged commit, a JSON body nobody checked the status of. Every catch above is
-the same move: read the surface the student reads, from a position that has none
-of the author's advantages.
+a merged commit, a JSON body nobody checked the status of, a project record that
+cannot go stale-visible. Every catch above is the same move: read the surface the
+student reads, from a position that has none of the author's advantages.
 
 ## 5. What I am not proposing, and why
 
@@ -449,13 +565,39 @@ layer is to state what would be deleted instead. Applying it:
    architecture, but it changes what an instructor is handed, so it is named.
 2. A `pic` section in `docs/live-deploy.md`, and a classroom section in
    `docs/using-tlda.md`, which currently has **zero** occurrences of the word.
-3. Whether `pic` should gate on `testing` the way `stable` does. Currently it
-   does not. Skip's call.
+3. **Note, not a question, and not for Skip tonight.** `pic` does not gate on
+   `testing` the way `stable` does — the ancestor check in the pre-receive hook
+   is written `if [[ "$repo_name" == stable ]]`. Recording it so the next person
+   does not rediscover it. `AGENTS.md` §"Either ask a question or don't": a row
+   naming a subject is not a question, and putting one in front of him records
+   him as the holdup for something never actually put to him. If it is ever
+   raised, it goes with both options and what each costs.
 
-**Resolved since the first draft** (all re-measured by me at 20:14–20:24Z with
-the `pic` tokens): course `qtm285` exists on `tlda-pic` with one assignment;
-`qtm285-book` is built, 3 pages, `html`; the `/auth/login` instructor path works;
-and the full book project `pic` has `pages: 0` and `lastBuild: null`.
+4. **From `classroom-share-token`, via `alassroom-pm`, who ruled it out for
+   tonight as a config-schema change:** `tokens.json` is one flat
+   `{tokenRw, tokenRead}` pair and `getReadToken()` (`shared/config.mjs:503`)
+   takes no environment argument — which is why `tlda project share` printed a
+   token that 401s on `pic`. They shipped the guard, so it now refuses to print a
+   token the target box rejects, and proposed **env-keyed tokens** as the durable
+   fix. **This carries to Skip as a named recommendation, not tonight.** The
+   wording here is mine from the mechanism; `classroom-share-token`'s own
+   sentences had not reached me when I committed, and should replace this
+   paragraph when they do.
+
+**Resolved since the first draft — and re-measure this list before using it, the
+same as the box table in §0.** It has already been wrong once: it said
+*"`qtm285-book` is built, 3 pages"*, which was true at 20:24Z and false by 20:45Z
+(Failure 6). Twenty-one minutes.
+
+- Course `qtm285` exists on `tlda-pic` with one assignment. **Stands** (20:14:03Z).
+- The `/auth/login` instructor path works. **Stands** — `alassroom-pm`, ~20:10Z.
+- The full book project `pic` has `pages: 0`, `lastBuild: null`. **Stands**
+  (20:51:36Z).
+- The registration app fix is deployed. **Newly true** — `d41f6839e` on
+  `tlda-pic` at 20:50:57Z, bundle `index-DZAEa7P8.js`.
+- ~~`qtm285-book` is built, 3 pages~~ — **false since ~20:45Z.** Its
+  `page-info.json` is 404 and two of its three pages are 404 (20:51:36Z). See
+  Failure 6.
 
 **Open unknowns, stated as unknowns:**
 
