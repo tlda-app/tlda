@@ -17,12 +17,9 @@ export function createBuildQueue({
   const buildPriority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 10
   // How long a build may say NOTHING before its slot is taken back.
   //
-  // This is a silence threshold, not a duration limit, and the difference is
-  // the whole point: a build streams its output, so a ten-minute render and a
-  // ten-second one both tick throughout. Skip put the question that forces this
-  // shape -- a tex build should finish in "ten fifteen seconds" while a large
-  // qmd render legitimately runs for minutes, so no single wall-clock number
-  // can tell slow from stuck. Silence can.
+  // This is a worker-liveness threshold, not a duration limit. A build worker
+  // sends heartbeats independently of renderer output, so a long, quiet R
+  // chunk remains live while a suspended worker still loses its slot.
   //
   // 90s is six missed seconds-apart flushes. Set to 0 to disable, which is what
   // a test does when it drives the clock itself.
@@ -145,11 +142,10 @@ export function createBuildQueue({
     stallTimer?.unref?.()
 
     function relay(message, channel) {
-      // ANY message is proof the worker's event loop is running. The build
-      // streams its output, so this ticks continuously for a healthy build of
-      // any length -- which is why the stall threshold does not have to be
-      // guessed against how long a build takes.
+      // ANY message is proof the worker's event loop is running. In particular,
+      // heartbeats do not depend on a renderer producing stdout.
       lastHeard = now()
+      if (message?.t === 'heartbeat') return
       if (message?.t === 'done' && message.ok === false) workerFailure = new Error(message.error || `build worker for ${job.name} failed`)
       relays = relays.then(async () => {
         if (message?.t === 'rpc') {
