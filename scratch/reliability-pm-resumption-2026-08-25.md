@@ -2710,3 +2710,54 @@ browser editor still fails for every project.**
   from elsewhere leaves staged reversions behind.
 - The symlink/realpath class has bitten three times now: build-runner, the
   classroom hand-in 500, the room-save 409.
+
+## 2026-08-28 - `qtm285-slides-probe`: settle succeeds silently at `equal-tree`
+
+Diagnosis only. Nothing written, real course project untouched.
+
+**THE BOUNDARY.** `daemon/git-project-sync.mjs:635`:
+```js
+const shared = await rev(fetchedRef) || await rev(appliedRef)
+if (shared && oursTree === sharedTree) return { ok: true, status: 'equal-tree', ... }
+```
+and `git-sync-manager.mjs:140` logs ONLY `if (result.ok === false)`. So
+`equal-tree` returns success, pushes no proposal, and writes no line. **acceptSeq
+cannot move and nothing reports why.**
+
+**Matches the log exactly.** Four outcome lines in the project's whole history:
+```
+10:35:22  proposal not accepted: not-on-work-branch
+10:37:31  admission confirmed id=5
+18:32:17  admission confirmed id=6
+18:35:27  admission confirmed id=7      <- last, yesterday
+```
+Settles still run (365 closure lines at 05:57 today) with NO admission and NO
+refusal. Silence is the signature of the one success path that does not push.
+
+**Refs, read-only:**
+```
+refs/tlda/project/<p> = 14c0ff5  tree 3ee9724
+refs/tlda/fetched/<p> = 14c0ff5  tree 3ee9724   <- identical -> equal-tree fires
+work branch           = 446ad68  (1451 paths)
+revision              =          ( 448 paths)
+rev-list --count revision..branch = 0
+```
+The branch is NOT ahead of the revision; the 1003 differing paths are
+`_book-ctd/...` build output (site_libs, bootstrap, search.json) the filter is
+right to exclude.
+
+**NOT established:** why the pushed payload lands only in excluded paths. The
+closure log carries two odd shapes I did not chase -- files referencing
+THEMSELVES (`midterm-1.md references midterm-1.md`) and `index.html` referencing
+`scratch/pic-site/${sourceLinks[date]}`, i.e. TEMPLATE EXPRESSIONS parsed as
+file paths. 365 such lines, logged-and-excluded by design.
+
+**Reportable independent of this project:** a settle with nothing to publish is
+indistinguishable, from every surface a person can see, from one that is
+failing -- 202 queued forever, acceptSeq frozen, no log line. Same shape as the
+silences of the last two days; one line to make audible.
+
+**Env note that cost me two wrong reads:** this is **pic-dev**, not pic. The pic
+daemon's log is 19h stale and the probe is NOT bound there; the pic-dev daemon
+(pid 647) is alive and heartbeating and the probe IS bound to
+`/Users/skip/work/qtm285-picdev`.
