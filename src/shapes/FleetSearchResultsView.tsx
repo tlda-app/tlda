@@ -120,9 +120,14 @@ export function FleetSearchResultsView({
     0,
   )
   const showLoadMore = hasMore || locallyHidden > 0
-  // His word for these is messages, and that is what they are unless the search
-  // turned up something else as well.
-  const loadMoreNoun = resultGroups.length === 1 ? resultGroups[0].label.toLowerCase() : 'results'
+  // His word is "messages", so the button says messages. It cannot come from the
+  // group label: those are fixed in shared/fleet-search-query.mjs as Agents,
+  // Conversation, Documents, Session Logs and Activity, so a label-derived noun
+  // can say "Show more conversation" but never his sentence. Caught by
+  // search-pm exercising this branch, and it was my claim to have used his
+  // words while deriving the noun from the label instead.
+  const hasConversation = resultGroups.some(group => group.id === 'conversation' && group.results.length > 0)
+  const loadMoreNoun = hasConversation ? 'messages' : 'results'
   const renderResult = (r: any, i: number, groupId: string) => {
     const text = r.text ?? r.snippet ?? ''
     const rawEvent = r.source === 'session'
