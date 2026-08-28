@@ -163,29 +163,37 @@ const h = isSlide
 **So a height newly declared in `page-info.json` is never adopted by a room
 that already holds the shape.** Slides are exempt; ordinary pages are not.
 
-**Measured on `tlda-pic`, declared against persisted:**
+**The consequence is clipping, and that IS established — from the code, not
+from a browser.** `HtmlPageShape.tsx:1229-1265`: the iframe is sized
+`width: 100%, height: 100%` inside a div of `shape.props.w × shape.props.h`,
+and carries **`scrolling="no"`** (line 1264). An iframe clips its document to
+its viewport, and the parent's `overflow: visible` does not change that.
+**So content taller than the persisted height is cut off, with no scrollbar and
+no way for a student to reach it.**
+
+**What this does NOT establish is that any current page is clipped**, and the
+obvious comparison is a trap I nearly published:
 
 | project / page | declared | persisted |
 |---|---|---|
-| `qtm285-hw-minus-1` | 800 × **1000** | 800 × **891** |
+| `qtm285-hw-minus-1` | 800 × 1000 | 800 × **891** |
 | `qtm285-book` / `Lecture0-prose` | 800 × 1200 | **863 × 15429** |
-| `qtm285-book` / both homework pages | 800 × 1200 | 800 × 1200 |
+| both book homework pages | 800 × 1200 | 800 × 1200 |
 | `pic-install` | 800 × 1200 | 800 × 1200 |
 
-**`Lecture0-prose` at 15429 shows the mechanism working as intended** — a
-measured height for a long chapter, persisted, correctly diverged from the
-declaration. **`qtm285-hw-minus-1` at 891 is the problem:** that was measured
-against an 84 KB page which is now 1.2 MB, and the room will hold 891 until a
-write-capable visitor opens it. The two homework pages sitting exactly at the
-declared 1200 have evidently never been measured, and both were republished
-tonight.
+**The declared height is a placeholder, not an authority — this table disproves
+treating it as one.** `Lecture0-prose` declares 1200 and persists 15429. So
+`891` against a declared `1000` says nothing about whether anything is cut off;
+only the *rendered* height would, and measuring that means rendering it.
 
-**What is NOT established, and must not be inferred from the mismatch:**
-whether a shape shorter than its content clips visibly or the page scrolls
-inside its frame. The shapes are `isLocked: true`, which makes clipping
-plausible, **but nobody has looked** — and looking means an automated browser
-on a live room, which now writes fleet shapes. **A number that disagrees is not
-a symptom a student can see until someone sees it.**
+**And the 1.2 MB page is not a bigger document.** Roughly 278 KB of the growth
+is base64 — an embedded font and two JS bundles — plus inlined CSS. **The
+visible assignment is the same document minus one collapsed callout**, so its
+rendered height is probably close to the 891 already persisted.
+
+**So: the mechanism is the finding; no instance of it is currently evidenced.**
+Clipping is real, silent, and unreachable by a student when it happens — and
+nothing on the box is known to be in that state right now.
 
 **So the rule is: after any publish that changes a non-slide page, a
 write-capable session must open the project before students do.** For a course
