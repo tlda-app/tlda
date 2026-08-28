@@ -845,6 +845,7 @@ const SLIDES_BRIDGE_SCRIPT = `
     slideBackground = slideBackground || readSlideBackground();
 
     bindXrefHovers();
+    bindSplitXrefNavigation();
 
     // Legacy per-slide iframes lock to one slide. Deck-mode iframes keep the
     // whole Reveal instance alive and are driven by parent messages.
@@ -1175,6 +1176,29 @@ const SLIDES_BRIDGE_SCRIPT = `
         })(xref),
       });
     }
+  }
+
+  function bindSplitXrefNavigation() {
+    document.addEventListener('click', function(e) {
+      var link = e.target.closest && e.target.closest('a.quarto-xref');
+      if (!link) return;
+      var href = link.getAttribute('href') || '';
+      if (href.charAt(0) !== '#') return;
+      var anchor = href.slice(1);
+      while (anchor.charAt(0) === '/') anchor = anchor.slice(1);
+      if (!anchor) return;
+      e.preventDefault();
+      if (window.parent !== window) {
+        window.parent.postMessage({
+          type: 'tlda-navigate',
+          shapeId: shapeId,
+          targetFile: null,
+          targetPath: null,
+          targetTitle: ((link.textContent || '').trim()) || null,
+          anchor: anchor,
+        }, '*');
+      }
+    }, true);
   }
 
   if (document.readyState === 'loading') {
