@@ -492,9 +492,23 @@ function FleetSearchInner({ shape }: { shape: any }) {
 
     try {
       const currentProject = new URLSearchParams(window.location.search).get('project') || undefined
-      const res = await searchFleet(ftsQuery || '', 100, { ...serverFilters, currentProject, historyOnly: !ftsQuery })
+      // `throwOnError` because a search that FAILED and a search that matched
+      // nothing are different facts, and the panel renders them in the same
+      // place. Without it `searchFleet` catches the error and returns [], so a
+      // 45s `WS request idle timeout` arrives here as an empty array and the
+      // panel prints "no results" — measured on deployed 196dd5929, where the
+      // console carried the timeout while the surface claimed the corpus was
+      // empty. The reader cannot tell a broken search from an empty one, which
+      // is the whole of the complaint that search is unusable.
+      const res = await searchFleet(ftsQuery || '', 100, { ...serverFilters, currentProject, historyOnly: !ftsQuery, throwOnError: true })
       setResults(rankSearchResults(res, ftsQuery))
       setExpandedSearchGroups({})
+    } catch (e) {
+      // Say it failed and keep the previous results off the screen, so nothing
+      // stale reads as an answer to this query. `queryError` already renders
+      // above the result list; this is the missing wire, not a new surface.
+      setResults([])
+      setQueryError((e as Error)?.message || 'search failed')
     } finally {
       setLoading(false)
     }
