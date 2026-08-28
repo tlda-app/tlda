@@ -181,6 +181,40 @@ open. `acceptSeq` is now 32 with `buildStatus: error` — pushes land, builds fa
   `advocate-check-1 · ungraded · 3:57:46 PM` ✅
 - photo round trip ✅ (byte-for-byte earlier)
 
+## 21:35Z — the discriminator: `source` blocks in page-info (6/6, tested)
+
+**A project renders iff its page-info entries carry a `source` block** — and
+`toc.json` presence agrees on all six, so they are two faces of one missing
+build step.
+
+| project | entries w/ `source` | `toc.json` | renders |
+|---|---|---|---|
+| `qtm285-lecture-1` | 18/18 | 200 | ✅ seen |
+| `qtm285-slides` | 18/18 | 200 | — |
+| `pic-install` | 1/1 | 200 | — |
+| `deploy-probe` | 1/1 | 200 | — |
+| `qtm285-hw-minus-1` | **0/1** | **404** | ❌ 1×1 empty, seen |
+| `pic-schedule` | **0/1** | **404** | ❌ 1×1 empty, seen |
+
+**I tested this in the direction that could kill it:** opened `pic-schedule`, the
+*other* no-source project, predicting blank. It is blank — 1 shape, 1×1, empty,
+panel reads "No headings found". Same signature as `qtm285-hw-minus-1`.
+
+**Verification order when the book returns** (PM's, step 2 is this lead):
+1. `page-info.json` 200 with three entries — necessary, **not sufficient**
+2. **each entry carries `source`** (`format: qmd`, chapter `.qmd` path), vs
+   `qtm285-lecture-1` as control
+3. each page returns real content
+4. open it, with `qtm285-lecture-1` alongside, and say what a person sees
+
+**Prediction to be held to:** three entries *with* source → renders; *without* →
+200 + three pages + blank canvas, and every HTTP check we used tonight calls that
+success.
+
+**Bigger than tonight:** `pic-schedule` has been in this state since **2026-08-13**
+and nobody noticed, because every HTTP signal on it is green. The build step that
+writes `source`/`toc.json` has been silently skipping projects for two weeks.
+
 ## Superseded: the Continue re-check (done — passed)
 
 At 16:0x the box served `gitSha c09e3943d` — **the old bundle**. Read out of
