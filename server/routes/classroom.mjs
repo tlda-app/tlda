@@ -400,12 +400,24 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     res.status(201).json({ id })
   })
 
+  const missingSubmission = error => /submission not found/i.test(error?.message || '')
+
   router.post('/assignments/:assignmentId/submissions/:studentId/grade', instructor, (req, res) => {
-    res.json(store.setStatus(req.params.assignmentId, req.params.studentId, 'graded'))
+    try {
+      res.json(store.setStatus(req.params.assignmentId, req.params.studentId, 'graded'))
+    } catch (error) {
+      if (!missingSubmission(error)) throw error
+      res.status(404).json({ error: 'Submission not found' })
+    }
   })
 
   router.post('/assignments/:assignmentId/submissions/:studentId/return', instructor, (req, res) => {
-    res.json(store.returnFeedback(req.params.assignmentId, req.params.studentId))
+    try {
+      res.json(store.returnFeedback(req.params.assignmentId, req.params.studentId))
+    } catch (error) {
+      if (!missingSubmission(error)) throw error
+      res.status(404).json({ error: 'Submission not found' })
+    }
   })
 
   return router
