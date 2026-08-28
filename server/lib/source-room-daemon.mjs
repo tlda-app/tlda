@@ -414,6 +414,24 @@ export function createSourceRoomDaemon({
     room.blocked = hasConflictMarkers(room.ytext.toString())
     if (room.blocked) {
       persistRoom(room)
+      // BLOCKED IS NOT SILENT. This returned here and told nobody, so a room
+      // whose text contains conflict markers stopped publishing FOREVER: every
+      // later edit re-derived `blocked` from the same markers and returned at
+      // this line, while the editor happily showed the typed text.
+      //
+      // Measured on a disposable project 2026-08-27: three demo cycles, the
+      // browser's edits admitted nowhere and "still absent 455s after the
+      // window closed", with NO hold recorded — because this early return is
+      // not the merge path and never reported anything. The markers in that
+      // room were dated 2026-08-26 06:07, from before the merge repair shipped:
+      // that repair stopped new contamination and left every already-poisoned
+      // room unable to publish, in silence.
+      //
+      // Nothing here resolves anything. It enters the SAME hold-and-report path
+      // a conflicting merge already uses, so the file is marked in the editor
+      // and the person can clear it with the resolution control that exists.
+      void noteRoomIsHolding(room, `${room.filePath} still contains conflict markers`)
+      broadcast(room, { type: 'status', status: 'conflict', file: room.filePath, sourceRevision: room.heldRevision })
       return
     }
     room.queued = true

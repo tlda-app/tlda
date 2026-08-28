@@ -277,3 +277,97 @@ test('an edit typed into the ROOM reaches the document', async () => {
   daemon.closeAll()
   await manager.closeAll()
 })
+
+test('a CONTAMINATED room cannot lose a browser edit silently', async () => {
+  // THE DEFECT, and it is the damage the merge repair left behind rather than a
+  // new fault.
+  //
+  // `noteLocalChange` re-derives `blocked` from whether the room's text contains
+  // conflict markers, and returned before queuing. `hasConflictMarkers` has
+  // exactly two occurrences in that file — its definition and that line — and
+  // NOTHING anywhere removes markers from a room's text. So a room that once
+  // held them never published again, and said nothing: the editor showed every
+  // keystroke and the document never changed.
+  //
+  // Read from the live disposable project on 2026-08-27, markers dated
+  // 2026-08-26 06:07 — from before the merge repair shipped:
+  //
+  //     <<<<<<< live room for <project>:<file>
+  //     - [browser] SYNCDEMO-69410 at 2026-08-26T06:07:49.411Z
+  //     =======
+  //     - [disk] SYNCDEMO-69409 at 2026-08-26T06:07:49.408Z
+  //     >>>>>>> accepted server source for <project>:<file>
+  //
+  // What is asserted here is ONLY that the silence ends: the file is marked and
+  // the hold is recorded, so the person can use the resolution control that
+  // already exists. Nothing resolves the markers for them — clearing someone's
+  // document is not this code's decision.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'tlda-contaminated-room-')))
+  const projectsDir = join(root, 'projects')
+  const working = join(projectsDir, 'paper', '.source-room', 'working')
+  mkdirSync(working, { recursive: true })
+  await git(working, ['init', '-b', 'main'])
+  await git(working, ['config', 'user.name', 'source-room'])
+  await git(working, ['config', 'user.email', 'room@tlda'])
+  writeFileSync(join(working, 'paper.md'), BASE)
+  await git(working, ['add', '-A'])
+  await git(working, ['commit', '-m', 'base'])
+  await git(working, ['branch', 'tlda/paper'])
+
+  const held = []
+  const queued = []
+  const daemon = createSourceRoomDaemon({
+    projectDir: project => join(projectsDir, project),
+    readProject: async name => ({ name, mainFile: 'paper.md' }),
+    sourceLifecycleStore: async () => ({
+      gitRepository: async () => ({ head: async () => null }),
+      readCurrentFile: async () => ({ content: Buffer.from(BASE) }),
+      readRevisionFile: async () => Buffer.from(BASE),
+    }),
+    readClientSourceManifest: async () => ['paper.md'],
+    gitSyncManagerForProject: () => ({
+      bindSource: () => {},
+      sync: async () => {},
+      headChanged: async () => ({ ok: true }),
+      standOnWorkBranch: async () => ({ ok: true, status: 'stood' }),
+      remoteOperation: async () => ({ inRepo: true, tracked: true, path: 'paper.md' }),
+      queuePaths: (project, paths) => { queued.push(...paths) },
+    }),
+    recordHeldEdit: async (project, record) => { held.push({ project, ...record }) },
+    pushDelayMs: 5,
+    log: { info() {}, warn() {}, error() {} },
+  })
+
+  const room = await daemon.getRoom('paper', 'paper.md')
+  const frames = []
+  room.clients.add({ readyState: 1, send: payload => frames.push(JSON.parse(payload)) })
+
+  // A room already carrying markers, exactly as the live one was found.
+  const contaminated = '# paper\n\n<<<<<<< live room for paper:paper.md\nbravo-FROM-BROWSER\n=======\nbravo-FROM-DISK\n>>>>>>> accepted server source for paper:paper.md\n'
+  room.ydoc.transact(() => {
+    room.ytext.delete(0, room.ytext.length)
+    room.ytext.insert(0, contaminated)
+  })
+  await new Promise(resolve => setTimeout(resolve, 200))
+
+  // The person keeps typing, which is what actually happened.
+  room.ydoc.transact(() => { room.ytext.insert(room.ytext.length, '\nstill typing\n') })
+  await new Promise(resolve => setTimeout(resolve, 200))
+
+  // The edit is NOT published — that part is correct and is not what this
+  // asserts. What must not happen is publishing nothing and saying nothing.
+  const marks = frames.filter(frame => frame?.type === 'status' && frame.status === 'conflict')
+  assert.ok(marks.length,
+    'the editor was told the file is held — otherwise every keystroke vanishes with the document '
+    + `unchanged and no signal anywhere (frames: ${JSON.stringify(frames.map(f => `${f.type}:${f.status ?? ''}`))})`)
+  assert.equal(marks[0].file, 'paper.md', 'and told WHICH file, so the mark lands on the right one')
+  assert.ok(held.length,
+    `and the hold was recorded, so it is visible off the socket too (saw ${JSON.stringify(held)})`)
+
+  // NOTHING WAS RESOLVED FOR THEM. The markers are still theirs to clear with
+  // the existing control; this change ends the silence, it does not choose.
+  assert.match(room.ytext.toString(), /<{7}/, 'the markers are untouched')
+  assert.deepEqual(queued, [], 'and nothing was queued while the text is still conflicted')
+
+  daemon.closeAll()
+})
