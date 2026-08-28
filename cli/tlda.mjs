@@ -3050,7 +3050,10 @@ async function publishClassroomAssignment({
   console.log(`Solutions: ${assignment.solutionsDocKey || solutionsDocKey}${assignment.solutionsVersion ? `@${assignment.solutionsVersion}` : ''}`)
   console.log()
   console.log('Next paths:')
-  console.log(`  Registration: ?workspace=classroom-register&course=${encodeURIComponent(courseId)}`)
+  // `project` is not decoration: ClassroomRegistration renders "Continue to
+  // class" only when it is present, so a registration path without it registers
+  // the student and then offers them nowhere to go.
+  console.log(`  Registration: ?workspace=classroom-register&course=${encodeURIComponent(courseId)}&project=${encodeURIComponent(sourceDocKey)}`)
   console.log(`  Gradebook:    ?workspace=classroom-gradebook&course=${encodeURIComponent(courseId)}`)
   console.log(`  Marking:      ?workspace=classroom-problems&assignment=${encodeURIComponent(assignmentId)}`)
   console.log(`  Student work: ?workspace=classroom-work&assignment=${encodeURIComponent(assignmentId)}`)
