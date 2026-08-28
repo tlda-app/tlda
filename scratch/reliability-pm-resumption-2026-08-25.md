@@ -2479,3 +2479,35 @@ done" failure and it was mine.
 **Their change is uncommitted and one `rm` from gone** -- the thing to protect
 first. Nothing of theirs touched: I copied their file into my worktree to test
 it and restored mine immediately.
+
+### Prepared on `room-fixes-on-theirs`, holding for their commit
+
+Three commits, `d4294222b..3ec9fd2b4`. **My competing implementation is DROPPED**
+-- `grep "COMPARE CANONICAL PATHS" shared/git-remotes.mjs` -> 0, so the branch
+contains no change to that file and cannot collide with theirs.
+
+Keeps: the four symlink controls (two symlink cases + the two that matter as
+much -- ordinary path judged as before, outside-the-repo STILL REFUSED), the
+Fly-topology rig and its guard allowance, the visible-hold change
+(`b7d8c6667`), and the pin commit recording what is NOT the cause.
+
+**Deliberately red right now:**
+```
+symlink gate   2 pass / 2 fail   <- the two symlink cases fail, both controls pass
+topology rig   409               <- the defect
+room tests     4 pass / 0 fail
+```
+Red is CORRECT: their fix is uncommitted, so the gate is red at exactly the
+boundary their change closes. If it does not go green on rebase, that is a
+finding rather than a formality.
+
+**Ordering detail that cost a cherry-pick:** the visible-hold commit EDITS the
+test file the pin commit CREATES, so picking visible-hold first gives `DU` on
+that path. Pin first, then visible-hold.
+
+**Waiting on** `classroom-submission-store` committing `git-remotes.mjs`. Then:
+rebase, rerun combined gates, REPORT BEFORE LANDING.
+
+Worktrees now: `room-fixes-on-theirs` (live), `integrate-room-fixes` (held,
+carries my dropped implementation), `repo-path-canonical`, `browser-edit-loss`,
+`one-checkout-one-project`, plus older proof worktrees.
