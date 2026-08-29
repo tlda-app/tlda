@@ -69,6 +69,65 @@ else
 fi
 
 echo
+echo "class read token — the same work through its history"
+for u in history/shadow history/shadow/bounds; do
+  check "/api/projects/<submission>/$u" "$HOST/api/projects/$ENC/$u" 403 "$READ"
+done
+answered() { # token names-json
+  curl -s -X POST -H "Authorization: Bearer $1" -H 'content-type: application/json' \
+    -d "{\"projects\":[\"$SUB\"]}" "$HOST/api/projects/history/shadow/changelog/batch" \
+  | node -pe 'const p=JSON.parse(require("fs").readFileSync(0,"utf8")).projects;Array.isArray(p)?p.length:Object.keys(p||{}).length'
+}
+n=$(answered "$READ")
+if [ "$n" = "0" ]; then
+  printf '  ok    %-52s %s\n' "batch changelog: projects answered for" "$n"
+else
+  printf '  FAIL  %-52s %s (wanted 0)\n' "batch changelog: projects answered for" "$n"
+  fails=$((fails + 1))
+fi
+
+echo
+echo "class read token — the manifest no longer names them"
+mannames=$(curl -s -H "Authorization: Bearer $READ" "$HOST/docs/manifest.json" \
+  | node -pe 'Object.keys(JSON.parse(require("fs").readFileSync(0,"utf8")).documents||{}).filter(n=>n.startsWith("submission-")).length')
+if [ "$mannames" = "0" ]; then
+  printf '  ok    %-52s %s\n' "/docs/manifest.json: submissions named" "$mannames"
+else
+  printf '  FAIL  %-52s %s (wanted 0)\n' "/docs/manifest.json: submissions named" "$mannames"
+  fails=$((fails + 1))
+fi
+
+echo
+echo "class read token — the sync room, over a real WebSocket"
+wsprobe() { # token room  -> OPEN | refused N
+  ( cd "$(dirname "$0")/../server" && TOKEN="$1" ROOM="$2" HOSTWS="${HOST/https:/wss:}" node -e '
+import("ws").then(({default: WebSocket}) => {
+  const url = `${process.env.HOSTWS}/sync/${encodeURIComponent(process.env.ROOM)}?sessionId=probe-gate&token=${process.env.TOKEN}`
+  const ws = new WebSocket(url)
+  const say = v => { console.log(v); try { ws.close() } catch {} ; process.exit(0) }
+  setTimeout(() => say("timeout"), 8000)
+  ws.on("open", () => say("OPEN"))
+  ws.on("unexpected-response", (_r, res) => say("refused " + res.statusCode))
+  ws.on("error", e => say("error " + e.message))
+})' 2>/dev/null )
+}
+sub_room="doc-$SUB"
+got=$(wsprobe "$READ" "$sub_room")
+if [ "$got" = "refused 403" ]; then
+  printf '  ok    %-52s %s\n' "/sync/doc-<submission>" "$got"
+else
+  printf '  FAIL  %-52s %s (wanted refused 403)\n' "/sync/doc-<submission>" "$got"
+  fails=$((fails + 1))
+fi
+got=$(wsprobe "$READ" "doc-qtm285-book")
+if [ "$got" = "OPEN" ]; then
+  printf '  ok    %-52s %s\n' "/sync/doc-qtm285-book  (POSITIVE CONTROL)" "$got"
+else
+  printf '  FAIL  %-52s %s (wanted OPEN)\n' "/sync/doc-qtm285-book  (POSITIVE CONTROL)" "$got"
+  fails=$((fails + 1))
+fi
+
+echo
 echo "class read token — POSITIVE CONTROL: the book is still readable"
 check "/docs/qtm285-book/page-info.json" "$HOST/docs/qtm285-book/page-info.json" 200 "$READ"
 check "/api/projects (the index itself)" "$HOST/api/projects" 200 "$READ"
@@ -80,6 +139,16 @@ if [ -n "$RW" ]; then
     check "/docs/<submission>/$f" "$HOST/docs/$ENC/$f" 200 "$RW"
   done
   check "/api/projects/<submission>" "$HOST/api/projects/$ENC" 200 "$RW"
+  for u in history/shadow history/shadow/bounds; do
+    check "/api/projects/<submission>/$u" "$HOST/api/projects/$ENC/$u" 200 "$RW"
+  done
+  rwn=$(answered "$RW")
+  if [ "$rwn" -ge 1 ]; then
+    printf '  ok    %-52s %s\n' "batch changelog: projects answered for" "$rwn"
+  else
+    printf '  FAIL  %-52s %s (wanted >= 1)\n' "batch changelog: projects answered for" "$rwn"
+    fails=$((fails + 1))
+  fi
   rwlisted=$(curl -s -H "Authorization: Bearer $RW" "$HOST/api/projects" \
     | node -pe 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));(d.projects||d).filter(p=>String(p.name).startsWith("submission-")).length')
   if [ "$rwlisted" -ge 1 ]; then
