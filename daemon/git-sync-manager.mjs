@@ -150,7 +150,10 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     // Named so `start()` can run it once, below. It is the ONE settle path:
     // the watcher reaches it through the debouncer, and startup reaches it
     // directly. Nothing else should grow a second way in.
-    const settleEditCluster = async () => {
+    // `fromEdit` says whether a PERSON's edit is what reached here. The watcher
+    // path sets it; the startup sweep does not, and that distinction is the
+    // difference between a useful warning and a flood.
+    const settleEditCluster = async ({ fromEdit = false } = {}) => {
       try {
         // settle() reports failure two ways and only one of them was audible.
         // A THROW is logged below; a returned { ok: false } was dropped on the
@@ -177,7 +180,20 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
           // each one would put thousands of messages in front of somebody,
           // which is a worse failure than the silence it replaces. The
           // signature is the same shape `reportedDropped` uses above.
-          await reportSyncRefusal(result)
+          //
+          // AND ONLY FOR AN ACTUAL EDIT. The first version of this reported
+          // from the startup sweep too, which runs once per binding at daemon
+          // start regardless of whether anybody touched anything. Measured the
+          // moment it shipped: a single daemon restart put **42 messages** into
+          // root's chat in 90 seconds, one per misconfigured binding on the
+          // machine. That is the flood this warning exists to avoid being.
+          //
+          // The narrower rule is also the true one. The claim being made is
+          // "the edit you just made did not reach the project" -- at startup
+          // nobody made one, so there is nothing to say. A binding parked on
+          // the wrong branch with no edits is not a person losing work; it is
+          // an inventory question, and inventory does not belong in a chat.
+          if (fromEdit) await reportSyncRefusal(result)
         }
         if (result?.ok) {
           reportedRefusal = null
@@ -191,7 +207,9 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     }
     const cluster = createEditClusterDebouncer({
       sourceDir: item.sourceDir,
-      onSettled: settleEditCluster,
+      // The watcher path: a file actually changed, so a refusal here is somebody's
+      // edit not reaching the project, and that is worth saying.
+      onSettled: () => settleEditCluster({ fromEdit: true }),
     })
     const remoteBridge = item.remote ? createRemoteGitBridge({
       sourceDir: item.sourceDir,
