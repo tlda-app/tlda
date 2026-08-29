@@ -388,3 +388,64 @@ the thing the whole flow exists to produce.
 **Not fixed and not touched.** It is the authority model — the same class of
 question as the first-reader decision, one surface over — and that is Skip's.
 **Unlike the first-reader decision, this one has a date on it.**
+
+## `main` cannot be deployed to `pic`, `pic-dev` or `stable`
+
+**Found 2026-08-29 02:35Z, before deploying the submission gate. Not fixed —
+it belongs to the front-door cutover owner. Re-check before any deploy of
+`main` to those three apps.**
+
+`51574efd9` moved the tailnet node and `tailscale serve`/`funnel` **out of**
+`scripts/fly-entrypoint-live.sh` and **into** `scripts/fly-entrypoint-edge.sh`,
+which runs as a separate Fly **process group**. `fly.live.toml` declares that
+group. **`fly.pic.toml`, `fly.pic-dev.toml` and `fly.stable.toml` declare no
+`[processes]` at all**, so they run the image's default
+`CMD ["/app/fly-entrypoint-live.sh"]` and never run the edge entrypoint.
+
+Measured with controls in both directions:
+
+| | tailscale references |
+|---|---|
+| `fly-entrypoint-live.sh` at `51574efd9^` | 9 |
+| `fly-entrypoint-live.sh` on `main` | **0** |
+| `fly-entrypoint-edge.sh` on `main` | 10 |
+| `fly-entrypoint-live.sh` at `5784f5787` — what `pic` serves today | 9 |
+
+And `deploy/hooks/pre-receive-common.sh:229` passes `--process-groups app`
+**only** when the config is `fly.live.toml`; every other app gets a plain
+`fly deploy`.
+
+**So deploying `main` to `pic` starts no tailscale node**, and
+`TS_HOSTNAME=tlda-pic` / `TS_FUNNEL=1` in `fly.pic.toml` do nothing.
+`tlda-pic.cormorant-matrix.ts.net` is the QR code, the PWA `start_url`, and the
+only public A record. **`stable` is the same shape.**
+
+**What was done instead:** the submission gate was cherry-picked onto the sha
+`pic` is already serving — `3aeea40e4` = `5784f5787` + one commit, five files,
+nothing from the cutover — and that was deployed. `170e4e6de` is the same
+commit on `main`, waiting for `main` to be deployable to these apps again.
+
+## `pic-dev` serves a frontend from before 18 June
+
+**The reported first-time-student failure is not a code defect.** `pic-dev`'s
+server reports `e0220ac74` (28 August) and hands out
+`/assets/index-BETHBNov.js`, which carries a login modal deleted from `src` on
+2026-06-18 and none of the classroom student-registration feature.
+
+| string in the served bundle | present? | introduced |
+|---|---|---|
+| `Enter your name to log in` | **yes** | `49ff7f658` 2026-04-19, deleted `300780038` 2026-06-18 |
+| `Using temporary identity` | no | `300780038` 2026-06-18 |
+| `identity-auto-notice` | no | `300780038` 2026-06-18 |
+| `Keep this token` | no | `237e32a38` 2026-08-11 |
+| `classroomContinueLink` | no | `a2a7fb530` 2026-08-28 |
+
+**Control — `pic` is current:** entry `index-B8K9teHu.js`, 5,492,169 bytes, modal
+absent, auto-assign present, classroom registration present. `pic-dev`'s entry is
+3,629,454 bytes with the reverse.
+
+**So the fix is a `pic-dev` rebuild, and it is blocked by the section above.**
+
+**The lesson is the standing one:** `/api/build-info` names what the **server**
+checked out. It says nothing about the bundle the browser loads, and the two can
+be two months apart. Inspect the bundle named by the served `index.html`.
