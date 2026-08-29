@@ -728,6 +728,18 @@ async function cmdCreate() {
       documentRoots: documentRoots.length ? documentRoots : defaultRoots,
       forceRebuild,
       acceptContainedServerHistory,
+      // THE CALL THAT ACTUALLY PUSHES. `bindLocalSource` above sends `server`
+      // and this one did not, so `--server` governed the API calls and the
+      // preflight while the history-seed push -- which happens on THIS call --
+      // still went to the daemon's own server. Measured against pic-dev:
+      //
+      //   Created markdown project "classroom-link-verify-0829"    <- pic-dev
+      //   fatal: repository 'https://tlda-fly…/git/classroom-link-verify-0829/'
+      //           not found                                         <- the seed
+      //
+      // The link then fails outright, so a classroom could not be set up on any
+      // box that is not the daemon's default.
+      server: getFlag('server') || null,
       ...linkedRemote,
     })
   }
