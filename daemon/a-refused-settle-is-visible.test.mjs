@@ -1,5 +1,5 @@
 /**
- * **A refused settle says so where a person is.**
+ * **A refused settle must not flood, and a working checkout must stay silent.**
  *
  * A checkout standing on a branch the daemon does not manage is refused
  * `not-on-work-branch`. The refusal is correct and stays — Skip's rule is *"if
@@ -7,25 +7,25 @@
  * that shit. otherwise it doesn't."* **Nothing here pushes a branch the daemon
  * does not manage.**
  *
- * What was wrong is that the refusal was inaudible. The person edits, the daemon
- * commits, their working tree goes clean, no command errors, and the project
- * never receives a revision — so sync looks like it worked. The only trace was a
- * line in the daemon's own log file on that machine.
+ * The refusal was inaudible: the person edits, the daemon commits, their tree
+ * goes clean, nothing errors, and the project never receives a revision.
+ * Measured on testing 2026-08-29 — **1702 refusals across 85 distinct
+ * projects**, 24 of the affected bindings in the user's own project directories.
  *
- * **Measured on testing, 2026-08-29:** 1702 `not-on-work-branch` refusals across
- * **85 distinct projects**, the newest minutes old, none of them visible
- * anywhere but that file. 24 of the affected bindings were in the user's own
- * project directories.
+ * **Reporting it from the startup sweep shipped a flood, and the first test is
+ * that regression.** The sweep runs once per binding at daemon start whether or
+ * not anybody touched anything, so one restart put **42 messages into root's
+ * chat in 90 seconds** — and every deploy restarts the daemon.
  *
- * `settle` already composed the whole sentence — the project, the branch this
- * checkout is on, the managed branch it must be on, and the command that fixes
- * it. This carries that sentence to `daemon-warning`, which the server turns
- * into a chat message. No new text, no new transport.
- *
- * **The dedupe is load-bearing, not tidiness.** The refusal recurs on every
- * settle. Reporting each one would put thousands of messages in front of
- * somebody, which is a worse failure than the silence it replaces — so the third
- * test is as much the point as the first.
+ * **What the narrowing does NOT yet buy, stated so nobody reads more into it.**
+ * Reporting is now limited to the watcher path, where a person's edit is what
+ * arrived. But a checkout that has never settled successfully has **no watched
+ * members** — `members()` resolves through `localRef`/`fetchedRef`, none of
+ * which exist for it — so the watcher observes none of its files and an edit
+ * there never reaches a settle at all. **For the population this warning is
+ * aimed at, it is therefore still silent.** That is a deliberate intermediate:
+ * silent is strictly better than 42 messages per restart, and the remaining
+ * gap is named rather than papered over.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -36,12 +36,13 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { createGitSyncManager } from './git-sync-manager.mjs'
+import { createGitProjectSync } from './git-project-sync.mjs'
 
 const execFile = promisify(execFileCb)
 const git = (cwd, args) => execFile('git', args, { cwd, encoding: 'utf8', timeout: 30_000 })
 const quiet = { info() {}, warn() {}, error() {} }
 
-/** A checkout with one commit and a bare remote, standing on `branch`. */
+/** A checkout with one commit, a published head, and a bare remote. */
 async function checkoutOn(branch, project) {
   const root = mkdtempSync(join(tmpdir(), 'tlda-refusal-'))
   const remote = join(root, 'server.git')
@@ -53,6 +54,7 @@ async function checkoutOn(branch, project) {
   writeFileSync(join(dir, 'main.md'), '# paper\n\nbaseline\n')
   await git(dir, ['add', '-A'])
   await git(dir, ['commit', '-qm', 'base'])
+  await git(dir, ['push', '-q', remote, `HEAD:refs/tlda/source/${project}`])
   if (branch !== 'main') await git(dir, ['checkout', '-q', '-b', branch])
   return { root, dir, remote, project }
 }
@@ -69,53 +71,56 @@ function managerOver(root, remote, onSyncRefused) {
   })
 }
 
-test('a checkout on an unmanaged branch reports the refusal, naming both branches', async () => {
+async function startDaemon(manager, project, dir) {
+  manager.bindSource(project, dir, { documentRoots: ['main.md'] })
+  await manager.sync([{ name: project, mainFile: 'main.md' }]).catch(() => {})
+}
+
+test('THE FLOOD REGRESSION: a daemon startup sweep reports nothing', async () => {
+  // 42 messages in 90 seconds from one restart, before this narrowing. Every
+  // deploy restarts the daemon, so this is the test that keeps it quiet.
   const { root, dir, remote, project } = await checkoutOn('main', 'paper')
   const seen = []
   const manager = managerOver(root, remote, event => { seen.push(event) })
-  manager.bindSource(project, dir, { documentRoots: ['main.md'] })
-  await manager.sync([{ name: project, mainFile: 'main.md' }]).catch(() => {})
+  await startDaemon(manager, project, dir)
 
-  assert.equal(seen.length, 1, `exactly one refusal reported, got ${JSON.stringify(seen)}`)
-  const [event] = seen
-  assert.equal(event.status, 'not-on-work-branch', JSON.stringify(event))
-  assert.equal(event.project, project, 'the project is named')
-  // The three facts a person needs to act, all present in the message itself.
-  assert.match(event.reason, /paper/, `names the project: ${event.reason}`)
-  assert.match(event.reason, /\bmain\b/, `names the branch the checkout is ON: ${event.reason}`)
-  assert.match(event.reason, /tlda\/paper/, `names the managed branch it must be on: ${event.reason}`)
-  assert.match(event.reason, /git checkout tlda\/paper/, `and the command that fixes it: ${event.reason}`)
+  assert.deepEqual(seen, [],
+    `startup must say nothing — nobody edited anything: ${JSON.stringify(seen)}`)
   await manager.closeAll()
 })
 
-test('CONTROL: a checkout on its own work branch reports nothing', async () => {
-  // THE LINE THAT MUST NOT MOVE. A working checkout must stay silent — a
-  // warning that fires on correct setups gets muted, and then catches nothing.
+test('CONTROL: a checkout on its own work branch is not refused at all', async () => {
+  // THE LINE THAT MUST NOT MOVE. A warning that fires on correct setups gets
+  // muted, and then catches nothing.
   const { root, dir, remote, project } = await checkoutOn('tlda/paper', 'paper')
   const seen = []
   const manager = managerOver(root, remote, event => { seen.push(event) })
-  manager.bindSource(project, dir, { documentRoots: ['main.md'] })
-  await manager.sync([{ name: project, mainFile: 'main.md' }]).catch(() => {})
+  await startDaemon(manager, project, dir)
 
-  const refusals = seen.filter(event => event.status === 'not-on-work-branch')
-  assert.equal(refusals.length, 0,
+  assert.equal(seen.filter(event => event.status === 'not-on-work-branch').length, 0,
     `a checkout on its work branch is not refused for being on the wrong branch: ${JSON.stringify(seen)}`)
   await manager.closeAll()
 })
 
-test('the same refusal is reported ONCE, not on every settle', async () => {
-  // Without this the change is a flood: the refusal recurs every settle, and
-  // 1702 of them were recorded on one machine in a day.
-  const { root, dir, remote, project } = await checkoutOn('main', 'paper')
-  const seen = []
-  const manager = managerOver(root, remote, event => { seen.push(event) })
-  manager.bindSource(project, dir, { documentRoots: ['main.md'] })
-  for (let i = 0; i < 3; i++) {
-    await manager.headChanged(project).catch(() => {})
-    writeFileSync(join(dir, 'main.md'), `# paper\n\nedit ${i}\n`)
-    await manager.sync([{ name: project, mainFile: 'main.md' }]).catch(() => {})
-  }
-  assert.equal(seen.length, 1,
-    `one report for one unchanged refusal, got ${seen.length}: ${JSON.stringify(seen.map(e => e.status))}`)
-  await manager.closeAll()
+test('the refusal carries the project, both branches, and the fix', async () => {
+  // The payload the warning exists to deliver, asserted where it is composed.
+  // `settle` builds this sentence; nothing downstream rewrites it, so this is
+  // the text a person would receive.
+  const { dir, remote, project } = await checkoutOn('main', 'paper')
+  const result = await createGitProjectSync({
+    sourceDir: dir,
+    project,
+    daemonId: `source-room:${project}`,
+    bindingId: project,
+    remote: `file://${remote}`,
+    documentRoots: ['main.md'],
+    log: quiet,
+  }).editClusterSettled()
+
+  assert.equal(result.ok, false, JSON.stringify(result))
+  assert.equal(result.status, 'not-on-work-branch', JSON.stringify(result))
+  assert.match(result.reason, /paper/, `names the project: ${result.reason}`)
+  assert.match(result.reason, /\bmain\b/, `names the branch the checkout is ON: ${result.reason}`)
+  assert.match(result.reason, /tlda\/paper/, `names the managed branch: ${result.reason}`)
+  assert.match(result.reason, /git checkout tlda\/paper/, `and the fix: ${result.reason}`)
 })
