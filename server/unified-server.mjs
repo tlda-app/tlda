@@ -5541,6 +5541,27 @@ server.on('upgrade', async (req, socket, head) => {
     if (slash <= 0 || slash === rest.length - 1) { socket.destroy(); return }
     const project = decodeURIComponent(rest.slice(0, slash))
     const filePath = decodeURIComponent(rest.slice(slash + 1))
+    // The same rule as `/sync/` above and as `/docs`, at the one call site that
+    // reaches a project's SOURCE — for a submission that is the file the student
+    // uploaded. Defence in depth rather than a measured exposure: this path
+    // answers 502 from outside the box to every request, including the no-token
+    // control, so nothing here has been proven on the wire and the refusal is
+    // asserted by test only.
+    const sourceOwner = app?.locals?.classroomStore?.submissionDocumentOwner(project)?.studentId ?? null
+    if (sourceOwner) {
+      const enrolledHere = app?.locals?.classroomStore?.studentForToken(url.searchParams.get('classroomToken'))
+      const may = classroomRoomAccess({
+        roomId: project,
+        tokenLevel: validateToken(extractToken(req)),
+        studentId: enrolledHere?.id ?? null,
+        submissionOwnerId: sourceOwner,
+      })
+      if (may === 'deny') {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+        socket.destroy()
+        return
+      }
+    }
     const remoteAddr = req.socket.remoteAddress
     const remotePort = req.socket.remotePort
     sourceRoomWss.handleUpgrade(req, socket, head, (ws) => {
