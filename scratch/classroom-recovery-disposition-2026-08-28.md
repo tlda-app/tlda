@@ -343,3 +343,48 @@ It needs an owner.
   good render.** This is what turned a content mistake into an outage.
 - `CLAUDE.md` imports `~/work/dot-claude/reference/lane-app.md`, which does not
   exist on this machine.
+
+## A student can read another student's submission, with the class read token
+
+**Measured on the PUBLIC box `tlda-pic` (`5784f5787`), using only the shared
+read token — the one on the QR code that every student holds.** No rw token, no
+enrolment token, no browser.
+
+```
+/api/projects                                            200
+  → 13 projects, 3 named with student logins:
+      submission-hw-minus-1-setup-qtm285:advocate-check-1
+      submission-hw-minus-1-setup-qtm285:heicprobe01
+      submission-hw-minus-1-setup-qtm285:photo-demo-0828-1519
+
+/api/projects/submission-…:photo-demo-0828-1519          200
+/docs/submission-…/page-info.json                        200
+/docs/submission-…/hw-minus-1.html                       200   49,153 bytes
+/docs/submission-…/my-photo.png                          200  320,849 bytes  image/png
+```
+
+**The rendered submission and the student's photograph both come back**, and
+`page-info.json` is 200 for all three submissions — it is the class of them,
+not one project.
+
+**The control that makes this a finding rather than a misread:** the classroom
+API is correctly gated against the same token —
+`/api/classroom/courses/qtm285/status` → **401**,
+`…/assignments` → **401**.
+
+**So the authority model holds where it was written and is absent where it was
+not.** Submissions are published as **ordinary projects**, and `/docs/*` is
+gated by the shared read token alone — which every classmate has by design.
+**Nothing in the document layer knows a submission belongs to one student.**
+
+**The exercise is "take a photo of something in the room you are in", so the
+artifact is a photograph of a student's home.**
+
+**No real student is exposed today.** All three submissions are ours —
+`advocate-check-1`, `heicprobe01`, `photo-demo-0828-1519`. **The mechanism is
+live; the harm is not, yet.** It becomes real at the first hand-in, which is
+the thing the whole flow exists to produce.
+
+**Not fixed and not touched.** It is the authority model — the same class of
+question as the first-reader decision, one surface over — and that is Skip's.
+**Unlike the first-reader decision, this one has a date on it.**
