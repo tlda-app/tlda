@@ -172,8 +172,16 @@ async function taskDocFleetSource(localFleetStore, { boundedTasksLimit = null } 
   }
 }
 
-// Mount history sub-router
-router.use('/:name/history', historyRoutes)
+// Mount history sub-router.
+//
+// Carries the classroom gate itself rather than inheriting the one below: this
+// mount is declared before `router.use('/:name', …)`, so express reaches it
+// first and a request for a submission's history never met that gate. Measured
+// on the live course box — `/api/projects/<submission>/history/shadow` answered
+// 200 to the shared class read token while the same token was refused the
+// document. A history route reads the same student's work through its
+// revisions.
+router.use('/:name/history', requireRead, requireClassroomDocumentAccess, historyRoutes)
 
 // List all projects
 export async function listProjectsWithLifecycleStatus() {
@@ -205,21 +213,34 @@ export async function listProjectsWithLifecycleStatus() {
  * unlocked stays listed and 403s on open, which is what it did before.
  */
 function readableProjects(req, projects) {
+  const mayRead = projectReadFilter(req)
+  return projects.filter(project => mayRead(project.name))
+}
+
+/**
+ * A predicate over project names, from the one classroom rule.
+ *
+ * `requireClassroomDocumentAccess` answers for a name in the path. Two routes
+ * take their names in the request BODY instead, so no path gate can see them,
+ * and both return a project's history. This is the same decision for those.
+ */
+function projectReadFilter(req) {
   const store = req.app?.locals?.classroomStore
-  if (!store) return projects
+  if (!store) return () => true
   const resolvePrincipal = req.app?.locals?.resolveClassroomPrincipal || classroomPrincipal
   const principal = resolvePrincipal(req, store)
-  return projects.filter(project => {
-    const access = store.documentAccess(project.name, principal)
+  return name => {
+    const access = store.documentAccess(name, principal)
     return access.submission ? access.allowed : true
-  })
+  }
 }
 
 router.get('/', requireRead, async (req, res) => {
   res.json({ projects: readableProjects(req, await listProjectsWithLifecycleStatus()) })
 })
 
-router.post('/:name/document-associations', requireRead, async (req, res) => {
+// Also declared before `router.use('/:name', …)`, so it carries the gate too.
+router.post('/:name/document-associations', requireRead, requireClassroomDocumentAccess, async (req, res) => {
   const requested = Array.isArray(req.body?.documents) ? req.body.documents : []
   const documents = []
   for (const document of requested) {
@@ -251,10 +272,11 @@ router.get('/meta', requireRead, async (req, res) => {
 
 // Space-time changelogs for an explicit page of project rows.
 router.post('/history/shadow/changelog/batch', requireRead, async (req, res) => {
+  const mayRead = projectReadFilter(req)
   const names = [...new Set(
     (Array.isArray(req.body?.projects) ? req.body.projects : [])
       .filter(name => typeof name === 'string' && name.length > 0),
-  )]
+  )].filter(mayRead)
   if (names.length === 0) return res.json({ projects: {} })
   if (names.length > 50) {
     return res.status(400).json({ error: 'At most 50 projects may be requested at once' })
@@ -273,10 +295,11 @@ router.post('/history/shadow/changelog/batch', requireRead, async (req, res) => 
 // Select real project histories and establish the shared clock before any row
 // strips render. A synthetic init or one build does not qualify as history.
 router.post('/history/shadow/index', requireRead, async (req, res) => {
+  const mayRead = projectReadFilter(req)
   const names = [...new Set(
     (Array.isArray(req.body?.projects) ? req.body.projects : [])
       .filter(name => typeof name === 'string' && name.length > 0),
-  )]
+  )].filter(mayRead)
   if (names.length === 0) return res.json({ projects: {}, oldest: null })
   if (names.length > 500) {
     return res.status(400).json({ error: 'At most 500 projects may be requested at once' })

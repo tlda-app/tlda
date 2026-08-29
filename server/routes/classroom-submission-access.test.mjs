@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClassroomStore } from '../lib/classroom-store.mjs'
 import { classroomPrincipal, requireClassroomDocumentAccess } from './classroom.mjs'
+import projectRoutes from './projects.mjs'
 
 const ASSIGNMENT = 'hw-minus-1-setup'
 const COURSE = 'qtm285'
@@ -148,6 +149,102 @@ test('the document route refuses the class read link and serves the instructor a
     assert.equal((await documentRequest(store, classmate)).status, 403)
     assert.deepEqual(await documentRequest(store, instructor), { status: 200, body: { ok: true } })
     assert.deepEqual(await documentRequest(store, owner), { status: 200, body: { ok: true } })
+  } finally {
+    store.db.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+/**
+ * The real project router, so route ORDER is part of what is under test.
+ *
+ * `router.use('/:name', requireClassroomDocumentAccess)` sits below two mounts
+ * that also match a project name, so express reaches those first and they never
+ * met the gate. A test that mounts the middleware by hand cannot see that — the
+ * defect is entirely in which line comes first.
+ */
+async function projectRouterCall(store, principal, path, init = {}) {
+  const app = express()
+  app.use(express.json())
+  app.locals.classroomStore = store
+  app.locals.resolveClassroomPrincipal = () => principal
+  app.use('/api/projects', projectRoutes)
+  const server = createServer(app)
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, init)
+    const text = await response.text()
+    return { status: response.status, text }
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+  }
+}
+
+const projectRouterRequest = async (...args) => (await projectRouterCall(...args)).status
+
+/** How many projects a batch history response actually answered for. */
+function answeredCount(text) {
+  const projects = JSON.parse(text).projects
+  return Array.isArray(projects) ? projects.length : Object.keys(projects || {}).length
+}
+
+test('a submission\'s history is refused to the class read link and reachable by the instructor', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-submission-history-'))
+  const store = storeWithOneSubmission(root)
+  const encoded = encodeURIComponent(SUBMISSION)
+  try {
+    // Measured 200 on the live course box with the shared read token before this.
+    assert.equal(await projectRouterRequest(store, null, `/api/projects/${encoded}/history/shadow`), 403)
+    assert.equal(await projectRouterRequest(store, classmate, `/api/projects/${encoded}/history/shadow`), 403)
+    // The instructor is not refused. What the handler then does with a project
+    // that is not on disk is not this test's business — only that the gate is
+    // not what stopped them.
+    assert.notEqual(await projectRouterRequest(store, instructor, `/api/projects/${encoded}/history/shadow`), 403)
+    assert.notEqual(await projectRouterRequest(store, owner, `/api/projects/${encoded}/history/shadow`), 403)
+
+    // The book, which every reader must keep.
+    assert.notEqual(await projectRouterRequest(store, null, '/api/projects/qtm285-book/history/shadow'), 403)
+  } finally {
+    store.db.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the batch changelog drops submissions it was asked for by name in the body', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-submission-batch-'))
+  const store = storeWithOneSubmission(root)
+  const body = (names) => ({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ projects: names }),
+  })
+  try {
+    // A name in the request BODY is invisible to any path gate. Both batch
+    // routes take one, and both return a project's history.
+    // `changelog/batch` answers for every name it is given, so the count is a
+    // real discriminator here: dropped by the filter reads 0, kept reads 1.
+    //
+    // The refusal is that the name is DROPPED, not that the call errors, so the
+    // status is 200 either way and only the count can see it. Asserting the
+    // status alone stays green with the filter removed — which is the shape this
+    // whole file is about.
+    const route = '/api/projects/history/shadow/changelog/batch'
+
+    const refused = await projectRouterCall(store, null, route, body([SUBMISSION]))
+    assert.equal(refused.status, 200)
+    assert.equal(answeredCount(refused.text), 0)
+    assert.equal(answeredCount((await projectRouterCall(store, classmate, route, body([SUBMISSION]))).text), 0)
+
+    // The owner and the instructor are answered for, which is what makes the
+    // zero above a refusal rather than the route being broken.
+    assert.equal(answeredCount((await projectRouterCall(store, instructor, route, body([SUBMISSION]))).text), 1)
+    assert.equal(answeredCount((await projectRouterCall(store, owner, route, body([SUBMISSION]))).text), 1)
+
+    // `/history/shadow/index` takes its names the same way and gets the same
+    // filter on the same line. It is NOT asserted here: it selects projects that
+    // have real history, so it answers 0 for the instructor too, and a check
+    // that cannot tell a refusal from an empty project is not a check. Proving
+    // it needs a project store on disk, which this file does not stand up.
   } finally {
     store.db.close()
     rmSync(root, { recursive: true, force: true })
