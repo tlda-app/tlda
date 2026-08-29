@@ -531,3 +531,23 @@ it is right; it exposed nothing. That is the fourth instrument tonight that
 answered without measuring, and the first where the answer happened to point at
 a real defect anyway. **A right conclusion does not make the evidence for it
 good**, and the next person reading row 7 needs to know which part was measured.
+
+### Why `pic-dev`'s bundle is two months old: the image copies `dist/`, it does not build it
+
+`Dockerfile.live:319` is `COPY dist/ ./dist/`, and **nothing in that Dockerfile
+runs a client build.** So the bundle in any image is whatever `dist/` was sitting
+in the directory `fly deploy` ran from.
+
+- **A pushed deploy is always current**, because `deploy/hooks/pre-receive-common.sh`
+  makes a fresh checkout and runs `npm run build` in it before `fly deploy`.
+- **A hand-run `fly deploy -c fly.pic-dev.toml` from the shared checkout ships
+  whatever is lying in `/Users/skip/work/tlda/dist`** — a directory a dozen agents
+  write to and nobody owns.
+
+`pic-dev` reports `builtAt 2026-08-28T14:33:30.944Z` and `checkoutPath
+/Users/skip/work/tlda`. **That is the signature of a hand-run deploy**, and it is
+how a server at `e0220ac74` came to hand out a client from before 18 June.
+
+**The fix for `pic-dev` is a deploy whose build is its own**, which is what the
+deploy remote already does for `pic` and `stable` — and there is no deploy remote
+for `pic-dev`.
