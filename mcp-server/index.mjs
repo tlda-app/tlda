@@ -14,6 +14,7 @@ import {
   getFleetTools,
   handleFleetTool,
   initFleet,
+  noteClientRequest,
   operationMailboxStartedResult,
   setAgentPreambleDoc,
   startOperationMailbox,
@@ -2407,6 +2408,10 @@ const TOOLS_NEEDING_BUILD = new Set([
 
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  // Proof the harness is running turns, which is what queued-mail announcement
+  // waits on. Before any argument handling, so a tool that returns early still
+  // counts as the client being live.
+  noteClientRequest();
   const { name, arguments: args } = request.params;
   const threadId = typeof request.params?._meta?.threadId === 'string'
     ? request.params._meta.threadId
