@@ -673,9 +673,68 @@ export function createGitProjectSync({
   // it whenever the two diverged. Local is authoritative. Divergence is theirs to
   // resolve, and it does not stop the project working.
 
+  /**
+   * Advance the work branch to the accepted head, but ONLY where doing so
+   * cannot lose anything.
+   *
+   * Everything above about parking still holds for every other case. What it
+   * left behind is that a browser edit reaches the server, is fetched into this
+   * very checkout, and then sits there. Measured on `apptester-sync3`:
+   * `refs/tlda/fetched/<p>` contained the edit while the working branch and the
+   * disk did not. Nothing was missing and no refspec was wrong — it was fetched
+   * and unapplied.
+   *
+   * Four conditions, and each protects something specific:
+   *
+   *   on the work branch    a checkout parked elsewhere is somebody standing in
+   *                         their own history; not ours to move.
+   *   HEAD is an ancestor   no divergence, so no merge is possible and nothing
+   *                         of theirs is behind us.
+   *   no tracked changes    their edits are never committed unasked, which is
+   *                         the exact damage the note above records.
+   *   not already there     nothing to do.
+   *
+   * `merge --ff-only` is the primitive because **it refuses anything that is not
+   * a fast-forward**, so git independently re-checks the conclusion reached
+   * here. It creates no commit, synthesizes no history, forces no checkout, and
+   * cannot conflict: on a fast-forward the branch pointer and the tree move
+   * together. If any condition fails this returns false and the revision stays
+   * parked exactly as it was.
+   */
+  async function fastForwardToAcceptedHead(fetched) {
+    if (await currentBranchRef() !== workBranchRef) return false
+    // NEVER ONTO OUR OWN PROJECTION. When this daemon's push is accepted, the
+    // head that comes back is the FILTERED projection we just published —
+    // `refs/tlda/project/<p>` — which contains only the document closure and is
+    // "not a tree anyone can stand on". Fast-forwarding onto it would quietly
+    // reparent the person's branch onto a filtered view of their own work and
+    // drop everything the closure leaves out. Caught by
+    // `git-project-sync.test.mjs`, which asserts this exact sequence still parks.
+    //
+    // The point of advancing is to take in work that arrived from SOMEWHERE
+    // ELSE, which is never equal to what we just published.
+    if (fetched === await rev(localRef)) return false
+    const head = await rev('HEAD')
+    if (!head || head === fetched) return false
+    if (!(await isAncestor(head, fetched))) return false
+    // Staged AND unstaged, against HEAD. Untracked files are deliberately not
+    // counted: they are not part of the project's history, and a fast-forward
+    // does not touch them.
+    try {
+      await git(['diff', '--quiet', 'HEAD'])
+    } catch {
+      return false
+    }
+    await git(['merge', '--ff-only', fetched])
+    return true
+  }
+
   async function headChanged(revision = null) {
     const fetched = await fetchHead(revision)
     if (!fetched) return { ok: true, status: 'no-shared-head', revision: null }
+    if (await fastForwardToAcceptedHead(fetched)) {
+      return { ok: true, status: 'advanced', revision: fetched }
+    }
     // An app-owned working tree is a VIEW of the project's source, not a history
     // of its own. It is created by `git init` with no commits, so a commit built
     // on its HEAD descends from nothing the server knows, and the pre-receive
