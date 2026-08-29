@@ -71,6 +71,134 @@ So on a rejected push:
 The frozen release-candidate interval is defined in
 [Frozen release candidate](release-candidate.md).
 
+## The front door is not in the machine being deployed
+
+`fly.live.toml` has two process groups. `app` carries the volume, so it has to
+stop to be redeployed — one volume means no blue/green, and `fleet.db` is on it.
+`edge` is the tailnet node and the front door, carries nothing, and the app
+deploy leaves it alone:
+
+```bash
+fly deploy -c fly.live.toml --process-groups app
+```
+
+**That flag is the deploy.** Without it, `fly deploy` updates both groups and the
+tailnet name goes down with them, which is the thing this arrangement exists to
+stop.
+
+Behind the tailnet node, `scripts/fly-edge-proxy.mjs` is a TCP pipe that **waits**
+for the app machine instead of answering 502. While the app machine is being
+replaced a connection is held, not refused, so a browser sees one slow request
+rather than a dead page. The wait is `TLDA_EDGE_HOLD_SECONDS`; past it the
+connection is dropped with a line in `fly logs`.
+
+The measured app-machine gap on 2026-08-18 was about 60 seconds — machine stop
+03:11:45Z, serving 03:12:45Z. A cold start on this box has been measured near 90s.
+
+`TLDA_EDGE_HEALTH_PORT` answers, on its own port, the one question a `curl`
+against the tailnet name cannot: **which half is missing.** A reply at all means
+the edge machine is up; `up: true` means the app machine is answering right now.
+From outside, an absent edge and an absent app look identical, and during a
+cutover that is the only thing worth knowing.
+
+### The cutover, once
+
+The tldraw licence is bound to `*.cormorant-matrix.ts.net` and Skip has that URL
+open, so the node has to keep its identity: the edge volume holds a **copy of the
+existing `tailscaled.state`**, which makes it the same node on a different
+machine. A fresh tailscaled registers a new node, Tailscale names it
+`tlda-fly-1`, and his URL moves.
+
+**Edge goes up first, while the app machine is still running its old image and
+still holding the tailnet node.** That ordering is the whole safety property: if
+anything about the edge machine is wrong, destroying it puts things back exactly,
+and the name is never down. Deploying both groups at once is one step shorter and
+means a failed edge boot leaves him with no app at all.
+
+**0. Nothing else may be deploying.** Two `fly deploy` runs against one app race,
+and these steps bypass the `pre-receive` lock:
+
+```bash
+cat /Users/skip/work/deploy/locks/fly.live.toml.lock   # absent, or a dead pid
+```
+
+**1. Take a copy of the node state.** Copy, never move — the app machine keeps
+its own until step 5.
+
+```bash
+fly sftp get -c fly.live.toml /app/server/persist/tailscale/tailscaled.state ./tailscaled.state
+test -s tailscaled.state && echo "have $(wc -c < tailscaled.state) bytes"
+```
+
+**2. Create the edge volume, same region as the app.**
+
+```bash
+fly volumes create edge_ts_state -c fly.live.toml -r sjc -s 1
+```
+
+**3. Seed it.** A throwaway machine is the only way to write a volume no machine
+has mounted yet. Run it on the image the app is running now, `sftp put` the file
+to `/var/lib/tlda-edge/tailscale/tailscaled.state`, and let `--rm` clean up.
+
+**Check before going on:** the file is on the volume, ~2.7 KB, not zero.
+
+**4. Bring up the edge machine only.** The app group keeps its current image and
+its tailscaled.
+
+```bash
+fly deploy -c fly.live.toml --process-groups edge
+curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/build-info
+fly logs -c fly.live.toml --no-tail | grep '\[edge\]'
+```
+
+**Check, and this is the one that matters:** the node did not rename. If the
+hostname moved to `tlda-fly-1`, **stop** — destroy the edge machine, and the app
+machine still holds `tlda-fly`. Nothing was lost and step 1 or 3 is wrong.
+
+There is a brief window here where the app machine and the edge machine hold the
+same node key. That is why step 5 follows immediately rather than later.
+
+**5. Land the app group.** This is the deploy that deletes tailscaled from the
+app container — and the first live proof of the whole thing, because the front
+door should hold his connections across it. Watch for
+`[edge] held a connection NNNNms`: that line is the outage, absorbed.
+
+```bash
+fly deploy -c fly.live.toml --process-groups app
+```
+
+**6. Make it the default.** In `/Users/skip/work/deploy/hooks/pre-receive-common.sh`,
+which is outside git:
+
+```diff
+-    fly deploy -c "$fly_config"
++    fly deploy -c "$fly_config" --process-groups app
+```
+
+Not before step 5 — it buys nothing until the edge group exists. Until it lands,
+an ordinary `git push` deploys **both** groups and takes the name down, which is
+the thing this arrangement exists to stop.
+
+### Rolling it back
+
+Before step 6, the whole cutover is undone by destroying one machine:
+
+```bash
+fly machine destroy <edge-machine-id> -c fly.live.toml --force
+```
+
+After step 5 the app container no longer runs tailscaled, so a rollback is that
+destroy **plus** redeploying the app group from a `main` without these commits.
+
+### What the move costs
+
+`server/lib/tailscale-peers.mjs` shells out to `tailscale status --json` in the
+app container to stamp a chat sender's machine name onto message metadata. There
+is no tailscaled in that container any more, so the lookup returns null and the
+stamp is omitted. It is omitted, never guessed wrong — that module is
+fail-visible by construction. Closing it means either the edge publishing its
+peer map or the app machine holding a tailnet node of its own without `serve`.
+
 ## A daemon/server change has no atomic landing
 
 A deploy ships the server. It does not ship the daemons that talk to it.
