@@ -221,8 +221,11 @@ Before step 6, the whole cutover is undone by destroying one machine:
 fly machine destroy <edge-machine-id> -c fly.live.toml --force
 ```
 
-After step 5 the app container no longer runs tailscaled, so a rollback is that
-destroy **plus** redeploying the app group from a `main` without these commits.
+After step 5 the app container no longer runs tailscaled. Roll back in this
+order: copy the edge's current `tailscaled.state` back to the app's persisted
+Tailscale path, destroy the edge machine, then redeploy the app group from a
+`main` without these commits. Do not redeploy the old app while the edge still
+holds `tlda-fly`, or the returning app node can be renamed.
 
 ### What the move costs
 
