@@ -78,17 +78,40 @@ if [ -d "$DEPLOYMENT_DIR/dist-overrides" ]; then
   cp -R "$DEPLOYMENT_DIR/dist-overrides/." /app/dist/
 fi
 
-# The tailnet node is NOT here any more. It ran in this container until the edge
-# cutover, which meant the .ts.net name died every time `fly deploy` replaced this
-# machine — one volume, so no blue/green, so a stop and a start with Skip's
-# browser pointed at it. It now runs in the `edge` process group
-# (scripts/fly-entrypoint-edge.sh), which the app deploy does not touch, in front
-# of a proxy that waits out this machine's absence instead of answering 502.
-#
-# What this block learned before it moved, and the edge entrypoint carries it:
-# the mounted state is the durable node identity, so TS_AUTHKEY is needed only
-# for first registration and a revoked setup key must not take an
-# already-authorized node back off the tailnet on its next deploy.
+# Live has a separate edge process holding its tailnet identity. The other
+# deployments still use this single-process entrypoint, so they keep their
+# tailnet node beside the app until they are explicitly given their own edge.
+if [ "$TLDA_DEPLOYMENT" != "live" ]; then
+  mkdir -p "$PERSIST/tailscale" /var/run/tailscale
+  tailscaled \
+    --state="$PERSIST/tailscale/tailscaled.state" \
+    --socket=/var/run/tailscale/tailscaled.sock \
+    --tun=userspace-networking &
+
+  i=0
+  until tailscale --socket=/var/run/tailscale/tailscaled.sock status >/dev/null 2>&1 || [ $i -ge 30 ]; do
+    i=$((i+1))
+    sleep 0.5
+  done
+
+  if [ -n "${TS_AUTHKEY:-}" ]; then
+    echo "[entrypoint] registering with TS_AUTHKEY"
+    AUTH_ARG="--authkey=$TS_AUTHKEY"
+  else
+    echo "[entrypoint] no TS_AUTHKEY - coming up from stored node identity"
+    AUTH_ARG=""
+  fi
+
+  if tailscale --socket=/var/run/tailscale/tailscaled.sock up \
+      $AUTH_ARG --hostname="${TS_HOSTNAME:-tlda-fly}" --accept-dns=false --timeout=45s; then
+    TS_EXPOSE=serve
+    [ -n "${TS_FUNNEL:-}" ] && TS_EXPOSE=funnel
+    tailscale --socket=/var/run/tailscale/tailscaled.sock "$TS_EXPOSE" --bg --https=443 "http://127.0.0.1:${PORT:-5176}" \
+      || echo "[entrypoint] ERROR: tailscale $TS_EXPOSE failed - browsers cannot reach this server"
+  else
+    echo "[entrypoint] ERROR: tailscale up failed - browsers cannot reach this server"
+  fi
+fi
 
 # --- Run-once: merge pre-cutover chat history into fleet.db ---
 # Runs here, BEFORE the server opens the DB, so the merge has exclusive access
