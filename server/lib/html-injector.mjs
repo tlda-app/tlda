@@ -1332,15 +1332,22 @@ export function injectChapterTitle(html, chapterTitle, prev = null, next = null)
 .tlda-chapter-nav .nav-spacer { flex: 1; }
 </style>`
 
+  // A JS string literal going into a double-quoted HTML attribute has to be
+  // escaped for the ATTRIBUTE, not just for JS. `JSON.stringify` emits its own
+  // double quotes, which close `onclick="` at the first one — the parser then
+  // sees `onclick="…targetFile:"` and the filename becomes stray attributes.
+  // The handler is silently truncated to invalid JS and the link does nothing.
+  const attrJson = (value) => JSON.stringify(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+
   let footer = ''
   if (prev || next) {
     const prevHtml = prev
-      ? `<a href="#" onclick="event.preventDefault();window.parent.postMessage({type:'tlda-navigate',targetFile:${JSON.stringify(prev.name)}},'*')">
+      ? `<a href="#" onclick="event.preventDefault();window.parent.postMessage({type:'tlda-navigate',targetFile:${attrJson(prev.name)}},'*')">
            <span class="nav-label">← Previous</span>${prev.title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}
          </a>`
       : '<span class="nav-spacer"></span>'
     const nextHtml = next
-      ? `<a href="#" style="text-align:right" onclick="event.preventDefault();window.parent.postMessage({type:'tlda-navigate',targetFile:${JSON.stringify(next.name)}},'*')">
+      ? `<a href="#" style="text-align:right" onclick="event.preventDefault();window.parent.postMessage({type:'tlda-navigate',targetFile:${attrJson(next.name)}},'*')">
            <span class="nav-label">Next →</span>${next.title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}
          </a>`
       : '<span class="nav-spacer"></span>'
