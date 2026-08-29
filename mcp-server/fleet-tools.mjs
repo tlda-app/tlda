@@ -5701,6 +5701,10 @@ export function __setFleetTransportForTest(transport) {
 }
 
 let _channelHasOpened = false;
+// Whether the harness has ever sent this MCP a request, and whether a channel
+// open is still waiting on that to announce its backlog. See `noteClientRequest`.
+let _clientHasRequested = false;
+let _flushPendingOnClient = false;
 
 const _deliveredChannelIds = new Set();
 const CHANNEL_DEDUP_TTL_MS = 60_000;
@@ -5965,7 +5969,17 @@ function startChannelWS({ bootstrap = false } = {}) {
       _reconnectBuffer.resolveConnected();
       const reconnect = _channelHasOpened;
       _channelHasOpened = true;
-      if (activeAgentId()) setTimeout(_flushUnread, 500).unref?.();
+      // Announce the backlog when the HARNESS can hear it, not 500ms after this
+      // socket opened. Those are unrelated clocks: measured on one reconnect, the
+      // flush emitted at 20:22:45.277 and the client registered its channel
+      // listener at 20:22:46.015 — 738ms later — so `server.notification()`
+      // resolved into a client that was not subscribed yet. No error, no log, and
+      // the notice was gone. The stdio connect alone took 6151ms, so no constant
+      // is right here; the client's own first request is the fact we need.
+      if (activeAgentId()) {
+        if (_clientHasRequested) void _flushUnread();
+        else _flushPendingOnClient = true;
+      }
       if (!activeAgentId()) return;
       const route = loginRouteFields();
       const loginBody = {
@@ -6041,4 +6055,25 @@ if (!_tmuxSession) {
 export function initFleet(serverInstance) {
   server = serverInstance;
   if (activeAgentId()) startChannelWS();
+}
+
+/**
+ * The harness sent this MCP a request, so it is running turns and its channel
+ * listener is registered. This is the trigger for announcing queued mail.
+ *
+ * A request is the only evidence available here that the client is actually
+ * listening. The transport being connected is not that -- `index.mjs` awaits
+ * `server.connect(transport)` before the channel starts, and the notice was
+ * STILL dropped, because the client registers its channel handler later still.
+ *
+ * Both directions matter. On a cold start the channel opens before the harness
+ * is ready, so the flush waits here. On a reconnect inside a live session the
+ * harness is already listening, so `startChannelWS` flushes immediately rather
+ * than waiting for the agent to happen to call something.
+ */
+export function noteClientRequest() {
+  _clientHasRequested = true;
+  if (!_flushPendingOnClient) return;
+  _flushPendingOnClient = false;
+  void _flushUnread();
 }
