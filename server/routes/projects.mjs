@@ -397,10 +397,26 @@ router.use('/:name', requireRead, requireClassroomDocumentAccess)
 
 // Get project
 router.get('/:name', requireRead, async (req, res) => {
+  // TEMPORARY INSTRUMENTATION — REVERT BEFORE ANY FIX.
+  //
+  // The browser reports ~3.3s of "server think" (responseStart - requestStart)
+  // for this request on a 66-page project, while curl of the same URL answers
+  // in ~0.3s by every route tried: unauthenticated, read token, rw token, 12
+  // concurrent, and during a live browser open of the same project. `/health`
+  // stayed under 0.5s across 136 probes spanning a full open, so the event loop
+  // is not stalled. These marks exist to settle one question and then go:
+  // is the time inside this handler, or between the browser and it?
+  const phases = []
+  const since = start => `${(performance.now() - start).toFixed(1)}`
+  const t0 = performance.now()
+
+  let s = performance.now()
   const project = await readProject(req.params.name)
+  phases.push(`readProject;dur=${since(s)}`)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   let pageInfo
+  s = performance.now()
   if (req.query.include === 'page-info' && FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
     try {
       pageInfo = JSON.parse(await readFile(join(getOutputDir(req.params.name), 'page-info.json'), 'utf8'))
@@ -408,8 +424,19 @@ router.get('/:name', requireRead, async (req, res) => {
       pageInfo = undefined
     }
   }
+  phases.push(`pageInfo;dur=${since(s)}`)
 
+  s = performance.now()
   const durableStatus = projectRevisionStatus((await sourceLifecycleStore(req.params.name)).listRevisionLifecycles(req.params.name))
+  phases.push(`revisionStatus;dur=${since(s)}`)
+
+  s = performance.now()
+  const refPaths = await referencedSourcePaths(req.params.name).catch(() => [])
+  phases.push(`referencedSourcePaths;dur=${since(s)}`)
+
+  phases.push(`total;dur=${since(t0)}`)
+  res.set('Server-Timing', phases.join(', '))
+
   // The chat-reference seed of project membership. This is the payload the
   // watcher already reads its source context from, so the roots arrive by the
   // channel that already carries mainFile rather than a second call.
@@ -419,7 +446,7 @@ router.get('/:name', requireRead, async (req, res) => {
     buildPhase: durableStatus.phase,
     sourceRevision: durableStatus.sourceRevision,
     acceptSeq: durableStatus.acceptSeq,
-    referencedSourcePaths: await referencedSourcePaths(req.params.name).catch(() => []),
+    referencedSourcePaths: refPaths,
     ...(pageInfo && { pageInfo }),
   })
 })
