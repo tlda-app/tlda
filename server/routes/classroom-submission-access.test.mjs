@@ -250,3 +250,25 @@ test('the batch changelog drops submissions it was asked for by name in the body
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('a common-scope student\'s work stays readable by their classmates', () => {
+  withStore(store => {
+    // `layerScope: 'common'` is an explicit opt-in — never the default — and
+    // `canReadStudent` already let classmates read such a student's submission
+    // ROW. The document, the index, the history and the sync room ask the same
+    // question now, so they must give the same answer; a quieter one here would
+    // be a product change smuggled in under a privacy fix.
+    assert.equal(store.documentAccess(SUBMISSION, classmate).allowed, false)
+
+    store.upsertStudent({
+      id: OWNER, courseId: COURSE, displayName: 'Ada', enrollmentToken: 'tok-ada', layerScope: 'common',
+    })
+    assert.equal(store.getStudent(OWNER).layerScope, 'common')
+    assert.equal(store.documentAccess(SUBMISSION, classmate).allowed, true)
+
+    // And it buys nothing to the read link, which is the exposure.
+    assert.equal(store.documentAccess(SUBMISSION, null).allowed, false)
+    // Nor to somebody enrolled in a different course.
+    assert.equal(store.documentAccess(SUBMISSION, { role: 'student', studentId: 'other:zed', courseId: 'other' }).allowed, false)
+  })
+})
