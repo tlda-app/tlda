@@ -100,7 +100,9 @@ export async function main(argv = process.argv.slice(2)) {
     return
   }
 
-  await checkedRun(`fly deploy -c ${args.flyConfig}`, 'fly', ['deploy', '-c', args.flyConfig], {
+  const flyArgs = ['deploy', '-c', args.flyConfig]
+  if (args.flyConfig === 'fly.live.toml') flyArgs.push('--process-groups', 'app')
+  await checkedRun(`fly ${flyArgs.join(' ')}`, 'fly', flyArgs, {
     cwd: REPO_ROOT,
     tailLines: args.tailLines,
   })
