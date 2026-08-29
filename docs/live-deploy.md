@@ -130,17 +130,51 @@ fly sftp get -c fly.live.toml /app/server/persist/tailscale/tailscaled.state ./t
 test -s tailscaled.state && echo "have $(wc -c < tailscaled.state) bytes"
 ```
 
-**2. Create the edge volume, same region as the app.**
+**2. The edge volume, same region as the app.** One already exists —
+`edge_ts_state`, created 2026-08-18 during an attempt that stopped here — so
+**check before creating**, or you get a second volume and the machine mounts
+whichever Fly picks:
 
 ```bash
-fly volumes create edge_ts_state -c fly.live.toml -r sjc -s 1
+fly volumes list -c fly.live.toml | grep edge_ts_state
+fly volumes create edge_ts_state -c fly.live.toml -r sjc -s 1   # only if absent
 ```
 
-**3. Seed it.** A throwaway machine is the only way to write a volume no machine
-has mounted yet. Run it on the image the app is running now, `sftp put` the file
-to `/var/lib/tlda-edge/tailscale/tailscaled.state`, and let `--rm` clean up.
+**3. Seed it.** A throwaway machine is the only way to read or write a volume
+nothing has mounted. Run it on the image the app is running now, with an **inert
+command** — the image's default CMD is the live entrypoint, which must not run on
+a machine holding this volume:
 
-**Check before going on:** the file is on the volume, ~2.7 KB, not zero.
+```bash
+fly machine run <current app image> -c fly.live.toml -r sjc \
+  -v edge_ts_state:/var/lib/tlda-edge --vm-memory 512 sleep 900
+```
+
+Look before writing — this is also how you learn whether an earlier attempt
+seeded it:
+
+```bash
+fly ssh console -c fly.live.toml --machine "$SEED" \
+  -C "sh -c 'wc -c /var/lib/tlda-edge/tailscale/tailscaled.state 2>&1'"
+```
+
+Then `mkdir -p /var/lib/tlda-edge/tailscale`, `fly sftp put --machine "$SEED"`
+the file to `/var/lib/tlda-edge/tailscale/tailscaled.state`, and
+`fly machine destroy "$SEED" --force` when done. Destroying the machine does not
+touch the volume. Do not use `--rm`: it removes the machine when the command
+exits, and a `sleep` that ends mid-transfer takes your file with it.
+
+**Overwrite even if a state file is already there.** A copy taken days ago is
+days of the app machine re-registering ago; if the node re-keyed since, a stale
+state boots the edge as a *new* node and the URL moves.
+
+**Check before going on:** compare the byte count **and** an `md5sum` taken on
+the volume against the local file. Same size and same digest, or stop.
+
+**Do not read the volume's snapshot sizes as evidence of what is on it.** The
+first snapshot is a baseline and the rest are deltas, and an empty ext4 on 1 GiB
+is ~33 MiB by itself — so "33 MiB then 1.4 KiB" means *formatted, barely
+written*, not *filled then emptied*. A 2.7 KB state file moves neither number.
 
 **4. Bring up the edge machine only.** The app group keeps its current image and
 its tailscaled.
