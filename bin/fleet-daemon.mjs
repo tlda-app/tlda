@@ -777,7 +777,10 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
         project,
         log,
         prepareSeed: () => shadowMirror.prepareHistorySeed({ project, sourceDir, seedBranch, seedRevision, documentRoots: documentRoots || [] }),
-        pushSeed: history => sourceSync.pushHistorySeed(project, history.repositoryDir, history.head),
+        // `server` is the one the caller named. It has to be handed over here
+        // because the binding that would otherwise carry it is written after
+        // adoption is confirmed, which is deliberately later than this push.
+        pushSeed: history => sourceSync.pushHistorySeed(project, history.repositoryDir, history.head, server),
         confirmAdoption: ({ head, ref }) => sendMsgWithReply({ type: 'adopt-shadow-history-ref', project, head, ref }),
       })
     }
