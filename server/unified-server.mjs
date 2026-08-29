@@ -4735,7 +4735,7 @@ app.use('/docs', async (req, res, next) => {
     try {
       const project = await readProject(name)
       if (project?.format === 'html') {
-        const access = classroomStore.solutionDocumentAccess(name, null)
+        const access = classroomStore.documentAccess(name, null)
         if (access.restricted) {
           return requireRead(req, res, async error => {
             if (error) return next(error)

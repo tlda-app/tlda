@@ -180,6 +180,43 @@ export class ClassroomStore {
     return { restricted: true, allowed, assignments }
   }
 
+  /**
+   * Whose handed-in work this document is, or null when it is not a submission.
+   *
+   * Read off `content_ref` — the string the submit path wrote, and the same one
+   * the document is served under. Deliberately not parsed out of the name: it is
+   * `submission-<assignment>-<student>`, both halves may contain a `-`, and no
+   * parse can recover the split.
+   */
+  submissionDocumentOwner(docKey) {
+    if (!docKey) return null
+    return this.db.prepare(`SELECT s.assignment_id AS assignmentId,s.student_id AS studentId,a.course_id AS courseId
+      FROM submissions s JOIN assignments a ON a.id=s.assignment_id WHERE s.content_ref=?`).get(docKey) || null
+  }
+
+  /**
+   * Whether a caller may read one classroom document — solutions or submission.
+   *
+   * One answer, because `/docs` and `/api/projects/:name` each have a single
+   * place to ask. Solutions open once you have handed something in; a submission
+   * is the student's own and opens to nobody else in the class.
+   *
+   * Skip, on what needs gating at all: "we just need to make sure acces to
+   * student jnfo is token gated." `classroomRoomAccess` in
+   * `shared/classroom-rooms.mjs` applies that to the sync rooms and refuses one
+   * student a look at another's layer. A handed-in assignment is the same
+   * student information over HTTP — measured on the live course box, the shared
+   * read token every classmate holds returned another student's rendered
+   * homework and the photograph attached to it.
+   */
+  documentAccess(docKey, principal) {
+    const submission = this.submissionDocumentOwner(docKey)
+    if (!submission) return this.solutionDocumentAccess(docKey, principal)
+    if (principal?.role === 'instructor') return { restricted: true, allowed: true, submission }
+    const allowed = principal?.role === 'student' && principal.studentId === submission.studentId
+    return { restricted: true, allowed, submission }
+  }
+
   freezeTemplate(assignmentId, { templateDocKey, templateVersion }) {
     if (!templateDocKey || !templateVersion) throw new Error('templateDocKey and templateVersion are required')
     const assignment = this.getAssignment(assignmentId)

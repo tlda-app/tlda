@@ -60,7 +60,7 @@ import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
-import { requireClassroomDocumentAccess } from './classroom.mjs'
+import { classroomPrincipal, requireClassroomDocumentAccess } from './classroom.mjs'
 import { formatForDocumentPath, normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 
 const router = Router()
@@ -192,8 +192,31 @@ export async function listProjectsWithLifecycleStatus() {
   })
 }
 
+/**
+ * The listing minus the handed-in work this caller may not open.
+ *
+ * A name is student information on its own here: a submission project is
+ * `submission-<assignment>-<course>:<login>`, so the index publishes who is
+ * enrolled and what they turned in even when the document behind it is refused.
+ * `router.use('/:name', …)` already gates the documents; this gates the index,
+ * and both ask `documentAccess` so there is one rule rather than two.
+ *
+ * Only the submission half is filtered. A solutions document a student has not
+ * unlocked stays listed and 403s on open, which is what it did before.
+ */
+function readableProjects(req, projects) {
+  const store = req.app?.locals?.classroomStore
+  if (!store) return projects
+  const resolvePrincipal = req.app?.locals?.resolveClassroomPrincipal || classroomPrincipal
+  const principal = resolvePrincipal(req, store)
+  return projects.filter(project => {
+    const access = store.documentAccess(project.name, principal)
+    return access.submission ? access.allowed : true
+  })
+}
+
 router.get('/', requireRead, async (req, res) => {
-  res.json({ projects: await listProjectsWithLifecycleStatus() })
+  res.json({ projects: readableProjects(req, await listProjectsWithLifecycleStatus()) })
 })
 
 router.post('/:name/document-associations', requireRead, async (req, res) => {

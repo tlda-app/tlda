@@ -106,8 +106,17 @@ async function walkSubmissionFiles(dir, base = dir) {
   return found
 }
 
+/**
+ * The enrolment token a request carries.
+ *
+ * The classroom API sends it as a header. A document fetch cannot always: the
+ * sync path already reads `classroomToken` off the URL because a browser
+ * WebSocket cannot set headers, and the same token on the same page URL is what
+ * lets a student reach their own submission through `/docs`. Same value, same
+ * source, two carriers.
+ */
 function studentToken(req) {
-  return req.headers['x-tlda-student-token'] || null
+  return req.headers['x-tlda-student-token'] || req.query?.classroomToken || null
 }
 
 export function classroomPrincipal(req, store, level = validateToken(extractToken(req))) {
@@ -120,9 +129,14 @@ export function requireClassroomDocumentAccess(req, res, next) {
   const store = req.app?.locals?.classroomStore
   if (!store || !req.params?.name) return next()
   const resolvePrincipal = req.app?.locals?.resolveClassroomPrincipal || classroomPrincipal
-  const access = store.solutionDocumentAccess(req.params.name, resolvePrincipal(req, store))
+  const access = store.documentAccess(req.params.name, resolvePrincipal(req, store))
   if (!access.restricted || access.allowed) return next()
-  return res.status(403).json({ error: 'Classroom solution access requires instructor access or a submitted assignment' })
+  // One refusal, one shape; the message names which of the two it is, because
+  // the next action differs — hand something in, or ask the student whose work
+  // this is.
+  return res.status(403).json({ error: access.submission
+    ? 'A submitted assignment is readable by the student who handed it in and by an instructor'
+    : 'Classroom solution access requires instructor access or a submitted assignment' })
 }
 
 function ownsStudent(principal, studentId) {
