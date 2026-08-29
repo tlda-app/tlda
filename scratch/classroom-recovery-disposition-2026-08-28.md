@@ -504,3 +504,30 @@ the rule into the store as `mayReadStudentWork` and has `canReadStudent` call it
 **No live instance:** all ten students on the course box are `layerScope=student`,
 read with the rw token at 2026-08-29 03:00Z. So the narrowing broke nothing that
 exists; it was still wrong.
+
+### Correction to row 7: the door was real, my evidence was the wrong spelling
+
+**The probe used `encodeURIComponent`, so the `OPEN` it measured was an EMPTY
+room.** Read on the box, read-only:
+
+```
+/app/server/persist/projects/submission-…-qtm285:photo-demo-0828-1519/sync-snapshot.json
+    2,584 bytes, 1 html-page shape        ← the room that holds the work
+directories matching %3A                    0
+```
+
+Snapshots are keyed by the project directory with a **literal colon**, and
+`getOrCreateRoom` uses the room name verbatim with no normalisation, so
+`doc-…%3A…` is a different name with no snapshot behind it.
+`SvgDocument.tsx:841` builds the sync URL as a plain template literal with **no
+encoding**, so the real client opens the literal-colon room.
+
+**So row 7 was a real door** — pre-fix `classroomRoomAccess` returned `read` for
+any non-overlay room on a read token, that room included, which is unambiguous
+from the code — **and the measurement offered for it was of a different room.**
+
+**The percent-encoded spelling is a check that can be spelled around.** Closing
+it is right; it exposed nothing. That is the fourth instrument tonight that
+answered without measuring, and the first where the answer happened to point at
+a real defect anyway. **A right conclusion does not make the evidence for it
+good**, and the next person reading row 7 needs to know which part was measured.
