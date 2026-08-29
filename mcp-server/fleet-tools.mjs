@@ -5810,8 +5810,46 @@ async function refuseWakeChannelNotice(agentId, wakeAckId, reason) {
   }
 }
 
+// Announce queued mail when the channel comes back, because nothing else does.
+//
+// A message that arrives while the socket is up is delivered live by
+// `handleChannelMessage`. One that arrived while it was DOWN has no such
+// trigger — it is sitting in the inbox with nothing to surface it — so this
+// runs on every reconnect (`startChannelWS` onOpen) and says how much is
+// waiting.
+//
+// It was a `return;` stub from `79d0aa438` "Restrict fleet wakes to direct
+// messages", whose commit body is empty, reverted by `101e9aeb3` and reapplied
+// by `21b1512ea`. The CALL SITE was left in place throughout, so a reconnect
+// has been calling a function that does nothing, with no log line and no way to
+// see it. The cost, reported by Skip: he has to type `inbox` in an agent's
+// terminal to get its queued fleet messages delivered.
+//
+// This does not reintroduce what that commit removed. A wake starts a process
+// for an agent that has none; this only ever runs on a socket THIS agent's MCP
+// just opened, so the process is already there and the notice is a notify. See
+// docs/notifications-and-liveness.md §"The two words".
+//
+// `my-task` is a read here: its handler answers from `getInboxDeliveriesLimited`,
+// a `SELECT ... WHERE read = 0` that marks nothing, so counting the backlog does
+// not consume it. `notification_flush` is not read anywhere on the server; it is
+// kept because it names the intent at the call site.
 async function _flushUnread() {
-  return;
+  const agentId = activeAgentId();
+  if (!agentId || !_channelRWS?.connected) return;
+  try {
+    const data = await mcpFleetTransport.ephemeral('my-task', {
+      agent: agentId,
+      peek: true,
+      notification_flush: true,
+    }, { deadlineMs: FLEET_TOOL_READ_WAIT_MS });
+    const msgs = (data?.messages || []).filter(m => !m.read);
+    if (msgs.length === 0) return;
+    const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
+    await deliverChannelNotice(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`, { event_type: 'flush' });
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] unread flush notification failed: ${e.message}\n`);
+  }
 }
 
 async function handleChannelMessage(msg) {
