@@ -449,3 +449,58 @@ absent, auto-assign present, classroom registration present. `pic-dev`'s entry i
 **The lesson is the standing one:** `/api/build-info` names what the **server**
 checked out. It says nothing about the bundle the browser loads, and the two can
 be two months apart. Inspect the bundle named by the served `index.html`.
+
+## Every way the class read token reached a student's handed-in work
+
+**The first fix closed the documents and I called it done. Four more doors were
+open, and I found them one at a time — which is the wrong way and is why this
+list exists.** The right move was the one I made third: **enumerate everything
+that can name or serve a project, then check each.**
+
+| # | door | how it was measured | closed by |
+|---|---|---|---|
+| 1 | `/api/projects` index names submissions by student login | read token, 3 listed | `170e4e6de` |
+| 2 | `/api/projects/<submission>` and every `/:name/*` under it | read token, 200 | `170e4e6de` |
+| 3 | `/docs/<submission>/{page-info.json,*.html,my-photo.png}` | read token, 200, 320 KB of `image/png` | `170e4e6de` |
+| 4 | `/api/projects/<submission>/history/shadow{,/bounds}` | read token, **200 after 1–3 shipped** | `4d40ce681` |
+| 5 | `history/shadow/changelog/batch`, `history/shadow/index` — names in the **request body**, invisible to any path gate | read token, answered for 1 | `4d40ce681` |
+| 6 | `/docs/manifest.json` names every project on the box | read token, 3 submissions named | `4a5471003` |
+| 7 | `/sync/doc-<submission>` — the room holding its page shapes and grading marks | real WebSocket, **accepted**; book's room accepted as the control | `4a5471003` |
+| 8 | `/source-sync/<submission>/<file>` — the file the student uploaded | **not measurable**: 502 from outside to every request including the no-token control | `7ae691084`, by inspection only |
+
+**Why 4 and 5 existed after 1–3:** `router.use('/:name', requireClassroomDocumentAccess)`
+is declared **below** two mounts that also match a project name, so express
+reaches those first. **A gate is only as wide as the line it sits on.**
+
+**Why 7 is the worst of them:** `classroomRoomAccess` refuses one student another's
+private overlay **because the room name says whose it is**. A submission's room is
+`doc-submission-<assignment>-<student>` — an ordinary document room to look at. The
+name cannot carry the fact, so the caller resolves the owner from the submissions
+record.
+
+### The check that kept being wrong, and the one that worked
+
+**A node one-liner reading `/docs/manifest.json` reported `submissions named: 0`
+while the raw bytes carried three.** It read the wrong shape — the manifest is
+`{documents: {...}}`, not an array — and answered confidently. **Looking at the
+first 700 bytes is what found it.**
+
+**`scratch/verify-submission-access-gate.sh` was run against the deploy that only
+closed 1–3, and four checks went red while the old ones stayed green.** That red
+run is what makes a later green run mean anything.
+
+**The instructor half is in the script and the script exits nonzero without it.**
+A gate nobody can get through passes every refusal check ever written.
+
+### One thing the first fix got wrong in the other direction
+
+**It was stricter than the rule the app already had.** `canReadStudent` lets a
+classmate read a submission **row** when the owner's `layerScope` is `common` — an
+explicit opt-in, never the default, covered by two existing tests. My gate refused
+that classmate the document, the index entry, the history and the room. **Nobody
+asked for that, and it would have arrived under a privacy fix.** `52e1f3582` moves
+the rule into the store as `mayReadStudentWork` and has `canReadStudent` call it.
+
+**No live instance:** all ten students on the course box are `layerScope=student`,
+read with the rw token at 2026-08-29 03:00Z. So the narrowing broke nothing that
+exists; it was still wrong.
