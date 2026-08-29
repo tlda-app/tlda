@@ -62,3 +62,35 @@ test('an ordinary document room is not mistaken for a private layer', () => {
   assert.equal(studentOverlayRoomOwner('doc-anything'), null)
   assert.equal(classroomRoomAccess({ roomId: 'doc-anything', tokenLevel: 'read' }), 'read')
 })
+
+// A submission's room is the other room that is one student's, and unlike the
+// overlay the NAME does not say so — `doc-submission-<assignment>-<student>` is
+// an ordinary document room to look at. Measured on the live course box: the
+// shared class read token was accepted into another student's submission room
+// while the same token was already refused that submission's documents over
+// HTTP. The caller resolves the owner from the submissions record and passes it.
+
+const SUBMISSION_ROOM = 'doc-submission-hw-minus-1-setup-qtm285:ada'
+
+test("a submission's room is refused to the class read link and to a classmate", () => {
+  assert.equal(classroomRoomAccess({ roomId: SUBMISSION_ROOM, tokenLevel: 'read', submissionOwnerId: 'qtm285:ada' }), 'deny')
+  assert.equal(classroomRoomAccess({
+    roomId: SUBMISSION_ROOM, tokenLevel: 'read', studentId: 'qtm285:bo', submissionOwnerId: 'qtm285:ada',
+  }), 'deny')
+})
+
+test('the student who handed it in keeps their submission room, and so does the instructor', () => {
+  assert.equal(classroomRoomAccess({
+    roomId: SUBMISSION_ROOM, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
+  }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: SUBMISSION_ROOM, tokenLevel: 'rw', submissionOwnerId: 'qtm285:ada' }), 'write')
+})
+
+test('nothing changes for a room that is not a submission', () => {
+  // The caller passes null when the record says the room is not one, which is
+  // every book and every common layer. This is the control that says the new
+  // parameter cannot narrow anything it was not given.
+  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read', submissionOwnerId: null }), 'read')
+  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read', studentId: 'ada', submissionOwnerId: null }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: ADA, tokenLevel: 'read', studentId: 'ada', submissionOwnerId: null }), 'write')
+})

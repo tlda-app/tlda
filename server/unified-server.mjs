@@ -76,7 +76,7 @@ import { parseHistorySeedRef } from '../shared/history-seed-ref.mjs'
 import { selfBaseUrl } from '../shared/self-base-url.mjs'
 import { listProposalRefs, parseDaemonProposalRef } from './lib/git-proposals.mjs'
 import projectRoutes from './routes/projects.mjs'
-import { createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
+import { classroomPrincipal, createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
 import { ClassroomStore } from './lib/classroom-store.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -4683,7 +4683,20 @@ async function runDocsAccessCheck(req, res, name) {
 
 app.get('/docs/manifest.json', requireRead, async (req, res) => {
   const manifest = await generateManifest()
-  res.json(manifest)
+  // The manifest is built by walking the projects directory, so it names every
+  // submission on the box. Measured with the shared class read token while the
+  // same token was already being refused the documents themselves: three
+  // submissions, each keyed by the student's login. A name is student
+  // information here on its own.
+  const store = app.locals.classroomStore
+  if (!store) return res.json(manifest)
+  const principal = (app.locals.resolveClassroomPrincipal || classroomPrincipal)(req, store)
+  const documents = {}
+  for (const [name, document] of Object.entries(manifest.documents || {})) {
+    const access = store.documentAccess(name, principal)
+    if (!access.submission || access.allowed) documents[name] = document
+  }
+  res.json({ ...manifest, documents })
 })
 
 /**
@@ -5479,10 +5492,19 @@ server.on('upgrade', async (req, socket, head) => {
     const enrolled = enrolmentToken && classroomStore
       ? classroomStore.studentForToken(enrolmentToken)
       : null
+    // Whose handed-in work this room is, if it is one. The room name is
+    // `doc-<project>` for a document room and the bare project name elsewhere,
+    // and neither says "submission" — that is a fact in the submissions record,
+    // so ask it rather than parsing.
+    const submissionOwnerId = classroomStore
+      ? (classroomStore.submissionDocumentOwner(docName)
+        || classroomStore.submissionDocumentOwner(docName.replace(/^doc-/, '')))?.studentId ?? null
+      : null
     const access = classroomRoomAccess({
       roomId: docName,
       tokenLevel: validateToken(extractToken(req)),
       studentId: enrolled?.id ?? null,
+      submissionOwnerId,
     })
     if (access === 'deny') {
       console.warn(`[sync] refused "${docName}" session=${sessionId} enrolled=${enrolled?.id ?? 'none'}`)
