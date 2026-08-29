@@ -40,6 +40,47 @@ function createHtmlPageShape(editor: Editor, shape: HtmlPageShapePartial) {
   // this app registers html-page via HtmlPageShapeUtil at runtime. Remove this
   // boundary cast if Editor becomes parameterized by app-registered shapes.
   editor.createShapes([shape as unknown as Parameters<Editor['createShapes']>[0][number]])
+  if (editor.getShape(shape.id)) return
+
+  // IT DID NOT LAND, SO DRAW IT LOCALLY. In tldraw's read-only mode
+  // `createShapes` is a SILENT NO-OP — measured on pic-dev, 2026-08-29: with
+  // `getIsReadonly()` true, creating a shape and reading it back in the same
+  // tick returns nothing, and nothing is logged. A read-token student therefore
+  // opened a freshly linked project and saw an empty canvas, because these page
+  // shapes are made by the client on open and no writer had been there yet to
+  // make them. One rw visit created them, after which every read worked — which
+  // is why it looked intermittent rather than broken.
+  //
+  // `editor.store.put` is NOT blocked by read-only; only the editor-level API
+  // is. The evidence that this is a real write rather than a bypass: the first
+  // probe failed with `props.richText: Expected object, got undefined`, a SCHEMA
+  // error, so the record was being validated exactly as any other.
+  //
+  // `mergeRemoteChanges` keeps it out of the room. Verified rather than assumed:
+  // after doing this the project's `/api/projects/<p>/shapes` was unchanged at
+  // three records with no reader-written page, and a read-token PATCH still
+  // returned 403.
+  //
+  // This does not weaken read-only mode and does not touch the writer path: a
+  // session that CAN write took the line above and has already returned. It runs
+  // only where the editor declined, so it needs no permission check of its own
+  // and cannot race the moment read-only is decided.
+  // `index` has no default and the record is REJECTED without it — the schema
+  // says `At shape(type = html-page).index: Expected string, got undefined`.
+  // `createShapes` computes one; going through the store means supplying it, and
+  // asking the editor for the next one keeps these pages ordered behind whatever
+  // is already on the page instead of stacking them at a fixed key.
+  const parentId = shape.parentId ?? editor.getCurrentPageId()
+  const util = editor.getShapeUtil(shape.type as never) as unknown as { getDefaultProps: () => object }
+  const record = editor.store.schema.types.shape.create({
+    ...shape,
+    parentId,
+    index: editor.getHighestIndexForParent(parentId),
+    props: { ...util.getDefaultProps(), ...shape.props },
+  } as unknown as Parameters<Editor['store']['schema']['types']['shape']['create']>[0])
+  editor.store.mergeRemoteChanges(() => {
+    editor.store.put([record as unknown as Parameters<Editor['store']['put']>[0][number]])
+  })
 }
 
 function putHtmlPageShape(editor: Editor, shape: HtmlPageShape) {

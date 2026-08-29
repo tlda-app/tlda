@@ -8,7 +8,6 @@ import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighligh
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { setCurrentDocumentInfo, createSvgDocumentLayout, createHtmlDocumentFromPageInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
-import { canPresent, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
 import { loadSlidesDocument } from './loaders/slidesLoader'
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
@@ -796,62 +795,6 @@ export function anchorIdToLabel(anchorId: string): { type: string; displayLabel:
   return { type: rawType, displayLabel: `${displayType} ${number}` }
 }
 
-/**
- * Create the document's HTML page shapes for whoever is looking at it.
- *
- * **A reader must not need a writer to have been here first.** These shapes are
- * created by the client on open, so on a project nobody with write authority has
- * opened yet they simply do not exist: a freshly linked project answers
- * `/api/projects/<p>/shapes` with `document`, `page` and `doc-version` and no
- * `html-page` at all, and a student holding a read token sees an empty canvas.
- * Measured on pic-dev, 2026-08-29. One visit by a writer created them, after
- * which every read worked — which is why this looked intermittent.
- *
- * **A session without write authority creates them through
- * `mergeRemoteChanges`, so they never sync.** That is this repository's existing
- * idiom for exactly this — `annotationVisibility.ts` states it: *"Draft shapes
- * are created via mergeRemoteChanges() so they never sync"*, and
- * `useDocAutoOpen` already wraps `createShapes` the same way. Nothing is written
- * to the room, so read-token write restrictions are untouched; the reader is
- * simply drawing, for itself, what the geometry already determines.
- *
- * **No second geometry producer.** `createHtmlShapes` remains the only thing
- * that decides where a page goes. This chooses the transaction it runs in, and
- * nothing else. The writer path is byte-for-byte what it was.
- *
- * `canPresent()` is the rw-vs-read discriminator the client already has — its
- * own doc comment is *"True if auth disabled or RW token"* — so it answers write
- * authority despite being named for presenting.
- *
- * **The permission may not have arrived yet**, because `fetchAuthLevel()` is
- * fired at module load and not awaited. When it is unknown this keeps today's
- * behaviour, and then re-checks once the answer lands: a reader whose answer
- * arrived late would otherwise have had its synced creation refused and be left
- * looking at the empty canvas this exists to fix.
- */
-function createHtmlPagesForThisSession(editor: Editor, document: SvgDocument): void {
-  const createLocally = () => editor.store.mergeRemoteChanges(() => { createHtmlShapes(editor, document) })
-
-  if (isPresentPermissionKnown()) {
-    if (canPresent()) createHtmlShapes(editor, document)
-    else createLocally()
-    return
-  }
-
-  // Unknown: behave exactly as before, then repair if the answer says reader.
-  createHtmlShapes(editor, document)
-  const stop = subscribeCanPresent(() => {
-    if (!isPresentPermissionKnown()) return
-    stop()
-    if (canPresent()) return
-    // The synced creation above cannot survive without write authority. Only
-    // act if the pages are actually absent, so a reader that did get them keeps
-    // them and nothing is created twice.
-    const missing = document.pages.some(page => !editor.getShape(page.shapeId))
-    if (missing) createLocally()
-  })
-}
-
 export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   shapeIdSet: Set<TLShapeId>
   shapeIds: TLShapeId[]
@@ -860,7 +803,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
 } {
   // Create page shapes if they don't already exist (from Yjs sync)
   if (HTML_PAGE_FORMATS.has(document.format || '')) {
-    createHtmlPagesForThisSession(editor, document)
+    createHtmlShapes(editor, document)
   } else if (document.format === 'slides') {
     createSlidesShapes(editor, document)
   } else if (document.format === 'png') {
