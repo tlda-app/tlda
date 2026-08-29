@@ -593,6 +593,29 @@ const sourceSync = createGitSyncManager({
     log.warn(`${project}: ${message}`)
     sendMsg({ type: 'daemon-warning', project, warning: 'document-not-in-revision', message, dropped })
   },
+  // A REFUSED settle, said where a person is. Same path and the same reasoning
+  // as the callback above: the watcher has no command output to report into,
+  // and `daemon-warning` is the one route from here to somebody.
+  //
+  // What this is for: a checkout standing on a branch the daemon does not
+  // manage is refused `not-on-work-branch`, and until now the only trace was a
+  // line in this daemon's own log file. The person's edit commits, their tree
+  // goes clean, nothing errors, and the project never receives a revision — so
+  // sync looks like it worked.
+  //
+  // The branch rule itself is unchanged and deliberately so. Skip: "if you have
+  // a daemon-managed branch checked out, it commits, and pushes, and all that
+  // shit. otherwise it doesn't." Nothing here pushes a branch the daemon does
+  // not manage; the refusal stands, it just stops being silent.
+  //
+  // Severity stays default, so this does NOT raise the per-document sync-error
+  // sentinel. The document is fine and the project is fine; a checkout is
+  // parked somewhere the daemon does not read. Raising the badge would be a
+  // product decision nobody asked for.
+  onSyncRefused: ({ project, status, reason, head, workBranch }) => {
+    log.warn(`${project}: ${reason}`)
+    sendMsg({ type: 'daemon-warning', project, warning: `sync-refused:${status}`, message: reason, head, workBranch })
+  },
 })
 
 let lastInvalidSourceOwnerSignature = null
