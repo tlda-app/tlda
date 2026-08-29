@@ -31,7 +31,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   }
   function record(project) { return records().find(item => item.project === project) || null }
 
-  function projectRemoteUrl(project) {
+  function projectRemoteUrl(project, serverOverride = null) {
     // A project bound with an explicit server pushes THERE. `--server` names the
     // server for that command, and the git remote is part of what that command
     // does -- it was governing the API call while the remote still came from the
@@ -39,8 +39,23 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     // the project on the preview and pushed its content to the configured
     // server instead. The binding is where a project's other facts already live,
     // so this needs no new record.
+    // AND AN EXPLICIT OVERRIDE WINS, because the binding does not exist yet at
+    // the moment of the first push. `project link --server <host>` creates the
+    // project on <host> and then pushes its history seed BEFORE `bindSource`
+    // records anything, so this read found no binding, fell through to the
+    // daemon's own server, and pushed to the wrong box:
+    //
+    //   Created markdown project "…"                        <- on the named server
+    //   fatal: repository 'https://<daemon's server>/git/…'  <- seed push
+    //           not found
+    //
+    // Measured against pic-dev on 2026-08-29. The link then fails outright, so
+    // a classroom cannot be set up on a box that is not the daemon's default.
+    // Threading the caller's server through the push is narrower than reordering
+    // the link: `bindSource` deliberately runs after adoption is confirmed, so
+    // that a failed link leaves nothing behind, and that ordering must not move.
     const bound = load()[project]
-    const base = (bound && typeof bound === 'object' && bound.server) || server
+    const base = serverOverride || (bound && typeof bound === 'object' && bound.server) || server
     let remoteUrl = remoteUrlFor ? remoteUrlFor(project) : new URL(`/git/${encodeURIComponent(project)}`, base)
     // The daemon id is the username and it is always known; the token is the
     // password and may legitimately be empty. Both were attached only when a
@@ -58,8 +73,8 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return remoteUrl.toString()
   }
 
-  async function configureProjectRemote(project, sourceDir) {
-    const remoteUrl = projectRemoteUrl(project)
+  async function configureProjectRemote(project, sourceDir, serverOverride = null) {
+    const remoteUrl = projectRemoteUrl(project, serverOverride)
     const { stdout } = await execFile('git', ['remote'], { cwd: sourceDir, encoding: 'utf8' })
     const hasTransportRemote = stdout.split(/\r?\n/).includes('tlda')
     await execFile('git', ['remote', hasTransportRemote ? 'set-url' : 'add', 'tlda', remoteUrl], { cwd: sourceDir })
@@ -76,9 +91,9 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     await configureProjectRemote(item.project, item.sourceDir)
   }
 
-  async function pushHistorySeed(project, repositoryDir, revision) {
+  async function pushHistorySeed(project, repositoryDir, revision, serverOverride = null) {
     const ref = historySeedRef({ daemonId, revision })
-    await configureProjectRemote(project, repositoryDir)
+    await configureProjectRemote(project, repositoryDir, serverOverride)
     await execFile('git', ['push', 'tlda', `${revision}:${ref}`], { cwd: repositoryDir, encoding: 'utf8', timeout: 180000 })
     return { project, ref, revision }
   }
