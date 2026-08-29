@@ -19,6 +19,11 @@ primary_region = "sjc"
 
 [env]
   PORT = "5176"
+  # The edge reaches the app through Fly's 6PN process DNS, which resolves to
+  # the app machine's IPv6 address. Node's default 0.0.0.0 listener is IPv4
+  # only; bind the app on IPv6 (dual-stack on Fly's Linux guest) so both the
+  # edge and the app-local Tailscale proxy can reach it.
+  HOST = "::"
   NODE_ENV = "production"
   # Read only by the `edge` process (scripts/fly-edge-proxy.mjs), which refuses to
   # start without all four rather than inventing a default.
