@@ -15,7 +15,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
 
@@ -109,12 +109,34 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     // silence one layer up. This is the shape reportInvalidProjectSourceOwners
     // already uses in bin/fleet-daemon.mjs for the same reason.
     let reportedDropped = null
+    let reportedRefusal = null
     async function reportDroppedDocuments(dropped = []) {
       const signature = dropped.join('\n')
       if (signature === reportedDropped) return
       reportedDropped = signature
       if (!dropped.length) return
       await onDocumentsDropped({ project: item.project, sourceDir: item.sourceDir, dropped })
+    }
+    /**
+     * Report a settle that was refused, once per distinct refusal.
+     *
+     * The reason string is `settle`'s, verbatim. Rewriting it here would be a
+     * second place that has to know what a work branch is called, and the two
+     * would drift -- so if a status has no reason, this reports the status
+     * rather than inventing prose for it.
+     */
+    async function reportSyncRefusal(result) {
+      const signature = `${result.status || 'unknown'}\n${result.head || ''}\n${result.reason || ''}`
+      if (signature === reportedRefusal) return
+      reportedRefusal = signature
+      await onSyncRefused({
+        project: item.project,
+        sourceDir: item.sourceDir,
+        status: result.status || 'unknown',
+        head: result.head || null,
+        workBranch: result.workBranch || null,
+        reason: result.reason || `${item.project}: proposal not accepted: ${result.status || 'unknown'}`,
+      })
     }
     async function refreshWatchedMembers() {
       const next = new Set((await sync.members()).map(file => path.join(item.sourceDir, file)))
@@ -139,8 +161,28 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
         const result = await sync.editClusterSettled()
         if (result && result.ok === false) {
           log.warn(`${item.project}: proposal not accepted: ${result.status || 'unknown'}`)
+          // AND SAY IT WHERE A PERSON IS. The log line above is on the machine
+          // and nowhere else, so the person edits, the daemon commits, their
+          // tree goes clean, nothing errors, and the project never receives a
+          // revision. Measured on testing 2026-08-29: 1702 such refusals across
+          // 85 distinct projects, the newest minutes old, none of them visible
+          // anywhere but this file.
+          //
+          // `settle` already composes the whole sentence -- project, the branch
+          // this checkout is on, the managed branch it must be on, and the
+          // command that fixes it -- so nothing is written here that the daemon
+          // did not already know. It only stopped being silent.
+          //
+          // Deduplicated on purpose. This fires on EVERY settle, so reporting
+          // each one would put thousands of messages in front of somebody,
+          // which is a worse failure than the silence it replaces. The
+          // signature is the same shape `reportedDropped` uses above.
+          await reportSyncRefusal(result)
         }
-        if (result?.ok) await reportDroppedDocuments(result.dropped || [])
+        if (result?.ok) {
+          reportedRefusal = null
+          await reportDroppedDocuments(result.dropped || [])
+        }
         await refreshWatchedMembers()
       } catch (error) {
         // Keep the watcher live after a rejected proposal so a later member edit can repair it.
