@@ -99,10 +99,11 @@ fi
 
 echo
 echo "class read token — the sync room, over a real WebSocket"
-wsprobe() { # token room  -> OPEN | refused N
-  ( cd "$(dirname "$0")/../server" && TOKEN="$1" ROOM="$2" HOSTWS="${HOST/https:/wss:}" node -e '
+wsprobe() { # token room [raw|encoded]  -> OPEN | refused N
+  ( cd "$(dirname "$0")/../server" && TOKEN="$1" ROOM="$2" SPELLING="${3:-encoded}" HOSTWS="${HOST/https:/wss:}" node -e '
 import("ws").then(({default: WebSocket}) => {
-  const url = `${process.env.HOSTWS}/sync/${encodeURIComponent(process.env.ROOM)}?sessionId=probe-gate&token=${process.env.TOKEN}`
+  const room = process.env.SPELLING === "raw" ? process.env.ROOM : encodeURIComponent(process.env.ROOM)
+  const url = `${process.env.HOSTWS}/sync/${room}?sessionId=probe-gate&token=${process.env.TOKEN}`
   const ws = new WebSocket(url)
   const say = v => { console.log(v); try { ws.close() } catch {} ; process.exit(0) }
   setTimeout(() => say("timeout"), 8000)
@@ -111,14 +112,21 @@ import("ws").then(({default: WebSocket}) => {
   ws.on("error", e => say("error " + e.message))
 })' 2>/dev/null )
 }
+# Both spellings of the room. `url.pathname` is not url-decoded and a student id
+# is `<course>:<login>`, so a client that percent-encodes the colon reaches a
+# lookup that matches no content_ref. Measured once with the gate deployed:
+# literal colon refused 403, encoded one accepted, same room. Probing only one
+# spelling is a check that cannot see the bug it exists for.
 sub_room="doc-$SUB"
-got=$(wsprobe "$READ" "$sub_room")
-if [ "$got" = "refused 403" ]; then
-  printf '  ok    %-52s %s\n' "/sync/doc-<submission>" "$got"
-else
-  printf '  FAIL  %-52s %s (wanted refused 403)\n' "/sync/doc-<submission>" "$got"
-  fails=$((fails + 1))
-fi
+for spelling in raw encoded; do
+  got=$(wsprobe "$READ" "$sub_room" "$spelling")
+  if [ "$got" = "refused 403" ]; then
+    printf '  ok    %-52s %s\n' "/sync/doc-<submission>  ($spelling)" "$got"
+  else
+    printf '  FAIL  %-52s %s (wanted refused 403)\n' "/sync/doc-<submission>  ($spelling)" "$got"
+    fails=$((fails + 1))
+  fi
+done
 got=$(wsprobe "$READ" "doc-qtm285-book")
 if [ "$got" = "OPEN" ]; then
   printf '  ok    %-52s %s\n' "/sync/doc-qtm285-book  (POSITIVE CONTROL)" "$got"
