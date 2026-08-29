@@ -142,6 +142,11 @@ const ALLOWED = {
     reason: 'Drives the SOURCE ROOM endpoint, which is a different protocol from fleet transport: /source-sync/<project>/<file>, JSON frames carrying base64 Yjs updates ({type:"sync"} in, {type:"update"} and {type:"flush"} out). The fleet transport library carries fleet messages and cannot speak it. This is the browser ingress route under test -- one of the three ways an edit enters a project -- and the socket IS the route, so carrying it any other way would test something else. It replaced a version that drove CodeMirror in a real browser, which tested the editor rather than the route and wrote six fleet shapes into the project on every launch.',
   },
 
+  'scripts/fly-edge-proxy-hold-test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Proves an RFC 6455 upgrade survives the edge proxy\'s TCP pipe, which is what the canvas and fleet chat ride on across a deploy. The transport library speaks the fleet protocol and would prove the library; this needs a bare upgrade against a local echo server to show the pipe does not parse. Endpoint: the proxy itself, no server.',
+  },
   'scripts/backfill-agent-models.mjs': {
     count: 1,
     category: 'tooling',
