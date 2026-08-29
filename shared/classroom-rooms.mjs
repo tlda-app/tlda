@@ -38,11 +38,22 @@ export function studentOverlayRoomOwner(roomId) {
  *   enrolment token     write the book and its common layer;  write their OWN
  *   rw token            write everything
  *
+ * "A student's" is two rooms, not one: their private overlay, which the room
+ * name says, and the room of the work they handed in, which it does not. The
+ * caller resolves the second from the submissions record and passes it as
+ * `submissionOwnerId` — measured on the live course box, the shared class read
+ * token was accepted into another student's submission room while the same
+ * token was already refused that submission's documents over HTTP.
+ *
  * Returns 'write' | 'read' | 'deny'.
  */
-export function classroomRoomAccess({ roomId, tokenLevel, studentId = null }) {
+export function classroomRoomAccess({ roomId, tokenLevel, studentId = null, submissionOwnerId = null }) {
   if (tokenLevel === 'rw') return 'write'
   if (tokenLevel !== 'read') return 'deny'
+
+  // Handed-in work. Theirs, exactly as their own layer is theirs; a read link
+  // with no enrolment behind it is nobody and gets nothing.
+  if (submissionOwnerId) return studentId === submissionOwnerId ? 'write' : 'deny'
 
   const owner = studentOverlayRoomOwner(roomId)
   // Not a private layer: the book itself, or its common layer. Open to the link.
