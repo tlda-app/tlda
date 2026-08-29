@@ -54,7 +54,7 @@ function createHtmlPageShape(editor: Editor, shape: HtmlPageShapePartial) {
   // `editor.store.put` is NOT blocked by read-only; only the editor-level API
   // is. The evidence that this is a real write rather than a bypass: the first
   // probe failed with `props.richText: Expected object, got undefined`, a SCHEMA
-  // error, so the record was being validated exactly as any other.
+  // error, so the record is validated exactly the way every other one is.
   //
   // `mergeRemoteChanges` keeps it out of the room. Verified rather than assumed:
   // after doing this the project's `/api/projects/<p>/shapes` was unchanged at
