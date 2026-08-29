@@ -5496,9 +5496,17 @@ server.on('upgrade', async (req, socket, head) => {
     // `doc-<project>` for a document room and the bare project name elsewhere,
     // and neither says "submission" — that is a fact in the submissions record,
     // so ask it rather than parsing.
+    //
+    // Through `docsProjectName`, because `url.pathname` is NOT url-decoded and a
+    // student id is `<course>:<login>` — so a client that percent-encodes the
+    // room arrives here as `…qtm285%3Aada`, which matches no `content_ref`.
+    // Measured on the live box with the gate deployed: the literal colon was
+    // refused 403 and the encoded one was accepted, on the same room. This is
+    // the same trap `docsProjectName` was written for, one path over.
+    const submissionRoom = docsProjectName(docName)
     const submissionOwnerId = classroomStore
-      ? (classroomStore.submissionDocumentOwner(docName)
-        || classroomStore.submissionDocumentOwner(docName.replace(/^doc-/, '')))?.studentId ?? null
+      ? (classroomStore.submissionDocumentOwner(submissionRoom)
+        || classroomStore.submissionDocumentOwner(submissionRoom.replace(/^doc-/, '')))?.studentId ?? null
       : null
     const access = classroomRoomAccess({
       roomId: docName,
