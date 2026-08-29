@@ -212,9 +212,31 @@ export class ClassroomStore {
   documentAccess(docKey, principal) {
     const submission = this.submissionDocumentOwner(docKey)
     if (!submission) return this.solutionDocumentAccess(docKey, principal)
-    if (principal?.role === 'instructor') return { restricted: true, allowed: true, submission }
-    const allowed = principal?.role === 'student' && principal.studentId === submission.studentId
-    return { restricted: true, allowed, submission }
+    return { restricted: true, allowed: this.mayReadStudentWork(principal, submission), submission }
+  }
+
+  /**
+   * Whether a caller may read one student's work for one assignment.
+   *
+   * The rule already existed as `canReadStudent` in `routes/classroom.mjs`,
+   * deciding it for the submission ROW. The document, the index, the history and
+   * the sync room now ask the same question, so it lives here and that function
+   * calls it — one encoding, rather than a second one that drifts.
+   *
+   * A classmate reaches it only where the roster already says so: the owner's
+   * `layerScope` is `common`, which is an explicit opt-in and never the default.
+   * Narrowing that to owner-and-instructor would have been a product change
+   * smuggled in under a privacy fix.
+   */
+  mayReadStudentWork(principal, { studentId, courseId }) {
+    if (principal?.role === 'instructor') return true
+    if (principal?.role !== 'student') return false
+    if (principal.studentId === studentId) return true
+    const owner = this.getStudent(studentId)
+    return owner?.active === 1
+      && owner.courseId === principal.courseId
+      && courseId === principal.courseId
+      && owner.layerScope === 'common'
   }
 
   freezeTemplate(assignmentId, { templateDocKey, templateVersion }) {

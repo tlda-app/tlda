@@ -143,15 +143,18 @@ function ownsStudent(principal, studentId) {
   return principal?.role === 'instructor' || (principal?.role === 'student' && principal.studentId === studentId)
 }
 
+// The rule itself is `store.mayReadStudentWork`, because the document, the
+// index, the history and the sync room ask the same question and a second copy
+// of it here would drift from theirs. This adds only what is local to a row:
+// the assignment has to exist and be in the caller's course.
 function canReadStudent(principal, assignmentId, studentId, store) {
+  // Kept ahead of the lookup: an instructor asking about an assignment that does
+  // not exist got a 404 from the handler, and turning that into a 403 would be a
+  // change nobody asked for.
   if (ownsStudent(principal, studentId)) return true
-  if (principal?.role !== 'student') return false
-  const student = store.getStudent(studentId)
   const assignment = store.getAssignment(assignmentId)
-  return student?.active === 1
-    && student.courseId === principal.courseId
-    && assignment?.courseId === principal.courseId
-    && student.layerScope === 'common'
+  if (!assignment) return false
+  return store.mayReadStudentWork(principal, { studentId, courseId: assignment.courseId })
 }
 
 // Submitting is what unlocks the solution. Skip, 26 June: "once you've submitted
