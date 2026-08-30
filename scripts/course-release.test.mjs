@@ -203,3 +203,30 @@ test('plan refuses source bytes that are not the declared Git revision', () => {
     rmSync(f.root, { recursive: true, force: true })
   }
 })
+
+test('components report separately and activate their owning directory once', () => {
+  const f = fixture()
+  try {
+    const contract = readReleaseContract(f.contractPath)
+    const owner = contract.artifacts.find(artifact => artifact.id === 'book')
+    owner.activation = { type: 'directory', path: join(f.live, 'book-output') }
+    owner.desired = ['chapter-one', 'handout-one', 'syllabus']
+    mkdirSync(owner.activation.path, { recursive: true })
+    writeFileSync(join(owner.activation.path, 'unchanged.txt'), 'keep')
+    for (const id of owner.desired) {
+      const component = contract.artifacts.find(artifact => artifact.id === id)
+      component.owner = 'book'
+      delete component.activation
+    }
+    const plan = planCourseRelease(contract)
+    assert.deepEqual(plan.artifacts.filter(artifact => artifact.owner).map(artifact => artifact.id), owner.desired)
+    const { manifest } = stageCourseRelease(plan)
+    assert.equal(manifest.artifacts.filter(artifact => artifact.activation?.path === owner.activation.path).length, 1)
+    const result = deployCourseRelease(manifest)
+    assert.deepEqual(result.activated, ['app', 'book'])
+    assert.equal(readFileSync(join(owner.activation.path, 'unchanged.txt'), 'utf8'), 'keep')
+    assert.equal(readFileSync(join(owner.activation.path, 'chapter.html'), 'utf8'), '<h1>old staging residue</h1>')
+  } finally {
+    rmSync(f.root, { recursive: true, force: true })
+  }
+})

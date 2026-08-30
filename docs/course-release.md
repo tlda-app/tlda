@@ -46,6 +46,13 @@ destinations, not hand-maintained document dependencies. Each artifact's
 `sources` are roots; Quarto/includes and the existing classroom fixture builder
 remain responsible for producing their closure.
 
+When several reportable components share one project output, each component
+names that artifact with `"owner": "<artifact-id>"` and has no activation of its
+own. Stage builds changed components separately, overlays them onto the owner's
+retained output tree, verifies the assembled immutable tree, and deploy swaps
+the owner's directory once. This is the QTM285 index/page/ZIP shape; it does not
+create five pointers to one directory.
+
 ```json
 {
   "version": 1,
@@ -161,5 +168,16 @@ already reached. The edge machine, its Tailscale identity, and production
 classroom state do not move.
 
 The first deployment of this edge change follows [Fly deployment](live-deploy.md)
-and remains a one-time infrastructure cutover. Do not use the release command to
-move a database, enrollment, submission, room, or Tailscale state.
+and remains a one-time infrastructure cutover. Before deploying, check for the
+PIC-specific edge volume and create it only when it is absent:
+
+```sh
+fly volumes list -c fly.pic.toml | grep pic_edge_ts_state
+fly volumes create pic_edge_ts_state -c fly.pic.toml -r sjc -s 1   # only if absent
+```
+
+The app process's existing volume and the live edge volume named
+`edge_ts_state` do not satisfy this mount. The PIC edge process mounts the
+distinct `pic_edge_ts_state` volume at `/var/lib/tlda-edge`. Do not use the
+release command to move a database, enrollment, submission, room, or Tailscale
+state.

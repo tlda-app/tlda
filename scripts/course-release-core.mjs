@@ -58,15 +58,16 @@ export function hashPath(path) {
   return sha256(stableJson(walk(resolve(path))))
 }
 
-function expandSources(courseRoot, sources) {
+function expandSources(courseRoot, sources, ignoredMissing = []) {
   const expanded = new Set()
   for (const source of sources) {
     const full = contained(courseRoot, source, 'source path')
     if (!existsSync(full)) throw new Error(`required path does not exist: ${full}`)
     if (lstatSync(full).isFile() && /\.(qmd|md|markdown)$/i.test(full)) {
       const closure = scanMarkdownDependencyClosure(source, courseRoot)
-      if (closure.missing.length) {
-        const first = closure.missing[0]
+      const missing = closure.missing.filter(item => !ignoredMissing.includes(`${item.from}:${item.ref}`))
+      if (missing.length) {
+        const first = missing[0]
         throw new Error(`missing dependency from ${first.from}: ${first.ref}`)
       }
       for (const file of closure.files) expanded.add(file)
@@ -77,9 +78,9 @@ function expandSources(courseRoot, sources) {
   return [...expanded].sort()
 }
 
-function sourceHash(courseRoot, sources) {
+function sourceHash(courseRoot, sources, ignoredMissing) {
   const rows = []
-  for (const source of expandSources(courseRoot, sources)) {
+  for (const source of expandSources(courseRoot, sources, ignoredMissing)) {
     const full = contained(courseRoot, source, 'source path')
     rows.push({ source, entries: walk(full) })
   }
@@ -96,9 +97,9 @@ function frontMatterRequirement(path) {
   return match?.[1] || null
 }
 
-function collectRequirements(courseRoot, sources) {
+function collectRequirements(courseRoot, sources, ignoredMissing) {
   const requirements = []
-  for (const source of expandSources(courseRoot, sources)) {
+  for (const source of expandSources(courseRoot, sources, ignoredMissing)) {
     const full = contained(courseRoot, source, 'source path')
     const stat = lstatSync(full)
     const files = stat.isDirectory()
@@ -127,14 +128,25 @@ function validateContract(contract, contractPath) {
       throw new Error(`unsupported artifact kind for ${artifact.id}: ${artifact.kind}`)
     }
     if (!Array.isArray(artifact.sources)) throw new Error(`artifact ${artifact.id} requires sources`)
-    if (!artifact.activation?.type || !artifact.activation?.path) {
-      throw new Error(`artifact ${artifact.id} requires an existing activation pointer`)
+    if (!artifact.owner && (!artifact.activation?.type || !artifact.activation?.path)) {
+      throw new Error(`artifact ${artifact.id} requires an existing activation pointer or owner`)
     }
-    if (!['file', 'symlink', 'json', 'directory'].includes(artifact.activation.type)) {
+    if (artifact.owner && artifact.activation) {
+      throw new Error(`component artifact ${artifact.id} cannot have its own activation pointer`)
+    }
+    if (artifact.activation && !['file', 'symlink', 'json', 'directory'].includes(artifact.activation.type)) {
       throw new Error(`artifact ${artifact.id} has unsupported activation type ${artifact.activation.type}`)
     }
   }
-  return { ...contract, contractPath }
+  for (const artifact of contract.artifacts) {
+    if (!artifact.owner) continue
+    const owner = contract.artifacts.find(candidate => candidate.id === artifact.owner)
+    if (!owner) throw new Error(`component artifact ${artifact.id} has unknown owner ${artifact.owner}`)
+    if (owner.activation?.type !== 'directory') {
+      throw new Error(`component owner ${owner.id} must have one directory activation`)
+    }
+  }
+  return { ...contract, contractPath: contractPath || contract.contractPath }
 }
 
 function gitOutput(courseRoot, args) {
@@ -144,14 +156,17 @@ function gitOutput(courseRoot, args) {
   return result.stdout.trim()
 }
 
-function verifySourceRevision(courseRoot, sourceRevision, sources) {
+function verifySourceRevision(courseRoot, sourceRevision, artifacts) {
   const declared = gitOutput(courseRoot, ['rev-parse', '--verify', `${sourceRevision}^{commit}`])
   const head = gitOutput(courseRoot, ['rev-parse', '--verify', 'HEAD'])
   if (declared !== head) throw new Error(`sourceRevision ${sourceRevision} is not the course checkout HEAD ${head}`)
-  const expanded = expandSources(courseRoot, sources)
-  if (expanded.length === 0) return
+  const expanded = [...new Set(artifacts.flatMap(artifact => expandSources(
+    courseRoot, artifact.sources, artifact.ignoreMissingDependencies || [],
+  )))]
+  if (expanded.length === 0) return declared
   const status = gitOutput(courseRoot, ['status', '--porcelain=v1', '--untracked-files=all', '--', ...expanded])
   if (status) throw new Error(`release source differs from sourceRevision ${declared}:\n${status}`)
+  return declared
 }
 
 export function readReleaseContract(path) {
@@ -197,12 +212,12 @@ export function planCourseRelease(contractInput) {
   const contract = typeof contractInput === 'string' ? readReleaseContract(contractInput) : validateContract(contractInput)
   const courseRoot = resolve(contract.courseRoot || dirname(contract.contractPath || process.cwd()))
   const previous = previousManifest(contract)
-  verifySourceRevision(courseRoot, contract.sourceRevision, contract.artifacts.flatMap(artifact => artifact.sources))
+  const sourceRevision = verifySourceRevision(courseRoot, contract.sourceRevision, contract.artifacts)
   const priorById = new Map((previous?.artifacts || []).map(artifact => [artifact.id, artifact]))
   const artifacts = contract.artifacts.map(artifact => {
-    const hash = sourceHash(courseRoot, artifact.sources)
+    const hash = sourceHash(courseRoot, artifact.sources, artifact.ignoreMissingDependencies || [])
     const prior = priorById.get(artifact.id)
-    const requirements = collectRequirements(courseRoot, artifact.sources)
+    const requirements = collectRequirements(courseRoot, artifact.sources, artifact.ignoreMissingDependencies || [])
     return {
       id: artifact.id,
       kind: artifact.kind,
@@ -213,16 +228,22 @@ export function planCourseRelease(contractInput) {
       desired: artifact.desired ?? null,
       url: artifact.url || null,
       activation: artifact.activation,
+      owner: artifact.owner || null,
       build: artifact.build || null,
       checks: artifact.checks || [],
       output: artifact.output || null,
       previousArtifact: prior || null,
     }
   })
+  const artifactById = new Map(artifacts.map(artifact => [artifact.id, artifact]))
+  for (const artifact of artifacts) {
+    if (!artifact.owner || !artifact.changed) continue
+    artifactById.get(artifact.owner).changed = true
+  }
   const plan = {
     version: 1,
     state: 'planned',
-    sourceRevision: contract.sourceRevision,
+    sourceRevision,
     appSha: contract.appSha || null,
     courseRoot,
     releaseRoot: resolve(contract.releaseRoot),
@@ -288,7 +309,29 @@ export function stageCourseRelease(plan, { runner = run } = {}) {
     }
   }
 
-  for (const artifact of plan.artifacts) {
+  for (const artifact of plan.artifacts.filter(item => item.owner)) {
+    if (!artifact.changed && artifact.previousArtifact) {
+      staged.push({ ...artifact.previousArtifact, changed: false })
+      continue
+    }
+    const stageDir = join(artifactRoot, artifact.id)
+    mkdirSync(stageDir, { recursive: true })
+    const variables = { STAGE_DIR: stageDir, SOURCE_REVISION: plan.sourceRevision, APP_SHA: plan.appSha || '' }
+    if (artifact.build) runSpec(artifact.build, plan.courseRoot, variables, runner)
+    const output = artifact.output ? contained(plan.courseRoot, artifact.output, 'artifact output') : stageDir
+    if (output !== stageDir) {
+      const destination = lstatSync(output).isDirectory() ? stageDir : join(stageDir, basename(output))
+      cpSync(output, destination, { recursive: true, verbatimSymlinks: true })
+    }
+    for (const check of artifact.checks) runSpec(check, plan.courseRoot, variables, runner)
+    staged.push({
+      id: artifact.id, kind: artifact.kind, changed: true, sourceHash: artifact.sourceHash,
+      requirements: artifact.requirements, contentHash: hashPath(stageDir), stagedPath: stageDir,
+      url: artifact.url, desired: artifact.desired, owner: artifact.owner,
+    })
+  }
+
+  for (const artifact of plan.artifacts.filter(item => !item.owner)) {
     if (!artifact.changed && artifact.previousArtifact) {
       staged.push({ ...artifact.previousArtifact, changed: false, previous: readPointer(artifact.activation) })
       continue
@@ -296,7 +339,17 @@ export function stageCourseRelease(plan, { runner = run } = {}) {
     const stageDir = join(artifactRoot, artifact.id)
     mkdirSync(stageDir, { recursive: true })
     const variables = { STAGE_DIR: stageDir, SOURCE_REVISION: plan.sourceRevision, APP_SHA: plan.appSha || '' }
-    if (artifact.build) runSpec(artifact.build, plan.courseRoot, variables, runner)
+    const components = staged.filter(item => item.owner === artifact.id)
+    if (components.length) {
+      const live = resolve(artifact.activation.path)
+      if (existsSync(live)) cpSync(live, stageDir, { recursive: true, verbatimSymlinks: true })
+      else if (components.some(component => !component.changed)) {
+        throw new Error(`cannot assemble ${artifact.id}: live output is absent with unchanged components`)
+      }
+      for (const component of components.filter(item => item.changed)) {
+        cpSync(component.stagedPath, stageDir, { recursive: true, verbatimSymlinks: true })
+      }
+    } else if (artifact.build) runSpec(artifact.build, plan.courseRoot, variables, runner)
     const output = artifact.output ? contained(plan.courseRoot, artifact.output, 'artifact output') : stageDir
     if (output !== stageDir) {
       const destination = lstatSync(output).isDirectory() ? stageDir : join(stageDir, basename(output))
@@ -416,7 +469,7 @@ function activePointerValue(artifact) {
 
 export function deployCourseRelease(manifest, { failAfter = null } = {}) {
   verifyManifest(manifest)
-  for (const artifact of manifest.artifacts) {
+  for (const artifact of manifest.artifacts.filter(item => item.activation)) {
     const current = readPointer(artifact.activation)
     if (!pointerEqual(current, artifact.previous)) {
       throw new Error(`activation pointer changed since stage: ${artifact.id}`)
@@ -425,7 +478,7 @@ export function deployCourseRelease(manifest, { failAfter = null } = {}) {
 
   const moved = []
   try {
-    for (const artifact of manifest.artifacts.filter(item => item.changed)) {
+    for (const artifact of manifest.artifacts.filter(item => item.changed && item.activation)) {
       activateArtifact(artifact)
       moved.push(artifact)
       if (failAfter != null && moved.length === failAfter) throw new Error('injected activation failure')
@@ -439,7 +492,7 @@ export function deployCourseRelease(manifest, { failAfter = null } = {}) {
 
 export function rollbackCourseRelease(manifest) {
   verifyManifest(manifest)
-  const changed = manifest.artifacts.filter(item => item.changed)
+  const changed = manifest.artifacts.filter(item => item.changed && item.activation)
   for (const artifact of changed) {
     const current = readPointer(artifact.activation)
     if (!pointerEqual(current, activePointerValue(artifact))) {
