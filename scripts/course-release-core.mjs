@@ -362,6 +362,10 @@ export function stageCourseRelease(plan, { runner = run } = {}) {
   const artifactRoot = join(releaseDir, 'artifacts')
   const staged = []
 
+  if (existsSync(releaseDir) && !existsSync(join(releaseDir, 'release.json'))) {
+    rmSync(releaseDir, { recursive: true, force: true })
+  }
+
   for (const artifact of plan.artifacts) {
     for (const requirement of artifact.requirements) {
       verifyRequirement(plan.courseRoot, requirement, plan.appSha, runner)
