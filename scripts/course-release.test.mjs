@@ -196,6 +196,9 @@ test('a real staged-artifact check can fail and leaves every live pointer unchan
     assert.equal(readFileSync(join(f.live, 'chapter-one', 'index.html'), 'utf8'), 'old chapter-one')
     const releaseId = `${f.sha.slice(0, 12)}-${plan.planHash.slice(0, 12)}`
     assert.equal(existsSync(join(f.root, 'release-store', 'releases', releaseId, 'release.json')), false)
+    contract.artifacts[1].checks = []
+    const retried = stageCourseRelease(planCourseRelease(contract))
+    assert.equal(existsSync(retried.manifestPath), true)
   } finally {
     rmSync(f.root, { recursive: true, force: true })
   }
