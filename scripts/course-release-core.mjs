@@ -14,7 +14,60 @@ import {
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
+
+const RELEASE_IMAGE_RE = /!\[[^\]]*\]\(([^)]+)\)/g
+const RELEASE_HTML_ASSET_RE = /<(?:img|script|source|video|audio|link)\s[^>]*\b(?:src|href)=["']([^"']+)["']/g
+const RELEASE_INCLUDE_RE = /\{\{<\s*include\s+([^\s>]+)\s*>\}\}/g
+
+function releaseRenderDependencies(content) {
+  const dependencies = []
+  const collect = (regex, include = false) => {
+    for (const match of content.matchAll(regex)) {
+      const raw = match[1].trim()
+      const target = raw.startsWith('<') && raw.includes('>') ? raw.slice(1, raw.indexOf('>')) : raw.split(/\s+["'(]/, 1)[0]
+      const ref = target.split(/[#?]/)[0].trim()
+      if (!ref || /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/|~\/)/i.test(ref)) continue
+      dependencies.push({ ref, include })
+    }
+  }
+  collect(RELEASE_IMAGE_RE)
+  collect(RELEASE_HTML_ASSET_RE)
+  collect(RELEASE_INCLUDE_RE, true)
+  return dependencies
+}
+
+function scanReleaseRenderClosure(mainFile, sourceDir) {
+  const root = resolve(sourceDir)
+  const queue = [String(mainFile).replace(/\\/g, '/').replace(/^\/+/, '')]
+  const files = new Set()
+  const missing = []
+  while (queue.length) {
+    const current = queue.shift()
+    if (files.has(current)) continue
+    const full = resolve(root, current)
+    const rel = relative(root, full).replace(/\\/g, '/')
+    if (!rel || rel.startsWith('../') || isAbsolute(rel)) continue
+    if (!existsSync(full) || !lstatSync(full).isFile()) {
+      missing.push({ from: current, ref: current })
+      continue
+    }
+    files.add(rel)
+    if (!/\.(?:qmd|md|markdown)$/i.test(rel)) continue
+    for (const dependency of releaseRenderDependencies(readFileSync(full, 'utf8'))) {
+      const target = resolve(dirname(full), dependency.ref)
+      const targetRel = relative(root, target).replace(/\\/g, '/')
+      if (!targetRel || targetRel.startsWith('../') || isAbsolute(targetRel)) continue
+      if (!existsSync(target) || !lstatSync(target).isFile()) {
+        missing.push({ from: rel, ref: dependency.ref })
+      } else if (dependency.include && /\.(?:qmd|md|markdown)$/i.test(targetRel)) {
+        queue.push(targetRel)
+      } else {
+        files.add(targetRel)
+      }
+    }
+  }
+  return { files: [...files].sort(), missing }
+}
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
@@ -64,7 +117,7 @@ function expandSources(courseRoot, sources, ignoredMissing = []) {
     const full = contained(courseRoot, source, 'source path')
     if (!existsSync(full)) throw new Error(`required path does not exist: ${full}`)
     if (lstatSync(full).isFile() && /\.(qmd|md|markdown)$/i.test(full)) {
-      const closure = scanMarkdownDependencyClosure(source, courseRoot)
+      const closure = scanReleaseRenderClosure(source, courseRoot)
       const missing = closure.missing.filter(item => !ignoredMissing.includes(`${item.from}:${item.ref}`))
       if (missing.length) {
         const first = missing[0]
@@ -218,14 +271,15 @@ export function planCourseRelease(contractInput) {
     const hash = sourceHash(courseRoot, artifact.sources, artifact.ignoreMissingDependencies || [])
     const prior = priorById.get(artifact.id)
     const requirements = collectRequirements(courseRoot, artifact.sources, artifact.ignoreMissingDependencies || [])
+    const desired = artifact.desired ?? null
     return {
       id: artifact.id,
       kind: artifact.kind,
-      changed: prior?.sourceHash !== hash || prior?.desired !== artifact.desired,
+      changed: prior?.sourceHash !== hash || prior?.desired !== desired,
       sourceHash: hash,
       previousSourceHash: prior?.sourceHash || null,
       requirements,
-      desired: artifact.desired ?? null,
+      desired,
       url: artifact.url || null,
       activation: artifact.activation,
       owner: artifact.owner || null,
