@@ -1,18 +1,29 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
 import {
   deployCourseRelease,
+  hashPath,
   planCourseRelease,
   readReleaseContract,
   readReleaseManifest,
   rollbackCourseRelease,
   stageCourseRelease,
 } from './course-release-core.mjs'
+
+test('hashPath records a symlink whose target is absent', () => {
+  const root = mkdtempSync(join(tmpdir(), 'course-release-broken-link-'))
+  try {
+    symlinkSync('/missing/release-target', join(root, 'linked-resource'))
+    assert.match(hashPath(root), /^[0-9a-f]{64}$/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'tlda-course-release-'))
