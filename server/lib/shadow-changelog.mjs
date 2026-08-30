@@ -13,7 +13,7 @@ const execFileAsync = promisify(execFileCb)
  * A finite limit reads that many recent commits. A null limit reads the whole
  * history, which callers need when placing several projects on matching axes.
  */
-export async function readShadowChangelog(name, { limit = 200 } = {}) {
+export async function readShadowChangelog(name, { limit = 200, signal } = {}) {
   const project = await readProject(name)
   if (!project) {
     const error = new Error('Project not found')
@@ -60,6 +60,7 @@ export async function readShadowChangelog(name, { limit = 200 } = {}) {
     cwd: repoDir,
     timeout: 30000,
     maxBuffer: 50 * 1024 * 1024,
+    signal,
   })
 
   const commits = []
@@ -122,7 +123,7 @@ export async function readShadowChangelog(name, { limit = 200 } = {}) {
  * Return index metadata only for projects with real edit history.
  * The synthetic `init` commit does not count; a single build is scratch.
  */
-export async function readShadowIndexInfo(name) {
+export async function readShadowIndexInfo(name, { signal } = {}) {
   const repoDir = getShadowRepoDir(name)
   if (!existsSync(join(repoDir, '.git'))) return null
 
@@ -154,7 +155,7 @@ export async function readShadowIndexInfo(name) {
   const { stdout: revList } = await execFileAsync(
     'git',
     ['rev-list', 'HEAD'],
-    { cwd: repoDir, timeout: 10000, maxBuffer: 10 * 1024 * 1024 },
+    { cwd: repoDir, timeout: 10000, maxBuffer: 10 * 1024 * 1024, signal },
   )
   const hashes = revList.trim().split('\n').filter(Boolean)
   if (hashes.length === 0) return null
@@ -164,7 +165,7 @@ export async function readShadowIndexInfo(name) {
   const { stdout: oldestLog } = await execFileAsync(
     'git',
     ['log', '--no-walk', '--format=%H%x09%at%x09%s', ...oldestPair],
-    { cwd: repoDir, timeout: 10000, maxBuffer: 1024 * 1024 },
+    { cwd: repoDir, timeout: 10000, maxBuffer: 1024 * 1024, signal },
   )
   const oldestCommits = oldestLog
     .trim()
