@@ -225,10 +225,18 @@ export function createGitProjectSync({
             isSourceFilePath(file, { format: 'qmd', mainFile: qmdRoots[0] })
             && !qmdRoots.some(root => isQuartoRenderOutput(file, root)))
         : []
+      const htmlRoots = candidates.filter(file => /\.html?$/i.test(file))
+      const htmlFiles = htmlRoots.length
+        ? paths.filter(file => isSourceFilePath(file, { format: 'html', mainFile: htmlRoots[0] }))
+        : []
       const closures = new Map()
       for (const candidate of candidates) {
         if (/\.qmd$/i.test(candidate)) {
           closures.set(candidate, new Set(qmdFiles))
+          continue
+        }
+        if (/\.html?$/i.test(candidate)) {
+          closures.set(candidate, new Set(htmlFiles))
           continue
         }
         const files = new Set()
@@ -279,7 +287,7 @@ export function createGitProjectSync({
       }
       const pulled = new Set()
       for (const [candidate, files] of closures) {
-        if (/\.qmd$/i.test(candidate)) continue
+        if (/\.(?:qmd|html?)$/i.test(candidate)) continue
         for (const other of candidates) if (other !== candidate && files.has(other)) pulled.add(other)
       }
       const roots = candidates.filter(candidate => !pulled.has(candidate))

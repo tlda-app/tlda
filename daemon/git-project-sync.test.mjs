@@ -144,6 +144,41 @@ test('QMD revisions carry tracked execution inputs and exclude rendered output',
   )
 })
 
+test('HTML revisions carry the complete rendered artifact tree', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-html-artifact-'))
+  const remote = join(root, 'server.git')
+  const checkout = join(root, 'checkout')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  await git(checkout, ['remote', 'add', 'tlda', remote])
+  mkdirSync(join(checkout, 'site_libs'))
+  mkdirSync(join(checkout, 'handouts'))
+  writeFileSync(join(checkout, 'index.html'), '<link href="site_libs/book.css"><h1>Course</h1>\n')
+  writeFileSync(join(checkout, 'chapter.html'), '<h1>Homework</h1>\n')
+  writeFileSync(join(checkout, 'site_libs', 'book.css'), 'body { color: black; }\n')
+  writeFileSync(join(checkout, 'handouts', 'homework.zip'), 'zip bytes\n')
+  writeFileSync(join(checkout, 'page-info.json'), '[{"file":"index.html"},{"file":"chapter.html"}]\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'base'])
+
+  const sync = createGitProjectSync({
+    sourceDir: checkout,
+    project: 'course',
+    daemonId: 'daemon-a',
+    bindingId: 'binding-a',
+    documentRoots: ['index.html', 'chapter.html'],
+  })
+  await sync.standOnWorkBranch()
+  const proposal = await sync.editClusterSettled()
+  assert.equal(proposal.status, 'SubmittedToBuildQueue')
+  assert.deepEqual(
+    (await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'),
+    ['chapter.html', 'handouts/homework.zip', 'index.html', 'page-info.json', 'site_libs/book.css'],
+  )
+})
+
 test('explicit same-revision rebuild reaches proposal admission metadata', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-project-force-rebuild-'))
   const remote = join(root, 'server.git')
