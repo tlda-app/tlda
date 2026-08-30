@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, Component, type ReactNode } from 'react'
+import { flushSync } from 'react-dom'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, createHtmlDocumentFromPageInfo, loadHtmlDocument, loadSlidesDocument, type HtmlPageEntry } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
@@ -530,7 +531,9 @@ function DocumentApp() {
             // the browser's stack, because back is not an in-app control.
             window.history.replaceState({}, '', newUrl.toString())
             const roomId = `doc-${key}`
-            setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId })
+            // The picker owns project-wide history requests. Finish unmounting it
+            // before the selected document starts competing with those requests.
+            flushSync(() => setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId }))
             loadDocument(key, roomId, undefined, true)
           }} />
         </div>
