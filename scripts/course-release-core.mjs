@@ -91,8 +91,13 @@ function contained(root, candidate, label) {
 }
 
 function walk(path, root = path, rows = []) {
-  if (!existsSync(path)) throw new Error(`required path does not exist: ${path}`)
-  const stat = lstatSync(path)
+  let stat
+  try {
+    stat = lstatSync(path)
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`required path does not exist: ${path}`)
+    throw error
+  }
   const rel = relative(root, path) || '.'
   if (stat.isSymbolicLink()) {
     rows.push({ path: rel, type: 'symlink', target: readlinkSync(path) })
