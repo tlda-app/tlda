@@ -16,6 +16,17 @@ set -e
 STATE=/var/lib/tlda-edge
 mkdir -p "$STATE/tailscale" /var/run/tailscale
 
+if [ -n "${TLDA_EDGE_UPSTREAM_POINTER:-}" ] && [ ! -e "$TLDA_EDGE_UPSTREAM_POINTER" ]; then
+  if [ -z "${TLDA_EDGE_UPSTREAM:-}" ]; then
+    echo "edge: TLDA_EDGE_UPSTREAM is required to seed $TLDA_EDGE_UPSTREAM_POINTER" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$TLDA_EDGE_UPSTREAM_POINTER")"
+  pending="${TLDA_EDGE_UPSTREAM_POINTER}.pending-$$"
+  printf '%s\n' "$TLDA_EDGE_UPSTREAM" > "$pending"
+  mv "$pending" "$TLDA_EDGE_UPSTREAM_POINTER"
+fi
+
 tailscaled \
   --state="$STATE/tailscale/tailscaled.state" \
   --socket=/var/run/tailscale/tailscaled.sock \
