@@ -230,3 +230,49 @@ test('components report separately and activate their owning directory once', ()
     rmSync(f.root, { recursive: true, force: true })
   }
 })
+
+test('index hashing ignores navigation links but follows embedded assets and includes', () => {
+  const f = fixture()
+  try {
+    writeFileSync(join(f.course, 'asset.svg'), '<svg/>')
+    writeFileSync(join(f.course, 'included.qmd'), 'Included text\n')
+    writeFileSync(join(f.course, 'index.qmd'), [
+      '# Syllabus',
+      '[Lecture](chapters/one.qmd)',
+      '![](asset.svg)',
+      '{{< include included.qmd >}}',
+      '',
+    ].join('\n'))
+    execFileSync('git', ['add', '--all'], { cwd: f.course })
+    execFileSync('git', ['commit', '-m', 'index inputs'], { cwd: f.course, stdio: 'ignore' })
+    const contract = readReleaseContract(f.contractPath)
+    contract.sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.course, encoding: 'utf8' }).trim()
+    const baseline = planCourseRelease(contract)
+    const previousPath = join(f.root, 'previous.json')
+    writeFileSync(previousPath, JSON.stringify({ artifacts: baseline.artifacts.map(artifact => ({
+      id: artifact.id, sourceHash: artifact.sourceHash, desired: artifact.desired,
+    })) }))
+    contract.previousManifest = previousPath
+
+    writeFileSync(join(f.course, 'chapters', 'one.qmd'), '# changed linked lecture\n')
+    execFileSync('git', ['add', '--all'], { cwd: f.course })
+    execFileSync('git', ['commit', '-m', 'linked lecture'], { cwd: f.course, stdio: 'ignore' })
+    contract.sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.course, encoding: 'utf8' }).trim()
+    assert.equal(planCourseRelease(contract).artifacts.find(artifact => artifact.id === 'syllabus').changed, false)
+
+    writeFileSync(join(f.course, 'asset.svg'), '<svg>changed</svg>')
+    execFileSync('git', ['add', '--all'], { cwd: f.course })
+    execFileSync('git', ['commit', '-m', 'embedded asset'], { cwd: f.course, stdio: 'ignore' })
+    contract.sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.course, encoding: 'utf8' }).trim()
+    assert.equal(planCourseRelease(contract).artifacts.find(artifact => artifact.id === 'syllabus').changed, true)
+
+    writeFileSync(join(f.course, 'asset.svg'), '<svg/>')
+    writeFileSync(join(f.course, 'included.qmd'), 'Changed include\n')
+    execFileSync('git', ['add', '--all'], { cwd: f.course })
+    execFileSync('git', ['commit', '-m', 'included source'], { cwd: f.course, stdio: 'ignore' })
+    contract.sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.course, encoding: 'utf8' }).trim()
+    assert.equal(planCourseRelease(contract).artifacts.find(artifact => artifact.id === 'syllabus').changed, true)
+  } finally {
+    rmSync(f.root, { recursive: true, force: true })
+  }
+})
