@@ -9,8 +9,13 @@ primary_region = "sjc"
 [build]
   dockerfile = "Dockerfile.live"
 
+[processes]
+  app = "/app/fly-entrypoint-live.sh"
+  edge = "/app/fly-entrypoint-edge.sh"
+
 [env]
   PORT = "5176"
+  HOST = "::"
   NODE_ENV = "production"
   # Everything else this server needs lives in config/deployments/pic/, committed
   # and baked into the image. TLDA_DEPLOYMENT names that directory and is the only
@@ -26,6 +31,15 @@ primary_region = "sjc"
   # The course is student-facing. Funnel exposes this licensed hostname publicly;
   # server.yaml's token gate remains the application boundary.
   TS_FUNNEL = "1"
+  # The edge is the stable student-facing front door. A staged release changes
+  # this file by same-directory rename; the database and classroom rooms remain
+  # mounted only on the app process.
+  TLDA_EDGE_UPSTREAM = "app.process.tlda-pic.internal:5176"
+  TLDA_EDGE_UPSTREAM_POINTER = "/var/lib/tlda-edge/upstream"
+  TLDA_EDGE_LISTEN_PORT = "5177"
+  TLDA_EDGE_HOLD_SECONDS = "180"
+  TLDA_EDGE_RETRY_MS = "250"
+  TLDA_EDGE_HEALTH_PORT = "5178"
 
 # No [http_service] — public access uses `tailscale funnel` on the licensed
 # *.cormorant-matrix.ts.net hostname; see scripts/fly-entrypoint-live.sh. No Fly
@@ -34,9 +48,21 @@ primary_region = "sjc"
 [[vm]]
   size = "performance-2x"
   memory = "4096"
+  processes = ["app"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512"
+  processes = ["edge"]
 
 # Course content, fleet.db and sync data. Same mount point as live and stable so
 # the shared entrypoint's symlinks resolve.
-[mounts]
+[[mounts]]
   source = "sync_data"
   destination = "/app/server/persist"
+  processes = ["app"]
+
+[[mounts]]
+  source = "pic_edge_ts_state"
+  destination = "/var/lib/tlda-edge"
+  processes = ["edge"]
