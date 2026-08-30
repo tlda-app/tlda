@@ -332,6 +332,8 @@ const BRIDGE_SCRIPT = `
       if (postDocLinkClick(e, docLink)) return;
       var a = e.target.closest('a[href]');
       if (!a) return;
+      // Download links must retain the browser's native file-download behavior.
+      if (a.hasAttribute('download')) return;
       var href = a.getAttribute('href');
       if (!href || href.startsWith('javascript:') || href.startsWith('mailto:')) return;
       // External links: open in new tab
