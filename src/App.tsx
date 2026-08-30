@@ -992,6 +992,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   )
   const chromeChatFilter = selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
   useEffect(() => {
+    const controller = new AbortController()
     const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
       .filter(name => !requestedHistoriesRef.current.has(name))
     if (projectNames.length === 0) return
@@ -1006,6 +1007,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ projects: batch }),
+          signal: controller.signal,
         })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         return response.json()
@@ -1018,10 +1020,12 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
         setChangelogs(current => ({ ...current, ...data }))
       })
       .catch(error => {
+        if (error.name === 'AbortError') return
         for (const name of projectNames) requestedHistoriesRef.current.delete(name)
         setHistoryError('History unavailable')
         console.warn('[app] project history batch fetch failed:', error.message)
       })
+    return () => controller.abort()
   }, [visibleProjectKey])
 
   const timeRange = historyIndex?.oldest
