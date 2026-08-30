@@ -81,12 +81,13 @@ async function pathExists(path) {
   }
 }
 
-async function mapWithConcurrency(items, concurrency, mapper) {
+async function mapWithConcurrency(items, concurrency, mapper, signal) {
   const results = {}
   let nextIndex = 0
   const workerCount = Math.min(concurrency, items.length)
   await Promise.all(Array.from({ length: workerCount }, async () => {
     while (nextIndex < items.length) {
+      signal?.throwIfAborted()
       const item = items[nextIndex++]
       results[item] = await mapper(item)
     }
@@ -282,14 +283,26 @@ router.post('/history/shadow/changelog/batch', requireRead, async (req, res) => 
     return res.status(400).json({ error: 'At most 50 projects may be requested at once' })
   }
 
-  const projects = await mapWithConcurrency(names, 4, async name => {
-    try {
-      return await readShadowChangelog(name, { limit: null })
-    } catch (error) {
-      return { commits: [], totalPages: 0, error: error.message }
-    }
-  })
-  res.json({ projects })
+  const controller = new AbortController()
+  const stopOnClose = () => {
+    if (!res.writableEnded) controller.abort()
+  }
+  res.once('close', stopOnClose)
+  try {
+    const projects = await mapWithConcurrency(names, 4, async name => {
+      try {
+        return await readShadowChangelog(name, { limit: null, signal: controller.signal })
+      } catch (error) {
+        if (error.name === 'AbortError') throw error
+        return { commits: [], totalPages: 0, error: error.message }
+      }
+    }, controller.signal)
+    if (!controller.signal.aborted) res.json({ projects })
+  } catch (error) {
+    if (error.name !== 'AbortError') throw error
+  } finally {
+    res.off('close', stopOnClose)
+  }
 })
 
 // Select real project histories and establish the shared clock before any row
@@ -305,15 +318,30 @@ router.post('/history/shadow/index', requireRead, async (req, res) => {
     return res.status(400).json({ error: 'At most 500 projects may be requested at once' })
   }
 
+  const controller = new AbortController()
+  const stopOnClose = () => {
+    if (!res.writableEnded) controller.abort()
+  }
+  res.once('close', stopOnClose)
   const errors = {}
-  const scanned = await mapWithConcurrency(names, 8, async name => {
-    try {
-      return await readShadowIndexInfo(name)
-    } catch (error) {
-      errors[name] = error.message
-      return null
-    }
-  })
+  let scanned
+  try {
+    scanned = await mapWithConcurrency(names, 8, async name => {
+      try {
+        return await readShadowIndexInfo(name, { signal: controller.signal })
+      } catch (error) {
+        if (error.name === 'AbortError') throw error
+        errors[name] = error.message
+        return null
+      }
+    }, controller.signal)
+  } catch (error) {
+    if (error.name === 'AbortError') return
+    throw error
+  } finally {
+    res.off('close', stopOnClose)
+  }
+  if (controller.signal.aborted) return
   const projects = Object.fromEntries(
     Object.entries(scanned).filter(([, info]) => info !== null),
   )
