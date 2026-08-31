@@ -104,9 +104,15 @@ test('new project linked from an existing Git checkout becomes a visible built d
 
     assert.equal((await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim(), authorRevision)
     assert.notEqual(authorRevision, submission.revision, 'daemon proposal commit must not move the author working copy')
-    const appliedRef = `refs/tlda/applied/${manager.bindingRecords()[0].bindingId.replace(/[^A-Za-z0-9._-]+/g, '-')}`
+    // `refs/tlda/applied/<binding>` used to be the answer here. Nothing writes it
+    // any more — git-project-sync says so where it declines to export the name,
+    // "publishing the name invites a reader that would be reading a fossil". The
+    // guarantee this line holds is unchanged: after headChanged, the accepted
+    // revision is reachable from the person's checkout. That ref is the parked
+    // one, and it is the ref the parking tests assert too.
+    const fetchedRef = `refs/tlda/fetched/${project}`
     await manager.headChanged(project, submission.revision)
-    assert.equal((await git(checkout, ['rev-parse', appliedRef])).stdout.trim(), submission.revision)
+    assert.equal((await git(checkout, ['rev-parse', fetchedRef])).stdout.trim(), submission.revision)
 
     phase = 'local edit convergence'
     writeFileSync(join(checkout, 'README.md'), '# Git-visible paper\n\nVisible after a later local edit.\n')
@@ -128,7 +134,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     assert.equal(editedPageResponse.status, 200)
     assert.match(await editedPageResponse.text(), /Visible after a later local edit/)
     await manager.headChanged(project, editedProject.sourceRevision)
-    assert.equal((await git(checkout, ['rev-parse', appliedRef])).stdout.trim(), editedProject.sourceRevision)
+    assert.equal((await git(checkout, ['rev-parse', fetchedRef])).stdout.trim(), editedProject.sourceRevision)
     assert.match(readFileSync(join(checkout, 'README.md'), 'utf8'), /Visible after a later local edit/)
 
     phase = 'local edit burst convergence'
@@ -149,7 +155,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     assert.equal(burstPageResponse.status, 200)
     assert.match(await burstPageResponse.text(), /burst settled/)
     await manager.headChanged(project, burstProject.sourceRevision)
-    assert.equal((await git(checkout, ['rev-parse', appliedRef])).stdout.trim(), burstProject.sourceRevision)
+    assert.equal((await git(checkout, ['rev-parse', fetchedRef])).stdout.trim(), burstProject.sourceRevision)
 
     phase = 'cross-daemon accepted head convergence'
     mkdirSync(peerCheckout)
@@ -183,7 +189,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     assert.equal(peerProject.acceptSeq, 4, JSON.stringify({ peerProject, server: server.output() }))
     const proposalsBefore = (await git(checkout, ['ls-remote', 'tlda', 'refs/tlda/proposals/daemon-git-visible/*'])).stdout
     await manager.headChanged(project, peerProject.sourceRevision)
-    assert.equal((await git(checkout, ['rev-parse', appliedRef])).stdout.trim(), peerProject.sourceRevision)
+    assert.equal((await git(checkout, ['rev-parse', fetchedRef])).stdout.trim(), peerProject.sourceRevision)
     assert.match(readFileSync(join(checkout, 'README.md'), 'utf8'), /Accepted from the peer daemon/)
     await new Promise(resolve => setTimeout(resolve, 50))
     const proposalsAfter = (await git(checkout, ['ls-remote', 'tlda', 'refs/tlda/proposals/daemon-git-visible/*'])).stdout
