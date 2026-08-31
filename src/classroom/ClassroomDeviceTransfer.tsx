@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { classroomApi, type DeviceTransfer, type RegisteredStudent } from './api'
+import { rememberClassroomToken } from './classroomToken'
 import './ClassroomWorkspace.css'
 
 export function ClassroomDeviceTransferSettings() {
@@ -65,7 +66,12 @@ export function ClassroomDeviceTransferRedeem() {
     started.current = true
     if (!courseId || !transferCode) return
     classroomApi.redeemDeviceTransfer(courseId, transferCode)
-      .then(setRegistration)
+      .then(redeemed => {
+        // Same reason registration remembers: this device is now the student's,
+        // and a single-use transfer link cannot be replayed to get back in.
+        rememberClassroomToken(courseId, redeemed.enrollmentToken)
+        setRegistration(redeemed)
+      })
       .catch(nextError => setError((nextError as Error).message))
   }, [courseId, transferCode])
 

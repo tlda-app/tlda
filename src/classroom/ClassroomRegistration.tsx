@@ -1,10 +1,20 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { classroomApi, type RegisteredStudent } from './api'
+import { classroomCourseId, readClassroomToken, rememberClassroomToken } from './classroomToken'
 import './ClassroomWorkspace.css'
+
+/** The class itself: the registration workspace dropped, the token carried. */
+function classUrl(project: string, enrollmentToken: string): string {
+  const next = new URL(window.location.href)
+  next.searchParams.delete('workspace')
+  next.searchParams.set('project', project)
+  next.searchParams.set('classroomToken', enrollmentToken)
+  return next.toString()
+}
 
 export function ClassroomRegistration() {
   const params = new URLSearchParams(window.location.search)
-  const courseId = params.get('course') || 'qtm285'
+  const courseId = classroomCourseId()
   const project = params.get('project')
   const [displayName, setDisplayName] = useState('')
   const [universityLogin, setUniversityLogin] = useState('')
@@ -12,13 +22,19 @@ export function ClassroomRegistration() {
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const continueUrl = registration && project ? (() => {
-    const next = new URL(window.location.href)
-    next.searchParams.delete('workspace')
-    next.searchParams.set('project', project)
-    next.searchParams.set('classroomToken', registration.enrollmentToken)
-    return next.toString()
-  })() : null
+  // Somebody who registered already is not a somebody to register again. The
+  // class link is shared, so this is the same URL for everyone: a student
+  // opening it a second time went to a form that answered "that university
+  // login is already registered" and stopped there. Their token is remembered
+  // now, so the link means "go to class" from the second visit onward.
+  const remembered = readClassroomToken(courseId)
+  const returning = Boolean(remembered && project && !registration)
+  useEffect(() => {
+    if (!returning || !project || !remembered) return
+    window.location.replace(classUrl(project, remembered))
+  }, [returning, project, remembered])
+
+  const continueUrl = registration && project ? classUrl(project, registration.enrollmentToken) : null
 
   const register = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -26,13 +42,23 @@ export function ClassroomRegistration() {
     try {
       setSubmitting(true)
       setError('')
-      setRegistration(await classroomApi.register(courseId, { displayName: displayName.trim(), universityLogin: universityLogin.trim() }))
+      const registered = await classroomApi.register(courseId, { displayName: displayName.trim(), universityLogin: universityLogin.trim() })
+      // Remembered before it is shown, so a student who closes the tab on the
+      // token screen is still enrolled on this browser rather than locked out
+      // of a value the server will not print again.
+      rememberClassroomToken(courseId, registered.enrollmentToken)
+      setRegistration(registered)
     } catch (nextError) {
       setError((nextError as Error).message)
     } finally {
       setSubmitting(false)
     }
   }
+
+  if (returning) return <main className="classroomWorkspace classroomRegistration">
+    <header><div><h1>Register for {courseId}</h1></div></header>
+    <section className="classroomTokenResult"><p>Taking you to class…</p></section>
+  </main>
 
   return <main className="classroomWorkspace classroomRegistration">
     <header><div><h1>Register for {courseId}</h1><div>Enter the name and university login you use for class.</div></div></header>
@@ -43,10 +69,7 @@ export function ClassroomRegistration() {
       {error && <p className="classroomError">{error}</p>}
     </form> : <section className="classroomTokenResult">
       <h2>Registration complete</h2>
-      <p>Your classroom token is:</p>
-      <code>{registration.enrollmentToken}</code>
-      <button type="button" onClick={() => navigator.clipboard.writeText(registration.enrollmentToken)}>Copy token</button>
-      <p>Keep this token. It identifies your classroom work, and the server cannot show it again.</p>
+      <p>This browser will remember you. The class link takes you straight in from now on.</p>
       {continueUrl && <a className="classroomContinueLink" href={continueUrl}>Continue to class</a>}
     </section>}
   </main>
