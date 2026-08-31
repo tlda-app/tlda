@@ -1,4 +1,4 @@
-# tlda classroom
+# PIC
 
 Three commands for handing in homework.
 
