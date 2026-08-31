@@ -22,6 +22,8 @@ import { FLEET_TOOL_DIMS, placeFleetShapeAtScreenPoint } from '../shapes/fleet-u
 import { getPref, setPref, subscribePref } from '../preferences'
 import { navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, type TocLevel, type TocEntry } from './helpers'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
+import { viewFormat } from '../../shared/document-formats.mjs'
+import { classroomApi } from '../classroom/api'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -42,6 +44,38 @@ function computeDefaultFolded(items: Array<{ level: string }>): Set<number> {
   }
   return set
 }
+
+/**
+ * The Quarto book sidebar: every chapter listed, the chapter you are reading
+ * opened, the rest closed. So the ordinary fold, with the active chapter
+ * reopened — nothing else about the policy changes.
+ */
+function computeBookFolded(
+  items: Array<{ level: string; targetFile?: string }>,
+  activeKey: string | undefined,
+): Set<number> {
+  const folded = computeDefaultFolded(items)
+  if (!activeKey) return folded
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].level === 'chapter' && items[i].targetFile === activeKey) folded.delete(i)
+  }
+  return folded
+}
+
+/** The small graphical cue on a chapter row. Each comes from a fact we hold. */
+type CourseItemType = 'homework' | 'deck'
+
+const COURSE_ITEM_LABEL: Record<CourseItemType, string> = {
+  homework: 'Homework',
+  deck: 'Slides',
+}
+
+const COURSE_ITEM_BADGE: Record<CourseItemType, string> = {
+  homework: 'HW',
+  deck: 'DECK',
+}
+
+const EMPTY_KEYS: ReadonlySet<string> = new Set<string>()
 
 export function TocTab({ query = '' }: { query?: string }) {
   const editor = useEditor()
@@ -76,8 +110,92 @@ export function TocTab({ query = '' }: { query?: string }) {
     })
   }, [doc])
 
+  // Which member is being read. The book's table of contents does not change
+  // when it changes; which chapter is open does.
+  const activeMemberKey = book?.members[book.activeIndex]?.key
+
+  // Which documents of this course are homework. Asked of the classroom store,
+  // which is the only thing that knows: an assignment names the documents it is
+  // made of, and a member that is one of them is homework. Nothing infers it
+  // from a name or a path.
+  const [assignmentDocKeys, setAssignmentDocKeys] = useState<ReadonlySet<string>>(EMPTY_KEYS)
   useEffect(() => {
-    if (!doc) return
+    if (!book) return
+    const courseId = new URLSearchParams(window.location.search).get('course')
+    if (!courseId) return
+    let cancelled = false
+    classroomApi.assignments(courseId)
+      .then(({ assignments }) => {
+        if (cancelled) return
+        const keys = new Set<string>()
+        for (const assignment of assignments) {
+          for (const key of [assignment.sourceDocKey, assignment.templateDocKey, assignment.solutionsDocKey]) {
+            if (key) keys.add(key)
+          }
+        }
+        setAssignmentDocKeys(keys)
+      })
+      // 401 for a reader with no classroom credential, which is most readers.
+      // The book stays a book; the rows simply carry no homework mark.
+      .catch(() => { if (!cancelled) setAssignmentDocKeys(EMPTY_KEYS) })
+    return () => { cancelled = true }
+  }, [book?.bookName])
+
+  const memberItemType = useMemo(() => {
+    const types = new Map<string, CourseItemType>()
+    for (const member of book?.members ?? []) {
+      if (assignmentDocKeys.has(member.key)) types.set(member.key, 'homework')
+      else if (viewFormat(member) === 'slides') types.set(member.key, 'deck')
+    }
+    return types
+  }, [book?.members, assignmentDocKeys])
+
+  useEffect(() => {
+    // A book's table of contents is the BOOK's, at every chapter.
+    //
+    // `aggregateBookToc` already writes exactly this file and rebuilds it after
+    // every member build: one chapter per member carrying its key as
+    // `targetFile`, with that member's own headings demoted underneath. Nothing
+    // read it. The panel loaded the TOC of `doc.projectName`, which in a book is
+    // whichever chapter happens to be mounted, so a reader got one document's
+    // heading list — the project/document hierarchy rather than the course — and
+    // saw the other chapters only when the mounted one had no headings at all.
+    //
+    // Turning a page remounts this panel — `BookViewer` keys the editor on the
+    // active member — so this runs again per chapter, and `loadHtmlToc` caches
+    // per project, which is what keeps that from being a fetch each time.
+    if (!book) return
+    let cancelled = false
+    setTocLoaded(false)
+    setHeadings([])
+    setHtmlToc(null)
+    setSlideTitles(null)
+    setCollapsed(null)
+    void (async () => {
+      try {
+        const toc = await loadHtmlToc(book.bookName)
+        if (cancelled || !toc) return
+        setHtmlToc(toc)
+      } catch (error) {
+        console.warn('[toc] book load failed:', error instanceof Error ? error.message : String(error))
+      } finally {
+        if (!cancelled) setTocLoaded(true)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [book?.bookName, reloadCount])
+
+  // The chapter you are in is open and the rest are closed, which is what a
+  // book sidebar does. Separate from the load so that recomputing the fold does
+  // not go back to `loadHtmlToc`, and so it stays right if the members change
+  // under a mounted panel.
+  useEffect(() => {
+    if (!book || !htmlToc) return
+    setCollapsed(computeBookFolded(htmlToc, activeMemberKey))
+  }, [book, htmlToc, activeMemberKey])
+
+  useEffect(() => {
+    if (book || !doc) return
     let cancelled = false
     setTocLoaded(false)
     setHeadings([])
@@ -143,7 +261,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       }
     })()
     return () => { cancelled = true }
-  }, [doc?.projectName, doc?.format, doc?.targets, reloadCount])
+  }, [book, doc?.projectName, doc?.format, doc?.targets, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!doc) return
@@ -307,7 +425,14 @@ export function TocTab({ query = '' }: { query?: string }) {
   let items: Array<{ level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string }> = useHtml
     ? tocItems!.map(h => ({
         level: h.level,
-        title: h.title,
+        // `aggregateBookToc` titles a chapter after its member's own top
+        // heading, and falls back to the member's KEY when it has none — a
+        // project name, which is the hierarchy this panel is not supposed to
+        // show. The book already carries the member's display name, so use it
+        // when that fallback fired.
+        title: h.level === 'chapter' && h.targetFile && h.title === h.targetFile
+          ? (book?.members.find(m => m.key === h.targetFile)?.name || h.title)
+          : h.title,
         nav: () => handleHtmlNav(h.page, h.anchor, h.targetFile),
         center: () => handleHtmlNav(h.page, h.anchor, h.targetFile),
         targetFile: h.targetFile,
@@ -361,8 +486,10 @@ export function TocTab({ query = '' }: { query?: string }) {
     const childLevels = Array.isArray(nextLevel) ? nextLevel : [nextLevel]
     const hasChildren = next && childLevels.includes(next.level)
     const isHot = h.level === 'chapter' && h.targetFile != null && h.targetFile === hotKey
+    const isCurrent = h.level === 'chapter' && h.targetFile != null && h.targetFile === activeMemberKey
+    const itemType = h.level === 'chapter' && h.targetFile ? memberItemType.get(h.targetFile) : undefined
     return (
-      <div key={i} className={`toc-item ${h.level}`}>
+      <div key={i} className={`toc-item ${h.level}${isCurrent ? ' toc-item-current' : ''}`}>
         {hasChildren ? (
           <span
             className={`toc-fold ${isCollapsed ? 'collapsed' : ''}`}
@@ -373,6 +500,13 @@ export function TocTab({ query = '' }: { query?: string }) {
         )}
         {renderCenterButton(h)}
         <span className="toc-title" onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
+        {itemType && (
+          <span
+            className={`toc-item-type toc-item-type--${itemType}`}
+            title={COURSE_ITEM_LABEL[itemType]}
+            aria-label={COURSE_ITEM_LABEL[itemType]}
+          >{COURSE_ITEM_BADGE[itemType]}</span>
+        )}
         {isHot && <span className="book-tab-hot-dot" title="Active session" />}
       </div>
     )
