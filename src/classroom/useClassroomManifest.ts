@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { classroomApi } from './api'
+import { readClassroomToken } from './classroomToken'
 
 const GLOBAL_MANIFEST = '/manifest.webmanifest'
 
@@ -8,7 +9,7 @@ export function useClassroomManifest() {
     const params = new URLSearchParams(window.location.search)
     const project = params.get('project')
     const readToken = params.get('token')
-    if (!project || !readToken || !params.get('classroomToken')) return
+    if (!project || !readToken || !readClassroomToken()) return
 
     const link = document.querySelector<HTMLLinkElement>('link[rel="manifest"]')
     if (!link) return

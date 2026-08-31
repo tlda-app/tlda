@@ -9,6 +9,7 @@
  */
 
 import { STORE_HTTP, DATABASE_HTTP } from './activeConfig.ts'
+import { readClassroomToken } from './classroom/classroomToken'
 
 let _token: string | null = null
 
@@ -101,11 +102,12 @@ export function subscribeCanPresent(fn: () => void): () => void {
  * The enrolment token rides along when there is one. A browser WebSocket cannot
  * set headers, so the sync path cannot use `x-tlda-student-token` the way the
  * classroom API does — and without it the server sees an anonymous read-token
- * visitor and refuses the student their own layer. Same value, same source: the
- * `classroomToken` already on the page URL.
+ * visitor and refuses the student their own layer. Same value, same source:
+ * whatever `readClassroomToken` resolves for this page, so a returning student
+ * whose token came from storage rather than the URL still reaches their layer.
  */
 export function appendToken(url: string): string {
-  const classroomToken = new URLSearchParams(window.location.search).get('classroomToken')
+  const classroomToken = readClassroomToken()
   const parts: string[] = []
   if (_token) parts.push(`token=${_token}`)
   if (classroomToken) parts.push(`classroomToken=${encodeURIComponent(classroomToken)}`)

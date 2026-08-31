@@ -1,3 +1,5 @@
+import { readClassroomToken } from './classroomToken'
+
 export type GradingStatus = 'ungraded' | 'graded' | 'returned'
 export interface Assignment {
   solutionsLocked?: boolean
@@ -14,7 +16,7 @@ export interface RegisteredStudent { student: { id: string; courseId: string; di
 export interface DeviceTransfer { transferUrl: string; qrSvg: string; expiresAt: string }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const classroomToken = new URLSearchParams(window.location.search).get('classroomToken')
+  const classroomToken = readClassroomToken()
   const response = await fetch(`/api/classroom${path}`, {
     ...init,
     headers: {
