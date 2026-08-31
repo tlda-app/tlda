@@ -214,29 +214,51 @@ test('initial project link submits the existing checkout through the ordinary pr
   // includes — is a root of its own and is watched like any other. The stored
   // `documentRoots` above no longer narrows anything.
   assert.deepEqual(watcher.added.slice().sort(), [join(checkout, 'main.tex'), join(checkout, 'unrelated-broken.tex')])
+  // The listed tip is the WORK BRANCH, not the revision. 84c48f6e4 split the two:
+  // `refs/tlda/project/<p>` is the chain, a filtered projection carrying only the
+  // documents, and `refs/heads/tlda/<p>` is the author's real settled tree. This
+  // listing prefers the branch, which is the one a person can stand on, so these
+  // are two different commits by design and asserting they are equal asserted the
+  // state before the split.
+  const workBranchTip = (await git(checkout, ['rev-parse', 'refs/heads/tlda/paper'])).stdout.trim()
+  assert.notEqual(workBranchTip, submitted.revision, 'the branch and the chain are different commits')
   assert.deepEqual(await manager.remoteOperation('paper', 'list'), [{
     name: 'tlda',
     url: remote,
     kind: 'tlda',
     writable: false,
-    branches: [{ name: 'paper', commit: submitted.revision, selected: false, writable: false }],
+    branches: [{ name: 'paper', commit: workBranchTip, selected: false, writable: false }],
   }])
   await manager.remoteOperation('paper', 'add', { name: 'origin', url: remote })
   const pushed = await manager.remoteOperation('paper', 'push', { name: 'origin' })
-  assert.equal(pushed.branch, 'main')
+  // A linked checkout stands on its work branch, so that is the branch a push to
+  // their own remote carries — `main` was the answer only while link left them
+  // wherever they happened to be.
+  assert.equal(pushed.branch, 'tlda/paper')
   const checkoutHead = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
   assert.equal(pushed.commit, checkoutHead)
-  assert.equal((await git(remote, ['rev-parse', 'refs/heads/main'])).stdout.trim(), checkoutHead)
+  assert.equal((await git(remote, ['rev-parse', 'refs/heads/tlda/paper'])).stdout.trim(), checkoutHead)
 
   writeFileSync(join(checkout, 'child.tex'), 'included\n')
   writeFileSync(join(checkout, 'unrelated.txt'), 'not a project member\n')
   writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}\\input{child}\\end{document}\n')
+  // Both are tracked, deliberately. A settle captures the TRACKED tree — an
+  // untracked file is never swept into a revision, which is its own guarantee in
+  // git-project-mirror-unrelated — so leaving `child.tex` untracked would make
+  // this pass or fail on trackedness and say nothing about membership. Tracked,
+  // the discriminator is the one the test is named for: `child.tex` is reachable
+  // from a document root and `unrelated.txt` is not.
+  await git(checkout, ['add', 'child.tex', 'unrelated.txt', 'main.tex'])
+  await git(checkout, ['commit', '-m', 'include a child, and a file nothing reaches'])
   watcher.emit('change', join(checkout, 'main.tex'))
   const deadline = Date.now() + 30000
   while (Date.now() < deadline && !watcher.added.includes(join(checkout, 'child.tex'))) {
     await new Promise(resolve => setTimeout(resolve, 20))
   }
-  assert.deepEqual(watcher.added, [join(checkout, 'main.tex'), join(checkout, 'child.tex')])
+  assert.deepEqual(
+    watcher.added.slice().sort(),
+    [join(checkout, 'child.tex'), join(checkout, 'main.tex'), join(checkout, 'unrelated-broken.tex')].sort(),
+  )
   assert.equal(watcher.added.includes(join(checkout, 'unrelated.txt')), false)
   await manager.closeAll()
 })
