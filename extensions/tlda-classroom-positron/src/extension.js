@@ -6,6 +6,7 @@ const { zipSync } = require('fflate')
 const { problems } = require('./submission')
 const images = require('./images')
 const { ClassroomUploadError, classroomSubmissionMetadata, submitSubmissionArchive } = require('./classroom-upload')
+const { classroomTokenFromUri } = require('./classroom-token')
 
 // Positron has no zip command of its own — the only one in the whole app is a
 // Copilot chat-log export. So "zip the folder" is Finder or Explorer, which is
@@ -132,6 +133,17 @@ function classroomTokenSecretKey(server) {
   return `tldaClassroom.studentToken:${server}`
 }
 
+async function receiveClassroomToken(context, uri) {
+  if (uri.path !== '/classroom-token') return
+  const registration = classroomTokenFromUri(uri)
+  if (!registration) {
+    await vscode.window.showErrorMessage('That classroom registration link is not valid.')
+    return
+  }
+  await context.secrets.store(classroomTokenSecretKey(registration.server), registration.classroomToken)
+  await vscode.window.showInformationMessage('Positron is connected to the class. You can hand in homework from here.')
+}
+
 // Hand in without leaving the editor. The ZIP command stays: it is the way to
 // hand in when the network is the thing that is broken, and it is what a
 // student who has already been told "upload this" is looking for.
@@ -182,10 +194,11 @@ function activate(context) {
   // Photos land beside the document, so they travel with the archive.
   images.register(context)
   context.subscriptions.push(
+    vscode.window.registerUriHandler({ handleUri: uri => receiveClassroomToken(context, uri) }),
     vscode.commands.registerCommand('tldaClassroom.checkSubmission', checkSubmission),
     vscode.commands.registerCommand('tldaClassroom.zipForSubmission', zipForSubmission),
     vscode.commands.registerCommand('tldaClassroom.submit', () => submitHomework(context)),
   )
 }
 
-module.exports = { activate, deactivate() {}, classroomTokenSecretKey, collectFolder }
+module.exports = { activate, deactivate() {}, classroomTokenSecretKey, collectFolder, receiveClassroomToken }

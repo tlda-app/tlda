@@ -1,10 +1,10 @@
-# PIC
+# tlda Classroom
 
 Three commands for handing in homework.
 
 **Submit** — hands the archive in directly, without leaving the editor. The
 assignment says which class server it belongs to, so the only thing you are
-asked for is the token you were given when you registered, once per server.
+asked to connect Positron from the registration page once per server.
 You get the time it was recorded back.
 
 **Check this submission** — tells you what would stop your work being marked,
