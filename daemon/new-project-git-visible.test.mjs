@@ -227,12 +227,35 @@ test('new project linked from an existing Git checkout becomes a visible built d
     const remoteWatcher = sourceWatcher()
     remoteManager = createGitSyncManager({
       bindingsFile: join(root, 'remote-bindings.json'), daemonId: 'daemon-remote', server: base,
-      token: 'fixture-token', remoteCheckoutsRoot: join(root, 'remote-checkouts'),
+      token: 'fixture-token',
       watch: () => remoteWatcher, quietMs: 10, log: { info() {}, warn() {}, error() {} },
     })
-    const preparedRemote = await remoteManager.prepareRemote({ project: remoteProject, remote: externalRemote, pollSeconds: 15 })
-    remoteManager.bindSource(remoteProject, preparedRemote.sourceDir, preparedRemote)
+    // This was `remoteManager.prepareRemote(...)` until a811ad4ea, "Make project
+    // link the sole creation path", which deleted it and `remoteCheckoutsRoot`
+    // with it -- the daemon no longer clones anybody's remote for them. Nothing
+    // replaced the method: the clone is the person's, and then they link it.
+    //
+    // So the clone happens here, and the binding carries exactly what
+    // prepareRemote used to return. That is what still drives the mechanism --
+    // `start()` builds the remote bridge from `item.remote` and `item.branch`,
+    // both of which survive. Only the helper that produced them is gone.
+    const remoteSourceDir = join(root, 'remote-checkouts', remoteProject)
+    mkdirSync(join(root, 'remote-checkouts'), { recursive: true })
+    await execFile('git', ['clone', '--', externalRemote, remoteSourceDir], { encoding: 'utf8', timeout: 180_000 })
+    await git(remoteSourceDir, ['config', 'user.name', 'tlda remote source daemon'])
+    await git(remoteSourceDir, ['config', 'user.email', 'tlda@local'])
+    const remoteBranch = (await git(remoteSourceDir, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()
+    // `remote` is a remote NAME, not a URL: createRemoteGitBridge defaults it to
+    // 'origin' and uses it as one throughout — `refs/remotes/${remote}/${branch}`,
+    // `.list({names:[remote]})`, `.pull(remote, branch)`. The clone above created
+    // `origin`, so that is the name. prepareRemote used to return the URL in this
+    // field, which builds the refspec `refs/remotes//tmp/.../external.git/main`
+    // and makes `git fetch` exit `invalid refspec` every time.
+    remoteManager.bindSource(remoteProject, remoteSourceDir, {
+      kind: 'git', remote: 'origin', branch: remoteBranch, pollSeconds: 15,
+    })
     await remoteManager.sync([{ name: remoteProject, mainFile: 'README.md' }])
+    await remoteManager.standOnWorkBranch(remoteProject)
     const remoteInitialSubmission = await remoteManager.submit(remoteProject)
     assert.equal(remoteInitialSubmission.status, 'SubmittedToBuildQueue')
     let remoteInitialProject
@@ -264,14 +287,15 @@ test('new project linked from an existing Git checkout becomes a visible built d
     assert.equal(remoteEditedProject.buildStatus, 'success', JSON.stringify({ remoteEditedProject, server: server.output() }))
     await remoteManager.headChanged(remoteProject, remoteEditedProject.sourceRevision)
     assert.equal((await git(externalRemote, ['rev-parse', 'refs/heads/main'])).stdout.trim(), remoteEditedProject.sourceRevision)
-    assert.match(readFileSync(join(preparedRemote.sourceDir, 'README.md'), 'utf8'), /Edit arriving from the external remote/)
+    assert.match(readFileSync(join(remoteSourceDir, 'README.md'), 'utf8'), /Edit arriving from the external remote/)
     const remotePageResponse = await fetch(`${base}/docs/${remoteProject}/index.html`)
     assert.equal(remotePageResponse.status, 200)
     assert.match(await remotePageResponse.text(), /Edit arriving from the external remote/)
 
     phase = 'divergent edit withholding and resolution'
-    const remoteSourceDir = preparedRemote.sourceDir
-    const remoteAppliedRef = `refs/tlda/applied/${remoteManager.bindingRecords()[0].bindingId.replace(/[^A-Za-z0-9._-]+/g, '-')}`
+    // `remoteSourceDir` is declared where the clone happens, above.
+    // The parked ref, not the applied fossil — see the note at the first use.
+    const remoteFetchedRef = `refs/tlda/fetched/${remoteProject}`
     const remoteProposalPattern = 'refs/tlda/proposals/daemon-remote/*'
     const remoteProposalsBeforeConflict = (await git(remoteSourceDir, ['ls-remote', 'tlda', remoteProposalPattern])).stdout
     writeFileSync(join(remoteSourceDir, 'README.md'), '# Remote-visible paper\n\nLocal conflicting side.\n')
@@ -301,6 +325,13 @@ test('new project linked from an existing Git checkout becomes a visible built d
 
     writeFileSync(join(remoteSourceDir, 'README.md'), '# Remote-visible paper\n\nHuman resolved both sides.\n')
     await git(remoteSourceDir, ['add', 'README.md'])
+    // Resolving a merge means finishing it. `git add` alone leaves MERGE_HEAD in
+    // place, and settle refuses while it is there — "a merge the PERSON started
+    // is theirs to finish, and MERGE_HEAD is theirs too", which is its own
+    // guarantee in git-project-mirror-unrelated. So a submit here answered
+    // merge-in-progress, correctly, and the test had stopped half way through
+    // what a person resolving a conflict actually does.
+    await git(remoteSourceDir, ['commit', '--no-edit'])
     const resolvedSubmission = await remoteManager.submit(remoteProject)
     assert.equal(resolvedSubmission.status, 'SubmittedToBuildQueue')
     let resolvedProject
@@ -312,7 +343,7 @@ test('new project linked from an existing Git checkout becomes a visible built d
     }
     assert.equal(resolvedProject.acceptSeq, remoteEditedProject.acceptSeq + 1, JSON.stringify({ resolvedProject, server: server.output() }))
     await remoteManager.headChanged(remoteProject, resolvedProject.sourceRevision)
-    assert.equal((await git(remoteSourceDir, ['rev-parse', remoteAppliedRef])).stdout.trim(), resolvedProject.sourceRevision)
+    assert.equal((await git(remoteSourceDir, ['rev-parse', remoteFetchedRef])).stdout.trim(), resolvedProject.sourceRevision)
     assert.equal((await git(externalRemote, ['rev-parse', 'refs/heads/main'])).stdout.trim(), resolvedProject.sourceRevision)
     assert.match(readFileSync(join(remoteSourceDir, 'README.md'), 'utf8'), /Human resolved both sides/)
     const resolvedPageResponse = await fetch(`${base}/docs/${remoteProject}/index.html`)
@@ -365,9 +396,8 @@ test('new project linked from an existing Git checkout becomes a visible built d
     }
     assert.equal(restartedProject.buildStatus, 'success', JSON.stringify({ restartedProject, server: server.output() }))
     await remoteManager.headChanged(remoteProject, restartedProject.sourceRevision)
-    const restartedAppliedRef = `refs/tlda/applied/${remoteManager.bindingRecords()[0].bindingId.replace(/[^A-Za-z0-9._-]+/g, '-')}`
-    assert.equal((await git(preparedRemote.sourceDir, ['rev-parse', restartedAppliedRef])).stdout.trim(), restartedProject.sourceRevision)
-    assert.match(readFileSync(join(preparedRemote.sourceDir, 'README.md'), 'utf8'), /Visible after daemon and server restart/)
+    assert.equal((await git(remoteSourceDir, ['rev-parse', remoteFetchedRef])).stdout.trim(), restartedProject.sourceRevision)
+    assert.match(readFileSync(join(remoteSourceDir, 'README.md'), 'utf8'), /Visible after daemon and server restart/)
     assert.equal((await git(externalRemote, ['rev-parse', 'refs/heads/main'])).stdout.trim(), restartedProject.sourceRevision)
     const restartedRowsDb = new Database(queuePath, { readonly: true })
     const restartedRows = restartedRowsDb.prepare('SELECT revision, COUNT(*) AS count FROM build_submissions WHERE revision IN (?, ?) GROUP BY revision ORDER BY revision')

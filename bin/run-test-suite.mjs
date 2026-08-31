@@ -110,8 +110,20 @@ await Promise.all(Array.from({ length: concurrency }, () => worker()))
 
 const passed = results.filter((r) => !r.timedOut && r.code === 0).length
 const timedOut = results.filter((r) => r.timedOut).length
-const failed = results.length - passed - timedOut
-console.log(`\ntlda-test-suite: ${passed} passed, ${failed} failed, ${timedOut} timed out, ${results.length} total`)
+// A file killed at the budget is a FAILED file, and is counted as one here.
+//
+// It used to be counted only as `timed out`, in its own column, which left the
+// `failed` column reading 0 while tests were failing: node's reporter emits its
+// `# fail N` summary at the end, so a SIGTERMed process never gets to say what
+// it had already found. Measured on daemon/ at load 36 -- four files blew the
+// 120s budget and the suite reported `23 passed, 0 failed, 4 timed out`, with
+// ten failing tests inside those four. Run serially they all completed.
+//
+// `0 failed` is the answer nobody re-reads. The timeout count is still shown,
+// because how a file failed is worth knowing -- but it is shown as a subset of
+// the failures rather than as an alternative to them.
+const failed = results.length - passed
+console.log(`\ntlda-test-suite: ${passed} passed, ${failed} failed (${timedOut} of them timed out before reporting), ${results.length} total`)
 
 if (passed !== results.length) {
   console.error('\ntlda-test-suite failures:')
