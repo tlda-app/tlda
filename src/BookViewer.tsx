@@ -12,6 +12,7 @@ import { STORE_HTTP } from './activeConfig'
 import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue, type BookLayersValue } from './BookContext'
+import { findBookMemberIndex } from './bookMemberNavigation'
 import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
 import { TeacherStudentOverlay } from './classroom/TeacherStudentOverlay'
 import { readerLayers, studentLayers, teacherLayers, setLayerVisible, setWriteTarget, type BookLayerState, type BookLayerId } from './classroom/bookLayers'
@@ -151,7 +152,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       if (e.data.__bookRouted) return  // already dispatched by BookViewer
       const targetFile = e.data.targetFile as string | null
       if (!targetFile) return
-      const targetIdx = members.findIndex(m => m.key === targetFile || m.name === targetFile)
+      const targetIdx = findBookMemberIndex(members, targetFile, e.data.targetPath)
       if (targetIdx === -1) return
       if (targetIdx === activeIndex) {
         // Same member: forward anchor navigation to HtmlPageShape

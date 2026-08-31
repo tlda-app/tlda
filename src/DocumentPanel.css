@@ -793,6 +793,33 @@ body.touch-toc-mode select {
   font-size: 10px;
 }
 
+/* Which chapter of the book is open, marked the way a book sidebar marks it. */
+.toc-item.toc-item-current > .toc-title {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* What kind of course item a chapter is: homework, a lecture deck. Sits at the
+   end of the row so the titles stay aligned down the column, and is monochrome
+   so it reads as a mark on the row rather than competing with it. */
+.toc-item-type {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  align-self: center;
+  flex: none;
+  opacity: 0.55;
+}
+
+.toc-item:hover .toc-item-type {
+  opacity: 0.85;
+}
+
 .toc-drop-hint {
   color: #0284c7;
   border: 1px dashed #38bdf8;

@@ -342,7 +342,19 @@ export function aggregateBookToc(bookName, members) {
   const bookOutDir = outputDir(bookName)
   mkdirSync(bookOutDir, { recursive: true })
 
-  const LEVEL_UP = { section: 'subsection', subsection: 'subsubsection', subsubsection: 'subsubsection' }
+  // A member becomes a chapter, and its own headings become that chapter's
+  // sections. So the shallowest heading a member still has is a `section` of the
+  // book, the next one in is a `subsection`, and everything below that is a
+  // `subsubsection` — the deepest level the panel draws.
+  //
+  // This used to demote every entry by exactly one step, which is right only
+  // when nothing was taken off the front. It normally is: a member's `#` heading
+  // is promoted out to BE the chapter title, and its `##` headings then arrived
+  // in the book as `subsubsection` — two levels under their chapter instead of
+  // one, drawn at a 40px indent in 10px type. Nothing read this file until the
+  // book's table of contents did, so the levels had never been looked at.
+  const DEPTH = ['part', 'chapter', 'section', 'subsection', 'subsubsection']
+  const UNDER_CHAPTER = ['section', 'subsection', 'subsubsection']
   const bookToc = []
 
   for (const key of members) {
@@ -365,11 +377,14 @@ export function aggregateBookToc(bookName, members) {
 
     bookToc.push({ title: chapterTitle, level: 'chapter', page: 1, targetFile: key, ...(chapterAnchor && { anchor: chapterAnchor }) })
 
-    for (let i = startIdx; i < memberToc.length; i++) {
-      const entry = memberToc[i]
-      // Demote levels: section→subsection, subsection→subsubsection
-      const newLevel = LEVEL_UP[entry.level] || entry.level
-      bookToc.push({ title: entry.title, level: newLevel, page: 1, anchor: entry.anchor, targetFile: key })
+    const rest = memberToc.slice(startIdx)
+    const depths = rest.map(entry => DEPTH.indexOf(entry.level)).filter(depth => depth >= 0)
+    const shallowest = depths.length > 0 ? Math.min(...depths) : 0
+    for (const entry of rest) {
+      const depth = DEPTH.indexOf(entry.level)
+      const stepsIn = depth < 0 ? 0 : depth - shallowest
+      const level = UNDER_CHAPTER[Math.min(Math.max(stepsIn, 0), UNDER_CHAPTER.length - 1)]
+      bookToc.push({ title: entry.title, level, page: 1, anchor: entry.anchor, targetFile: key })
     }
   }
 

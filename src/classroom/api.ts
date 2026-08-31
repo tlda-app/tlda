@@ -1,7 +1,7 @@
 export type GradingStatus = 'ungraded' | 'graded' | 'returned'
 export interface Assignment {
   solutionsLocked?: boolean
- id: string; courseId: string; title: string; dueAt: string; solutionsDocKey?: string; solutionsVersion?: string; templateDocKey?: string; templateVersion?: string }
+ id: string; courseId: string; title: string; dueAt: string; solutionsDocKey?: string; solutionsVersion?: string; templateDocKey?: string; templateVersion?: string; sourceDocKey?: string }
 export interface StatusCell { assignmentId: string; state: 'not-submitted' | GradingStatus; studentId?: string; contentRef?: string; submittedAt?: string; gradingStatus?: GradingStatus }
 export type StudentLayerScope = 'student' | 'common'
 export interface StatusRow { id: string; displayName: string; universityLogin?: string; layerScope: StudentLayerScope; assignments: StatusCell[] }
@@ -48,6 +48,11 @@ export const classroomApi = {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transferCode }),
   }),
   status: (courseId: string) => request<CourseStatus>(`/courses/${encodeURIComponent(courseId)}/status`),
+  // The course's assignments, which both a student and an instructor may read.
+  // It is the only place that says which documents of a course are homework, so
+  // it is what the table of contents asks to mark them. A reader with no
+  // classroom credential gets 401 and no marks.
+  assignments: (courseId: string) => request<{ assignments: Assignment[] }>(`/courses/${encodeURIComponent(courseId)}/assignments`),
   problems: (assignmentId: string) => request<ProblemsView>(`/assignments/${encodeURIComponent(assignmentId)}/problems`),
   // The student's own work. Their identity comes from their token, so this
   // takes no student id and cannot be aimed at anyone else.
