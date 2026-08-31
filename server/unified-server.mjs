@@ -7123,7 +7123,25 @@ async function dispatchFleetWsMessage(ws, msg) {
       error('event-by-id requires a positive integer event_id')
       return
     }
-    reply({ event: await fleetStore.getEventById(eventId) || null })
+    const original = await fleetStore.getEventById(eventId)
+    if (!original || original.type !== 'chat') {
+      reply({ event: original || null })
+      return
+    }
+    const amend = await fleetStore.getLatestAmendForEvent(eventId)
+    reply({
+      event: amend
+        ? {
+            ...original,
+            text: amend.text,
+            metadata: {
+              ...(amend.metadata || {}),
+              original_event_id: original.id,
+              amended_by_event_id: amend.id,
+            },
+          }
+        : original,
+    })
     return
   }
 

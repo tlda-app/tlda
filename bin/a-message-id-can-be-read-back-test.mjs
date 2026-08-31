@@ -138,6 +138,26 @@ async function run() {
     found.result?.event?.type === 'chat',
     `type was ${JSON.stringify(found.result?.event?.type)}`)
 
+  const AMENDED_TEXT = 'the corrected message the original id must now name'
+  const amended = await request(ws, {
+    type: 'amend',
+    from: 'fleet:readback-sender',
+    event_id: messageId,
+    message: AMENDED_TEXT,
+  })
+  check('the amend itself succeeds', amended.result?.ok === true,
+    `reply was ${JSON.stringify(amended)}`)
+  const foundAfterAmend = await request(ws, { type: 'event-by-id', event_id: messageId })
+  check('the original id reads back as the current amended message',
+    foundAfterAmend.result?.event?.text === AMENDED_TEXT,
+    `text was ${JSON.stringify(foundAfterAmend.result?.event?.text)}`)
+  check('the folded read remains a chat reference',
+    foundAfterAmend.result?.event?.type === 'chat' && foundAfterAmend.result?.event?.id === messageId,
+    `event was ${JSON.stringify(foundAfterAmend.result?.event)}`)
+  check('the folded read carries the amend event id for version history',
+    foundAfterAmend.result?.event?.metadata?.amended_by_event_id === amended.result?.amend_id,
+    `metadata was ${JSON.stringify(foundAfterAmend.result?.event?.metadata)}`)
+
   // A missing message must read as missing. If this came back as an event, the
   // lookup would confirm any id an agent invented.
   // `event: null` explicitly, not merely falsy: with the handler removed this

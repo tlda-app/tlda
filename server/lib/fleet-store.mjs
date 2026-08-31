@@ -5433,6 +5433,20 @@ export class FleetStore {
     return { ...event, metadata: event.metadata ? JSON.parse(event.metadata) : null };
   }
 
+  getLatestAmendForEvent(eventId) {
+    const row = this.db.prepare(`
+      SELECT ${this._EVT}
+      FROM events
+      WHERE type = 'amend'
+        AND json_extract(COALESCE(metadata, '{}'), '$.amends') = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(eventId);
+    if (!row) return null;
+    const event = FleetStore.hydrateEvent(row);
+    return { ...event, metadata: event.metadata ? JSON.parse(event.metadata) : null };
+  }
+
   getSessionEntryById(entryId) {
     const row = this.db.prepare(`
       SELECT id, agent_id AS agentId, session_id AS sessionId, role, timestamp, text
