@@ -68,6 +68,12 @@ test('new project linked from an existing Git checkout becomes a visible built d
     })
     manager.bindSource(project, checkout)
     await manager.sync([{ name: project, mainFile: 'README.md' }])
+    // What `project link` does, at bin/fleet-daemon.mjs:847. Without it the
+    // checkout stays on `main`: an explicit submit still works, because that path
+    // is not gated, but every watcher-driven settle is refused not-on-work-branch
+    // and the project's revision never moves off the first submission. That is
+    // the convergence this test goes on to assert.
+    await manager.standOnWorkBranch(project)
     phase = 'ordinary Git submission'
     const submission = await manager.submit(project)
     assert.equal(submission.status, 'SubmittedToBuildQueue')
