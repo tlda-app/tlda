@@ -5,6 +5,7 @@ const fs = require('fs')
 const { zipSync } = require('fflate')
 const { problems } = require('./submission')
 const images = require('./images')
+const visualModeCss = require('./visual-mode-css')
 const { ClassroomUploadError, classroomSubmissionMetadata, submitSubmissionArchive } = require('./classroom-upload')
 
 // Positron has no zip command of its own — the only one in the whole app is a
@@ -179,6 +180,11 @@ async function submitHomework(context) {
 }
 
 function activate(context) {
+  try {
+    visualModeCss.install(vscode.extensions.getExtension('quarto.quarto')?.extensionPath)
+  } catch (error) {
+    vscode.window.showWarningMessage(`PIC could not style homework callouts in visual mode: ${error.message}`)
+  }
   // Photos land beside the document, so they travel with the archive.
   images.register(context)
   context.subscriptions.push(
