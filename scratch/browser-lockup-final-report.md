@@ -101,3 +101,94 @@ finding:
 measuring.** The general rule for this system: no causal claim without a return
 arm (A-B-A), and no rate from a window shorter than the slowest release cycle
 present.
+
+---
+
+# 2026-08-31 — Retained owner found: detached SVG page content in Blink's Oilpan heap
+
+Option 2 (disposable synthetic project) reproduced it. Nothing of Skip's was
+touched; his tab was not instrumented.
+
+## The reproduction
+
+`synth-manypage` — a generated **500-page** LaTeX document, linked as my own
+disposable project, built on the deployed server (500 pages, 12.7 s).
+
+**Page count alone is not the driver.** Freshly loaded, the 500-page tab sits at
+~397 MB — comparable to a 1-page project. **Visiting pages is the driver.**
+
+| pooled tab, deployed build | footprint |
+|---|---|
+| baseline (loaded, no navigation) | 523 MB |
+| after 40 page visits | 794 MB |
+| after 80 page visits | 1243 MB |
+| after collection | **712 MB** |
+
+≈ **9 MB/page while active, ≈2.4 MB/page permanently retained** after collection.
+JS heap stayed 50–58 MB and canvas count 3 throughout — the retention is neither
+JS objects nor canvas rasters.
+
+## The retained owner
+
+`Memory.getSamplingProfile` was again useless (50 MB total, unsymbolised), and a
+heap snapshot cannot see this because the JS heap is only ~40 MB of a ~700 MB
+process. The instrument that works is a **memory-infra trace dump**, which
+attributes native memory by subsystem.
+
+**Delta across 60 page visits** (standalone CDP browser, same deployed build):
+
+| allocator | before → after | delta |
+|---|---|---|
+| **blink_gc** | 76.1 → 128.9 MB | **+52.8 MB** |
+| blink_objects/blink_gc | 0 → 48.2 MB | +48.2 |
+| malloc/allocated_objects | 158.3 → 168.0 | +9.7 |
+| partition_alloc | 37.7 → 40.6 | +2.9 |
+| malloc | 267.2 → 269.5 | +2.3 |
+
+**Blink's Oilpan GC heap grows ≈0.88 MB per page visited and dominates everything
+else.** `malloc` is essentially flat.
+
+**Per-class breakdown of what is retained:**
+
+```
+3.7 MB  SVGAnimatedLengthList      1.0 MB  SVGAnimatedTransformList
+2.3 MB  blink::SVGLengthList       0.9 MB  SVGAnimatedNumberList
+2.0 MB  SVGTSpanElement            0.9 MB  blink::FontResource
+1.3 MB  Text                       0.8 MB  SVGAnimatedEnumeration
+1.0 MB  blink::SVGLength           0.7 MB  blink::ScriptTimingInfo
+1.0 MB  SVGAnimatedLength          0.6 MB  PerformanceScriptTiming
+```
+
+It is **SVG page content**. Document pages render as SVG; their element and
+attribute objects survive navigation away.
+
+**Confirmed detached, not live:**
+
+```
+Blink DOM counters:  36,360 nodes   (1,524 JS event listeners, 6 documents)
+Live document:        3,337 nodes   (18 svg, 520 tspan)
+```
+
+**~33,000 retained detached nodes — 10× the live document.**
+
+## Why every earlier instrument missed this
+
+- **The JS heap is ~40 MB of a ~700 MB process.** `performance.memory` — what most
+  instruments reach for — was watching 6% of the problem, which is why heap
+  readings looked flat all along.
+- **It is action-driven, not time-driven.** Idle tabs do not grow. Every
+  time-based sampler in this file was measuring the wrong axis, which is why the
+  rates kept contradicting each other.
+
+## Consistency with the live failing tab
+
+His fleet-layout tab matches the local probe and is healthy (≤205 MB). His heavy
+tab is a many-page document worked in over days, and holds ~12.9 GB **at rest with
+no idle growth** — exactly what an action-driven retention produces.
+
+## Remaining gap
+
+**What holds the detached SVG.** The retention is measured and localised, but the
+specific retaining reference is not identified. Next instrument: Oilpan/Blink
+retaining-path analysis on the same synthetic project — no access to his session
+required.
