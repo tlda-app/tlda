@@ -1,0 +1,28 @@
+/* The mirror of `.version-stamp`, which is the corner stamp this sits opposite:
+   same 6px inset, same z-index, same quiet weight. It names the reader, so it
+   is a little larger than the version hashes and set in the UI face rather than
+   mono — but it is still a stamp, not a control, and it takes no pointer
+   input. */
+
+.classroom-identity-badge {
+  position: fixed;
+  top: 6px;
+  right: 6px;
+  z-index: 999;
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: rgba(0, 0, 0, 0.7);
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  pointer-events: none;
+  user-select: none;
+}
+
+html[data-theme="dark"] .classroom-identity-badge {
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(0, 0, 0, 0.42);
+}

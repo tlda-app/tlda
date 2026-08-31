@@ -27,7 +27,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type ClassroomIdentity =
-  | { role: 'student'; studentId: string; courseId: string }
+  // `displayName` is the name the student registered under. Optional because a
+  // principal resolver is free not to carry one, and a badge with no name says
+  // nothing rather than saying "undefined".
+  | { role: 'student'; studentId: string; courseId: string; displayName?: string }
   | { role: 'instructor' }
 
 export const classroomApi = {

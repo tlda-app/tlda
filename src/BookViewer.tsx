@@ -17,6 +17,8 @@ import { TeacherStudentOverlay } from './classroom/TeacherStudentOverlay'
 import { readerLayers, studentLayers, teacherLayers, setLayerVisible, setWriteTarget, type BookLayerState, type BookLayerId } from './classroom/bookLayers'
 import { moveShapesToLayer, layerStore } from './classroom/moveBetweenLayers'
 import { classroomApi, type ClassroomIdentity } from './classroom/api'
+import { ClassroomIdentityBadge } from './classroom/ClassroomIdentityBadge'
+import { isClassroomSurface } from './classroom/classroomSurface'
 import type { SvgDocument } from './loaders/types'
 import { HTML_PAGE_FORMATS, viewFormat } from '../shared/document-formats.mjs'
 import type { Editor } from 'tldraw'
@@ -354,6 +356,11 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   return (
     <BookContext.Provider value={ctx}>
       <div className="book-viewer">
+        {/* Who is reading, said once, where the course cannot be confused with
+            it. `identity` is already the answer from the enrolment token; the
+            badge only renders it. Off the classroom this is an ordinary book
+            and nobody is logged in to a course. */}
+        {isClassroomSurface() && <ClassroomIdentityBadge identity={identity} />}
         {loading && <div className="book-loading">Loading {activeMember?.name}...</div>}
         {!loading && loadError && (
           <div className="book-load-error" role="alert">

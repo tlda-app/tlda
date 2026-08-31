@@ -122,7 +122,7 @@ function studentToken(req) {
 export function classroomPrincipal(req, store, level = validateToken(extractToken(req))) {
   if (level === 'rw') return { role: 'instructor' }
   const student = store.studentForToken(studentToken(req))
-  return student ? { role: 'student', studentId: student.id, courseId: student.courseId, layerScope: student.layerScope } : null
+  return student ? { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName, layerScope: student.layerScope } : null
 }
 
 export function requireClassroomDocumentAccess(req, res, next) {
@@ -444,10 +444,13 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   //
   // An instructor gets `role: 'instructor'` and no student id; they choose whose
   // overlay to read, and that choice is checked where it is made.
+  // The name comes back with the id because the classroom surface says who is
+  // reading it — the registered name, not the tlda identity the page would
+  // otherwise show. It is the caller's own name, from the caller's own token.
   router.get('/me', (req, res) => {
     const p = req.classroomPrincipal
     if (p.role !== 'student') return res.json({ role: p.role })
-    res.json({ role: 'student', studentId: p.studentId, courseId: p.courseId })
+    res.json({ role: 'student', studentId: p.studentId, courseId: p.courseId, displayName: p.displayName })
   })
 
   router.get('/assignments/:assignmentId/submissions/:studentId', (req, res) => {
