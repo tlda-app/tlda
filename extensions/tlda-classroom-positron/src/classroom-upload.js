@@ -24,10 +24,10 @@ function classroomSubmissionMetadata(source) {
   try {
     server = new URL(serverValue)
   } catch {
-    throw new Error('tlda-classroom-server must be a complete http or https URL.')
+    throw new Error('The assignment server must be a complete http or https URL.')
   }
   if (!['http:', 'https:'].includes(server.protocol) || server.username || server.password) {
-    throw new Error('tlda-classroom-server must be a complete http or https URL without credentials.')
+    throw new Error('The assignment server must be a complete http or https URL without credentials.')
   }
   return { server: server.origin, assignmentId }
 }
