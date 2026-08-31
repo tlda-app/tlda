@@ -5204,6 +5204,13 @@ if (existsSync(katexDir)) {
 // Assets use content-hashed filenames (long cache). index.html must be no-cache.
 const distDir = join(__dirname, '..', 'dist')
 
+// A deployment may give its bare public URL one explicit landing place. Keep
+// this as a relative URL so the browser stays on the deployment's own host.
+const rootRedirect = String(process.env.TLDA_ROOT_REDIRECT || '').trim()
+if (rootRedirect && !rootRedirect.startsWith('/?')) {
+  throw new Error('TLDA_ROOT_REDIRECT must be a relative root URL beginning with /?')
+}
+
 // What this deployment calls itself in the tab. dist/ is one built artifact
 // shared by every deployment, so the title cannot be baked per deployment; the
 // SPA handler below rewrites it on the way out, in the same pass that injects
@@ -5256,6 +5263,9 @@ if (existsSync(distDir)) {
 
 // SPA catch-all: serve index.html for client-side routing
 app.get('/{*path}', async (req, res) => {
+  if (rootRedirect && req.originalUrl === '/') {
+    return res.redirect(302, rootRedirect)
+  }
   // Don't catch API or doc routes
   if (req.path.startsWith('/api/') || req.path.startsWith('/docs/')) {
     return res.status(404).json({ error: 'Not found' })
