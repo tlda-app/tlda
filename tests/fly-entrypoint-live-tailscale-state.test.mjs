@@ -5,7 +5,7 @@ import test from 'node:test'
 const script = readFileSync(new URL('../scripts/fly-entrypoint-live.sh', import.meta.url), 'utf8')
 
 function assertPersistedIdentityBootsWithoutSetupKey(source) {
-  const deploymentBranch = source.indexOf('if [ "$TLDA_DEPLOYMENT" != "live" ]; then')
+  const deploymentBranch = source.indexOf('if [ "$TLDA_DEPLOYMENT" != "live" ] && [ "$TLDA_DEPLOYMENT" != "pic" ]; then')
   const tailscaled = source.indexOf('tailscaled \\\n')
   const keyBranch = source.indexOf('if [ -n "${TS_AUTHKEY:-}" ]; then')
   const optionalArg = source.indexOf('$AUTH_ARG --hostname=')
@@ -30,7 +30,10 @@ test('the guard rejects the outage shape from the previous entrypoint', () => {
   assert.throws(() => assertPersistedIdentityBootsWithoutSetupKey(regressed))
 })
 
-test('the live app does not start a second tailnet node beside its edge', () => {
-  const regressed = script.replace('if [ "$TLDA_DEPLOYMENT" != "live" ]; then', 'if true; then')
+test('the live and PIC apps do not start second tailnet nodes beside their edges', () => {
+  const regressed = script.replace(
+    'if [ "$TLDA_DEPLOYMENT" != "live" ] && [ "$TLDA_DEPLOYMENT" != "pic" ]; then',
+    'if [ "$TLDA_DEPLOYMENT" != "live" ]; then',
+  )
   assert.throws(() => assertPersistedIdentityBootsWithoutSetupKey(regressed))
 })

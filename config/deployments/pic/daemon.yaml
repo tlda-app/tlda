@@ -11,9 +11,9 @@ environments:
   values:
     pic:
       # fleet, chat, registry, agents
-      database: https://tlda-pic.cormorant-matrix.ts.net
+      database: https://pic.cormorant-matrix.ts.net
       # document assets and shape sync
-      store: https://tlda-pic.cormorant-matrix.ts.net
+      store: https://pic.cormorant-matrix.ts.net
       # tldraw license. A client-side value shipped to every browser in
       # window.__TLDA_CONFIG__ — not a secret, so it belongs here and not in
       # `fly secrets`.

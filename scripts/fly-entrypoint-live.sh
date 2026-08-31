@@ -78,10 +78,10 @@ if [ -d "$DEPLOYMENT_DIR/dist-overrides" ]; then
   cp -R "$DEPLOYMENT_DIR/dist-overrides/." /app/dist/
 fi
 
-# Live has a separate edge process holding its tailnet identity. The other
-# deployments still use this single-process entrypoint, so they keep their
-# tailnet node beside the app until they are explicitly given their own edge.
-if [ "$TLDA_DEPLOYMENT" != "live" ]; then
+# Live and PIC have separate edge processes holding their tailnet identities.
+# The other deployments still use this single-process entrypoint, so they keep
+# their tailnet node beside the app until they are explicitly given an edge.
+if [ "$TLDA_DEPLOYMENT" != "live" ] && [ "$TLDA_DEPLOYMENT" != "pic" ]; then
   mkdir -p "$PERSIST/tailscale" /var/run/tailscale
   tailscaled \
     --state="$PERSIST/tailscale/tailscaled.state" \
