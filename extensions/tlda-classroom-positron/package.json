@@ -1,8 +1,8 @@
 {
   "name": "tlda-classroom",
-  "displayName": "PIC",
+  "displayName": "tlda Classroom",
   "description": "Hand in PIC homework from Positron, and keep photos beside the document.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "publisher": "tlda-labs",
   "license": "MIT",
   "engines": {
@@ -13,7 +13,8 @@
   ],
   "main": "./src/extension.js",
   "activationEvents": [
-    "onLanguage:quarto"
+    "onLanguage:quarto",
+    "onUri"
   ],
   "scripts": {
     "test": "node --test test/*.test.js"

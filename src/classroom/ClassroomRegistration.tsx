@@ -12,6 +12,13 @@ function classUrl(project: string, enrollmentToken: string): string {
   return next.toString()
 }
 
+function positronUrl(enrollmentToken: string): string {
+  const next = new URL('positron://tlda-labs.tlda-classroom/classroom-token')
+  next.searchParams.set('server', window.location.origin)
+  next.searchParams.set('token', enrollmentToken)
+  return next.toString()
+}
+
 export function ClassroomRegistration() {
   const params = new URLSearchParams(window.location.search)
   const courseId = classroomCourseId()
@@ -70,6 +77,7 @@ export function ClassroomRegistration() {
     </form> : <section className="classroomTokenResult">
       <h2>Registration complete</h2>
       <p>This browser will remember you. The class link takes you straight in from now on.</p>
+      <a className="classroomContinueLink" href={positronUrl(registration.enrollmentToken)}>Connect Positron</a>
       {continueUrl && <a className="classroomContinueLink" href={continueUrl}>Continue to class</a>}
     </section>}
   </main>
