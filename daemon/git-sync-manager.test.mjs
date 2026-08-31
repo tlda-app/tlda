@@ -89,11 +89,15 @@ test('one broken binding does not prevent a later project binding from starting'
   })
   manager.bindSource('broken', brokenCheckout, { documentRoots: ['main.tex'] })
   manager.bindSource('good', goodCheckout, { documentRoots: ['main.tex'] })
-  await assert.rejects(
-    manager.sync([{ name: 'broken', mainFile: 'main.tex' }, { name: 'good', mainFile: 'main.tex' }]),
-    error => error instanceof AggregateError && error.errors.some(failure => /broken:/.test(failure.message)),
-  )
+  // This used to assert `sync` rejects with an AggregateError naming `broken:`.
+  // 73adc3047 made a checkout with no commits legitimate — it starts at the
+  // project head — so the empty checkout here is no longer a failure at all, and
+  // demanding a rejection was asserting the state before that commit. The
+  // guarantee in this test's name is unchanged and is what is checked now: the
+  // binding that cannot submit reports why, and it does not stop the other one.
+  await manager.sync([{ name: 'broken', mainFile: 'main.tex' }, { name: 'good', mainFile: 'main.tex' }])
 
+  assert.equal((await manager.submit('broken')).status, 'empty-checkout')
   const submitted = await manager.submit('good')
   assert.equal(submitted.status, 'SubmittedToBuildQueue')
   await manager.closeAll()
@@ -205,7 +209,11 @@ test('initial project link submits the existing checkout through the ordinary pr
   assert.equal(submitted.status, 'SubmittedToBuildQueue')
   assert.match(submitted.proposalRef, /^refs\/tlda\/proposals\/daemon-link\/main\/[0-9a-f]{40}$/)
   assert.equal((await git(remote, ['rev-parse', submitted.proposalRef])).stdout.trim(), submitted.revision)
-  assert.deepEqual(watcher.added, [join(checkout, 'main.tex')])
+  // Both documents are watched, not just the declared one. d5a264fe0 made roots
+  // a computed property of the branch, so `unrelated-broken.tex` — which nothing
+  // includes — is a root of its own and is watched like any other. The stored
+  // `documentRoots` above no longer narrows anything.
+  assert.deepEqual(watcher.added.slice().sort(), [join(checkout, 'main.tex'), join(checkout, 'unrelated-broken.tex')])
   assert.deepEqual(await manager.remoteOperation('paper', 'list'), [{
     name: 'tlda',
     url: remote,
@@ -230,40 +238,6 @@ test('initial project link submits the existing checkout through the ordinary pr
   }
   assert.deepEqual(watcher.added, [join(checkout, 'main.tex'), join(checkout, 'child.tex')])
   assert.equal(watcher.added.includes(join(checkout, 'unrelated.txt')), false)
-  await manager.closeAll()
-})
-
-test('same-daemon relink installs corrected roots and later metadata updates preserve them', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'tlda-git-root-relink-'))
-  const checkout = join(root, 'checkout')
-  const remote = join(root, 'paper.git')
-  await git(root, ['init', '--bare', remote])
-  await git(root, ['init', '-b', 'main', checkout])
-  await git(checkout, ['config', 'user.name', 'fixture'])
-  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
-  writeFileSync(join(checkout, 'main.tex'), 'paper\n')
-  writeFileSync(join(checkout, 'broken.tex'), '\\input{missing}\n')
-  await git(checkout, ['add', '.'])
-  await git(checkout, ['commit', '-m', 'existing paper and unrelated backup'])
-  // The state `project link` leaves a checkout in: on its work branch.
-  await git(checkout, ['checkout', '-b', 'tlda/paper'])
-
-  const manager = createGitSyncManager({
-    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-relink', server: 'http://unused.test',
-    remoteUrlFor: () => remote, watch: () => testWatcher(),
-    log: { info() {}, warn() {}, error() {} },
-  })
-  manager.bindSource('paper', checkout)
-  await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
-  await assert.rejects(manager.submit('paper'), /broken\.tex has missing dependencies/)
-
-  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
-  const submitted = await manager.submit('paper')
-  assert.equal(submitted.status, 'SubmittedToBuildQueue')
-  assert.deepEqual((await git(remote, ['ls-tree', '-r', '--name-only', submitted.revision])).stdout.trim().split('\n'), ['main.tex'])
-
-  manager.bindSource('paper', checkout, { remote: 'origin' })
-  assert.deepEqual(manager.bindingStatus('paper', checkout).binding.documentRoots, ['main.tex'])
   await manager.closeAll()
 })
 

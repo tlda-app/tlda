@@ -41,6 +41,11 @@ async function fixture({ local = null, accepted = null } = {}) {
     await git(checkout, ['commit', '-m', 'local author change'])
   }
   await git(checkout, ['update-ref', 'refs/tlda/project/paper', (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()])
+  // The state `project link` leaves a checkout in: standing on its work branch.
+  // settle only commits and pushes when it is, so a fixture on `main` is a
+  // checkout that would not sync in real use either. Same correction 84c48f6e4
+  // made to the other two fixture files; this one was missed.
+  await git(checkout, ['checkout', '-q', '-b', 'tlda/paper'])
   const submitted = []
   const calls = []
   const sync = createGitProjectSync({
@@ -125,7 +130,12 @@ test('recover submits local work the server never saw, without moving the shared
   assert.equal((await git(f.remote, ['rev-parse', 'refs/tlda/source/paper'])).stdout.trim(), f.revision, 'the shared head is the server\'s to move')
 })
 
-test('a tracked edit is submitted while their branch stays put and their tree stays dirty', async () => {
+// This asserted the opposite until 84c48f6e4: that their branch stayed put and
+// their tree stayed dirty. That was the defect, not the contract — a checkout
+// permanently dirty against its own HEAD is one where `git checkout` and
+// `tlda project remote pull` refuse forever. settle now commits the edit under
+// them on the branch they are standing on, which is what makes the tree clean.
+test('a tracked edit is submitted and committed under them, leaving their checkout clean', async () => {
   const f = await fixture()
   const before = await checkoutSnapshot(f.checkout)
   writeFileSync(join(f.checkout, 'main.tex'), 'tracked edit\n')
@@ -134,15 +144,13 @@ test('a tracked edit is submitted while their branch stays put and their tree st
 
   assert.equal(result.status, 'SubmittedToBuildQueue')
   assert.equal((await git(f.remote, ['show', `${result.revision}:main.tex`])).stdout, 'tracked edit\n')
-  // The edit reached the server. Nothing of theirs moved to get it there: their
-  // branch still points where it did, their index is byte-identical, and the
-  // edit is still an uncommitted modification for them to commit when they like.
   const after = await checkoutSnapshot(f.checkout)
-  assert.equal(after.head, before.head, 'their branch must not advance from settle')
+  // They are still standing where they were — settle moves the branch under
+  // them, it does not move them to another branch.
   assert.equal(after.branch, before.branch)
-  assert.deepEqual(after.index, before.index, 'their index must not be written')
-  assert.equal((await git(f.checkout, ['show', 'HEAD:main.tex'])).stdout, 'base\n')
-  assert.equal((await git(f.checkout, ['diff', '--name-only'])).stdout.trim(), 'main.tex', 'their tree stays dirty')
+  assert.notEqual(after.head, before.head, 'the work branch advances to carry their edit')
+  assert.equal((await git(f.checkout, ['show', 'HEAD:main.tex'])).stdout, 'tracked edit\n')
+  assert.equal((await git(f.checkout, ['status', '--porcelain'])).stdout.trim(), '', 'their checkout is clean afterwards')
   assert.equal((await git(f.checkout, ['rev-parse', 'refs/tlda/project/paper'])).stdout.trim(), result.revision)
 })
 
@@ -158,7 +166,12 @@ test('an untracked file is not swept into the submitted revision or their index'
   assert.equal((await git(f.remote, ['show', `${result.revision}:main.tex`])).stdout, 'tracked edit\n')
   await assert.rejects(git(f.remote, ['cat-file', '-e', `${result.revision}:scratch.txt`]), 'the untracked file must not be submitted')
   assert.equal((await git(f.checkout, ['ls-files', '--', 'scratch.txt'])).stdout.trim(), '', 'the untracked file must not be staged')
-  assert.deepEqual((await checkoutSnapshot(f.checkout)).index, before.index)
+  // The index is no longer byte-identical — settle commits under them and then
+  // `reset --mixed` brings their index to that commit. What must still hold is
+  // that the untracked file was not swept in on the way: it is the ONLY thing
+  // `git status` has left to say, which is a stronger statement than comparing
+  // index bytes, because it also catches the file being staged and committed.
+  assert.equal((await git(f.checkout, ['status', '--porcelain'])).stdout.trim(), '?? scratch.txt')
   assert.equal(readFileSync(join(f.checkout, 'scratch.txt'), 'utf8'), 'mine, not the project\n')
 })
 
@@ -173,17 +186,25 @@ test('a path the person already staged is carried, as commit -a would carry it',
   assert.equal(result.status, 'SubmittedToBuildQueue')
   assert.equal((await git(f.remote, ['show', `${result.revision}:main.tex`])).stdout, 'staged by them\n')
   const after = await checkoutSnapshot(f.checkout)
-  assert.equal(after.head, before.head)
-  assert.deepEqual(after.index, before.index, 'their staged path stays staged, unchanged')
+  assert.equal(after.branch, before.branch)
+  // settledCommit stages into a COPY of their index, so what they had staged is
+  // never disturbed mid-settle; the commit it produces captures it, and
+  // `reset --mixed` then brings their real index to that commit. So their staged
+  // work is not lost and not left half-applied — it is committed under them.
+  assert.equal((await git(f.checkout, ['show', 'HEAD:main.tex'])).stdout, 'staged by them\n')
+  assert.equal((await git(f.checkout, ['status', '--porcelain'])).stdout.trim(), '')
 })
 
 test('settle refuses and preserves a merge the person started themselves', async () => {
   const f = await fixture()
-  await git(f.checkout, ['checkout', '-b', 'user-merge'])
+  await git(f.checkout, ['checkout', '-q', '-b', 'user-merge'])
   writeFileSync(join(f.checkout, 'merged.tex'), 'user branch\n')
   await git(f.checkout, ['add', 'merged.tex'])
   await git(f.checkout, ['commit', '-m', 'user branch'])
-  await git(f.checkout, ['checkout', 'main'])
+  // Back onto the work branch, so the merge is in progress where settle would
+  // otherwise commit. Merging on `main` would be refused as not-on-work-branch,
+  // which is a different refusal and would not exercise this one at all.
+  await git(f.checkout, ['checkout', '-q', 'tlda/paper'])
   writeFileSync(join(f.checkout, 'main.tex'), 'main side\n')
   await git(f.checkout, ['commit', '-a', '-m', 'main side'])
   await git(f.checkout, ['merge', '--no-commit', '--no-ff', 'user-merge'])
