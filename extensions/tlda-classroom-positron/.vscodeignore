@@ -1,2 +1,4 @@
 test/**
 *.vsix
+PROVENANCE.md
+node_modules/.package-lock.json
