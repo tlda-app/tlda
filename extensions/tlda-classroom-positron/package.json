@@ -1,39 +1,55 @@
 {
   "name": "tlda-classroom",
-  "displayName": "tlda Classroom",
-  "description": "Prepare QTM homework submissions from Positron.",
-  "version": "0.1.0",
-  "publisher": "tlda",
+  "displayName": "tlda classroom",
+  "description": "Hand in homework from Positron, and keep photos beside the document.",
+  "version": "0.2.4",
+  "publisher": "tlda-labs",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Education"
+    "Other"
   ],
+  "main": "./src/extension.js",
   "activationEvents": [
-    "onCommand:tldaClassroom.zipForSubmission",
-    "onCommand:tldaClassroom.submit"
+    "onLanguage:quarto"
   ],
-  "main": "./extension.js",
   "scripts": {
     "test": "node --test test/*.test.js"
   },
   "contributes": {
     "commands": [
       {
-        "command": "tldaClassroom.zipForSubmission",
-        "category": "Homework",
-        "title": "Zip for submission",
-        "enablement": "resourceExtname == .qmd"
+        "command": "tldaClassroom.submit",
+        "title": "Submit",
+        "category": "Homework"
       },
       {
-        "command": "tldaClassroom.submit",
-        "category": "Homework",
-        "title": "Submit",
-        "enablement": "resourceExtname == .qmd"
+        "command": "tldaClassroom.zipForSubmission",
+        "title": "Zip for submission",
+        "category": "Homework"
+      },
+      {
+        "command": "tldaClassroom.checkSubmission",
+        "title": "Check this submission",
+        "category": "Homework"
       }
-    ]
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "tldaClassroom.submit",
+          "when": "resourceExtname == .qmd",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tldaClassroom.zipForSubmission",
+          "when": "resourceExtname == .qmd",
+          "group": "navigation@2"
+        }
+      ]
+    }
   },
   "dependencies": {
     "fflate": "^0.8.3"
