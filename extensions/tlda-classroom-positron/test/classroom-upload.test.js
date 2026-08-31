@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
-const { ClassroomUploadError, classroomSubmissionMetadata, submitSubmissionArchive } = require('../classroom-upload')
+const { ClassroomUploadError, classroomSubmissionMetadata, submitSubmissionArchive } = require('../src/classroom-upload')
 
 test('reads public server and assignment coordinates from QMD front matter', () => {
   const metadata = classroomSubmissionMetadata(`---
