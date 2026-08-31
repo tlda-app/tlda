@@ -31,7 +31,7 @@ async function serve(resolvePrincipal) {
 // that sits above it in production is the part standing in here.
 const byEnrolmentToken = (req, store) => {
   const student = store.studentForToken(req.headers['x-tlda-student-token'])
-  return student ? { role: 'student', studentId: student.id, courseId: student.courseId } : null
+  return student ? { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName } : null
 }
 
 test('a student is told who they are, and it comes from their token', async t => {
@@ -44,13 +44,17 @@ test('a student is told who they are, and it comes from their token', async t =>
 
   const ada = await get('/me', { 'x-tlda-student-token': 'token-ada' })
   assert.equal(ada.status, 200)
-  assert.deepEqual(ada.body, { role: 'student', studentId: 'ada', courseId: 'c' })
+  // The registered name comes back with the id. The classroom badge says
+  // "Logged in as Ada" from this and nothing else, so a route that answered
+  // only the id would leave the badge unable to name anyone.
+  assert.deepEqual(ada.body, { role: 'student', studentId: 'ada', courseId: 'c', displayName: 'Ada' })
 
   // The counterfactual that makes the assertion above mean something: a
   // different token has to produce a different student, or the test would pass
   // just as well against a route that returned a constant.
   const bo = await get('/me', { 'x-tlda-student-token': 'token-bo' })
   assert.equal(bo.body.studentId, 'bo', 'two enrolment tokens resolved to the same student')
+  assert.equal(bo.body.displayName, 'Bo', 'two enrolment tokens resolved to the same name')
 })
 
 test('no token is 401, not an anonymous identity', async t => {

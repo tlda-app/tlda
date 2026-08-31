@@ -89,7 +89,9 @@ import { FleetToolGhost } from './overlays/FleetToolGhost'
 import { FleetNudgeGuides } from './overlays/FleetNudgeGuides'
 import { ChromeConditions } from './chrome/ChromeConditions'
 import { RecognizeButton } from './overlays/RecognizeButton'
+import { RecordingsButton } from './overlays/RecordingsButton'
 import { RecordingViewer } from './overlays/RecordingViewer'
+import { isClassroomSurface } from './classroom/classroomSurface'
 import { useBook } from './BookContext'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
@@ -152,6 +154,13 @@ const LICENSE_KEY = CFG_LICENSE_KEY
 // other phone checks). Module-level so render-time component overrides (e.g.
 // hiding the TLDraw toolbar) can read it without prop threading.
 const IS_PHONE = isPhoneViewport()
+
+// The classroom carries the chrome that belongs to a course, and not tlda's own
+// workshop chrome: no fleet controls and no versioning controls. Same document,
+// same canvas — a course is a way of reading it, so everything else is the same.
+// Module-level for the same reason IS_PHONE is: the components callback is
+// memoized, and the marker is a page fact that does not change without a load.
+const IS_CLASSROOM = isClassroomSurface()
 
 // Agent attention overlay wrapper (needs useEditor context)
 function AgentAttentionCanvas() {
@@ -752,7 +761,28 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
       // RibbonLane, ProvenancePanel and ProvenanceInline — three of twenty-one —
       // which is what made the presentation surface's controls "not the usual
       // ones."
-      const chrome = <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><RibbonLane /><ProvenancePanel /><ProvenanceInline /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
+      //
+      // The classroom drops the fleet controls and the version stamp, and adds
+      // the recordings entry point. Everything else is the same list.
+      const chrome = <>
+        <SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} />
+        <RibbonLane /><ProvenancePanel /><ProvenanceInline /><DocumentPanel /><PhoneOverlay />
+        <HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower />
+        <SemanticHighlightPill />
+        {!IS_CLASSROOM && <AgentAttentionCanvas />}
+        <RecognizeButton />
+        {/* The way in to the recording viewer. It plays back into a corner PiP
+            over the live document, and the viewer itself is mounted below —
+            this list is the only thing that ever opened it, and a "UI clutter"
+            commit (71c56104a) took it out of the chrome in August, which left
+            the whole playback path unreachable rather than merely tidier. */}
+        {IS_CLASSROOM && <RecordingsButton />}
+        <BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud />
+        {!IS_CLASSROOM && <VersionStampSlot />}
+        {!IS_CLASSROOM && <FleetToolGhost />}
+        {!IS_CLASSROOM && <FleetNudgeGuides />}
+        <ChromeConditions />
+      </>
       return {
         PageMenu: null,
         SharePanel: null,
@@ -1136,10 +1166,10 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         <BuildWarningPill warnings={pillWarnings}>
           <BuildProgressPill document={document} />
         </BuildWarningPill>
-        {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
+        {!IS_CLASSROOM && editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
         {/* Build errors: red BuildErrorPill (reads errorsJson from the doc-version sentinel) */}
       </div>
-      {editorRef.current && (
+      {!IS_CLASSROOM && editorRef.current && (
         <FleetHUD mainEditor={editorRef.current} />
       )}
       </div>

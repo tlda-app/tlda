@@ -40,7 +40,7 @@ test('a classroom enrollment token identifies a student without exposing the glo
     store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
     store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'student-secret' })
     const principal = classroomPrincipal({ headers: { 'x-tlda-student-token': 'student-secret' }, query: {} }, store, null)
-    assert.deepEqual(principal, { role: 'student', studentId: 'ada', courseId: 'qtm285', layerScope: 'student' })
+    assert.deepEqual(principal, { role: 'student', studentId: 'ada', courseId: 'qtm285', displayName: 'Ada', layerScope: 'student' })
     assert.equal(classroomPrincipal({ headers: { 'x-tlda-student-token': 'wrong' }, query: {} }, store, null), null)
   } finally {
     store.close()
