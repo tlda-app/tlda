@@ -1,9 +1,9 @@
 {
-  "name": "tlda-classroom",
+  "name": "classroom",
   "displayName": "PIC",
   "description": "Hand in PIC homework from Positron, and keep photos beside the document.",
   "version": "0.2.4",
-  "publisher": "tlda-labs",
+  "publisher": "pic",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
