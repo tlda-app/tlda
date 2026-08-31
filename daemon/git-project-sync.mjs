@@ -217,9 +217,18 @@ export function createGitProjectSync({
       const computed = await documentRootsIn(paths, async file => {
         try { return await fs.promises.readFile(path.join(extracted, file), 'utf8') } catch { return null }
       })
-      const candidates = computed.map(root => root.path)
-      if (!candidates.length) throw new Error(`${project}: no document roots in settled tree`)
-      const qmdRoots = candidates.filter(file => /\.qmd$/i.test(file))
+      const computedRoots = computed.map(root => root.path)
+      if (!computedRoots.length) throw new Error(`${project}: no document roots in settled tree`)
+      const qmdRoots = computedRoots.filter(file => /\.qmd$/i.test(file))
+      // `talk.html` beside `talk.qmd` is that root's render output, not a document.
+      // Nothing includes it, so the graph returns it as a root of its own, and an
+      // html root carries its whole sibling tree — which is right for an html
+      // project and is how a stale local render gets published by a qmd one.
+      // `isQuartoRenderOutput` already keeps it out of the qmd closure; this is the
+      // same rule applied one step earlier, to roothood. A project with no qmd root
+      // has an empty `qmdRoots` and is untouched.
+      const candidates = computedRoots.filter(file =>
+        !(/\.html?$/i.test(file) && qmdRoots.some(root => isQuartoRenderOutput(file, root))))
       const qmdFiles = qmdRoots.length
         ? paths.filter(file =>
             isSourceFilePath(file, { format: 'qmd', mainFile: qmdRoots[0] })
