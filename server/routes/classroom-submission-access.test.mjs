@@ -34,8 +34,8 @@ const SUBMISSION = `submission-${ASSIGNMENT}-${OWNER}`
 function storeWithOneSubmission(root) {
   const store = new ClassroomStore(join(root, 'classroom.db'))
   store.upsertCourse({ id: COURSE, title: 'QTM 285' })
-  store.registerStudent({ courseId: COURSE, displayName: 'Ada', universityLogin: 'ada', enrollmentToken: 'tok-ada' })
-  store.registerStudent({ courseId: COURSE, displayName: 'Biko', universityLogin: 'biko', enrollmentToken: 'tok-biko' })
+  store.registerStudent({ courseId: COURSE, preferredName: 'Ada', universityLogin: 'ada', enrollmentToken: 'tok-ada' })
+  store.registerStudent({ courseId: COURSE, preferredName: 'Biko', universityLogin: 'biko', enrollmentToken: 'tok-biko' })
   store.upsertAssignment({ id: ASSIGNMENT, courseId: COURSE, title: 'Setup', dueAt: '2026-09-01T00:00:00.000Z' })
   store.submit({ assignmentId: ASSIGNMENT, studentId: OWNER, contentRef: SUBMISSION })
   return store

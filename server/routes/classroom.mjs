@@ -120,7 +120,7 @@ function studentToken(req) {
 export function classroomPrincipal(req, store, level = validateToken(extractToken(req))) {
   if (level === 'rw') return { role: 'instructor' }
   const student = store.studentForToken(studentToken(req))
-  return student ? { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName, layerScope: student.layerScope } : null
+  return student ? { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName, preferredName: student.preferredName, pronouns: student.pronouns, layerScope: student.layerScope } : null
 }
 
 export function requireClassroomDocumentAccess(req, res, next) {
@@ -249,14 +249,15 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   })
   router.post('/courses/:courseId/register', (req, res) => {
     if (!resolveRegistrationAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
-    const displayName = String(req.body?.displayName || '').trim()
+    const preferredName = String(req.body?.preferredName || '').trim()
+    const pronouns = String(req.body?.pronouns || '').trim()
     const universityLogin = String(req.body?.universityLogin || '').trim().toLowerCase()
-    if (!displayName || !universityLogin) return res.status(400).json({ error: 'displayName and universityLogin are required' })
+    if (!preferredName || !universityLogin) return res.status(400).json({ error: 'preferredName and universityLogin are required' })
     if (!/^[a-z0-9._-]+$/.test(universityLogin)) return res.status(400).json({ error: 'universityLogin contains unsupported characters' })
     if (!store.getCourse(req.params.courseId)) return res.status(404).json({ error: 'Course not found' })
     const enrollmentToken = crypto.randomBytes(32).toString('hex')
     try {
-      const student = store.registerStudent({ courseId: req.params.courseId, displayName, universityLogin, enrollmentToken })
+      const student = store.registerStudent({ courseId: req.params.courseId, preferredName, pronouns, universityLogin, enrollmentToken })
       return res.status(201).json({ student, enrollmentToken })
     } catch (error) {
       if (String(error?.code || '').startsWith('SQLITE_CONSTRAINT')) return res.status(409).json({ error: 'That university login is already registered for this course' })
@@ -304,16 +305,16 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   })
 
   router.post('/courses', instructor, (req, res) => {
-    const { id, title } = req.body || {}
-    if (!id || !title) return res.status(400).json({ error: 'id and title are required' })
-    res.status(201).json(store.upsertCourse({ id, title }))
+    const { id, title, preferredName, pronouns } = req.body || {}
+    if (!id || !title || !String(preferredName || '').trim()) return res.status(400).json({ error: 'id, title, and preferredName are required' })
+    res.status(201).json(store.upsertCourse({ id, title, preferredName: String(preferredName).trim(), pronouns }))
   })
 
   router.post('/courses/:courseId/students', instructor, (req, res) => {
-    const { id, displayName, enrollmentToken, active, layerScope } = req.body || {}
-    if (!id || !displayName || !enrollmentToken) return res.status(400).json({ error: 'id, displayName, and enrollmentToken are required' })
+    const { id, displayName, preferredName, pronouns, enrollmentToken, active, layerScope } = req.body || {}
+    if (!id || !(preferredName || displayName) || !enrollmentToken) return res.status(400).json({ error: 'id, preferredName, and enrollmentToken are required' })
     try {
-      res.status(201).json(store.upsertStudent({ id, courseId: req.params.courseId, displayName, enrollmentToken, active, layerScope }))
+      res.status(201).json(store.upsertStudent({ id, courseId: req.params.courseId, displayName, preferredName, pronouns, enrollmentToken, active, layerScope }))
     } catch (error) {
       if (error.message.startsWith('invalid student layer scope:')) return res.status(400).json({ error: error.message })
       throw error
@@ -447,8 +448,11 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   // otherwise show. It is the caller's own name, from the caller's own token.
   router.get('/me', (req, res) => {
     const p = req.classroomPrincipal
-    if (p.role !== 'student') return res.json({ role: p.role })
-    res.json({ role: 'student', studentId: p.studentId, courseId: p.courseId, displayName: p.displayName })
+    if (p.role === 'student') return res.json({ role: 'student', studentId: p.studentId, courseId: p.courseId, displayName: p.displayName, preferredName: p.preferredName || p.displayName, pronouns: p.pronouns || null })
+    const courseId = String(req.query?.course || '')
+    const course = courseId && store.getCourse(courseId)
+    if (!course?.preferred_name) return res.status(409).json({ error: 'Course instructor preferred name is not configured' })
+    res.json({ role: 'instructor', courseId, preferredName: course.preferred_name, pronouns: course.pronouns || null })
   })
 
   router.get('/assignments/:assignmentId/submissions/:studentId', (req, res) => {

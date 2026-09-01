@@ -1,4 +1,4 @@
-import { composerMicAppearance, documentPanelShowsProject } from './classroomUiPolicy'
+import { composerMicAppearance, documentPanelShowsProject, settingsIdentityEditable } from './classroomUiPolicy'
 
 function equal(actual: unknown, expected: unknown, label: string) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`${label}: ${JSON.stringify(actual)}`)
@@ -6,6 +6,8 @@ function equal(actual: unknown, expected: unknown, label: string) {
 
 equal(documentPanelShowsProject(true), false, 'classroom hides Project')
 equal(documentPanelShowsProject(false), true, 'ordinary document retains Project')
+equal(settingsIdentityEditable(true), false, 'classroom locks identity settings')
+equal(settingsIdentityEditable(false), true, 'ordinary document retains identity settings')
 equal(composerMicAppearance(false), {
   slashed: true,
   ariaPressed: false,

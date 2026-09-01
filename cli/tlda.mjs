@@ -231,6 +231,8 @@ const COMMAND_HELP = {
   config:  'tlda config [init | apply | mcp-setup | setup | auth | set <key> <value> | get [key]]\n\n  init       Create the config files a fresh install needs (daemon.yaml, server.yaml)\n             pointing at this machine. Only writes files that are missing; an\n             existing config is never merged into or overwritten.\n  apply      Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n             --dry-run       show the plan without writing plists or running launchctl.\n             --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  mcp-setup  Write .mcp.json in the current directory for tlda and fleet tools.\n  setup      Run one-time local setup tasks, such as editor URL handlers.\n  auth       Manage access tokens.\n  set        Manage CLI preferences.\n  get        Show CLI preferences.',
 }
 
+COMMAND_HELP.classroom += '\n\n  Identity options:\n    --instructor-preferred-name  Required. Course-owned classroom display name.\n    --instructor-pronouns        Optional free-text pronouns; pass an empty value to clear.'
+
 // Flags that take a value (--flag value). All others are boolean.
 const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
@@ -238,7 +240,7 @@ const VALUE_FLAGS = new Set([
   'model', 'cwd', 'effort', 'mode', 'name', 'kind',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'poll', 'config',
   'label', 'plist', 'only', 'version', 'project',
-  'course', 'course-title', 'assignment', 'assignment-title', 'due',
+  'course', 'course-title', 'instructor-preferred-name', 'instructor-pronouns', 'assignment', 'assignment-title', 'due',
   'source', 'handout', 'solutions', 'solutions-version', 'handout-filter', 'solution-filter',
   'homework-root', 'homework', 'project-prefix', 'quarto-bin',
   'handout-generator', 'support-file', 'extension', 'work-dir',
@@ -2934,6 +2936,8 @@ function copyHtmlProjectFiles(bookDir, destinationRoot, mainFile, otherHtmlFile)
 async function cmdClassroomSetup() {
   const courseId = requiredClassroomSetupFlag('course')
   const courseTitle = requiredClassroomSetupFlag('course-title')
+  const instructorPreferredName = requiredClassroomSetupFlag('instructor-preferred-name')
+  const instructorPronouns = getFlag('instructor-pronouns')
   const assignmentId = requiredClassroomSetupFlag('assignment')
   const assignmentTitle = requiredClassroomSetupFlag('assignment-title')
   const dueAt = requiredClassroomSetupFlag('due')
@@ -2996,7 +3000,7 @@ async function cmdClassroomSetup() {
   // timeout on the last link used to re-render the whole assignment — which is
   // what a caller sees as a command that never finishes.
   await finishCliOperation('classroom setup', () => publishClassroomAssignment({
-    rendered, courseId, courseTitle, assignmentId, assignmentTitle, dueAt,
+    rendered, courseId, courseTitle, instructorPreferredName, instructorPronouns, assignmentId, assignmentTitle, dueAt,
     sourceDocKey, templateDocKey, solutionsDocKey, solutionsVersion,
     handoutFilter, solutionFilter, sourceDir, handoutDir, solutionDir, onProgress,
   }))
@@ -3005,7 +3009,7 @@ async function cmdClassroomSetup() {
 // Re-runnable: creating a project that exists is ignored, git init and an empty
 // commit converge, and each link is the same call with the same bytes.
 async function publishClassroomAssignment({
-  rendered, courseId, courseTitle, assignmentId, assignmentTitle, dueAt,
+  rendered, courseId, courseTitle, instructorPreferredName, instructorPronouns, assignmentId, assignmentTitle, dueAt,
   sourceDocKey, templateDocKey, solutionsDocKey, solutionsVersion,
   handoutFilter, solutionFilter, sourceDir, handoutDir, solutionDir, onProgress,
 }) {
@@ -3038,7 +3042,12 @@ async function publishClassroomAssignment({
   })
 
   onProgress({ message: `Recording course, assignment, and frozen handout` })
-  const course = await api('POST', '/api/classroom/courses', { id: courseId, title: courseTitle })
+  const course = await api('POST', '/api/classroom/courses', {
+    id: courseId,
+    title: courseTitle,
+    preferredName: instructorPreferredName,
+    ...(instructorPronouns == null ? {} : { pronouns: instructorPronouns }),
+  })
   const assignment = await api('POST', `/api/classroom/courses/${encodeURIComponent(courseId)}/assignments`, {
     id: assignmentId,
     title: assignmentTitle,

@@ -26,6 +26,16 @@ test('gradebook derives missing and ungraded states from roster and submissions'
   } finally { f.close() }
 })
 
+test('course pronouns can be cleared without losing the preferred name', () => {
+  const f = fixture()
+  try {
+    f.store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'skip', pronouns: 'he/him' })
+    const cleared = f.store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'skip', pronouns: '' })
+    assert.equal(cleared.preferred_name, 'skip')
+    assert.equal(cleared.pronouns, null)
+  } finally { f.close() }
+})
+
 test('a common-layer student is an ordinary roster member through missing, submission, and marking', () => {
   const f = fixture()
   try {

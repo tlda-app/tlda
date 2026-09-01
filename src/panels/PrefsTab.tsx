@@ -33,6 +33,8 @@ import {
   type ReadabilityProfile,
 } from '../readabilityProfile'
 import { ClassroomDeviceTransferSettings } from '../classroom/ClassroomDeviceTransfer'
+import { isClassroomSurface } from '../classroom/classroomSurface'
+import { settingsIdentityEditable } from '../classroom/classroomUiPolicy'
 
 type DeviceRecord = { lastSeen: string }
 
@@ -146,6 +148,7 @@ function IdentitySectionBody({
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const deviceId = getDeviceId()
+  const classroom = isClassroomSurface()
 
   useEffect(() => {
     if (!deviceId) return
@@ -182,7 +185,9 @@ function IdentitySectionBody({
 
   return (
     <>
-      <PrefSubsection title="User">
+      {!settingsIdentityEditable(classroom) ? <PrefSubsection title="User">
+        <div style={{ fontSize: 11 }}>Your identity is managed by this course.</div>
+      </PrefSubsection> : <PrefSubsection title="User">
         <div style={{ fontSize: 11, marginBottom: 4 }}>
           You are <strong>{name || '(none)'}</strong>
         </div>
@@ -200,7 +205,7 @@ function IdentitySectionBody({
           </button>
         </div>
         {err && <div style={{ fontSize: 10, color: '#b91c1c', marginTop: 2 }}>{err}</div>}
-      </PrefSubsection>
+      </PrefSubsection>}
 
       <PrefSubsection title="Devices">
         {devices.length === 0 && <div style={{ fontSize: 10, color: '#6b7280' }}>No devices seen yet.</div>}

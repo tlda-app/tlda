@@ -47,7 +47,7 @@ test('a student is told who they are, and it comes from their token', async t =>
   // The registered name comes back with the id. The classroom badge says
   // "Logged in as Ada" from this and nothing else, so a route that answered
   // only the id would leave the badge unable to name anyone.
-  assert.deepEqual(ada.body, { role: 'student', studentId: 'ada', courseId: 'c', displayName: 'Ada' })
+  assert.deepEqual(ada.body, { role: 'student', studentId: 'ada', courseId: 'c', displayName: 'Ada', preferredName: 'Ada', pronouns: null })
 
   // The counterfactual that makes the assertion above mean something: a
   // different token has to produce a different student, or the test would pass
@@ -66,12 +66,15 @@ test('no token is 401, not an anonymous identity', async t => {
   assert.equal(anon.body.studentId, undefined)
 })
 
-test('an instructor gets no student id to draw as', async t => {
-  const { server, get } = await serve(() => ({ role: 'instructor' }))
+test('an instructor gets the course-owned preferred name and no student id', async t => {
+  const { store, server, get } = await serve(() => ({ role: 'instructor' }))
   t.after(() => server.close())
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Professor Example', pronouns: 'they/them' })
 
-  const who = await get('/me')
+  const who = await get('/me?course=c')
   assert.equal(who.status, 200)
   assert.equal(who.body.role, 'instructor')
   assert.equal(who.body.studentId, undefined, 'an instructor was handed a student overlay to write into')
+  assert.equal(who.body.preferredName, 'Professor Example')
+  assert.equal(who.body.pronouns, 'they/them')
 })

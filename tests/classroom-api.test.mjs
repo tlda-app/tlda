@@ -40,7 +40,7 @@ test('a classroom enrollment token identifies a student without exposing the glo
     store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
     store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'student-secret' })
     const principal = classroomPrincipal({ headers: { 'x-tlda-student-token': 'student-secret' }, query: {} }, store, null)
-    assert.deepEqual(principal, { role: 'student', studentId: 'ada', courseId: 'qtm285', displayName: 'Ada', layerScope: 'student' })
+    assert.deepEqual(principal, { role: 'student', studentId: 'ada', courseId: 'qtm285', displayName: 'Ada', preferredName: 'Ada', pronouns: null, layerScope: 'student' })
     assert.equal(classroomPrincipal({ headers: { 'x-tlda-student-token': 'wrong' }, query: {} }, store, null), null)
   } finally {
     store.close()
@@ -73,25 +73,39 @@ test('a student cannot bypass archive hand-in with an arbitrary document key', a
   } finally { f.close() }
 })
 
-test('a student can register their name and university login and receive a token', async () => {
+test('a student registers a required preferred name and optional pronouns', async () => {
   const f = await serverFixture()
   try {
     let response = await f.request('/courses/qtm285/register', '', {
       method: 'POST',
       headers: { authorization: 'Bearer read-access' },
-      body: JSON.stringify({ displayName: 'Katherine Johnson', universityLogin: 'kjohn42' }),
+      body: JSON.stringify({ preferredName: 'Katherine Johnson', pronouns: 'she/her', universityLogin: 'kjohn42' }),
     })
     assert.equal(response.status, 201)
     const registration = await response.json()
     assert.equal(registration.student.displayName, 'Katherine Johnson')
+    assert.equal(registration.student.preferredName, 'Katherine Johnson')
+    assert.equal(registration.student.pronouns, 'she/her')
     assert.equal(registration.student.id, 'qtm285:kjohn42')
     assert.equal(f.store.studentForToken(registration.enrollmentToken).id, registration.student.id)
     assert.equal(f.store.listStudents('qtm285').find(student => student.id === registration.student.id).universityLogin, 'kjohn42')
 
+    response = await f.request('/courses/qtm285/students', 'instructor', {
+      method: 'POST',
+      body: JSON.stringify({ id: registration.student.id, preferredName: 'Grace Hopper', pronouns: 'they/them', enrollmentToken: registration.enrollmentToken }),
+    })
+    assert.equal(response.status, 201)
+    const corrected = await response.json()
+    assert.equal(corrected.displayName, 'Grace Hopper')
+    assert.equal(corrected.pronouns, 'they/them')
+    const authority = classroomPrincipal({ headers: { 'x-tlda-student-token': registration.enrollmentToken }, query: {} }, f.store, null)
+    assert.equal(authority.displayName, 'Grace Hopper')
+    assert.equal(authority.pronouns, 'they/them')
+
     response = await f.request('/courses/qtm285/register', '', {
       method: 'POST',
       headers: { authorization: 'Bearer read-access' },
-      body: JSON.stringify({ displayName: 'Someone Else', universityLogin: 'kjohn42' }),
+      body: JSON.stringify({ preferredName: 'Someone Else', universityLogin: 'kjohn42' }),
     })
     assert.equal(response.status, 409)
   } finally { f.close() }
@@ -113,13 +127,9 @@ test('a class-scoped web app manifest carries only the class, project, and ordin
     assert.equal(start.searchParams.get('token'), 'read-access')
     assert.equal(start.searchParams.has('classroomToken'), false)
     assert.equal(manifest.icons.length, 1)
-    assert.match(manifest.icons[0].src, /^\/api\/classroom\/courses\/qtm285\/icon\.svg\?token=read-access$/)
+    assert.equal(manifest.icons[0].src, '/tlda-mark.svg')
     assert.doesNotMatch(JSON.stringify(manifest), /ada-secret|classroomToken/)
 
-    const icon = await f.request(manifest.icons[0].src.replace('/api/classroom', ''), '')
-    assert.equal(icon.status, 200)
-    assert.equal(icon.headers.get('content-type'), 'image/svg+xml; charset=utf-8')
-    assert.match(await icon.text(), />Q2<\/text>/)
   } finally { f.close() }
 })
 
@@ -158,7 +168,7 @@ test('a student transfers their enrollment to one new device without exposing or
 
     response = await f.request('/me', '', { headers: { 'x-tlda-student-token': redeemed.enrollmentToken } })
     assert.equal(response.status, 200)
-    assert.deepEqual(await response.json(), { role: 'student', studentId: 'ada', courseId: 'qtm285' })
+    assert.deepEqual(await response.json(), { role: 'student', studentId: 'ada', courseId: 'qtm285', pronouns: null })
 
     response = await f.request('/courses/qtm285/device-transfer/redeem', '', {
       method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
@@ -243,6 +253,23 @@ test('instructor creates a common-layer student through the ordinary student API
     const demo = (await response.json()).rows.find(row => row.id === 'demo')
     assert.equal(demo.layerScope, 'common')
     assert.equal(demo.assignments[0].state, 'not-submitted')
+
+    response = await f.request('/courses/qtm285/students', 'instructor', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'demo', preferredName: 'Updated Name', pronouns: 'they/them', enrollmentToken: 'demo-secret', layerScope: 'common' }),
+    })
+    assert.equal(response.status, 201)
+    let updated = await response.json()
+    assert.equal(updated.displayName, 'Updated Name')
+    assert.equal(updated.pronouns, 'they/them')
+
+    response = await f.request('/courses/qtm285/students', 'instructor', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'demo', preferredName: 'Updated Again', pronouns: '', enrollmentToken: 'demo-secret', layerScope: 'common' }),
+    })
+    updated = await response.json()
+    assert.equal(updated.displayName, 'Updated Again')
+    assert.equal(updated.pronouns, null)
 
     response = await f.request('/courses/qtm285/students', 'instructor', {
       method: 'POST',

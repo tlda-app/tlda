@@ -131,6 +131,7 @@ test('classroom setup posts course, assignment, and frozen handout through exist
       '--token', 'rw-token',
       '--course', 'qtm285',
       '--course-title', 'QTM 285',
+      '--instructor-preferred-name', 'Professor Example',
       '--assignment', 'hw1',
       '--assignment-title', 'Homework 1',
       '--due', '2026-09-01T20:00:00Z',
@@ -188,7 +189,7 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     assert.doesNotMatch(handoutHtml, /callout-solution/)
     assert.doesNotMatch(handoutHtml, /Fifty-five/)
     assert.match(handoutHtml, /ans-sum/)
-    assert.deepEqual(fixture.requests[6].body, { id: 'qtm285', title: 'QTM 285' })
+    assert.deepEqual(fixture.requests[6].body, { id: 'qtm285', title: 'QTM 285', preferredName: 'Professor Example' })
     assert.deepEqual(fixture.requests[7].body, {
       id: 'hw1',
       title: 'Homework 1',
@@ -215,4 +216,6 @@ test('classroom setup help documents the required instructor procedure', async (
   assert.match(result.stdout, /one authoritative homework QMD using the course's own handout generator/)
   assert.match(result.stdout, /ordinary Git checkouts linked through the project-link daemon path/)
   assert.match(result.stdout, /freezes the generated handout/)
+  assert.match(result.stdout, /--instructor-preferred-name\s+Required/)
+  assert.match(result.stdout, /--instructor-pronouns\s+Optional/)
 })

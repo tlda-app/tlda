@@ -467,11 +467,12 @@ export async function login(name) {
 }
 
 /** Register a new human agent. Used by the IdentityPicker for new users. */
-export async function registerHuman(name, { persist = true } = {}) {
+/** @param {string} name @param {{persist?: boolean, agentId?: string | null, prettyName?: string | null}} [options] */
+export async function registerHuman(name, { persist = true, agentId = null, prettyName = null } = {}) {
   const sanitized = sanitizeIdentityName(name)
   if (!isUsableIdentityName(sanitized)) throw new Error('invalid identity name')
-  const humanId = `fleet:${sanitized}`
-  const res = await browserFleetTransport.durable('register', { agent_id: humanId, name: sanitized, human: true })
+  const humanId = agentId || `fleet:${sanitized}`
+  const res = await browserFleetTransport.durable('register', { agent_id: humanId, name: sanitized, pretty_name: prettyName, human: true })
   const identity = completedRegistrationIdentity(res)
   _humanId = identity.id
   _humanName = sanitized
