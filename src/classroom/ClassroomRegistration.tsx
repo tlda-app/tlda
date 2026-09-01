@@ -23,7 +23,8 @@ export function ClassroomRegistration() {
   const params = new URLSearchParams(window.location.search)
   const courseId = classroomCourseId()
   const project = params.get('project')
-  const [displayName, setDisplayName] = useState('')
+  const [preferredName, setPreferredName] = useState('')
+  const [pronouns, setPronouns] = useState('')
   const [universityLogin, setUniversityLogin] = useState('')
   const [registration, setRegistration] = useState<RegisteredStudent | null>(null)
   const [error, setError] = useState('')
@@ -49,7 +50,7 @@ export function ClassroomRegistration() {
     try {
       setSubmitting(true)
       setError('')
-      const registered = await classroomApi.register(courseId, { displayName: displayName.trim(), universityLogin: universityLogin.trim() })
+      const registered = await classroomApi.register(courseId, { preferredName: preferredName.trim(), pronouns: pronouns.trim(), universityLogin: universityLogin.trim() })
       // Remembered before it is shown, so a student who closes the tab on the
       // token screen is still enrolled on this browser rather than locked out
       // of a value the server will not print again.
@@ -68,9 +69,10 @@ export function ClassroomRegistration() {
   </main>
 
   return <main className="classroomWorkspace classroomRegistration">
-    <header><div><h1>Register for {courseId}</h1><div>Enter the name and university login you use for class.</div></div></header>
+    <header><div><h1>Register for {courseId}</h1><div>Enter the preferred name and university login you use for class.</div></div></header>
     {!registration ? <form onSubmit={register}>
-      <label>Name<input required value={displayName} onChange={event => setDisplayName(event.target.value)} autoComplete="name" /></label>
+      <label>Preferred name<input required value={preferredName} onChange={event => setPreferredName(event.target.value)} autoComplete="name" /></label>
+      <label>Pronouns <span>(optional)</span><input value={pronouns} onChange={event => setPronouns(event.target.value)} /></label>
       <label>University login<input required value={universityLogin} onChange={event => setUniversityLogin(event.target.value)} autoCapitalize="none" autoCorrect="off" /></label>
       <button type="submit" disabled={submitting}>{submitting ? 'Registering…' : 'Register'}</button>
       {error && <p className="classroomError">{error}</p>}

@@ -26,7 +26,8 @@ export class ClassroomStore {
   #migrate() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS courses (
-        id TEXT PRIMARY KEY, title TEXT NOT NULL
+        id TEXT PRIMARY KEY, title TEXT NOT NULL,
+        preferred_name TEXT, pronouns TEXT
       );
       CREATE TABLE IF NOT EXISTS students (
         id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
@@ -63,6 +64,9 @@ export class ClassroomStore {
         FOREIGN KEY (assignment_id, student_id) REFERENCES submissions(assignment_id, student_id) ON DELETE CASCADE
       );
     `)
+    const courseColumns = new Set(this.db.pragma('table_info(courses)').map(column => column.name))
+    if (!courseColumns.has('preferred_name')) this.db.exec('ALTER TABLE courses ADD COLUMN preferred_name TEXT')
+    if (!courseColumns.has('pronouns')) this.db.exec('ALTER TABLE courses ADD COLUMN pronouns TEXT')
     const assignmentColumns = new Set(this.db.pragma('table_info(assignments)').map(column => column.name))
     if (!assignmentColumns.has('template_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN template_doc_key TEXT')
     if (!assignmentColumns.has('source_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN source_doc_key TEXT')
@@ -74,6 +78,8 @@ export class ClassroomStore {
     const submissionColumns = new Set(this.db.pragma('table_info(submissions)').map(column => column.name))
     if (!submissionColumns.has('answer_ids')) this.db.exec('ALTER TABLE submissions ADD COLUMN answer_ids TEXT')
     const studentColumns = new Set(this.db.pragma('table_info(students)').map(column => column.name))
+    if (!studentColumns.has('preferred_name')) this.db.exec('ALTER TABLE students ADD COLUMN preferred_name TEXT')
+    if (!studentColumns.has('pronouns')) this.db.exec('ALTER TABLE students ADD COLUMN pronouns TEXT')
     if (!studentColumns.has('university_login')) this.db.exec('ALTER TABLE students ADD COLUMN university_login TEXT')
     if (!studentColumns.has('layer_scope')) this.db.exec("ALTER TABLE students ADD COLUMN layer_scope TEXT NOT NULL DEFAULT 'student' CHECK (layer_scope IN ('student','common'))")
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_students_course_login ON students(course_id, university_login) WHERE university_login IS NOT NULL')
@@ -81,39 +87,49 @@ export class ClassroomStore {
 
   close() { this.db.close() }
 
-  upsertCourse({ id, title }) {
-    this.db.prepare(`INSERT INTO courses(id,title) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title`).run(id, title)
+  upsertCourse({ id, title, preferredName, pronouns }) {
+    const existing = this.getCourse(id)
+    const nextPreferredName = preferredName === undefined ? (existing?.preferred_name || null) : preferredName
+    const nextPronouns = pronouns === undefined ? (existing?.pronouns || null) : (String(pronouns ?? '').trim() || null)
+    this.db.prepare(`INSERT INTO courses(id,title,preferred_name,pronouns) VALUES (?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET title=excluded.title, preferred_name=excluded.preferred_name, pronouns=excluded.pronouns`)
+      .run(id, title, nextPreferredName, nextPronouns)
     return this.getCourse(id)
   }
 
   getCourse(id) { return this.db.prepare('SELECT * FROM courses WHERE id=?').get(id) || null }
 
-  upsertStudent({ id, courseId, displayName, enrollmentToken, active = true, layerScope = 'student' }) {
+  upsertStudent({ id, courseId, displayName, preferredName, pronouns, enrollmentToken, active = true, layerScope = 'student' }) {
     if (!STUDENT_LAYER_SCOPES.has(layerScope)) throw new Error(`invalid student layer scope: ${layerScope}`)
+    const existing = this.getStudent(id)
+    const nextPreferredName = String(preferredName ?? displayName ?? '').trim()
+    if (!nextPreferredName) throw new Error('preferred name is required')
+    const nextPronouns = pronouns === undefined ? (existing?.pronouns || null) : (String(pronouns ?? '').trim() || null)
     const tokenHash = hashEnrollmentToken(enrollmentToken)
-    this.db.prepare(`INSERT INTO students(id,course_id,display_name,enrollment_token_hash,active,layer_scope) VALUES (?,?,?,?,?,?)
+    this.db.prepare(`INSERT INTO students(id,course_id,display_name,preferred_name,pronouns,enrollment_token_hash,active,layer_scope) VALUES (?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET course_id=excluded.course_id, display_name=excluded.display_name,
+      preferred_name=excluded.preferred_name, pronouns=excluded.pronouns,
       enrollment_token_hash=excluded.enrollment_token_hash, active=excluded.active, layer_scope=excluded.layer_scope`)
-      .run(id, courseId, displayName, tokenHash, active ? 1 : 0, layerScope)
+      .run(id, courseId, nextPreferredName, nextPreferredName, nextPronouns, tokenHash, active ? 1 : 0, layerScope)
     return this.getStudent(id)
   }
 
-  registerStudent({ courseId, displayName, universityLogin, enrollmentToken }) {
+  registerStudent({ courseId, preferredName, pronouns = null, universityLogin, enrollmentToken }) {
     const id = `${courseId}:${universityLogin}`
     const tokenHash = hashEnrollmentToken(enrollmentToken)
-    this.db.prepare(`INSERT INTO students(id,course_id,display_name,enrollment_token_hash,active,university_login)
-      VALUES (?,?,?,?,1,?)`).run(id, courseId, displayName, tokenHash, universityLogin)
+    this.db.prepare(`INSERT INTO students(id,course_id,display_name,preferred_name,pronouns,enrollment_token_hash,active,university_login)
+      VALUES (?,?,?,?,?,?,1,?)`).run(id, courseId, preferredName, preferredName, pronouns || null, tokenHash, universityLogin)
     return this.getStudent(id)
   }
 
-  getStudent(id) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, active, layer_scope AS layerScope FROM students WHERE id=?').get(id) || null }
+  getStudent(id) { return this.db.prepare('SELECT id, course_id AS courseId, COALESCE(preferred_name,display_name) AS displayName, preferred_name AS preferredName, pronouns, active, layer_scope AS layerScope FROM students WHERE id=?').get(id) || null }
   studentForToken(token) {
     if (!token) return null
     const tokenHash = hashEnrollmentToken(token)
-    const primary = this.db.prepare(`SELECT id, course_id AS courseId, display_name AS displayName, layer_scope AS layerScope FROM students
+    const primary = this.db.prepare(`SELECT id, course_id AS courseId, COALESCE(preferred_name,display_name) AS displayName, preferred_name AS preferredName, pronouns, layer_scope AS layerScope FROM students
       WHERE enrollment_token_hash=? AND active=1`).get(tokenHash)
     if (primary) return primary
-    return this.db.prepare(`SELECT st.id, st.course_id AS courseId, st.display_name AS displayName, st.layer_scope AS layerScope
+    return this.db.prepare(`SELECT st.id, st.course_id AS courseId, COALESCE(st.preferred_name,st.display_name) AS displayName, st.preferred_name AS preferredName, st.pronouns, st.layer_scope AS layerScope
       FROM student_device_credentials dc JOIN students st ON st.id=dc.student_id
       WHERE dc.device_token_hash=? AND dc.redeemed_at IS NOT NULL AND st.active=1`).get(tokenHash) || null
   }

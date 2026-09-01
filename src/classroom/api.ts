@@ -12,7 +12,7 @@ export interface FeedbackMark { id: string; title: string; text: string; attache
 export interface ProblemAnswer { studentId: string; displayName: string; layerScope: StudentLayerScope; contentRef: string; gradingStatus: GradingStatus; anchor: string | null }
 export interface ProblemsView { assignment: Assignment; problems: { problemId: string; answers: ProblemAnswer[] }[] }
 export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[] }
-export interface RegisteredStudent { student: { id: string; courseId: string; displayName: string; layerScope: StudentLayerScope }; enrollmentToken: string }
+export interface RegisteredStudent { student: { id: string; courseId: string; displayName: string; preferredName?: string; pronouns?: string | null; layerScope: StudentLayerScope }; enrollmentToken: string }
 export interface DeviceTransfer { transferUrl: string; qrSvg: string; expiresAt: string }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -32,15 +32,18 @@ export type ClassroomIdentity =
   // `displayName` is the name the student registered under. Optional because a
   // principal resolver is free not to carry one, and a badge with no name says
   // nothing rather than saying "undefined".
-  | { role: 'student'; studentId: string; courseId: string; displayName?: string }
-  | { role: 'instructor' }
+  | { role: 'student'; studentId: string; courseId: string; displayName?: string; preferredName: string; pronouns?: string | null }
+  | { role: 'instructor'; courseId: string; preferredName: string; pronouns?: string | null }
 
 export const classroomApi = {
   // Who the caller is, from their token. The book surface needs this before it
   // can open the student's own annotation room, and there is no assignment in
   // hand there to ask through.
-  me: () => request<ClassroomIdentity>('/me'),
-  register: (courseId: string, body: { displayName: string; universityLogin: string }) => request<RegisteredStudent>(`/courses/${encodeURIComponent(courseId)}/register`, {
+  me: () => {
+    const course = new URLSearchParams(window.location.search).get('course')
+    return request<ClassroomIdentity>(`/me${course ? `?course=${encodeURIComponent(course)}` : ''}`)
+  },
+  register: (courseId: string, body: { preferredName: string; pronouns?: string; universityLogin: string }) => request<RegisteredStudent>(`/courses/${encodeURIComponent(courseId)}/register`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   }),
   createDeviceTransfer: (courseId: string, returnPath: string) => request<DeviceTransfer>(`/courses/${encodeURIComponent(courseId)}/device-transfer`, {

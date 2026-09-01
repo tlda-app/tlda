@@ -541,6 +541,7 @@ function DocumentApp() {
     case 'book':
       return (
         <div className="App">
+          <IdentityPicker />
           <ErrorBoundary>
             <BookViewer bookName={state.bookName} members={state.members} onEditorMount={attachAppRecordingEditor} />
           </ErrorBoundary>
