@@ -135,7 +135,9 @@ test('pull search and push subscriptions agree on persisted query shapes', async
     ]) store.upsertAgent({ ...agent, labels: [], registered_at: now, last_seen: now })
 
     const messages = [
-      { from: 'fleet:skip', to: 'fleet:pic-lab1', address: 'pic-lab1', timestamp: '2026-09-01T01:00:00.000Z', text: 'lab forward' },
+      // The UI sends the resolved fleet id. A subscription naming the same
+      // participant by friendly name must still match the conversation.
+      { from: 'fleet:skip', to: 'fleet:pic-lab1', address: 'fleet:pic-lab1', timestamp: '2026-09-01T01:00:00.000Z', text: 'lab forward' },
       { from: 'fleet:pic-lab1', to: 'fleet:skip', address: 'fleet:skip', timestamp: '2026-09-01T01:01:00.000Z', text: 'lab reverse' },
       { from: 'fleet:skip', to: 'fleet:pic-lecture-opus', address: 'pic-lecture-opus', timestamp: '2026-09-01T01:02:00.000Z', text: 'lecture forward' },
       { from: 'fleet:sender', to: 'fleet:goose', address: 'goose', timestamp: '2026-09-01T01:03:00.000Z', text: 'direct subscriber' },
