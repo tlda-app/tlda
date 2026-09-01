@@ -14,7 +14,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
@@ -139,16 +139,45 @@ export function qmdOutputFileForSource(sourceFile) {
 }
 
 export function qmdRenderedOutputFileForSource(outDir, sourceFile) {
-  const direct = qmdOutputFileForSource(sourceFile)
-  return [direct, `_book/${direct}`]
-    .find((candidate) => existsSync(join(outDir, candidate))) || null
+  return qmdRenderedOutputFilesForSource(outDir, sourceFile)[0] || null
 }
 
-export function qmdDeckPageInfo(root, perSlide) {
+export function qmdRenderedOutputFilesForSource(outDir, sourceFile) {
+  const normalizedSource = String(sourceFile || '').replace(/\\/g, '/').replace(/^\.?\/+/, '')
+  const sourcePath = join(outDir, normalizedSource)
+  const candidates = []
+  if (existsSync(sourcePath)) {
+    const source = readFileSync(sourcePath, 'utf8')
+    const frontMatter = source.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+    if (frontMatter) {
+      const format = parseYaml(frontMatter[1])?.format
+      if (format && typeof format === 'object' && !Array.isArray(format)) {
+        for (const options of Object.values(format)) {
+          if (!options || typeof options !== 'object' || Array.isArray(options)) continue
+          const outputFile = options['output-file']
+          if (typeof outputFile !== 'string' || !outputFile.trim()) continue
+          candidates.push(join(dirname(normalizedSource), outputFile).replace(/\\/g, '/'))
+        }
+      }
+    }
+  }
+  if (candidates.length === 0) candidates.push(qmdOutputFileForSource(normalizedSource))
+
+  const rendered = []
+  for (const candidate of [...new Set(candidates)]) {
+    for (const path of [candidate, `_book/${candidate}`]) {
+      if (existsSync(join(outDir, path))) rendered.push(path)
+    }
+  }
+  return [...new Set(rendered)]
+}
+
+export function qmdDeckPageInfo(root, perSlide, variant) {
   return perSlide.map(({ pageInfo }, groupIndex) => ({
     ...pageInfo,
     group: root,
     groupIndex,
+    ...(variant && { variant }),
     source: { type: 'project-source', format: 'qmd', file: root },
   }))
 }
@@ -365,51 +394,56 @@ export async function buildQmdDocument(name, addLog = console.log) {
   let anyDeck = false
   for (const root of mainFiles) {
     const sourceOutputFile = qmdOutputFileForSource(root)
-    const outputFile = qmdRenderedOutputFileForSource(outDir, root)
+    const outputFiles = qmdRenderedOutputFilesForSource(outDir, root)
     // Throws for the reason the root check above throws: a render that produced
     // no document is a failed build, and returning normally publishes the empty
     // instance over the last good render.
-    if (!outputFile) {
+    if (outputFiles.length === 0) {
       throw new Error(`[qmd] render produced neither ${sourceOutputFile} nor _book/${sourceOutputFile}`)
     }
-    const renderedPath = join(outDir, outputFile)
+    const hasAlternates = outputFiles.length > 1
+    for (const outputFile of outputFiles) {
+      const renderedPath = join(outDir, outputFile)
+      const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
+      writeFileSync(renderedPath, rendered)
 
-    const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
-    writeFileSync(renderedPath, rendered)
-
-    // A deck and a document are the same build with the same inputs and two
-    // different things on the far side: one page of prose to scroll, or N slides
-    // addressed by reveal coordinates. The rendered HTML is what says which, so
-    // it is read rather than guessed at from the source header.
-    const isDeck = isRevealDeck(rendered)
-    anyDeck ||= isDeck
-    if (isDeck) {
-      const perSlide = buildPerSlideDocuments(rendered, outputFile)
-      const groupedPageInfo = qmdDeckPageInfo(root, perSlide)
-      for (const [groupIndex, slide] of perSlide.entries()) {
-        writeFileSync(join(outDir, slide.filename), slide.html)
-        pageInfo.push(groupedPageInfo[groupIndex])
+      const isDeck = isRevealDeck(rendered)
+      anyDeck ||= isDeck
+      const variant = hasAlternates ? (isDeck ? 'slides' : 'chapter') : undefined
+      if (isDeck) {
+        const perSlide = buildPerSlideDocuments(rendered, outputFile)
+        const groupedPageInfo = qmdDeckPageInfo(root, perSlide, variant)
+        for (const [groupIndex, slide] of perSlide.entries()) {
+          writeFileSync(join(outDir, slide.filename), slide.html)
+          pageInfo.push(groupedPageInfo[groupIndex])
+        }
+        addLog(`[qmd] split ${root} into ${perSlide.length} single-slide documents`)
+      } else {
+        pageInfo.push({
+          file: outputFile,
+          width: DEFAULT_WIDTH,
+          height: DEFAULT_HEIGHT,
+          title: titleFromRenderedHtml(rendered, root.replace(/\.qmd$/i, '')),
+          format: 'qmd',
+          ...(variant && { variant }),
+          source: { type: 'project-source', format: 'qmd', file: root },
+        })
       }
-      addLog(`[qmd] split ${root} into ${perSlide.length} single-slide documents`)
-    } else {
-      pageInfo.push({
-        file: outputFile,
-        width: DEFAULT_WIDTH,
-        height: DEFAULT_HEIGHT,
-        title: titleFromRenderedHtml(rendered, root.replace(/\.qmd$/i, '')),
-        format: 'qmd',
-        source: { type: 'project-source', format: 'qmd', file: root },
-      })
     }
   }
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
-  writeFileSync(join(outDir, 'toc.json'), JSON.stringify(extractHtmlToc(outDir, pageInfo), null, 2))
+  const chapterPages = pageInfo.filter((entry) => entry.variant !== 'slides')
+  const toc = extractHtmlToc(outDir, chapterPages)
+  if (pageInfo.some((entry) => entry.variant === 'slides') && chapterPages.length > 0) {
+    toc.push({ title: 'Slides', level: 'section', page: 1, variant: 'slides' })
+  }
+  writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
   await writeSourceScope(name, srcDir, outDir)
   await reporter.updateProject(name, {
     buildStatus: 'success',
     pages: pageInfo.length,
-    renderedFormat: mainFiles.length === 1 && anyDeck ? 'slides' : 'html',
+    renderedFormat: mainFiles.length === 1 && anyDeck && pageInfo.every((entry) => entry.variant !== 'chapter') ? 'slides' : 'html',
     lastBuild: new Date().toISOString(),
   })
   reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: Date.now() })

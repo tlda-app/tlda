@@ -281,11 +281,11 @@ export function TocTab({ query = '' }: { query?: string }) {
     editor.centerOnPoint({ x: pageCenterX, y: pos.y }, { animation: { duration: 300 } })
   }, [editor, doc])
 
-  const handleHtmlNav = useCallback((pageNum: number, anchor?: string, targetFile?: string) => {
+  const handleHtmlNav = useCallback((pageNum: number, anchor?: string, targetFile?: string, variant?: 'slides') => {
     if (!doc) return
     if (targetFile) {
       // Book cross-member navigation: post tlda-navigate, BookViewer handles the switch
-      window.postMessage({ type: 'tlda-navigate', targetFile, anchor: anchor || null, shapeId: null }, '*')
+      window.postMessage({ type: 'tlda-navigate', targetFile, anchor: anchor || null, variant, shapeId: null }, '*')
       return
     }
     if (anchor) {
@@ -433,8 +433,8 @@ export function TocTab({ query = '' }: { query?: string }) {
         title: h.level === 'chapter' && h.targetFile && h.title === h.targetFile
           ? (book?.members.find(m => m.key === h.targetFile)?.name || h.title)
           : h.title,
-        nav: () => handleHtmlNav(h.page, h.anchor, h.targetFile),
-        center: () => handleHtmlNav(h.page, h.anchor, h.targetFile),
+        nav: () => handleHtmlNav(h.page, h.anchor, h.targetFile, h.variant),
+        center: () => handleHtmlNav(h.page, h.anchor, h.targetFile, h.variant),
         targetFile: h.targetFile,
       }))
     : headings.map(h => ({

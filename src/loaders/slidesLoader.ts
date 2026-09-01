@@ -20,10 +20,12 @@ export async function loadSlidesDocument(
     const body = await response.json().catch(() => ({}))
     throw new Error(`${response.status} ${body.error || response.statusText || 'could not load page-info.json'}`.trim())
   }
-  const pageInfos: SlidePageEntry[] = await response.json()
-  if (!Array.isArray(pageInfos)) {
+  const allPageInfos: SlidePageEntry[] = await response.json()
+  if (!Array.isArray(allPageInfos)) {
     throw new Error(`page-info.json for "${name}" is not a list of pages`)
   }
+  const slideVariant = allPageInfos.filter(info => info.variant === 'slides')
+  const pageInfos = slideVariant.length > 0 ? slideVariant : allPageInfos
 
   console.log(`Found ${pageInfos.length} slides`)
 

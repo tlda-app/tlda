@@ -384,7 +384,7 @@ export function aggregateBookToc(bookName, members) {
       const depth = DEPTH.indexOf(entry.level)
       const stepsIn = depth < 0 ? 0 : depth - shallowest
       const level = UNDER_CHAPTER[Math.min(Math.max(stepsIn, 0), UNDER_CHAPTER.length - 1)]
-      bookToc.push({ title: entry.title, level, page: 1, anchor: entry.anchor, targetFile: key })
+      bookToc.push({ title: entry.title, level, page: 1, anchor: entry.anchor, targetFile: key, ...(entry.variant && { variant: entry.variant }) })
     }
   }
 

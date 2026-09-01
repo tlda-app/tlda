@@ -18,6 +18,7 @@ export interface HtmlPageEntry {
   indexh?: number
   indexv?: number
   tabLabel?: string
+  variant?: 'chapter' | 'slides'
   source?: {
     type?: string
     format?: string
@@ -50,10 +51,11 @@ export async function loadHtmlDocument(
     const body = await response.json().catch(() => ({}))
     throw new Error(`${response.status} ${body.error || response.statusText || 'could not load page-info.json'}`.trim())
   }
-  const pageInfos: HtmlPageEntry[] = await response.json()
-  if (!Array.isArray(pageInfos)) {
+  const allPageInfos: HtmlPageEntry[] = await response.json()
+  if (!Array.isArray(allPageInfos)) {
     throw new Error(`page-info.json for "${name}" is not a list of pages`)
   }
+  const pageInfos = allPageInfos.filter(info => info.variant !== 'slides')
   return createHtmlDocumentFromPageInfo(name, basePath, pageInfos)
 }
 
