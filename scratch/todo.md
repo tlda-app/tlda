@@ -187,6 +187,30 @@ Owned by `course-website`. Design in `qtm285-1/scratch/naming-and-deploy-design.
       Parked: `fleet:9307-mtjabkhi`.
 - [ ] **`<>` subscription notifications never deliver.** ~40 messages, zero
       notifications, both spellings. Live. Parked: `fleet:9307-mtjaxr1s`.
+
+      **Narrowed, 19:45.** Not a global outage — a fleet-ID `<>` control for
+      another pair delivers, and a `to:me` subscription for the same subscriber
+      delivers. **The stale-pre-deploy-row hypothesis is falsified by control:**
+      a subscription created 42 minutes *after* the fix, carrying the identical
+      query, stayed silent across the same 13 qualifying events as the old one.
+      So it is subscriber- or creation-context-specific. **`list` shows the
+      unhealthy rows as healthy**, which is why nothing surfaced it.
+
+- [ ] **Document MCP tools are invisible to daemon-launched agents.**
+      `TLDA_MCP_FLEET_ONLY=1` is forced in `agent-launch/harness/claude.mjs:49`
+      and `codex.mjs:209,240`, so `tools/list` returns only the fleet tools.
+      **`annotations`, `ref` and `note` are unreachable**, and no second
+      document MCP or bridge is configured.
+
+      **This cost Skip time tonight.** He asked for the stickies on the document
+      he was looking at; I could not see `annotations`, and went to Chrome
+      remote debugging and the filesystem instead before he had to name the tool
+      twice. **Guidance meanwhile claims those tools are available on every
+      harness**, so the next agent will make the same detour.
+
+      Acceptance: a freshly daemon-minted Claude, Codex and Goose agent can each
+      discover and call `annotations` from an ordinary viewer-anchored request,
+      **without being told the tool's name.**
 - [ ] **`dev` runs as `quiet-dev` and is therefore inert** — no worktree
       eviction, no preview reaping, since 2026-08-26. Same root cause as the
       bot existence test above.
