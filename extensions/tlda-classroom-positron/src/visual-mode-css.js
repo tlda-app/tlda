@@ -4,6 +4,9 @@ const path = require('path')
 
 const marker = '/* tlda Classroom homework callouts */'
 const endMarker = '/* end tlda Classroom homework callouts */'
+const oldBlocks = [
+  ['/* PIC homework callouts */', '/* end PIC homework callouts */'],
+]
 const css = `${marker}
 .ProseMirror .pm-div.callout-exercise {
   border: 1px solid rgba(222, 226, 230, 1);
@@ -54,14 +57,22 @@ function install(quartoExtensionPath) {
   if (!quartoExtensionPath) return false
   const stylesheet = path.join(quartoExtensionPath, 'assets', 'www', 'editor', 'style.css')
   const current = fs.readFileSync(stylesheet, 'utf8')
-  const start = current.indexOf(marker)
+  let cleaned = current
+  for (const [oldStart, oldEnd] of oldBlocks) {
+    const start = cleaned.indexOf(oldStart)
+    if (start === -1) continue
+    const markedEnd = cleaned.indexOf(oldEnd, start)
+    const end = markedEnd === -1 ? cleaned.length : markedEnd + oldEnd.length
+    cleaned = cleaned.slice(0, start) + cleaned.slice(end)
+  }
+  const start = cleaned.indexOf(marker)
   let next
   if (start === -1) {
-    next = current + (current.endsWith('\n') ? '' : '\n') + css
+    next = cleaned + (cleaned.endsWith('\n') ? '' : '\n') + css
   } else {
-    const markedEnd = current.indexOf(endMarker, start)
-    const end = markedEnd === -1 ? current.length : markedEnd + endMarker.length
-    next = current.slice(0, start) + css + current.slice(end)
+    const markedEnd = cleaned.indexOf(endMarker, start)
+    const end = markedEnd === -1 ? cleaned.length : markedEnd + endMarker.length
+    next = cleaned.slice(0, start) + css + cleaned.slice(end)
   }
   if (next === current) return false
   fs.writeFileSync(stylesheet, next)
