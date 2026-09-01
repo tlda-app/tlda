@@ -264,9 +264,14 @@ export async function injectCodexPrompt(session, prompt, {
         await sleep(500)
         const pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
         if (!pasted.stdout.includes(promptMarker)) continue
-        await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'Enter')
-        await sleep(1000)
-        return true
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'Enter')
+          await sleep(1000)
+          const submitted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
+          if (['Working', 'Transmuting', 'Thinking', 'esc to interrupt', 'ESC to interrupt']
+            .some((marker) => submitted.stdout.includes(marker))) return true
+        }
+        continue
       }
     } catch {
       // Prompt polling tolerates transient tmux capture failures until timeout.
