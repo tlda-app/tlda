@@ -299,9 +299,10 @@ const DAEMON_OUTBOX_LEDGER_PRUNE_INTERVAL_MS =
 export class FleetStore {
   constructor(dbPath, options = {}) {
     dbPath = dbPath || DB_PATH;
+    const readonly = options.readonly === true;
     // Ensure directory exists
     const dir = path.dirname(dbPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!readonly && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
     // The file this store actually opened, as a plain property rather than
     // something read back off the connection. Diagnostics compare it against
@@ -309,7 +310,7 @@ export class FleetStore {
     // the connection is not reachable from the main thread once this store
     // runs on a worker — FleetStoreClient carries the same property.
     this.dbPath = dbPath;
-    this.db = new Database(dbPath);
+    this.db = new Database(dbPath, readonly ? { readonly: true, fileMustExist: true } : undefined);
     // Slow-query logger: any .all()/.get() >= TLDA_SLOWQUERY_MS (default 25ms)
     // logs its SQL + duration + rowcount to [slowquery] in server.log. Installed
     // before any statement is prepared so it covers every query. Kept permanently
@@ -328,7 +329,9 @@ export class FleetStore {
             if (ms >= SLOW_MS) {
               const flat = String(sql).replace(/\s+/g, ' ').trim().slice(0, 200);
               const n = Array.isArray(r) ? r.length : (r ? 1 : 0);
-              console.warn(`[slowquery] ${ms.toFixed(0)}ms rows=${n} :: ${flat}`);
+              const context = this._activeSearchContext || null;
+              const contextText = context ? ` request=${context.requestId} caller=${context.caller || 'unknown'} surface=${context.surface || 'unknown'}` : '';
+              console.warn(`[slowquery] ${ms.toFixed(0)}ms rows=${n}${contextText} :: ${flat}`);
               // Also append to a file. stdout alone means this is only readable by
               // whoever happens to be tailing `fly logs` at the moment it fires --
               // there is no server.log on the Fly machine, and the log buffer rolls
@@ -337,7 +340,7 @@ export class FleetStore {
               // witness is a stakeout, not an instrument.
               fs.appendFile(
                 SLOWQUERY_LOG_FILE,
-                JSON.stringify({ ts: new Date().toISOString(), ms: Number(ms.toFixed(1)), rows: n, sql: flat }) + '\n',
+                JSON.stringify({ ts: new Date().toISOString(), ms: Number(ms.toFixed(1)), rows: n, sql: flat, context }) + '\n',
                 err => { if (err) console.warn(`[slowquery] append failed: ${err.message}`); },
               );
             }
@@ -351,8 +354,10 @@ export class FleetStore {
     // through FleetStoreClient, so slow SQLite work stays on the store worker
     // rather than the server event loop. NORMAL is durable across an app crash;
     // only a power loss can lose the last txn, never corrupts.
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL');
+    if (!readonly) {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('synchronous = NORMAL');
+    }
     // The dominant cost of a read here is I/O, not the query plan: identical
     // SQL returning identical rows has spanned 1,575x (113ms to 178s). Measured
     // on the live file 2026-07-26: a 16MB page cache against a 29.2GB database,
@@ -365,8 +370,10 @@ export class FleetStore {
     this.db.pragma('mmap_size = 1073741824');
     // Keep the WAL from growing without bound. Both live WALs reached ~1GB —
     // roughly 250x the checkpoint target — before being truncated by hand.
-    this.db.pragma('wal_autocheckpoint = 1000');
-    this.db.pragma('journal_size_limit = 67108864');
+    if (!readonly) {
+      this.db.pragma('wal_autocheckpoint = 1000');
+      this.db.pragma('journal_size_limit = 67108864');
+    }
     // This connection is normally the only one, so it never contends. The one
     // exception is bin/build-session-history-index.mjs, which takes the write
     // lock for the tens of seconds a CREATE INDEX over session_entries costs on
@@ -375,7 +382,7 @@ export class FleetStore {
     // waiting for a lock it is going to get. Reads are unaffected either way —
     // WAL readers do not block on a writer.
     this.db.pragma('busy_timeout = 120000');
-    this._createTables();
+    if (!readonly) this._createTables();
     this._prepareStatements();
     // Two delivery ledgers that are nothing but tables in this database. They
     // were constructed by unified-server from fleetStore.db, which cannot
@@ -383,20 +390,22 @@ export class FleetStore {
     // because neither reaches main-thread state. ServerDaemonOutbox in
     // particular wraps its enqueue in a db.transaction(), and a transaction
     // has to run on the thread that owns the connection.
-    this._serverDaemonOutbox = new ServerDaemonOutbox(this.db);
+    this._serverDaemonOutbox = readonly ? null : new ServerDaemonOutbox(this.db);
     this._closed = false;
-    this._initAgentRegistry();
+    if (!readonly) this._initAgentRegistry();
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
     this._lastTransportOperationPruneAt = 0;
-    this._backfillDefaultSubscriptions();
-    this._backfillDefaultSubscriptionsV2();
-    this._backfillDefaultSubscriptionsV3();
-    this._backfillSelfSubscriptions();
-    this._markMintSlotsMandatory();
-    this._backfillNameHistory();
+    if (!readonly) {
+      this._backfillDefaultSubscriptions();
+      this._backfillDefaultSubscriptionsV2();
+      this._backfillDefaultSubscriptionsV3();
+      this._backfillSelfSubscriptions();
+      this._markMintSlotsMandatory();
+      this._backfillNameHistory();
+    }
     this._listeners = []; // SSE broadcast callbacks
-    this._taskDocMaterializer = options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
+    this._taskDocMaterializer = !readonly && options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
       ? createTaskDocMaterializer({ fleetStore: this, ...(options.taskDocOptions || {}) })
       : null;
 
@@ -4966,6 +4975,8 @@ export class FleetStore {
   // so a broadcast to `awake` fired an awake agent's personal-mail subscription
   // exactly as hard as its group one.
   resolveSubscriptionDeliveries(senderId, recipientId, eventType, addressAst = null) {
+    const recipientIds = Array.isArray(recipientId) ? recipientId : [recipientId].filter(Boolean);
+    const directRecipients = new Set(recipientIds);
     if (!this._resolvableSubscriptionWiretapCache) {
       this._resolvableSubscriptionWiretapCache = this._getResolvableSubscriptionWiretaps.all().map(r => {
         const tap = this._hydrateWiretap(r)
@@ -4984,7 +4995,7 @@ export class FleetStore {
     const matched = [];
     if (taps.length === 0) return matched;
     const senderLabels = this._agentLabelsById(senderId);
-    const recipientLabels = this._agentLabelsById(recipientId);
+    const recipientLabels = recipientIds.length === 1 ? this._agentLabelsById(recipientIds[0]) : [];
     // Computed once per event rather than per subscription — this runs on the
     // main thread for every chat, and there can be thousands of taps.
     const envelope = addressAst ? addressTerms(addressAst) : null;
@@ -5033,7 +5044,7 @@ export class FleetStore {
         query: tap.query,
         notification_policy: tap.notification_policy,
         origin: 'held',
-        direct: tap.owner === recipientId,
+        direct: directRecipients.has(tap.owner),
       });
     }
     return matched;
@@ -5819,15 +5830,20 @@ export class FleetStore {
     const ph = (n) => n.map(() => '?').join(',');
     // Newest-first inside each direction, then merged and cut once. Same reason
     // the rest of this file reads DESC: the caller wants the recent page.
-    const branch = (from, to) => `SELECT * FROM (SELECT ${cols} FROM events
+    const sentBranch = (from, to) => `SELECT * FROM (SELECT ${cols} FROM events
+      WHERE events.from_id IN (${ph(from)})
+        AND EXISTS (SELECT 1 FROM recipients rc
+          WHERE rc.event_id = events.id AND rc.agent_id IN (${ph(to)}))${tailSql}
+      ORDER BY events.timestamp DESC, events.id DESC LIMIT ?)`;
+    const receivedBranch = (to, from) => `SELECT * FROM (SELECT ${cols} FROM events
       JOIN recipients r ON r.event_id = events.id
-      WHERE events.from_id IN (${ph(from)}) AND r.agent_id IN (${ph(to)})${tailSql}
+      WHERE r.agent_id IN (${ph(to)}) AND events.from_id IN (${ph(from)})${tailSql}
       ORDER BY r.timestamp DESC, r.event_id DESC LIMIT ?)`;
-    const sql = `SELECT * FROM (${branch(a, b)} UNION ${branch(b, a)})
+    const sql = `SELECT * FROM (${sentBranch(a, b)} UNION ${receivedBranch(a, b)})
       ORDER BY timestamp DESC, id DESC LIMIT ?`;
     const rows = this.db.prepare(sql).all(
       ...a, ...b, ...tailParams, limit,
-      ...b, ...a, ...tailParams, limit,
+      ...a, ...b, ...tailParams, limit,
       limit,
     );
     return FleetStore.hydrateEvents(rows);
@@ -5988,11 +6004,15 @@ export class FleetStore {
         UNION ALL
         SELECT fleet_id AS id, coalesce(to_ts, from_ts, '') AS seen_at FROM name_history
           WHERE friendly_name IS NOT NULL AND lower(friendly_name) LIKE ?
+        UNION ALL
+        SELECT agents.id, coalesce(agents.last_seen, agents.registered_at, '') AS seen_at
+          FROM agents, json_each(CASE WHEN json_valid(agents.labels) THEN agents.labels ELSE '[]' END) AS label
+          WHERE lower(label.value) = ?
       )
       SELECT id FROM matches
       GROUP BY id
       ORDER BY max(seen_at) DESC, id ASC
-    `).all(...idAliases, like, like);
+    `).all(...idAliases, like, like, q);
     // Lineage stack first — its order is occupancy order, which is what a
     // positional selector like `*chief[2]` counts against — then everything the
     // name matched directly or historically, most recently seen first.
@@ -6096,7 +6116,7 @@ export class FleetStore {
     let eventRows = [];
     if (includeEvents) {
       const pairRead = between?.a?.length && between?.b?.length;
-      if (effectiveHistoryMode && (pairRead || (hasAgent && eventOnly))) {
+      if (effectiveHistoryMode && (pairRead || hasAgent)) {
         // A pair read is the whole result set, so it is one bounded query rather
         // than a union of each participant's traffic that something downstream
         // has to narrow. See _queryPairEventsForSearch for what that cost.

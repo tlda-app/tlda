@@ -36,7 +36,7 @@ export type SearchAutocompleteContext = {
 // `id:` has no value list on purpose: the value is a number the reader already
 // has in front of them — inbox() and the chips print it — so there is nothing to
 // suggest and completing the key is the whole affordance.
-const FIELD_KEYS = ['from', 'to', 'agent', 'type', 'since', 'before', 'after', 'role', 'id']
+const FIELD_KEYS = ['from', 'to', 'agent', 'project', 'type', 'since', 'before', 'after', 'role', 'id']
 const AGENT_KEYS = new Set(['from', 'to', 'agent'])
 const TIME_KEYS = new Set(['since', 'before', 'after'])
 const EVENT_TYPES = ['chat', 'delegate', 'task_done', 'report', 'lifecycle']
@@ -158,6 +158,10 @@ export function searchAutocompleteSuggestions(
   } else if (token.key === 'role') {
     for (const role of ROLES) if (!value || role.startsWith(value)) {
       suggestions.push({ id: `role:${role}`, label: role, insert: `${token.key}:${role} `, kind: 'role', detail: 'result role' })
+    }
+  } else if (token.key === 'project') {
+    for (const project of context.projects || []) if (!value || project.toLowerCase().includes(value)) {
+      suggestions.push({ id: `project:${project}`, label: project, insert: `project:${project} `, kind: 'project', detail: 'project' })
     }
   } else if (TIME_KEYS.has(token.key)) {
     for (const time of TIME_VALUES) if (!value || time.startsWith(value)) {

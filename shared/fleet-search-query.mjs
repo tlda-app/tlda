@@ -19,7 +19,7 @@ function withExplicitConjunctions(parts, junctions) {
   return explicitConjunctionSegments(parts, junctions).map(s => s.text).join(' ')
 }
 
-const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'since', 'after', 'before', 'type', 'role', 'id'])
+const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'project', 'since', 'after', 'before', 'type', 'role', 'id'])
 const FILTER_OPERATORS = new Set(['&', '|', '!', '(', ')'])
 
 // `agentSelector` is the search tool's `agent` parameter. It used to be spliced
@@ -91,6 +91,10 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
       if (key === 'from') filters.from = normalized.value
       else if (key === 'to') filters.to = normalized.value
       else if (key === 'agent') filters.agent = normalized.value
+      else if (key === 'project') {
+        filters.project = normalized.value
+        filters.agent = `project:${normalized.value}`
+      }
       continue
     }
 
@@ -221,6 +225,7 @@ export function buildFleetSearchFilters(filters) {
     role: filters.role,
     filterExpression: filters.filterExpression,
     eventType: filters.type,
+    project: filters.project,
   }
   for (const key of Object.keys(payload)) {
     if (payload[key] == null || payload[key] === false || payload[key] === '') delete payload[key]
@@ -364,8 +369,11 @@ function collectFilterValue(parts, index) {
 }
 
 function normalizeSearchFilterToken(key, valueTokens) {
-  const normalizedKey = key === 'agent' ? 'involving' : key === 'after' ? 'since' : key
+  const normalizedKey = key === 'agent' || key === 'project' ? 'involving' : key === 'after' ? 'since' : key
   const value = valueTokens.join(' ').trim()
+  if (key === 'project') {
+    return { value, filterTokens: [`involving:project:${value}`] }
+  }
   if (normalizedKey === 'id') {
     return { value, filterTokens: [`${normalizedKey}:${value}`] }
   }
