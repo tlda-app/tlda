@@ -153,9 +153,22 @@ Owned by `course-website`. Design in `qtm285-1/scratch/naming-and-deploy-design.
 - [ ] **Syllabus link rule**: a link only if it has happened or is happening
       today. **Nine rows violate it right now**, all in the same direction — a
       future session carrying a link.
-- [ ] **Thirteen of sixty-three chapters have no committed freeze result**, so
-      CI would pay thirteen cold renders. Warm is 139s, cold ~900s, measured
-      here — not a runner number.
+- [ ] **Commit freeze results for the thirteen chapters that have none**, so a
+      CI runner doesn't execute them from scratch. A full book render is **23
+      minutes** with the cache warm (71 documents: 49 restored, 20 with nothing
+      to execute, 2 actually executed). **CI would execute thirteen where that
+      run executed two.** Committing them turns the runner's recurring cold
+      cost into a one-off here.
+
+      **Render-in-CI looks viable.** Both of us predicted ~2.4 hours from
+      63 × 139s and it came in at a sixteenth of that: the 139s single-file
+      figure is mostly *per-invocation* cost — Quarto startup, the
+      `build-handouts.py` pre-render step, deno, webR format setup — which a
+      book build pays once. **Second time tonight the reasoned estimate lost to
+      the measurement.**
+
+      All numbers measured on this machine, warm local disk. **The CI figure is
+      unknown and probably worse.**
 
 ---
 
