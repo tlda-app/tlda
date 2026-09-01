@@ -1367,12 +1367,12 @@ export function injectChapterTitle(html, chapterTitle, prev = null, next = null)
 }
 
 export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage = false, nav = {}) {
-  // Fix relative paths — Quarto chapters in subdirs reference ../site_libs/
-  // Rewrite to absolute doc path so assets resolve correctly from iframe
+  // Quarto's site_libs references are relative to the rendered HTML file and
+  // already resolve against that file's /docs URL. Keep them relative so a
+  // nested book chapter continues to load its sibling _book/site_libs tree.
   let patched = basePath
-    ? html.replace(/(?:\.\.\/)+site_libs\//g, basePath + 'site_libs/')
-      .replace(/(?:\.\.\/)+figs\//g, basePath + 'figs/')
-    : html.replace(/(?:\.\.\/)+site_libs\//g, 'site_libs/')
+    ? html.replace(/(?:\.\.\/)+figs\//g, basePath + 'figs/')
+    : html
 
   // Inject MathJax config before MathJax loads (must precede the <script src="...mathjax...">)
   const mathjaxScriptIdx = patched.indexOf('mathjax@3')
