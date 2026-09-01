@@ -112,6 +112,12 @@ test('transfers a task by keeping its id and appending the delegation message', 
   assert.equal(storedTask.status, 'working')
   assert.equal(storedTask.delegated_by, 'owner')
   assert.equal(storedTask.delegated_at, '2026-07-20T12:00:00.000Z')
+  // The row's own title, which is what tasks() prints. The call above passes no
+  // `description`, and this is the assertion that says so: a hand-off does not
+  // retitle what it hands off. The delegate event's copy was already checked
+  // below, but the event is not the row -- 39 open tasks had the right subject
+  // in their delegate events and a hand-off note in this field.
+  assert.equal(storedTask.description, 'Original subject')
   assert.deepEqual(storedTask.metadata, {
     keep: 'unchanged',
     at: '2026-07-26T12:00:00.000Z',
