@@ -142,7 +142,7 @@ export function qmdRenderedOutputFileForSource(outDir, sourceFile) {
   return qmdRenderedOutputFilesForSource(outDir, sourceFile)[0] || null
 }
 
-export function qmdRenderedOutputFilesForSource(outDir, sourceFile) {
+export function qmdDeclaredOutputFilesForSource(outDir, sourceFile) {
   const normalizedSource = String(sourceFile || '').replace(/\\/g, '/').replace(/^\.?\/+/, '')
   const sourcePath = join(outDir, normalizedSource)
   const candidates = []
@@ -162,14 +162,23 @@ export function qmdRenderedOutputFilesForSource(outDir, sourceFile) {
     }
   }
   if (candidates.length === 0) candidates.push(qmdOutputFileForSource(normalizedSource))
+  return [...new Set(candidates)]
+}
 
+export function qmdRenderedOutputFilesForSource(outDir, sourceFile) {
   const rendered = []
-  for (const candidate of [...new Set(candidates)]) {
+  for (const candidate of qmdDeclaredOutputFilesForSource(outDir, sourceFile)) {
     for (const path of [candidate, `_book/${candidate}`]) {
       if (existsSync(join(outDir, path))) rendered.push(path)
     }
   }
   return [...new Set(rendered)]
+}
+
+export function qmdMissingDeclaredOutputFiles(outDir, sourceFile) {
+  return qmdDeclaredOutputFilesForSource(outDir, sourceFile).filter((candidate) => (
+    !existsSync(join(outDir, candidate)) && !existsSync(join(outDir, `_book/${candidate}`))
+  ))
 }
 
 export function qmdDeckPageInfo(root, perSlide, variant) {
@@ -394,6 +403,7 @@ export async function buildQmdDocument(name, addLog = console.log) {
   let anyDeck = false
   for (const root of mainFiles) {
     const sourceOutputFile = qmdOutputFileForSource(root)
+    const declaredOutputFiles = qmdDeclaredOutputFilesForSource(outDir, root)
     const outputFiles = qmdRenderedOutputFilesForSource(outDir, root)
     // Throws for the reason the root check above throws: a render that produced
     // no document is a failed build, and returning normally publishes the empty
@@ -401,7 +411,11 @@ export async function buildQmdDocument(name, addLog = console.log) {
     if (outputFiles.length === 0) {
       throw new Error(`[qmd] render produced neither ${sourceOutputFile} nor _book/${sourceOutputFile}`)
     }
-    const hasAlternates = outputFiles.length > 1
+    const missingOutputFiles = qmdMissingDeclaredOutputFiles(outDir, root)
+    if (missingOutputFiles.length > 0) {
+      throw new Error(`[qmd] render did not produce declared output(s): ${missingOutputFiles.join(', ')}`)
+    }
+    const hasAlternates = declaredOutputFiles.length > 1
     for (const outputFile of outputFiles) {
       const renderedPath = join(outDir, outputFile)
       const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
