@@ -192,3 +192,57 @@ no idle growth** — exactly what an action-driven retention produces.
 specific retaining reference is not identified. Next instrument: Oilpan/Blink
 retaining-path analysis on the same synthetic project — no access to his session
 required.
+
+## 2026-08-31 (later) — CORRECTION: the detached SVG is collectable
+
+**I have to retract the retained-owner claim I sent earlier the same day.** The
+detached SVG is **not permanently retained**. It is ordinary garbage that a forced
+collection reclaims completely.
+
+**The measurement that overturns it** — GC-bracketed, on the same synthetic
+project, standalone renderer 26735:
+
+| round | Blink nodes | live nodes | footprint |
+|---|---|---|---|
+| post-GC baseline | 5,734 | 3,337 | 269 MB |
+| after 60 page visits (+2 quick GCs) | 61,591 | 3,337 | 316 MB |
+| **one further GC, 6 s** | **5,730** | 3,337 | 284 MB |
+| 3 more GCs | 5,730 | 3,337 | 282 MB |
+
+Node count returns to baseline and **stays** there. Live count never moves.
+
+**What that corrects, item by item:**
+
+1. **"36,360 nodes retained against 3,337 live, ~33k detached"** — wrong. Those
+   nodes were uncollected garbage; a forced GC returns the count to ~5,730. The
+   residual ~2,400 over live is stable and unremarkable.
+2. **"≈2.4 MB/page permanently retained"** — wrong. That was measured *without* a
+   forced collection. After full collection it is **~0.2 MB/page** (13 MB / 60
+   pages).
+3. **"Retained owner: detached SVG in Oilpan"** — the SVG *is* what the memory is
+   made of, and it *is* the bulk of the transient, but it is **not retained**. The
+   allocation attribution stands; the retention claim does not.
+
+**What survives, and it is still substantive:**
+
+- **Page visits generate large transient memory** — ~9 MB/page while active,
+  dominated by `blink_gc` and overwhelmingly SVG page content.
+- **It is collectable.** Forced GC reclaims essentially all of it.
+- **Persistent retention is small** — ~0.2 MB/page. At that rate 748 pages is
+  ~150 MB, which **does not explain 13 GB**.
+
+**So the boundary is not an application-owned reference. It is collection itself.**
+The bytes are garbage that Chrome does not reclaim under ordinary conditions — my
+pooled-tab run reached 1243 MB and natural release only took it to 712 MB, while a
+*forced* GC on the standalone took the equivalent state to 282 MB. His tab sits at
+12.9 GB **at rest with no idle growth**, which is consistent with a large volume of
+collectable-but-uncollected page content rather than a reference leak.
+
+**The honest remaining gap, restated:** not *what holds the SVG* — nothing holds
+it — but **why collection does not reclaim it in a real session**. That is a
+different question from the one I set out to answer, and I have not answered it.
+
+**Method note:** the first two GCs after the visits returned 61,591; the third,
+given 6 seconds, returned 5,730. **A GC that has not finished looks exactly like
+retention.** Two collections were not enough, and reporting after two would have
+produced — did produce — a false retention finding.
