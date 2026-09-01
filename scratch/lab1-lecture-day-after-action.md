@@ -119,3 +119,32 @@ spinner count returned *wrong* numbers. This one returns a *correct* number —
 zero really was zero — **read as terminal when it was mid-process.** The defence
 is not a better counter; it is a positive control establishing how long silence
 lasts before silence means anything.
+
+### The serving rig is an instrument, not just the browser
+
+**2026-09-01: three measurements of the same deck disagreed by 4x, and only one
+of the three differences was the browser.**
+
+```
+browser   headless Chromium != pooled headed browser
+          headless here does not execute webR AT ALL - 0 canvases at 483s
+          on a deck the pool draws at ~120s
+
+server    a local COOP/COEP server != the tailnet static server
+          COOP/COEP -> crossOriginIsolated -> webR takes the SharedArrayBuffer
+          path; without it webR falls back to PostMessage
+          MEASURED: the isolated rig was the SLOW one, ~20 min vs ~356s
+```
+
+**Both rules are needed and the browser rule alone does not catch the second.**
+The agent whose numbers were 4x off *had* used the pooled headed browser
+correctly — they served the deck themselves to get cross-origin isolation, and
+that put it in a different runtime regime from every other measurement.
+
+**So: use `tlda-dev pw` for the browser, AND record how the page was served.**
+`crossOriginIsolated` belongs in any webR timing report. Two numbers taken under
+different isolation are not comparable and nothing about them looks different.
+
+**And the counter-intuitive part is worth keeping:** SharedArrayBuffer is
+supposed to be the fast path. Here it was 4x slower. **Do not assume the isolated
+rig is the faster one; measure.**
