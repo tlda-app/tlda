@@ -1,6 +1,6 @@
 # tlda recovery chief: complete non-marketplace work list
 
-Status carried forward at **2026-09-01 03:24 EDT**.
+Status carried forward at **2026-09-01 03:39 EDT**.
 
 ## Authority and boundary
 
@@ -66,6 +66,7 @@ Skip's scope is the 21:14:04 whole book/TOC/appropriate Settings/no Project requ
 | Check, Zip, Submit | **Older VSIX-profile Check/Zip evidence does not close the gallery chain.** That profile returned “This looks ready to hand in” and created a 17-file ZIP, but the QMD still contained `*(your answer here)*`, the ZIP had no requested image, and it predated the gallery profile's registry update. The gallery-profile QMD is now retargeted to exact disposable pic-dev assignment `mendel-hw-minus-1-179003` but has no new ZIP yet. | `classroom-ui-sol` | In the gallery profile, complete the answer, add an actual supported image through the written workflow, then run Preview/Check/Zip/Submit. Prove the new ZIP's profile/time, filled QMD, and image bytes before submission. |
 | Mine and instructor receipt | **Unrun on the gallery/disposable route.** | `classroom-ui-sol` | After the gallery-profile disposable submission succeeds, prove the archive appears intact in Mine and on the disposable instructor receipt surface. |
 | Public assignment + marketplace dependency | **Resolved and independently checked.** The page instructs extension search rather than a direct VSIX; `/root` established the exact p3m Gallery tuple at 03:04:26 EDT, and an isolated real-Positron search/install resolved exact 0.2.7. Both student ZIP routes resolve to the same reviewed bytes. | `classroom-ui-sol`; independent delivery advocate | Continue from the installed extension and public ZIP through the real Preview/submission chain; do not reopen propagation monitoring. |
+| Student ZIP root/support layout | **Explicitly requested and in progress.** Skip confirmed at 03:37:48 that support artifacts should not confuse students. Current HW −1 ZIP exposes an unused root `shared-code.qmd`; its Lua filter and baseline are already in `.qmd.support/`. | Harness SOL `hw_handout_layout` in a clean course worktree | Make the homework QMD the one obvious root file; omit unused shared code from HW −1; for assignments that need it, place it under `_support/` and rewrite the generated include. Prove actual HW −1 and shared-code-using ZIP trees render, preserve referenced images, and contain no solution leakage. Local commit only until review. |
 | Historical 0.2.6 gate | **Superseded evidence, retained for audit.** The prior advocate found an old Positron download URL 404, class-specific README/description, and a held pic-dev chain. Later edits addressed the URL/description in 0.2.7 source, but only the exact 0.2.7 installed surface can replace the old failure. | `classroom-delivery-advocate-sol` | Compare the installed 0.2.7 artifact to each old failure; do not carry a stale PASS or stale BLOCK forward without rechecking. |
 
 ## Sync reliability and explanation
