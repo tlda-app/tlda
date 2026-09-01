@@ -17,6 +17,7 @@ test('Codex prompt injection ignores startup warnings in a resumed transcript', 
     sent.push(args)
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
     return { stdout: '' }
   }
 
@@ -44,9 +45,10 @@ test('Codex prompt injection dismisses the update dialog before kickoff', async 
     if (command === 'capture-pane') return { stdout: pane }
     assert.equal(command, 'send-keys')
     sent.push(args)
-    if (args.at(-1) === 'Enter' && sent.some(call => call.at(-1) === '2')) pane = '› Summarize recent commits'
+    if (args.at(-1) === 'Enter' && pane.includes('Update available!') && sent.some(call => call.at(-1) === '2')) pane = '› Summarize recent commits'
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
     return { stdout: '' }
   }
 
@@ -78,6 +80,7 @@ test('Codex prompt injection ignores an update dialog left in scrollback', async
     sent.push(args)
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
     return { stdout: '' }
   }
 
@@ -90,4 +93,30 @@ test('Codex prompt injection ignores an update dialog left in scrollback', async
   assert.equal(delivered, true)
   assert.equal(sent[0].at(-1), 'C-u')
   assert.equal(sent.some(args => args.at(-1) === '2'), false)
+})
+
+test('Codex prompt injection retries Enter until the pasted kickoff is submitted', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = '› Summarize recent commits'
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: pane }
+    assert.equal(command, 'send-keys')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter') {
+      enterCount += 1
+      if (enterCount === 2) pane += '\n\n• Working (0s • esc to interrupt)'
+    }
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 1000,
+    tmuxExec,
+    sleep: async () => {},
+  })
+
+  assert.equal(delivered, true)
+  assert.equal(enterCount, 2)
 })
