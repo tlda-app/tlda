@@ -17,10 +17,11 @@ import {
   type TLShapeId,
 } from 'tldraw'
 import { fleetChatProps } from '../../shared/shapes/fleet-panel-schema.mjs'
-import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef, useImperativeHandle } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef, useImperativeHandle, useId } from 'react'
 import { createPortal } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { probe } from '../perf-probe'
+import { composerMicAppearance } from '../classroom/classroomUiPolicy'
 import { isPhoneViewport } from '../phoneViewport'
 import { getReadabilityProfile, readabilityStyleVars } from '../readabilityProfile'
 
@@ -5890,6 +5891,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // the inbox, where there is no Right Shift to hold. This is that capability
   // coming back: the index page had a mic before its own chat was replaced.
   const [composerRecording, setComposerRecording] = useState(() => isRecording())
+  const micSlashMaskId = useId()
+  const composerMic = composerMicAppearance(composerRecording)
   useEffect(() => onRecordingChange(setComposerRecording), [])
 
   const toggleComposerVoice = () => {
@@ -7254,16 +7257,23 @@ function FleetChatInner({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 activateComposerRailAction('mic', null)
               }}
-              title={composerRecording ? 'Stop dictation' : 'Dictate'}
-              aria-label={composerRecording ? 'Stop dictation' : 'Start dictation'}
-              aria-pressed={composerRecording}
+              title={composerMic.label}
+              aria-label={composerMic.label}
+              aria-pressed={composerMic.ariaPressed}
             >
-              {/* The same mark the index page's own mic used before the real chat
-                  replaced it, so it is the glyph he already knows. */}
+              {/* OFF is slashed and ON is bare. State is carried by the mark,
+                  not by colour or visual weight. */}
               <svg width="12" height="12" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill="currentColor" stroke="none" />
-                <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
-                <line x1="9" y1="14" x2="9" y2="16" />
+                {composerMic.slashed && <mask id={micSlashMaskId}>
+                  <rect x="0" y="0" width="18" height="18" fill="white" />
+                  <line x1="3.2" y1="15.4" x2="15.4" y2="3.2" stroke="black" strokeWidth="3.2" strokeLinecap="round" />
+                </mask>}
+                <g mask={composerMic.slashed ? `url(#${micSlashMaskId})` : undefined}>
+                  <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill="currentColor" stroke="none" />
+                  <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
+                  <line x1="9" y1="14" x2="9" y2="16" />
+                </g>
+                {composerMic.slashed && <line x1="3.9" y1="14.7" x2="14.7" y2="3.9" />}
               </svg>
             </button>
             {(composerHasText || canUnclearComposer) && (

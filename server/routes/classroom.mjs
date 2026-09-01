@@ -32,8 +32,6 @@ export function classroomWebManifest({ course, project, readToken }) {
   start.searchParams.set('project', project)
   start.searchParams.set('course', course.id)
   start.searchParams.set('token', readToken)
-  const icon = new URL(`/api/classroom/courses/${encodeURIComponent(course.id)}/icon.svg`, 'http://tlda.invalid')
-  icon.searchParams.set('token', readToken)
   return {
     id: `/?course=${encodeURIComponent(course.id)}`,
     name: course.title,
@@ -44,7 +42,7 @@ export function classroomWebManifest({ course, project, readToken }) {
     display: 'standalone',
     background_color: '#f7f7f4',
     theme_color: '#f7f7f4',
-    icons: [{ src: `${icon.pathname}${icon.search}`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
+    icons: [{ src: '/tlda-mark.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
   }
 }
 

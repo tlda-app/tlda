@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { Tldraw, createTLStore, loadSnapshot, stopEventPropagation } from 'tldraw'
 import type { TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLStore, TLShapeId } from 'tldraw'
 import './RecordingViewer.css'
@@ -8,6 +9,7 @@ import { PlaybackEngine } from '../recording/playbackEngine'
 import type { RecordingMeta, RecordingEvent } from '../recording/recorder'
 import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
 import { canPublishRecording, subscribeCanPresent } from '../authToken'
+import { trackRecordingViewerFrame, type RecordingViewerFrame } from '../recording/recordingViewerFrame'
 
 interface Props {
   projectName: string
@@ -60,6 +62,26 @@ export function RecordingViewer({ projectName, shapeUtils, tools, licenseKey }: 
   const engineRef = useRef<PlaybackEngine | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const rafRef = useRef<number | null>(null)
+  const viewerRef = useRef<HTMLDivElement | null>(null)
+  const [frame, setFrame] = useState<RecordingViewerFrame | null>(null)
+  const frameGestureCleanupRef = useRef<(() => void) | null>(null)
+
+  const beginFrameGesture = (event: ReactPointerEvent, kind: 'move' | 'resize') => {
+    const rect = viewerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    event.preventDefault()
+    event.stopPropagation()
+    frameGestureCleanupRef.current?.()
+    frameGestureCleanupRef.current = trackRecordingViewerFrame(
+      window,
+      { x: event.clientX, y: event.clientY },
+      { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+      kind,
+      setFrame,
+    )
+  }
+
+  useEffect(() => () => frameGestureCleanupRef.current?.(), [])
 
   useEffect(() => subscribePlaybackOpen(setOpenId), [])
 
@@ -147,7 +169,8 @@ export function RecordingViewer({ projectName, shapeUtils, tools, licenseKey }: 
 
   if (!openId || !meta || !store) return null
   return (
-    <div className="recording-viewer" onPointerDown={stopEventPropagation} onWheel={stopEventPropagation}>
+    <div ref={viewerRef} className="recording-viewer" style={frame ? { left: frame.x, top: frame.y, width: frame.w, height: frame.h, right: 'auto', bottom: 'auto' } : undefined} onPointerDown={stopEventPropagation} onWheel={stopEventPropagation}>
+      <div className="recording-viewer__drag" onPointerDown={(event) => beginFrameGesture(event, 'move')} aria-label="Move playback viewer">Playback</div>
       <div className="recording-viewer__body">
         <div className="recording-viewer__canvas">
           <Tldraw
@@ -198,6 +221,7 @@ export function RecordingViewer({ projectName, shapeUtils, tools, licenseKey }: 
           <span>{reviewStatus}</span>
         </div>
       )}
+      <button className="recording-viewer__resize" onPointerDown={(event) => beginFrameGesture(event, 'resize')} aria-label="Resize playback viewer" />
     </div>
   )
 }

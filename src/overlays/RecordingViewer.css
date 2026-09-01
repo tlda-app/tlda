@@ -16,6 +16,31 @@
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
+.recording-viewer__drag {
+  flex: 0 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.82);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+.recording-viewer__resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,.55) 51%, rgba(255,255,255,.55) 58%, transparent 59%);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
 /* Body row: canvas on the left, optional transcript panel on the right. */
 .recording-viewer__body {
   flex: 1 1 auto;
