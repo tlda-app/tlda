@@ -276,6 +276,7 @@ export function createDispatcherWithOptions(transport, options = {}) {
     getProjectsDir,
     store: options.store || new BuildQueueStore(options.storePath || ':memory:'),
     serializeProject: serializedPublication,
+    recordAdmission,
     async getCurrentHead(name) {
       return (await (await sourceLifecycleStore(name)).gitRepository()).head(name)
     },
@@ -353,14 +354,13 @@ export function initBuildDispatcher() {
 
 function dispatcher() { return activeDispatcher || initBuildDispatcher() }
 
-async function recordAdmission(project, row) {
-  return (await sourceLifecycleStore(project)).recordRevisionAdmission(project, row.revision, row.id)
+async function recordAdmission(job) {
+  return (await sourceLifecycleStore(job.name))
+    .recordRevisionAdmission(job.name, job.sourceRevision, job.acceptSeq)
 }
 
 export async function admitProposal(submission, options = {}) {
-  const row = await dispatcher().admitBuild(submission.project, submission, options)
-  await recordAdmission(submission.project, row)
-  return row
+  return dispatcher().admitBuild(submission.project, submission, options)
 }
 export const killBuild = name => dispatcher().killBuild(name)
 export const killAllDispatchedBuilds = () => dispatcher().killAllDispatchedBuilds()
@@ -377,8 +377,7 @@ export async function recoverProposalBuilds() {
   for (const project of await listProjects()) {
     const git = await (await sourceLifecycleStore(project.name)).gitRepository()
     for (const proposal of await listProposalRefs(git.gitDir)) {
-      const row = await queue.admitBuild(project.name, proposal)
-      await recordAdmission(project.name, row)
+      await queue.admitBuild(project.name, proposal)
     }
   }
   await queue.recover()

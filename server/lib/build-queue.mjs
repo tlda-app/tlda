@@ -4,6 +4,7 @@ export function createBuildQueue({
   transport,
   getProjectsDir,
   relayMessage,
+  recordAdmission = async () => {},
   recordDisposition = async () => {},
   getCurrentHead = async () => null,
   isAncestor = async (ancestor, descendant) => ancestor === descendant,
@@ -217,6 +218,7 @@ export function createBuildQueue({
           reason: valid ? null : 'needs-rebase',
         }).row
       }
+      await recordAdmission(jobFromRow(admittedRow))
       if (!['complete', 'failed', 'killed'].includes(admittedRow.state)) {
         await thinPending(project)
         await drain()
