@@ -85,6 +85,52 @@ settle a row, the lead sits in the evidence column under `unestablished`.
 **101 rows have had no evidence read yet.** They carry `unestablished` with no
 evidence, and that is what they are — not a judgement that they are dead.
 
+## The second list, and that this job is a row on it
+
+`the-list.md` is tracked on `main`, 63 rows, **last touched 2026-08-13** — 18 days
+ago. It is Skip's own items in his own voice, grouped by topic with status as a
+mark on the row.
+
+**One of its rows is this job.** Status ○, not started:
+
+> **A second list exists and nobody reads it** — 34 open fleet tasks, 26 of them
+> stale, the oldest 328 hours, and every one has an owner who is hibernating.
+> **They are not all the same thing, and nobody knows which is which — that is
+> the finding.** Three kinds have already turned up in a sample of nine: work
+> that is *abandoned*, which needs an owner or a decision; work that is
+> **finished and never closed**, which needs only a close and until then inflates
+> the backlog and hides the real ones; and **eight of the nine that have no row
+> here at all — invisible rather than duplicated.**
+
+That is the same taxonomy this triage was asked for, written 18 days ago and
+never started. **Then: 34 open, oldest 328h. Now: 245 open, 194 with a
+hibernating owner, oldest 41 days.** Seven times bigger.
+
+His third kind — *invisible rather than duplicated* — is what §3 above measured:
+39 rows that carry a transfer note where their subject should be.
+
+**No code change would have prevented the 197-row miss.** His rule *"everything
+that paginates announces it, at the top and at the bottom"* shipped as
+`2cb6cac1e` on 2026-08-13, and `tasks()` obeys it at both ends — the top of
+tonight's own output reads *"Showing 200 of 245 open tasks"* and the bottom reads
+*"45 more open task(s) not shown. Next page: …"*. The announcement was there and
+was read past.
+
+**Cross-links worth keeping** between his list and the task table:
+
+| his row | in the backlog as |
+|---|---|
+| Place-stack forward/back over documents | *Build document place-stack navigation* — one of the 25 invisible parked rows |
+| An inert `dev` reclaims no disk | *Why supervised dev is not reclaiming* (11d, owner hibernating) |
+| `mint` and `delegate` report success for an agent that never joined | *Diagnose mint success-without-login…* and *Fix mint+delegate dropping the delegation* (both 16d) |
+| The agent read path does not fold amends | *Fix thread historical names and amend marking* — marked done here on `aedd8f978`; **his row says the amend half is still open**, which is why that row carries a re-check |
+| A bot loses its own name to its mint's shell row | no task. `96c35417d` established `quiet-<name>` has **two** causes — the sanctioned stop, and a mint's row squatting a running bot — and left a question with Skip |
+
+**I have not established how much of his list the task table covers.** The two
+are written in different voices — his are symptoms, the tasks are imperatives —
+so keyword overlap under-matches badly, and this is the third matcher this pass
+that I am declining to report a number from.
+
 ---
 
 ## Assigned to Skip — 15, 1 with evidence
