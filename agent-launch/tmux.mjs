@@ -234,9 +234,10 @@ export async function injectCodexPrompt(session, prompt, {
   while (Date.now() < deadline) {
     try {
       const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p')
-      const updateDialog = stdout.includes('Update available!')
-        && stdout.includes('Skip until next version')
-        && stdout.includes('Press enter to continue')
+      const visibleTail = stdout.split('\n').slice(-20).join('\n')
+      const updateDialog = visibleTail.includes('Update available!')
+        && visibleTail.includes('Skip until next version')
+        && visibleTail.includes('Press enter to continue')
       if (updateDialog) {
         await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), '2')
         await sleep(200)

@@ -61,3 +61,33 @@ test('Codex prompt injection dismisses the update dialog before kickoff', async 
   assert.equal(sent[1].at(-1), 'Enter')
   assert.equal(sent.at(-1).at(-1), 'Enter')
 })
+
+test('Codex prompt injection ignores an update dialog left in scrollback', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = [
+    'Update available!',
+    '3. Skip until next version',
+    'Press enter to continue',
+    ...Array.from({ length: 21 }, (_, i) => `old output ${i}`),
+    '› Summarize recent commits',
+  ].join('\n')
+  const sent = []
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: pane }
+    assert.equal(command, 'send-keys')
+    sent.push(args)
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane += args[literalIndex + 1]
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 1000,
+    tmuxExec,
+    sleep: async () => {},
+  })
+
+  assert.equal(delivered, true)
+  assert.equal(sent[0].at(-1), 'C-u')
+  assert.equal(sent.some(args => args.at(-1) === '2'), false)
+})
