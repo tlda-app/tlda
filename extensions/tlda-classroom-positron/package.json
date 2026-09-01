@@ -2,7 +2,7 @@
   "name": "tlda-classroom",
   "displayName": "tlda Classroom",
   "description": "Preview, check, and hand in homework from Positron.",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "publisher": "tlda-labs",
   "license": "MIT",
   "engines": {
