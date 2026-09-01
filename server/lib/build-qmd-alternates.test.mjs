@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { qmdDeckPageInfo, qmdRenderedOutputFilesForSource } from './build-qmd.mjs'
+import { qmdDeckPageInfo, qmdDeclaredOutputFilesForSource, qmdMissingDeclaredOutputFiles, qmdRenderedOutputFilesForSource } from './build-qmd.mjs'
 
 test('a qmd source resolves both declared non-colliding output files', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-alternates-'))
@@ -24,6 +24,17 @@ format:
 
     assert.deepEqual(qmdRenderedOutputFilesForSource(root, 'lectures/Lab1-prose.qmd'), [
       'lectures/Lab1-prose.html',
+      'lectures/Lab1-prose-slides.html',
+    ])
+    rmSync(join(root, 'lectures', 'Lab1-prose-slides.html'))
+    assert.deepEqual(qmdDeclaredOutputFilesForSource(root, 'lectures/Lab1-prose.qmd'), [
+      'lectures/Lab1-prose.html',
+      'lectures/Lab1-prose-slides.html',
+    ])
+    assert.deepEqual(qmdRenderedOutputFilesForSource(root, 'lectures/Lab1-prose.qmd'), [
+      'lectures/Lab1-prose.html',
+    ])
+    assert.deepEqual(qmdMissingDeclaredOutputFiles(root, 'lectures/Lab1-prose.qmd'), [
       'lectures/Lab1-prose-slides.html',
     ])
   } finally {
