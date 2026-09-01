@@ -24,12 +24,17 @@ const { classroomTokenFromUri } = require('./classroom-token')
 // they see their answer on screen and submit the version without it.
 async function activeQmd() {
   const editor = vscode.window.activeTextEditor
-  const file = editor && editor.document.fileName
+  const activeTabUri = vscode.window.tabGroups?.activeTabGroup?.activeTab?.input?.uri
+  const document = editor?.document
+    || (activeTabUri && activeTabUri.fsPath.toLowerCase().endsWith('.qmd')
+      ? await vscode.workspace.openTextDocument(activeTabUri)
+      : null)
+  const file = document?.fileName
   if (!file || !file.toLowerCase().endsWith('.qmd')) {
     vscode.window.showErrorMessage('Open your homework .qmd first, then run this.')
     return null
   }
-  if (editor.document.isDirty && !(await editor.document.save())) {
+  if (document.isDirty && !(await document.save())) {
     vscode.window.showErrorMessage('Your .qmd could not be saved, so nothing was handed in.')
     return null
   }
@@ -207,4 +212,4 @@ function activate(context) {
   )
 }
 
-module.exports = { activate, deactivate() {}, classroomTokenSecretKey, collectFolder, receiveClassroomToken }
+module.exports = { activate, deactivate() {}, activeQmd, classroomTokenSecretKey, collectFolder, receiveClassroomToken }
