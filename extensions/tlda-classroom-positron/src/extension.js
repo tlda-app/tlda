@@ -5,6 +5,7 @@ const fs = require('fs')
 const { zipSync } = require('fflate')
 const { problems } = require('./submission')
 const images = require('./images')
+const visualModeCss = require('./visual-mode-css')
 const { ClassroomUploadError, classroomSubmissionMetadata, submitSubmissionArchive } = require('./classroom-upload')
 const { classroomTokenFromUri } = require('./classroom-token')
 
@@ -191,6 +192,11 @@ async function submitHomework(context) {
 }
 
 function activate(context) {
+  try {
+    visualModeCss.install(vscode.extensions.getExtension('quarto.quarto')?.extensionPath)
+  } catch (error) {
+    vscode.window.showWarningMessage(`tlda Classroom could not style homework callouts in visual mode: ${error.message}`)
+  }
   // Photos land beside the document, so they travel with the archive.
   images.register(context)
   context.subscriptions.push(
