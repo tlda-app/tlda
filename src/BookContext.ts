@@ -40,7 +40,7 @@ export interface BookContextValue {
   bookName: string
   members: BookMember[]
   activeIndex: number
-  switchTo: (index: number) => void
+  switchTo: (index: number, variant?: 'slides') => void
   layers?: BookLayersValue
 }
 

@@ -43,6 +43,7 @@ export interface SlideInfo {
   slideIndex: number
   indexh?: number
   indexv?: number
+  variant?: 'slides'
 }
 
 export interface TargetInfo {

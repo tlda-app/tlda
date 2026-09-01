@@ -222,6 +222,7 @@ export interface HtmlTocEntry {
   page: number
   anchor?: string
   targetFile?: string  // book cross-member navigation: member key
+  variant?: 'slides'
 }
 
 export interface HtmlSearchEntry {

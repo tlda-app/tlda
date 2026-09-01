@@ -31,6 +31,7 @@ interface BookViewerProps {
 
 export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps) {
   const [activeIndex, setActiveIndex] = useState(0)
+  const [activeVariant, setActiveVariant] = useState<'slides' | null>(null)
   const [document, setDocument] = useState<SvgDocument | null>(null)
   const [loading, setLoading] = useState(true)
   const [bookEditor, setBookEditor] = useState<Editor | null>(null)
@@ -53,7 +54,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // Pending cross-member anchor navigation: set before switchTo, consumed after load
   const pendingAnchor = useRef<string | null>(null)
 
-  const loadMember = useCallback(async (member: BookMember) => {
+  const loadMember = useCallback(async (member: BookMember, variant: 'slides' | null) => {
     setLoading(true)
     setLoadError('')
     clearDocumentStores()
@@ -74,7 +75,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       // Ordered before the HTML test on purpose: `qmd` is in HTML_PAGE_FORMATS,
       // and a qmd that rendered to a deck is exactly the case that has to reach
       // the slides loader rather than the scrolling one.
-      const shownAs = viewFormat(member)
+      const shownAs = variant || viewFormat(member)
       if (shownAs === 'slides') {
         doc = await loadSlidesDocument(member.key, member.basePath)
       } else if (HTML_PAGE_FORMATS.has(member.format || '')) {
@@ -132,13 +133,13 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
 
   useEffect(() => {
     const member = members[activeIndex]
-    if (member) loadMember(member)
-  }, [activeIndex, members, loadMember])
+    if (member) loadMember(member, activeVariant)
+  }, [activeIndex, activeVariant, members, loadMember])
 
-  const switchTo = useCallback((index: number) => {
-    if (index >= 0 && index < members.length && index !== activeIndex) {
-      setActiveIndex(index)
-    }
+  const switchTo = useCallback((index: number, variant?: 'slides') => {
+    if (index < 0 || index >= members.length) return
+    setActiveVariant(variant || null)
+    if (index !== activeIndex) setActiveIndex(index)
   }, [members.length, activeIndex])
 
   // Cross-member navigation: intercept tlda-navigate when targetFile is a different member
@@ -150,7 +151,13 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       if (!targetFile) return
       const targetIdx = findBookMemberIndex(members, targetFile, e.data.targetPath)
       if (targetIdx === -1) return
+      const variant = e.data.variant === 'slides' ? 'slides' : undefined
       if (targetIdx === activeIndex) {
+        if ((activeVariant || undefined) !== variant) {
+          pendingAnchor.current = e.data.anchor || null
+          switchTo(targetIdx, variant)
+          return
+        }
         // Same member: forward anchor navigation to HtmlPageShape
         if (e.data.anchor) {
           const activeMember = members[activeIndex]
@@ -160,11 +167,11 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       }
       // Store anchor to navigate after member loads
       pendingAnchor.current = e.data.anchor || null
-      switchTo(targetIdx)
+      switchTo(targetIdx, variant)
     }
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [members, activeIndex, switchTo])
+  }, [members, activeIndex, activeVariant, switchTo])
 
   // Handle fleet-open-doc events: add member to book and switch to it
   useEffect(() => {
@@ -383,7 +390,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
         )}
         {!loading && document && (
           <SvgDocumentEditor
-            key={activeMember.key}
+            key={`${activeMember.key}:${activeVariant || 'chapter'}`}
             document={document}
             roomId={roomId}
             annotationsHidden={!commonVisible}
