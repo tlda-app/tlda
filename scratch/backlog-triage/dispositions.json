@@ -1,0 +1,322 @@
+{
+ "fleet:85f8-mswhot8v": [
+  "done",
+  "`d7e16c36f` on main — debounces the follow-off decision. `claude-chief` deployed it and said \"released unless it recurs\". Preceded by `fd55a2f72`."
+ ],
+ "fleet:85f8-mswotfwy": [
+  "done",
+  "`53dccb7ac` on main — pinned annotation viewer wheel+touch. Chief: \"Ship as-is — deploying now.\" **Carve-out below: the regression test Skip asked for was deferred and never built.**"
+ ],
+ "fleet:85f8-mswu9ude": [
+  "live",
+  "Delegated 08-17 02:14 and the thread ends there — the agent never answered. Source-manifest rejection on one of his documents."
+ ],
+ "fleet:724a-mswvaztv": [
+  "done",
+  "`4fac22085` (seat records resolved model) + `8687158d6` (backfill) + `2bbd70231` (also in the table), all on main."
+ ],
+ "fleet:5987-mtc48w5e": [
+  "superseded",
+  "Expand deleted by `3d4454abe`; replaced by one control, `6a4c8acf4` on main. **Remnant:** never exercised in a browser — `search-pm` established a card with a second page may be unreachable on a preview by construction."
+ ],
+ "fleet:3258-mt2iao41": [
+  "done",
+  "`1ecc7fd80` on main, plus test `4274f7a4a`."
+ ],
+ "fleet:3670-mt2qeerw": [
+  "done",
+  "`db61cefd4` on main — \"Refactor document formats and add native PDF\"."
+ ],
+ "fleet:3970-mt2ianwp": [
+  "done",
+  "`47eb7d8b8` on main — \"Add stateful whole-document history diff\"."
+ ],
+ "fleet:37a6-mswwlxm4": [
+  "done",
+  "`b18d29862` on main — \"Record the task transitions that left no trace\"."
+ ],
+ "fleet:d733-mtaa927d": [
+  "done",
+  "`f08b95238` on main — resolves a closure member pointing through a committed symlink; `25f697cf6` records the unverifiable criterion."
+ ],
+ "fleet:7c0d-mt1b6l04": [
+  "done",
+  "`395ac27b8` on main — \"Add sync convergence state-machine boundary harness\"."
+ ],
+ "fleet:3f3d-mt9lbn6y": [
+  "done",
+  "`430195d67` on main — \"Merge classroom student layers\"."
+ ],
+ "fleet:b8f8-mszxqasz": [
+  "done",
+  "`57e0616b4` on main — gives the build queue its second slot."
+ ],
+ "fleet:37b8-mt6cflnm": [
+  "done",
+  "`f03f7f5cb` on main — \"Keep Markdown chip drags on canvas pointer path\"."
+ ],
+ "fleet:b770-mtdemn64": [
+  "live",
+  "`67ecf5422` landed (checks the token against the box in the URL) — but `classroom-pm-2` re-reported tonight that `share` prints a working URL and QR for a project not on the server it points at, resolving the **host** from shell env. Same family, not the same defect. Chief has already routed the host fix; **do not double-assign.**"
+ ],
+ "fleet:35ad-msb52r3a": [
+  "done",
+  "Real subject recovered: *Split metadata.source into via and source*. `10eb76da9` on main, exact subject."
+ ],
+ "fleet:73f9-mti9591n": [
+  "live",
+  "Blocked, 16h old, owner `app-chief` active. Note `35143d4e7` *deleted* \"an index nobody queries\" — worth reconciling against this before building one."
+ ],
+ "fleet:7b2c-mtix2kk7": [
+  "live",
+  "Owner `chief-advocate-fresh` is awake and holds this advocacy now."
+ ],
+ "fleet:e743-mtiw1htz": [
+  "live",
+  "Owner `slides-content-advocate` is awake and holds this advocacy now."
+ ],
+ "fleet:8658-mtiifhc3": [
+  "live",
+  "Owner `tlda-recovery-chief-advocate-4` is awake and holds this advocacy now."
+ ],
+ "fleet:6c05-mthk6pag": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `pic-delivery-advocate-opus` hibernating 1d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:63c9-mthb8nus": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `qtm285-recovery-advocate` hibernating 1d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:7691-mt6sonpw": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `sol-advocate` hibernating 9d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:662e-mt61srp5": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `intro-sentence-advocate` hibernating 9d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:ba77-mt5vlmha": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `intro-writer-advocate` hibernating 9d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:f4b5-mt5niia9": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `intro-advocate-standing` hibernating 9d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:6257-mt5ln918": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `intro-opus-advocate` hibernating 10d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:e264-mt5lms6e": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `appendix-e-advocate-2` hibernating 10d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:2eb0-mt5gwmei": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `intro-outline-advocate` hibernating 10d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:2eb0-mt5gfqhc": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `intro-outline-advocate` hibernating 10d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:38dc-mt56u60a": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `advocate-3-2` hibernating 10d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:f129-mt54v8e3": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `paper-advocate` hibernating 10d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:597a-mt51pa1q": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `rynth-advocate` hibernating 10d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:226a-mt4pljwa": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `chief-opus-2` hibernating 10d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:9258-mt3x2ba6": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `chief-advocate` hibernating 11d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:cf45-msztjfrs": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `chief-night` hibernating 14d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:7211-msz9hhn6": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `advocate-chief-night` hibernating 14d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:c1e2-msy1g39y": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `eiv-advocate` hibernating 15d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:5f90-mswv7ci3": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `bhief-advocate` hibernating 16d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:a3f6-msuyp7xc": [
+  "superseded",
+  "Advocacy seat for work that has moved on; owner `claude-chief-advocate` hibernating 17d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake."
+ ],
+ "fleet:a6a6-mt3wy106": [
+  "superseded",
+  "The row's own text is the evidence: **Skip stood this seat down, 2026-08-22 ~18:44 EDT.** Four chiefs have held it since."
+ ],
+ "fleet:4463-mt9ko6ad": [
+  "superseded",
+  "Restoring an advocate task to `sol-dev-advocate`, which has been hibernating 7d. `sol-dev` is awake and on-call; its advocacy now sits with the current chief advocates."
+ ],
+ "fleet:ff2a-mswwhfvt": [
+  "done",
+  "`aedd8f978` on main — \"Give thread and search recipients the name they held at send time, and mark amends\". ⚠ A later standing note says `thread` still does not fold amends — re-check that half before closing."
+ ],
+ "fleet:521b-mswa1fa5": [
+  "done",
+  "`71c56104a` on main — \"Remove recordings chrome from document view\"."
+ ],
+ "fleet:9c98-mswppfi4": [
+  "done",
+  "`da1d76f0a` \"Fix three false-failure/false-negative reliability bugs found tonight\" + `217132a11` in-flight spawn guard against concurrent duplicate mints, both on main."
+ ],
+ "fleet:3546-mt1bjiyc": [
+  "done",
+  "Title is a transfer note; the work is lexical `me`, landed as `cdada954c` \"Fix lexical me in thread cards\" on main. Matches the standing ruling in AGENTS.md §\"`me` IS LEXICALLY SCOPED\"."
+ ],
+ "fleet:3aaf-mtcatep2": [
+  "done",
+  "`3ab30571d` \"Give the inbox its own subscription, like every other panel\" + `1f11759f2` \"Mark the inbox buffer server-fed, or the subscription delivers into a hole\", both on main."
+ ],
+ "fleet:2de9-mtdfk0fu": [
+  "done",
+  "`cb1a94beb` on main — \"A failed build leaves the last good render serving\"; `cff3c21d3` covers the rebuild case."
+ ],
+ "fleet:8172-mtdg4jc9": [
+  "done",
+  "`147f1e6e8` \"A dragged iPhone photo reaches the grader\" on main; `9e3cb2a2c` then withdrew the drop provider because the shipped extension already does more."
+ ],
+ "fleet:efbf-msxdl5ez": [
+  "done",
+  "Title is a reassignment note. The work landed: `22fb6182b` \"Make LaTeX membership the closure of the document's roots\" — the implementation AGENTS.md §\"A subsystem is Skip's decision\" names as the correct one."
+ ],
+ "fleet:5ed6-msyidwo0": [
+  "live",
+  "Partly landed — `fc7c58cc0`, `51574efd9` \"Move the tailnet front door off the machine a deploy replaces\". But the newest commit on the theme, `13d093cc0` (08-28), is *\"Stage the cutover, and **stop documenting a front door that is not there**\"*. By its own author the front door is not shipped."
+ ],
+ "fleet:2d2c-mt11sr71": [
+  "superseded",
+  "`app-chief` holds this (awake, 95 commits on main, most recent today)."
+ ],
+ "fleet:34d8-mt11rx0o": [
+  "superseded",
+  "`app-chief` holds this (awake, 95 commits on main, most recent today)."
+ ],
+ "fleet:e11b-mt11r8va": [
+  "superseded",
+  "`app-chief` holds this (awake, 95 commits on main, most recent today)."
+ ],
+ "fleet:55e4-msz1lchw": [
+  "superseded",
+  "Standing PM seat, owner hibernating 14d; the lane is now run by `reliability-pm`/`sync-repair-sol` under `tlda-recovery-chief-opus`."
+ ],
+ "fleet:a1d6-msz1kwx9": [
+  "superseded",
+  "Standing PM seat, owner hibernating 14d; the lane is now run by the current chief under `tlda-recovery-chief-opus`."
+ ],
+ "fleet:fcff-msz1knbl": [
+  "superseded",
+  "Standing PM seat, owner hibernating 14d; the lane is now run by the current chief under `tlda-recovery-chief-opus`."
+ ],
+ "fleet:8d6c-mtc63pd3": [
+  "unestablished",
+  "Lead: `2e9ef9e91` on main, \"Re-ask for the confirmation, do not rebuild the history that was already sent\" — same area, but it does not say the hang is gone."
+ ],
+ "fleet:3a16-mtbgueu0": [
+  "unestablished",
+  "Lead: `0ce641013` on main, \"Stop loading a document from a manifest entry, which has no targets\". Fixes the cause; whether the already-broken projects were recovered is not stated."
+ ],
+ "fleet:848b-mt3xcnsy": [
+  "unestablished",
+  "Lead: `e7aede620` \"Make activity card rendering idempotent\". That is a fix, not the reproduction this row asks for."
+ ],
+ "fleet:6fd6-mt52elt7": [
+  "unestablished",
+  "Six commits on main incl. `ec37d074e` \"Record the root cause: WrongHead, rejected silently\" and `94569675b`. Root cause recorded; whether an in-app edit now yields a build **and** a version is not asserted by any of them."
+ ],
+ "fleet:fb3d-msyiexff": [
+  "unestablished",
+  "`29e8474a7` put the vacuum runbook in place, but no commit prunes FTS. Per AGENTS.md `auto_vacuum` is `NONE`, so this needs the maintenance-window procedure run, not code."
+ ],
+ "fleet:a2f5-msz1trb5": [
+  "unestablished",
+  "Owner landed 8 commits on main but none on this subject."
+ ],
+ "fleet:ce18-mt2ianqs": [
+  "unestablished",
+  "Lead: `6719514a2` \"Model project document roots by format\". Row cites Skip chat#3086828 — read that message before disposing."
+ ],
+ "fleet:4421-mt2iancu": [
+  "unestablished",
+  "Lead: `000573cac` \"Restore source editor panel controls\". A review row; what it was reviewing is not named in the title."
+ ],
+ "fleet:3546-mt2hu61r": [
+  "unestablished",
+  "Row cites Skip chat#3085884 — read that message before disposing."
+ ],
+ "fleet:2383-mt649brl": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:995e-mt61uc4m": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:577f-mt60psyd": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:6f15-mt5m0rmk": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:b492-mt5isyx6": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:2eb0-mt5go5wh": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:2eb0-mt5gm5qk": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:b5bf-mt5ctqov": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:9dca-mt5crqrf": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:bdc9-mt5cme0q": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:9ad5-mt4ysxod": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:bdc9-mt4xa8tj": [
+  "superseded",
+  "Superseded by the current introduction lane: `intro-polish` (awake) with `intro-polish-process-advocate` (awake), which reported 09-01 04:52 that it holds the artifact under an active gate. That lane, not this 9-day-old cohort, is where the work is."
+ ],
+ "fleet:5531-mtibm8p2": [
+  "live",
+  "**Deliberately blocked on one bare question to Skip** — the referent of \"second bullet\" in his own instruction. Three agents have guessed; the advocate is holding rather than mutating. Subscription #92757 live. This is the one row in this bucket that genuinely needs him."
+ ],
+ "fleet:bba2-mtgm3xfl": [
+  "live",
+  "Held now. `intro-polish-process-advocate` reports the artifact under an active gate, writer frozen, nothing accepted."
+ ]
+}
