@@ -349,3 +349,25 @@ check any of them with `thread(message_id: <id>)`.
 | task | restore to | event | chain |
 |---|---|---|---|
 | `fleet:a3f6-msuyp7xc` | You are the independent Claude advocate for the tlda chief-o | 2844609 | 1 |
+
+---
+
+## Note added after review
+
+**Eight rows in the tables above are no-ops** — `restore to` is byte-identical to
+what the row already reads: `fleet:7608-mswu27lb`, `fleet:85f8-mswu9ude`,
+`fleet:85f8-mswotfwy`, `fleet:85f8-mswhot8v`, `fleet:521b-mswa1fa5`,
+`fleet:a3f4-mswadp6j`, `fleet:9c98-mswppfi4`, `fleet:a3f6-msuyp7xc`.
+
+**They are not stamped.** Their description was derived **at creation**, which is
+correct behaviour and is deliberately kept. The first version of the detection
+rule could not tell "derived at create" from "stamped by transfer", so it flagged
+them; they were caught on review.
+
+**The rule now tells them apart by mechanism** rather than by someone noticing a
+no-op: a delegate event only counts as a stamp if its metadata carries
+`transfer: true`. A creation delegate has no such flag. Re-run under the
+corrected rule, `scratch/build-title-mapping.mjs` yields **exactly these 79**,
+with every title and source event id byte-identical to the tables above, and
+these eight absent. `scratch/restore-task-titles.mjs` refuses them by id as well,
+so the approved set and the executed set are the same 79 either way.

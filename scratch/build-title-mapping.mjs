@@ -20,8 +20,15 @@ function recover(row) {
   if (!d.length) return { verdict: 'no-delegate-events' }
   const current = row.description || ''
 
-  // Index of the event that wrote the current title.
-  let i = d.findIndex(e => e.message && derivedPreFix(e.message) === current)
+  // Index of the event that wrote the current title. `transfer` is load-bearing:
+  // a delegate event that is NOT a transfer is the task's CREATION, where
+  // deriving the description from the message is correct and not the defect.
+  // Without this test the walk also flags every task whose creator passed no
+  // description -- 8 of 87 on the first run, each "restoring" to the string the
+  // row already held. They were caught on review; the test is what makes the
+  // rule tell the two apart rather than relying on someone noticing a no-op.
+  const isStamp = e => e.transfer && e.message && derivedPreFix(e.message) === current
+  let i = d.findIndex(isStamp)
   if (i < 0) return { verdict: 'not-stamped' }
 
   const chain = []
@@ -31,7 +38,7 @@ function recover(row) {
     const prior = e.text || ''
     // Was the title this event displaced ALSO a stamp, written by an earlier
     // hand-off? If so keep walking back.
-    const j = d.findIndex((x, k) => k < i && x.message && derivedPreFix(x.message) === prior)
+    const j = d.findIndex((x, k) => k < i && x.transfer && x.message && derivedPreFix(x.message) === prior)
     if (j < 0) return { verdict: 'recovered', title: prior, chain, sourceEventId: e.eventId }
     i = j
   }
