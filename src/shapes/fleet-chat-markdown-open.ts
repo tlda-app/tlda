@@ -82,11 +82,9 @@ function managedViewportSize() {
   }
 }
 
-export async function fetchMarkdownChipText(chipUrl: string, chipPath: string): Promise<string> {
-  const candidates = [
-    chipUrl,
-    chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '',
-  ].filter(Boolean)
+export async function fetchMarkdownChipText(chipUrl: string, chipPath = ''): Promise<string> {
+  void chipPath // retained for the inbox caller's existing signature
+  const candidates = [chipUrl].filter(Boolean)
   let lastError: unknown = null
   for (const url of candidates) {
     try {
@@ -98,6 +96,25 @@ export async function fetchMarkdownChipText(chipUrl: string, chipPath: string): 
     }
   }
   throw lastError instanceof Error ? lastError : new Error('markdown chip fetch failed')
+}
+
+async function resolveSenderFileUrl(chipPath: string, sourceAgent: string): Promise<string> {
+  const res = await fetch('/api/resolve-chat-file', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agentId: sourceAgent, path: chipPath }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const body = await res.json()
+  if (!body?.url) throw new Error('resolved chat file has no URL')
+  return body.url
+}
+
+async function fetchChatMarkdown(chipUrl: string, chipPath: string, sourceAgent: string): Promise<string> {
+  if (chipUrl) return await fetchMarkdownChipText(chipUrl)
+  if (!chipPath || !sourceAgent) throw new Error('markdown chip has no uploaded URL or source agent')
+  const url = await resolveSenderFileUrl(chipPath, sourceAgent)
+  return await fetchMarkdownChipText(url)
 }
 
 export function openChatMarkdownColumn(options: MarkdownColumnOptions): Promise<void> {
@@ -168,6 +185,7 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
   const chipUrl = mdChip.dataset.url || ''
   const chipPath = mdChip.dataset.path || ''
   const chipSection = mdChip.dataset.section || undefined
+  const sourceAgent = mdChip.closest('.chat-line')?.getAttribute('data-msg-from') || ''
 
   if (mdChip.classList.contains('src-chip')) {
     stopPropagation()
@@ -179,7 +197,7 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
     // Provenance chips are a shared-file chip plus a section focus, not a
     // section-only snapshot — fetch the whole raw source file (same path as
     // a plain file chip), never the rendered chat bubble text.
-    fetchMarkdownChipText(chipUrl, chipPath)
+    fetchChatMarkdown(chipUrl, chipPath, sourceAgent)
       .then(text => openMarkdownColumn(title, text, mdChip, { path: chipPath, section: chipSection }))
       // A load failure opens NO document. It used to open a markdown column whose
       // body was "# Failed to load", which reads to the user as a real but broken
@@ -196,14 +214,13 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
   }
 
   const isMd = /\.(?:md|markdown)(?:$|[?#])/i.test(chipUrl || chipPath)
-  const fetchUrl = chipUrl || (chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '')
-  if (!isMd || !fetchUrl) return false
+  if (!isMd || (!chipUrl && (!chipPath || !sourceAgent))) return false
 
   stopPropagation()
   const openKey = chipOpenKey(chipUrl, chipPath)
   if (!beginChipOpen(mdChip, openKey)) return true
   const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
-  fetchMarkdownChipText(chipUrl, chipPath)
+  fetchChatMarkdown(chipUrl, chipPath, sourceAgent)
     .then(text => {
       const baseUrl = chipUrl ? chipUrl.substring(0, chipUrl.lastIndexOf('/') + 1) : ''
       const resolved = baseUrl ? text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {

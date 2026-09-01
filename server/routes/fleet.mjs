@@ -1209,6 +1209,31 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ markdown: entry.markdown })
   })
 
+  // A chat row can arrive from the harness without passing through chat(), so a
+  // sender-local Markdown path may have no uploaded URL yet. Resolve it on the
+  // sender's owning daemon through the existing rechat/upload path; the Fly
+  // server must never try to read a Mini/Air path from its own filesystem.
+  router.post('/api/resolve-chat-file', async (req, res) => {
+    const { agentId, path: filePath } = req.body || {}
+    if (!agentId || !filePath) return res.status(400).json({ error: 'agentId and path required' })
+    const agent = await fleetStore.findAgent?.(agentId) || await fleetStore.getAgent?.(agentId)
+    if (!agent) return res.status(404).json({ error: `agent not found: ${agentId}` })
+    const seat = await agentRouteOrHttpError(res, agent)
+    if (!seat) return
+    try {
+      const result = await sendDaemonDurable(seat.daemon_key, 'rechat', {
+        agent_id: agent.id,
+        text: String(filePath),
+      })
+      const attachment = (result.inlineAttachments || []).find(att => att && !att.broken && att.url)
+      if (!attachment) return res.status(404).json({ ok: false, error: 'file did not materialize' })
+      res.json({ ok: true, url: attachment.url })
+    } catch (e) {
+      const code = e.code === 'NO_DAEMON' ? 503 : 502
+      res.status(code).json({ ok: false, error: e.message })
+    }
+  })
+
   // --- POST /api/unquote-file ---
   // Unquote = amend the message by removing the backticks around a quoted block,
   // then re-render it as if it had never been quoted. The full interior is run
