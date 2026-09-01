@@ -4185,17 +4185,8 @@ body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: ca
   display: flex;
   align-items: center;
 }
-/* Recording reads in the rail's own vocabulary: the control comes up from its
-   resting tone to its active one, the same step every other control on this rail
-   uses. It does NOT change colour.
-   Skip, 2026-08-26: "it CANNOT be a glowing fucking red thing." The red and the
-   full-opacity bump were mine, carried over from the old index-page mic, and on
-   a rail where everything else is a faint monochrome glyph they made an open
-   microphone the loudest thing on the screen. */
-.fleet-chat-shape .fleet-composer-mic-toggle.recording {
-  opacity: var(--ui-tone-active);
-}
-
+/* Mic state is entirely in the glyph: slashed while off, bare while on. Both
+   states keep this same resting tone. */
 .fleet-chat-shape .fleet-composer-clear-toggle {
   order: 4;
   pointer-events: auto;
