@@ -8,13 +8,13 @@ export function layoutPageBounds(
   gap: number,
 ): Box[] {
   let offset = 0
-  const crossSize = Math.max(0, ...pages.map(page =>
-    axis === 'horizontal' ? page.height : page.width
-  ))
+  const crossSize = axis === 'vertical'
+    ? Math.max(0, ...pages.map(page => page.width))
+    : 0
 
   return pages.map(page => {
     const bounds = axis === 'horizontal'
-      ? new Box(offset, (crossSize - page.height) / 2, page.width, page.height)
+      ? new Box(offset, 0, page.width, page.height)
       : new Box((crossSize - page.width) / 2, offset, page.width, page.height)
     offset += (axis === 'horizontal' ? page.width : page.height) + gap
     return bounds
