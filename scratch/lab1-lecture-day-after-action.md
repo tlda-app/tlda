@@ -93,3 +93,29 @@ Five times the answer was in his repository while we derived it:
 He presented from a plain reveal deck over the tailnet — no tlda, no split, no
 auth, no token — served from `lectures/` on port 8899. 23 plots, ~5 minutes cold
 warm-up while webR fetches the tidyverse.
+
+### The instrument for a webR deck that looks wedged
+
+**Canvas count is terminal. Running-cell count is live.** Measured 2026-09-01 on
+his deck, PostMessage rig:
+
+```
+t=158s   35 cells running   canvas=0     <- looks wedged, isn't
+t=341s   34 cells running   canvas=0     <- 183 seconds of this
+t=356s   19 cells running   canvas=9
+t=386s    0 cells running   canvas=21
+```
+
+**A 183-second window where fetches have stopped, nothing is drawn, and there are
+no errors.** Indistinguishable from wedged by canvas count, and normal — first
+plot lands at ~356 s.
+
+**Every zero-plot report on 2026-09-01 was sampled inside that window.** The
+running-cell count says "alive" at every sample within it. **Ask cells-running
+before concluding anything from canvases.**
+
+**This failure is distinct from the others above.** The `img` counter and the
+spinner count returned *wrong* numbers. This one returns a *correct* number —
+zero really was zero — **read as terminal when it was mid-process.** The defence
+is not a better counter; it is a positive control establishing how long silence
+lasts before silence means anything.
