@@ -168,8 +168,8 @@
   "Restoring an advocate task to `sol-dev-advocate`, which has been hibernating 7d. `sol-dev` is awake and on-call; its advocacy now sits with the current chief advocates."
  ],
  "fleet:ff2a-mswwhfvt": [
-  "done",
-  "`aedd8f978` on main — \"Give thread and search recipients the name they held at send time, and mark amends\". ⚠ A later standing note says `thread` still does not fold amends — re-check that half before closing."
+  "live",
+  "Half landed: `aedd8f978` on main gives thread/search recipients the name they held at send time. **The amend half is not done** — Skip's own `the-list.md` carries `The agent read path does not fold amends` at 🔨, and that list postdates nothing that would have closed it. Do not close on the commit alone."
  ],
  "fleet:521b-mswa1fa5": [
   "done",
@@ -248,8 +248,8 @@
   "`29e8474a7` put the vacuum runbook in place, but no commit prunes FTS. Per AGENTS.md `auto_vacuum` is `NONE`, so this needs the maintenance-window procedure run, not code."
  ],
  "fleet:a2f5-msz1trb5": [
-  "unestablished",
-  "Owner landed 8 commits on main but none on this subject."
+  "done",
+  "Same fix: `d1a7b4271` (08-18) on main attaches the task in the mint operation, so there is no returned-id/requested-name gap left to mis-attach across."
  ],
  "fleet:ce18-mt2ianqs": [
   "unestablished",
@@ -541,7 +541,7 @@
  ],
  "fleet:4807-mtijw6vp": [
   "live",
-  "Owner `hw-release-pairing` is awake and this was notified 11h ago — in hand now."
+  "Owner `hw-release-pairing` is **awake**. Leads `78ca0ae63` \"Retry interrupted course release stages\" (08-30) and `d0b8098c9` (08-31) are adjacent, neither asserts the divergence fixed."
  ],
  "fleet:73f9-mtiiqr78": [
   "live",
@@ -574,5 +574,353 @@
  "fleet:bc8d-mthyusax": [
   "live",
   "Owner `tlda-recovery-chief-sol` is awake and this was notified 21h ago — in hand now."
+ ],
+ "fleet:75f8-mswvq8jx": [
+  "done",
+  "`d1a7b4271` (08-18) on main — \"Attach a mint's task in the same operation that mints it\". Postdates the row and is the deliverable."
+ ],
+ "fleet:82fd-mt5dsas0": [
+  "superseded",
+  "The question was closed from the other side: `203476dda` (08-23) \"Close the delegate-notifies-a-live-recipient question with the missing control\", and `770f3f375` (08-19) \"Never infer death: a failed reanimate leaves a hibernating agent\" settles what a dead seat even is. Owner is the one agent in the fleet **marked dead**."
+ ],
+ "fleet:0f10-mt2jnw8f": [
+  "done",
+  "`f5c044ea2` (08-20) on main, by this owner — \"Make mint launch state durable before session discovery\"; `39648f5b5` adds \"Tell the requester when a mint launches and never answers\"."
+ ],
+ "fleet:2b6f-mt2lmy47": [
+  "unestablished",
+  "Leads `f8da9eb67` (08-12) and `7020b5117` (08-06) are in this exact area but **both predate the row**, so they are prior art, not its resolution. Blocked on `fleet:2b6f-mt2ko64i` (the white-spinner row) and never picked up."
+ ],
+ "fleet:0748-mt3hrfcy": [
+  "unestablished",
+  "`050f97837` (08-21) \"Make every fleet snap guide actionable\" postdates the row and may close it. Against that, Skip's `the-list.md` carries **\"The guides do not say which line you will actually snap to\"** at ○ — but that list was last written 08-13, *before* the commit, so it cannot settle this either way. Needs one look at the running app."
+ ],
+ "fleet:d705-msyhl1rk": [
+  "unestablished",
+  "`0271a378e`/`51f477b9f` \"Share one bot-heartbeat survey, so a bot's death has a witness\" are this owner's only landed work and are not the deliverable."
+ ],
+ "fleet:b50a-msz2tcdj": [
+  "unestablished",
+  "Lead: `244732040` (08-20) \"Bound daemon outbox receiver debt\". The probe this row asks for is not asserted by any commit."
+ ],
+ "fleet:6287-mthk6i88": [
+  "live",
+  "**Still open tonight.** The chief reports `classroom-pm-2` established HW−1 and HW0 **reach zero students** — never in `documentRoots` — and that `week0-homework.qmd` is published while its source no longer exists in the repo. `7989cb60f`/`6864b4180` (09-01) fix visual-mode rendering, which is a different half."
+ ],
+ "fleet:cdc2-mthbf15o": [
+  "live",
+  "Rolled into tonight's classroom recovery — `classroom-pm-2`, `classroom-repair-sol`, `classroom-ui-sol`, `hw-release-pairing`, `pic-release-opus`, all awake under the chief. Still wanted; the owner on this row is not the one doing it. Same subject as the row above, which the chief has live."
+ ],
+ "fleet:fe9a-mtdkbzxa": [
+  "done",
+  "`6864b4180` \"Recognize homework in Quarto visual mode\" and `7989cb60f` \"Package visual-mode homework fix as 0.2.8\", both on main today (09-01), both postdating this row."
+ ],
+ "fleet:b450-mt6ssvvy": [
+  "live",
+  "`85326627a` (08-25) is a resumption point naming the cause: **pic has no daemon, which is why the course book never built.** A diagnosis, not a fix — the row stands and is blocked on that."
+ ],
+ "fleet:a5c5-mt6ssn9e": [
+  "superseded",
+  "Overtaken by the layer work that landed: `430195d67` \"Merge classroom student layers\" (08-27) and `c9978e0f9` \"Compose classroom layers for the instructor\" (08-31)."
+ ],
+ "fleet:1bd8-mt6ssf85": [
+  "live",
+  "Rolled into tonight's classroom recovery — `classroom-pm-2`, `classroom-repair-sol`, `classroom-ui-sol`, `hw-release-pairing`, `pic-release-opus`, all awake under the chief. Still wanted; the owner on this row is not the one doing it. Leads `b669537cc` \"Gate pic-dev with classroom tokens\" and `6404d0106` \"Ask who the reader is by credential, not by query parameter\" (both 08-27/28) move it but do not assert it complete."
+ ],
+ "fleet:1e24-mtdconlr": [
+  "live",
+  "Rolled into tonight's classroom recovery — `classroom-pm-2`, `classroom-repair-sol`, `classroom-ui-sol`, `hw-release-pairing`, `pic-release-opus`, all awake under the chief. Still wanted; the owner on this row is not the one doing it. No commit on main carries this subject."
+ ],
+ "fleet:bbc1-mthv5cj2": [
+  "live",
+  "Rolled into tonight's classroom recovery — `classroom-pm-2`, `classroom-repair-sol`, `classroom-ui-sol`, `hw-release-pairing`, `pic-release-opus`, all awake under the chief. Still wanted; the owner on this row is not the one doing it. No commit on main carries this subject; the chief has the release process live tonight."
+ ],
+ "fleet:c4da-mthtqqjl": [
+  "live",
+  "Rolled into tonight's classroom recovery — `classroom-pm-2`, `classroom-repair-sol`, `classroom-ui-sol`, `hw-release-pairing`, `pic-release-opus`, all awake under the chief. Still wanted; the owner on this row is not the one doing it. No commit on main carries this subject."
+ ],
+ "fleet:58e2-mt9e5qcf": [
+  "superseded",
+  "Session recovery for `classroom-pm`, hibernating 7d. `classroom-pm-2` is awake and carrying the lane."
+ ],
+ "fleet:22de-mtdcomgk": [
+  "superseded",
+  "`classroom-advocate` landed its record — `d153376a9` \"The advocate's record of the classroom recovery\", `f032ff8fd`, `bb22c804b`, `fd0a28a63`, `5ef53e13a` (all 08-28). Verification of *that* recovery is filed; tonight's is a later one with its own advocates awake."
+ ],
+ "fleet:3546-mt1fho4d": [
+  "superseded",
+  "The premise was retracted: `e7685664d` (09-01) **\"CORRECTION: the detached SVG is collectable, not retained\"**, reversing `bc1e20951`. There is no retained-document failure to retry."
+ ],
+ "fleet:324a-mt92lrc1": [
+  "live",
+  "**Dated, and the first date is in 48 hours.** Raised 7d ago, owner `deck-read-mid` hibernating since. Nobody is reading these."
+ ],
+ "fleet:6114-mt9370ox": [
+  "live",
+  "**Dated.** Raised 7d ago, owner `deck-read-late-2` hibernating since."
+ ],
+ "native:claude:fleet:efbfa049:7992a624-9adf-4333-ae99-ea4282608eb9:1": [
+  "superseded",
+  "A chief-of-staff checkpoint whose owner is hibernating with the task still marked `working`, stale 371h. The seat is held by `tlda-recovery-chief-opus`."
+ ],
+ "fleet:0a55-msy4hu3k": [
+  "superseded",
+  "A seat's recurring obligation; `chief-aug18` hibernating 15d. The obligation travels with the seat, which the current chief holds."
+ ],
+ "fleet:5ed6-msy3z558": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:4e69-msxvildg": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:8f73-msydfqd6": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:2b6f-mt99gmd5": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:83dc-mt3n697o": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:1753-mt20lltk": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:dev-mt2a0iua": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:1a87-mt3hreqz": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:f358-mt5koo2v": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:98ec-mt2572ib": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:383b-mt17cv5g": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:3d1d-mt16fjqd": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:8a77-msz0hzqx": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:cbcd-mt3njv17": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:a3f4-mswadp6j": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:9fae-mti8rdmb": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:9fae-mthyusyh": [
+  "unestablished",
+  "**The title is a handoff/correction note, not the task.** What it transfers is only in the referenced thread or message id. Establishing it means reading that reference — the same defect as the 39 rows in §3, one at a time rather than in bulk."
+ ],
+ "fleet:4589-mt1yg3zr": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:4589-mt1xpmjz": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:4589-mt1x2a59": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:4589-mt1un0nt": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:4589-mt1tjl5b": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:4589-mt1pp7jx": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:7eb6-mt13l3lp": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:7eb6-mt13j9gp": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:8a62-mt134lpo": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:9d89-mt12nbqb": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:9d89-mt12iuct": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:e7b7-mt0r1qnf": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:3d65-mt0kn8gs": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:eac4-msxl1org": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:1d50-mswoezh4": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:6a8f-mswoehok": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:7ceb-mswg72al": [
+  "unestablished",
+  "Part of a mathematics cohort that all hibernated on 08-19/08-20. **Not establishable from this repository** — the work lives in paper checkouts, not in tlda, so no commit here can settle it. Needs `math-historian` or a read of these threads."
+ ],
+ "fleet:7608-mswu27lb": [
+  "unestablished",
+  "The defect *class* has landed fixes on main — `a9074bc8e` \"Scope external-sync deletions to what the remote itself introduced\" and `f08b95238` \"Resolve a closure member that points through a committed symlink\". **Whether this row is closed is a statement about one of his own documents, which is not mine to make or to check.** Him or the chief."
+ ],
+ "fleet:b340-mthbplzw": [
+  "done",
+  "Owner `daemon-suite-red` is awake and landed the run on 08-31: `e5cdf8d4e` \"Retire daemon tests asserting three replaced contracts\", `cf5aa7e32`, `69b467bb0`, `8d634aae4`, `c4a9084fa` — five commits on main clearing stale assertions."
+ ],
+ "fleet:2e4d-mtaac7mk": [
+  "done",
+  "`e5701db4e` (08-26) on main — \"The server's self-remote uses the host its cert is issued for\"; `29389baf2` records the `TLDA_SELF_BASE_URL` trap alongside it."
+ ],
+ "fleet:0497-mt5lbz4x": [
+  "done",
+  "`4fac22085` (08-17) records the resolved model on a seat, `8687158d6` backfills the agents minted before it. The probe this row asks for is satisfied by the backfill existing."
+ ],
+ "fleet:0196-mt1b6knr": [
+  "done",
+  "`e3ba10559` \"Make Git remotes ordinary daemon sources\", `6d524dea7`, `84b9733f2`, `3d7565539` — this owner's four commits on main (08-20). `8b4eac118` (08-24) then records **\"Overleaf settled as fine\"**."
+ ],
+ "fleet:500d-mtdkcav1": [
+  "superseded",
+  "`b5011fca1` (08-27) \"Record the search integration disposition\" is this owner's own filing. The card itself changed under it — expand deleted `3d4454abe`, one control landed `6a4c8acf4` — so what this row was to witness no longer exists in that form."
+ ],
+ "fleet:500d-mtc3dseh": [
+  "live",
+  "`6a4c8acf4` and `196dd5929` landed on main, so the change is shipped and **unverified on the surface**. `search-pm` established the obstacle: a card with a second page of results may be unreachable on a preview by construction — `--sandbox` gives a daemon but no real history, `--real-fleet` the reverse. That obstacle is the thing to settle, not the button."
+ ],
+ "fleet:d733-mt6qp421": [
+  "superseded",
+  "A standing ownership seat, owner hibernating 9d. That job is the chief's now, and `reliability-pm`'s 183 commits on main stop at 08-29."
+ ],
+ "fleet:d733-mtdkg1h5": [
+  "unestablished",
+  "Lead: `304b054b7` (08-29) \"Apply the accepted head when doing so cannot cost anything\". `a1c0d768c` is a warning against this row's own method — *\"Record two instruments agreeing on an absence because they share a blind spot.\"*"
+ ],
+ "fleet:9111-mt6docjt": [
+  "unestablished",
+  "This owner's `7cdc0cb90` \"Make this file's shape cleanups able to delete, which they never could\" was **reverted today** by `7b2d716cc`. Whichever way that row goes, it is not closed."
+ ],
+ "fleet:0c44-mt4nc7v0": [
+  "unestablished",
+  "Leads `4f588b0e6` (08-28) \"Record the equal-tree silent success as the probe boundary\" and this owner's nine commits on main to 08-22. None asserts the junk-commit-free round trip."
+ ],
+ "fleet:0f10-mt1vafaa": [
+  "live",
+  "Blocked on `fleet:0f10-mt1swqpo`. Nothing on main carries it, and it is the same subject as Skip's own `the-list.md` row **\"Bots that aren't all fucked up\"** — *\"that's a fucking item, right\"*, his words."
+ ],
+ "fleet:37a6-mswwu4xh": [
+  "unestablished",
+  "Lead: `cd2119ce0` (08-23) \"Record that the markdown gate is shared and one branch of it is dead\" — adjacent, and it *records* a dead branch rather than restoring a route."
+ ],
+ "fleet:9387-mswvarwi": [
+  "done",
+  "Both halves landed: `4c10d8438` (08-23) \"Give login the transport identity it just resolved\" and `d1a7b4271` (08-18) \"Attach a mint's task in the same operation that mints it\"."
+ ],
+ "fleet:ff2a-mswvfjnk": [
+  "unestablished",
+  "Lead: `b5e6ce08a` \"Document the identity and labeling system\" — but that is 07-31, **two weeks before this row**, so it is the thing being audited, not the audit."
+ ],
+ "fleet:d8fa-mrwr2xr2": [
+  "unestablished",
+  "**The oldest open row in the fleet at 41 days**, blocked on `fleet:d8fa-mrwq97vb`, owner `pin` hibernating. Nothing on main carries the subject."
+ ],
+ "fleet:e3c2-mthk6fgd": [
+  "superseded",
+  "A staffing action. `pic-lecture-advocate` and the Lab 1 cohort are awake on opus and ran today's lecture day."
+ ],
+ "fleet:98ec-mt19t0tu": [
+  "superseded",
+  "A standing seat for a Codex tester, hibernating 13d. `app-tester` and `tlda-dev pw` cover this, and the chief issued a standing rule on the pooled browser tonight."
+ ],
+ "fleet:dda0-mszu04tc": [
+  "unestablished",
+  "Lead: `b48d98be0` (08-22) \"Recover the sixteen sync promises as a specification\" — the specification exists; whether his dispositions were marked against it is not asserted."
+ ],
+ "fleet:6361-msz2009l": [
+  "unestablished",
+  "One slice of the August keep/cut audit. `c1e83aa62` preserved that audit's output before scratch/ was swept; whether S6 was ever run is not established."
+ ],
+ "fleet:feb2-msz1cdrh": [
+  "unestablished",
+  "Same audit family. The window it names is now three weeks past and two further chiefs have held the seat."
+ ],
+ "fleet:0bfc-msyvsrea": [
+  "unestablished",
+  "Lead: `8df7d86bc` (08-18) \"Give the accept path the effects it owed, so an accept preserves the work\" — this owner's own commit and plausibly the deliverable, but it does not name the daemon caller half."
+ ],
+ "fleet:9a66-mswv877q": [
+  "unestablished",
+  "No commit carries this subject. The nearest artifacts are `9a66b204`'s own; the sync root-cause work that did land came from other owners."
+ ],
+ "fleet:ae95-mt3xm54x": [
+  "live",
+  "Skip's own `the-list.md` carries this at ○ — **\"An inert `dev` reclaims no disk\"**. Not currently biting: 75 GB free, load 17.6, measured tonight. But `dev` runs as `quiet-dev`, and per `96c35417d` that prefix has two causes and only one of them is a decision."
+ ],
+ "fleet:2b6f-mt2ko64i": [
+  "unestablished",
+  "Lead: `b6161bc45` (08-18) \"Show the last good render while a rebuild runs\" — masks the wait rather than explaining 30 seconds. `94ade5eed` warns in the same area about a monitor flagging designed behaviour as a fault."
+ ],
+ "fleet:a879-mta8awxy": [
+  "live",
+  "**A decision row sitting with `sol-dev`, who is awake and on-call, for 6 days.** By its own title the next action is a call somebody has to make."
+ ],
+ "fleet:21a4-mt4ah5xm": [
+  "unestablished",
+  "No commit asserts this proof. `21a4e891` landed nothing on main."
+ ],
+ "fleet:e1f8-mthb7n8c": [
+  "unestablished",
+  "One of **five** rows on `tlda-recovery-chief-sol` sharing this transfer note as their title — the §3 defect on a live agent. The owner is **awake**; one question to them recovers all five subjects."
+ ],
+ "fleet:3536-mthb7l9w": [
+  "unestablished",
+  "One of **five** rows on `tlda-recovery-chief-sol` sharing this transfer note as their title — the §3 defect on a live agent. The owner is **awake**; one question to them recovers all five subjects."
+ ],
+ "fleet:7dca-mthb7j23": [
+  "unestablished",
+  "One of **five** rows on `tlda-recovery-chief-sol` sharing this transfer note as their title — the §3 defect on a live agent. The owner is **awake**; one question to them recovers all five subjects."
  ]
 }

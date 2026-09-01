@@ -64,8 +64,21 @@ row already settled by hand:
 Neither appears as evidence in any row. Where one produced a lead that does not
 settle a row, the lead sits in the evidence column under `unestablished`.
 
-**101 rows have had no evidence read yet.** They carry `unestablished` with no
-evidence, and that is what they are — not a judgement that they are dead.
+**231 of the 245 rows now carry a disposition.** The 14 that do not are Skip's
+own — listed, untouched, because closing them is his.
+
+**95 of the 231 are `unestablished`, and every one of them says why**, which is
+the useful half: the lead that does not settle it, or the reason it cannot be
+settled from here. Three recurring reasons are worth naming, because they are
+structural rather than per-row:
+
+- **The title is a handoff note.** 17 rows. What was transferred lives only in a
+  referenced thread or message id — the §3 defect one row at a time.
+- **It cannot be settled from this repository.** 17 rows, a mathematics cohort
+  that all hibernated on 08-19/08-20; the work is in paper checkouts, so no
+  commit here can speak to it.
+- **A lead exists and stops short.** The commit is adjacent, or predates the row
+  and is therefore prior art rather than its resolution.
 
 ## The second list, and that this job is a row on it
 
