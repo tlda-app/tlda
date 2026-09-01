@@ -255,7 +255,12 @@ export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subsc
       case 'from': return agentExpr(n.x, from)
       case 'to': return agentExpr(n.x, to)
       case 'involving': return agentExpr(n.x, from) || agentExpr(n.x, to)
-      case 'between': return (agentExpr(n.l, from) && agentExpr(n.r, to)) || (agentExpr(n.r, from) && agentExpr(n.l, to))
+      // `between` names the two participants, not the spelling used on the
+      // envelope. A direct message addressed by fleet id is still between the
+      // same two agents as one addressed by friendly name. History resolves
+      // both names to participant ids; live delivery must use the resolved
+      // recipient labels for the same reason.
+      case 'between': return (agentExpr(n.l, from) && agentExpr(n.r, recipient)) || (agentExpr(n.r, from) && agentExpr(n.l, recipient))
       case 'not': return !ev(n.x)
       case 'and': return ev(n.l) && ev(n.r)
       case 'or': return ev(n.l) || ev(n.r)
