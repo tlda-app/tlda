@@ -162,6 +162,19 @@ export function channelLoginCoalesceKey(agentId, loginBody) {
   return `channel-login:${agentId}:${facts}`;
 }
 
+// A task's headline when the caller gave none: its opening sentence, else its
+// opening line. A task row is ONE line -- `[id] agent | status | description |
+// age` in tasks(), and the same shape in inbox() -- so this must never return a
+// newline. Slicing the raw message did, and a message opening with a heading
+// broke the row across two lines with the id on one and the title on the other.
+export function deriveTaskDescription(message) {
+  const text = typeof message === 'string' ? message : '';
+  const firstSentence = text.match(/^[^.!?\n]{5,60}[.!?]/);
+  if (firstSentence) return firstSentence[0];
+  const firstLine = text.split('\n').find(line => line.trim()) || '';
+  return firstLine.trim().slice(0, 60).trimEnd();
+}
+
 // Resolve a chat-like message body from the tool args. Two forms:
 //   - { [bodyField] } : an inline string → body = value, no source provenance.
 //   - { file, selector } : read the markdown file (agent-side — the file is on
@@ -2852,12 +2865,18 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     if (resolvedBody.error) return { content: [{ type: 'text', text: resolvedBody.error }], isError: true };
     const message = resolvedBody.body;
 
-    // Auto-derive description from message if not provided
-    let description = args.description;
-    if (!description) {
-      const firstSentence = message.match(/^[^.!?\n]{5,60}[.!?]/);
-      description = firstSentence ? firstSentence[0] : message.slice(0, 60).trimEnd();
-    }
+    // Auto-derive a description from the message when the caller gives none --
+    // but NOT on a transfer. There the derived string is the hand-off note, and
+    // d416d6edf made `description` load-bearing on that branch on the stated
+    // premise that "omitting description keeps the existing one, which is what
+    // every current caller passes". This layer never omitted it, so every
+    // re-delegation wrote its own note over the task's real title, and a bulk
+    // hand-off stamped one note across every row it touched.
+    const derivedDescription = deriveTaskDescription(message);
+    const description = args.task_id ? args.description : (args.description || derivedDescription);
+    // What to call the task when reporting back. On a transfer that leaves the
+    // title alone there is no new one, so say what the hand-off said.
+    const headline = description || derivedDescription;
 
     // Merge template + explicit criteria
     const templateCriteria = args.template ? (TASK_TEMPLATES[args.template] || []) : [];
@@ -2872,7 +2891,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       const harnessKind = await harnessKindForDelegateTarget(targetAgent, args.mint);
       const routedMessage = applyNonClaudeRolePack(message, {
         template: args.template,
-        description,
+        description: headline,
         successCriteria: criteria,
         harnessKind,
       });
@@ -2881,6 +2900,8 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         from: activeAgentId(),
         agent: targetAgent,
         task_id: args.task_id || undefined,
+        // Undefined on a transfer the caller did not retitle. The server reads
+        // that as "keep the existing description" -- see transferTaskLifecycle.
         description,
         message: routedMessage,
         success_criteria: criteria.length ? criteria : undefined,
@@ -2987,14 +3008,14 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     try {
       const { data, queued, operationId } = await delegateToResolvedAgent(agent, spawnedInfo);
       if (queued) {
-        return { content: [{ type: 'text', text: `Delegate queued durably for ${agent}: ${description}\noperation_id: ${data.operation_id || operationId}` }] };
+        return { content: [{ type: 'text', text: `Delegate queued durably for ${agent}: ${headline}\noperation_id: ${data.operation_id || operationId}` }] };
       }
 
       if (spawnedInfo) {
         return { content: [{ type: 'text', text: `Spawned ${spawnedInfo.friendly_name} (${spawnedInfo.agent_id}) and delegated [${data.task_id}]: ${description}\nagent_id: ${spawnedInfo.agent_id}\nfriendly_name: ${spawnedInfo.friendly_name}` }] };
       }
       const verb = args.task_id ? 'Transferred' : 'Delegated';
-      return { content: [{ type: 'text', text: `${verb} to ${agent} [${data.task_id}]: ${description}` }] };
+      return { content: [{ type: 'text', text: `${verb} to ${agent} [${data.task_id}]: ${headline}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Delegate failed before transport ACK: ${e.message}` }], isError: true };
     }
