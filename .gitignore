@@ -95,3 +95,11 @@ fleet.db
 # TypeScript incremental build artifacts
 *.tsbuildinfo
 .tmp/
+
+# Build artifacts that block the live-deploy preflight.
+# `runLiveDeployPreflight` treats ANY untracked file in the shared checkout as
+# dirty and refuses to deploy. The packaged extension is rebuilt constantly, so
+# left untracked it blocks every deploy until someone notices. Ignoring is not
+# deleting: existing files stay on disk.
+extensions/tlda-classroom-positron/*.vsix
+/bk.html
