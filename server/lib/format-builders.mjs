@@ -9,7 +9,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync
 import { join, basename } from 'path'
 import { sourceDir as getSourceDir, outputDir as getOutputDir, projectDir, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter } from './build-runner.mjs'
-import { generateSlidesPageInfo } from './slides-parser.mjs'
+import { buildPerSlideDocuments } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
 import { buildQmdDocument } from './build-qmd.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
@@ -155,7 +155,12 @@ export async function buildSlides(name) {
   if (htmlFiles.length === 0) throw new Error('No HTML file found in source')
 
   const htmlContent = readFileSync(join(outDir, htmlFiles[0]), 'utf8')
-  const pageInfo = generateSlidesPageInfo(htmlContent, htmlFiles[0])
+  const slides = buildPerSlideDocuments(htmlContent, htmlFiles[0])
+  if (!slides) throw new Error(`${htmlFiles[0]} is not a reveal.js deck`)
+  for (const slide of slides) {
+    writeFileSync(join(outDir, slide.filename), slide.html)
+  }
+  const pageInfo = slides.map(slide => slide.pageInfo)
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
 
   await writeSourceScope(name, srcDir)
