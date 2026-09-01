@@ -67,6 +67,7 @@ import { TextSelectTool } from './tools/TextSelectTool'
 import { FleetChatTool } from './tools/FleetChatTool'
 import { FleetAgentsTool } from './tools/FleetAgentsTool'
 import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
+import { fetchDocumentSvgPages } from './svgPageFetchPolicy'
 import { FleetSearchTool } from './tools/FleetSearchTool'
 import { FleetInboxTool } from './tools/FleetInboxTool'
 import { ClusterTool } from './tools/ClusterTool'
@@ -1342,7 +1343,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           // Signal that pages are ready (still used by some listeners)
           window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
 
-          void fetchSvgPagesAsync(editor, document)
+          fetchDocumentSvgPages(editor, document, fetchSvgPagesAsync)
 
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
