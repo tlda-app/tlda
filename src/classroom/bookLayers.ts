@@ -21,7 +21,7 @@
 // see the book can write its layer.
 
 /** `common` is the book's own room — the layer everyone in the class shares. */
-export type BookLayerId = 'common' | 'mine' | 'student'
+export type BookLayerId = 'common' | 'mine' | `student:${string}`
 
 export interface BookLayer {
   id: BookLayerId
@@ -77,11 +77,17 @@ export function studentLayers(): BookLayerState {
  * student deliberately and is written where marking already writes it; a teacher
  * who landed in a student's layer drawing live would be a different feature.
  */
-export function teacherLayers(studentId: string, displayName: string): BookLayerState {
+export function teacherLayers(students: readonly { id: string; displayName: string }[]): BookLayerState {
   return {
     layers: [
       { id: 'common', label: 'Class', visible: true, targetable: true },
-      { id: 'student', label: displayName, visible: true, studentId, targetable: false },
+      ...students.map(student => ({
+        id: `student:${student.id}` as const,
+        label: student.displayName,
+        visible: true,
+        studentId: student.id,
+        targetable: false,
+      })),
     ],
     target: 'common',
   }
