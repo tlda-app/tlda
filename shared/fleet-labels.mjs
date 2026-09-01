@@ -255,6 +255,7 @@ export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subsc
       case 'from': return agentExpr(n.x, from)
       case 'to': return agentExpr(n.x, to)
       case 'involving': return agentExpr(n.x, from) || agentExpr(n.x, to)
+      case 'between': return (agentExpr(n.l, from) && agentExpr(n.r, to)) || (agentExpr(n.r, from) && agentExpr(n.l, to))
       case 'not': return !ev(n.x)
       case 'and': return ev(n.l) && ev(n.r)
       case 'or': return ev(n.l) || ev(n.r)

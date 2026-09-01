@@ -26,7 +26,7 @@ import {
   subscriptionSetsFromDaemonConfig,
 } from '../../shared/subscriptions.mjs'
 import { decideSubscriptionDelivery } from '../../shared/inbox-attention.mjs'
-import { parseFilter } from '../../shared/fleet-labels.mjs'
+import { parseFilter, parseMessageFilter } from '../../shared/fleet-labels.mjs'
 
 // A fleet of four: two reviewers, a goose, and a sender — all awake, so every
 // pair of them shares the `awake` pseudo-label. That sharing is the trap.
@@ -122,6 +122,89 @@ test('a sender is not notified about its own message', async () => {
     const notified = notifiedFor(store, 'fleet:alice', 'reviewers')
     assert.ok(!notified.has('fleet:alice'))
     assert.ok(notified.has('fleet:bob'))
+  })
+})
+
+test('pull search and push subscriptions agree on persisted query shapes', async () => {
+  await withFleet(async store => {
+    const now = new Date().toISOString()
+    for (const agent of [
+      { id: 'fleet:skip', friendly_name: 'skip' },
+      { id: 'fleet:pic-lab1', friendly_name: 'pic-lab1' },
+      { id: 'fleet:pic-lecture-opus', friendly_name: 'pic-lecture-opus' },
+    ]) store.upsertAgent({ ...agent, labels: [], registered_at: now, last_seen: now })
+
+    const messages = [
+      { from: 'fleet:skip', to: 'fleet:pic-lab1', address: 'pic-lab1', timestamp: '2026-09-01T01:00:00.000Z', text: 'lab forward' },
+      { from: 'fleet:pic-lab1', to: 'fleet:skip', address: 'fleet:skip', timestamp: '2026-09-01T01:01:00.000Z', text: 'lab reverse' },
+      { from: 'fleet:skip', to: 'fleet:pic-lecture-opus', address: 'pic-lecture-opus', timestamp: '2026-09-01T01:02:00.000Z', text: 'lecture forward' },
+      { from: 'fleet:sender', to: 'fleet:goose', address: 'goose', timestamp: '2026-09-01T01:03:00.000Z', text: 'direct subscriber' },
+      { from: 'fleet:sender', to: 'fleet:bob', address: 'bob', timestamp: '2026-09-01T01:04:00.000Z', text: 'unrelated' },
+    ]
+    const eventIds = []
+    for (const message of messages) {
+      const event = store.db.prepare(`
+        INSERT INTO events (type, timestamp, from_id, text)
+        VALUES ('chat', ?, ?, ?)
+      `).run(message.timestamp, message.from, message.text)
+      store.db.prepare(`
+        INSERT INTO recipients (event_id, agent_id, timestamp, read)
+        VALUES (?, ?, ?, 0)
+      `).run(event.lastInsertRowid, message.to, message.timestamp)
+      eventIds.push(Number(event.lastInsertRowid))
+    }
+
+    const queries = [
+      'fleet:skip <> pic-lab1',
+      'fleet:skip <> pic-lecture-opus',
+      'pic-lab1 | fleet:skip',
+      'to:me',
+    ]
+    const agentIds = new Map([
+      ['fleet:skip', 'fleet:skip'],
+      ['pic-lab1', 'fleet:pic-lab1'],
+      ['pic-lecture-opus', 'fleet:pic-lecture-opus'],
+    ])
+    for (const query of queries) {
+      const subscription = store.addSubscription({
+        owner: 'fleet:goose',
+        query,
+        notificationPolicy: 'immediate',
+        createdBy: 'fleet:goose',
+        adapter: 'subscription',
+      })
+      const pushed = []
+      for (let i = 0; i < messages.length; i++) {
+        const message = messages[i]
+        const deliveries = store.resolveSubscriptionDeliveries(
+          message.from,
+          message.to,
+          'chat',
+          parseFilter(message.address),
+        )
+        if (deliveries.some(row => row.subscription_id === subscription.subscription_id && row.recipient === 'fleet:goose')) {
+          pushed.push(eventIds[i])
+        }
+      }
+
+      const filter = parseMessageFilter(query)
+      const resolve = node => {
+        if (!node) return
+        if (node.t === 'lit') node.ids = [agentIds.get(node.v) || node.v]
+        if (node.t === 'me') node.ids = ['fleet:goose']
+        resolve(node.l); resolve(node.r); resolve(node.x)
+      }
+      resolve(filter)
+      const pulled = store.searchAll('', {
+        historyOnly: true,
+        eventOnly: true,
+        type: 'chat',
+        messageFilterAst: filter,
+        limit: 20,
+      }).map(row => Number(row.id)).sort((a, b) => a - b)
+
+      assert.deepEqual(pushed.sort((a, b) => a - b), pulled, query)
+    }
   })
 })
 

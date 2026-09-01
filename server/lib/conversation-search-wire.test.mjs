@@ -88,7 +88,7 @@ test('agent-only search returns resolved agent identities before conversation ro
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
   try {
-    await store.upsertAgent({ id: 'fleet:chief', friendly_name: 'chiefsoso', dead: false })
+    await store.upsertAgent({ id: 'fleet:chief', friendly_name: 'chiefsoso', labels: ['project:randomization-synth'], dead: false })
     await store.upsertAgent({ id: 'fleet:caller', friendly_name: 'caller', dead: false, human: true })
     insertEvent(store, {
       type: 'chat',
@@ -129,6 +129,8 @@ test('agent-only search returns resolved agent identities before conversation ro
       assert.equal(result.results[0].type, 'project_agent')
       assert.equal(result.results[0].agentId, 'fleet:chief')
     }
+    const projectResult = await searchWire(port, 'project:randomization-synth & type:agent')
+    assert.deepEqual(projectResult.results.map(row => row.agentId), ['fleet:chief'])
     for (const [query, expectedText] of [
       ['from:chiefsoso history', 'chief history'],
       ['to:chiefsoso history', 'caller history'],

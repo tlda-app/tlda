@@ -10,6 +10,7 @@ import WebSocket from 'ws'
 
 import { FleetStore } from './fleet-store.mjs'
 import { FleetStoreClient } from './fleet-store-client.mjs'
+import { FleetSearchClient } from './fleet-search-client.mjs'
 
 async function unusedPort() {
   const server = createServer()
@@ -95,6 +96,36 @@ test('getAllAgents applies the same runtime projection as getAgent', async () =>
     assert.deepEqual(all.find(agent => agent.id === 'fleet:test')?.runtime_status, { kind: 'ai', status: 'awake' })
   } finally {
     await client.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a blocked search process does not delay a store write', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-search-process-isolation-'))
+  const dbPath = join(dir, 'fleet.db')
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  await store.upsertAgent({ id: 'fleet:test', friendly_name: 'test', dead: false, human: false })
+  store.close()
+
+  process.env.TLDA_SEARCH_TEST_BLOCK_MS = '300'
+  const search = new FleetSearchClient(dbPath)
+  const writer = new FleetStoreClient(dbPath, { taskDoc: false })
+  try {
+    await Promise.all([search.ready(), writer.ready()])
+    const searchStarted = performance.now()
+    const pendingSearch = search.searchAll('', { historyOnly: true, limit: 1 })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    const writeStarted = performance.now()
+    await writer.upsertAgent({ id: 'fleet:writer', friendly_name: 'writer', dead: false, human: false })
+    const writeMs = performance.now() - writeStarted
+    await pendingSearch
+    const searchMs = performance.now() - searchStarted
+
+    assert.ok(searchMs >= 300, `search test block did not engage: ${searchMs.toFixed(1)}ms`)
+    assert.ok(writeMs < 200, `store write waited ${writeMs.toFixed(1)}ms behind isolated search`)
+  } finally {
+    delete process.env.TLDA_SEARCH_TEST_BLOCK_MS
+    await Promise.all([search.close(), writer.close()])
     rmSync(dir, { recursive: true, force: true })
   }
 })

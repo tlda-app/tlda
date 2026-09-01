@@ -98,14 +98,14 @@ async function waitForSymptom(rpcs) {
 }
 
 // `recipient` decides whether the agent has an MCP socket and what it does.
-async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {} }, fn) {
+async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {}, subscriptionQuery = 'to:me' }, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-notification-symptom-'))
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
   const now = new Date().toISOString()
   await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
   await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
-  await store.ensureSubscription({ owner: 'fleet:recipient', query: 'to:me', notificationPolicy: 'immediate' })
+  await store.ensureSubscription({ owner: 'fleet:recipient', query: subscriptionQuery, notificationPolicy: 'immediate' })
   store.setAgentDaemonRoute('fleet:recipient', 'mini:testing')
   await store.close()
 
@@ -156,6 +156,24 @@ async function withFleet({ withRecipientSocket = true, loginKind = 'claude', res
 
 const sendChat = (ws, id, tempId) => request(ws, id, 'chat', {
   from: 'fleet:sender', to: 'recipient', message: 'a notice that will not be acked', _tempId: tempId,
+})
+
+test('a persisted between-thread subscription crosses the notification channel', async () => {
+  let received = false
+  await withFleet({
+    subscriptionQuery: 'fleet:sender <> recipient',
+    responder: (ws, ackId) => {
+      received = true
+      ws.send(JSON.stringify({
+        id: 100, type: 'channel-notification-ack', agent: 'fleet:recipient', ack_id: ackId,
+      }))
+    },
+  }, async senderWs => {
+    await sendChat(senderWs, 2, 'between-subscription-channel-proof')
+    const deadline = Date.now() + 10_000
+    while (!received && Date.now() < deadline) await sleep(25)
+    assert.equal(received, true)
+  })
 })
 
 test('an MCP that says nothing is reported to the daemon as channel-silent', async () => {

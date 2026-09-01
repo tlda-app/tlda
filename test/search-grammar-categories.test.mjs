@@ -167,3 +167,22 @@ test('autocomplete exposes executable text operators and me through ordinary age
   assert.ok(agentValues.some(item => item.id === 'agent:from:me' && item.insert === 'from:me '))
   assert.ok(agentValues.some(item => item.id === 'agent:from:pretty' && item.insert === 'from:pretty '))
 })
+
+test('project search is a project-label agent query and autocomplete completes the field value', () => {
+  const parsed = parseSearchQuery('project:randomization-synth & type:agent')
+  const filters = buildFleetSearchFilters(parsed.filters)
+
+  assert.equal(parsed.query, '')
+  assert.equal(filters.project, 'randomization-synth')
+  assert.equal(filters.agentIdentityQuery, true)
+  assert.equal(filters.eventType, 'agent')
+  assert.equal(filters.filterExpression, 'involving:project:randomization-synth & type:agent')
+
+  const fields = searchAutocompleteSuggestions('proj', 4, { projects: ['randomization-synth'] })
+  assert.ok(fields.some(item => item.id === 'field:project' && item.insert === 'project:'))
+
+  const projects = searchAutocompleteSuggestions('project:random', 'project:random'.length, {
+    projects: ['another-project', 'randomization-synth'],
+  })
+  assert.deepEqual(projects.map(item => item.insert), ['project:randomization-synth '])
+})

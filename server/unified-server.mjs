@@ -85,6 +85,7 @@ import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
 import { FleetStoreClient } from './lib/fleet-store-client.mjs'
+import { FleetSearchClient } from './lib/fleet-search-client.mjs'
 import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
@@ -311,6 +312,8 @@ const fleetStore = new FleetStoreClient(process.env.TLDA_FLEET_DB, {
   taskDocOptions: { projectsDir: PROJECTS_DIR },
 })
 await fleetStore.ready()
+const fleetSearchStore = new FleetSearchClient(fleetStore.dbPath)
+await fleetSearchStore.ready()
 const fleetOperationContext = new AsyncLocalStorage()
 const serverDaemonOutboxInflight = new Map()
 let serverTimerScheduler = null
@@ -7193,7 +7196,7 @@ async function dispatchFleetWsMessage(ws, msg) {
   // ---- fleet-search-stats: small diagnostic surface for search corpus scale ----
   if (type === 'fleet-search-stats') {
     try {
-      reply(await fleetStore.getSearchStats())
+      reply(await fleetSearchStore.getSearchStats())
     } catch (e) { error(e.message) }
     return
   }
@@ -7201,6 +7204,24 @@ async function dispatchFleetWsMessage(ws, msg) {
   // ---- fleet-search: unified search across fleet events + session JSONL text ----
   if (type === 'fleet-search') {
     try {
+      const searchRequestContext = {
+        requestId: `search:${randomUUID()}`,
+        caller: String(msg.me || msg.agent || 'unknown'),
+        surface: msg.searchSurface || (msg.historyOnly && msg.eventOnly ? 'thread-or-history' : 'search'),
+        payload: {
+          query: msg.query || '',
+          limit: msg.limit || null,
+          filterExpression: msg.filterExpression || null,
+          agent: msg.agent || null,
+          agentQuery: msg.agentQuery || null,
+          eventType: msg.eventType || null,
+          eventTypes: msg.eventTypes || null,
+          since: msg.since || null,
+          before: msg.before || null,
+          historyOnly: !!msg.historyOnly,
+          eventOnly: !!msg.eventOnly,
+        },
+      }
       const noMatch = '__fleet_search_no_match__'
       const currentSearchActor = () => {
         const me = String(msg.me || '').trim()
@@ -7218,8 +7239,8 @@ async function dispatchFleetWsMessage(ws, msg) {
           case 'lit': {
             if (node.v?.startsWith?.('fleet:')) return new Set([node.v])
             const ids = node.selector
-              ? await fleetStore.resolveAgentSelector(node.selector)
-              : await fleetStore.resolveAgentQuery(node.v)
+              ? await fleetSearchStore.resolveAgentSelector(node.selector)
+              : await fleetSearchStore.resolveAgentQuery(node.v)
             if (!ids.length) unresolvedNames.add(node.v)
             return new Set(ids)
           }
@@ -7353,13 +7374,13 @@ async function dispatchFleetWsMessage(ws, msg) {
       if (msg.agent) resolvedAgentIds = (Array.isArray(msg.agent) ? msg.agent : [msg.agent]).filter(Boolean)
       if (msg.agentQuery || msg.agentResolve) {
         const selector = msg.agentResolve || { fragment: msg.agentQuery }
-        const ids = await fleetStore.resolveAgentSelector(selector)
+        const ids = await fleetSearchStore.resolveAgentSelector(selector)
         if (!ids.length) unresolvedNames.add(selector.fragment)
         searchAgent = ids.length ? ids : [noMatch];
         resolvedAgentIds = ids
       }
       const hasText = (msg.query || '').trim().length > 0;
-      let results = await fleetStore.searchAll(msg.query || '', {
+      let results = await fleetSearchStore.searchAll(msg.query || '', {
         limit: msg.limit, agent: searchAgent, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
         // No keyword + an agent filter → return that agent's whole history
         // instead of FTS-matching the literal query text.
@@ -7369,12 +7390,13 @@ async function dispatchFleetWsMessage(ws, msg) {
         fromOnly: msg.fromOnly,
         between: betweenPair,
         messageFilterAst: messageFilter,
+        _requestContext: searchRequestContext,
       })
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
         const ids = [...new Set((await Promise.all(naturalQueries.map(async query => {
           if (String(query || '').trim() === 'me') return [currentSearchActor()]
-          const resolved = await fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
+          const resolved = await fleetSearchStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
           // A bare token that names nobody has to be reported here too. This is
           // the path a lone `sinse:30m` takes — no filter expression, so the
           // prefilter never sees it — and it was the last way to get a bare
@@ -7384,11 +7406,12 @@ async function dispatchFleetWsMessage(ws, msg) {
         }))).flat())]
         if (ids.length) {
           const naturalTextQuery = (msg.naturalTextQuery || '').trim()
-          const agentResults = await fleetStore.searchAll(naturalTextQuery, {
+          const agentResults = await fleetSearchStore.searchAll(naturalTextQuery, {
             limit: msg.limit, agent: ids, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
             agentOnly: !naturalTextQuery,
             historyOnly: msg.historyOnly,
             eventOnly: msg.eventOnly,
+            _requestContext: searchRequestContext,
           })
           const seen = new Set(results.map(r => `${r.source}:${r.id}`))
           for (const row of agentResults) {
@@ -7423,12 +7446,12 @@ async function dispatchFleetWsMessage(ws, msg) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
         resolvedAgentIds = [...new Set((await Promise.all(naturalQueries.map(async query => {
           if (String(query || '').trim() === 'me') return [currentSearchActor()]
-          return await fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
+          return await fleetSearchStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
         }))).flat())]
       }
       const agentIdentityQuery = naturalAgentOnly || msg.agentIdentityQuery === true || msg.agentResolve?.scope === 'any'
       if (agentIdentityQuery && (!hasText || naturalAgentOnly)) {
-        const agentRows = await fleetStore.getAgentsByIds(resolvedAgentIds)
+        const agentRows = await fleetSearchStore.getAgentsByIds(resolvedAgentIds)
         const agentById = new Map(agentRows.map(agent => [agent.id, agent]))
         const agentResults = resolvedAgentIds
           .map(id => agentById.get(id))
@@ -7448,6 +7471,7 @@ async function dispatchFleetWsMessage(ws, msg) {
             latest_relevant_at: agent.last_seen || agent.registered_at || '',
             text: '',
             snippet: '',
+            project: msg.project || null,
             cwd: agent.cwd || null,
             latest_activity: { source: 'agent', type: 'agent', summary: '' },
             status: { dead: !!agent.dead, last_seen: agent.last_seen || null, last_active: agent.last_active || null },
@@ -7488,7 +7512,7 @@ async function dispatchFleetWsMessage(ws, msg) {
       const context = {}
       if (msg.context_timestamps?.length) {
         for (const ts of msg.context_timestamps) {
-          const ctx = await fleetStore.getChatContext(ts, msg.context_window || 3)
+          const ctx = await fleetSearchStore.getChatContext(ts, msg.context_window || 3)
           await stampNames(ctx.before); await stampNames(ctx.after)
           context[ts] = ctx
         }
@@ -7784,9 +7808,11 @@ async function dispatchFleetWsMessage(ws, msg) {
     const perRecipient = []
     const watchRecipients = new Set()
     const subscriptionDeliveriesAll = []
-    for (const to of recipients) {
-      // Resolve subscriptions per recipient — tap labels are matched against this `to`.
-      const subscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat', filterAst) || []
+    // Resolve subscriptions per recipient — tap labels are matched against this `to`.
+    const eventSubscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, recipients.length === 1 ? recipients[0] : recipients, 'chat', filterAst) || []
+    for (let recipientIndex = 0; recipientIndex < recipients.length; recipientIndex++) {
+      const to = recipients[recipientIndex]
+      const subscriptionMatches = eventSubscriptionMatches.filter(match => match.direct ? match.recipient === to : recipientIndex === 0)
       const recipientAgent = await fleetStore.getAgent?.(to)
       const nativeParentId = recipientAgent?.parent_agent_id || null
       const hasOpenDirectChannel = hasOpenFleetSocketForAgent(to)
