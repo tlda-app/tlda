@@ -46,8 +46,8 @@ write `scrollTop` and when.
       says the hit-test is right and the commit path is wrong; those are
       different code.
 
-- [ ] **The thread collapse control is in the wrong place.** It exists — it was
-      previously reported missing, and it is not.
+- [ ] **The collapse control is in the wrong place — on thread cards AND search
+      cards.** It exists; it was previously reported missing, and it is not.
 
       > It turns out that it's there. It's just not in the right fucking place.
       > It's supposed to be in the fucking, like, **thread card, like, gutter or
@@ -56,10 +56,9 @@ write `scrollTop` and when.
 
       > That seems like an easy fix, like, coordinate math.
 
-- [ ] **Search is supposed to be in the sidebar and isn't.**
-
-      > search, which is supposed to be in the fucking sidebar and just, like,
-      > isn't
+      Skip, clarifying 2026-09-01 19:4x EDT: **"on the thread and search cards,
+      collapse is supposed to be in the side gutter."** One control, two card
+      types, one defect.
 
 - [ ] **Scrolling feels non-linear — "warps".** Cause unknown and he says so.
 
