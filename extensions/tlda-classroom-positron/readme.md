@@ -1,33 +1,21 @@
 # tlda Classroom
 
-Three commands for handing in homework.
+Use tlda Classroom to prepare and hand in a Quarto homework assignment from
+Positron.
 
-**Submit** — hands the archive in directly, without leaving the editor. The
-assignment says which class server it belongs to, so the only thing you are
-asked to connect Positron from the registration page once per server.
-You get the time it was recorded back.
+**Submit** checks the open assignment, packages its complete folder, hands it in
+directly, and confirms when it was received.
 
-**Check this submission** — tells you what would stop your work being marked,
-while you can still fix it. The two that matter: an answer typed *underneath*
-the answer box instead of inside it, which renders perfectly and gets marked
-empty; and an image you referenced that isn't beside the document, which looks
-right in your preview and doesn't travel with the file.
+**Check this submission** catches problems that a rendered preview can hide:
+an answer written below its answer box instead of inside it, or an image that is
+referenced by the document but missing from the assignment folder.
 
-**Zip for submission** — builds the same archive as a file you can upload
-yourself. Use it if the network is what is broken.
+**Zip for submission** creates the same submission as a ZIP that you can upload
+yourself.
 
-That second one exists because zipping by hand is where submissions break.
-Compressing a folder in Finder or Explorer produces two different shapes
-depending on what you selected, and macOS quietly adds `__MACOSX` files that
-look like a second copy of your document.
-
-**Photos land beside your document.** Paste or drag an image into the source
-editor and the file is copied next to your `.qmd` and referenced by name. That
-matters because a submission is an archive of one folder: an image left in
-Downloads renders perfectly in your preview and is guaranteed missing from what
-you hand in.
-
-iPhone photos (HEIC) are inserted rather than turned into a link, and you get
-told they may not display for everyone — export as JPEG if you want to be sure.
-
-Made for QTM 285-1.
+Paste a photo into a Quarto document and tlda Classroom copies it beside the
+document, inserts the image reference, and includes the photo in the submission.
+Supported image formats are PNG, JPEG, GIF, WebP, SVG, HEIC, HEIF, TIFF, and
+BMP. HEIC and HEIF files are included unchanged, but some previews and browsers
+cannot display them; convert the photo to JPEG when it needs to display
+everywhere.

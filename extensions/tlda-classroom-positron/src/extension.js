@@ -4,6 +4,7 @@ const path = require('path')
 const fs = require('fs')
 const { zipSync } = require('fflate')
 const { problems } = require('./submission')
+const { answerBaseline } = require('./answer-baseline')
 const images = require('./images')
 const visualModeCss = require('./visual-mode-css')
 const { ClassroomUploadError, classroomSubmissionMetadata, submitSubmissionArchive } = require('./classroom-upload')
@@ -35,13 +36,12 @@ async function activeQmd() {
   return file
 }
 
-
 async function checkSubmission() {
   const file = await activeQmd()
   if (!file) return
   const dir = path.dirname(file)
   const source = fs.readFileSync(file, 'utf8')
-  const found = problems(source, image => fs.existsSync(path.join(dir, image)))
+  const found = problems(source, image => fs.existsSync(path.join(dir, image)), answerBaseline(file, source))
   if (!found.length) {
     vscode.window.showInformationMessage('This looks ready to hand in.')
     return
@@ -102,7 +102,7 @@ async function prepareArchive(anyway) {
   const base = path.basename(file).replace(/\.qmd$/i, '')
   const source = fs.readFileSync(file, 'utf8')
 
-  const found = problems(source, image => fs.existsSync(path.join(dir, image)))
+  const found = problems(source, image => fs.existsSync(path.join(dir, image)), answerBaseline(file, source))
   if (found.length) {
     const go = await vscode.window.showWarningMessage(
       `${found.length} thing${found.length === 1 ? '' : 's'} would stop this being marked.`,
