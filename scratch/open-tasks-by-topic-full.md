@@ -16,7 +16,78 @@ Age = time since last notify. Sorted newest first inside each topic.
 Dispositions carry their evidence. A row marked `unestablished` has had no
 evidence read yet — it is an honest gap, not a verdict.
 
-## Assigned to Skip — 15
+## What this pass found
+
+**1. The previous build of this file was one page.** `tasks({limit:200})` states
+**245 open**, returns 200, and hands back a cursor. The prior file totalled 197
+and contained no row from the tail. 48 rows had never been triaged, including
+seven of Skip's own.
+
+**2. Skip owns 15 rows, not 8.** The seven that were missing: Review Part 1
+course sequence · Review Part 2 course sequence · Review enrichment breather ·
+Bootstrap managed testing daemon · Supply Zach estimator specification
+(`every:900s`, re-notifying for 465h) · Drop-test complete, no task work
+performed · Check chat transition resistance after revert.
+
+**3. One display defect makes 39 rows unreadable, and it is why they were never
+triaged.** For a re-delegated task, `tasks()` shows the **delegation message**
+where the task title belongs. So a bulk transfer writes its own note over every
+row it touches:
+
+| rows | what every one of them reads as | who wrote it |
+|---|---|---|
+| 25 | "Parking stale backlog task during fleet cleanup — owner hibe…" | `claude-chief`, 08-16 17:51 |
+| 9 | "Transferred from an Opus agent to the nobody bot at Skip's r…" | `fall-class`, 08-13 15:22 |
+| 5 | "Ownership transfer while the chief/package lane has the next…" | on `tlda-recovery-chief-sol`, still open |
+
+The real subjects are recoverable: the parking delegations are second-for-second
+with the rows' notify timestamps, so joining on that timestamp resolves **25 of
+25 with no ambiguity**. This file shows the recovered subjects for those 25. The
+nine from 08-13 collide within one second and resolve only to their batch. The
+five on `tlda-recovery-chief-sol` are not yet recovered — that owner is awake and
+can simply be asked.
+
+*This describes the observed behaviour. I have not read the code that renders the
+title, so the cause is not established here.*
+
+**4. The 25 recovered subjects are product work, not debris.** They were parked
+for "owner hibernating, no live progress" — a fact about the owner, never about
+whether Skip still wants the thing. Among them: *Rebuild index page to Skip's
+spec* · *Recover and build the index page columns* · *Make composer slider
+salient on touch* · *Work with Skip on the tlda README* · *Hold Enter until the
+voice transcript finalizes* · *Build document place-stack navigation* · *Fix
+invisible math-agent messages* · *Restore lifecycle authority and Reanimate* ·
+*Stop `tlda daemon stop` from unloading the launchd job*. Exactly one of the 25
+has landed work on `main`.
+
+**5. Nothing will pick that bucket up.** Its owner `nobody` (fleet:9307b38c) has
+been hibernating **318h**. The only running agent of that bot model is
+`quiet-nobody` — a bot under a non-canonical name, which AGENTS.md §"A renamed
+mint and an inert bot are both the design" makes inert by construction.
+
+## How a row was disposed, and where I stopped
+
+Every `done` cites a commit whose **subject is the deliverable**, checked on
+`main` by message rather than by ancestry — four of the commits cited here are
+not ancestors of `main` and would have read as never-landed.
+
+Two instruments were tried and rejected, both after running a counterfactual on a
+row already settled by hand:
+
+- A title↔commit keyword matcher returned a **plausible wrong commit** for the
+  known row and missed the true one.
+- An owner-name↔branch matcher matched a branch holding that agent's *other*
+  work.
+
+Neither appears as evidence in any row. Where one produced a lead that does not
+settle a row, the lead sits in the evidence column under `unestablished`.
+
+**101 rows have had no evidence read yet.** They carry `unestablished` with no
+evidence, and that is what they are — not a judgement that they are dead.
+
+---
+
+## Assigned to Skip — 15, 1 with evidence
 
 | age | status | owner | owner state | task | evidence |
 |---|---|---|---|---|---|
@@ -32,76 +103,76 @@ evidence read yet — it is an honest gap, not a verdict.
 | 17d | unestablished | `skip` | never picked up | Review enrichment breather | — |
 | 17d | unestablished | `skip` | never picked up | Review Part 1 course sequence | — |
 | 18d | unestablished | `skip` | never picked up | Bootstrap managed testing daemon | — |
-| 18d | unestablished | `skip` | never picked up | Drop-test complete; no task work was performed. | — |
+| 18d | done, unclosed | `skip` | never picked up | Drop-test complete; no task work was performed. | The row's own text: drop-test complete, no task work performed. Skip-owned, so closing it is his. |
 | 19d | unestablished | `skip` | — | Check chat transition resistance after revert | — |
 | 19d | unestablished | `skip` | never picked up | Supply Zach estimator specification | — |
 
-## Parked under `nobody` — 34 rows nobody has triaged — 34, 1 with evidence
+## Parked under `nobody` — 34 rows nobody has triaged — 34, 34 with evidence
 
 | age | status | owner | owner state | task | evidence |
 |---|---|---|---|---|---|
-| 18d | unestablished | `nobody` | owner hibernating | Gate late-alpha release preparation | — |
-| 18d | unestablished | `nobody` | owner hibernating | Gate stray upload refusal | — |
-| 18d | unestablished | `nobody` | owner hibernating | Gate docs and Overleaf onboarding | — |
-| 18d | unestablished | `nobody` | owner hibernating | Gate short image references | — |
-| 18d | unestablished | `nobody` | owner hibernating | Take this preserved independent layout/obligation gate after… | — |
-| 18d | unestablished | `nobody` | owner hibernating | The task’s bounded capture and generic delayed-touch diagnos… | — |
-| 18d | unestablished | `nobody` | owner hibernating | The fresh manager handoff was received and executed. | — |
-| 18d | unestablished | `nobody` | owner hibernating | Carry accepted WM outputs forward | — |
-| 18d | unestablished | `nobody` | owner hibernating | Gate shared highlighter repair | — |
-| 18d | unestablished | `nobody` | owner hibernating | Transferred because your hold `2830652`, relayed in wm-follo… | — |
-| 19d | unestablished | `nobody` | owner hibernating | Watch post-revert chat telemetry | — |
-| 19d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | — |
-| 19d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | — |
-| 20d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | — |
-| 20d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | — |
-| 20d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | — |
-| 20d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | — |
-| 21d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | — |
-| 21d | unestablished | `nobody` | owner hibernating | Work with Skip on the tlda README | — |
-| 22d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | — |
-| 23d | unestablished | `nobody` | owner hibernating | Task expiry notifications and timer path | — |
-| 23d | unestablished | `nobody` | owner hibernating | Interleaved two-writer editing session test | — |
-| 25d | unestablished | `nobody` | owner hibernating | Restore lifecycle authority and Reanimate | — |
-| 25d | unestablished | `nobody` | owner hibernating | Fix invisible math-agent messages | — |
-| 26d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | — |
+| 18d | unestablished | `nobody` | owner hibernating | Gate late-alpha release preparation | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 18d | unestablished | `nobody` | owner hibernating | Gate stray upload refusal | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 18d | unestablished | `nobody` | owner hibernating | Gate docs and Overleaf onboarding | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 18d | unestablished | `nobody` | owner hibernating | Gate short image references | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 18d | unestablished | `nobody` | owner hibernating | Take this preserved independent layout/obligation gate after… | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 18d | unestablished | `nobody` | owner hibernating | The task’s bounded capture and generic delayed-touch diagnos… | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 18d | done, unclosed | `nobody` | owner hibernating | The fresh manager handoff was received and executed. | The row's own text: handoff received and executed. (Recovered subject — this row is one of the 34 whose title `tasks()` hides.) |
+| 18d | unestablished | `nobody` | owner hibernating | Carry accepted WM outputs forward | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 18d | unestablished | `nobody` | owner hibernating | Gate shared highlighter repair | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 18d | unestablished | `nobody` | owner hibernating | Transferred because your hold `2830652`, relayed in wm-follo… | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 19d | unestablished | `nobody` | owner hibernating | Watch post-revert chat telemetry | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 19d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | Moved to `nobody` by `fall-class` 08-13 15:22 **"at Skip's request"** — that citation is unchecked. Title is the transfer note; the real subject is one of the nine in the batch-A list, which resolve only to the second, not to the row. |
+| 19d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | Moved to `nobody` by `fall-class` 08-13 15:22 **"at Skip's request"** — that citation is unchecked. Title is the transfer note; the real subject is one of the nine in the batch-A list, which resolve only to the second, not to the row. |
+| 20d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | Moved to `nobody` by `fall-class` 08-13 15:22 **"at Skip's request"** — that citation is unchecked. Title is the transfer note; the real subject is one of the nine in the batch-A list, which resolve only to the second, not to the row. |
+| 20d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | Moved to `nobody` by `fall-class` 08-13 15:22 **"at Skip's request"** — that citation is unchecked. Title is the transfer note; the real subject is one of the nine in the batch-A list, which resolve only to the second, not to the row. |
+| 20d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | Moved to `nobody` by `fall-class` 08-13 15:22 **"at Skip's request"** — that citation is unchecked. Title is the transfer note; the real subject is one of the nine in the batch-A list, which resolve only to the second, not to the row. |
+| 20d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | Moved to `nobody` by `fall-class` 08-13 15:22 **"at Skip's request"** — that citation is unchecked. Title is the transfer note; the real subject is one of the nine in the batch-A list, which resolve only to the second, not to the row. |
+| 21d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | Moved to `nobody` by `fall-class` 08-13 15:22 **"at Skip's request"** — that citation is unchecked. Title is the transfer note; the real subject is one of the nine in the batch-A list, which resolve only to the second, not to the row. |
+| 21d | unestablished | `nobody` | owner hibernating | Work with Skip on the tlda README | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 22d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | Moved to `nobody` by `fall-class` 08-13 15:22 **"at Skip's request"** — that citation is unchecked. Title is the transfer note; the real subject is one of the nine in the batch-A list, which resolve only to the second, not to the row. |
+| 23d | unestablished | `nobody` | owner hibernating | Task expiry notifications and timer path | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 23d | unestablished | `nobody` | owner hibernating | Interleaved two-writer editing session test | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 25d | unestablished | `nobody` | owner hibernating | Restore lifecycle authority and Reanimate | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 25d | unestablished | `nobody` | owner hibernating | Fix invisible math-agent messages | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 26d | unestablished | `nobody` | owner hibernating | Transferred from an Opus agent to the nobody bot at Skip's r | Moved to `nobody` by `fall-class` 08-13 15:22 **"at Skip's request"** — that citation is unchecked. Title is the transfer note; the real subject is one of the nine in the batch-A list, which resolve only to the second, not to the row. |
 | 31d | done, unclosed | `nobody` | owner hibernating | Split metadata.source into via and source | Real subject recovered: *Split metadata.source into via and source*. `10eb76da9` on main, exact subject. |
-| 31d | unestablished | `nobody` | owner hibernating | Build the gesture classifier in the tldraw fork | — |
-| 32d | unestablished | `nobody` | owner hibernating | CLI command for an agent to restart its own MCP | — |
-| 32d | unestablished | `nobody` | owner hibernating | Stop `tlda daemon stop` from unloading the launchd job | — |
-| 32d | unestablished | `nobody` | owner hibernating | Delete wiretaps | — |
-| 32d | unestablished | `nobody` | owner hibernating | Build gesture transitions in the tldraw fork | — |
-| 33d | unestablished | `nobody` | owner hibernating | Recover and build the index page columns | — |
-| 33d | unestablished | `nobody` | owner hibernating | Make composer slider salient on touch | — |
-| 33d | unestablished | `nobody` | owner hibernating | Rebuild index page to Skip’s spec | — |
+| 31d | unestablished | `nobody` | owner hibernating | Build the gesture classifier in the tldraw fork | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 32d | unestablished | `nobody` | owner hibernating | CLI command for an agent to restart its own MCP | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 32d | unestablished | `nobody` | owner hibernating | Stop `tlda daemon stop` from unloading the launchd job | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 32d | unestablished | `nobody` | owner hibernating | Delete wiretaps | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 32d | unestablished | `nobody` | owner hibernating | Build gesture transitions in the tldraw fork | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 33d | unestablished | `nobody` | owner hibernating | Recover and build the index page columns | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 33d | unestablished | `nobody` | owner hibernating | Make composer slider salient on touch | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
+| 33d | unestablished | `nobody` | owner hibernating | Rebuild index page to Skip’s spec | Parked by `claude-chief` 08-16 17:51 for "owner hibernating, no live progress" — a fact about the owner, not about the work. **No commit on main carries this subject.** Whether Skip still wants it is his call or the chief's, not an agent's. |
 
-## Lab 1 and this week’s lecture — 14, 1 with evidence
+## Lab 1 and this week’s lecture — 14, 10 with evidence
 
 | age | status | owner | owner state | task | evidence |
 |---|---|---|---|---|---|
-| 14m | unestablished | `static-deck-toolset` | never picked up | Settle the toolset for static decks outside tlda | — |
-| 16m | unestablished | `wm-frame-adapter` | never picked up | Design the external coordinate frame adapter | — |
-| 5h | unestablished | `lab1-deck-tester` | never picked up | Test the Lab 1 deck against Skip's three conditions | — |
-| 5h | unestablished | `lab1-floor-builder` | never picked up | Build the floor deck: code cells, plots visible, in sequence | — |
-| 5h | unestablished | `experiment-plot-design` | never picked up | Design the experiment plot appearance | — |
-| 5h | unestablished | `slides-requirements-reader` | never picked up | Read Skip's thread, hold the slide requirements | — |
-| 5h | unestablished | `app-chief` | never picked up | Publish rebuilt deck by the working route | — |
-| 5h | unestablished | `pic-lab1` | never picked up | Restore stripped slide config and rebuild deck | — |
+| 14m | **live** | `static-deck-toolset` | never picked up | Settle the toolset for static decks outside tlda | Owner `static-deck-toolset` is awake and this was notified 14m ago — in hand now. |
+| 16m | **live** | `wm-frame-adapter` | never picked up | Design the external coordinate frame adapter | Owner `wm-frame-adapter` is awake and this was notified 16m ago — in hand now. |
+| 5h | **live** | `lab1-deck-tester` | never picked up | Test the Lab 1 deck against Skip's three conditions | Owner `lab1-deck-tester` is awake and this was notified 5h ago — in hand now. |
+| 5h | **live** | `lab1-floor-builder` | never picked up | Build the floor deck: code cells, plots visible, in sequence | Owner `lab1-floor-builder` is awake and this was notified 5h ago — in hand now. |
+| 5h | **live** | `experiment-plot-design` | never picked up | Design the experiment plot appearance | Owner `experiment-plot-design` is awake and this was notified 5h ago — in hand now. |
+| 5h | **live** | `slides-requirements-reader` | never picked up | Read Skip's thread, hold the slide requirements | Owner `slides-requirements-reader` is awake and this was notified 5h ago — in hand now. |
+| 5h | **live** | `app-chief` | never picked up | Publish rebuilt deck by the working route | Owner `app-chief` is awake and this was notified 5h ago — in hand now. |
+| 5h | **live** | `pic-lab1` | never picked up | Restore stripped slide config and rebuild deck | Owner `pic-lab1` is awake and this was notified 5h ago — in hand now. |
 | 6h | **live** | `slides-content-advocate` | never picked up | Advocate: content vs his ask and needs | Owner `slides-content-advocate` is awake and holds this advocacy now. |
-| 12h | unestablished | `app-chief` | never picked up | Ship Sampling chapter and slide alternate | — |
+| 12h | **live** | `app-chief` | never picked up | Ship Sampling chapter and slide alternate | Owner `app-chief` is awake and this was notified 12h ago — in hand now. |
 | 1d | unestablished | `pic-lecture-opus` | owner hibernating | Replace lecture agent with Opus | — |
 | 7d | unestablished | `deck-read-late-2` | owner hibernating | Deck/chapter read: Sep 15 and Sep 17 | — |
 | 7d | unestablished | `deck-read-mid` | owner hibernating | Deck/chapter read: Sep 3 and Sep 8/10 | — |
 | 11d | unestablished | `classroom-quarto-pm` | owner hibernating | Correction superseding the deck-as-peer phrasing: Skip says | — |
 
-## Classroom — homework, release, students — 22, 6 with evidence
+## Classroom — homework, release, students — 22, 10 with evidence
 
 | age | status | owner | owner state | task | evidence |
 |---|---|---|---|---|---|
-| 0m | unestablished | `classroom-pm-2` | owner hibernating | Own classroom: homework, release, student flow | — |
-| 11h | unestablished | `hw-release-pairing` | never picked up | Fix HTML/ZIP divergence in course release | — |
-| 14h | unestablished | `tlda-recovery-chief-sol` | never picked up | Review and assemble classroom book repair | — |
-| 16h | unestablished | `classroom-delivery-advocate-sol` | never picked up | Gate recovered classroom delivery | — |
+| 0m | **live** | `classroom-pm-2` | owner hibernating | Own classroom: homework, release, student flow | Owner `classroom-pm-2` is awake and this was notified 0m ago — in hand now. |
+| 11h | **live** | `hw-release-pairing` | never picked up | Fix HTML/ZIP divergence in course release | Owner `hw-release-pairing` is awake and this was notified 11h ago — in hand now. |
+| 14h | **live** | `tlda-recovery-chief-sol` | never picked up | Review and assemble classroom book repair | Owner `tlda-recovery-chief-sol` is awake and this was notified 14h ago — in hand now. |
+| 16h | **live** | `classroom-delivery-advocate-sol` | never picked up | Gate recovered classroom delivery | Owner `classroom-delivery-advocate-sol` is awake and this was notified 16h ago — in hand now. |
 | 21h | unestablished | `bhief-of-getting-shit-done:Mendel` | owner hibernating | This older classroom audit/repair task is now in assembly an | — |
 | 23h | unestablished | `pic-book-release-process-opus` | owner hibernating | Establish correct Quarto release process | — |
 | 23h | unestablished | `pic-syllabus-schedule-opus` | owner hibernating | Reconcile syllabus topic schedule | — |
@@ -121,12 +192,12 @@ evidence read yet — it is an honest gap, not a verdict.
 | 9d | unestablished | `classroom-layers-2` | owner hibernating | Build classroom layer system | — |
 | 9d | unestablished | `classroom-tokens-2` | owner hibernating | Complete classroom token access | — |
 
-## Sync and source of truth — 19, 5 with evidence
+## Sync and source of truth — 19, 8 with evidence
 
 | age | status | owner | owner state | task | evidence |
 |---|---|---|---|---|---|
-| 15h | unestablished | `sync-repair-sol` | never picked up | Repair exact programmatic highlight geometry | — |
-| 16h | unestablished | `sync-repair-sol` | — | Implement source reference link semantics | — |
+| 15h | **live** | `sync-repair-sol` | never picked up | Repair exact programmatic highlight geometry | Owner `sync-repair-sol` is awake and this was notified 15h ago — in hand now. |
+| 16h | **live** | `sync-repair-sol` | — | Implement source reference link semantics | Owner `sync-repair-sol` is awake and this was notified 16h ago — in hand now. |
 | 4d | unestablished | `reliability-pm` | owner hibernating | Own recovery for already-diverged sync rooms | — |
 | 6d | unestablished | `features-pm` | owner hibernating | Fix TLS preview source push | — |
 | 6d | done, unclosed | `reliability-pm` | owner hibernating | Fix symlink closure source push | `f08b95238` on main — resolves a closure member pointing through a committed symlink; `25f697cf6` records the unverifiable criterion. |
@@ -143,13 +214,13 @@ evidence read yet — it is an honest gap, not a verdict.
 | 15d | unestablished | `idio-sweep` | owner hibernating | Think through the idiosyncratic-randomization sweep | — |
 | 15d | done, unclosed | `doc-sync-pm` | owner hibernating | Reassigning from bhief-of-staff, who correctly stopped rathe | Title is a reassignment note. The work landed: `22fb6182b` "Make LaTeX membership the closure of the document's roots" — the implementation AGENTS.md §"A subsystem is Skip's decision" names as the correct one. |
 | 16d | unestablished | `sync-autopsy` | owner hibernating | Independent root-cause report on document sync | — |
-| 18d | unestablished | `sync-wedge` | owner hibernating | The owner-only bootstrap action is already satisfied. | — |
+| 18d | done, unclosed | `sync-wedge` | owner hibernating | The owner-only bootstrap action is already satisfied. | The row's own text says the owner-only action is already satisfied. |
 
-## The app Skip uses day to day — 26, 17 with evidence
+## The app Skip uses day to day — 26, 19 with evidence
 
 | age | status | owner | owner state | task | evidence |
 |---|---|---|---|---|---|
-| 2m | unestablished | `backlog-triage` | — | Triage the 197 open tasks and mine chat for unrecorded todos | — |
+| 2m | **live** | `backlog-triage` | — | Triage the 197 open tasks and mine chat for unrecorded todos | Owner `backlog-triage` is awake and this was notified 2m ago — in hand now. |
 | 4d | unestablished | `search-pm` | owner hibernating | Witness deployed search card interaction | — |
 | 5d | done, unclosed | `inbox-empty-diagnosis` | owner hibernating | Diagnose empty inbox shape | `3ab30571d` "Give the inbox its own subscription, like every other panel" + `1f11759f2` "Mark the inbox buffer server-fed, or the subscription delivers into a hole", both on main. |
 | 5d | superseded | `search-card-expand` | owner hibernating | Exercise in-app search cards and expand | Expand deleted by `3d4454abe`; replaced by one control, `6a4c8acf4` on main. **Remnant:** never exercised in a browser — `search-pm` established a card with a second page may be unreachable on a preview by construction. |
@@ -167,7 +238,7 @@ evidence read yet — it is an honest gap, not a verdict.
 | 12d | unestablished | `ui-artifact-release` | owner hibernating | Review pending UI artifacts | Lead: `000573cac` "Restore source editor panel controls". A review row; what it was reviewing is not named in the title. |
 | 12d | unestablished | `app-librarian` | owner hibernating | Correction/addition from Skip, chat#3085884: generate the th | Row cites Skip chat#3085884 — read that message before disposing. |
 | 12d | unestablished | `app-tester-codex` | owner hibernating | Citation correction: final scope authority is chat#3071535 a | — |
-| 12d | unestablished | `bhief-sol` | owner hibernating | Task remains intentionally unstarted under your chat#3067914 | — |
+| 12d | **live** | `bhief-sol` | owner hibernating | Task remains intentionally unstarted under your chat#3067914 | **Intentionally unstarted** under Skip's chat#3067914 — a deliberate hold, not neglect. Read that message before anyone restarts it. |
 | 16d | done, unclosed | `history-fold-audit` | owner hibernating | Fix thread historical names and amend marking | `aedd8f978` on main — "Give thread and search recipients the name they held at send time, and mark amends". ⚠ A later standing note says `thread` still does not fold amends — re-check that half before closing. |
 | 16d | done, unclosed | `panel-model-row` | owner hibernating | Show an agent's model in the agents panel expansion | `4fac22085` (seat records resolved model) + `8687158d6` (backfill) + `2bbd70231` (also in the table), all on main. |
 | 16d | **live** | `claude-scroll-drift-fix` | owner hibernating | URGENT, live, blocking Skip right now — he cannot view his B | Delegated 08-17 02:14 and the thread ends there — the agent never answered. Source-manifest rejection on one of his documents. |
@@ -202,7 +273,7 @@ evidence read yet — it is an honest gap, not a verdict.
 | 16d | unestablished | `mint-login-truth` | owner hibernating | Diagnose mint success-without-login and dropped delegation | — |
 | 16d | done, unclosed | `claude-fleet-reliability` | owner hibernating | Urgent, live right now: Skip and other agents' mint attempts | `da1d76f0a` "Fix three false-failure/false-negative reliability bugs found tonight" + `217132a11` in-flight spawn guard against concurrent duplicate mints, both on main. |
 
-## Writing and papers — 44, 24 with evidence
+## Writing and papers — 44, 27 with evidence
 
 | age | status | owner | owner state | task | evidence |
 |---|---|---|---|---|---|
@@ -243,33 +314,33 @@ evidence read yet — it is an honest gap, not a verdict.
 | 13d | unestablished | `asymptotic-rate-sol` | owner hibernating | Discharge diagonal repair gate | — |
 | 13d | unestablished | `perm-transfer` | owner hibernating | Can cor:vanishing-share carry a rate | — |
 | 13d | unestablished | `e2-specialist` | owner hibernating | Read appendix E2 and be ready to help | — |
-| 15d | unestablished | `duality-fml2765` | owner hibernating | WITHDRAWN BY SKIP 2026-08-18 ~01:25 EDT. | — |
-| 15d | unestablished | `duality-fml2765` | owner hibernating | Parked: garbage in the B.3 setting | — |
-| 15d | unestablished | `duality-fml2765` | owner hibernating | Parked: B.2's a.e. handling, deal properly | — |
+| 15d | superseded | `duality-fml2765` | owner hibernating | WITHDRAWN BY SKIP 2026-08-18 ~01:25 EDT. | The row's own text: **withdrawn by Skip, 2026-08-18 ~01:25 EDT.** |
+| 15d | **live** | `duality-fml2765` | owner hibernating | Parked: garbage in the B.3 setting | Explicitly **parked**, not abandoned. Owner hibernating 14d; parking was a decision, resuming is one too. |
+| 15d | **live** | `duality-fml2765` | owner hibernating | Parked: B.2's a.e. handling, deal properly | Explicitly **parked**, not abandoned. Owner hibernating 14d. |
 | 15d | superseded | `eiv-advocate` | owner hibernating | Advocate for eiv-paper work | Advocacy seat for work that has moved on; owner `eiv-advocate` hibernating 15d. Current advocacy is `tlda-recovery-chief-advocate-4` / `chief-advocate-fresh`, both awake. |
 | 16d | unestablished | `interviewer-c` | owner hibernating | Interview transcript lines 1201-1774 | — |
 | 16d | unestablished | `interviewer-b` | owner hibernating | Interview transcript lines 601-1200 | — |
 | 16d | unestablished | `synth-audit` | owner hibernating | Meant-vs-actual audit of tonight's paper edits | — |
 
-## Fleet process, ownership, audits — 50, 18 with evidence
+## Fleet process, ownership, audits — 50, 27 with evidence
 
 | age | status | owner | owner state | task | evidence |
 |---|---|---|---|---|---|
 | 5h | **live** | `chief-advocate-fresh` | never picked up | Fresh advocate checking the chief | Owner `chief-advocate-fresh` is awake and holds this advocacy now. |
-| 5h | unestablished | `tlda-recovery-chief-opus` | never picked up | **Interval moved from 5 minutes to 30 while Skip is teaching | — |
-| 5h | unestablished | `tlda-recovery-chief-opus` | — | ## How I work — Skip, 09-01 13:0x EDT > YOU DO NOT HAVE THE | — |
-| 5h | unestablished | `tlda-recovery-chief-opus` | never picked up | **Carried list as of 15:57, and the interval goes 15m → 30m | — |
-| 7h | unestablished | `tlda-recovery-chief-opus` | never picked up | **Class is over — 17:50, his words: "im done with class dude. | — |
+| 5h | **live** | `tlda-recovery-chief-opus` | never picked up | **Interval moved from 5 minutes to 30 while Skip is teaching | Owner `tlda-recovery-chief-opus` is awake and this was notified 5h ago — in hand now. |
+| 5h | **live** | `tlda-recovery-chief-opus` | — | ## How I work — Skip, 09-01 13:0x EDT > YOU DO NOT HAVE THE | Owner `tlda-recovery-chief-opus` is awake and this was notified 5h ago — in hand now. |
+| 5h | **live** | `tlda-recovery-chief-opus` | never picked up | **Carried list as of 15:57, and the interval goes 15m → 30m | Owner `tlda-recovery-chief-opus` is awake and this was notified 5h ago — in hand now. |
+| 7h | **live** | `tlda-recovery-chief-opus` | never picked up | **Class is over — 17:50, his words: "im done with class dude. | Owner `tlda-recovery-chief-opus` is awake and this was notified 7h ago — in hand now. |
 | 12h | **live** | `tlda-recovery-chief-advocate-4` | never picked up | Advocate tlda recovery chief | Owner `tlda-recovery-chief-advocate-4` is awake and holds this advocacy now. |
 | 16h | **live** | `app-chief` | — | Index standing subscription queries | Blocked, 16h old, owner `app-chief` active. Note `35143d4e7` *deleted* "an index nobody queries" — worth reconciling against this before building one. |
-| 16h | unestablished | `tlda-recovery-chief-sol` | never picked up | Ownership transfer while the chief/package lane has the next | — |
+| 16h | **live** | `tlda-recovery-chief-sol` | never picked up | Ownership transfer while the chief/package lane has the next | Owner `tlda-recovery-chief-sol` is awake and this was notified 16h ago — in hand now. |
 | 16h | unestablished | `bhief-of-getting-shit-done:Mendel` | owner hibernating | Next action is your independent PASS/BLOCK on exact held com | — |
-| 17h | unestablished | `app-chief` | — | Implement corrected handoff enforcement | — |
-| 21h | unestablished | `tlda-recovery-chief-sol` | never picked up | Ownership transfer while the chief/package lane has the next | — |
+| 17h | **live** | `app-chief` | — | Implement corrected handoff enforcement | Owner `app-chief` is awake and this was notified 17h ago — in hand now. |
+| 21h | **live** | `tlda-recovery-chief-sol` | never picked up | Ownership transfer while the chief/package lane has the next | Owner `tlda-recovery-chief-sol` is awake and this was notified 21h ago — in hand now. |
 | 1d | unestablished | `tlda-recovery-chief-sol` | never picked up | Ownership transfer while the chief/package lane has the next | — |
 | 1d | unestablished | `tlda-recovery-chief-sol` | never picked up | Ownership transfer while the chief/package lane has the next | — |
 | 1d | unestablished | `tlda-recovery-chief-sol` | never picked up | Ownership transfer while the chief/package lane has the next | — |
-| 2d | unestablished | `sol-dev` | never picked up | Integrated PIC-dev stage is complete and production is uncha | — |
+| 2d | done, unclosed | `sol-dev` | never picked up | Integrated PIC-dev stage is complete and production is uncha | The row's own text: the integrated stage is complete and production unchanged. |
 | 5d | unestablished | `existing-project-link` | owner hibernating | Fix existing-project link hang | Lead: `2e9ef9e91` on main, "Re-ask for the confirmation, do not rebuild the history that was already sent" — same area, but it does not say the hang is gone. |
 | 6d | unestablished | `sol-dev` | never picked up | Decide: 13GB unreproducible, remaining conditions need your call | — |
 | 7d | unestablished | `sol-dev` | never picked up | **Transferring because the next action is yours. | — |
@@ -283,7 +354,7 @@ evidence read yet — it is an honest gap, not a verdict.
 | 11d | unestablished | `bhief-sol` | owner hibernating | Corrected candidate returned — transferring, since by your o | — |
 | 11d | unestablished | `bhief-sol` | owner hibernating | Candidate ready for integrated current-main and advocate rev | — |
 | 12d | unestablished | `bhief-sol` | owner hibernating | Take ownership and implement the task as assigned by the cur | — |
-| 12d | unestablished | `chief-sol` | owner hibernating | Primitive-condition repair is complete and reported in messa | — |
+| 12d | done, unclosed | `chief-sol` | owner hibernating | Primitive-condition repair is complete and reported in messa | The row's own text: repair complete and reported. The cited message is the evidence to check if closing. |
 | 12d | unestablished | `bhief-sol` | owner hibernating | Recovered canonical record and created `/Users/skip/worktree | — |
 | 12d | unestablished | `app-librarian` | owner hibernating | Retry retained document failures each sweep | — |
 | 13d | done, unclosed | `lexical-me-owner` | owner hibernating | Canonical ownership transfer. | Title is a transfer note; the work is lexical `me`, landed as `cdada954c` "Fix lexical me in thread cards" on main. Matches the standing ruling in AGENTS.md §"`me` IS LEXICALLY SCOPED". |
@@ -312,8 +383,8 @@ evidence read yet — it is an honest gap, not a verdict.
 
 | mark | rows |
 |---|---|
-| **live** | 9 |
-| done, unclosed | 21 |
-| superseded | 41 |
-| unestablished | 174 |
+| **live** | 35 |
+| done, unclosed | 26 |
+| superseded | 42 |
+| unestablished | 142 |
 | **all** | 245 |

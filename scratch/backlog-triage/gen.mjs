@@ -26,6 +26,7 @@ const age = m => m==null?'?':(m<120?`${m}m`:m<1440?`${Math.round(m/60)}h`:`${Mat
 const MARK = {live:'**live**',done:'done, unclosed',superseded:'superseded',unestablished:'unestablished'};
 
 let out = `# Open tasks by topic — rebuilt from the full set\n\n**245 open tasks.** Every open row is here; \`tasks()\` paginates at 200 and the\nprevious build of this file stopped at that boundary, dropping 48 rows.\n\nAge = time since last notify. Sorted newest first inside each topic.\n**Status is a mark on the row, not a section.**\n\n| mark | meaning |\n|---|---|\n| **live** | still real, still wanted, someone should own it |\n| done, unclosed | the work happened — evidence in the row |\n| superseded | overtaken by later work or a later decision |\n| unestablished | I could not determine it. Not a guess either way |\n\nDispositions carry their evidence. A row marked \`unestablished\` has had no\nevidence read yet — it is an honest gap, not a verdict.\n\n`;
+out += fs.readFileSync('findings.md','utf8') + '\n---\n\n';
 let counts={};
 for(const [name] of TOPICS.concat([['Unclassified']])){
   const rows = groups[name]; if(!rows) continue;
