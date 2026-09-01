@@ -59,14 +59,17 @@ test('exactly one layer is the write target, always', () => {
   assert.ok(!('isTarget' in state.layers[0]), 'a per-layer target flag reappeared and can disagree with state.target')
 })
 
-test("a teacher sees a student's layer and cannot write it", () => {
-  let state = teacherLayers('ada', 'Ada')
+test("a teacher sees every student layer together and cannot write them", () => {
+  let state = teacherLayers([
+    { id: 'ada', displayName: 'Ada' },
+    { id: 'grace', displayName: 'Grace' },
+  ])
   assert.equal(state.target, 'common')
 
-  const student = state.layers.find(l => l.id === 'student')
-  assert.equal(student.visible, true, 'the student layer was not visible to read')
-  assert.equal(student.targetable, false)
+  assert.deepEqual(state.layers.map(layer => layer.id), ['common', 'student:ada', 'student:grace'])
+  assert.ok(state.layers.every(layer => layer.visible), 'a readable layer was not composed')
+  assert.ok(state.layers.slice(1).every(layer => !layer.targetable), 'a student layer became writable')
 
-  state = setWriteTarget(state, 'student')
+  state = setWriteTarget(state, 'student:ada')
   assert.equal(state.target, 'common', "a teacher took a student's layer as their write target")
 })

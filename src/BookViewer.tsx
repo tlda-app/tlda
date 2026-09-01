@@ -14,10 +14,9 @@ import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue, type BookLayersValue } from './BookContext'
 import { findBookMemberIndex } from './bookMemberNavigation'
 import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
-import { TeacherStudentOverlay } from './classroom/TeacherStudentOverlay'
 import { readerLayers, studentLayers, teacherLayers, setLayerVisible, setWriteTarget, type BookLayerState, type BookLayerId } from './classroom/bookLayers'
 import { moveShapesToLayer, layerStore } from './classroom/moveBetweenLayers'
-import { classroomApi, type ClassroomIdentity } from './classroom/api'
+import { classroomApi, type ClassroomIdentity, type StatusRow } from './classroom/api'
 import { ClassroomIdentityBadge } from './classroom/ClassroomIdentityBadge'
 import { isClassroomSurface } from './classroom/classroomSurface'
 import type { SvgDocument } from './loaders/types'
@@ -44,11 +43,8 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // identity, and identity is asked for asynchronously, so this is the state
   // before the answer arrives rather than a guess at it.
   const [layers, setLayers] = useState<BookLayerState>(readerLayers)
-  // The student an instructor is currently reading, reported up by the overlay
-  // that flicks through them. It is a layer of theirs, so the layer state has
-  // to know about it.
-  const [readStudent, setReadStudent] = useState<{ id: string; displayName: string } | null>(null)
-  const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
+  const [classroomRoster, setClassroomRoster] = useState<StatusRow[]>([])
+  const [overlayEditors, setOverlayEditors] = useState<Map<BookLayerId, Editor>>(new Map())
   const [trackedSelectionCount, setTrackedSelectionCount] = useState(0)
   const [moveError, setMoveError] = useState('')
   // Why a member failed to load. Without it a refused member renders as a book
@@ -240,9 +236,9 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // frame is ever drawn offering choices from the previous reader's layers.
   const baseLayers = useMemo(() => {
     if (identity?.role === 'student') return studentLayers()
-    if (identity?.role === 'instructor' && readStudent) return teacherLayers(readStudent.id, readStudent.displayName)
+    if (identity?.role === 'instructor') return teacherLayers(classroomRoster)
     return readerLayers()
-  }, [identity?.role, readStudent])
+  }, [identity?.role, classroomRoster])
 
   const [layersBase, setLayersBase] = useState(baseLayers)
   if (layersBase !== baseLayers) {
@@ -263,8 +259,16 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // no course named, no roster, no overlay.
   const courseId = useMemo(() => new URLSearchParams(window.location.search).get('course') || '', [])
 
+  useEffect(() => {
+    if (identity?.role !== 'instructor' || !courseId) return
+    let cancelled = false
+    classroomApi.status(courseId)
+      .then(status => { if (!cancelled) setClassroomRoster(status.rows) })
+      .catch(() => { if (!cancelled) setClassroomRoster([]) })
+    return () => { cancelled = true }
+  }, [identity?.role, courseId])
+
   const mineLayer = layers.layers.find(l => l.id === 'mine')
-  const studentLayer = layers.layers.find(l => l.id === 'student')
   const commonVisible = layers.layers.find(l => l.id === 'common')?.visible ?? true
 
   // Which canvas holds which layer. Named rather than derived by complement:
@@ -272,8 +276,17 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // two layers, and a teacher's view already has three. This stays correct when
   // one is added; a complement silently moves the work to the wrong place.
   const editorForLayer = useCallback((id: BookLayerId) => (
-    id === 'common' ? bookEditor : overlayEditor
-  ), [bookEditor, overlayEditor])
+    id === 'common' ? bookEditor : overlayEditors.get(id) ?? null
+  ), [bookEditor, overlayEditors])
+
+  const rememberOverlayEditor = useCallback((id: BookLayerId, editor: Editor | null) => {
+    setOverlayEditors(current => {
+      const next = new Map(current)
+      if (editor) next.set(id, editor)
+      else next.delete(id)
+      return next
+    })
+  }, [])
 
   // Only the write target takes pointer input, so it is the only layer a
   // selection can be on — which is what makes "move the selection" unambiguous
@@ -390,21 +403,28 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
             bookEditor={bookEditor}
             visible={mineLayer?.visible ?? false}
             isWriteTarget={layers.target === 'mine'}
-            onEditorMount={setOverlayEditor}
+            onEditorMount={editor => rememberOverlayEditor('mine', editor)}
           />
         )}
-        {/* The teacher reads one student's layer at a time, flicking between
-            them. Only when a course is named — the book itself belongs to no
-            course, so without one there is no roster to flick through. */}
+        {/* The instructor composites the readable student layers over the book.
+            Visibility is controlled by the one layer menu; there is no serial
+            student tab to flick through. */}
         {!loading && document && identity?.role === 'instructor' && courseId && (
-          <TeacherStudentOverlay
-            key={`${activeMember.key}:${courseId}`}
-            bookRoomId={roomId}
-            courseId={courseId}
-            bookEditor={bookEditor}
-            visible={studentLayer?.visible ?? true}
-            onStudentChange={setReadStudent}
-          />
+          <>
+            {classroomRoster.map(student => {
+              const layerId = `student:${student.id}` as const
+              const layer = layers.layers.find(candidate => candidate.id === layerId)
+              return <StudentAnnotationOverlay
+                key={`${activeMember.key}:${student.id}`}
+                bookRoomId={roomId}
+                studentId={student.id}
+                bookEditor={bookEditor}
+                visible={layer?.visible ?? true}
+                isWriteTarget={false}
+                onEditorMount={editor => rememberOverlayEditor(layerId, editor)}
+              />
+            })}
+          </>
         )}
       </div>
     </BookContext.Provider>
