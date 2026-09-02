@@ -17,7 +17,7 @@ export function MarkingLifecycle() {
 
   if (!courseId || !assignmentId || !studentId) return null
   const backParams = new URLSearchParams(window.location.search)
-  for (const key of ['doc', 'compareDoc', 'markingCourse', 'markingAssignment', 'markingStudent']) backParams.delete(key)
+  for (const key of ['project', 'compareDoc', 'markingCourse', 'markingAssignment', 'markingStudent']) backParams.delete(key)
   backParams.set('workspace', 'classroom-gradebook')
   backParams.set('course', courseId)
   const back = `?${backParams}`
