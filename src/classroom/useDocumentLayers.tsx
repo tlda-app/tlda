@@ -15,6 +15,7 @@ import {
 import { moveShapesToLayer, copyShapesToLayer, layerStore, layerFrameConversion } from './moveBetweenLayers'
 import { getEditorWMCore } from '../wm/editor-wm'
 import { ensureClassroomLayer } from '../wm/classroom-layers'
+import { withOverlayEditor, withoutOverlayEditor } from './overlayEditorRegistry'
 import type { LayersValue } from './layersContext'
 
 /**
@@ -102,13 +103,14 @@ export function useDocumentLayers({
     id === 'common' ? documentEditor : overlayEditors.get(id) ?? null
   ), [documentEditor, overlayEditors])
 
-  const rememberOverlayEditor = useCallback((id: BookLayerId, editor: Editor | null) => {
-    setOverlayEditors(current => {
-      const next = new Map(current)
-      if (editor) next.set(id, editor)
-      else next.delete(id)
-      return next
-    })
+  // Register and release are both identity-checked; `overlayEditorRegistry`
+  // carries why, because the reason is an ordering neither call site shows.
+  const rememberOverlayEditor = useCallback((id: BookLayerId, editor: Editor) => {
+    setOverlayEditors(current => withOverlayEditor(current, id, editor) as Map<BookLayerId, Editor>)
+  }, [])
+
+  const releaseOverlayEditor = useCallback((id: BookLayerId, editor: Editor) => {
+    setOverlayEditors(current => withoutOverlayEditor(current, id, editor) as Map<BookLayerId, Editor>)
   }, [])
 
   // Only the write target takes pointer input, so it is the only layer a
@@ -202,6 +204,7 @@ export function useDocumentLayers({
           visible={mineLayer?.visible ?? false}
           isWriteTarget={layers.target === 'mine'}
           onEditorMount={editor => rememberOverlayEditor('mine', editor)}
+          onEditorRelease={editor => releaseOverlayEditor('mine', editor)}
         />
       )}
       {identity?.role === 'instructor' && courseId && classroomRoster.map(student => {
@@ -216,6 +219,7 @@ export function useDocumentLayers({
             visible={layer?.visible ?? true}
             isWriteTarget={false}
             onEditorMount={editor => rememberOverlayEditor(layerId, editor)}
+            onEditorRelease={editor => releaseOverlayEditor(layerId, editor)}
           />
         )
       })}
