@@ -4995,7 +4995,23 @@ export class FleetStore {
     const matched = [];
     if (taps.length === 0) return matched;
     const senderLabels = this._agentLabelsById(senderId);
-    const recipientLabels = recipientIds.length === 1 ? this._agentLabelsById(recipientIds[0]) : [];
+    // Every recipient's labels, not just a lone one's. This read `recipientIds
+    // .length === 1 ? labels : []`, and the empty branch silently disabled
+    // exactly one operator: `<>` is the only thing that reads this set --
+    // everything else reads `to`, which falls back to the envelope (see
+    // evalExprDirectional). So a message with two recipients made `<>` match
+    // nothing, indistinguishably from a genuine non-match, while `to:me` on the
+    // same seat kept delivering. It varies with the traffic rather than the
+    // subscriber, which is why identical queries behaved differently and why it
+    // hit advocates hardest: watching traffic between other parties is
+    // multi-recipient by nature.
+    //
+    // The union is what `<>` means -- "are these two the participants" -- and it
+    // cannot over-match, because an agent absent from every recipient's labels
+    // is still absent from their union. Computed once per event, outside the tap
+    // loop, so the cost is one registry lookup per recipient and not per
+    // subscription.
+    const recipientLabels = recipientIds.flatMap(id => this._agentLabelsById(id));
     // Computed once per event rather than per subscription — this runs on the
     // main thread for every chat, and there can be thousands of taps.
     const envelope = addressAst ? addressTerms(addressAst) : null;
