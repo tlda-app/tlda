@@ -120,6 +120,7 @@ import {
   INBOX_STATUSES,
   batchUnitMissing,
   decideSubscriptionDelivery,
+  promptestSubscriptionDelivery,
   normalizeDeliveryChannel,
   normalizeInboxStatus,
   normalizeMessagePriority,
@@ -7854,7 +7855,10 @@ async function dispatchFleetWsMessage(ws, msg) {
       for (const match of subscriptionMatches) {
         const decision = decideSubscriptionDelivery({ policy: match.notification_policy, priority: basePriority, now: nowMs })
         if (!decision) continue
-        if (match.direct) { deliveryDecision = decision; continue }
+        if (match.direct) {
+          deliveryDecision = promptestSubscriptionDelivery(deliveryDecision, decision)
+          continue
+        }
         subscriptionDeliveries.push({
           recipient: match.recipient,
           subscription_id: match.subscription_id,

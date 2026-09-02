@@ -98,7 +98,7 @@ async function waitForSymptom(rpcs) {
 }
 
 // `recipient` decides whether the agent has an MCP socket and what it does.
-async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {}, subscriptionQuery = 'to:me' }, fn) {
+async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {}, subscriptionQuery = 'to:me', extraSubscriptions = [] }, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-notification-symptom-'))
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
@@ -106,6 +106,9 @@ async function withFleet({ withRecipientSocket = true, loginKind = 'claude', res
   await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
   await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
   await store.ensureSubscription({ owner: 'fleet:recipient', query: subscriptionQuery, notificationPolicy: 'immediate' })
+  for (const subscription of extraSubscriptions) {
+    await store.ensureSubscription({ owner: 'fleet:recipient', ...subscription })
+  }
   store.setAgentDaemonRoute('fleet:recipient', 'mini:testing')
   await store.close()
 
@@ -173,6 +176,27 @@ test('a persisted between-thread subscription crosses the notification channel',
     const deadline = Date.now() + 10_000
     while (!received && Date.now() < deadline) await sleep(25)
     assert.equal(received, true)
+  })
+})
+
+test('an immediate personal subscription is not overwritten by a matching batch subscription', async () => {
+  let receivedAt = null
+  await withFleet({
+    extraSubscriptions: [{ query: 'to:my_labels', notificationPolicy: 'batch(15s)' }],
+    responder: (ws, ackId) => {
+      receivedAt = Date.now()
+      ws.send(JSON.stringify({
+        id: 100, type: 'channel-notification-ack', agent: 'fleet:recipient', ack_id: ackId,
+      }))
+    },
+  }, async senderWs => {
+    const startedAt = Date.now()
+    const result = await sendChat(senderWs, 2, 'overlapping-subscription-channel-proof')
+    const deadline = startedAt + 5000
+    while (!receivedAt && Date.now() < deadline) await sleep(25)
+    assert.ok(receivedAt, `notification did not arrive; receipt: ${JSON.stringify(result)}`)
+    assert.ok(receivedAt - startedAt < 5000, `notification arrived after ${receivedAt - startedAt}ms`)
+    assert.equal(result.receipts[0].delivery, 'notified')
   })
 })
 

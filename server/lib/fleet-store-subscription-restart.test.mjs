@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { FleetStore } from './fleet-store.mjs'
-import { decideSubscriptionDelivery } from '../../shared/inbox-attention.mjs'
+import { decideSubscriptionDelivery, promptestSubscriptionDelivery } from '../../shared/inbox-attention.mjs'
 import { DEFAULT_SUBSCRIPTION_QUERY } from '../../shared/subscriptions.mjs'
 
 async function withStore(testFn) {
@@ -140,5 +140,32 @@ test('subscription notification policy controls delivery and urgent pierces it',
     delivery: 'notified',
     wokeRecipient: 'yes',
     notifyBy: null,
+  })
+})
+
+test('the incident subscription pair resolves immediate instead of the later batch match', async () => {
+  await withStore(async dbPath => {
+    const store = new FleetStore(dbPath, { taskDoc: false })
+    const timestamp = '2026-09-02T10:44:43.012Z'
+    await store.upsertAgent({ id: 'fleet:skip', friendly_name: 'skip', labels: [], registered_at: timestamp, last_seen: timestamp })
+    await store.upsertAgent({ id: 'fleet:cd6748f4', friendly_name: 'cleanup-chief', labels: ['chief', 'on-call'], registered_at: timestamp, last_seen: timestamp })
+    store.ensureSubscription({ owner: 'fleet:cd6748f4', query: 'to:me', notificationPolicy: 'immediate' })
+    store.ensureSubscription({ owner: 'fleet:cd6748f4', query: 'to:my_labels', notificationPolicy: 'batch(15s)' })
+
+    const matches = store.resolveSubscriptionDeliveries('fleet:skip', 'fleet:cd6748f4', 'chat')
+    assert.deepEqual(matches.map(({ query, notification_policy, direct }) => ({ query, notification_policy, direct })), [{
+      query: 'to:me', notification_policy: 'immediate', direct: true,
+    }, {
+      query: 'to:my_labels', notification_policy: 'batch(15s)', direct: true,
+    }])
+
+    const decisions = matches.map(match => decideSubscriptionDelivery({
+      policy: match.notification_policy,
+      priority: 'normal',
+      now: Date.parse(timestamp),
+    }))
+    assert.equal(decisions.at(-1).delivery, 'batched', 'control: last-match overwrite reproduces the incident')
+    assert.equal(decisions.reduce(promptestSubscriptionDelivery, null).delivery, 'notified')
+    store.close()
   })
 })
