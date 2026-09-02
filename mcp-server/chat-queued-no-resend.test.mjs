@@ -64,3 +64,34 @@ test('a queued chat() result tells the caller not to resend', async () => {
   assert.match(result.content[0].text, /Do not re-send/)
   assert.match(result.content[0].text, /operation_id/)
 })
+
+test('chat preserves the authored group address for subscription matching', async () => {
+  __resetAgentPreambleForTest()
+  const { durableCalls } = installTransportStub()
+
+  const result = await handleFleetTool('chat', {
+    to: 'on-call',
+    message: 'group-addressed message',
+  })
+
+  assert.equal(result.isError, undefined)
+  assert.equal(durableCalls.length, 1)
+  assert.equal(durableCalls[0].payload.to, 'on-call')
+  assert.equal(durableCalls[0].payload.max_recipients, 5)
+})
+
+test('chat carries an explicit broadcast ceiling to authoritative server resolution', async () => {
+  __resetAgentPreambleForTest()
+  const { durableCalls } = installTransportStub()
+
+  const result = await handleFleetTool('chat', {
+    to: 'on-call',
+    max_recipients: 2,
+    message: 'bounded group message',
+  })
+
+  assert.equal(result.isError, undefined)
+  assert.equal(durableCalls.length, 1)
+  assert.equal(durableCalls[0].payload.to, 'on-call')
+  assert.equal(durableCalls[0].payload.max_recipients, 2)
+})

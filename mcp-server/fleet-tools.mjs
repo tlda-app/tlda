@@ -3253,12 +3253,12 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     let queuedOperationId = null;
     let messageId = null;
     const priority = parsePriorityPhrase(resolvedMessage) || 'normal';
-    // `to` stays an agent-set EXPRESSION on the wire — the server is the one
-    // authority that resolves recipients. Sending the ids we already resolved,
-    // joined with `|`, is that same expression narrowed to exactly this set, so
-    // the gate above and the delivered set cannot drift apart and the server
-    // needs no second input shape.
-    const chatBody = { message: resolvedMessage, to: recipients.join(' | '), from: activeAgentId(), metadata: { priority }, _tempId: `${activeAgentId()}:mcp-chat:${crypto.randomUUID()}` };
+    // Preserve the address expression the sender wrote. Subscription matching
+    // distinguishes a message addressed to a group from separate messages sent
+    // to the group's current members (`to:my_labels` depends on that envelope).
+    // The bounded resolution above is only the sender-side recipient/count gate;
+    // the server remains the authority that resolves the expression for insert.
+    const chatBody = { message: resolvedMessage, to: args.to, max_recipients: maxRecipients, from: activeAgentId(), metadata: { priority }, _tempId: `${activeAgentId()}:mcp-chat:${crypto.randomUUID()}` };
     if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
     if (refAttachments.length) chatBody.attachments = refAttachments;
     if (docContext) chatBody.context = docContext;
