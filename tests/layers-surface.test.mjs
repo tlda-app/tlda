@@ -42,6 +42,14 @@ test('the rejected draft-mode pills are not beside the real layers control', () 
   assert.doesNotMatch(doc, /<DraftPill\b/, 'the draft-mode pill is off this surface')
 })
 
+test('nobody is put into draft mode on a surface with no way out of it', () => {
+  const doc = read('SvgDocument.tsx')
+  // Viewers used to be entered into draft mode automatically here. With the
+  // controls gone that would strand their marks — created as drafts, never
+  // publishable — which is worse than either having the mode or not.
+  assert.doesNotMatch(doc, /setDraftMode\s*\(/, 'this surface does not enter anyone into draft mode')
+})
+
 test('the draft mechanism itself is untouched', () => {
   // "Do not expand this into deleting the underlying draft mechanism." Removing
   // a control is not the same as removing what it controlled, and this is the
