@@ -179,6 +179,11 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'A refusal has to be distinguishable from silence, and that distinction exists only as a state the server reaches after a frame crosses the socket. Drives /ws/fleet as the recipient MCP and answers the notice three ways — ack, nack, nothing — asserting three distinct server states. Endpoint: /ws/fleet.',
   },
+  'server/lib/chat-recipient-full-roster-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Wire test for chat recipient resolution after the daemon roster protocol deletion: drives /ws/fleet directly to prove the server answers without hydrating the full daemon roster. Endpoint: /ws/fleet.',
+  },
   'server/lib/login-return-notice-wire.test.mjs': {
     count: 1,
     category: 'tooling',
@@ -208,11 +213,6 @@ const ALLOWED = {
     count: 2,
     category: 'tooling',
     reason: 'Hibernation authority wire test joins a real daemon and fleet client to prove the request crosses /ws/fleet, reaches /ws/fleet-daemon, and returns without a server-authored status write. Endpoints: /ws/fleet and /ws/fleet-daemon.',
-  },
-  'server/lib/native-descendant-authority-wire.test.mjs': {
-    count: 2,
-    category: 'tooling',
-    reason: 'Native-descendant authority wire test joins a real daemon and fleet client to prove parent lifecycle changes arrive only through daemon status after a fleet request. Endpoints: /ws/fleet and /ws/fleet-daemon.',
   },
   'server/lib/manual-preamble-edit-wire.test.mjs': {
     count: 1,
