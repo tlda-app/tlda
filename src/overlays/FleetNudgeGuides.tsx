@@ -3,6 +3,7 @@ import type { TLViewportId } from 'tldraw'
 import { getHudEditor } from '../wm/editor-host-bridge'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import { pagePointToClient } from '../wm/viewport-coordinates'
+import { frameFromHudPresence } from '../wm/fleet-interaction-frame'
 import {
   clearFleetNudgeGuides,
   getFleetNudgeGuides,
@@ -45,10 +46,18 @@ export function FleetNudgeGuides() {
       // with its own camera over the same editor. Projecting with the main
       // camera drew the hairline at coordinates for a canvas nobody is looking
       // at, which is why the guides read as missing rather than misplaced.
-      // Same condition and same fallback as every other fleet-panel coordinate
-      // in this codebase — see `fleetShapeAtScreenPoint` in fleet-utils.
-      const viewportId = getHudEditor() ? (FLEET_HUD_VIEWPORT_ID as TLViewportId) : undefined
-      const toClient = (x: number, y: number) => pagePointToClient(held.editor, { x, y }, viewportId)
+      //
+      // The guides are drawn for a tldraw canvas translate or resize, which has
+      // no gesture frame to inherit: the drag comes through a shape util's
+      // `onTranslate`, not through a projected panel's pointer handler. So the
+      // frame is stated here, in the one form that says "there is no projecting
+      // viewport behind this" — the same call the pill's own translate makes.
+      const frame = frameFromHudPresence(
+        held.editor,
+        FLEET_HUD_VIEWPORT_ID as TLViewportId,
+        !!getHudEditor(),
+      )
+      const toClient = (x: number, y: number) => pagePointToClient(held.editor, { x, y }, frame.viewportId)
       setLines(held.guides.map((guide, i) => {
         const from = guide.axis === 'x'
           ? toClient(guide.line, guide.spanFrom)

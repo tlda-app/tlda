@@ -244,3 +244,29 @@ test('the round trip projects and un-projects through one frame', () => {
     'the inline heuristic is gone from the drop path',
   )
 })
+
+test('the nudge guides project through a stated frame, and cite nothing stale', () => {
+  // The last live copy of the inline heuristic, in the nudge path §A scopes.
+  // Its comment cited `fleetShapeAtScreenPoint in fleet-utils` as doing the
+  // same thing — wrong twice over: the function is `placeFleetShapeAtScreenPoint`,
+  // and the commit before this one is what stopped it doing that. A citation
+  // that names a mechanism is exactly the kind that rots when the mechanism
+  // moves, so this checks the claim as well as the code.
+  const guides = read('src/overlays/FleetNudgeGuides.tsx')
+  assert.match(stripComments(guides), /frameFromHudPresence\(/, 'the frame is stated, not assembled inline')
+  assert.doesNotMatch(
+    stripComments(guides),
+    /getHudEditor\(\) \? \(FLEET_HUD_VIEWPORT_ID as TLViewportId\) : undefined/,
+    'the inline viewport heuristic is gone',
+  )
+  assert.doesNotMatch(guides, /fleetShapeAtScreenPoint/, 'the stale citation is gone, not merely renamed')
+
+  // And the claim the replacement makes: `placeFleetShapeAtScreenPoint` no
+  // longer decides its own viewport, so nothing may point at it as the example.
+  const utils = read('src/shapes/fleet-utils.ts')
+  const start = utils.indexOf('export async function placeFleetShapeAtScreenPoint')
+  assert.doesNotMatch(
+    stripComments(utils.slice(start, utils.indexOf('\nexport ', start + 1))),
+    /getHudEditor\(\)/,
+  )
+})
