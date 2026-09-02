@@ -7564,18 +7564,35 @@ async function dispatchFleetWsMessage(ws, msg) {
     }
     return { ...delivery, notifyBy: state.notifyBy, batch_key: key }
   }
-  // NOTE: queueSubscriptionBatchWake was deleted here on 2026-08-17. It was the
-  // only consumer of _subscriptionBatchWakes, and it had been unreachable since
-  // the observer-wake rule landed -- it was passed as an argument to
-  // scheduleSubscriptionWakes(), whose body was empty, so it was never invoked.
-  //
-  // Consequence, recorded rather than fixed in the same pass: reserveSubscriptionBatch
-  // above still WRITES _subscriptionBatchWakes and nothing drains it now, because
-  // the only `.delete` lived in the function removed here. The map grows one entry
-  // per (recipient, subscription, policy). It was already leaking -- the drain was
-  // in dead code -- so this does not make it worse, but it is now unambiguous.
-  // batch_key is still consumed by the delivery record, so reserveSubscriptionBatch
-  // itself is not dead and must not be removed to 'fix' this.
+  const queueDirectSubscriptionBatchWake = ({ delivery, eventId, text, from, traceId, priority }) => {
+    if (delivery?.delivery !== 'batched' || !delivery.batch_key) return
+    const state = _subscriptionBatchWakes.get(delivery.batch_key)
+    if (!state) return
+    state.eventIds.add(eventId)
+    state.preview ||= text
+    state.from ||= from
+    state.traceId ||= traceId
+    state.priority ||= priority
+    if (state.timer) return
+    const delay = Math.max(0, Date.parse(state.notifyBy) - Date.now())
+    state.timer = setTimeout(() => { void (async () => {
+      _subscriptionBatchWakes.delete(state.key)
+      let pending = false
+      for (const id of state.eventIds) {
+        if (await unreadPendingFor(id, state.recipient)) { pending = true; break }
+      }
+      if (!pending) return
+      await requestWake(state.recipient, wakeText({
+        what: `messages from ${await agentDisplayName(state.from)}`,
+        preview: previewForWake(state.preview),
+      }), state.from, state.traceId, {
+        sourceEventIds: [...state.eventIds],
+        priority: state.priority,
+        subscriptionId: state.subscriptionId,
+      })
+    })().catch(e => console.error(`[wake] direct subscription batch wake failed for ${state.recipient}: ${e?.message || e}`)) }, delay)
+    state.timer.unref?.()
+  }
 
   if (type === 'amend') {
     // Amend = a NEW event of type 'amend' that REFERENCES the original chat
@@ -7862,7 +7879,13 @@ async function dispatchFleetWsMessage(ws, msg) {
         const decision = decideSubscriptionDelivery({ policy: match.notification_policy, priority: basePriority, now: nowMs })
         if (!decision) continue
         if (match.direct) {
-          deliveryDecision = promptestSubscriptionDelivery(deliveryDecision, decision)
+          deliveryDecision = promptestSubscriptionDelivery(deliveryDecision, {
+            recipient: match.recipient,
+            subscription_id: match.subscription_id,
+            query: match.query,
+            notification_policy: match.notification_policy,
+            ...decision,
+          })
           continue
         }
         subscriptionDeliveries.push({
@@ -7873,6 +7896,7 @@ async function dispatchFleetWsMessage(ws, msg) {
           ...decision,
         })
       }
+      deliveryDecision = reserveSubscriptionBatch(deliveryDecision)
       for (let i = 0; i < subscriptionDeliveries.length; i++) {
         subscriptionDeliveries[i] = reserveSubscriptionBatch(subscriptionDeliveries[i])
       }
@@ -8004,6 +8028,15 @@ async function dispatchFleetWsMessage(ws, msg) {
         if (!r.nativeNeedsParent) {
           wakeRequests.push({ to: r.to, text: await chatWakeText(text, r.to, from), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
         }
+      } else if (r.deliveryDecision.delivery === 'batched' && !r.nativeNeedsParent) {
+        queueDirectSubscriptionBatchWake({
+          delivery: r.deliveryDecision,
+          eventId,
+          text,
+          from,
+          traceId,
+          priority: basePriority,
+        })
       }
     }
     // Observer subscriptions deliberately schedule NO wake. They keep messages
