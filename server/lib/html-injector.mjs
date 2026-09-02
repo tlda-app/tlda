@@ -942,7 +942,12 @@ const SLIDES_BRIDGE_SCRIPT = `
       '.reveal-viewport.reveal-scroll{overflow:visible!important}',
       '.reveal-viewport.reveal-scroll .slides{display:block!important;position:relative!important;width:max-content!important;height:max-content!important}',
       '.reveal-viewport.reveal-scroll .scroll-page{position:absolute!important;margin:0!important}',
-      '.reveal-viewport.reveal-scroll .scroll-page-sticky{position:relative!important}',
+      // Reveal sizes these from the VIEWPORT, and our viewport is the whole
+      // strip -- measured, each page's inner box came out 31000px tall with the
+      // slide centred 14500px down it, which is why the canvas looked empty.
+      // They belong to the slide's own rect instead.
+      '.reveal-viewport.reveal-scroll .scroll-page-sticky{position:relative!important;height:100%!important;top:auto!important}',
+      '.reveal-viewport.reveal-scroll .scroll-page-content{height:100%!important}',
     ].join('\\n');
 
     var byIndex = {};
@@ -954,6 +959,12 @@ const SLIDES_BRIDGE_SCRIPT = `
       pages[p].style.setProperty('top', rect.y + 'px', 'important');
       pages[p].style.setProperty('width', rect.width + 'px', 'important');
       pages[p].style.setProperty('height', rect.height + 'px', 'important');
+      // Reveal's own --slide-scale is fitted to the viewport too (measured at 2
+      // against a strip-sized one). The rect IS the authored slide box, so the
+      // slide draws at 1:1 inside it and the CANVAS does the scaling.
+      pages[p].style.setProperty('--slide-width', rect.width + 'px');
+      pages[p].style.setProperty('--slide-height', rect.height + 'px');
+      pages[p].style.setProperty('--slide-scale', '1');
     }
   }
 
