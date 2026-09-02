@@ -32,7 +32,9 @@ export interface BookLayersValue {
   /** How many annotations are selected on the write target. */
   selectionCount: number
   moveSelection: (id: BookLayerId) => void
-  /** Set when a move could not be completed. Nothing was lost. */
+  /** Skip named two operations: "we can expose, like, move and copy." */
+  copySelection: (id: BookLayerId) => void
+  /** Set when a move or copy could not be completed. Nothing was lost. */
   moveError?: string
 }
 

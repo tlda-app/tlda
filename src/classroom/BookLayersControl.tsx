@@ -56,6 +56,7 @@ interface BookLayersControlProps {
   /** How many annotations are selected on the write target. */
   selectionCount: number
   onMoveSelection: (id: BookLayerId) => void
+  onCopySelection: (id: BookLayerId) => void
   /** Set when a move could not be completed. Nothing was lost — it is still where it was. */
   moveError?: string
 }
@@ -66,6 +67,7 @@ export function BookLayersControl({
   onTargetChange,
   selectionCount,
   onMoveSelection,
+  onCopySelection,
   moveError,
 }: BookLayersControlProps) {
   const [open, setOpen] = useState(false)
@@ -124,6 +126,22 @@ export function BookLayersControl({
                   <LayersIcon upper={layer.id !== 'common'} />
                   <span>{layer.label}</span>
                 </button>
+                {/* Skip: "we can expose, like, move and copy." Two operations on
+                    one destination, so the destination is the row and the verb is
+                    the button — rather than a mode you set first and then forget
+                    you are in. His follow-on, "or will move always be a copy?",
+                    is unanswered, so both are offered and neither is assumed. */}
+                {moving && (
+                  <button
+                    type="button"
+                    className="bookLayersOptionCopy"
+                    disabled={disabled}
+                    onClick={() => { onCopySelection(layer.id); setOpen(false) }}
+                    title={`Copy to ${layer.label}, leaving the originals here`}
+                  >
+                    Copy
+                  </button>
+                )}
                 <label className="bookLayersOptionEye" title={`Show ${layer.label}`}>
                   <input
                     type="checkbox"
