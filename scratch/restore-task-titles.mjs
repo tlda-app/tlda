@@ -13,10 +13,21 @@
  * scratch/title-restore-mapping.md, and the eight no-op rows that were excluded
  * on review are refused by id.
  *
+ * PASS --db EXPLICITLY. The default below is a guess and was wrong: it was
+ * copied from bin/migrate-to-lineages.mjs and resolves to nothing on the
+ * machines that would run this, because the store is embedded in the server
+ * process and lives on whichever host serves the environment.
+ *
+ * A FIXTURE CANNOT CATCH A WRONG DEFAULT -- IT IS HANDED THE RIGHT PATH EVERY
+ * TIME. Every test of this script passed while the default was broken, because
+ * each one supplied --db. That is the same shape as the defect this script
+ * repairs: an instrument that answers confidently, having been asked a
+ * different question than the one that mattered. The guards below exist
+ * because of it.
+ *
  * Usage:
- *   node scratch/restore-task-titles.mjs                 # dry run, writes nothing
- *   node scratch/restore-task-titles.mjs --write         # perform the repair
- *   node scratch/restore-task-titles.mjs --db /path.db   # against a specific DB
+ *   node scratch/restore-task-titles.mjs --db /path.db            # dry run, writes nothing
+ *   node scratch/restore-task-titles.mjs --db /path.db --write    # perform the repair
  *
  * Idempotent: a row already reading its target is skipped, not rewritten, so a
  * second run reports 79 skipped and changes nothing.
