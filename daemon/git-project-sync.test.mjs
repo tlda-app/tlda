@@ -82,6 +82,41 @@ test('settle submits an immutable daemon proposal and HeadChanged fetches exact 
   assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/applied/binding-a'])).stdout.trim(), base)
 })
 
+test('projecting a revision reads the immutable tree once, not once per member', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-single-tree-read-'))
+  const remote = join(root, 'server.git')
+  const checkout = join(root, 'checkout')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  await git(checkout, ['remote', 'add', 'tlda', remote])
+  writeFileSync(join(checkout, 'main.tex'), '\\input{one}\n\\input{two}\n')
+  writeFileSync(join(checkout, 'one.tex'), 'one\n')
+  writeFileSync(join(checkout, 'two.tex'), 'two\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'base'])
+
+  let treeReads = 0
+  const sync = createGitProjectSync({
+    sourceDir: checkout,
+    project: 'paper',
+    daemonId: 'daemon-a',
+    bindingId: 'binding-a',
+    remote,
+    runGit: async (args, options = {}) => {
+      if (args[0] === 'ls-tree') treeReads++
+      return execFile('git', args, { cwd: checkout, encoding: 'utf8', timeout: 30000, ...options })
+    },
+  })
+  await sync.standOnWorkBranch()
+  writeFileSync(join(checkout, 'one.tex'), 'changed\n')
+  const proposal = await sync.editClusterSettled()
+
+  assert.equal(proposal.status, 'SubmittedToBuildQueue')
+  assert.equal(treeReads, 1)
+})
+
 test('QMD revisions carry tracked execution inputs and exclude rendered output', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-project-qmd-source-'))
   const remote = join(root, 'server.git')
