@@ -392,6 +392,7 @@ export class FleetStore {
     // has to run on the thread that owns the connection.
     this._serverDaemonOutbox = readonly ? null : new ServerDaemonOutbox(this.db);
     this._closed = false;
+    this._runtimeStatusByAgent = new Map();
     if (!readonly) this._initAgentRegistry();
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
@@ -2532,12 +2533,15 @@ export class FleetStore {
   }
 
   resolveChatRecipients(filterAst, { from = null, filter = '', runtimeProjections = {} } = {}) {
+    const runtimeById = new Map(this._runtimeStatusByAgent || [])
+    for (const [id, status] of Object.entries(runtimeProjections || {})) runtimeById.set(id, status)
+    const runtimeProjection = id => runtimeById.get(id) || null
     const hydrateCandidates = rows => rows
       .map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)))
       .filter(isFleetRosterAgent)
     const candidatesForLiteral = (label) => {
       if (PSEUDO_LABELS.includes(label)) {
-        const ids = Object.keys(runtimeProjections || {})
+        const ids = [...runtimeById.keys()]
         if (ids.length === 0) return []
         return this.getAgentsByIds(ids).filter(isFleetRosterAgent)
       }
@@ -2592,7 +2596,7 @@ export class FleetStore {
       const found = new Map(literalCandidates
         .map(agent => ({
           ...agent,
-          runtime_status: runtimeProjections[agent.id] || agent.runtime_status || null,
+          runtime_status: runtimeProjection(agent.id) || agent.runtime_status || null,
         }))
         .filter(agent => labelsForAgent(agent).includes(literal))
         .map(agent => [agent.id, agent]));
@@ -2631,7 +2635,7 @@ export class FleetStore {
     return candidates
       .map(agent => ({
         ...agent,
-        runtime_status: runtimeProjections[agent.id] || agent.runtime_status || null,
+        runtime_status: runtimeProjection(agent.id) || agent.runtime_status || null,
       }))
       .filter(agent => agent.id !== from && evalExpr(filterAst, labelsForAgent(agent)))
       .sort(compareAgentsForRoster)
@@ -3294,6 +3298,12 @@ export class FleetStore {
     // which is why `awake & <name>` found nobody and roster found sixteen.
     if (changed) this._syncAgentRegistry(id);
     return changed;
+  }
+
+  refreshAgentLiveness(id, runtimeStatus = null) {
+    if (runtimeStatus) this._runtimeStatusByAgent.set(id, runtimeStatus);
+    else this._runtimeStatusByAgent.delete(id);
+    this._syncAgentRegistry(id);
   }
 
   /**
@@ -4330,9 +4340,9 @@ export class FleetStore {
       // authority says; the main thread applies the daemon check.
       route_present: !!row.route_present,
       route_daemon_key: row.route_daemon_key || null,
-      runtime_status: row.dead && !row.human
+      runtime_status: this._runtimeStatusByAgent?.get(row.id) || (row.dead && !row.human
         ? runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.DEAD)
-        : null,
+        : null),
     }
     return baseAgent;
   }
