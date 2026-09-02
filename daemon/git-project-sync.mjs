@@ -192,7 +192,23 @@ export function createGitProjectSync({
     try {
       await git(['archive', '--format=tar', `--output=${archive}`, workingCommit])
       await execFile('tar', ['-xf', archive, '-C', extracted], { timeout: 30000 })
-      const paths = (await git(['ls-tree', '-r', '--name-only', workingCommit])).stdout.split('\n').filter(Boolean)
+      // Read the immutable tree once. The projection used to spawn `git
+      // ls-tree <commit> -- <path>` twice per member below. A book-sized tree
+      // therefore turned one settle into thousands of sequential Git processes
+      // before its proposal could even be submitted.
+      //
+      // `-t` includes directory and symlink entries needed by
+      // resolveThroughSymlinks; `-z` keeps path parsing independent of quoting.
+      const treeEntries = new Map()
+      for (const record of (await git(['ls-tree', '-r', '-t', '-z', workingCommit])).stdout.split('\0').filter(Boolean)) {
+        const tab = record.indexOf('\t')
+        if (tab < 0) throw new Error(`${project}: could not parse immutable tree entry`)
+        const [mode, type, sha] = record.slice(0, tab).split(/\s+/)
+        treeEntries.set(record.slice(tab + 1), { mode, type, sha })
+      }
+      const paths = [...treeEntries.entries()]
+        .filter(([, entry]) => entry.type !== 'tree')
+        .map(([file]) => file)
       // **The documents are computed from the tree being published, not read
       // from a stored list.**
       //
@@ -320,20 +336,16 @@ export function createGitProjectSync({
       // canonical committed path, and carry the link itself so the built
       // document can still find its figures. The check below is unchanged: a
       // member that resolves to nothing still stops the revision.
-      const committedEntry = async (candidatePath) => {
-        const line = (await git(['ls-tree', workingCommit, '--', candidatePath])).stdout.trim()
-        const match = line.match(/^(\d+)\s+\w+\s+([0-9a-f]{40})\t(.+)$/)
-        return match ? { mode: match[1], sha: match[2] } : null
-      }
+      const committedEntry = candidatePath => treeEntries.get(candidatePath) || null
       const resolveThroughSymlinks = async (member, links, seen = new Set()) => {
-        if (await committedEntry(member)) return member
+        if (committedEntry(member)) return member
         const parts = member.split('/')
         // Longest prefix first: the nearest enclosing entry is the one that
         // decides. A shorter prefix that happens to exist says nothing about
         // whether the rest of the path does.
         for (let index = parts.length - 1; index >= 1; index--) {
           const prefix = parts.slice(0, index).join('/')
-          const entry = await committedEntry(prefix)
+          const entry = committedEntry(prefix)
           if (!entry) continue
           // A real directory here means the remainder genuinely is not in the
           // tree. That is an absent file, and it belongs to the check below.
@@ -352,7 +364,7 @@ export function createGitProjectSync({
       }
       const symlinkMembers = new Set()
       for (const member of [...members]) {
-        if (await committedEntry(member)) continue
+        if (committedEntry(member)) continue
         const canonical = await resolveThroughSymlinks(member, symlinkMembers)
         if (!canonical) continue
         members.delete(member)
@@ -365,11 +377,9 @@ export function createGitProjectSync({
       const env = { ...process.env, GIT_INDEX_FILE: index }
       await git(['read-tree', '--empty'], { env })
       for (const member of [...members].sort()) {
-        const line = (await git(['ls-tree', workingCommit, '--', member])).stdout.trim()
-        if (!line) throw new Error(`${project}: immutable closure member is absent: ${member}`)
-        const match = line.match(/^(\d+)\s+\w+\s+([0-9a-f]{40})\t(.+)$/)
-        if (!match) throw new Error(`${project}: could not read tree entry for ${member}`)
-        await git(['update-index', '--add', '--cacheinfo', `${match[1]},${match[2]},${match[3]}`], { env })
+        const entry = committedEntry(member)
+        if (!entry) throw new Error(`${project}: immutable closure member is absent: ${member}`)
+        await git(['update-index', '--add', '--cacheinfo', `${entry.mode},${entry.sha},${member}`], { env })
       }
       const tree = (await git(['write-tree'], { env })).stdout.trim()
       // Fetched server history is never proposal ancestry. This chain used to
