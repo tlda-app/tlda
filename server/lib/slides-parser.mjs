@@ -29,13 +29,6 @@ function readDeckDimensions(html) {
   return { width, height }
 }
 
-/** The slide title from the first <h1>/<h2> in the section starting at `pos`. */
-function slideTitleAt(content, pos) {
-  const after = content.slice(pos, pos + 2000)
-  const h = after.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/)
-  return h ? h[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : ''
-}
-
 /**
  * @param {string} html - Full reveal.js HTML content
  * @returns {{ slides: Array<{index: number, title: string, id: string}>, width: number, height: number }}
@@ -135,218 +128,41 @@ export function parseRevealSlides(html) {
 }
 
 /**
- * Generate page-info.json content for a slides project.
+ * The page-info entry for a deck: ONE document, carrying its address space.
+ *
+ * A deck used to be cut into one document per slide so it would fit canvas
+ * coordinates. That is what broke it: quarto-live gives one webR session per
+ * DOCUMENT, so 31 documents were 31 sessions, and a name defined on one slide
+ * was invisible to every other. Measured on a 31-slide deck: 23 of the 24
+ * cell-bearing documents had no setup block, and 20 referenced a name defined
+ * on an earlier slide.
+ *
+ * So the deck stays whole and the window manager adapts to it instead. The
+ * entry carries the extent — one `{indexh, indexv}` per slide — which is what
+ * the client lays out and what the TOC lists.
+ *
+ * `slides` here agrees exactly with what reveal reports at runtime from
+ * `getIndices(el)`: checked on a 31-slide deck, both give maxH 3, maxV 20 and
+ * 4 distinct columns. Reveal's own `getHorizontalSlides()`/`getVerticalSlides()`
+ * accessors do NOT agree with either (they answered 2 and 0 on that deck), so
+ * they are not a source of extent anywhere.
+ *
  * @param {string} html - Full reveal.js HTML
  * @param {string} filename - HTML filename (e.g. "swissrollera.html")
- * @returns {Array<{file: string, width: number, height: number, title: string, slideIndex: number}>}
  */
-export function generateSlidesPageInfo(html, filename) {
+export function deckPageInfo(html, filename) {
   const { slides, width, height } = parseRevealSlides(html)
-  return slides.map(s => ({
+  return {
     file: filename,
     width,
     height,
-    title: s.title,
-    slideIndex: s.index,
-    indexh: s.indexh,
-    indexv: s.indexv,
-  }))
-}
-
-/**
- * Cut a rendered reveal deck into one self-contained document per slide.
- *
- * The deck is `<head>…</head><body>…<div class="reveal"><div class="slides">
- * <section>…</section>…</div>…scripts…</body>`. A single-slide document is the
- * same `<head>` and the same trailing scripts and libs, with the `.slides`
- * container holding exactly one leaf `<section>` instead of all of them. So the
- * heavy shared bytes — reveal.css, the theme, htmlwidgets/rgl libs loaded by
- * <script src> from site_libs — are byte-identical URLs the browser caches once
- * across every slide, and each document inlines only its own one slide's markup.
- * An htmlwidget's JSON payload sits inside its slide's <section>, so it travels
- * with that slide; the runtime that inits it is in the shared head.
- *
- * `prefix` is everything through the `<div class="slides">` open tag; `suffix`
- * is everything from the close of the last top-level section to EOF, which is
- * the `.slides` close, the footer, the reveal close, and every init script.
- *
- * Leaf detection mirrors parseRevealSlides exactly, so slide order and titles
- * match the page-info this deck would otherwise produce. Vertical sub-slides are
- * lifted to top-level sections in their own document.
- *
- * @param {string} html - Full rendered reveal.js HTML
- * @returns {{ prefix: string, suffix: string, width: number, height: number,
- *   slides: Array<{index:number,title:string,id:string,outerHtml:string}> } | null}
- *   null when the html is not a reveal deck (no `.slides` container).
- */
-export function splitDeckIntoSlides(html) {
-  const { width, height } = readDeckDimensions(html)
-
-  const slidesMatch = /<div\b(?=[^>]*\bclass\s*=\s*["'][^"']*\bslides\b)[^>]*>/i.exec(html)
-  if (!slidesMatch) return null
-
-  const prefixEnd = slidesMatch.index + slidesMatch[0].length
-  const prefix = html.slice(0, prefixEnd)
-  const content = html.slice(prefixEnd)
-
-  const tokenRe = /<section\b([^>]*)>|<\/section>/gi
-  const stack = []
-  const slides = []
-  let match
-  let depth = 0
-  let indexh = -1
-  let indexv = 0
-  let inWrapper = false
-  let slideIndex = 0
-  let lastTopClose = content.length
-
-  while ((match = tokenRe.exec(content)) !== null) {
-    const isClose = match[0][1] === '/'
-    if (isClose) {
-      const frame = stack.pop()
-      if (frame && frame.leaf) {
-        frame.leaf.outerHtml = content.slice(frame.start, match.index + match[0].length)
-      }
-      if (depth === 1) {
-        lastTopClose = match.index + match[0].length
-        inWrapper = false
-      }
-      depth--
-      if (depth < 0) break
-      continue
-    }
-
-    depth++
-    const attrs = match[1] || ''
-    const classMatch = attrs.match(/\bclass\s*=\s*["']([^"']*)["']/i)
-    const idMatch = attrs.match(/\bid\s*=\s*["']([^"']*)["']/i)
-    const cls = classMatch ? classMatch[1] : ''
-    const id = idMatch ? idMatch[1] : ''
-    const isSlide = cls.includes('slide') || cls.includes('quarto-title-block')
-    const frame = { start: match.index, leaf: null }
-
-    if (depth === 1) {
-      if (isSlide) {
-        indexh++
-        indexv = 0
-        inWrapper = false
-        // Skip Quarto hidden macro-definition slides (content is only <div class="hidden">)
-        const afterTag = content.slice(match.index, match.index + 2000).replace(/^<section[^>]*>\s*/, '')
-        if (!/^<div class="hidden">/.test(afterTag)) {
-          const title = slideTitleAt(content, match.index)
-          frame.leaf = { index: slideIndex++, title: title || `Slide ${slideIndex}`, id, outerHtml: '' }
-          slides.push(frame.leaf)
-        }
-      } else {
-        indexh++
-        indexv = 0
-        inWrapper = true
-      }
-    } else if (depth === 2 && inWrapper && isSlide) {
-      const title = slideTitleAt(content, match.index)
-      frame.leaf = { index: slideIndex++, title: title || `Slide ${slideIndex}`, id, outerHtml: '' }
-      slides.push(frame.leaf)
-      indexv++
-    }
-
-    stack.push(frame)
+    title: slides[0]?.title || filename.replace(/\.html$/i, ''),
+    slides: slides.map(s => ({
+      index: s.index,
+      indexh: s.indexh,
+      indexv: s.indexv,
+      title: s.title,
+      id: s.id,
+    })),
   }
-
-  const suffix = content.slice(lastTopClose)
-  return { prefix, suffix, width, height, slides }
-}
-
-/**
- * Build the per-slide documents and their page-info entries for a rendered deck.
- *
- * Returns one entry per slide: the filename to write beside the deck, its HTML,
- * and the page-info the client loads. `indexh`/`indexv` are 0 because each
- * document holds a single slide at reveal coordinate (0,0) — there is no other
- * slide for the bridge to navigate to. Returns null for a non-deck document.
- *
- * @param {string} html - Full rendered reveal.js HTML
- * @param {string} deckFilename - The deck's own output filename (e.g. "talk.html")
- */
-const VOID_TAGS = new Set(['img', 'input', 'br', 'hr', 'source', 'embed'])
-
-function elementOuterHtml(html, id) {
-  const quoted = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const at = html.search(new RegExp('<([a-zA-Z0-9]+)[^>]*\\sid="' + quoted + '"'))
-  if (at === -1) return null
-  const open = /^<([a-zA-Z0-9]+)/.exec(html.slice(at))
-  if (!open) return null
-  const tag = open[1].toLowerCase()
-  const openEnd = html.indexOf('>', at)
-  if (openEnd === -1) return null
-  if (VOID_TAGS.has(tag) || html[openEnd - 1] === '/') return html.slice(at, openEnd + 1)
-  const scan = new RegExp('<' + tag + '\\b|</' + tag + '>', 'gi')
-  scan.lastIndex = openEnd + 1
-  let depth = 1
-  for (let m = scan.exec(html); m; m = scan.exec(html)) {
-    depth += m[0][1] === '/' ? -1 : 1
-    if (depth === 0) return html.slice(at, m.index + m[0].length)
-  }
-  return null
-}
-
-function referencedFigureTargets(slideHtml, fullHtml) {
-  const ids = new Set()
-  const link = /<a\b[^>]*class="[^"]*\bquarto-xref\b[^"]*"[^>]*>/gi
-  for (let m = link.exec(slideHtml); m; m = link.exec(slideHtml)) {
-    const href = /href="#\/?([^"]+)"/.exec(m[0])
-    if (href && href[1].startsWith('fig-')) ids.add(decodeURIComponent(href[1]))
-  }
-  const copies = []
-  for (const id of ids) {
-    if (slideHtml.includes(`id="${id}"`)) continue
-    const node = elementOuterHtml(fullHtml, id)
-    if (node) copies.push(node.replace(/\sdata-src="/g, ' src="'))
-  }
-  if (!copies.length) return ''
-  return '\n<div id="tlda-xref-targets" hidden aria-hidden="true" style="display:none">\n' +
-    copies.join('\n') + '\n</div>'
-}
-
-function annotateSplitXrefTargets(slideHtml, targetFileById) {
-  return slideHtml.replace(/<a\b[^>]*class="[^"]*\bquarto-xref\b[^"]*"[^>]*>/gi, tag => {
-    const href = /href="#\/?([^"]+)"/.exec(tag)
-    if (!href) return tag
-    let id
-    try { id = decodeURIComponent(href[1]) } catch { id = href[1] }
-    const targetFile = targetFileById.get(id)
-    if (!targetFile || /\sdata-tlda-target-file=/.test(tag)) return tag
-    const escaped = targetFile.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
-    return tag.slice(0, -1) + ` data-tlda-target-file="${escaped}">`
-  })
-}
-
-export function buildPerSlideDocuments(html, deckFilename) {
-  const split = splitDeckIntoSlides(html)
-  if (!split) return null
-  const { prefix, suffix, width, height, slides } = split
-  const base = String(deckFilename).replace(/\.html$/i, '')
-  const targetFileById = new Map()
-  for (let i = 0; i < slides.length; i++) {
-    const ids = /\sid="([^"]+)"/g
-    for (let match = ids.exec(slides[i].outerHtml); match; match = ids.exec(slides[i].outerHtml)) {
-      targetFileById.set(match[1], `${base}-slide-${i}.html`)
-    }
-  }
-  return slides.map((s, i) => {
-    const filename = `${base}-slide-${i}.html`
-    const slideHtml = annotateSplitXrefTargets(s.outerHtml, targetFileById)
-    return {
-      filename,
-      html: `${prefix}\n${slideHtml}\n${referencedFigureTargets(slideHtml, html)}\n${suffix}`,
-      pageInfo: {
-        file: filename,
-        width,
-        height,
-        title: s.title,
-        slideIndex: i,
-        indexh: 0,
-        indexv: 0,
-      },
-    }
-  })
 }

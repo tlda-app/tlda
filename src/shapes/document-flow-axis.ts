@@ -19,6 +19,11 @@ import type { Editor } from 'tldraw'
  */
 export type Axis = 'x' | 'y'
 
+/** How much wider than tall a single page must be to count as running across.
+ *  Deliberately well above 1: a page a little wider than tall is a page, not a
+ *  strip. A deck of N slides is N × 1.5 slide-widths wide by one tall. */
+const FLOW_ASPECT = 3
+
 /** The axis at right angles to `axis`. Not a branch on document type — the
  *  complement of a direction is arithmetic. */
 export function crossAxis(axis: Axis): Axis {
@@ -38,15 +43,29 @@ export function minAlong(box: { x: number; y: number }, axis: Axis): number {
 /**
  * Which way this document's pages run.
  *
- * Undecidable with fewer than two pages, which returns 'y' — a single page has
- * no flow, and stacked is the arrangement every other document uses.
+ * With fewer than two pages the spread says nothing, so the page's OWN shape
+ * does: a box far wider than it is tall runs across. That is not a special case
+ * for decks — it is the same question asked of one box instead of many, and it
+ * is what a deck now needs, because a deck is ONE page shape carrying every
+ * slide rather than one shape per slide.
+ *
+ * Measured when this was missing: a deck at 59,340 × 1,000 answered 'y', so the
+ * HUD placed fleet shapes down the side of a document that runs across — they
+ * landed tens of thousands of px below a 1,000px slide.
+ *
+ * A genuinely square or tall single page still returns 'y', which is the old
+ * answer and the arrangement every other document uses.
  */
 export function documentFlowAxis(
   editor: Editor,
   getPageBounds: (editor: Editor) => { pageShapes: any[] } | null,
 ): Axis {
   const bounds = getPageBounds(editor)
-  if (!bounds || bounds.pageShapes.length < 2) return 'y'
+  if (!bounds || bounds.pageShapes.length === 0) return 'y'
+  if (bounds.pageShapes.length < 2) {
+    const only = editor.getShapePageBounds(bounds.pageShapes[0].id)
+    return only && only.w > only.h * FLOW_ASPECT ? 'x' : 'y'
+  }
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
   for (const ps of bounds.pageShapes) {
     const b = editor.getShapePageBounds(ps.id)

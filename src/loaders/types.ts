@@ -1,3 +1,5 @@
+import type { DeckSlide, DeckLayout } from './deckLayout'
+
 import {
   Box,
 } from 'tldraw'
@@ -40,9 +42,8 @@ export interface SlideInfo {
   width: number
   height: number
   title?: string
-  slideIndex: number
-  indexh?: number
-  indexv?: number
+  /** The deck's address space, one entry per slide. See deckLayout.ts. */
+  slides?: DeckSlide[]
   variant?: 'slides'
 }
 
@@ -58,6 +59,8 @@ export interface SvgDocument {
   title?: string
   pages: SvgPage[]
   slideInfo?: SlideInfo[]
+  /** Where each slide address sits, for a deck. */
+  deckLayout?: DeckLayout
   macros?: Record<string, string>
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
   format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'

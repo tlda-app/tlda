@@ -1,11 +1,23 @@
-import { AssetRecordType, createShapeId } from 'tldraw'
-import { PAGE_GAP } from '../layoutConstants'
+import { Box, AssetRecordType, createShapeId } from 'tldraw'
 import type { SvgPage, SvgDocument, SlideInfo } from './types'
-import { layoutPageBounds } from './pageLayout'
+import { deckLayout, type DeckSlide } from './deckLayout'
 
 export type SlidePageEntry = SlideInfo
 
-/** Load a reveal.js deck as pages laid out on the horizontal page axis. */
+/**
+ * Load a reveal deck as ONE document on the canvas.
+ *
+ * The deck used to be cut into one HTML document per slide so it would fit
+ * canvas coordinates. That is what broke it: quarto-live gives one webR session
+ * per DOCUMENT, so 31 slides meant 31 sessions and a name defined on one slide
+ * was invisible to the rest. Measured on a 31-slide deck, 20 of the 24
+ * cell-bearing documents referenced a name defined on an earlier slide.
+ *
+ * So the document stays whole and the window manager adapts to it. `deckLayout`
+ * decides where each address sits; the shape is sized to the whole strip and the
+ * CANVAS pans across it — the iframe itself never scrolls, because reveal's
+ * scroll container would otherwise clip the strip it just laid out.
+ */
 export async function loadSlidesDocument(
   name: string,
   basePath: string,
@@ -27,32 +39,36 @@ export async function loadSlidesDocument(
   const slideVariant = allPageInfos.filter(info => info.variant === 'slides')
   const pageInfos = slideVariant.length > 0 ? slideVariant : allPageInfos
 
-  console.log(`Found ${pageInfos.length} slides`)
+  const deck = pageInfos[0]
+  if (!deck) {
+    return { name, pages: [], basePath, format: 'slides', slideInfo: [] }
+  }
 
-  // Skip: "make the slides be spaced out a bit more so they're kind of more in
-  // different places. Because right now, I can often see one... so maybe the
-  // slides should be half a slide. Apart." At a fixed 32 the neighbouring slide
-  // bleeds into the one you are reading.
-  //
-  // PAGE_GAP is the gap between STACKED pages, and it was being reused here as a
-  // horizontal one. A deck's gap is a fraction of a slide rather than a constant
-  // — it has to scale with the slide, because what it separates is slides.
-  const slideWidth = pageInfos[0]?.width ?? 0
-  const bounds = layoutPageBounds(pageInfos, 'horizontal', Math.round(slideWidth / 2) || PAGE_GAP)
-  const pages: SvgPage[] = pageInfos.map((info, index) => {
-    const pageId = `${name}-slide-${index}`
-    const indexh = info.indexh ?? info.slideIndex
-    const indexv = info.indexv ?? 0
-    return {
-      src: `${basePath}${info.file}?_tldaH=${indexh}&_tldaV=${indexv}`,
-      bounds: bounds[index],
-      assetId: AssetRecordType.createId(pageId),
-      shapeId: createShapeId(pageId),
-      width: info.width,
-      height: info.height,
-    }
-  })
+  // The address space, from the build. It agrees exactly with what reveal
+  // reports at runtime from getIndices(el) — checked on a 31-slide deck, both
+  // give maxH 3, maxV 20, 4 distinct columns. Reveal's own getHorizontalSlides()
+  // and getVerticalSlides() agree with NEITHER (2 and 0 on that deck), which is
+  // why nothing here asks them.
+  const slides: DeckSlide[] = deck.slides ?? []
+  const layout = deckLayout(slides, { width: deck.width, height: deck.height })
 
-  console.log(`Slides document ready (${pageInfos.length} slides, horizontal page axis)`)
-  return { name, pages, basePath, format: 'slides', slideInfo: pageInfos }
+  console.log(`Found a deck of ${slides.length} slides`)
+
+  const pageId = `${name}-deck`
+  const pages: SvgPage[] = [{
+    // `_tldaDeck=1` is what puts the injected bridge in deck mode: it keeps the
+    // whole Reveal instance alive instead of locking to one slide, and reveal's
+    // scroll view (`view=scroll`, which only takes at INITIALIZE — configure()
+    // and toggleScrollView() after load silently do not) is what gives every
+    // slide a real box for us to position.
+    src: `${basePath}${deck.file}?_tldaDeck=1&view=scroll`,
+    bounds: new Box(0, 0, layout.stripWidth, layout.stripHeight),
+    assetId: AssetRecordType.createId(pageId),
+    shapeId: createShapeId(pageId),
+    width: layout.stripWidth,
+    height: layout.stripHeight,
+  }]
+
+  console.log(`Slides document ready (one deck document, ${slides.length} slides, ${layout.stripWidth}×${layout.stripHeight})`)
+  return { name, pages, basePath, format: 'slides', slideInfo: pageInfos, deckLayout: layout }
 }
