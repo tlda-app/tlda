@@ -7245,10 +7245,16 @@ async function dispatchFleetWsMessage(ws, msg) {
         if (!node) return new Set()
         switch (node.t) {
           case 'lit': {
+            // agentNodesInMessageFilter annotates every leaf before the query.
+            // The post-filter runs this same function once per result row and
+            // recipient; ignoring the annotation repeated the full selector
+            // query dozens or hundreds of times for one search request.
+            if (Array.isArray(node.ids)) return new Set(node.ids)
             if (node.v?.startsWith?.('fleet:')) return new Set([node.v])
-            const ids = node.selector
-              ? await fleetSearchStore.resolveAgentSelector(node.selector)
-              : await fleetSearchStore.resolveAgentQuery(node.v)
+            const ids = await fleetSearchStore.resolveAgentSelector({
+              ...(node.selector || { fragment: node.v }),
+              _requestContext: searchRequestContext,
+            })
             if (!ids.length) unresolvedNames.add(node.v)
             return new Set(ids)
           }
@@ -7381,7 +7387,7 @@ async function dispatchFleetWsMessage(ws, msg) {
       let resolvedAgentIds = []
       if (msg.agent) resolvedAgentIds = (Array.isArray(msg.agent) ? msg.agent : [msg.agent]).filter(Boolean)
       if (msg.agentQuery || msg.agentResolve) {
-        const selector = msg.agentResolve || { fragment: msg.agentQuery }
+        const selector = { ...(msg.agentResolve || { fragment: msg.agentQuery }), _requestContext: searchRequestContext }
         const ids = await fleetSearchStore.resolveAgentSelector(selector)
         if (!ids.length) unresolvedNames.add(selector.fragment)
         searchAgent = ids.length ? ids : [noMatch];
@@ -7404,7 +7410,10 @@ async function dispatchFleetWsMessage(ws, msg) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
         const ids = [...new Set((await Promise.all(naturalQueries.map(async query => {
           if (String(query || '').trim() === 'me') return [currentSearchActor()]
-          const resolved = await fleetSearchStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
+          const resolved = await fleetSearchStore.resolveAgentSelector({
+            ...(parseUnifiedAgentSelector(query) || { fragment: query }),
+            _requestContext: searchRequestContext,
+          })
           // A bare token that names nobody has to be reported here too. This is
           // the path a lone `sinse:30m` takes — no filter expression, so the
           // prefilter never sees it — and it was the last way to get a bare
@@ -7454,7 +7463,10 @@ async function dispatchFleetWsMessage(ws, msg) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
         resolvedAgentIds = [...new Set((await Promise.all(naturalQueries.map(async query => {
           if (String(query || '').trim() === 'me') return [currentSearchActor()]
-          return await fleetSearchStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
+          return await fleetSearchStore.resolveAgentSelector({
+            ...(parseUnifiedAgentSelector(query) || { fragment: query }),
+            _requestContext: searchRequestContext,
+          })
         }))).flat())]
       }
       const agentIdentityQuery = naturalAgentOnly || msg.agentIdentityQuery === true || msg.agentResolve?.scope === 'any'

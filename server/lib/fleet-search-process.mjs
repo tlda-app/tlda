@@ -26,7 +26,7 @@ process.on('message', async message => {
     if (method === 'searchAll' && Number(process.env.TLDA_SEARCH_TEST_BLOCK_MS || 0) > 0) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.TLDA_SEARCH_TEST_BLOCK_MS))
     }
-    store._activeSearchContext = method === 'searchAll' ? args[1]?._requestContext || null : null
+    store._activeSearchContext = args.find(arg => arg?._requestContext)?._requestContext || null
     const result = await store[method](...args)
     store._activeSearchContext = null
     process.send?.({ kind: 'result', id, result })
