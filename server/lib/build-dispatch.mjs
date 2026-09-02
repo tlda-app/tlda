@@ -23,6 +23,7 @@ import { ForkTransport } from './build-transport.mjs'
 import { createBuildQueue } from './build-queue.mjs'
 import { BuildQueueStore } from './build-queue-store.mjs'
 import { listProposalRefs } from './git-proposals.mjs'
+import { reportBuildFailure } from './build-runner.mjs'
 
 async function patchShape(docName, shapeId, propsPatch) {
   try {
@@ -52,7 +53,7 @@ async function regenerateBookTocs(name) {
   }
 }
 
-const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, regenerateBookTocs }
+const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, regenerateBookTocs, reportBuildFailure }
 const publicationLocks = new Map()
 
 function serializedPublication(name, operation) {
