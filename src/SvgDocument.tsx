@@ -1171,9 +1171,10 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
          * layer menus, one of which he has rejected.
          *
          * The draft mechanism itself is untouched: `annotationVisibility.ts`
-         * still tracks drafts, still publishes them, and viewers are still put
-         * into draft mode at :499 and :507. Only these two controls leave this
-         * surface. */}
+         * still tracks drafts, publishes them, and toggles the mode for whatever
+         * mounts a control for it. Nothing on this surface enters anyone into
+         * that mode — see the presenter-broadcast effect above, which used to
+         * and no longer does. */}
         <FollowingBadge />
         <PlaybackPill state={playbackState} />
         {editorRef.current && (
