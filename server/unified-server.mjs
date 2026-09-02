@@ -611,10 +611,17 @@ function traceGate1(stage, detail) {
 // or copied route state does not fabricate hibernation.
 const runtimeStatusStore = createAgentRuntimeStatusStore({
   onChange: agentId => {
+    syncRuntimeProjection(agentId).catch(e => console.error(`[runtime-status] projection refresh failed for ${agentId}: ${e?.message || e}`))
     if (typeof broadcastState === 'function') broadcastState(agentId)
   },
 })
 fleetStore.setRuntimeProjector(agent => runtimeStatusStore.project(agent))
+
+async function syncRuntimeProjection(agentId) {
+  const agent = await fleetStore.getAgent(agentId)
+  if (!agent) return
+  await fleetStore.refreshAgentLiveness(agentId, agent.runtime_status)
+}
 
 const humanPresence = createHumanPresenceTracker({
   onEdge: ({ humanId, status, atMs }) => {
