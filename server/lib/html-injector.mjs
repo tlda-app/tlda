@@ -881,10 +881,16 @@ const SLIDES_BRIDGE_SCRIPT = `
       var at = Reveal.getIndices(el) || {};
       return { index: i, indexh: at.h || 0, indexv: at.v || 0, id: el.id || '' };
     });
+    // The authored slide size travels with the extent so the parent can compute
+    // placement from this one message. Threading it through document state
+    // instead would give the layout a second input that can disagree.
+    var config = Reveal.getConfig ? Reveal.getConfig() : {};
     window.parent.postMessage({
       type: 'tlda-deck-extent',
       shapeId: shapeId,
       slides: slides,
+      width: config.width || 960,
+      height: config.height || 700,
       scale: Reveal.getScale ? Reveal.getScale() : 1,
     }, '*');
   }

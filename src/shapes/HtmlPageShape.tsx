@@ -24,6 +24,7 @@ import {
 import { SPATIAL_MAP_ZOOM } from '../spatialDocumentWorld'
 import { getOptionalVisibilityViewport, useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
+import { deckLayout } from '../loaders/deckLayout'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
 import { attachRglFigureSync } from '../rglFigureSync'
 import { GestureInterpreter } from '@tldraw/editor'
@@ -1127,10 +1128,50 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         }
         return
       }
+      if (e.data?.type === 'tlda-deck-extent' && e.data.shapeId === shape.id) {
+        // The deck reports its address space; we answer with where each address
+        // goes. Reveal gives existence and address, tlda gives position — this
+        // exchange is the whole of the coordinate frame.
+        const layout = deckLayout(e.data.slides || [], {
+          width: e.data.width,
+          height: e.data.height,
+        })
+        iframeRef.current?.contentWindow?.postMessage(
+          { type: 'tlda-deck-layout', layout }, '*',
+        )
+        // The shape is the whole strip, so the CANVAS pans across the slides
+        // rather than the iframe scrolling between them.
+        const deckShape = editor.store.get(shape.id)
+        if (!isHtmlPageShapeRecord(deckShape)) return
+        if (
+          Math.abs(layout.stripWidth - deckShape.props.w) > 5 ||
+          Math.abs(layout.stripHeight - deckShape.props.h) > 5
+        ) {
+          measuredGeometryWriterRef.current.report({
+            permissionKnown: isPresentPermissionKnown(),
+            mayWrite: canPresent(),
+          }, () => {
+            const latest = editor.store.get(shape.id)
+            if (!isHtmlPageShapeRecord(latest)) return
+            editor.store.update(shape.id, (s) => {
+              const record = s as unknown as HtmlPageShapeRecord
+              return {
+                ...s,
+                props: { ...record.props, w: layout.stripWidth, h: layout.stripHeight },
+              }
+            })
+          })
+        }
+        return
+      }
       if (e.data?.type === 'tlda-resize' && e.data.shapeId === shape.id) {
         const current = editor.store.get(shape.id) as any
         if (!current) return
-        const isSlideShape = current.props.url?.includes('_tldaDeck=1') || current.props.url?.includes('_tldaH=')
+        // A deck's size is its strip, set from the layout above. The bridge's
+        // own height reports measure ONE slide, so letting them through would
+        // fight the strip — and that path only ever climbs (minH = current h).
+        if (current.props.url?.includes('_tldaDeck=1')) return
+        const isSlideShape = current.props.url?.includes('_tldaH=')
         const minH = isSlideShape ? current.props.h : 200
         const newH = Math.max(minH, 200, Math.round(e.data.height))
         const documentW = isSlideShape ? null : htmlPageDocumentWidth(iframeRef.current)
