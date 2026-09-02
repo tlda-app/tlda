@@ -79,18 +79,27 @@ export function deckLayout(slides: DeckSlide[], options: DeckLayoutOptions): Dec
   const colStride = width * (1 + gap)
   const rowStride = height * (1 + gap)
 
-  const rects = slides.map(slide => {
-    // Across-then-down, or its transpose. Only the axes swap: the address is
-    // the same either way, which is the point of laying out from the address
-    // rather than from document order.
-    const across = mode === 'horizontal' ? slide.indexh : slide.indexv
-    const down = mode === 'horizontal' ? slide.indexv : slide.indexh
+  // ONE LINE, in reading order. Not a grid.
+  //
+  // Laying verticals DOWN made the deck a plane -- measured on his deck,
+  // 7095 x 31000 -- and a plane is what let the camera come to rest between
+  // slide boundaries, so a slide clipped vertically. Skip, on his own tab:
+  // slides must not clip, and that is why the layout has to be horizontal.
+  //
+  // A single row cannot clip vertically: there is only ever one slide on the
+  // vertical axis, so any camera that fits a slide's height fits every slide.
+  // The deck's `v` addresses still exist and still travel in the rect -- they
+  // are how up/down navigation works -- they just do not consume a second
+  // spatial axis.
+  const rects = slides.map((slide, i) => {
+    const along = mode === 'horizontal' ? i * colStride : 0
+    const down = mode === 'horizontal' ? 0 : i * rowStride
     return {
       index: slide.index,
       indexh: slide.indexh,
       indexv: slide.indexv,
-      x: across * colStride,
-      y: down * rowStride,
+      x: along,
+      y: down,
       width,
       height,
     }
