@@ -838,6 +838,91 @@ const SLIDES_BRIDGE_SCRIPT = `
     return '#fff';
   }
 
+  // ---- deck mode: the external coordinate frame ----------------------------
+  //
+  // In reveal, h/v are navigation structure. Only the current slide has a box,
+  // so nothing is spatially anywhere:
+  //
+  //   reveal  gives  existence + address   (h, v, f)
+  //   tlda    gives  position
+  //
+  // Reveal's scroll view supplies the first half: it wraps every slide in a
+  // generated .scroll-page and gives each a real box. Measured on a 31-slide
+  // deck, stacked vs view=scroll: sections with a real box went 4 -> 31.
+  // It must be requested at INITIALIZE (the URL carries view=scroll); calling
+  // configure({view:'scroll'}) or toggleScrollView() after load sets the config
+  // and does NOT activate it.
+  //
+  // We take only the boxes, never reveal's placement. Every !important rule in
+  // reveal's scroll CSS is on section -- those give the slide its box and its
+  // scale, so we leave them alone. .scroll-page carries none, which is why
+  // positioning the WRAPPERS does not fight anything.
+  //
+  // The rectangles are computed by the parent (src/loaders/deckLayout.ts) and
+  // posted here. This side only applies numbers: one implementation of the
+  // layout rule rather than one on each side of the iframe, and changing the
+  // layout never touches this injected script.
+  var pendingDeckLayout = null;
+  var deckLayoutStyle = null;
+
+  function deckSlideElements() {
+    return Array.prototype.slice.call(document.querySelectorAll('.slides section'))
+      .filter(function(el) { return !el.querySelector('section'); });
+  }
+
+  // The extent is enumerated per slide. Reveal's own getHorizontalSlides() and
+  // getVerticalSlides() disagree with the slides themselves -- measured on one
+  // deck in one call, they answered 2 and 0 against 4 real columns and verticals
+  // to v=20, while getTotalSlides() answered 33 against 31 slides. So they are
+  // not a source of extent here or anywhere.
+  function reportDeckExtent() {
+    if (window.parent === window) return;
+    var slides = deckSlideElements().map(function(el, i) {
+      var at = Reveal.getIndices(el) || {};
+      return { index: i, indexh: at.h || 0, indexv: at.v || 0, id: el.id || '' };
+    });
+    window.parent.postMessage({
+      type: 'tlda-deck-extent',
+      shapeId: shapeId,
+      slides: slides,
+      scale: Reveal.getScale ? Reveal.getScale() : 1,
+    }, '*');
+  }
+
+  function applyDeckLayout(layout) {
+    if (!layout || !layout.rects || !layout.rects.length) return;
+    pendingDeckLayout = layout;
+    if (!Reveal.isScrollView || !Reveal.isScrollView()) return;
+
+    var pages = document.querySelectorAll('.scroll-page');
+    if (!pages.length) return;
+
+    if (!deckLayoutStyle) {
+      deckLayoutStyle = document.createElement('style');
+      document.head.appendChild(deckLayoutStyle);
+    }
+    // The strip is laid out in the deck's own coordinate space and the CANVAS
+    // pans across it, so nothing here may scroll: reveal's viewport would
+    // otherwise clip the strip it just laid out.
+    deckLayoutStyle.textContent = [
+      '.reveal-viewport.reveal-scroll{overflow:visible!important}',
+      '.reveal-viewport.reveal-scroll .slides{display:block!important;position:relative!important;width:max-content!important;height:max-content!important}',
+      '.reveal-viewport.reveal-scroll .scroll-page{position:absolute!important;margin:0!important}',
+      '.reveal-viewport.reveal-scroll .scroll-page-sticky{position:relative!important}',
+    ].join('\\n');
+
+    var byIndex = {};
+    for (var i = 0; i < layout.rects.length; i++) byIndex[layout.rects[i].index] = layout.rects[i];
+    for (var p = 0; p < pages.length; p++) {
+      var rect = byIndex[p];
+      if (!rect) continue;
+      pages[p].style.setProperty('left', rect.x + 'px', 'important');
+      pages[p].style.setProperty('top', rect.y + 'px', 'important');
+      pages[p].style.setProperty('width', rect.width + 'px', 'important');
+      pages[p].style.setProperty('height', rect.height + 'px', 'important');
+    }
+  }
+
   function init() {
     if (typeof Reveal === 'undefined' || !Reveal.isReady || !Reveal.isReady()) {
       setTimeout(init, 100);
@@ -852,6 +937,11 @@ const SLIDES_BRIDGE_SCRIPT = `
     // Legacy per-slide iframes lock to one slide. Deck-mode iframes keep the
     // whole Reveal instance alive and are driven by parent messages.
     if (!deckMode) Reveal.slide(indexh, indexv, 0);
+
+    if (deckMode) {
+      reportDeckExtent();
+      applyDeckLayout(pendingDeckLayout);
+    }
 
     // Signal parent that this slide is ready to show (triggers fade-in)
     setTimeout(function() {
@@ -1075,6 +1165,12 @@ const SLIDES_BRIDGE_SCRIPT = `
         Reveal.slide(e.data.indexh || 0, e.data.indexv || 0, 0);
         setTimeout(reportFragmentState, 50);
         setTimeout(reportSlideHeight, 50);
+      }
+      if (e.data.type === 'tlda-deck-layout') {
+        // Arrives whenever the parent recomputes placement, including before
+        // Reveal is ready — applyDeckLayout keeps it and the deck-mode branch in
+        // init() replays it, so neither order loses the layout.
+        applyDeckLayout(e.data.layout);
       }
       if (e.data.type === 'tlda-wheel-owner') {
         tldaWheelOwner = e.data.owner === 'clip' ? 'clip' : 'page';
