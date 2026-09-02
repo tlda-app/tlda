@@ -7698,8 +7698,10 @@ async function dispatchFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, context, preambleRef, source } = msg
+    const { message: text, to: rawTo, max_recipients: rawMaxRecipients, from: rawFrom, metadata, inline_attachments, attachments, context, preambleRef, source } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
+    const maxRecipients = rawMaxRecipients == null ? Infinity : Number(rawMaxRecipients)
+    if (maxRecipients !== Infinity && (!Number.isInteger(maxRecipients) || maxRecipients < 1)) { error('max_recipients must be a positive integer'); return }
     const traceId = metadata?.trace_id || msg.trace_id || (msg._tempId ? `chat:${msg._tempId}` : createTraceId('chat'))
     controlPlaneTraces.append({
       trace_id: traceId,
@@ -7766,6 +7768,10 @@ async function dispatchFleetWsMessage(ws, msg) {
       if (!recipients.includes(SERVER_OWNER_ID)) recipients.push(SERVER_OWNER_ID)
     }
     if (recipients.length === 0) { error(`No recipients matched: ${JSON.stringify(rawTo)}`); return }
+    if (recipients.length > maxRecipients) {
+      error(`Broadcast to ${recipients.length} agents exceeds max_recipients=${maxRecipients}`)
+      return
+    }
     // Update sender heartbeat + activity tracking
     if (from) {
       await fleetStore.updateHeartbeat?.(from)
