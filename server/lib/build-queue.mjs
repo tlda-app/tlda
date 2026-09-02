@@ -201,6 +201,29 @@ export function createBuildQueue({
 
   function admitBuild(project, { revision, daemonId, branch = 'main', kind = 'build' }, { retryTerminal = false } = {}) {
     if (!project || !revision || !daemonId || !branch) return Promise.reject(new Error('project, revision, daemonId, and branch are required'))
+    // The Git HTTP receive path and the daemon's explicit admission message can
+    // name the same proposal. Once that exact row exists, admission is already
+    // durable; making the duplicate wait behind the project's publication lock
+    // can withhold its acknowledgement for the whole build and make the daemon
+    // time out after the revision has been accepted successfully.
+    //
+    // A requested retry of a terminal row is the only duplicate that still has
+    // work to do, so it stays on the serialized path below.
+    const existing = store.get(project, revision)
+    const retryingTerminal = existing && retryTerminal && ['complete', 'failed', 'killed'].includes(existing.state)
+    if (existing && !retryingTerminal) {
+      // These are the ordinary admission side effects, not proof that the row
+      // still needs admission. Keep them on the queue transition chain, but do
+      // not put the daemon's acknowledgement behind the publication lock.
+      void transition(async () => {
+        await recordAdmission(jobFromRow(existing))
+        if (!['complete', 'failed', 'killed'].includes(existing.state)) {
+          await thinPending(project)
+          await drain()
+        }
+      }).catch(error => logError(project, error))
+      return Promise.resolve(existing)
+    }
     return serializeProject(project, () => transition(async () => {
       let admittedRow = store.get(project, revision)
       if (admittedRow && retryTerminal && ['complete', 'failed', 'killed'].includes(admittedRow.state)) {
