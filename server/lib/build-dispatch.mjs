@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -139,11 +140,18 @@ export function publishBuildDiagnostics(name, instanceProject, failureReason = n
   // them. There was nothing to carry out and so nothing was written anywhere,
   // which is the case that reads as "failed and left no log" with no defect
   // visible in any build the reader can find. The reason is the only account
-  // that exists, so it becomes the log.
+  // that exists, so it becomes the log. When an instance log does exist, keep
+  // it and append the outer failure: that is the only error after an inner
+  // build which reached `Build complete` but failed at publication or IPC.
   let wrote = null
-  if (copied.length === 0 && failureReason) {
+  if (failureReason) {
     try {
-      writeFileSync(join(liveProject, 'build.log'), `[build] ${failureReason}\n`)
+      const buildLog = join(liveProject, 'build.log')
+      if (copied.includes('build.log')) {
+        const separator = readFileSync(buildLog, 'utf8').endsWith('\n') ? '' : '\n'
+        appendFileSync(buildLog, `${separator}[build] ${failureReason}\n`)
+      }
+      else writeFileSync(buildLog, `[build] ${failureReason}\n`)
       wrote = 'build.log'
     } catch (e) {
       // Never let recording the reason replace the failure being recorded.
