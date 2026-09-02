@@ -1985,4 +1985,46 @@ router.get('/:name/shadow/log', requireRead, async (req, res) => {
   }
 })
 
+// GET /:name/shadow/bundle — the project's version history as a git bundle.
+//
+// This is what `tlda project merge` replays FROM. The spec leaves open whether
+// the operation reads `refs/tlda/shadow/HEAD` in the local checkout or fetches
+// the shadow from the server; the local ref is written only by
+// daemon/shadow-mirror.mjs, which sits behind a trigger nothing calls, so today
+// a checkout that has never been mirrored has no such ref and the choice is not
+// open in practice. See docs/source-authority-state-machine.md §"A revision is
+// a commit".
+//
+// A bundle rather than a stream of commits because a bundle IS a repository to
+// `git clone`, so the client needs no new notion of how to read history — and
+// because it is already how a shadow moves between environments
+// (createShadowBundleBase64, used by the build runner's mirror path).
+router.get('/:name/shadow/bundle', requireRead, async (req, res) => {
+  try {
+    // Resolving the directory is INSIDE the try. It can throw, and an
+    // uncaught throw here leaves express to answer with an HTML error page —
+    // which a JSON client reports as unparseable rather than as what happened.
+    //
+    // `shadowRepoDir`, NOT `join(getProjectDir(name), 'shadow-repo')`. Those are
+    // two answers to one question and they differ exactly when a build is
+    // running: `projectDir` is overridden to the build INSTANCE for the length
+    // of a build (bin/build-worker.mjs), and the instance has no `shadow-repo`.
+    // Asked that way the route reports "no version history" for a project whose
+    // history is sitting right there, for as long as the build takes — and the
+    // bundle it would then read is `createShadowBundleBase64`'s directory,
+    // which is this one. Written the other way first and caught by the wire
+    // test, which resolved null and answered 500.
+    const { createShadowBundleBase64, shadowRepoDir } = await import('../lib/shadow-repo.mjs')
+    const repoDir = shadowRepoDir(req.params.name)
+    if (!existsSync(join(repoDir, '.git'))) {
+      return res.status(404).json({ error: `no version history for ${req.params.name}` })
+    }
+    const head = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf8', timeout: 5000 })).stdout.trim()
+    const bundleBase64 = await createShadowBundleBase64(req.params.name, head)
+    res.json({ head, bundleBase64 })
+  } catch (e) {
+    res.status(500).json({ error: `shadow bundle failed: ${e.message}` })
+  }
+})
+
 export default router

@@ -21,7 +21,7 @@ removed; Git history remains their archive.
   resolution contract
 - [Fleet chat artifacts](fleet-chat-artifacts.md) — current cross-machine chat artifact contract
 - [Source synchronization](source-authority-state-machine.md) — what a person does with sync, the
-  `tlda merge` operation, and the source revision and synchronization authority
+  `tlda project merge` operation, and the source revision and synchronization authority
 - [Voice-path known defects](voice-path-known-defects.md) — current verified voice defects
 
 ## Development process

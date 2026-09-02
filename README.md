@@ -316,13 +316,34 @@ tlda project link <project-name> <main-file>
 
 Here, `<project-url>` is the paper's Git clone URL, not its tlda viewer URL.
 `<project-name>` is the hosted tlda project and `<main-file>` is the paper's
-entry file in your clone. `tlda project link` is the current command; there is
-no separate `tlda project add` command on `main`. Linking puts the checkout on
-the `tlda/<project>` branch when Git can do that without forcing local state;
-that is the branch where tracked changes and deletions are submitted
-automatically. Add new files with Git before expecting tlda to include them.
-Your changes will be pushed to the server unless simultaneous editing results in
-merge conflicts. If so, resolve using Git, commit, and keep writing.
+entry file in your clone. Linking puts the checkout on the `tlda/<project>`
+branch when Git can do that without forcing local state; that is the branch
+where tracked changes and deletions are submitted automatically. Your changes
+will be pushed to the server unless simultaneous editing results in merge
+conflicts. If so, resolve using Git, commit, and keep writing.
+
+Three more commands cover the rest of the round trip.
+
+```bash
+tlda project add <file>                 # another document, same project
+tlda project add <file> --from main     # one that is only on another branch
+tlda project merge <project-name>       # the app's history onto your branch
+```
+
+`tlda project add` stages the file if it is untracked and appends it to the
+project's documents. The project keeps the branch and history it already has —
+nothing is unlinked or reseeded — and running it twice adds nothing the second
+time.
+
+`tlda project merge` brings the version history tlda accumulated back into your
+repository. tlda's copy is a filtered rewrite of your history and shares no
+commit identity with it, so the command replays the changes with `git am`: one
+commit per real change, keeping its author, date and message, and skipping
+anything already on your branch. Patches are applied in a scratch worktree, so a
+conflict leaves your branch where it was and hands you the conflict to resolve;
+`--continue`, `--status` and `--abort` finish or drop it.
+
+[Using tlda](docs/using-tlda.md) has the full behaviour of all three.
 
 ### Work with your own agents
 
