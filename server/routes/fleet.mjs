@@ -990,7 +990,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- POST /api/label ---
   router.post('/api/label', async (req, res) => {
-    const { agent: agentQuery, operation, labels } = req.body || {}
+    const { agent: agentQuery, operation, labels, singleton } = req.body || {}
     const validValue = operation === 'replace'
       ? Array.isArray(labels)
       : (operation === 'add' || operation === 'remove')
@@ -1001,7 +1001,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, { actorId: SERVER_OWNER_ID })
+    const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, {
+      actorId: SERVER_OWNER_ID,
+      singleton: singleton == null ? null : !!singleton,
+    })
     broadcastState()
     res.json({ ok: true, ...result })
   })

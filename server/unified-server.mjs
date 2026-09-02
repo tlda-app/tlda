@@ -8575,8 +8575,16 @@ async function dispatchFleetWsMessage(ws, msg) {
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (newName) {
-      const conflict = await fleetStore.nameTakenByOther(newName, agent.id)
-      if (conflict || newName === SERVER_OWNER_NAME) { error(`Name "${newName}" already in use`); return }
+      // The same gate POST /api/rename already uses. This path used to ask
+      // only nameTakenByOther, which compares names against names — so a rename
+      // could take a name equal to another living agent's LABEL, which is the
+      // fan-out this gate exists to stop, and it could take a reserved routing
+      // word or an unaddressable string besides. Found by the singleton-label
+      // wire test: `siren` held as a singleton label by one agent was still
+      // available as a friendly name to another over this socket.
+      const collisions = await fleetStore.checkNameAvailable([newName], { excludeId: agent.id, asFriendlyName: true }) || []
+      if (newName === SERVER_OWNER_NAME) collisions.push({ name: newName, kind: 'server_owner' })
+      if (collisions.length) { error(`Name "${newName}" unavailable: ${formatNameCollisions(collisions)}`); return }
     }
     try {
       await fleetStore.renameAgentFriendlyName(agent.id, newName, { actorId: agent.id, reason: 'ws-rename' })
@@ -8657,7 +8665,7 @@ async function dispatchFleetWsMessage(ws, msg) {
 
   // ---- label ----
   if (type === 'label') {
-    const { agent: agentQuery, operation, labels } = msg
+    const { agent: agentQuery, operation, labels, singleton } = msg
     const validValue = operation === 'replace'
       ? Array.isArray(labels)
       : (operation === 'add' || operation === 'remove')
@@ -8668,7 +8676,10 @@ async function dispatchFleetWsMessage(ws, msg) {
     }
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, { actorId: msg.caller || agent.id })
+    const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, {
+      actorId: msg.caller || agent.id,
+      singleton: singleton == null ? null : !!singleton,
+    })
     broadcastState()
     reply({ ok: true, ...result })
     return
