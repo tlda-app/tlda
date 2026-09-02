@@ -108,7 +108,7 @@ import {
   requestManagedSurface,
 } from '../wm/managed-surfaces'
 import { clientPointToPage } from '../wm/viewport-coordinates'
-import { fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { useFleetInteractionFrame } from '../wm/useFleetInteractionFrame'
 import { cancelWMDrop, finishWMDrop, registerWMDropTarget, updateWMDrop, type WMDropPayload } from '../wm/drop-targets'
 import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipFromTargetElement } from './fleet-chat-markdown-open'
@@ -6792,9 +6792,13 @@ function FleetChatInner({ shape }: { shape: any }) {
       const onMain = !!drag._onMain
       const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
       const dropEditor = (onMain && mainEditor) ? mainEditor : editor
-      const pagePos = onMain
-        ? clientPointToPage(dropEditor, { x: e.clientX, y: e.clientY })
-        : fleetPointerEventPagePoint(dropEditor, frame, e)
+      // The drag left this panel and landed on the main canvas, so it is a main
+      // canvas gesture from here on. The frame has to move with the point: the
+      // conversion below and everything downstream — the drop's hit test, its
+      // page/client round trips — must be told the same frame, or the point is
+      // in one and the probe is in another.
+      const dropFrame = onMain ? fleetInteractionFrame(dropEditor, undefined) : frame
+      const pagePos = fleetPointerEventPagePoint(dropEditor, dropFrame, e)
       // Give a registered WM drop target — the chat filter zones — first refusal,
       // then fall back. This is the same order FleetAgentsShape uses, and the
       // fallback is what keeps every other pill type behaving as before: a zone
@@ -6816,7 +6820,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           drag.pillId as TLShapeId,
           drag.value,
           pagePos,
-          frame,
+          dropFrame,
           drag.content,
           (message: string) => addToast({ title: message, severity: 'error' }),
         )
