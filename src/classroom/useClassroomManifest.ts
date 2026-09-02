@@ -7,9 +7,9 @@ const GLOBAL_MANIFEST = '/manifest.webmanifest'
 export function useClassroomManifest() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const project = params.get('project')
-    const readToken = params.get('token')
-    if (!project || !readToken || !readClassroomToken()) return
+    if (!shouldLoadClassroomManifest(params, Boolean(readClassroomToken()))) return
+    const project = params.get('project')!
+    const readToken = params.get('token')!
 
     const link = document.querySelector<HTMLLinkElement>('link[rel="manifest"]')
     if (!link) return
@@ -30,4 +30,13 @@ export function useClassroomManifest() {
       link.setAttribute('href', GLOBAL_MANIFEST)
     }
   }, [])
+}
+
+export function shouldLoadClassroomManifest(params: URLSearchParams, hasClassroomToken: boolean) {
+  return Boolean(
+    params.get('project')
+    && params.get('token')
+    && hasClassroomToken
+    && !params.get('markingCourse')
+  )
 }
