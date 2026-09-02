@@ -130,6 +130,18 @@ const ALLOWED = {
       + 'convenience.',
   },
 
+  'bin/a-link-does-not-lower-access-test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Asserts what access level a /sync/ socket resolves to, by setting a raw `tlda_token` cookie '
+      + 'header on the upgrade request. The cookie handling IS the thing under test: the claim is that an '
+      + 'invalid token in a link cannot lower a valid cookie, and that upward is still allowed. '
+      + 'shared/fleet-transport.mjs carries the fleet protocol and owns its own auth, so routing this '
+      + 'through the library would test the library\'s cookie handling instead of the sync endpoint\'s -- '
+      + 'the one thing this file exists to check. Endpoint: /sync/. The `new WebSocketServer` at line 54 '
+      + 'is the test\'s own stub server and is counted as a listener, not here.',
+  },
+
   'bin/a-message-id-can-be-read-back-test.mjs': {
     count: 1,
     category: 'tooling',
