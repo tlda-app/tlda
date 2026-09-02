@@ -17,6 +17,7 @@ import { getEditorWMCore } from '../wm/editor-wm'
 import { ensureClassroomLayer } from '../wm/classroom-layers'
 import { withOverlayEditor, withoutOverlayEditor } from './overlayEditorRegistry'
 import type { LayersValue } from './layersContext'
+import { shouldResolveDocumentLayerIdentity } from './classroomSurface'
 
 /**
  * A reader's layers over one document: the state, the overlay rooms that hold
@@ -54,6 +55,7 @@ export function useDocumentLayers({
   // authenticates with the RW bearer token and never carries a classroom one.
   // 401 is an ordinary reader, and the catch leaves them an ordinary document.
   useEffect(() => {
+    if (!shouldResolveDocumentLayerIdentity(new URLSearchParams(window.location.search))) return
     let cancelled = false
     classroomApi.me()
       .then(next => { if (!cancelled) setIdentity(next) })
