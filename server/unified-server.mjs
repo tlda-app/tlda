@@ -63,6 +63,7 @@ import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, projectDir as getProjectDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
 import { projectRevisionStatus } from './lib/source-lifecycle.mjs'
+import { stripPositionPrefix } from './lib/html-toc-extractor.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner, staleSourceSyncEntries } from './lib/source-sync-conflicts.mjs'
 import { createSourceRoomDaemon, sourceRoomDaemonKey } from './lib/source-room-daemon.mjs'
 import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
@@ -5108,8 +5109,10 @@ app.use('/docs', (req, res, next) => {
               const idx = pageInfo.findIndex(p => p.file === filePath)
               isFirstPage = idx === 0
               // Compute prev/next chapter titles for navigation
-              if (idx > 0) navPrev = pageInfo[idx - 1].title
-              if (idx >= 0 && idx < pageInfo.length - 1) navNext = pageInfo[idx + 1].title
+              // Prev/next name the neighbouring CHAPTERS, so they carry the
+              // same no-position rule as the chapter heading below.
+              if (idx > 0) navPrev = stripPositionPrefix(pageInfo[idx - 1].title) || pageInfo[idx - 1].title
+              if (idx >= 0 && idx < pageInfo.length - 1) navNext = stripPositionPrefix(pageInfo[idx + 1].title) || pageInfo[idx + 1].title
               if (idx >= 0 && pageInfo[idx].title) {
                 const entry = pageInfo[idx]
                 if (entry.tocLevel === 'part') {
@@ -5128,13 +5131,17 @@ app.use('/docs', (req, res, next) => {
                       chapterNum++
                     }
                   }
-                  // Strip "Lab N:", "Lecture N:", etc. prefixes
-                  const stripped = entry.title.replace(/^(Lab|Lecture)\s+\d+[:.]\s*/i, '').replace(/^Lecture\s+\d+$/i, '')
+                  // One encoding of "a chapter is not named after its position",
+                  // shared with the TOC extractor. This site had its own copy of
+                  // the regex and applied it only inside a part, so a page
+                  // outside one was served headed `Lab 1: ...` while the TOC
+                  // beside it said something else.
+                  const stripped = stripPositionPrefix(entry.title)
                   chapterTitle = chapterNum > 0 && stripped
                     ? `Chapter ${chapterNum}: ${stripped}`
                     : chapterNum > 0
                       ? `Chapter ${chapterNum}`
-                      : entry.title
+                      : stripped || entry.title
                 }
               }
             } catch (e) { console.warn(`[server] TOC/chapter title parsing failed for ${name}: ${e.message}`) }
