@@ -22,7 +22,6 @@ import { htmlPageReloadUrl } from './html-page-navigation-helpers'
 import { htmlIframeElements } from './htmlIframeRegistry'
 import { FORMATS_WITH_OWN_PAGE_INFO, HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 import { resolveAnnotationSourceAnchor, type AnnotationSourceAnchor } from './annotationSourceAnchor'
-import { getPref } from './preferences'
 import { fetchCachedSvgPage } from './pageSvgCache'
 import {
   getVisibilityMode, subscribeVisibility,
@@ -272,9 +271,6 @@ function pageFetchOrder(pages: SvgDocument['pages'], viewTop: number, viewBottom
       deferredIndices.push(i)
     }
   }
-  if (deferredIndices.length > 0 && priorityIndices.length > 0) {
-    priorityIndices.push(deferredIndices.shift()!)
-  }
   const focusY = (viewTop + viewBottom) / 2
   const distanceToFocus = (index: number) => {
     const b = pages[index].bounds
@@ -287,8 +283,8 @@ function pageFetchOrder(pages: SvgDocument['pages'], viewTop: number, viewBottom
 /**
  * Fetch SVG pages with viewport-priority loading.
  * Pages visible on initial load are fetched first for fast first-paint,
- * then remaining pages load in parallel.
- * Text extraction is deferred to idle time after all pages render.
+ * Deferred pages are fetched only when they enter the viewport. Fetching the
+ * whole project is the explicit Airplane-mode action in the table of contents.
  */
 export async function fetchSvgPagesAsync(
   editor: Editor,
@@ -307,7 +303,6 @@ export async function fetchSvgPagesAsync(
 
   const { priorityIndices, deferredIndices } = pageFetchOrder(pages, viewTop, viewBottom)
   const buildHash = currentBuiltHash(editor)
-  const stingy = getPref('document-stingy-mode')
 
   console.log(`[FetchAsync] Loading ${pages.length} pages (${priorityIndices.length} priority, ${deferredIndices.length} deferred)`)
 
@@ -321,15 +316,6 @@ export async function fetchSvgPagesAsync(
   }
 
   console.log(`[FetchAsync] ${svgDocs.length} priority pages rendered`)
-
-  if (!stingy) {
-    const deferredResults = await Promise.all(
-      deferredIndices.map(i => fetchPage(pages[i], basePath, i, buildHash))
-    )
-    for (const r of deferredResults) {
-      if (r) svgDocs.push(r)
-    }
-  }
 
   console.log(`[FetchAsync] ${svgDocs.length}/${pages.length} pages rendered (${anchorIndex.size} hyperref anchors)`)
 

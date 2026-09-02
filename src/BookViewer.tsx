@@ -20,6 +20,8 @@ import { isClassroomSurface } from './classroom/classroomSurface'
 import type { SvgDocument } from './loaders/types'
 import { HTML_PAGE_FORMATS, viewFormat } from '../shared/document-formats.mjs'
 import type { Editor } from 'tldraw'
+import { cacheProjectsForOffline } from './airplaneMode'
+import type { AirplaneState } from './BookContext'
 
 interface BookViewerProps {
   bookName: string
@@ -36,6 +38,9 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // Why a member failed to load. Without it a refused member renders as a book
   // with nothing in it, which is indistinguishable from a member that is empty.
   const [loadError, setLoadError] = useState('')
+  const [airplaneState, setAirplaneState] = useState<AirplaneState>('off')
+  const [airplaneProgress, setAirplaneProgress] = useState({ complete: 0, total: 0 })
+  const [airplaneError, setAirplaneError] = useState('')
   // Pending cross-member anchor navigation: set before switchTo, consumed after load
   const pendingAnchor = useRef<string | null>(null)
 
@@ -126,6 +131,27 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     setActiveVariant(variant || null)
     if (index !== activeIndex) setActiveIndex(index)
   }, [members.length, activeIndex])
+
+  const toggleAirplaneMode = useCallback(() => {
+    if (airplaneState === 'loading') return
+    if (airplaneState === 'ready') {
+      setAirplaneState('off')
+      return
+    }
+    setAirplaneState('loading')
+    setAirplaneError('')
+    void cacheProjectsForOffline(members.map(member => ({
+      projectName: member.key,
+      basePath: member.basePath,
+      format: member.renderedFormat || member.format,
+      pages: member.pages,
+    })), setAirplaneProgress)
+      .then(() => setAirplaneState('ready'))
+      .catch(error => {
+        setAirplaneError(error instanceof Error ? error.message : String(error))
+        setAirplaneState('error')
+      })
+  }, [airplaneState, members])
 
   // Cross-member navigation: intercept tlda-navigate when targetFile is a different member
   useEffect(() => {
@@ -225,7 +251,11 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     members,
     activeIndex,
     switchTo,
-  }), [bookName, members, activeIndex, switchTo])
+    airplaneState,
+    airplaneProgress,
+    airplaneError,
+    toggleAirplaneMode,
+  }), [bookName, members, activeIndex, switchTo, airplaneState, airplaneProgress, airplaneError, toggleAirplaneMode])
 
   // The book's editor, kept so the overlay above it can follow its camera and
   // its tool selection. Passed on to the original caller unchanged.

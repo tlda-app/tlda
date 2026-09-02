@@ -1,4 +1,7 @@
 import { createContext, useContext } from 'react'
+import type { OfflineProgress } from './airplaneMode'
+
+export type AirplaneState = 'off' | 'loading' | 'ready' | 'error'
 
 export interface BookMember {
   key: string       // project name (manifest key)
@@ -19,6 +22,10 @@ export interface BookContextValue {
   members: BookMember[]
   activeIndex: number
   switchTo: (index: number, variant?: 'slides') => void
+  airplaneState: AirplaneState
+  airplaneProgress: OfflineProgress
+  airplaneError: string
+  toggleAirplaneMode: () => void
 }
 
 export const BookContext = createContext<BookContextValue | null>(null)
