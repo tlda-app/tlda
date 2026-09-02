@@ -15,7 +15,6 @@ import {
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { probe } from './perf-probe'
-import { SPATIAL_MAP_ZOOM } from './spatialDocumentWorld'
 import { installLivePerfProbe } from './livePerfProbe'
 import { downloadEmergencyDump } from './emergencyDump'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
@@ -1438,28 +1437,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
                 editor.setCamera({ x: initialCamera.x, y: initialCamera.y, z: initialCamera.z })
               } else if (session?.camera && !isPresentation) {
                 editor.setCamera(session.camera)
-              } else if (document.deckLayout?.rects?.length) {
-                // Open a deck on its first slide, not on the whole strip.
-                //
-                // A deck's strip is thousands of px on both axes, so fitting it
-                // lands around z = 0.027 -- far under SPATIAL_MAP_ZOOM (0.28),
-                // where every page deliberately renders a map placeholder.
-                // Measured on pic-dev: the deck loaded correctly, reported its
-                // extent, positioned all 31 slides, and showed grey boxes.
-                //
-                // It cannot be done from the shape: below that threshold the
-                // shape's component never mounts, so nothing there ever runs.
-                // Fitting the document and being able to read it are opposite
-                // requests once the document is a plane rather than a column.
-                const first = document.deckLayout.rects[0]
-                const vp = editor.getViewportScreenBounds()
-                if (first.width > 0 && vp.width > 0) {
-                  editor.setCamera({
-                    x: -first.x + 40,
-                    y: -first.y + 40,
-                    z: Math.max(SPATIAL_MAP_ZOOM * 1.2, vp.width / (first.width * 1.15)),
-                  })
-                }
               }
               const readinessWindow = window as Window & {
                 __tldaCameraRestoredAt?: number

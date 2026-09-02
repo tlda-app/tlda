@@ -995,13 +995,22 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       })
       // Center camera on first slide by width. Tall slides intentionally
       // overflow vertically instead of shrinking to fit a fixed viewport box.
+      //
+      // "First slide" is no longer the first PAGE. A deck is one page shape
+      // carrying the whole strip -- one document, one webR session -- so its
+      // width is every column, and using it here fits the strip instead of a
+      // slide. Measured: z came out 0.027 against SPATIAL_MAP_ZOOM 0.28, so
+      // every slide rendered as a map placeholder and the deck looked empty.
+      // deckLayout carries the slide's own box, which is what this always meant.
       const first = document.pages[0]
-      if (first) {
+      const firstSlide = document.deckLayout?.rects?.[0]
+      const slideWidth = firstSlide?.width ?? first?.width
+      if (first && slideWidth) {
         const vp = editor.getViewportScreenBounds()
-        const z = Math.min(1, vp.width / first.width)
+        const z = Math.min(1, vp.width / slideWidth)
         editor.setCamera({
-          x: -first.bounds.x + (vp.width / z - first.width) / 2,
-          y: -first.bounds.y,
+          x: -(first.bounds.x + (firstSlide?.x ?? 0)) + (vp.width / z - slideWidth) / 2,
+          y: -(first.bounds.y + (firstSlide?.y ?? 0)),
           z,
         })
       }
