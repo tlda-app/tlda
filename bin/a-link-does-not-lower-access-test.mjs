@@ -18,6 +18,15 @@
 //
 // Both directions are asserted, because a fix that quietly broke enrollment
 // would be far worse than the defect — that link is how the class gets in.
+//
+// The WebSocket half is not a bonus. `/sync/` feeds this level straight into
+// `room.handleSocketConnect({ isReadonly: access === 'read' })`, so the demotion
+// did not merely 403 an API call — it handed back a read-only canvas, enforced
+// by the room. And an upgrade is where the ranking is least obviously safe: a
+// browser WebSocket cannot set an Authorization header, so the cookie is the
+// only place the stronger credential can be, and whether it rides an upgrade
+// request at all is a fact about the transport rather than about this code.
+import WebSocket, { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
@@ -32,13 +41,22 @@ const RW = 'test-rw-token'
 // ---- child: the server under test, running the real middleware ----
 if (process.argv[2] === '--serve') {
   const express = (await import('express')).default
-  const { initAuth, loginRoute, requireRead, requireRw } = await import('../server/lib/auth.mjs')
+  const { initAuth, loginRoute, requireRead, requireRw, validateToken, extractToken } = await import('../server/lib/auth.mjs')
   initAuth()
   const app = express()
   app.get('/auth/login', loginRoute)
   app.get('/read', requireRead, (req, res) => res.json({ level: req.authLevel }))
   app.get('/rw', requireRw, (req, res) => res.json({ level: req.authLevel }))
-  app.listen(Number(process.env.PORT), () => console.log('ready'))
+  const server = app.listen(Number(process.env.PORT), () => console.log('ready'))
+
+  // The same expression the real `/sync/` upgrade uses to decide `isReadonly`,
+  // reached the same way: off the raw upgrade request, before any handshake.
+  const wss = new WebSocketServer({ noServer: true })
+  server.on('upgrade', (req, socket, head) => {
+    const level = validateToken(extractToken(req))
+    if (!level) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return }
+    wss.handleUpgrade(req, socket, head, ws => ws.send(JSON.stringify({ level, readonly: level === 'read' })))
+  })
 } else {
   const PORT = 8700 + (process.pid % 800)
   const configDir = mkdtempSync(join(tmpdir(), 'tlda-link-access-'))
@@ -117,6 +135,26 @@ if (process.argv[2] === '--serve') {
     await level(await get(`/read?token=${RW}`, { cookie: READ })) === 'rw')
   check('read cookie + rw link upgrades the cookie',
     (await get(`/read?token=${RW}`, { cookie: READ })).headers.get('set-cookie')?.includes(RW) === true)
+
+  // --- the sync socket, where the level becomes a read-only canvas ---
+  const upgrade = (query, cookie) => new Promise(resolve => {
+    const ws = new WebSocket(`ws://localhost:${PORT}/sync/doc-any${query}`,
+      cookie ? { headers: { cookie: `tlda_token=${cookie}` } } : {})
+    const done = v => { try { ws.close() } catch { /* already closing */ } resolve(v) }
+    ws.on('message', d => done(JSON.parse(String(d))))
+    ws.on('error', e => done({ level: `error ${e.message}` }))
+    setTimeout(() => done({ level: 'timeout' }), 8000)
+  })
+
+  // The positive control first: this socket can produce a read verdict at all,
+  // so a later 'rw' is a measurement and not an instrument that only says rw.
+  const studentSocket = await upgrade(`?token=${READ}`)
+  check('sync socket: student read link connects', studentSocket.level === 'read')
+  check('sync socket: student read link is read-only', studentSocket.readonly === true)
+  const skipSocket = await upgrade(`?token=${READ}`, RW)
+  check('sync socket: rw cookie + read link stays rw', skipSocket.level === 'rw')
+  check('sync socket: rw cookie + read link is NOT read-only', skipSocket.readonly === false)
+  check('sync socket: no credential is refused', (await upgrade('')).level.startsWith('error'))
 
   console.log(failures === 0 ? 'PASS' : `FAIL: ${failures} check(s)`)
   cleanup(failures === 0 ? 0 : 1)
