@@ -108,8 +108,6 @@ import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
 import { SyncErrorPill } from './pills/SyncErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
-import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
-import { DraftPill } from './pills/DraftPill'
 import { BookLayersSlot } from './classroom/BookLayersSlot'
 import { FollowingBadge } from './pills/FollowingBadge'
 import { FleetIconPill } from './pills/FleetIconPill'
@@ -1154,7 +1152,22 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           <span className="sync-offline-badge" title="Connection lost — signals and sync paused">⚡ offline</span>
         )}
         <BookLayersSlot />
-        {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
+        {/* The draft-mode pills are gone from this row.
+         *
+         * Skip, 2026-09-02 03:45:47 EDT: "yeah, the draft mode layer icons were
+         * suppsoed to be borrowed; not the fking mode itself." Both of these sat
+         * where the layers control now sits, and `AnnotationVisibilityPill` is a
+         * pill with a stacked-layers glyph whose "layers" are own-versus-others'
+         * annotations at three opacities — a different thing wearing the same
+         * word, and the thing he was looking at when he called the layers UI
+         * draft mode. Leaving them beside the real control would offer him two
+         * layer menus, one of which he has rejected.
+         *
+         * The draft mechanism itself is untouched: `annotationVisibility.ts`
+         * still tracks drafts, still publishes them, and viewers are still put
+         * into draft mode at :499 and :507. Only these two controls leave this
+         * surface. */}
+        <FollowingBadge />
         <PlaybackPill state={playbackState} />
         {editorRef.current && (
           <LiveRoomAudio
