@@ -90,10 +90,7 @@ import { FleetToolGhost } from './overlays/FleetToolGhost'
 import { FleetNudgeGuides } from './overlays/FleetNudgeGuides'
 import { ChromeConditions } from './chrome/ChromeConditions'
 import { RecognizeButton } from './overlays/RecognizeButton'
-import { RecordingsButton } from './overlays/RecordingsButton'
-import { RecordingViewer } from './overlays/RecordingViewer'
 import { isClassroomSurface } from './classroom/classroomSurface'
-import { useBook } from './BookContext'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
 import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
@@ -484,8 +481,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
 
   // --- Hooks ---
   const projectName = document.name
-  const book = useBook()
-  const recordingProjectName = book?.bookName ?? projectName
 
   const isPresentation = document.format === 'slides'
   const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
@@ -777,12 +772,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         <SemanticHighlightPill />
         {!IS_CLASSROOM && <AgentAttentionCanvas />}
         <RecognizeButton />
-        {/* The way in to the recording viewer. It plays back into a corner PiP
-            over the live document, and the viewer itself is mounted below —
-            this list is the only thing that ever opened it, and a "UI clutter"
-            commit (71c56104a) took it out of the chrome in August, which left
-            the whole playback path unreachable rather than merely tidier. */}
-        {IS_CLASSROOM && <RecordingsButton />}
         <BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud />
         {!IS_CLASSROOM && <VersionStampSlot />}
         {!IS_CLASSROOM && <FleetToolGhost />}
@@ -1651,7 +1640,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </ProjectContext.Provider>
-    <RecordingViewer projectName={recordingProjectName} shapeUtils={shapeUtils} tools={tools} licenseKey={LICENSE_KEY} />
     </>
   )
 }
