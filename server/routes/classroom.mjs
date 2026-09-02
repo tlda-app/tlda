@@ -228,7 +228,14 @@ async function frozenTemplateSource(store, assignmentId, resolveTemplateSource) 
   }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null } = {}) {
+async function submissionBuild(contentRef) {
+  const project = await readProject(contentRef)
+  if (!project) return { buildStatus: 'missing', buildAt: null }
+  const lifecycle = projectRevisionStatus((await sourceLifecycleStore(contentRef)).listRevisionLifecycles(contentRef))
+  return { buildStatus: lifecycle.status, buildAt: project.lastBuildSuccess || project.lastBuild || null }
+}
+
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null, resolveSubmissionBuild = submissionBuild } = {}) {
   const router = Router()
   router.get('/courses/:courseId/manifest.webmanifest', (req, res) => {
     if (!resolveManifestAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
@@ -338,7 +345,14 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     })) })
   })
 
-  router.get('/courses/:courseId/status', instructor, (req, res) => res.json(store.status(req.params.courseId)))
+  router.get('/courses/:courseId/status', instructor, async (req, res) => {
+    const status = store.status(req.params.courseId)
+    await Promise.all(status.rows.flatMap(row => row.assignments.map(async cell => {
+      if (!cell.contentRef) return
+      Object.assign(cell, await resolveSubmissionBuild(cell.contentRef))
+    })))
+    res.json(status)
+  })
 
   // The safety net: everything students submitted, plus whatever has been said
   // back to them, as one archive that opens without tlda. It exists so the

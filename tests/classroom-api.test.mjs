@@ -17,7 +17,7 @@ async function serverFixture() {
   store.submit({ assignmentId: 'hw1', studentId: 'ada', contentRef: 'hw1-ada' })
   store.addFeedback({ id: 'draft', assignmentId: 'hw1', studentId: 'ada', title: 'Draft', text: 'Private.' })
   const app = express(); app.use(express.json())
-  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: req => req.headers.authorization === 'Bearer read-access', resolveManifestAccess: req => req.query.token === 'read-access', resolveTemplateVersion(docKey) {
+  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: req => req.headers.authorization === 'Bearer read-access', resolveManifestAccess: req => req.query.token === 'read-access', resolveSubmissionBuild: async contentRef => ({ buildStatus: contentRef === 'hw1-ada' ? 'success' : 'missing', buildAt: '2026-09-02T03:41:51Z' }), resolveTemplateVersion(docKey) {
     if (docKey !== 'hw1-handout') throw new Error('template document not found')
     return 'build-abc'
   }, resolvePrincipal(req, classroomStore) {
@@ -58,6 +58,25 @@ test('student can read own submission but not another student or instructor draf
     assert.equal(response.status, 403)
     response = await f.request('/assignments/hw1/submissions/ada', 'instructor')
     assert.equal((await response.json()).feedback[0].id, 'draft')
+  } finally { f.close() }
+})
+
+test('instructor status lists submission acceptance and build state without exposing it to a student', async () => {
+  const f = await serverFixture()
+  try {
+    let response = await f.request('/courses/qtm285/status', 'instructor')
+    assert.equal(response.status, 200)
+    const status = await response.json()
+    const submitted = status.rows.find(row => row.id === 'ada').assignments[0]
+    assert.equal(submitted.contentRef, 'hw1-ada')
+    assert.equal(submitted.buildStatus, 'success')
+    assert.equal(submitted.buildAt, '2026-09-02T03:41:51Z')
+    const missing = status.rows.find(row => row.id === 'grace').assignments[0]
+    assert.equal(missing.state, 'not-submitted')
+    assert.equal('buildStatus' in missing, false)
+
+    response = await f.request('/courses/qtm285/status', 'ada')
+    assert.equal(response.status, 403)
   } finally { f.close() }
 })
 
