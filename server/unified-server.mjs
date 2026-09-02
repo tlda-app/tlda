@@ -7897,9 +7897,6 @@ async function dispatchFleetWsMessage(ws, msg) {
         })
       }
       deliveryDecision = reserveSubscriptionBatch(deliveryDecision)
-      for (let i = 0; i < subscriptionDeliveries.length; i++) {
-        subscriptionDeliveries[i] = reserveSubscriptionBatch(subscriptionDeliveries[i])
-      }
       const subscriptionRecipients = [...new Set(subscriptionDeliveries.map(d => d.recipient))]
       for (const id of subscriptionRecipients) watchRecipients.add(id)
       subscriptionDeliveriesAll.push(...subscriptionDeliveries)
