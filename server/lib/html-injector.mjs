@@ -863,6 +863,7 @@ const SLIDES_BRIDGE_SCRIPT = `
   // layout rule rather than one on each side of the iframe, and changing the
   // layout never touches this injected script.
   var pendingDeckLayout = null;
+  var deckLayoutRetry = null;
   var deckLayoutStyle = null;
 
   function deckSlideElements() {
@@ -898,7 +899,19 @@ const SLIDES_BRIDGE_SCRIPT = `
   function applyDeckLayout(layout) {
     if (!layout || !layout.rects || !layout.rects.length) return;
     pendingDeckLayout = layout;
-    if (!Reveal.isScrollView || !Reveal.isScrollView()) return;
+
+    // The parent's reply usually arrives BEFORE reveal has finished switching
+    // into scroll view, and the wrappers we position do not exist until it has.
+    // Measured on pic-dev: the extent went out, the layout came back, and every
+    // slide stayed at (0,0) because this returned early and nothing ever ran
+    // again. Storing it and waiting for a caller that never comes is the whole
+    // bug, so the retry is the fix rather than an optimisation.
+    if (!Reveal.isScrollView || !Reveal.isScrollView() || !document.querySelector('.scroll-page')) {
+      if (deckLayoutRetry) clearTimeout(deckLayoutRetry);
+      deckLayoutRetry = setTimeout(function() { applyDeckLayout(pendingDeckLayout); }, 100);
+      return;
+    }
+    if (deckLayoutRetry) { clearTimeout(deckLayoutRetry); deckLayoutRetry = null; }
 
     var pages = document.querySelectorAll('.scroll-page');
     if (!pages.length) return;
