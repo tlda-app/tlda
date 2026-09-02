@@ -62,17 +62,50 @@ slide loaders. A Quarto render produces it after inspecting the output;
 pre-rendered HTML may supply it, while the server otherwise derives it from the
 top-level HTML files.
 
-An Overleaf or Git remote is an ordinary Git-backed daemon source. Its checkout
-lives on the daemon's machine, remote edits enter through the same source
-proposal as filesystem edits, and accepted revisions return through the same
-materialization path. The daemon pushes the exact accepted revision only when
-the remote is its ancestor. Fast-forward mode stops on divergence; auto-merge
-mode submits a clean merge normally and withholds unresolved checkouts until an
-ordinary editor or MCP resolution changes them.
+`tlda project link` is the current create/relink command; `tlda project add` is
+not a current command on `main`. The CLI first proves the current directory is a
+Git repository with `git rev-parse --show-toplevel`, resolves positional
+arguments as document roots, creates or updates the project through the server
+API, and calls the local daemon with `project-source-link`.
 
-The server does not currently push a successful browser edit into an already
-linked local checkout. That checkout discovers the newer server revision when
-it next submits, then receives a merge conflict to resolve locally.
+The daemon seeds existing project history by configuring a `tlda` Git remote for
+the server's `/git/<project>` endpoint and pushing the chosen revision to the
+history seed ref. After the server adopts that ref, the daemon writes the local
+binding, sends `source-bindings-set` to the server, starts the Git manager, moves
+the checkout onto `refs/heads/tlda/<project>` when Git can do that without
+forcing local state, and submits the current tree. If the branch move is refused,
+the link remains in place and the daemon reports which branch to check out.
+
+Each settle from that branch creates two commits with ordinary Git plumbing. A
+temporary index stages tracked changes with `git add -u`, `git write-tree` and
+`git commit-tree -m "tlda settled edit cluster"` create the author's branch
+commit, then the document-root dependency closure is written as
+`git commit-tree -m "tlda project revision"` on `refs/tlda/project/<project>`.
+The daemon updates `refs/heads/tlda/<project>`, resets the real index mixed to
+that branch, and pushes the revision to
+`refs/tlda/proposals/<daemon>/<branch>/<revision>` on the server.
+
+When the server reports a different accepted head, the daemon fetches or records
+that head and runs Git's merge machinery against the local revision. A clean
+merge is committed and pushed as a combined proposal. Conflicted paths,
+unresolved files from `git diff --name-only --diff-filter=U`, or an existing
+`MERGE_HEAD` stop submission and leave the checkout for ordinary Git resolution.
+The server does not silently overwrite a linked local checkout with a browser
+edit.
+
+`tlda project remote add`, `delete`, `pull`, `push`, and `checkout` are literal
+Git remote operations from the daemon checkout. `add` runs `git remote add`;
+`pull` fetches the named branch into `refs/remotes/<remote>/<branch>` and merges
+it; `push` pushes the selected commit to `refs/heads/<branch>`; `checkout`
+fetches, checks for a dirty checkout, checks out the tracking branch, and then
+submits through the same project path. The automatic bridge uses the same Git
+remote path: it polls the remote branch, records it at
+`refs/tlda/remote/observed`, merges it locally when it moved, and pushes accepted
+revisions only when the remote head is an ancestor.
+
+There is no current `tlda merge` command on `main`. The implemented route out of
+the app is the linked checkout or linked remote described above; a separate
+history replay command is not available in this build.
 
 ## Machine daemon
 
