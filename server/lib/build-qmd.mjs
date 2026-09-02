@@ -21,7 +21,7 @@ import { parse as parseYaml } from 'yaml'
 
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter, streamChildOutput } from './build-runner.mjs'
-import { buildPerSlideDocuments } from './slides-parser.mjs'
+import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
 
@@ -181,14 +181,21 @@ export function qmdMissingDeclaredOutputFiles(outDir, sourceFile) {
   ))
 }
 
-export function qmdDeckPageInfo(root, perSlide, variant) {
-  return perSlide.map(({ pageInfo }, groupIndex) => ({
-    ...pageInfo,
+/**
+ * The page-info entry for a deck built from a .qmd root.
+ *
+ * One entry, not one per slide. `deck.slides` carries the address space the
+ * window manager lays out; `variant`/`group` are what pair a deck with its
+ * chapter as alternate renderings of one source, and both are unchanged by
+ * there now being a single entry — nothing downstream keys on slide count.
+ */
+export function qmdDeckPageInfo(root, deck, variant) {
+  return {
+    ...deck,
     group: root,
-    groupIndex,
     ...(variant && { variant }),
     source: { type: 'project-source', format: 'qmd', file: root },
-  }))
+  }
 }
 
 export function qmdDocumentRootPaths(project) {
@@ -425,13 +432,9 @@ export async function buildQmdDocument(name, addLog = console.log) {
       anyDeck ||= isDeck
       const variant = hasAlternates ? (isDeck ? 'slides' : 'chapter') : undefined
       if (isDeck) {
-        const perSlide = buildPerSlideDocuments(rendered, outputFile)
-        const groupedPageInfo = qmdDeckPageInfo(root, perSlide, variant)
-        for (const [groupIndex, slide] of perSlide.entries()) {
-          writeFileSync(join(outDir, slide.filename), slide.html)
-          pageInfo.push(groupedPageInfo[groupIndex])
-        }
-        addLog(`[qmd] split ${root} into ${perSlide.length} single-slide documents`)
+        const deck = deckPageInfo(rendered, outputFile)
+        pageInfo.push(qmdDeckPageInfo(root, deck, variant))
+        addLog(`[qmd] ${root}: one deck document, ${deck.slides.length} slides`)
       } else {
         pageInfo.push({
           file: outputFile,
