@@ -287,7 +287,6 @@ export { PSEUDO_LABELS };
 // Backlog drains at batch/interval: 2,000 per minute clears 603k in about five
 // hours, then tracks. Both are env-tunable without a deploy.
 const ACTIVITY_FTS_RETENTION_DAYS = envNumber('TLDA_ACTIVITY_FTS_RETENTION_DAYS', 30)
-const ACTIVITY_FTS_PRUNE_INTERVAL_MS = envNumber('TLDA_ACTIVITY_FTS_PRUNE_INTERVAL_MS', 60 * 1000)
 const ACTIVITY_FTS_PRUNE_BATCH_MAX = envNumber('TLDA_ACTIVITY_FTS_PRUNE_BATCH_MAX', 2000)
 
 const DAEMON_OUTBOX_LEDGER_RETENTION_MS =
@@ -2056,9 +2055,7 @@ export class FleetStore {
   }
 
   insertEventRecord(event, options = {}) {
-    const result = this._insertEventRecord(event, options);
-    this._maybePruneActivityEventsFts();
-    return result;
+    return this._insertEventRecord(event, options);
   }
 
   // Deleting a row from an external-content FTS5 table requires handing back the
@@ -2125,21 +2122,6 @@ export class FleetStore {
       `).run(String(through))
       return { deleted, through }
     })()
-  }
-
-  _maybePruneActivityEventsFts(nowMs = Date.now()) {
-    if (ACTIVITY_FTS_PRUNE_INTERVAL_MS <= 0 || ACTIVITY_FTS_PRUNE_BATCH_MAX <= 0) return
-    if (this._lastActivityFtsPruneAt && nowMs - this._lastActivityFtsPruneAt < ACTIVITY_FTS_PRUNE_INTERVAL_MS) return
-    this._lastActivityFtsPruneAt = nowMs
-    try {
-      const { deleted, through } = this.pruneActivityEventsFts({ now: new Date(nowMs) })
-      if (deleted > 0) console.log(`[fleet-store] pruned ${deleted} activity_events_fts entries through id ${through}`)
-    } catch (e) {
-      // Swallowed like the transport and ledger prunes beside it: this rides on
-      // the event insert path, and housekeeping must never fail the write it
-      // piggybacks on. A skipped sweep costs index size until the next one.
-      console.warn(`[fleet-store] activity fts prune failed: ${e.message}`)
-    }
   }
 
   // A retried send is now ONE event, so its recipients come from that event's
