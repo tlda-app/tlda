@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, Component, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
-import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, createHtmlDocumentFromPageInfo, loadHtmlDocument, loadSlidesDocument, type HtmlPageEntry } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
@@ -9,6 +8,7 @@ import { createAppRecordingOwner } from './recording/appRecordingOwner'
 import { log } from './logger'
 import { SHAPE_RENDER_ERROR_EVENT, errorFromShapeRenderEvent } from './shape-error-surface'
 import { BookViewer } from './BookViewer'
+import { DocumentWithLayers } from './classroom/DocumentWithLayers'
 import { IdentityPicker } from './IdentityPicker'
 import { sendMessage, useFleetAgents, useFleetIdentity } from './fleet-data-adapter'
 import { subscribeChat } from './fleet/chat-subscription.mjs'
@@ -554,7 +554,7 @@ function DocumentApp() {
           <IdentityPicker />
           <DocumentRadio />
           <ErrorBoundary>
-            <SvgDocumentEditor document={state.document} roomId={state.roomId} initialCamera={initialCamera} onEditorMount={attachAppRecordingEditor} />
+            <DocumentWithLayers document={state.document} roomId={state.roomId} initialCamera={initialCamera} onEditorMount={attachAppRecordingEditor} />
           </ErrorBoundary>
           <MarkingLifecycle />
         </div>

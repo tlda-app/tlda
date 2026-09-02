@@ -1,0 +1,17 @@
+/* A document rendered on its own, with its layers over it.
+ *
+ * The same box `.book-viewer` is: it exists so the overlay layers, which are
+ * `position: absolute; inset: 0`, have something to size against. Without a
+ * positioned ancestor they would size to the viewport instead, which is nearly
+ * right and silently wrong the moment anything else is on the page. */
+
+.documentWithLayers {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.documentWithLayers .tl-container {
+  flex: 1;
+}
