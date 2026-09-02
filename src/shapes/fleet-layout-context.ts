@@ -3,6 +3,7 @@ import { getLayoutReadabilityTokens } from '../readabilityProfile'
 import { isCanvasPageShape, isDocumentPageShape } from './document-pages'
 import { CANONICAL_FLOW_LEAD, laneDy, layoutOffset } from './fleet-layout-geometry'
 import { crossAxis, documentFlowAxis, type Axis } from './document-flow-axis'
+import { layoutAcrossOrigin } from './fleet-layout-origin'
 import type { FleetLayoutPlanInput, FleetLayoutVariant } from './fleet-layout-plan'
 import { defaultFleetLayoutChatFilters, type FleetChatFilter } from './fleet-layout-seeding'
 import { adaptiveInnerColumnWidth, currentVisibleViewportSize, projectedDocumentSpan, singleChatViewportPanelSize } from './fleet-layout-sizing'
@@ -172,7 +173,10 @@ export function buildFleetLayoutPlanInput({
   // One rule, stated on an axis. There is no paper case and no talk case here.
   const contentAcross = marginAxis === 'x' ? leftContentW : totalH
   const docNear = marginAxis === 'x' ? docBounds.minLeft : docBounds.minTop
-  const acrossOrigin = docNear - marginGap - contentAcross
+  // Beside the document for a paper, along the top edge for a deck — the two
+  // are different rules, not one with a sign flip, so they live together in
+  // `layoutAcrossOrigin` with the reason written down.
+  const acrossOrigin = layoutAcrossOrigin({ marginAxis, docNear, marginGap, contentAcross })
 
   // Along the flow axis the layout just tracks the document's near edge. Note
   // this coordinate is not observable: the HUD pins the flow axis to a position

@@ -32,6 +32,7 @@ import { getLayoutReadabilityTokens } from '../readabilityProfile'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { documentPageFlowAxis, getDocumentPageBounds } from '../shapes/fleet-layout-context'
 import { crossAxis, type Axis } from '../shapes/document-flow-axis'
+import { ANCHOR_RULES, readStoredAnchor } from './fleet-hud-anchor-rule'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
@@ -107,36 +108,18 @@ function isDocumentCameraRestored(): boolean {
  * So the anchor says which rule wrote it, and one written under any other rule is
  * not a position and is ignored. Bump this whenever the placement rule changes.
  */
-const ANCHOR_RULE = 'flow-axis-1'
+// The anchor rule and its two guards live in `fleet-hud-anchor-rule.ts` —
+// pure, and importable without tldraw so the stored-anchor cases can be
+// exercised rather than reasoned about.
 const HUD_ANCHOR_METRIC_NS = 'fleet-hud-anchor'
 const HUD_CAMERA_DIVERGENCE_PX = 8
 const HUD_CAMERA_DIVERGENCE_Z = 0.001
 
 type CameraLike = { x: number; y: number; z: number }
 
-/**
- * The flow axis an anchor was written under.
- *
- * The rule did not change — "screen-fixed along the flow axis, document-fixed
- * across it" is the same sentence it always was. What changed is a DECK's
- * answer to it: a deck used to be one page shape per slide running down, and is
- * now one shape running across. An anchor computed under 'y' is not a position
- * under 'x'; it is two readable numbers meaning something else, which is the
- * failure this guard exists to catch.
- *
- * Bumping ANCHOR_RULE would also catch it, and would additionally throw away
- * every anchor on every paper — documents whose flow axis never moved. Storing
- * the axis rejects exactly the anchors that are actually stale.
- *
- * An anchor with no axis predates this and is treated as 'y', which is what
- * every document was: a paper keeps its anchor, a deck drops the one it can no
- * longer interpret.
- */
-function anchorMeta(meta: any, flowAxis: Axis | null): { panOffset: number; cameraY: number } | null {
-  if (!meta || meta.panOffset === undefined || meta.rule !== ANCHOR_RULE) return null
-  if (flowAxis && (meta.axis ?? 'y') !== flowAxis) return null
-  return { panOffset: meta.panOffset, cameraY: meta.cameraY }
-}
+/** Whether a stored anchor is still a position. See `fleet-hud-anchor-rule.ts`
+ *  for the two guards and why each is needed. */
+const anchorMeta = readStoredAnchor
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number, flowAxis: Axis) {
   const t0 = probe.isEnabled('hud') ? performance.now() : 0
@@ -168,7 +151,7 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number, f
       editor.updateShape({
         id: anchorId as any,
         type: 'geo',
-        meta: { ...existing.meta, panOffset, cameraY, rule: ANCHOR_RULE, axis: flowAxis },
+        meta: { ...existing.meta, panOffset, cameraY, rule: ANCHOR_RULES[flowAxis], axis: flowAxis },
         isLocked: true,
       })
     } else {
@@ -179,7 +162,7 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number, f
         opacity: 0,
         isLocked: true,
         props: { w: 1, h: 1, geo: 'rectangle' as const },
-        meta: { panOffset, cameraY, rule: ANCHOR_RULE, axis: flowAxis },
+        meta: { panOffset, cameraY, rule: ANCHOR_RULES[flowAxis], axis: flowAxis },
       })
     }
   }, { history: 'ignore' })
