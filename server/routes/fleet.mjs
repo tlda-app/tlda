@@ -1009,6 +1009,33 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, ...result })
   })
 
+  // A seat command is one store transaction: singleton ownership and the two
+  // persisted notification slots change together. Todd invokes this route; it
+  // does not reimplement either label or subscription semantics.
+  router.post('/api/singleton-seat', async (req, res) => {
+    const { label, agent: agentQuery, transfer = false, actor = SERVER_OWNER_ID } = req.body || {}
+    if (!label || !agentQuery || typeof transfer !== 'boolean') {
+      res.status(400).json({ error: 'label, agent, and boolean transfer are required' })
+      return
+    }
+    const agent = await fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    try {
+      const result = await fleetStore.assignSingletonSeat({
+        label,
+        agentId: agent.id,
+        actorId: actor,
+        transfer,
+        batchPolicy: 'batch(default)',
+      })
+      broadcastState()
+      res.json({ ok: true, ...result })
+    } catch (error) {
+      const conflict = /held by|already defined/.test(error?.message || '')
+      res.status(conflict ? 409 : 400).json({ error: error?.message || String(error) })
+    }
+  })
+
   // --- POST /api/set-metadata ---
   // Merge key/value pairs into an agent's metadata JSON.
   router.post('/api/set-metadata', async (req, res) => {

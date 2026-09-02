@@ -2796,6 +2796,11 @@ export class FleetStore {
       const nextLabels = hasLabels ? this._normalizeCompleteLabels(agent.labels) : null;
       const labelsChanged = hasLabels
         && JSON.stringify(nextLabels) !== (before?.labels || '[]');
+      if (hasLabels) {
+        let beforeLabels = [];
+        try { beforeLabels = JSON.parse(before?.labels || '[]'); } catch { beforeLabels = []; }
+        this._assertSingletonLabelsAvailable(nextLabels.filter(label => !beforeLabels.includes(label)), agent.id);
+      }
       let insertedEvent = null;
       this.db.transaction(() => {
         this._upsertAgent.run(
@@ -2853,6 +2858,143 @@ export class FleetStore {
       normalized.push(raw);
     }
     return normalized;
+  }
+
+  _singletonLabelHolders(label, excludeId = null) {
+    return this.db.prepare(`
+      SELECT a.id, a.friendly_name
+      FROM agents a, json_each(CASE WHEN json_valid(a.labels) THEN a.labels ELSE '[]' END) member
+      WHERE a.dead = 0 AND a.id != ? AND member.value = ?
+      ORDER BY a.last_seen DESC, a.id
+    `).all(excludeId || '', label);
+  }
+
+  _singletonLabelHolder(label, excludeId = null) {
+    return this._singletonLabelHolders(label, excludeId)[0] || null;
+  }
+
+  _assertSingletonLabelsAvailable(labels, excludeId = null) {
+    for (const label of labels) {
+      const definition = this.getLabelDefinition(label);
+      if (!definition?.singleton) continue;
+      const holder = this._singletonLabelHolder(label, excludeId);
+      if (holder) {
+        throw new Error(`Label rejected: singleton label "${label}" is held by ${holder.friendly_name || holder.id} (${holder.id}). Remove it there before applying it here.`);
+      }
+    }
+  }
+
+  assignSingletonSeat({ label, agentId, actorId = null, transfer = false, batchPolicy = 'batch(default)' }) {
+    const target = this._getAgent.get(agentId);
+    if (!target || target.dead) throw new Error(`Cannot assign "${label}": target agent ${agentId} is not living.`);
+    const emitted = [];
+    const changedAgents = new Set();
+    const previousHolders = [];
+    let renamed = null;
+    let subscriptions = null;
+    const now = new Date().toISOString();
+
+    this.db.transaction(() => {
+      const existingDefinition = this.getLabelDefinition(label);
+      if (existingDefinition && !existingDefinition.singleton) {
+        throw new Error(`Label "${label}" is already defined as non-singleton.`);
+      }
+      const holders = this._singletonLabelHolders(label, agentId);
+      if (holders.length && !transfer) {
+        const holder = holders[0];
+        throw new Error(`Singleton label "${label}" is held by ${holder.friendly_name || holder.id} (${holder.id}). Use "Todd transfer ${label} to ${target.friendly_name || target.id}" to move it explicitly.`);
+      }
+
+      const nameHolder = this.db.prepare(
+        'SELECT id, friendly_name FROM agents WHERE dead = 0 AND friendly_name = ? LIMIT 1',
+      ).get(label);
+      if (nameHolder) {
+        const newName = this.allocateFreshFriendlyName(`${label}-agent`, { excludeId: nameHolder.id });
+        this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(newName, nameHolder.id);
+        const metadata = { subtype: 'rename', reason: 'reserve-singleton-label', oldName: label, newName };
+        const result = this._insertEvent.run(
+          'lifecycle', now, actorId, `rename: ${label} -> ${newName}`, JSON.stringify(metadata), null, nameHolder.id,
+        );
+        emitted.push({
+          id: Number(result.lastInsertRowid), type: 'lifecycle', timestamp: now,
+          from_id: actorId, recipients: [], text: `rename: ${label} -> ${newName}`,
+          metadata, task_id: null, agent_id: nameHolder.id, read: false,
+        });
+        changedAgents.add(nameHolder.id);
+        renamed = { agent: nameHolder.id, from: label, to: newName };
+      }
+
+      if (!existingDefinition) {
+        this.db.prepare(`
+          INSERT INTO label_definitions (label, singleton, created_at, created_by)
+          VALUES (?, 1, ?, ?)
+        `).run(label, now, actorId);
+      }
+
+      for (const holder of holders) {
+        previousHolders.push({ id: holder.id, name: holder.friendly_name || holder.id });
+        const outgoing = this._currentLabelStateFromEvents(holder.id);
+        if (!outgoing) throw new Error(`agent ${holder.id} has no canonical label event; run the label-history migration`);
+        const next = outgoing.filter(item => item !== label);
+        this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?').run(JSON.stringify(next), holder.id);
+        const event = this._insertLabelStateEvent({
+          type: 'label', agentId: holder.id, actorId: actorId || agentId,
+          labels: next, operation: 'remove', timestamp: now,
+        });
+        this._rebuildLabelHistoryForAgent(holder.id);
+        emitted.push(event);
+        changedAgents.add(holder.id);
+        const outgoingGroup = this.ensureSubscription({
+          owner: holder.id, query: DEFAULT_SUBSCRIPTION_QUERY,
+          notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, createdBy: actorId || agentId, mandatory: true,
+        });
+        this.setSubscriptionPolicy(outgoingGroup.subscription_id, DEFAULT_SUBSCRIPTION_POLICY);
+      }
+
+      const current = this._currentLabelStateFromEvents(agentId);
+      if (!current) throw new Error(`agent ${agentId} has no canonical label event; run the label-history migration`);
+      if (!current.includes(label)) {
+        const next = [...current, label];
+        this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?').run(JSON.stringify(next), agentId);
+        const event = this._insertLabelStateEvent({
+          type: 'label', agentId, actorId: actorId || agentId,
+          labels: next, operation: 'add', timestamp: now,
+        });
+        this._rebuildLabelHistoryForAgent(agentId);
+        emitted.push(event);
+        changedAgents.add(agentId);
+      }
+
+      const direct = this.ensureSubscription({
+        owner: agentId, query: 'to:me', notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY,
+        createdBy: actorId || agentId, mandatory: true,
+      });
+      const group = this.ensureSubscription({
+        owner: agentId, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: batchPolicy,
+        createdBy: actorId || agentId, mandatory: true,
+      });
+      this.setSubscriptionPolicy(direct.subscription_id, DEFAULT_SUBSCRIPTION_POLICY);
+      this.setSubscriptionPolicy(group.subscription_id, batchPolicy);
+      subscriptions = {
+        direct: this.getSubscription(direct.subscription_id),
+        labels: this.getSubscription(group.subscription_id),
+      };
+    })();
+
+    this._bustAgentsCache();
+    this._bustSubscriptionTapCache();
+    for (const id of changedAgents) this._syncAgentRegistry(id);
+    for (const event of emitted) this._notifyEvent(event);
+    const assigned = this._getAgent.get(agentId);
+    return {
+      label,
+      agent: agentId,
+      holder: assigned?.friendly_name || agentId,
+      previous_holder: previousHolders[0] || null,
+      previous_holders: previousHolders,
+      renamed,
+      subscriptions,
+    };
   }
 
   _insertLabelStateEvent({ type, agentId, actorId, labels, operation, timestamp }) {
