@@ -948,6 +948,16 @@ const SLIDES_BRIDGE_SCRIPT = `
       // They belong to the slide's own rect instead.
       '.reveal-viewport.reveal-scroll .scroll-page-sticky{position:relative!important;height:100%!important;top:auto!important}',
       '.reveal-viewport.reveal-scroll .scroll-page-content{height:100%!important}',
+      // Reveal's scroll-snap markers. They are siblings of the slide inside
+      // .scroll-page, they inherit the strip's height the same way the boxes
+      // above did -- measured at 1290 x 31000, 39 of them -- and being later in
+      // DOM order they paint over the slide and take every pointer. That is
+      // Skip's "browse tool doesn't interact with shit": a real click landed on
+      // .scroll-snap-point and never reached the code cell underneath.
+      //
+      // We drive navigation from the canvas, so reveal's snapping has nothing
+      // to do here. Size them to their page and take them out of hit-testing.
+      '.reveal-viewport.reveal-scroll .scroll-snap-point{height:100%!important;pointer-events:none!important}',
     ].join('\\n');
 
     var byIndex = {};
