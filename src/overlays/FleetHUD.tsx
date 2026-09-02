@@ -114,12 +114,31 @@ const HUD_CAMERA_DIVERGENCE_Z = 0.001
 
 type CameraLike = { x: number; y: number; z: number }
 
-function anchorMeta(meta: any): { panOffset: number; cameraY: number } | null {
+/**
+ * The flow axis an anchor was written under.
+ *
+ * The rule did not change — "screen-fixed along the flow axis, document-fixed
+ * across it" is the same sentence it always was. What changed is a DECK's
+ * answer to it: a deck used to be one page shape per slide running down, and is
+ * now one shape running across. An anchor computed under 'y' is not a position
+ * under 'x'; it is two readable numbers meaning something else, which is the
+ * failure this guard exists to catch.
+ *
+ * Bumping ANCHOR_RULE would also catch it, and would additionally throw away
+ * every anchor on every paper — documents whose flow axis never moved. Storing
+ * the axis rejects exactly the anchors that are actually stale.
+ *
+ * An anchor with no axis predates this and is treated as 'y', which is what
+ * every document was: a paper keeps its anchor, a deck drops the one it can no
+ * longer interpret.
+ */
+function anchorMeta(meta: any, flowAxis: Axis | null): { panOffset: number; cameraY: number } | null {
   if (!meta || meta.panOffset === undefined || meta.rule !== ANCHOR_RULE) return null
+  if (flowAxis && (meta.axis ?? 'y') !== flowAxis) return null
   return { panOffset: meta.panOffset, cameraY: meta.cameraY }
 }
 
-function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
+function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number, flowAxis: Axis) {
   const t0 = probe.isEnabled('hud') ? performance.now() : 0
   const humanId = getHumanId()
   const deviceReady = isDeviceReady()
@@ -149,7 +168,7 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
       editor.updateShape({
         id: anchorId as any,
         type: 'geo',
-        meta: { ...existing.meta, panOffset, cameraY, rule: ANCHOR_RULE },
+        meta: { ...existing.meta, panOffset, cameraY, rule: ANCHOR_RULE, axis: flowAxis },
         isLocked: true,
       })
     } else {
@@ -160,7 +179,7 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
         opacity: 0,
         isLocked: true,
         props: { w: 1, h: 1, geo: 'rectangle' as const },
-        meta: { panOffset, cameraY, rule: ANCHOR_RULE },
+        meta: { panOffset, cameraY, rule: ANCHOR_RULE, axis: flowAxis },
       })
     }
   }, { history: 'ignore' })
@@ -187,7 +206,10 @@ function readAnchorShapeForTelemetry(
   const deviceId = getDeviceId()
   const anchorId = getMyAnchorId()
   const anchor = editor.getShape(anchorId as TLShapeId)
-  const saved = anchorMeta(anchor?.meta)
+  // Telemetry reports what is STORED, so it passes no axis: an anchor this
+  // document can no longer interpret is exactly what you want to see in the
+  // log, not something to filter out before writing it down.
+  const saved = anchorMeta(anchor?.meta, null)
   const signature = JSON.stringify({
     site,
     anchorId,
@@ -1150,7 +1172,7 @@ export function FleetHUD({
             baseAnchor: hudAnchorRef.current,
             effectiveAnchor: hudCameraAnchor,
           })
-          saveAnchorOffsets(mainEditor, persistedAnchor.panOffset, persistedAnchor.cameraY)
+          saveAnchorOffsets(mainEditor, persistedAnchor.panOffset, persistedAnchor.cameraY, flowAxis)
         }
         if (probe.isEnabled('hud')) {
           probe.record('hud', 'hud-pan-camera-change', performance.now() - t0, { dx: cam.x - lastCam.x })
@@ -1198,7 +1220,7 @@ export function FleetHUD({
       for (const r of arrivals as any[]) {
         if (isMyAnchor(r)) {
           if (!cameraReady) break
-          const saved = anchorMeta(r.meta)
+          const saved = anchorMeta(r.meta, documentPageFlowAxis(mainEditor))
           if (!saved) break
           const hudCameraAnchor = readHudCameraAnchor()
           if (hudCameraAnchor?.panOffset !== saved.panOffset || hudCameraAnchor?.cameraY !== saved.cameraY) {
@@ -1444,7 +1466,7 @@ export function FleetHUD({
         dy: detail.dy,
       })
       applyHudAnchor(next)
-      saveAnchorOffsets(mainEditor, next.panOffset, next.cameraY)
+      saveAnchorOffsets(mainEditor, next.panOffset, next.cameraY, documentPageFlowAxis(mainEditor))
       setFleetBounds(resetFleetBoundsTracker())
     }
     window.addEventListener(FLEET_HUD_RESET_EVENT, onReset)
