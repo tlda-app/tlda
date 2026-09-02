@@ -5890,9 +5890,20 @@ async function _flushUnread() {
   }
 }
 
+export function normalizeChannelMessageEnvelope(msg = {}) {
+  return msg.event === 'filter-event'
+    ? { event: 'fleet-event', data: msg.data?.event }
+    : msg;
+}
+
 async function handleChannelMessage(msg) {
   const agentId = activeAgentId();
   if (!agentId) return;
+
+  // Persisted subscriptions arrive on the filter socket wrapped as
+  // { event: 'filter-event', data: { subId, event } }. Feed that live event
+  // through the same notification path as an ordinary fleet broadcast.
+  msg = normalizeChannelMessageEnvelope(msg);
 
   const eventType = msg.event === 'fleet-event' || msg.event === 'event-update'
     ? (msg.data?.type || '')
