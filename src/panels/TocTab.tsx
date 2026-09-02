@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useBook } from '../BookContext'
 import { useEditor } from 'tldraw'
+import type { TLViewportId } from 'tldraw'
+import { frameFromHudPresence } from '../wm/fleet-interaction-frame'
+import { getHudEditor } from '../wm/editor-host-bridge'
+import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import { loadLookup, clearLookupCache, loadHtmlToc, type LookupEntry, type HtmlTocEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { ProjectContext, PanelContext } from '../PanelContext'
@@ -661,6 +665,10 @@ export function JoinVoiceVideoToggle() {
     const dims = FLEET_TOOL_DIMS['fleet-video']
     await placeFleetShapeAtScreenPoint(editor, 'fleet-video', clientX, clientY, dims.w, dims.h, {
       tileKeys: '[]',
+    }, {
+      // A press on the TOC's video button. The panel is chrome, not a projected
+      // canvas viewport, so the point is in the main editor's screen space.
+      frame: frameFromHudPresence(editor, FLEET_HUD_VIEWPORT_ID as TLViewportId, !!getHudEditor()),
     })
   }, [editor])
 

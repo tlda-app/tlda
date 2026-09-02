@@ -2923,6 +2923,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   recordFleetChatRender(shape)
   const editor = useEditor()
   const interactionFrame = useFleetInteractionFrame()
+  // Kept current for the drop target below, which is registered once.
+  const interactionFrameRef = useRef(interactionFrame)
+  useEffect(() => { interactionFrameRef.current = interactionFrame }, [interactionFrame])
   const doc = useContext(ProjectContext)
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
@@ -5517,11 +5520,15 @@ function FleetChatInner({ shape }: { shape: any }) {
         })
       },
       leave: () => setPillOver(null),
+      // The drop landed on THIS chat, so this chat's frame is the frame it
+      // landed in. Read from a ref rather than closed over, because the target
+      // is registered once and the frame changes when the HUD opens or closes.
       drop: (payload) => dropPillOnTarget(
         payload.data.editor,
         payload.data.pillId as TLShapeId,
         payload.data.value,
         payload.data.pagePoint,
+        interactionFrameRef.current,
       ),
     }, { notifyLeaveOnUnregister: false })
   }, [])
@@ -6809,9 +6816,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           drag.pillId as TLShapeId,
           drag.value,
           pagePos,
-          drag.content,
-          (message) => addToast({ title: message, severity: 'error' }),
           frame,
+          drag.content,
+          (message: string) => addToast({ title: message, severity: 'error' }),
         )
       }
       try {

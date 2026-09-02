@@ -20,6 +20,7 @@ import { readPermanentGuides, writePermanentGuides } from './fleet-permanent-gui
 import { getFleetNudgeStrengthPx } from '../readabilityProfile'
 import { dispatchFleetHudReset, getHudEditor, markMainEditorHistoryStoppingPoint } from '../wm/editor-host-bridge'
 import { getEditorWMCore } from '../wm/editor-wm'
+import { frameFromHudPresence, type FleetInteractionFrame } from '../wm/fleet-interaction-frame'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import { clientPointToPage } from '../wm/viewport-coordinates'
 import {
@@ -546,7 +547,11 @@ export async function placeFleetShapeAtCursor(
   extraProps: Record<string, any> = {},
 ): Promise<string | null> {
   const screen = editor.inputs.currentScreenPoint
-  return placeFleetShapeAtScreenPoint(editor, type, screen.x, screen.y, w, h, extraProps)
+  // `editor.inputs` is the main editor's own pointer state, so this gesture is
+  // on the main canvas by construction — not a point handed in from a panel.
+  return placeFleetShapeAtScreenPoint(editor, type, screen.x, screen.y, w, h, extraProps, {
+    frame: frameFromHudPresence(editor, FLEET_HUD_VIEWPORT_ID as TLViewportId, !!getHudEditor()),
+  })
 }
 
 export async function placeFleetShapeAtScreenPoint(
@@ -557,19 +562,26 @@ export async function placeFleetShapeAtScreenPoint(
   w: number,
   h: number,
   extraProps: Record<string, any> = {},
-  options: { select?: boolean } = {},
+  /**
+   * `frame` is required, and the object is required so it cannot be forgotten.
+   *
+   * It used to pick its own viewport — `getHudEditor() ? HUD : undefined` —
+   * which answers "is the HUD open", not "which viewport projected this point".
+   * Those coincide today: a gesture that reaches here starts in a fleet panel,
+   * which is in the HUD viewport when the HUD is open and on the main canvas
+   * when it is not. They coincide for a reason nobody wrote down, and it is a
+   * second derivation of a fact the frame already carries — the same shape as
+   * the ownership and type filters that were standing in for membership.
+   *
+   * The caller must state it, because the caller is the only one that knows
+   * where the gesture came from. `frameFromHudPresence` is the honest way to
+   * say "this is not a gesture from a projected panel".
+   */
+  options: { select?: boolean; frame: FleetInteractionFrame },
 ): Promise<string | null> {
-  const hudEditor = getHudEditor()
-  let x: number, y: number
-  if (hudEditor) {
-    const point = clientPointToPage(editor, { x: screenX, y: screenY }, FLEET_HUD_VIEWPORT_ID as TLViewportId)
-    x = point.x - w / 2
-    y = point.y - h / 2
-  } else {
-    const point = editor.screenToPage({ x: screenX, y: screenY })
-    x = point.x - w / 2
-    y = point.y - h / 2
-  }
+  const point = clientPointToPage(editor, { x: screenX, y: screenY }, options.frame.viewportId)
+  const x = point.x - w / 2
+  const y = point.y - h / 2
   const id = await createFleetShape(editor, type, x, y, { w, h, ...extraProps })
   if (!id) return null
   if (options.select !== false) {

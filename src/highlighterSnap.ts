@@ -966,7 +966,7 @@ function showSourceContextCard(
             const pillId = drag.pillId as TLShapeId
             markFleetPillInactive(String(pillId))
             const dropPoint = fleetPointerEventPagePoint(pillEditor, frame, ev)
-            dropPillOnTarget(pillEditor, pillId, token, dropPoint, token, undefined, frame)
+            dropPillOnTarget(pillEditor, pillId, token, dropPoint, frame, token)
             pillEditor.run(() => {
               deleteFleetPill(pillEditor, pillId, 'drag-drop', { surface: 'highlighter' })
             }, { history: 'ignore' })

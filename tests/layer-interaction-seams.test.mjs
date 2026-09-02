@@ -157,6 +157,9 @@ test('the frame carries the registry’s answer, not the viewport id it was aske
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 
+/** Source with comments removed, so an assertion cannot match its own prose. */
+const stripComments = source => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
 test('the fleet panels get their interaction frame from the single derivation', () => {
   for (const path of [
     'src/shapes/FleetSearchShape.tsx',
@@ -184,5 +187,60 @@ test('the drop path hit-tests through the WM, not against page bounds', () => {
     drop.slice(0, drop.indexOf('const overFleet')),
     /targetPagePoint\.x >= /,
     'no raw page-bounds containment test survives in the hit path',
+  )
+})
+
+test('the frame cannot be omitted: every entry point takes one', () => {
+  // The advocate's finding on the previous head: `frame` was optional on
+  // `dropPillOnTarget` and silently defaulted a projected-panel drop to the main
+  // canvas — the same defect as a `LayerFrameConversion` defaulting to the
+  // identity. A default that is right for one kind of caller and silently wrong
+  // for another, with nothing at the call site saying which, is not a default.
+  //
+  // These are signature assertions rather than behavioural ones because the
+  // property is enforced by the type system: the check that it holds is
+  // `tsc -b`, and this is the check that nobody quietly makes it optional again.
+  const pill = read('src/shapes/FleetPillShape.tsx')
+  assert.match(
+    pill,
+    /pagePoint: \{ x: number; y: number \},[\s\S]{0,900}?\n  frame: FleetInteractionFrame,/,
+    'dropPillOnTarget takes a required frame, before the optionals',
+  )
+  assert.doesNotMatch(pill, /frame\?: FleetInteractionFrame/, 'and it is not optional anywhere here')
+
+  const utils = read('src/shapes/fleet-utils.ts')
+  assert.match(
+    utils,
+    /options: \{ select\?: boolean; frame: FleetInteractionFrame \}/,
+    'placeFleetShapeAtScreenPoint requires a frame, in a required options object',
+  )
+  // The heuristic it used to apply to itself. It still exists — as a named
+  // function a caller invokes on purpose — but not as this callee's fallback.
+  const placeStart = utils.indexOf('export async function placeFleetShapeAtScreenPoint')
+  const placeBody = utils.slice(placeStart, utils.indexOf('\nexport ', placeStart + 1))
+  assert.notEqual(placeBody.length, 0, 'the function is still where this test looks for it')
+  // Comments stripped first: this function's doc comment NAMES the heuristic it
+  // used to apply, so a bare search cannot tell a call from an explanation of
+  // why there is no longer a call. It matched the prose on the first run.
+  assert.doesNotMatch(
+    stripComments(placeBody),
+    /getHudEditor\(\)/,
+    'and it no longer picks its own viewport from whether the HUD is open',
+  )
+})
+
+test('the round trip projects and un-projects through one frame', () => {
+  // `pagePointToClient` here and `clientPointToPage` inside
+  // placeFleetShapeAtScreenPoint are two halves of one round trip. They were
+  // paired by both applying the same `getHudEditor()` heuristic — two copies of
+  // a rule, correct only while they stayed in step. Both now read the frame.
+  const pill = read('src/shapes/FleetPillShape.tsx')
+  for (const call of pill.match(/pagePointToClient\([^)]*\)/g) ?? []) {
+    assert.match(call, /frame\.viewportId/, `${call} projects with the gesture's own frame`)
+  }
+  assert.doesNotMatch(
+    stripComments(pill),
+    /getHudEditor\(\) \? \(FLEET_HUD_VIEWPORT_ID as TLViewportId\) : undefined/,
+    'the inline heuristic is gone from the drop path',
   )
 })

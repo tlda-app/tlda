@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { Editor, TLShapeId } from 'tldraw'
+import type { Editor, TLShapeId, TLViewportId } from 'tldraw'
+import { frameFromHudPresence } from '../wm/fleet-interaction-frame'
+import { getHudEditor } from '../wm/editor-host-bridge'
+import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import { Room, RoomEvent, Track } from 'livekit-client'
 import { getLiveSession, subscribeLiveSession, setLiveRuntime, leaveLiveSession } from './liveSession'
 import { setCallMicState } from '../voice.mjs'
@@ -769,7 +772,12 @@ export function LiveRoomAudio({ projectName, editor }: LiveRoomAudioProps) {
     const h = 172
     void placeFleetShapeAtScreenPoint(editor, 'fleet-video', 24 + w / 2, 72 + h / 2, w, h, {
       tileKeys,
-    }, { select: false }).then((id) => {
+    }, {
+      select: false,
+      // A fixed corner placement, not a gesture: 24,72 are screen coordinates
+      // this code chose, so there is no projecting viewport to inherit.
+      frame: frameFromHudPresence(editor, FLEET_HUD_VIEWPORT_ID as TLViewportId, !!getHudEditor()),
+    }).then((id) => {
       if (!id || cancelled) return
       videoShapeIdRef.current = id
       autoVideoShapeRef.current = true
