@@ -98,14 +98,14 @@ async function waitForSymptom(rpcs) {
 }
 
 // `recipient` decides whether the agent has an MCP socket and what it does.
-async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {}, subscriptionQuery = 'to:me', extraSubscriptions = [] }, fn) {
+async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {}, subscriptionQuery = 'to:me', notificationPolicy = 'immediate', extraSubscriptions = [] }, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-notification-symptom-'))
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
   const now = new Date().toISOString()
   await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
   await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
-  await store.ensureSubscription({ owner: 'fleet:recipient', query: subscriptionQuery, notificationPolicy: 'immediate' })
+  await store.ensureSubscription({ owner: 'fleet:recipient', query: subscriptionQuery, notificationPolicy })
   for (const subscription of extraSubscriptions) {
     await store.ensureSubscription({ owner: 'fleet:recipient', ...subscription })
   }
@@ -197,6 +197,29 @@ test('an immediate personal subscription is not overwritten by a matching batch 
     assert.ok(receivedAt, `notification did not arrive; receipt: ${JSON.stringify(result)}`)
     assert.ok(receivedAt - startedAt < 5000, `notification arrived after ${receivedAt - startedAt}ms`)
     assert.equal(result.receipts[0].delivery, 'notified')
+  })
+})
+
+test('a direct batched subscription crosses the notification channel after its window', async () => {
+  let receivedAt = 0
+  let sentAt = 0
+  await withFleet({
+    notificationPolicy: 'batch(250ms)',
+    responder: (ws, ackId) => {
+      receivedAt = Date.now()
+      ws.send(JSON.stringify({
+        id: 101, type: 'channel-notification-ack', agent: 'fleet:recipient', ack_id: ackId,
+      }))
+    },
+  }, async senderWs => {
+    sentAt = Date.now()
+    await sendChat(senderWs, 22, 'direct-batch-channel-proof')
+    await sleep(100)
+    assert.equal(receivedAt, 0, 'a batched direct message must not wake immediately')
+    const deadline = Date.now() + 10_000
+    while (!receivedAt && Date.now() < deadline) await sleep(25)
+    assert.ok(receivedAt, 'the direct batch must eventually reach the recipient channel')
+    assert.ok(receivedAt - sentAt >= 200, `batch arrived before its window: ${receivedAt - sentAt}ms`)
   })
 })
 
