@@ -184,6 +184,37 @@ unresolved files, or an in-progress merge, the daemon stops and leaves the
 checkout for ordinary Git resolution. The server does not silently overwrite a
 linked local checkout with a browser edit.
 
+### When an edit does not appear
+
+`tlda daemon log` shows the last 50 lines of
+`~/.config/tlda/fleet-daemon<env-suffix>.log`, which is where the sync path
+writes. **It records failures, not successes**, so read it with that in mind: a
+settle that worked writes nothing, and the absence of a line about your project
+is not evidence that nothing happened.
+
+What you will see when something did go wrong, each prefixed with the project
+name:
+
+- `proposal not accepted: <status>` — the submission was refused. `WrongHead`
+  means the server accepted someone else's revision first; `conflict-held` means
+  your checkout and the accepted source changed the same content and both were
+  kept; `merge-in-progress` means Git is mid-merge in your tree and the daemon
+  will not touch it.
+- `not in the revision — tracked, but no document root reaches them: <paths>` —
+  the file is committed but no document includes it, so it is not part of any
+  document. `tlda project add <file>` makes it a document of its own.
+- `<document> references <path>, which is present but untracked` — the file is
+  there but not staged, so it is not in the revision yet. `git add` it.
+- `holding — the accepted source and this checkout both changed <paths>` —
+  resolve it in the checkout with ordinary Git.
+
+A refused settle is also reported to you outside the log, once per distinct
+reason rather than once per attempt, and only when one of your own edits
+triggered it.
+
+For what happened to one particular revision — accepted, queued, built, failed —
+the record is the project's revision history on the server rather than any log.
+
 ### Getting the app's history back into your repository
 
 `tlda project merge` lands the version history tlda accumulated for a project on
