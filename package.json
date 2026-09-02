@@ -10,7 +10,7 @@
     "tlda-fly": "./bin/tlda-fly.mjs"
   },
   "scripts": {
-    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true",
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true; patch-package --error-on-fail",
     "prepare": "vite build && mkdir -p server/public && cp -r dist/* server/public/",
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -100,6 +100,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "marked": "^18.0.5",
+    "patch-package": "^8.0.1",
     "puppeteer-core": "^25.2.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
