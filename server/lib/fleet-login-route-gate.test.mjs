@@ -141,7 +141,6 @@ test('agent login writes the daemon route projection from the login proof', asyn
     last_seen: now,
     metadata: { shell: true },
   })
-  store.updateAgentStatus('fleet:recipient', 'awake', 'thinking', 'review', now)
   store.close()
 
   const port = await unusedPort()
@@ -165,8 +164,6 @@ test('agent login writes the daemon route projection from the login proof', asyn
     assert.equal(result.agent.route_daemon_key, 'mini:testing')
     assert.equal(result.agent.metadata.shell, undefined)
     assert.equal(result.agent.is_manager, true)
-    assert.equal(result.agent.metadata.status.status, 'awake')
-    assert.equal(result.agent.metadata.status.activity, 'thinking')
   } finally {
     ws?.close()
     child.kill('SIGTERM')
@@ -182,7 +179,6 @@ test('agent login writes the daemon route projection from the login proof', asyn
     const agent = await store.getAgent('fleet:recipient')
     assert.equal(agent.metadata.shell, undefined)
     assert.equal(agent.is_manager, true)
-    assert.equal(agent.metadata.status.status, 'awake')
   } finally {
     store.close()
     rmSync(dir, { recursive: true, force: true })

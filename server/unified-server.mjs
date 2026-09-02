@@ -102,7 +102,6 @@ import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-mo
 import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { writeCandidateClip } from './lib/recording-publication.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
-import { reconcileUnroutedNativeDescendantLiveness } from './lib/native-subagent-lifecycle.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -154,7 +153,6 @@ import {
   createAgentLivenessTraceStore,
   recordLivenessProjection,
 } from './lib/agent-liveness-trace.mjs'
-import { applyDaemonAgentStatusBatch, planDaemonAgentStatusBatch } from './lib/daemon-agent-status.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -313,6 +311,15 @@ const fleetStore = new FleetStoreClient(process.env.TLDA_FLEET_DB, {
   taskDocOptions: { projectsDir: PROJECTS_DIR },
 })
 await fleetStore.ready()
+if (process.env.TLDA_TEST_THROW_ON_FULL_ROSTER === '1') {
+  for (const method of ['getAliveAgents', 'getAliveAgentsPage']) {
+    const original = fleetStore[method]?.bind(fleetStore)
+    if (!original) continue
+    fleetStore[method] = async (...args) => {
+      throw new Error(`test full roster call blocked: ${method}`)
+    }
+  }
+}
 const fleetSearchStore = new FleetSearchClient(fleetStore.dbPath)
 await fleetSearchStore.ready()
 const fleetOperationContext = new AsyncLocalStorage()
@@ -449,8 +456,6 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 // Daemon connections — keyed by machine_id:env_name. Each value is the live WS
 // for that daemon config lane. Used for RPC routing and agent updates.
 const daemonConnections = new Map()         // machine_id:env_name -> ws
-const daemonAgentStatusSequences = new Map() // daemon_key\0boot_id -> last accepted complete batch
-const daemonAgentStatusApplyChains = new Map()
 setBuildHeadNotifier(async (project, revision) => {
   await sourceRoomDaemon.headChanged(project, revision)
   const message = JSON.stringify({ type: 'head-changed', project, revision })
@@ -606,17 +611,10 @@ function traceGate1(stage, detail) {
 // or copied route state does not fabricate hibernation.
 const runtimeStatusStore = createAgentRuntimeStatusStore({
   onChange: agentId => {
-    syncRuntimeProjection(agentId).catch(e => console.error(`[runtime-status] projection refresh failed for ${agentId}: ${e?.message || e}`))
     if (typeof broadcastState === 'function') broadcastState(agentId)
   },
 })
 fleetStore.setRuntimeProjector(agent => runtimeStatusStore.project(agent))
-
-async function syncRuntimeProjection(agentId) {
-  const agent = await fleetStore.getAgent(agentId)
-  if (!agent) return
-  await fleetStore.refreshAgentLiveness(agentId, agent.runtime_status)
-}
 
 const humanPresence = createHumanPresenceTracker({
   onEdge: ({ humanId, status, atMs }) => {
@@ -676,60 +674,6 @@ function markAgentNotAlive(agentId, detail = {}) {
   clearSourceEditsForAgent(agentId)
   clearEphemeralState(agentId)
   return durableWrite
-}
-
-// `getAliveAgents` crosses the store worker, so it hands back a Promise. Passing
-// it unawaited made this throw `(agents || []) is not iterable` — after the
-// kill or hibernate had already succeeded, so the caller was told the action
-// failed when it had happened. todd announced seventy false corrections that way
-// on 7/31.
-// A native subagent has no tmux session of its own, so it never appears in a
-// daemon's session inventory and cannot be observed directly. Its liveness is
-// therefore DERIVED from its parent's — which makes it a projection of an
-// authoritative fact, not a fact this server observed.
-//
-// That distinction is why no request handler calls this. `route_present: false`
-// does not prove death; it proves the agent is unroutable, and an operation
-// intending to hibernate or restart a parent is not evidence about anything
-// underneath it. The one caller is the accepted daemon status batch, which is
-// where a parent's liveness is actually established — so every derived row
-// carries that batch's own generation and is traceable to the observation it
-// came from.
-//
-// It takes the whole set of parents the batch reported as not awake, not just
-// the ones that CHANGED, and that is load-bearing rather than tidy. An unrouted
-// descendant is never in a daemon's inventory and never in a complete batch's
-// fill-in, which only covers agents routed to that daemon
-// (`validateDaemonAgentStatusBatch`). So an inherited inconsistency — parent
-// already hibernating, unrouted child still awake — is reached by no transition
-// and would otherwise never be reconciled by anything. Reading every not-awake
-// parent each batch is what closes it, and it costs one alive-set read because
-// the steady-state write set is empty.
-//
-// Each write is awaited: a caller that acknowledges a lifecycle transition must
-// not report success over descendant writes that have not landed.
-async function reconcileUnroutedNativeDescendants(parentAgentIds, detail = {}) {
-  if (!parentAgentIds?.length) return false
-  const alive = await fleetStore.getAliveAgents()
-  return reconcileUnroutedNativeDescendantLiveness({
-    agents: alive,
-    parentAgentIds,
-    livenessFor: descendantId => runtimeStatusStore.evidenceFor(descendantId)?.liveness,
-    writeDurable: ({ descendantId }) => fleetStore.recordRuntimeState(
-      descendantId,
-      { kind: RUNTIME_KIND.AI, status: detail.status || RUNTIME_STATUS.HIBERNATING },
-      Number.isFinite(detail.atMs) ? new Date(detail.atMs).toISOString() : null,
-    ),
-    markRuntime: ({ descendantId, parentAgentId }) => markAgentNotAlive(descendantId, {
-        ...detail,
-        durableRecorded: true,
-        source: detail.source || 'native-parent-not-alive',
-        reason: `native parent ${parentAgentId} is not alive`,
-        liveness_generation: detail.liveness_generation
-          ? { ...detail.liveness_generation, agent_id: parentAgentId }
-          : undefined,
-      }),
-  })
 }
 
 function recordExplicitCheckAliveLiveness(liveness) {
@@ -8587,15 +8531,20 @@ async function dispatchFleetWsMessage(ws, msg) {
       // again at 00:23, tmux session_created never changing, while an agent with
       // a ledger row hibernated correctly in the same sweep.
       //
-      // No runtime status is written here on either branch. An unresolved
-      // terminal is an error. A real kill is published by the daemon's own
-      // inventory, and the native descendants underneath it are projected from
-      // that same authoritative transition — not from this handler, which knows
-      // only that it asked.
+      // A successful explicit hibernate is the operation result. The daemon no
+      // longer publishes a full inventory batch afterward, so this handler writes
+      // the durable runtime transition it just caused.
       if (result?.terminal_unresolved) {
         error(`${seat.daemon_key} has no terminal binding for ${agent.friendly_name || agent.id}; nothing was hibernated`)
         return
       }
+      const atMs = Date.now()
+      await markAgentNotAlive(agent.id, {
+        source: 'hibernate-session',
+        reason: 'explicit hibernate-session completed',
+        atMs,
+        status: RUNTIME_STATUS.HIBERNATING,
+      })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
@@ -9442,7 +9391,7 @@ async function handleDaemonWsMessage(ws, msg) {
       ? Number(process.env.TLDA_TEST_DAEMON_HELLO_DELAY_MS || 0)
       : 0
     if (helloDelayMs > 0) await new Promise(resolve => setTimeout(resolve, helloDelayMs))
-    const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq, connection_attempt_id, capabilities, source_bindings } = msg
+    const { machine_id, env_name, user, hostname, version, boot_id, install_path, connection_attempt_id, capabilities, source_bindings } = msg
     if (!machine_id || !env_name) return
     const daemonKey = daemonAddress(machine_id, env_name)
     // §4b backstop: a daemon address is owned by ONE daemon install. If another
@@ -9491,15 +9440,10 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._hostname = hostname
     ws._version = version
     ws._connectionAttemptId = connection_attempt_id || null
-    ws._agentStatusSeq = Number.isInteger(last_agent_status_seq) ? last_agent_status_seq : 0
     ws._capabilities = {
       terminalInputAllowed: capabilities?.terminalInputAllowed === true,
     }
     daemonConnections.set(daemonKey, ws)
-    const activeStatusGeneration = `${daemonKey}\0${boot_id}`
-    for (const key of daemonAgentStatusSequences.keys()) {
-      if (key.startsWith(`${daemonKey}\0`) && key !== activeStatusGeneration) daemonAgentStatusSequences.delete(key)
-    }
     recordDaemonSourceBindings(daemonKey, source_bindings)
     traceGate1('registry-set', {
       daemon_key: daemonKey,
@@ -9630,108 +9574,6 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'agent-status') {
-    if (!fleetStore) return
-    const generationKey = `${ws._daemonKey}\0${ws._bootId}`
-    await applyDaemonAgentStatusBatch(daemonAgentStatusApplyChains, ws._daemonKey, async () => {
-      const routedAgents = await fleetStore.getAgentsByDaemonKey(ws._daemonKey)
-      const knownAgents = await fleetStore.getAgentsByIds(msg.agents.map(result => result?.agent_id).filter(Boolean))
-      const accepted = planDaemonAgentStatusBatch({
-        message: msg,
-        daemonKey: ws._daemonKey,
-        bootId: ws._bootId,
-        lastSequence: daemonAgentStatusSequences.get(generationKey) || 0,
-        routedAgents,
-        knownAgents,
-        // A dropped row used to drop the whole batch, so its refusal was loud by
-        // construction. Now that valid rows survive it, say which row was refused
-        // -- a cross-daemon identity claim arrives through here.
-        onSkip: result => console.warn(
-          `[fleet] agent-status: skipped row ${result?.agent_id || '<no agent_id>'} from ${ws._daemonKey}`),
-      })
-      if (!accepted) return
-      await fleetStore.admitDaemonAgentStatusIdentities(accepted.admissions, ws._daemonKey)
-      daemonAgentStatusSequences.set(generationKey, accepted.sequence)
-      const ts = msg.ts || new Date().toISOString()
-      const atMs = Date.parse(ts) || Date.now()
-      let projectionChanged = false
-      const notAwakeParentIds = []
-      for (const result of accepted.results) {
-        const agentId = result?.agent_id
-        const status = result?.status
-        if (agentId && status !== 'awake') notAwakeParentIds.push(agentId)
-        const activity = result?.activity || 'unknown'
-        const previous = runtimeStatusStore.evidenceFor(agentId)
-        const previousStatus = previous?.liveness === 'alive'
-          ? 'awake'
-          : previous?.liveness === 'dead' || previous?.liveness === 'wedged' ? 'hibernating' : null
-        const statusChanged = previousStatus !== status
-        const activityChanged = previous?.activity !== activity || (previous?.activity_tool || null) !== (result.tool || null)
-        const generation = {
-          daemon_key: msg.daemon_key,
-          daemon_boot_id: msg.daemon_boot_id,
-          report_seq: msg.report_seq,
-          agent_id: agentId,
-        }
-        if (status === 'awake') {
-          markAgentAlive(agentId, atMs, {
-            source: 'daemon-agent-status',
-            reason: msg.reason,
-            daemon_key: msg.daemon_key,
-            daemon_boot_id: msg.daemon_boot_id,
-            report_seq: msg.report_seq,
-            liveness_generation: generation,
-          })
-        } else if (statusChanged) {
-          await markAgentNotAlive(agentId, {
-            source: 'daemon-agent-status',
-            reason: 'absent from daemon session inventory',
-            atMs,
-            daemon_key: msg.daemon_key,
-            daemon_boot_id: msg.daemon_boot_id,
-            report_seq: msg.report_seq,
-            liveness_generation: generation,
-          })
-          await fleetStore.retirePendingShell?.(agentId)
-        }
-        if (previous?.activity === 'thinking' && activity !== 'thinking') {
-          await emitTurnEnded(agentId, previous.activity_at_ms)
-        }
-        if (activityChanged) runtimeStatusStore.updateActivity(agentId, activity, {
-          tool: result.tool,
-          atMs,
-          generation,
-        })
-        if (statusChanged || activityChanged) {
-          projectionChanged = true
-          await fleetStore.updateAgentStatus?.(agentId, status, activity, result.tool, ts)
-          broadcastEvent('agent-status', { agent: agentId, status, activity, tool: result.tool || null, ts })
-        }
-        if (activityChanged && activity === 'thinking') touchActivity(agentId)
-      }
-      // Once per accepted batch, over every parent this daemon reports as not
-      // awake — including the ones that did not change, which is the only thing
-      // that reconciles a descendant left awake under an already-hibernating
-      // parent. See reconcileUnroutedNativeDescendants.
-      const descendantsChanged = await reconcileUnroutedNativeDescendants(notAwakeParentIds, {
-        source: 'daemon-agent-status',
-        atMs,
-        daemon_key: msg.daemon_key,
-        daemon_boot_id: msg.daemon_boot_id,
-        report_seq: msg.report_seq,
-        liveness_generation: {
-          daemon_key: msg.daemon_key,
-          daemon_boot_id: msg.daemon_boot_id,
-          report_seq: msg.report_seq,
-        },
-      })
-      if (projectionChanged || descendantsChanged) broadcastState()
-    }, () => daemonConnections.get(ws._daemonKey) === ws
-      && ws._daemonKey === msg.daemon_key
-      && ws._bootId === msg.daemon_boot_id)
-    return
-  }
-
   if (type === 'agent-activity') {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
@@ -9769,6 +9611,18 @@ async function handleDaemonWsMessage(ws, msg) {
       agent: agent_id,
       tool,
     })
+    const activityAtMs = Date.parse(msg.ts) || serverReceivedAtMs
+    markAgentAlive(agent_id, activityAtMs, {
+      source: 'daemon-activity-event',
+      reason: 'activity extracted from harness stream',
+      atMs: activityAtMs,
+    })
+    const activityName = tool && !String(tool).startsWith('_') ? 'thinking' : 'unknown'
+    runtimeStatusStore.updateActivity(agent_id, activityName, {
+      tool: tool && !String(tool).startsWith('_') ? tool : null,
+      atMs: activityAtMs,
+    })
+    broadcastEvent('agent-status', { agent: agent_id, status: 'awake', activity: activityName, tool: tool || null, ts: msg.ts || new Date(activityAtMs).toISOString() })
     touchActivity(agent_id)
     if (sourceEditActivity && (msg.status === 'completed' || msg.status === 'error')) return
     if (!shouldStoreDaemonActivity(msg)) return
@@ -9878,43 +9732,6 @@ async function handleDaemonWsMessage(ws, msg) {
       broadcastState([routeAgentId])
     } catch (e) {
       await reportDaemonEventFailure(msg, 'agent-route-write', e)
-      throw e
-    }
-    return
-  }
-
-  // A daemon's whole routing picture in one message, sent once when it starts.
-  //
-  // This replaces a republish of every agent on every roster change and every
-  // reconnect -- 8,532 messages in 5h40m against ~200/day of genuine mints. It
-  // is not only cheaper: a per-agent route can only add, so a route for an agent
-  // that died or moved had nothing that could remove it. A roster is
-  // authoritative, so this is the first thing that can correct the picture
-  // rather than only append to it.
-  //
-  // Replace, not merge. The merge would leave exactly the stale entries the
-  // per-agent scheme already cannot remove, which would make this a volume fix
-  // and nothing else.
-  if (type === 'daemon-roster') {
-    if (!fleetStore) return
-    const rosterDaemonKey = ws._daemonKey || msg.daemon_key
-    if (!rosterDaemonKey) return
-    if (!Array.isArray(msg.agent_ids)) return
-    try {
-      const result = await fleetStore.replaceAgentDaemonRoutes(rosterDaemonKey, msg.agent_ids)
-      // Removals are the part nobody could see before, so say them out loud
-      // rather than leaving the count to be inferred from a roster that changed.
-      if (result?.removed) {
-        console.log(`[daemon-roster] ${rosterDaemonKey}: kept ${result.kept}, removed ${result.removed} stale route(s)`)
-      }
-      recordServerPerfEvent('daemon-roster', {
-        daemon_key: rosterDaemonKey,
-        kept: result?.kept ?? 0,
-        removed: result?.removed ?? 0,
-      })
-      if (msg.agent_ids.length) broadcastState(msg.agent_ids)
-    } catch (e) {
-      await reportDaemonEventFailure(msg, 'daemon-roster-write', e)
       throw e
     }
     return

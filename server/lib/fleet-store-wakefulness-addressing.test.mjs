@@ -98,7 +98,6 @@ test('production-size compound chat routing does not scan the full alive roster'
         last_seen: NOW,
       })
     }
-    store._ensureAgentRegistryLoaded()
     const originalAll = store._aliveAgentRegistry.all
     const originalFullRoster = store._getAliveAgents.all
     let fullRosterScans = 0
@@ -136,7 +135,7 @@ test('durable history does not reanimate worker routing after restart', async ()
 
     store = new FleetStore(dbPath)
     assert.deepEqual(recipients(store, 'awake & riser'), [])
-    assert.deepEqual(recipients(store, 'hibernating & riser'), ['fleet:riser'])
+    assert.deepEqual(recipients(store, 'hibernating & riser'), [])
     store.close?.()
   })
 })

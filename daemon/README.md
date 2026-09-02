@@ -18,9 +18,6 @@ lifecycle, module construction, and RPC/event routing.
   inbox attachment materialization, and playwright orphan cleanup handlers.
 - `prompt-plan.mjs`: permission prompt detection, auto-accept cooldown/sweep
   state, surfaced prompt state, and plan-mode prompt extraction/deduping.
-- `agent-status.mjs`: one session inventory per tick, authoritative status and
-  activity results, armed live-pane classification, terminal attention, and
-  disarm cleanup.
 - `goose-supervisor.mjs`: goose sqlite activity polling, turn-end kick state,
   freeze tracking, and idle/stuck/pending goose nudges.
 - `activity-events.mjs`: Claude JSONL turn parsing, activity noise filtering,

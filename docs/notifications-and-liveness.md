@@ -406,20 +406,19 @@ implementer's to infer.
    hop before the tag: whether the server reached that MCP directly or something
    relayed it.
 
-6. **A reserved shell that never logged in can end up `dead` while its stored
-   metadata still reads `hibernating`.** Observed on that same fixture:
+6. **A reserved shell that never logged in can end up `dead`; status readers must
+   use the runtime projection, not stored status metadata.** Observed on that
+   same fixture:
 
    ```
    dead: true                          runtime_status: dead
-   metadata.shell: true                metadata.status.status: "hibernating"
+   metadata.shell: true
    ```
 
    and the roster answering *"resolves to fleet:82fd355d but has no live roster
    row — known to the store, absent from the registry."* A surface reading the
-   metadata reports it as hibernating; the column and the projection say dead.
-   **Which of those a reader gets depends on which surface they ask**, and that
-   is what makes such a seat a ghost: addressable by name, absent from the
-   registry, and describable two ways.
+   runtime projection reports dead; stored metadata is not a current status
+   source.
 
    **What set `dead` is unknown.** The liveness trace gives only
    `reason: "agent-marked-dead"` — the projection reading a flag already set,
