@@ -838,6 +838,157 @@ const SLIDES_BRIDGE_SCRIPT = `
     return '#fff';
   }
 
+  // ---- deck mode: the external coordinate frame ----------------------------
+  //
+  // In reveal, h/v are navigation structure. Only the current slide has a box,
+  // so nothing is spatially anywhere:
+  //
+  //   reveal  gives  existence + address   (h, v, f)
+  //   tlda    gives  position
+  //
+  // Reveal's scroll view supplies the first half: it wraps every slide in a
+  // generated .scroll-page and gives each a real box. Measured on a 31-slide
+  // deck, stacked vs view=scroll: sections with a real box went 4 -> 31.
+  // It must be requested at INITIALIZE (the URL carries view=scroll); calling
+  // configure({view:'scroll'}) or toggleScrollView() after load sets the config
+  // and does NOT activate it.
+  //
+  // We take only the boxes, never reveal's placement. Every !important rule in
+  // reveal's scroll CSS is on section -- those give the slide its box and its
+  // scale, so we leave them alone. .scroll-page carries none, which is why
+  // positioning the WRAPPERS does not fight anything.
+  //
+  // The rectangles are computed by the parent (src/loaders/deckLayout.ts) and
+  // posted here. This side only applies numbers: one implementation of the
+  // layout rule rather than one on each side of the iframe, and changing the
+  // layout never touches this injected script.
+  var pendingDeckLayout = null;
+  var deckLayoutRetry = null;
+  var deckLayoutStyle = null;
+
+  // The pages reveal actually built, in the order it built them.
+  //
+  // Enumerating .slides section instead is off by the hidden macro-definition
+  // sections Quarto emits: measured on one deck, that gives 33 where reveal
+  // builds 31 .scroll-page wrappers, so every rect after the first hidden
+  // section lands on the wrong slide. The wrappers are what we position, so
+  // they are also what we count -- one list, no correspondence to maintain.
+  function deckPageElements() {
+    return Array.prototype.slice.call(document.querySelectorAll('.scroll-page'));
+  }
+
+  function deckSectionOf(page) {
+    return page.querySelector('section');
+  }
+
+  // The extent is enumerated per slide. Reveal's own getHorizontalSlides() and
+  // getVerticalSlides() disagree with the slides themselves -- measured on one
+  // deck in one call, they answered 2 and 0 against 4 real columns and verticals
+  // to v=20, while getTotalSlides() answered 33 against 31 slides. So they are
+  // not a source of extent here or anywhere.
+  function reportDeckExtent() {
+    if (window.parent === window) return;
+    var pages = deckPageElements();
+    // Nothing to report until reveal has built its pages; the retry below is
+    // what brings us back, the same wait the layout needs.
+    if (!pages.length) return false;
+    var slides = pages.map(function(page, i) {
+      var el = deckSectionOf(page) || page;
+      var at = Reveal.getIndices(el) || {};
+      return { index: i, indexh: at.h || 0, indexv: at.v || 0, id: el.id || '' };
+    });
+    // The authored slide size travels with the extent so the parent can compute
+    // placement from this one message. Threading it through document state
+    // instead would give the layout a second input that can disagree.
+    var config = Reveal.getConfig ? Reveal.getConfig() : {};
+    window.parent.postMessage({
+      type: 'tlda-deck-extent',
+      shapeId: shapeId,
+      slides: slides,
+      width: config.width || 960,
+      height: config.height || 700,
+      scale: Reveal.getScale ? Reveal.getScale() : 1,
+    }, '*');
+  }
+
+  function applyDeckLayout(layout) {
+    if (!layout || !layout.rects || !layout.rects.length) return;
+    pendingDeckLayout = layout;
+
+    // The parent's reply usually arrives BEFORE reveal has finished switching
+    // into scroll view, and the wrappers we position do not exist until it has.
+    // Measured on pic-dev: the extent went out, the layout came back, and every
+    // slide stayed at (0,0) because this returned early and nothing ever ran
+    // again. Storing it and waiting for a caller that never comes is the whole
+    // bug, so the retry is the fix rather than an optimisation.
+    if (!Reveal.isScrollView || !Reveal.isScrollView() || !document.querySelector('.scroll-page')) {
+      if (deckLayoutRetry) clearTimeout(deckLayoutRetry);
+      deckLayoutRetry = setTimeout(function() { applyDeckLayout(pendingDeckLayout); }, 100);
+      return;
+    }
+    if (deckLayoutRetry) { clearTimeout(deckLayoutRetry); deckLayoutRetry = null; }
+
+    var pages = document.querySelectorAll('.scroll-page');
+    if (!pages.length) return;
+
+    if (!deckLayoutStyle) {
+      deckLayoutStyle = document.createElement('style');
+      document.head.appendChild(deckLayoutStyle);
+    }
+    // The strip is laid out in the deck's own coordinate space and the CANVAS
+    // pans across it, so nothing here may scroll: reveal's viewport would
+    // otherwise clip the strip it just laid out.
+    deckLayoutStyle.textContent = [
+      '.reveal-viewport.reveal-scroll{overflow:visible!important}',
+      '.reveal-viewport.reveal-scroll .slides{display:block!important;position:relative!important;width:max-content!important;height:max-content!important}',
+      '.reveal-viewport.reveal-scroll .scroll-page{position:absolute!important;margin:0!important}',
+      // Reveal sizes these from the VIEWPORT, and our viewport is the whole
+      // strip -- measured, each page's inner box came out 31000px tall with the
+      // slide centred 14500px down it, which is why the canvas looked empty.
+      // They belong to the slide's own rect instead.
+      '.reveal-viewport.reveal-scroll .scroll-page-sticky{position:relative!important;height:100%!important;top:auto!important}',
+      // Height pins the box to the slide; overflow must NOT clip it.
+      //
+      // Reveal gives .scroll-page-content overflow:hidden because in its own
+      // scroll view a page is a viewport-sized window. Here the page IS the
+      // slide and the canvas is infinite, so a slide whose content runs long
+      // should spill downward onto empty canvas rather than be cut off.
+      //
+      // Measured: content ending at 1535px inside a 1000px box was clipped at
+      // 1000; with overflow visible it renders in full. Everything else in the
+      // chain -- sticky, section, page -- was already visible, so this one rule
+      // was the whole of it.
+      '.reveal-viewport.reveal-scroll .scroll-page-content{height:100%!important;overflow:visible!important}',
+      // Reveal's scroll-snap markers. They are siblings of the slide inside
+      // .scroll-page, they inherit the strip's height the same way the boxes
+      // above did -- measured at 1290 x 31000, 39 of them -- and being later in
+      // DOM order they paint over the slide and take every pointer. That is
+      // Skip's "browse tool doesn't interact with shit": a real click landed on
+      // .scroll-snap-point and never reached the code cell underneath.
+      //
+      // We drive navigation from the canvas, so reveal's snapping has nothing
+      // to do here. Size them to their page and take them out of hit-testing.
+      '.reveal-viewport.reveal-scroll .scroll-snap-point{height:100%!important;pointer-events:none!important}',
+    ].join('\\n');
+
+    var byIndex = {};
+    for (var i = 0; i < layout.rects.length; i++) byIndex[layout.rects[i].index] = layout.rects[i];
+    for (var p = 0; p < pages.length; p++) {
+      var rect = byIndex[p];
+      if (!rect) continue;
+      pages[p].style.setProperty('left', rect.x + 'px', 'important');
+      pages[p].style.setProperty('top', rect.y + 'px', 'important');
+      pages[p].style.setProperty('width', rect.width + 'px', 'important');
+      pages[p].style.setProperty('height', rect.height + 'px', 'important');
+      // Reveal's own --slide-scale is fitted to the viewport too (measured at 2
+      // against a strip-sized one). The rect IS the authored slide box, so the
+      // slide draws at 1:1 inside it and the CANVAS does the scaling.
+      pages[p].style.setProperty('--slide-width', rect.width + 'px');
+      pages[p].style.setProperty('--slide-height', rect.height + 'px');
+      pages[p].style.setProperty('--slide-scale', '1');
+    }
+  }
+
   function init() {
     if (typeof Reveal === 'undefined' || !Reveal.isReady || !Reveal.isReady()) {
       setTimeout(init, 100);
@@ -852,6 +1003,19 @@ const SLIDES_BRIDGE_SCRIPT = `
     // Legacy per-slide iframes lock to one slide. Deck-mode iframes keep the
     // whole Reveal instance alive and are driven by parent messages.
     if (!deckMode) Reveal.slide(indexh, indexv, 0);
+
+    if (deckMode) {
+      // Reveal builds its .scroll-page wrappers asynchronously, so neither half
+      // can run at init: the extent has nothing to enumerate and the layout has
+      // nothing to position. One retry drives both.
+      (function announceDeck() {
+        if (reportDeckExtent() === false) {
+          setTimeout(announceDeck, 100);
+          return;
+        }
+        applyDeckLayout(pendingDeckLayout);
+      })();
+    }
 
     // Signal parent that this slide is ready to show (triggers fade-in)
     setTimeout(function() {
@@ -1075,6 +1239,12 @@ const SLIDES_BRIDGE_SCRIPT = `
         Reveal.slide(e.data.indexh || 0, e.data.indexv || 0, 0);
         setTimeout(reportFragmentState, 50);
         setTimeout(reportSlideHeight, 50);
+      }
+      if (e.data.type === 'tlda-deck-layout') {
+        // Arrives whenever the parent recomputes placement, including before
+        // Reveal is ready — applyDeckLayout keeps it and the deck-mode branch in
+        // init() replays it, so neither order loses the layout.
+        applyDeckLayout(e.data.layout);
       }
       if (e.data.type === 'tlda-wheel-owner') {
         tldaWheelOwner = e.data.owner === 'clip' ? 'clip' : 'page';

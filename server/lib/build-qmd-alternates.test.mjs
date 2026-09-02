@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
+import { deckPageInfo } from './slides-parser.mjs'
 import { qmdDeckPageInfo, qmdDeclaredOutputFilesForSource, qmdMissingDeclaredOutputFiles, qmdRenderedOutputFilesForSource } from './build-qmd.mjs'
 
 test('a qmd source resolves both declared non-colliding output files', () => {
@@ -42,15 +43,36 @@ format:
   }
 })
 
-test('split deck entries carry the slides variant without changing their source authority', () => {
-  const entries = qmdDeckPageInfo('lectures/Lab1-prose.qmd', [{
-    pageInfo: { file: 'Lab1-prose-slides-slide-0.html', width: 1600, height: 900 },
-  }], 'slides')
+test('the deck entry carries the slides variant without changing its source authority', () => {
+  const entry = qmdDeckPageInfo('lectures/Lab1-prose.qmd', {
+    file: 'Lab1-prose-slides.html',
+    width: 1600,
+    height: 900,
+    slides: [{ index: 0, indexh: 0, indexv: 0 }, { index: 1, indexh: 1, indexv: 0 }],
+  }, 'slides')
 
-  assert.equal(entries[0].variant, 'slides')
-  assert.deepEqual(entries[0].source, {
+  assert.equal(entry.variant, 'slides')
+  assert.deepEqual(entry.source, {
     type: 'project-source',
     format: 'qmd',
     file: 'lectures/Lab1-prose.qmd',
   })
+  // Pairing a deck with its chapter is `variant` + `group`, and neither has ever
+  // keyed on how many entries the deck produced. One entry pairs as 31 did.
+  assert.equal(entry.group, 'lectures/Lab1-prose.qmd')
+  assert.equal(entry.slides.length, 2)
+})
+
+test('a deck is one document, not one per slide', () => {
+  const deck = deckPageInfo(`<div class="slides">
+    <section class="slide level2"><h2>One</h2></section>
+    <section><section class="slide level2"><h2>Two</h2></section>
+    <section class="slide level2"><h2>Three</h2></section></section>
+  </div>`, 'deck.html')
+
+  assert.equal(deck.file, 'deck.html')
+  assert.equal(deck.slides.length, 3)
+  // Verticals live under their own column: the address is 2D and the layout
+  // reads it rather than reading document order.
+  assert.deepEqual(deck.slides.map(s => [s.indexh, s.indexv]), [[0, 0], [1, 0], [1, 1]])
 })

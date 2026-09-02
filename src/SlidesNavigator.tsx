@@ -25,8 +25,38 @@ interface SlidesNavigatorProps {
 const fragmentState = new Map<string, { total: number; current: number }>()
 
 /** Navigate camera to center on a specific slide */
+/**
+ * A deck is ONE page shape carrying every slide, so a slide is an address in it
+ * rather than a page of its own. `deckLayout` holds the rect per address; the
+ * old per-page path stays for anything that still arrives as separate pages.
+ */
+function slideBoxes(document: SvgDocument) {
+  const deck = document.deckLayout?.rects
+  const base = document.pages[0]
+  if (deck?.length && base) {
+    return deck.map(r => ({
+      x: base.bounds.x + r.x,
+      y: base.bounds.y + r.y,
+      width: r.width,
+      height: r.height,
+      shapeId: base.shapeId,
+      indexh: r.indexh,
+      indexv: r.indexv,
+    }))
+  }
+  return document.pages.map(page => ({
+    x: page.bounds.x,
+    y: page.bounds.y,
+    width: page.width,
+    height: page.height,
+    shapeId: page.shapeId,
+    indexh: undefined as number | undefined,
+    indexv: undefined as number | undefined,
+  }))
+}
+
 function navigateToSlide(editor: Editor, document: SvgDocument, index: number, animate = true) {
-  const page = document.pages[index]
+  const page = slideBoxes(document)[index]
   if (!page) return
   const vp = editor.getViewportScreenBounds()
   // Keep the whole slide visible and centered. Width-only fitting clips decks
@@ -34,9 +64,16 @@ function navigateToSlide(editor: Editor, document: SvgDocument, index: number, a
   // makes adjacent slides appear to jump between centered and cut off.
   const z = Math.min(1, vp.width / page.width, vp.height / page.height)
   const target = {
-    x: -page.bounds.x + (vp.width / z - page.width) / 2,
-    y: -page.bounds.y + (vp.height / z - page.height) / 2,
+    x: -page.x + (vp.width / z - page.width) / 2,
+    y: -page.y + (vp.height / z - page.height) / 2,
     z,
+  }
+  // Keep reveal's own address in step, so fragments and anything reading
+  // getIndices() answer for the slide the camera is actually on.
+  if (page.indexh !== undefined) {
+    slideIframe(page.shapeId)?.contentWindow?.postMessage(
+      { type: 'tlda-slide-goto', indexh: page.indexh, indexv: page.indexv ?? 0 }, '*',
+    )
   }
   if (animate) {
     editor.setCamera(target, { animation: { duration: 350 } })
@@ -97,7 +134,7 @@ function reconcileFragment(shapeId: string, targetCurrent: number): boolean {
 export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   const [currentSlide, setCurrentSlide] = useState(0)
   const [fragmentInfo, setFragmentInfo] = useState<{ current: number; total: number } | null>(null)
-  const totalSlides = document.pages.length
+  const totalSlides = document.deckLayout?.rects?.length || document.pages.length
   const pendingRemoteFragmentsRef = useRef(new Map<string, number>())
   const applyingRemoteFragmentRef = useRef(false)
   const applyingRemoteSlideRef = useRef(false)
@@ -165,7 +202,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     const clamped = Math.max(0, Math.min(index, totalSlides - 1))
     setCurrentSlide(clamped)
     navigateToSlide(editor, document, clamped, animate)
-    const page = document.pages[clamped]
+    const page = slideBoxes(document)[clamped]
     setFragmentInfo(page ? fragmentState.get(page.shapeId) ?? null : null)
     const shapeId = getDeckSyncShapeId(document)
     if (!applyingRemoteSlideRef.current && shapeId && getRole() === 'presenter') {
@@ -196,7 +233,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   }, [currentSlide, goToSlide])
 
   const handleNext = useCallback(() => {
-    const shapeId = document.pages[currentSlide]?.shapeId
+    const shapeId = slideBoxes(document)[currentSlide]?.shapeId
     if (!shapeId) return
     // Try advancing fragment first
     const fs = fragmentState.get(shapeId)
@@ -211,7 +248,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   }, [currentSlide, totalSlides, document, goToSlide])
 
   const handlePrev = useCallback(() => {
-    const shapeId = document.pages[currentSlide]?.shapeId
+    const shapeId = slideBoxes(document)[currentSlide]?.shapeId
     if (!shapeId) return
     // Try going back a fragment first
     const fs = fragmentState.get(shapeId)
@@ -238,11 +275,24 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault()
         handlePrev()
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        // A deck's address is 2D: horizontals across, verticals down under
+        // their own column. Left/right walks the deck in reading order; up/down
+        // moves within the column, which is the axis his 21-deep section needs.
+        const boxes = slideBoxes(document)
+        const here = boxes[currentSlide]
+        if (!here || here.indexh === undefined) return
+        e.preventDefault()
+        const step = e.key === 'ArrowDown' ? 1 : -1
+        const target = boxes.findIndex(
+          b => b.indexh === here.indexh && b.indexv === (here.indexv ?? 0) + step,
+        )
+        if (target >= 0) goToSlide(target)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [handleNext, handlePrev])
+  }, [handleNext, handlePrev, document, currentSlide, goToSlide])
 
   const containerStyle: React.CSSProperties = {
     position: 'fixed',
