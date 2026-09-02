@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { shouldDeliverChannelTurn } from '../mcp-server/fleet-tools.mjs'
+import { normalizeChannelMessageEnvelope, shouldDeliverChannelTurn } from '../mcp-server/fleet-tools.mjs'
 
 test('direct chat and delegate events create a channel turn', () => {
   assert.equal(shouldDeliverChannelTurn({ eventType: 'chat', isDirectTarget: true }), true)
@@ -73,6 +73,14 @@ test('an observer gets a channel turn for traffic between two other parties', ()
     isDirectTarget: false,
     isWiretapTarget: true,
   }), true)
+})
+
+test('the channel handler unwraps live subscription filter events', () => {
+  const event = { id: 3647679, type: 'chat', metadata: { wiretap_cc: ['fleet:observer'] } }
+  assert.deepEqual(normalizeChannelMessageEnvelope({
+    event: 'filter-event',
+    data: { subId: 97020, event },
+  }), { event: 'fleet-event', data: event })
 })
 
 test('an observer is still refused the turns a direct target is refused', () => {
