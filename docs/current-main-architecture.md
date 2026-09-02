@@ -117,6 +117,59 @@ unresolved files from `git diff --name-only --diff-filter=U`, or an existing
 The server does not silently overwrite a linked local checkout with a browser
 edit.
 
+### What the sync path currently logs
+
+Read from the code and quoted as it is written, 2026-09-02. **The sync path logs
+failures and is silent on success**, so the log answers "did something go wrong"
+and does not answer "did my edit get picked up".
+
+The daemon writes to `~/.config/tlda/fleet-daemon<env-suffix>.log`, which
+`tlda daemon log` tails. (`tlda logs` is listed in `TOP_LEVEL_COMMANDS` and has
+no case in the dispatch switch, so it falls through to the general help — it
+reads nothing.) On the settle path the daemon emits, all prefixed with the
+project name:
+
+| line | level | when |
+| --- | --- | --- |
+| `proposal not accepted: <status>` | warn | `settle()` returned `ok: false` — `WrongHead`, `conflict-held`, `merge-in-progress`, `empty-checkout` |
+| `proposal failed: <message>` | warn | `settle()` threw |
+| `holding — the accepted source and this checkout both changed <paths>` | warn | the local revision and the accepted head conflict; both sides are kept |
+| `not in the revision — tracked, but no document root reaches them: <paths>` | warn | a tracked file no root's closure includes |
+| `<root> references <path>, which is present but untracked — it joins the revision once it is staged` | info | a closure member that is in the tree but not in the index |
+| `<root> references <path>, which is not in the project — leaving it out of the revision` | info | a closure member that is not there at all |
+| `announced <a>, fetched <b>` | info | the fetched revision is not the announced one |
+| `this checkout has a branch named "tlda", which blocks the branch tlda/<project>` | warn | the work branch cannot be created |
+| `could not adopt the work branch <ref>: <message>` | warn | the branch move failed |
+| `source watcher failed` / `remote Git poll failed` | warn | the watcher or the remote bridge errored |
+
+**A settle that works writes no line at all.** `settleEditCluster` in
+`git-sync-manager.mjs` is the one settle path — the watcher reaches it through
+the debouncer and the startup sweep reaches it directly — and on `result.ok` it
+clears its dedup marker and reports dropped documents without logging. So a
+successful submission is visible in the refs and in the server's record, and
+nowhere in the daemon log.
+
+A refusal is also reported off the machine, through `onSyncRefused`, but only
+under two conditions that are easy to mistake for the report being broken: it is
+**deduplicated** on `status`/`head`/`reason`, so a project refusing on every
+settle reports once; and it fires **only when a person's edit triggered the
+settle**, never from the startup sweep, because a binding parked on the wrong
+branch with nobody editing is an inventory question rather than lost work. That
+narrowing is deliberate — reporting from the sweep put 42 messages in one chat in
+90 seconds.
+
+Server-side, build output is relayed to the server process log as
+`[build:<project>] <line>`, and the browser-editor leg logs under
+`[source-room] <project>`, again on failure paths. **The durable per-revision
+record is not a log**: `recordRevisionPhase` writes each revision's phases and
+states into the project's `.source-lifecycle` store, which is what
+`projectRevisionStatus` reads. A question about what happened to one revision is
+answered from there, not from the log.
+
+**Not established here:** whether the revision the viewer actually served is
+recorded anywhere. It is not in the lines above, and this section does not claim
+either way.
+
 `tlda project remote add`, `delete`, `pull`, `push`, and `checkout` are literal
 Git remote operations from the daemon checkout. `add` runs `git remote add`;
 `pull` fetches the named branch into `refs/remotes/<remote>/<branch>` and merges
