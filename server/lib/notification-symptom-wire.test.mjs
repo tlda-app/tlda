@@ -98,7 +98,7 @@ async function waitForSymptom(rpcs) {
 }
 
 // `recipient` decides whether the agent has an MCP socket and what it does.
-async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {}, subscriptionQuery = 'to:me', notificationPolicy = 'immediate', extraSubscriptions = [] }, fn) {
+async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {}, onRecipientFrame = () => {}, subscriptionQuery = 'to:me', notificationPolicy = 'immediate', extraSubscriptions = [] }, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-notification-symptom-'))
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
@@ -144,6 +144,7 @@ async function withFleet({ withRecipientSocket = true, loginKind = 'claude', res
       })
       recipientWs.on('message', raw => {
         const frame = JSON.parse(String(raw))
+        onRecipientFrame(frame)
         const ackId = frame.data?.metadata?.wake_ack_id
         if (frame.event !== 'channel-notification' || !ackId) return
         responder(recipientWs, ackId)
@@ -178,6 +179,24 @@ test('a persisted between-thread subscription crosses the notification channel',
     const deadline = Date.now() + 10_000
     while (!received && Date.now() < deadline) await sleep(25)
     assert.equal(received, true)
+  })
+})
+
+test('a claimed MCP socket receives events matched by its persisted observer subscription', async () => {
+  let observed = null
+  await withFleet({
+    subscriptionQuery: 'fleet:sender <> fleet:target',
+    onRecipientFrame: frame => {
+      if (frame.event === 'fleet-event' && frame.data?.type === 'chat') observed = frame
+    },
+  }, async senderWs => {
+    await request(senderWs, 'observer-chat', 'chat', {
+      from: 'fleet:sender', to: 'fleet:target', message: 'observer stream proof', _tempId: 'observer-stream-proof',
+    })
+    const deadline = Date.now() + 10_000
+    while (!observed && Date.now() < deadline) await sleep(25)
+    assert.ok(observed, 'persisted observer subscription did not reach the claimed MCP socket')
+    assert.deepEqual(observed.data.metadata.wiretap_cc, ['fleet:recipient'])
   })
 })
 
@@ -226,8 +245,12 @@ test('a direct batched subscription crosses the notification channel after its w
 })
 
 test('an observer batch records its due time without reserving undrainable timer state', async () => {
+  let observed = false
   await withFleet({
     extraSubscriptions: [{ query: 'fleet:sender <> fleet:target', notificationPolicy: 'batch(250ms)' }],
+    onRecipientFrame: frame => {
+      if (frame.event === 'fleet-event' && frame.data?.type === 'chat') observed = true
+    },
   }, async senderWs => {
     const sent = await request(senderWs, 23, 'chat', {
       from: 'fleet:sender',
@@ -242,6 +265,8 @@ test('an observer batch records its due time without reserving undrainable timer
     assert.equal(deliveries[0].delivery, 'batched')
     assert.ok(deliveries[0].notifyBy, 'the observer delivery still records when its batch becomes due')
     assert.equal(deliveries[0].batch_key, undefined, 'observer-only delivery must not reserve timer state that nothing drains')
+    await sleep(300)
+    assert.equal(observed, false, 'a batched observer subscription must not notify immediately')
   })
 })
 

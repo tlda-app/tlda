@@ -1654,6 +1654,17 @@ function broadcastEvent(type, data, options = {}) {
   }
   if (type === 'fleet-event') {
     if (isChatHistoryEventType(data?.type)) void pushFilteredEvent(data, { updateOnly: !!options.updateOnly })
+    const directRecipients = new Set(data?.recipients || [])
+    const immediateObservers = new Set((data?.metadata?.subscription_deliveries || [])
+      .filter(delivery => delivery.delivery === 'notified')
+      .map(delivery => delivery.recipient))
+    for (const observerId of immediateObservers) {
+      if (directRecipients.has(observerId)) continue
+      const ws = agentFleetConnections.get(observerId)
+      try {
+        if (ws?.readyState === 1) ws.send(JSON.stringify({ event: 'fleet-event', data }))
+      } catch { /* the socket's own close path cleans up */ }
+    }
     return
   }
   broadcastFleet({ event: type, data })
