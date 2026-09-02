@@ -13,48 +13,18 @@ import { createTLStore, loadSnapshot } from 'tldraw'
 import type { TLAnyShapeUtilConstructor, TLStore, TLShapeId } from 'tldraw'
 import type { RecordingMeta, RecordingEvent } from './recorder'
 import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
-import { isClassroomSurface } from '../classroom/classroomSurface'
 
-/** Where the transport sits: gone, revealed on hover, or always on screen. */
-export type TimeControlsMode = 'off' | 'auto-hide' | 'pinned'
-
-const TIME_CONTROLS_MODES: TimeControlsMode[] = ['off', 'auto-hide', 'pinned']
-
-/**
- * The default the shape starts at when nobody has chosen.
- *
- * This is where `RecordingsButton`'s classroom gate went. That gate decided
- * whether playback existed at all, which is why a doc-view outside a classroom
- * could not reach a recording by any route. Here it decides only whether the
- * transport is *showing*: the body is spacetime-capable everywhere, and setting
- * this to `auto-hide` or `pinned` on any doc-view gets you the controls.
- */
-export function defaultTimeControlsMode(): TimeControlsMode {
-  return isClassroomSurface() ? 'pinned' : 'off'
-}
-
-export function timeControlsMode(stored: string | undefined): TimeControlsMode {
-  return TIME_CONTROLS_MODES.includes(stored as TimeControlsMode)
-    ? (stored as TimeControlsMode)
-    : defaultTimeControlsMode()
-}
-
-export function formatTimecode(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
-}
-
-/** A recording id as stored on the shape carries the draft flag in a prefix. */
-export function parseRecordingRef(ref: string | undefined): { id: string; privateDraft: boolean } | null {
-  if (!ref) return null
-  return ref.startsWith('draft:')
-    ? { id: ref.slice(6), privateDraft: true }
-    : { id: ref, privateDraft: false }
-}
-
-export function recordingRef(id: string, privateDraft: boolean | undefined): string {
-  return privateDraft ? `draft:${id}` : id
-}
+// The time-control states and the recording-ref encoding live in
+// `timeControls.ts` — pure, and importable without tldraw so they can be
+// exercised rather than read. Re-exported so callers keep one import surface.
+export {
+  defaultTimeControlsMode,
+  formatTimecode,
+  parseRecordingRef,
+  recordingRef,
+  timeControlsMode,
+  type TimeControlsMode,
+} from './timeControls'
 
 function recordingShapeIds(events: RecordingEvent[]): Set<string> {
   const ids = new Set<string>()
