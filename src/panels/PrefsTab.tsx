@@ -307,7 +307,6 @@ function readAll() {
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
     semanticOperationPageSize: getPref('semantic-operation-page-size'),
-    documentStingyMode: getPref('document-stingy-mode'),
     hlZone: getPref('hl-zone-enabled'),
     provenanceMode: getPref('provenance-display-mode'),
     selfCheckEnabled: getPref('todd-self-check-auto-enabled'),
@@ -560,13 +559,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             <span className="prefs-num-label">ToC hover region</span>
             <ZoneWidthThumbControl className="prefs-zone-width-slider" />
           </div>
-        </PrefSubsection>
-
-        <PrefSubsection title="Doc viewer">
-          <label className="prefs-check">
-            <input type="checkbox" checked={prefs.documentStingyMode} onChange={e => setPref('document-stingy-mode', e.target.checked)} />
-            <span>Stingy mode</span>
-          </label>
         </PrefSubsection>
 
         <PrefSubsection title="Ribbon provenance">

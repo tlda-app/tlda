@@ -281,7 +281,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
       | { type?: string; props?: { commitHash?: unknown } }
       | undefined
     const builtHash = sentinel?.type === 'doc-version' && typeof sentinel.props?.commitHash === 'string'
-      ? sentinel.props.commitHash
+      ? sentinel.props.commitHash.slice(0, 7)
       : undefined
     fetchCachedSvgPage(url, builtHash, { signal: controller.signal }).then(newText => {
       if (newText === null) return

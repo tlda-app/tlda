@@ -28,6 +28,8 @@ import { navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripT
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { viewFormat } from '../../shared/document-formats.mjs'
 import { classroomApi } from '../classroom/api'
+import { cacheProjectsForOffline, type OfflineProgress, type OfflineProject } from '../airplaneMode'
+import type { AirplaneState } from '../BookContext'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -92,6 +94,9 @@ export function TocTab({ query = '' }: { query?: string }) {
   const [collapsed, setCollapsed] = useState<Set<number> | null>(null)
   const [reloadCount, setReloadCount] = useState(0)
   const [tocLoaded, setTocLoaded] = useState(false)
+  const [localAirplaneState, setLocalAirplaneState] = useState<AirplaneState>('off')
+  const [localAirplaneProgress, setLocalAirplaneProgress] = useState<OfflineProgress>({ complete: 0, total: 0 })
+  const [localAirplaneError, setLocalAirplaneError] = useState('')
 
   // Hot session: most recently pushed book member (must be before any early returns)
   const book = useBook()
@@ -117,6 +122,46 @@ export function TocTab({ query = '' }: { query?: string }) {
   // Which member is being read. The book's table of contents does not change
   // when it changes; which chapter is open does.
   const activeMemberKey = book?.members[book.activeIndex]?.key
+  const airplaneState = book?.airplaneState ?? localAirplaneState
+  const airplaneProgress = book?.airplaneProgress ?? localAirplaneProgress
+  const airplaneError = book?.airplaneError ?? localAirplaneError
+
+  const offlineProjects = useMemo<OfflineProject[]>(() => {
+    if (book) return book.members.map(member => ({
+      projectName: member.key,
+      basePath: member.basePath,
+      format: member.renderedFormat || member.format,
+      pages: member.pages,
+    }))
+    if (!doc) return []
+    return [{
+      projectName: doc.projectName,
+      basePath: `/docs/${encodeURIComponent(doc.projectName)}/`,
+      format: doc.format,
+      pages: doc.pages.length,
+      targets: doc.targets,
+    }]
+  }, [book, doc])
+
+  const toggleAirplaneMode = useCallback(() => {
+    if (book) {
+      book.toggleAirplaneMode()
+      return
+    }
+    if (airplaneState === 'loading') return
+    if (airplaneState === 'ready') {
+      setLocalAirplaneState('off')
+      return
+    }
+    setLocalAirplaneState('loading')
+    setLocalAirplaneError('')
+    void cacheProjectsForOffline(offlineProjects, setLocalAirplaneProgress)
+      .then(() => setLocalAirplaneState('ready'))
+      .catch(error => {
+        setLocalAirplaneError(error instanceof Error ? error.message : String(error))
+        setLocalAirplaneState('error')
+      })
+  }, [book, airplaneState, offlineProjects])
 
   // Which documents of this course are homework. Asked of the classroom store,
   // which is the only thing that knows: an assignment names the documents it is
@@ -582,6 +627,17 @@ export function TocTab({ query = '' }: { query?: string }) {
         </div>
       )}
       <div className="toc-bottom-controls">
+        <button
+          className={`toc-diff-hint toc-state-control${airplaneState === 'ready' ? ' toc-state-control--active' : ''}${airplaneState === 'error' ? ' toc-state-control--error' : ''}`}
+          type="button"
+          onClick={toggleAirplaneMode}
+          disabled={airplaneState === 'loading' || offlineProjects.length === 0}
+          title={airplaneError || (airplaneState === 'ready' ? 'Turn Airplane mode off' : 'Cache this project for offline reading')}
+          aria-pressed={airplaneState === 'ready'}
+        >
+          <AirplaneIcon />
+          <span>{airplaneState === 'loading' ? `Caching ${airplaneProgress.complete}/${airplaneProgress.total}` : airplaneState === 'ready' ? 'Ready offline' : airplaneState === 'error' ? 'Offline failed' : 'Airplane mode'}</span>
+        </button>
         {ctx?.onToggleWholeDocumentDiff && (
           <button
             className={`toc-diff-hint history-compare-btn${ctx.wholeDocumentDiffVisible ? ' active' : ''}`}
@@ -643,13 +699,15 @@ export function CameraLinkToggle() {
   const linked = useSyncExternalStore(subscribeCameraLinked, getCameraLinked)
   return (
     <button
-      className={`toc-diff-hint toc-live-glyph${linked ? ' toc-live-glyph--active' : ''}`}
+      className={`toc-diff-hint toc-state-control${linked ? ' toc-state-control--active' : ''}`}
       type="button"
       onClick={toggleCameraLinked}
       title={linked ? 'Stop sharing your viewport' : 'Share what you are looking at'}
       aria-label={linked ? 'Stop sharing your viewport' : 'Share what you are looking at'}
+      aria-pressed={linked}
     >
       <GlassesIcon />
+      <span>{linked ? 'Cameras linked' : 'Link cameras'}</span>
     </button>
   )
 }
@@ -718,16 +776,17 @@ export function JoinVoiceVideoToggle() {
     return (
       <>
         <button
-          className="toc-diff-hint toc-live-glyph"
+          className="toc-diff-hint toc-state-control"
           type="button"
           onClick={toggleLiveSession}
           title="Join the live voice room for this paper"
           aria-label="Join the live voice room for this paper"
         >
           <WhisperIcon />
+          <span>Voice unavailable</span>
         </button>
         <button
-          className="toc-diff-hint toc-live-glyph"
+          className="toc-diff-hint toc-state-control"
           type="button"
           style={{ cursor: 'default' }}
           onPointerDown={onVideoPointerDown}
@@ -738,6 +797,7 @@ export function JoinVoiceVideoToggle() {
           aria-label="Video chat is not configured on this server; drag to place video"
         >
           <VideoCameraIcon />
+          <span>Video unavailable</span>
         </button>
       </>
     )
@@ -746,16 +806,18 @@ export function JoinVoiceVideoToggle() {
   return (
     <>
       <button
-        className={`toc-diff-hint toc-live-glyph${s.intent && !s.muteIntent ? ' toc-live-glyph--active' : ''}`}
+        className={`toc-diff-hint toc-state-control${s.intent && !s.muteIntent ? ' toc-state-control--active' : ''}`}
         type="button"
         onClick={s.intent ? toggleMute : toggleLiveSession}
         title={!s.intent ? 'Join the live voice room' : s.micOn ? 'Mute your voice' : 'Unmute your voice'}
         aria-label={!s.intent ? 'Join the live voice room' : s.micOn ? 'Mute your voice' : 'Unmute your voice'}
+        aria-pressed={s.intent && !s.muteIntent}
       >
         <WhisperIcon />
+        <span>{s.intent && !s.muteIntent ? 'Voice on' : 'Voice off'}</span>
       </button>
       <button
-        className={`toc-diff-hint toc-live-glyph${s.cameraIntent || s.cameraOn ? ' toc-live-glyph--active' : ''}`}
+        className={`toc-diff-hint toc-state-control${s.cameraIntent || s.cameraOn ? ' toc-state-control--active' : ''}`}
         type="button"
         onClick={() => {
           if (suppressVideoClickRef.current) {
@@ -771,8 +833,10 @@ export function JoinVoiceVideoToggle() {
         onPointerCancel={clearVideoDrag}
         title={s.cameraIntent || s.cameraOn ? 'Turn camera off; drag to place video' : 'Turn camera on; drag to place video'}
         aria-label={s.cameraIntent || s.cameraOn ? 'Turn camera off; drag to place video' : 'Turn camera on; drag to place video'}
+        aria-pressed={s.cameraIntent || s.cameraOn}
       >
         <VideoCameraIcon />
+        <span>{s.cameraIntent || s.cameraOn ? 'Video on' : 'Video off'}</span>
       </button>
     </>
   )
@@ -787,6 +851,16 @@ function GlassesIcon() {
         <path d="M12 14h0" />
         <path d="M4.2 13.1 3 9.5" />
         <path d="m19.8 13.1 1.2-3.6" />
+      </svg>
+    </span>
+  )
+}
+
+function AirplaneIcon() {
+  return (
+    <span className="toc-live-glyph-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="m2 16 8-4V5.5a2 2 0 0 1 4 0V12l8 4v2l-8-2.5V20l2 1.5V23l-4-1-4 1v-1.5l2-1.5v-4.5L2 18z" />
       </svg>
     </span>
   )
