@@ -392,6 +392,7 @@ export class FleetStore {
     // has to run on the thread that owns the connection.
     this._serverDaemonOutbox = readonly ? null : new ServerDaemonOutbox(this.db);
     this._closed = false;
+    this._runtimeStatusByAgent = new Map();
     if (!readonly) this._initAgentRegistry();
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
@@ -2533,13 +2534,50 @@ export class FleetStore {
 
   resolveChatRecipients(filterAst, { from = null, filter = '', runtimeProjections = {} } = {}) {
     this._ensureAgentRegistryLoaded();
-    const projectedAgents = this._aliveAgentRegistry.all().map(agent => ({
-      ...agent,
-      runtime_status: runtimeProjections[agent.id] || agent.runtime_status || null,
-    }));
+    const indexedCandidates = (ast) => {
+      const projectedRuntimeLabels = new Set(
+        Object.entries(runtimeProjections || {})
+          .filter(([, runtime]) => runtime?.status)
+          .map(([, runtime]) => runtime.status)
+      )
+      const fromLabel = (label) => {
+        if (projectedRuntimeLabels.has(label)) return null
+        return new Map(this._aliveAgentByLabel.get(label).map(agent => [agent.id, agent]))
+      }
+      const intersect = (a, b) => {
+        if (!a) return b
+        if (!b) return a
+        const out = new Map()
+        const [small, large] = a.size <= b.size ? [a, b] : [b, a]
+        for (const [id, agent] of small) if (large.has(id)) out.set(id, agent)
+        return out
+      }
+      const union = (a, b) => {
+        if (!a || !b) return null
+        return new Map([...a, ...b])
+      }
+      const walk = (node) => {
+        if (!node) return null
+        switch (node.t) {
+          case 'lit': return fromLabel(node.v)
+          case 'not': return null
+          case 'and': return intersect(walk(node.l), walk(node.r))
+          case 'or': return union(walk(node.l), walk(node.r))
+          default: return null
+        }
+      }
+      return walk(ast)
+    }
     const literal = astLiteral(filterAst);
     if (literal) {
-      const found = new Map(projectedAgents
+      const literalCandidates = Object.keys(runtimeProjections || {}).length > 0 && PSEUDO_LABELS.includes(literal)
+        ? this._aliveAgentRegistry.all()
+        : this._aliveAgentByLabel.get(literal)
+      const found = new Map(literalCandidates
+        .map(agent => ({
+          ...agent,
+          runtime_status: runtimeProjections[agent.id] || agent.runtime_status || null,
+        }))
         .filter(agent => labelsForAgent(agent).includes(literal))
         .map(agent => [agent.id, agent]));
       // Addressing one agent by name or id, and the registries have nothing.
@@ -2568,7 +2606,14 @@ export class FleetStore {
         .map(a => a.id);
     }
 
-    return projectedAgents
+    const indexed = indexedCandidates(filterAst)
+    const candidates = indexed ? [...indexed.values()] : this._aliveAgentRegistry.all()
+
+    return candidates
+      .map(agent => ({
+        ...agent,
+        runtime_status: runtimeProjections[agent.id] || agent.runtime_status || null,
+      }))
       .filter(agent => agent.id !== from && evalExpr(filterAst, labelsForAgent(agent)))
       .sort(compareAgentsForRoster)
       .map(agent => agent.id);
@@ -3348,6 +3393,12 @@ export class FleetStore {
     // which is why `awake & <name>` found nobody and roster found sixteen.
     if (changed) this._syncAgentRegistry(id);
     return changed;
+  }
+
+  refreshAgentLiveness(id, runtimeStatus = null) {
+    if (runtimeStatus) this._runtimeStatusByAgent.set(id, runtimeStatus);
+    else this._runtimeStatusByAgent.delete(id);
+    this._syncAgentRegistry(id);
   }
 
   /**
@@ -4396,9 +4447,9 @@ export class FleetStore {
       // authority says; the main thread applies the daemon check.
       route_present: !!row.route_present,
       route_daemon_key: row.route_daemon_key || null,
-      runtime_status: row.dead && !row.human
+      runtime_status: this._runtimeStatusByAgent?.get(row.id) || (row.dead && !row.human
         ? runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.DEAD)
-        : null,
+        : null),
     }
     return baseAgent;
   }

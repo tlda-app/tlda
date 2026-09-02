@@ -85,6 +85,48 @@ test('waking an agent changes who awake addresses, without a restart', async () 
   })
 })
 
+test('production-size compound chat routing does not scan the full alive roster', async () => {
+  await withStore(async dbPath => {
+    const store = new FleetStore(dbPath)
+    store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: NOW, last_seen: NOW })
+    for (let i = 0; i < 1200; i++) {
+      store.upsertAgent({
+        id: `fleet:agent-${i}`,
+        friendly_name: `agent-${i}`,
+        labels: i === 777 ? ['room', 'target-777'] : ['room'],
+        registered_at: NOW,
+        last_seen: NOW,
+      })
+    }
+    store._ensureAgentRegistryLoaded()
+    const originalAll = store._aliveAgentRegistry.all
+    const originalFullRoster = store._getAliveAgents.all
+    let fullRosterScans = 0
+    store._aliveAgentRegistry.all = () => {
+      fullRosterScans++
+      throw new Error('full alive roster scan')
+    }
+    store._getAliveAgents.all = () => {
+      fullRosterScans++
+      throw new Error('full alive roster SQL')
+    }
+    try {
+      assert.deepEqual(
+        store.resolveChatRecipients(parseFilter('room & target-777'), {
+          from: 'fleet:sender',
+          filter: 'room & target-777',
+        }),
+        ['fleet:agent-777'],
+      )
+      assert.equal(fullRosterScans, 0)
+    } finally {
+      store._aliveAgentRegistry.all = originalAll
+      store._getAliveAgents.all = originalFullRoster
+      store.close?.()
+    }
+  })
+})
+
 test('durable history does not reanimate worker routing after restart', async () => {
   await withStore(async dbPath => {
     let store = new FleetStore(dbPath)
