@@ -6,7 +6,7 @@
 // writes the new one. So a delegate event's text is the title as of just before
 // that hand-off, and the first delegate event carries the title the task was
 // created with.
-import { WebSocket } from 'ws'
+import { ResilientWS, startWsRequest } from '../shared/fleet-transport.mjs'
 import crypto from 'node:crypto'
 
 const SERVER = process.env.TLDA_SERVER || 'https://tlda-fly.cormorant-matrix.ts.net'
@@ -14,30 +14,34 @@ const AGENT = process.env.FLEET_ID || 'fleet:8d2f3d14'
 const WS_URL = `${SERVER.replace(/^http/, 'ws')}/ws/fleet?agent=${encodeURIComponent(AGENT)}`
 
 function connect() {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(WS_URL)
+  return new Promise(resolve => {
     const pending = new Map()
-    ws.on('open', () => resolve({
-      request(type, params = {}) {
-        const id = crypto.randomUUID()
-        return new Promise((res, rej) => {
-          pending.set(id, { res, rej })
-          setTimeout(() => { if (pending.delete(id)) rej(new Error(`timeout ${type}`)) }, 30000)
-          ws.send(JSON.stringify({ type, ...params, id }))
-        })
+    const rws = new ResilientWS({
+      url: () => WS_URL,
+      label: 'read-task-events',
+      connectAttemptTimeoutMs: 15000,
+      log: s => process.stderr.write(`${s}\n`),
+      onOpen: () => resolve({
+        request(type, params = {}) {
+          const id = crypto.randomUUID()
+          return startWsRequest({
+            pending,
+            id,
+            type,
+            deadlineMs: 30000,
+            send: requestId => rws.send({ type, ...params, id: requestId }),
+          })
+        },
+        close: () => rws.close(),
+      }),
+      onMessage: msg => {
+        const waiter = msg.id && pending.get(msg.id)
+        if (!waiter) return
+        if (msg.error) waiter.reject(new Error(msg.error))
+        else waiter.resolve(msg.result ?? msg)
       },
-      close: () => ws.close(),
-    }))
-    ws.on('error', reject)
-    ws.on('message', raw => {
-      let msg
-      try { msg = JSON.parse(raw.toString()) } catch { return }
-      const waiter = msg.id && pending.get(msg.id)
-      if (!waiter) return
-      pending.delete(msg.id)
-      if (msg.error) waiter.rej(new Error(msg.error))
-      else waiter.res(msg.result ?? msg)
     })
+    rws.connect()
   })
 }
 

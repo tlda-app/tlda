@@ -130,6 +130,18 @@ const ALLOWED = {
       + 'convenience.',
   },
 
+  'bin/a-link-does-not-lower-access-test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Drives a bare RFC 6455 upgrade to /sync/<doc>, which is not the fleet protocol and carries no '
+      + 'fleet messages -- the socket never gets past the handshake, because the handshake IS the subject. '
+      + 'What is under test is how `extractToken` ranks three credential sources on one upgrade request, and '
+      + 'the answer becomes `room.handleSocketConnect({ isReadonly })`, so a `?token=` link that outranked a '
+      + 'read-write cookie handed back a read-only canvas with no logout to undo it. A browser socket cannot '
+      + 'set an Authorization header, so the cookie must ride the upgrade -- a fact about the transport, which '
+      + 'the library would supply for the test instead of exposing. Endpoint: /sync/ on its own express server.',
+  },
+
   'bin/a-message-id-can-be-read-back-test.mjs': {
     count: 1,
     category: 'tooling',
