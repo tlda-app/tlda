@@ -67,6 +67,53 @@ test('one project publication lock does not block another project admission', as
   await blocked
 })
 
+test('duplicate pending admission acknowledges immediately and keeps admission bookkeeping', async () => {
+  let holdPublication = false
+  let releasePublication
+  const publicationHeld = new Promise(resolve => { releasePublication = resolve })
+  const admissions = []
+  const started = []
+  const queue = createBuildQueue({
+    transport: {
+      start(job) {
+        started.push(job)
+        return { cancel() {} }
+      },
+    },
+    getProjectsDir: () => '/projects',
+    recordAdmission(job) { admissions.push(job.sourceRevision) },
+    serializeProject: async (_project, operation) => {
+      if (holdPublication) await publicationHeld
+      return operation()
+    },
+  })
+
+  // This is the state recovered from durable storage before drain has started
+  // it: the exact duplicate-admission case must acknowledge first and then
+  // nudge this pending row into the free worker slot.
+  const first = queue.store.admit({
+    project: 'paper',
+    revision: 'same-revision',
+    daemonId: 'mini:testing',
+    branch: 'main',
+    fractionalPriority: 0.5,
+  }).row
+  assert.equal(first.state, 'pending')
+  assert.equal(started.length, 0)
+  holdPublication = true
+  const duplicate = await Promise.race([
+    queue.admitBuild('paper', { revision: 'same-revision', daemonId: 'mini:testing' }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('duplicate admission waited for publication')), 100)),
+  ])
+
+  assert.equal(duplicate.id, first.id)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(admissions, ['same-revision'])
+  assert.equal(started.length, 1)
+  assert.equal(started[0].sourceRevision, 'same-revision')
+  releasePublication()
+})
+
 test('priority is sampled once and integer ring positions dominate stored draws', async () => {
   const h = harness({ slots: 1, draws: [0.01, 0.99, 0.2], heads: { paper: 'head' } })
   await h.submit('a1', 'a')
