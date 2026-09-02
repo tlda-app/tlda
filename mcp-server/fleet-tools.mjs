@@ -5748,8 +5748,21 @@ const SYSTEM_NOTIFICATION_CHAT_TYPES = new Set([
   'wake_failed',
 ])
 
-export function shouldDeliverChannelTurn({ eventType, data = {}, fromId = '', isDirectTarget = false } = {}) {
-  if (!isDirectTarget) return false;
+// An observer counts. `wiretap_cc` names the agents whose subscription matched
+// without them being addressed, and the whole path below this was built for
+// them -- the notice goes out as event_type `wiretap`, and the wake-ack block
+// is already guarded on `isDirectTarget` so an observer never answers someone
+// else's ack. Only this gate refused them, and it refused every one: the caller
+// computed `isWiretapTarget`, admitted the message past its own check, and then
+// called this without passing it, so `isDirectTarget` alone decided and an
+// observer subscription could never produce a notification.
+//
+// That is why it looked subscriber-specific and why it hit advocates and nobody
+// else. A subscription only delivered when its owner happened to be a party to
+// the traffic it watched; an advocate is by definition never a party to the
+// traffic it watches, so every subscription an advocate holds is one of these.
+export function shouldDeliverChannelTurn({ eventType, data = {}, fromId = '', isDirectTarget = false, isWiretapTarget = false } = {}) {
+  if (!isDirectTarget && !isWiretapTarget) return false;
   if (eventType === 'delegate') return true;
   if (eventType === 'chat') {
     if (fromId === 'fleet:tlda') return false;
@@ -5903,7 +5916,7 @@ async function handleChannelMessage(msg) {
   // `refuseWakeChannelNotice`. `shouldDeliverChannelTurn` is not among them —
   // for a channel-notification it returns false only when there is no ack id,
   // so there is nothing waiting on an answer.
-  if (!shouldDeliverChannelTurn({ eventType, data, fromId, isDirectTarget })) return;
+  if (!shouldDeliverChannelTurn({ eventType, data, fromId, isDirectTarget, isWiretapTarget })) return;
   if (fromId === agentId) {
     await refuseWakeChannelNotice(agentId, pendingAckId, 'sender-is-recipient');
     return;
