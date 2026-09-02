@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { moveShapesToLayer, shapeForDestination, LayerMoveFailed } from '../src/classroom/moveBetweenLayers.ts'
+import { moveShapesToLayer, copyShapesToLayer, shapeForDestination, LayerMoveFailed, LayerCopyFailed } from '../src/classroom/moveBetweenLayers.ts'
 
 // Layers are separate sync rooms, so moving an annotation crosses stores. The
 // failure worth testing is not "does tldraw create a shape" — it is the
@@ -99,4 +99,81 @@ test('moving nothing does nothing', () => {
   assert.deepEqual(moveShapesToLayer(source, destination, []), [])
   assert.deepEqual(destination.log, [], 'an empty move still wrote to the destination')
   assert.deepEqual(source.log, [], 'an empty move still deleted from the source')
+})
+
+// --- copy ---
+//
+// Skip named two operations: "we can expose, like, move and copy." A copy leaves
+// the original, so the loss risk of a move is absent — but it introduces one a
+// move does not have. A move carries the id across because it is the same
+// annotation on another layer; a copy makes a SECOND annotation, and giving both
+// the same id is a collision waiting for either to be moved into the other's
+// room.
+
+test('a copy lands on the destination and the original stays put', () => {
+  const source = room({ shapes: [mark('shape:one')], pageId: 'page:source' })
+  const destination = room({ pageId: 'page:dest' })
+  let n = 0
+  const copied = copyShapesToLayer(source, destination, ['shape:one'], () => `shape:copy${++n}`)
+
+  assert.deepEqual(copied, ['shape:copy1'])
+  assert.ok(destination.getShape('shape:copy1'), 'the copy is on the destination')
+  assert.ok(source.getShape('shape:one'), 'the original is untouched')
+  assert.ok(!destination.log.includes('delete'), 'a copy deletes nothing')
+  assert.ok(!source.log.includes('delete'), 'least of all from the source')
+})
+
+test('a copy gets a new id, so it cannot collide with the shape it came from', () => {
+  const source = room({ shapes: [mark('shape:one')] })
+  const destination = room()
+  const [copied] = copyShapesToLayer(source, destination, ['shape:one'], () => 'shape:fresh')
+  assert.equal(copied, 'shape:fresh')
+  assert.equal(destination.getShape('shape:one'), undefined, 'the source id is not reused')
+})
+
+test('position and props survive a copy; the ordering index does not', () => {
+  const source = room({ shapes: [mark('shape:one', { x: 12, y: 34 })] })
+  const destination = room()
+  copyShapesToLayer(source, destination, ['shape:one'], () => 'shape:fresh')
+  const copy = destination.getShape('shape:fresh')
+  assert.equal(copy.x, 12)
+  assert.equal(copy.y, 34)
+  assert.deepEqual(copy.props, { color: 'red' })
+  assert.equal(copy.index, undefined, "the source room's index means nothing here")
+})
+
+test('a shape nested in another copied shape points at that shape’s copy', () => {
+  const parent = mark('shape:parent')
+  const child = mark('shape:child', { parentId: 'shape:parent' })
+  const source = room({ shapes: [parent, child] })
+  const destination = room({ pageId: 'page:dest' })
+  const order = ['shape:p2', 'shape:c2']
+  let i = 0
+  copyShapesToLayer(source, destination, ['shape:parent', 'shape:child'], () => order[i++])
+
+  assert.equal(destination.getShape('shape:c2').parentId, 'shape:p2',
+    'the copy is nested in the copy, not in the original it came from')
+})
+
+test('a shape nested in something left behind joins the destination page', () => {
+  const child = mark('shape:child', { parentId: 'shape:staying' })
+  const source = room({ shapes: [child] })
+  const destination = room({ pageId: 'page:dest' })
+  copyShapesToLayer(source, destination, ['shape:child'], () => 'shape:c2')
+  assert.equal(destination.getShape('shape:c2').parentId, 'page:dest',
+    'no dangling parent pointing into the room it came from')
+})
+
+test('a destination that silently drops the record reports it, and changes nothing', () => {
+  const source = room({ shapes: [mark('shape:one')] })
+  const destination = room({ rejectCreate: true })
+  assert.throws(() => copyShapesToLayer(source, destination, ['shape:one'], () => 'shape:fresh'), LayerCopyFailed)
+  assert.ok(source.getShape('shape:one'), 'the original is still there')
+})
+
+test('copying nothing does nothing', () => {
+  const source = room()
+  const destination = room()
+  assert.deepEqual(copyShapesToLayer(source, destination, [], () => 'shape:x'), [])
+  assert.deepEqual(destination.log, [])
 })

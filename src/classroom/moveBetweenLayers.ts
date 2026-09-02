@@ -87,6 +87,66 @@ export function moveShapesToLayer(source: LayerStore, destination: LayerStore, i
   return shapes.map(shape => shape.id)
 }
 
+export class LayerCopyFailed extends Error {}
+
+/**
+ * Copy shapes onto another layer, leaving the originals where they are.
+ *
+ * Skip, 16:15:53 EDT: "And I guess we can expose, like, move and copy. Or will
+ * move always be a copy?" The second half is his open question and this does not
+ * answer it — move still moves. This is the other operation he named.
+ *
+ * **New ids, unlike a move.** A move carries the id across because the thing on
+ * the other layer is the same annotation. A copy makes a second one, and two
+ * annotations with one id is a collision waiting for someone to move either of
+ * them into the other's room — where `createShapes` would land on top of an
+ * existing record. The id factory is a parameter so the ordering stays testable
+ * without a DOM, for the same reason `LayerStore` is.
+ *
+ * A shape nested inside another copied shape is re-parented to *its copy*, not
+ * to the original it was nested in. Carrying the old parent id would leave the
+ * copy pointing into the source room's tree.
+ *
+ * Same create → verify ordering as the move, minus the delete. Nothing is
+ * removed here at all, so the worst reachable outcome is a copy that did not
+ * arrive.
+ */
+export function copyShapesToLayer(
+  source: LayerStore,
+  destination: LayerStore,
+  ids: TLShapeId[],
+  makeId: () => TLShapeId,
+): TLShapeId[] {
+  const shapes = ids.map(id => source.getShape(id)).filter((s): s is TLShape => Boolean(s))
+  if (shapes.length === 0) return []
+
+  const destinationPageId = destination.getCurrentPageId()
+  const copiedId = new Map<TLShapeId, TLShapeId>(shapes.map(shape => [shape.id, makeId()]))
+
+  destination.createShapes(shapes.map(shape => {
+    const written = { ...shapeForDestination(shape, destinationPageId) } as Record<string, unknown>
+    written.id = copiedId.get(shape.id)
+    const parent = written.parentId
+    if (typeof parent === 'string' && parent.startsWith('shape:')) {
+      // Nested inside another shape being copied → point at that shape's copy.
+      // Nested inside something staying behind → it has no copy to belong to, so
+      // the copy joins the destination's page rather than dangling.
+      written.parentId = copiedId.get(parent as TLShapeId) ?? destinationPageId
+    }
+    return written as Partial<TLShape>
+  }))
+
+  const arrived = [...copiedId.values()]
+  const missing = arrived.filter(id => !destination.getShape(id))
+  if (missing.length > 0) {
+    throw new LayerCopyFailed(
+      `${missing.length} of ${shapes.length} annotations did not reach the other layer; nothing was changed`,
+    )
+  }
+
+  return arrived
+}
+
 /** Narrow a tldraw Editor to what a move needs. */
 export function layerStore(editor: Editor): LayerStore {
   return {

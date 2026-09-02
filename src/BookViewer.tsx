@@ -6,7 +6,7 @@
  * unmounts the current editor and mounts the new one.
  */
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { Tldraw, react } from 'tldraw'
+import { Tldraw, createShapeId, react } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
 import { STORE_HTTP } from './activeConfig'
 import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument, loadSlidesDocument } from './svgDocumentLoader'
@@ -15,7 +15,7 @@ import { BookContext, type BookMember, type BookContextValue, type BookLayersVal
 import { findBookMemberIndex } from './bookMemberNavigation'
 import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
 import { readerLayers, studentLayers, teacherLayers, setLayerVisible, setWriteTarget, type BookLayerState, type BookLayerId } from './classroom/bookLayers'
-import { moveShapesToLayer, layerStore } from './classroom/moveBetweenLayers'
+import { moveShapesToLayer, copyShapesToLayer, layerStore } from './classroom/moveBetweenLayers'
 import { classroomApi, type ClassroomIdentity, type StatusRow } from './classroom/api'
 import { ClassroomIdentityBadge } from './classroom/ClassroomIdentityBadge'
 import { isClassroomSurface } from './classroom/classroomSurface'
@@ -337,6 +337,21 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     }
   }, [targetEditor, editorForLayer, layers.target])
 
+  // Copy, the other operation Skip named. It does not move the write target:
+  // the originals are still on it, so that is still where he is working. A move
+  // follows the work to its destination; a copy leaves the work where it was.
+  const copySelectionToLayer = useCallback((destination: BookLayerId) => {
+    const destinationEditor = editorForLayer(destination)
+    if (!targetEditor || !destinationEditor || destination === layers.target) return
+    const ids = targetEditor.getSelectedShapeIds()
+    try {
+      copyShapesToLayer(layerStore(targetEditor), layerStore(destinationEditor), ids, createShapeId)
+      setMoveError('')
+    } catch (error) {
+      setMoveError((error as Error).message)
+    }
+  }, [targetEditor, editorForLayer, layers.target])
+
   // The layer state and the two selections over it, handed to the surface that
   // draws the ordinary controls. Nothing here is conditional on who is reading:
   // one layer means the control has nothing to offer and does not appear, which
@@ -347,8 +362,9 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     setTarget: id => { setMoveError(''); setLayers(current => setWriteTarget(current, id)) },
     selectionCount,
     moveSelection: moveSelectionToLayer,
+    copySelection: copySelectionToLayer,
     moveError,
-  }), [layers, selectionCount, moveSelectionToLayer, moveError])
+  }), [layers, selectionCount, moveSelectionToLayer, copySelectionToLayer, moveError])
 
   const ctx = useMemo<BookContextValue>(() => ({
     bookName,

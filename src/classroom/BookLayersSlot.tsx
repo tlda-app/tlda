@@ -30,6 +30,7 @@ export function BookLayersSlot() {
       onTargetChange={layers.setTarget}
       selectionCount={layers.selectionCount}
       onMoveSelection={layers.moveSelection}
+      onCopySelection={layers.copySelection}
       moveError={layers.moveError}
     />
   )
