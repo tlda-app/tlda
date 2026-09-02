@@ -121,6 +121,20 @@ export function decideSubscriptionDelivery({ policy, priority, now = Date.now() 
   return null
 }
 
+export function promptestSubscriptionDelivery(current, candidate) {
+  if (!current) return candidate
+  const rank = { queued: 0, batched: 1, notified: 2 }
+  const currentRank = rank[current.delivery] ?? -1
+  const candidateRank = rank[candidate.delivery] ?? -1
+  if (candidateRank !== currentRank) return candidateRank > currentRank ? candidate : current
+  if (candidate.delivery !== 'batched') return current
+  const currentAt = Date.parse(current.notifyBy || '')
+  const candidateAt = Date.parse(candidate.notifyBy || '')
+  return Number.isFinite(candidateAt) && (!Number.isFinite(currentAt) || candidateAt < currentAt)
+    ? candidate
+    : current
+}
+
 export function formatAttentionReceipt({ recipientLabel, status, tag, priority, delivery, notifyBy, notificationPolicy, reason }) {
   const label = notificationPolicy
     ? `${recipientLabel || 'recipient'} [${notificationPolicy}]`
