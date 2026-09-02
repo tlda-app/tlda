@@ -63,6 +63,7 @@ import { noteSnapshot, forgetSnapshot } from './fleet/chat-freeze-probe.mjs'
 import { getLastEventId } from './fleet/fleet-data.mjs'
 import { loadPrefs } from './preferences'
 import { chatAgentSignature } from './fleet/chat-agent-signature'
+import { fleetIdentityStateFromEvent } from './fleet/identity-event'
 
 // Load prefs whenever the user's fleet identity is established
 subscribe('identity', null, (ev: any) => {
@@ -1039,7 +1040,12 @@ export function useFleetIdentity(): { id: string | null, name: string | null, id
       if (cancelled) return
       setIdentity({ id: getHumanId(), name: getHumanName(), identityResolved: isIdentityResolved(), needsIdentity: _needsIdentity() })
       unsub = subscribe('identity', null, (ev: any) => {
-        setIdentity({ id: ev.id || getHumanId(), name: ev.name || getHumanName(), identityResolved: ev.identityResolved ?? isIdentityResolved(), needsIdentity: !!ev.needsIdentity })
+        setIdentity(fleetIdentityStateFromEvent(ev, {
+          id: getHumanId(),
+          name: getHumanName(),
+          identityResolved: isIdentityResolved(),
+          needsIdentity: _needsIdentity(),
+        }))
       })
     })
 
