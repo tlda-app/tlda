@@ -27,7 +27,7 @@
  */
 
 import Database from 'better-sqlite3'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import os from 'os'
 
@@ -78,8 +78,21 @@ if (targets.length !== APPROVED_COUNT) {
 console.log(`${write ? 'WRITING' : '[DRY RUN] no writes'} — ${DB_PATH}`)
 console.log(`mapping: ${MAP_PATH} (${parsed.length} rows, ${EXCLUDED.size} excluded, ${targets.length} to apply)\n`)
 
-const db = new Database(DB_PATH, { readonly: !write })
+// better-sqlite3 CREATES a database when the path does not exist, so a wrong
+// --db does not fail -- it makes an empty store and then dies on the first
+// prepare, having left a stray 0-byte file behind. Refuse first, and say which
+// path was tried: a repair script must never be the thing that invents a store.
+if (!existsSync(DB_PATH)) {
+  console.error(`no database at ${DB_PATH}. Refusing to run — pass the real store with --db.`)
+  process.exit(1)
+}
+const db = new Database(DB_PATH, { readonly: !write, fileMustExist: true })
 db.pragma('busy_timeout = 10000')
+const hasTasks = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").get()
+if (!hasTasks) {
+  console.error(`${DB_PATH} has no tasks table — this is not the fleet store. Refusing to run.`)
+  process.exit(1)
+}
 
 const getTask = db.prepare('SELECT id, description, agent, status FROM tasks WHERE id = ?')
 const setDescription = db.prepare('UPDATE tasks SET description = ? WHERE id = ?')
