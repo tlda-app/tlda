@@ -120,7 +120,6 @@ async function startMockDaemon() {
   const daemon = new WebSocket(`${wsProto}://localhost:${PORT}/ws/fleet-daemon`, wsOpts)
   const captured = []
   const bootId = Date.now()
-  let reportSeq = 0
   await new Promise((resolve, reject) => {
     daemon.on('open', () => {
       daemon.send(JSON.stringify({
@@ -164,15 +163,10 @@ async function startMockDaemon() {
     daemon,
     captured,
     reportAbsent(agentId) {
-      reportSeq += 1
       daemon.send(JSON.stringify({
-        type: 'agent-status',
-        agents: [{ agent_id: agentId, status: 'hibernating', activity: 'unknown', tool: null }],
-        snapshot_complete: true,
-        daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
-        daemon_boot_id: bootId,
-        report_seq: reportSeq,
-        reason: 'test-authoritative-absence',
+        type: 'spawn-startup-failed',
+        agent_id: agentId,
+        reason: 'test explicit startup failure',
         ts: new Date().toISOString(),
       }))
     },

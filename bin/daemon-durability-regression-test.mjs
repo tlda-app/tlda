@@ -269,24 +269,15 @@ test('CLI mint records the daemon-owned local process', () => {
   assert.doesNotMatch(bindMintSeatSource, /terminalCapability|daemonApi|sendMsg/)
 })
 
-test('daemon welcome carries no roster and refreshes authoritative status plus JSONL lifecycle', () => {
+test('daemon welcome carries no roster/status batch and still starts JSONL lifecycle', () => {
   const welcomeHandler = daemonSource.match(/if \(msg\.type === 'daemon-welcome'\) \{([\s\S]*?)\n  \}\n  if \(msg\.type === 'agent-status-events'\)/)?.[1] || ''
   const welcomePayload = serverSource.match(/type: 'daemon-welcome',([\s\S]*?)projects: projectsForDaemon\(\)/)?.[1] || ''
   assert.ok(welcomeHandler)
-  assert.doesNotMatch(welcomeHandler, /msg\.agents|reconcileRoster|agentStatus\.start/)
-  assert.match(welcomeHandler, /agentStatus\.scanStatus\('daemon-welcome'\)/)
+  assert.doesNotMatch(welcomeHandler, /msg\.agents|reconcileRoster|agentStatus|sendDaemonRoster/)
   assert.doesNotMatch(welcomeHandler, /jsonlIngestor\.startOwnerHarvester\(\)/)
   assert.match(welcomeHandler, /reconcileJsonlProcessBindings\('daemon-welcome'\)/)
-  // Was registerHostedAgentRoutes() -- one agent-route per agent, re-sent on
-  // every welcome AND every roster change, so one agent appearing republished
-  // every agent. The guard's intent is unchanged: the welcome must re-establish
-  // this daemon's routing picture. It now does that in one authoritative
-  // message, which is also the only thing that can remove a stale route.
-  assert.match(welcomeHandler, /sendDaemonRoster\('daemon-welcome'\)/)
-  assert.doesNotMatch(daemonSource, /onChanged: \(\) => \{\s*registerHostedAgentRoutes\(\)/)
   assert.match(welcomeHandler, /jsonlIngestor\.resumeAfterServerReady\(\)/)
   assert.doesNotMatch(welcomePayload, /agents|agent_status/)
-  assert.match(daemonSource, /listSessions: \(\) => terminalRpc\.listSessions\(\)/)
   assert.match(daemonSource, /getAgents: currentJsonlBindingAgents/)
 })
 

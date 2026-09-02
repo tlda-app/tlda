@@ -392,7 +392,6 @@ export class FleetStore {
     // has to run on the thread that owns the connection.
     this._serverDaemonOutbox = readonly ? null : new ServerDaemonOutbox(this.db);
     this._closed = false;
-    this._runtimeStatusByAgent = new Map();
     if (!readonly) this._initAgentRegistry();
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
@@ -2533,16 +2532,35 @@ export class FleetStore {
   }
 
   resolveChatRecipients(filterAst, { from = null, filter = '', runtimeProjections = {} } = {}) {
-    this._ensureAgentRegistryLoaded();
+    const hydrateCandidates = rows => rows
+      .map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)))
+      .filter(isFleetRosterAgent)
+    const candidatesForLiteral = (label) => {
+      if (PSEUDO_LABELS.includes(label)) {
+        const ids = Object.keys(runtimeProjections || {})
+        if (ids.length === 0) return []
+        return this.getAgentsByIds(ids).filter(isFleetRosterAgent)
+      }
+      const rows = this.db.prepare(`
+        SELECT ${this._AGENT_SELECT} ${this._AGENT_JOIN}
+        WHERE agents.dead = 0
+          AND COALESCE(json_extract(agents.metadata, '$.shell'), 0) != 1
+          AND (
+            agents.id = @label
+            OR agents.friendly_name = @label
+            OR EXISTS (
+              SELECT 1
+              FROM json_each(COALESCE(agents.labels, '[]'))
+              WHERE value = @label
+            )
+          )
+        ORDER BY agents.last_seen DESC
+      `).all({ label })
+      return hydrateCandidates(rows)
+    }
     const indexedCandidates = (ast) => {
-      const projectedRuntimeLabels = new Set(
-        Object.entries(runtimeProjections || {})
-          .filter(([, runtime]) => runtime?.status)
-          .map(([, runtime]) => runtime.status)
-      )
       const fromLabel = (label) => {
-        if (projectedRuntimeLabels.has(label)) return null
-        return new Map(this._aliveAgentByLabel.get(label).map(agent => [agent.id, agent]))
+        return new Map(candidatesForLiteral(label).map(agent => [agent.id, agent]))
       }
       const intersect = (a, b) => {
         if (!a) return b
@@ -2570,9 +2588,7 @@ export class FleetStore {
     }
     const literal = astLiteral(filterAst);
     if (literal) {
-      const literalCandidates = Object.keys(runtimeProjections || {}).length > 0 && PSEUDO_LABELS.includes(literal)
-        ? this._aliveAgentRegistry.all()
-        : this._aliveAgentByLabel.get(literal)
+      const literalCandidates = candidatesForLiteral(literal)
       const found = new Map(literalCandidates
         .map(agent => ({
           ...agent,
@@ -2607,7 +2623,10 @@ export class FleetStore {
     }
 
     const indexed = indexedCandidates(filterAst)
-    const candidates = indexed ? [...indexed.values()] : this._aliveAgentRegistry.all()
+    const candidates = indexed ? [...indexed.values()] : (() => {
+      this._ensureAgentRegistryLoaded()
+      return this._aliveAgentRegistry.all()
+    })()
 
     return candidates
       .map(agent => ({
@@ -2684,124 +2703,6 @@ export class FleetStore {
     this._syncAgentRegistry(agentId);
     return this.getAgentDaemonRoute(agentId);
   }
-
-  // The whole of a daemon's routing picture, replacing what we held for it.
-  //
-  // setAgentDaemonRoute can only ever ADD -- one message says "this agent is
-  // here" and there is no way to say "and nobody else is". So a route for an
-  // agent that has died or moved stayed until its agent row was deleted, which
-  // is the only thing that has ever removed one. This is the operation that can
-  // say it.
-  //
-  // The delete is scoped to daemon_key on purpose. An agent that MOVED to
-  // another daemon already carries that daemon's key on its row, so a roster
-  // from the daemon it left must not delete it -- the scope gives that for free.
-  replaceAgentDaemonRoutes(daemonKey, agentIds) {
-    if (!daemonKey) throw new Error('agent daemon routes require daemonKey');
-    const key = String(daemonKey);
-    const ids = [...new Set((agentIds || []).map(id => String(id || '')).filter(Boolean))];
-    const before = this.db.prepare('SELECT count(*) AS n FROM agent_daemon_routes WHERE daemon_key = ?').get(key).n;
-    const touched = this.db.transaction(() => {
-      if (ids.length) {
-        const holes = ids.map(() => '?').join(',');
-        this.db.prepare(`DELETE FROM agent_daemon_routes WHERE daemon_key = ? AND agent_id NOT IN (${holes})`).run(key, ...ids);
-      } else {
-        this.db.prepare('DELETE FROM agent_daemon_routes WHERE daemon_key = ?').run(key);
-      }
-      for (const id of ids) this._setAgentDaemonRoute.run(id, key);
-      return ids;
-    })();
-    this._bustAgentsCache();
-    for (const id of touched) this._syncAgentRegistry(id);
-    return { daemonKey: key, kept: touched.length, removed: Math.max(0, before - touched.length) };
-  }
-
-  admitDaemonAgentStatusIdentities(admissions, daemonKey) {
-    if (!daemonKey) throw new Error('agent status admission requires daemonKey');
-    const key = String(daemonKey);
-    const rows = admissions || [];
-    const touched = [];
-    const insertedEvents = [];
-    const allowedHarnesses = new Set(['codex', 'claude', 'goose', 'bot']);
-    this.db.transaction(() => {
-      const seenIds = new Set();
-      const reservedNames = new Set();
-      const planned = [];
-      const allocateReservedName = (seed, id) => {
-        let candidate = this.allocateFreshFriendlyName(seed, { excludeId: id });
-        if (reservedNames.has(candidate.toLowerCase())) {
-          for (let suffix = 2; suffix < 10000; suffix++) {
-            const next = this.allocateFreshFriendlyName(`${seed}-${suffix}`, { excludeId: id });
-            if (!reservedNames.has(next.toLowerCase())) {
-              candidate = next;
-              break;
-            }
-          }
-        }
-        if (!candidate || reservedNames.has(candidate.toLowerCase())) throw new Error(`No available friendly-name variant for "${seed}"`);
-        reservedNames.add(candidate.toLowerCase());
-        return candidate;
-      };
-      for (const admission of rows) {
-        const id = String(admission?.id || '');
-        const name = String(admission?.friendly_name || '');
-        const harness = String(admission?.runtime_kind || '');
-        if (!id || !name || !allowedHarnesses.has(harness)) throw new Error(`invalid daemon agent identity ${id || '(missing id)'}`);
-        if (seenIds.has(id)) throw new Error(`duplicate daemon agent identity ${id}`);
-        seenIds.add(id);
-
-        const current = this._getAgent.get(id);
-        let metadata = {};
-        try { metadata = JSON.parse(current?.metadata || '{}') || {}; } catch { metadata = {}; }
-        if (current?.human || metadata.kind === 'human') throw new Error(`daemon cannot claim human identity ${id}`);
-        const route = this._getAgentDaemonRoute.get(id);
-        if (route?.daemon_key && route.daemon_key !== key) throw new Error(`agent ${id} is already claimed by ${route.daemon_key}`);
-        let canonicalName = current?.friendly_name || null;
-        if (!current) {
-          canonicalName = allocateReservedName(name, id);
-        } else if (current.dead) {
-          const seed = canonicalName || name;
-          const nameOwner = canonicalName ? this._getLiveAgentRowByFriendlyName.get(canonicalName) : null;
-          if (!canonicalName || (nameOwner && nameOwner.id !== id) || reservedNames.has(canonicalName.toLowerCase())) {
-            canonicalName = allocateReservedName(seed, id);
-          } else {
-            reservedNames.add(canonicalName.toLowerCase());
-          }
-        } else if (canonicalName) {
-          reservedNames.add(canonicalName.toLowerCase());
-        }
-        planned.push({ id, name: canonicalName, harness, current });
-      }
-
-      for (const { id, name, harness, current } of planned) {
-        const now = new Date().toISOString();
-        if (!current) {
-          this._upsertAgent.run(id, null, name, null, '[]', now, now, 0, 0, 0, JSON.stringify({ kind: harness }));
-          const event = this._insertLabelStateEvent({
-            type: 'register', agentId: id, actorId: id, labels: [], operation: 'register', timestamp: now,
-          });
-          this._rebuildLabelHistoryForAgent(id);
-          insertedEvents.push(event);
-        } else {
-          this.db.prepare(`
-            UPDATE agents
-            SET friendly_name = ?, last_seen = ?, dead = 0,
-                metadata = json_patch(COALESCE(metadata, '{}'), ?)
-            WHERE id = ? AND human = 0
-          `).run(name, now, JSON.stringify({ kind: harness }), id);
-        }
-        const latestRoute = this._getAgentDaemonRoute.get(id);
-        if (latestRoute?.daemon_key && latestRoute.daemon_key !== key) throw new Error(`agent ${id} was concurrently claimed by ${latestRoute.daemon_key}`);
-        this._setAgentDaemonRoute.run(id, key);
-        touched.push(id);
-      }
-    })();
-    this._bustAgentsCache();
-    for (const id of touched) this._syncAgentRegistry(id);
-    for (const event of insertedEvents) if (event) this._notifyEvent(event);
-    return { daemonKey: key, admitted: touched.length };
-  }
-
 
   upsertAgent(agent, { allowProtectedAgentFields = false } = {}) {
     try {
@@ -3393,12 +3294,6 @@ export class FleetStore {
     // which is why `awake & <name>` found nobody and roster found sixteen.
     if (changed) this._syncAgentRegistry(id);
     return changed;
-  }
-
-  refreshAgentLiveness(id, runtimeStatus = null) {
-    if (runtimeStatus) this._runtimeStatusByAgent.set(id, runtimeStatus);
-    else this._runtimeStatusByAgent.delete(id);
-    this._syncAgentRegistry(id);
   }
 
   /**
@@ -4155,18 +4050,6 @@ export class FleetStore {
     return this.getAgent(id);
   }
 
-  updateAgentStatus(id, status, activity, tool, ts) {
-    const row = this._getAgent.get(id);
-    if (!row) return;
-    let metadata;
-    try { metadata = row.metadata ? JSON.parse(row.metadata) : {}; } catch (e) { console.warn(`[fleet-store] corrupt metadata JSON for agent ${id}, resetting: ${e.message}`); metadata = {}; }
-    if (typeof metadata !== 'object' || metadata === null) metadata = {};
-    metadata.status = { status, activity, tool: tool || null, ts: ts || new Date().toISOString() };
-    this.db.prepare(`UPDATE agents SET metadata = ?, last_seen = CASE WHEN ? = 'awake' THEN ? ELSE last_seen END WHERE id = ?`)
-      .run(JSON.stringify(metadata), status, new Date().toISOString(), id);
-    this._syncAgentRegistry(id);
-  }
-
   updateAgentMeta(id, patch) {
     // Merge patch into agent metadata JSON blob — no schema migration needed
     const row = this._getAgent.get(id);
@@ -4447,9 +4330,9 @@ export class FleetStore {
       // authority says; the main thread applies the daemon check.
       route_present: !!row.route_present,
       route_daemon_key: row.route_daemon_key || null,
-      runtime_status: this._runtimeStatusByAgent?.get(row.id) || (row.dead && !row.human
+      runtime_status: row.dead && !row.human
         ? runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.DEAD)
-        : null),
+        : null,
     }
     return baseAgent;
   }

@@ -66,7 +66,7 @@ import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-s
 import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
-  getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
+  getMachineId, saveMachineId, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
   getOutboxInflightDeadlineMs, getOutboxFlushByteBudget,
   getFleetServerUrl, getServerUrl, getActiveEnvName,
 } from '../shared/config.mjs'
@@ -108,7 +108,6 @@ import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
 import { createAgentRouteResolver } from '../daemon/agent-route.mjs'
 import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
-import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
@@ -426,12 +425,6 @@ function bufferActivity(agentId, evts) {
   const activeBinding = permissionLedger.listProcessBindings().find(row =>
     row.id === agentId && row.daemonKey === activeDaemonKey)
   if (activeBinding?.tmuxSession) alivenessCache.set(activeBinding.tmuxSession, true)
-  const toolActivity = [...stampedEvents].reverse().find(event =>
-    event?.tool && !String(event.tool).startsWith('_'))
-  if (activeBinding && toolActivity) agentStatus.noteToolActivity(agentId, toolActivity.tool)
-  // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
-  // watch this agent's pane frequently — arm it for the status state machine.
-  if (activeBinding) agentStatus.armAgent(agentId)
   sendMsg({
     type: 'activity-health',
     agent_id: agentId,
@@ -443,41 +436,6 @@ function bufferActivity(agentId, evts) {
     last_activity_at: new Date(daemonReceivedAtMs).toISOString(),
   })
   return sendActivityEvents(agentId, stampedEvents, sendMsg)
-}
-
-// This daemon's whole routing picture, in one message, once per process start.
-//
-// It replaces registerHostedAgentRoutes(), which sent one `agent-route` per
-// agent and was called from reconcileRoster().onChanged -- every roster change --
-// and from the welcome handler -- every connect and reconnect. So one agent
-// appearing republished every agent: 8,532 messages in 5h40m against the ~200/day
-// of real mints. Per-mint publication is untouched and still carries a new agent.
-//
-// Not on reconnect: a reconnect is not a restart and the agent set has not
-// changed. Skip, on the shape: "demon route says / here i am and these ate my
-// agents / 1 message".
-let _daemonRosterSent = false
-function sendDaemonRoster(reason) {
-  if (_daemonRosterSent) return
-  const daemonKey = `${MACHINE_ID}:${ACTIVE_ENV}`
-  const agentIds = []
-  for (const row of permissionLedger.listProcessBindings()) {
-    if (!row?.id || row.daemonKey !== daemonKey) continue
-    agentIds.push(row.id)
-  }
-  try {
-    sendMsg({ type: 'daemon-roster', daemon_key: daemonKey, agent_ids: agentIds })
-    _daemonRosterSent = true
-    log.info(`daemon roster sent (${reason}): ${agentIds.length} agent(s) for ${daemonKey}`)
-  } catch (e) {
-    // Recovered rather than swallowed: the sent flag stays false, so the next
-    // welcome sends the roster again. Rethrowing here would abort the rest of
-    // the welcome handler -- JSONL resume, liveness, prompt sweeps -- for a
-    // message the very next reconnect retries. Every route this daemon owns
-    // going unpublished is the failure to avoid, and leaving the flag down is
-    // what avoids it.
-    log.warn(`daemon roster send failed for ${daemonKey}, will retry on next welcome: ${e.message}`)
-  }
 }
 
 // ---------- JSONL ingestion ----------
@@ -974,28 +932,6 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
   }
 }
 
-const agentStatus = createAgentStatus({
-  tmuxArgs: TMUX_ARGS,
-  sendMsg,
-  log,
-  getAgents: () => permissionLedger.listProcessBindings()
-    .filter(row => row.daemonKey === `${MACHINE_ID}:${ACTIVE_ENV}`)
-    .map(row => ({
-      id: row.id,
-      daemonKey: row.daemonKey,
-      friendly_name: row.friendlyName,
-      tmux_session: row.tmuxSession,
-      runtimeKind: row.sessionKind,
-      metadata: { kind: row.sessionKind, model: row.model },
-    })),
-  harnessForAgent: harnessRuntime.harnessForAgent,
-  listSessions: () => terminalRpc.listSessions(),
-  isConnected: () => _serverReady && _rws?.connected,
-  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
-  daemonBootId: BOOT_ID,
-  statusScanMs: getStatusScanMs(),
-})
-
 let gooseSupervisor
 const alivenessCache = new Map()
 
@@ -1004,7 +940,7 @@ const promptPlan = createPromptPlan({
   log,
   sendMsg,
   getAgents: () => agents,
-  isArmed: agentStatus.isArmed,
+  isArmed: () => false,
   hasActiveTerminalWatch: tmuxSession => terminalRpc?.hasActiveWatch(tmuxSession),
   autoAcceptPrompt: (tmuxSession, reason, acceptKey) => terminalRpc.autoAcceptPrompt(tmuxSession, reason, acceptKey),
 })
@@ -1025,9 +961,9 @@ terminalRpc = createTerminalRpc({
   terminalInputAllowed: TERMINAL_INPUT_ALLOWED,
   decideTerminalWatchExit,
   resolveAgentRoute,
-  onArmAgent: agentStatus.armAgent,
-  onArmBySession: agentStatus.armBySession,
-  onSessionInventoryChanged: reason => agentStatus.scanStatus(reason),
+  onArmAgent: () => {},
+  onArmBySession: () => {},
+  onSessionInventoryChanged: async () => {},
   onPlanModeSeen: promptPlan.scheduleCheckForPlanModePrompt,
   onPlanModeGone: promptPlan.clearPlanMode,
   hasPlanMode: promptPlan.hasPlanMode,
@@ -1788,9 +1724,6 @@ function connect() {
         },
         source_bindings: sourceSync.bindingRecords(),
         connection_attempt_id: connectionAttemptId,
-        // A cold daemon has no roster to apply a delta to, so 0 deliberately
-        // requests the exceptional snapshot. Reconnects retain the cursor.
-        last_agent_status_seq: agents.length ? agentStatusSeq : 0,
       })
       traceGate1('hello-send', {
         daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
@@ -1855,12 +1788,7 @@ function reconcileRoster(reason) {
     reason,
     syncIdentityNames: roster => jsonlIngestor.syncIdentityNames(roster),
     syncIfRosterChanged: options => jsonlIngestor.syncIfRosterChanged(options),
-    onChanged: () => {
-      // The roster is no longer republished here. A roster change means one
-      // agent arrived or left; a new agent publishes its own route at mint, and
-      // this callback used to re-announce every other agent to carry that one.
-      void agentStatus.scanStatus(reason)
-    },
+    onChanged: () => {},
   })
 }
 
@@ -1931,12 +1859,10 @@ async function handleServerMessage(msg, wsAttemptId) {
     daemonDelivery.noteReady()
     sendActivityDeliveryMetrics('daemon-welcome')
     await reconcileJsonlProcessBindings('daemon-welcome')
-    sendDaemonRoster('daemon-welcome')
     jsonlIngestor.resumeAfterServerReady()
     jsonlIngestor.retryPendingNativeSubagents()
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
-    void agentStatus.scanStatus('daemon-welcome')
     log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_ENV} projects=${projects.length} watchers=started`)
     return
   }
@@ -2106,9 +2032,4 @@ log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
 // Bots are independent, launchd-owned services (bots.yaml) — the daemon no
 // longer starts a bot-supervisor.
-// Local terminal inspection belongs to the daemon process lifecycle, not the
-// server message protocol. Its tmux/runtime dependencies are fully constructed
-// above; connectivity is checked inside each scan, and local activity explicitly
-// arms the owned agents that may be inspected.
-  agentStatus.start()
-  connect()
+connect()

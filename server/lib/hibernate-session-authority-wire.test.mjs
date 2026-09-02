@@ -217,7 +217,7 @@ test('NEGATIVE: hibernate on a no-ledger agent errors, writes no status, and sen
   )
 })
 
-test('POSITIVE CONTROL: hibernate on a ledger-backed agent succeeds and still writes no server-authored status', { timeout: 180_000 }, async () => {
+test('POSITIVE CONTROL: hibernate on a ledger-backed agent records the explicit lifecycle result', { timeout: 180_000 }, async () => {
   const { frame, rpcs, rows } = await runHibernate({
     killSessionReply: { ok: true },
   })
@@ -228,11 +228,7 @@ test('POSITIVE CONTROL: hibernate on a ledger-backed agent succeeds and still wr
   assert.equal(frame.error, undefined, `expected success, got ${JSON.stringify(frame)}`)
   assert.equal(frame.result?.ok, true, 'a real kill is acknowledged')
 
-  // The kill is real, but publishing it is the daemon's inventory to do. The
-  // server must not author the hibernation itself on the way past.
-  assert.deepEqual(
-    rows,
-    [],
-    `the server must not author hibernation status; daemon inventory publishes it. got ${JSON.stringify(rows)}`,
-  )
+  assert.equal(rows.length, 1, `expected one durable hibernation row; got ${JSON.stringify(rows)}`)
+  assert.equal(rows[0].kind, 'ai')
+  assert.equal(rows[0].status, 'hibernating')
 })
