@@ -1112,6 +1112,7 @@ router.get('/:name/macros', requireRead, async (req, res) => {
   // for one, so it names which: the project's first declared document, or the
   // one asked for by `?target=`.
   const targets = Array.isArray(project?.targets) ? project.targets : []
+  if (project.format !== 'svg' && targets.length === 0) return res.json({ macros: {} })
   const requested = String(req.query.target || '').trim()
   const target = requested ? targets.find(item => item?.texBase === requested) : targets[0]
   if (requested && !target) {
