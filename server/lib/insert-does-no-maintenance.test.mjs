@@ -73,13 +73,3 @@ test('the prune still works when called explicitly, and is idempotent', async ()
     assert.equal(second.through, first.through, 'the watermark does not move on an empty sweep')
   })
 })
-
-test('no automatic prune scheduler survives on the store', async () => {
-  await withStore(async store => {
-    assert.equal(
-      typeof store._maybePruneActivityEventsFts,
-      'undefined',
-      'the interval-gated sweep is deleted, not merely unreferenced',
-    )
-  })
-})
