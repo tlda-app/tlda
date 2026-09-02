@@ -16,6 +16,30 @@ function stripHtmlTags(html) {
   return html.replace(/<[^>]+>/g, '').trim()
 }
 
+/**
+ * A chapter is named after what it is about, never after where it sits.
+ *
+ * Skip, 2026-09-01 06:11 EDT: "labs are not a thing." A lab is a chapter, and
+ * `Lab 1` / `Lecture 2` is a position rather than a name — positions shift the
+ * moment anything is inserted before them, so the TOC must not carry one.
+ *
+ * This used to live inline in the `inPart` branch below and only ran there, so
+ * the strip fired for a chapter inside a part and never for a book member,
+ * which is the case that reaches a reader: a member's own extractor runs with
+ * no part, keeps `entry.title` verbatim, and `aggregateBookToc` then lifts that
+ * string straight out as the chapter title. The separator was also required to
+ * be `:` or `.`, so a plain `Lab 1 Sampling` went through untouched.
+ */
+export function stripPositionPrefix(title) {
+  return String(title || '').replace(/^(?:Lab|Lecture)\s+\d+\s*[:.–—-]?\s*/i, '').trim()
+}
+
+/** The first `<h1>` text in a rendered document, or '' when it has none. */
+function firstHeadingText(html) {
+  const match = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(html || '')
+  return match ? stripHtmlTags(match[1]).replace(/\s+/g, ' ').trim() : ''
+}
+
 function extractHeadings(html, pageNum, chapterTitle, tocLevel) {
   const entries = []
 
@@ -58,7 +82,7 @@ function extractHeadings(html, pageNum, chapterTitle, tocLevel) {
     // Strip prefixes like "2 ", "Lab 1:", "Lecture 2:", "Chapter 1:" before comparing
     if (chapterTitle && tag === 'h1') {
       const textNoNum = text.replace(/^\d+[\s.]+/, '')
-      const titleNoNum = chapterTitle.replace(/^(Chapter|Lab|Lecture)\s+\d+[:.]\s*/i, '')
+      const titleNoNum = stripPositionPrefix(chapterTitle.replace(/^Chapter\s+\d+[:.]\s*/i, ''))
       if (normalize(textNoNum) === normalize(titleNoNum)) {
         continue
       }
@@ -97,13 +121,6 @@ export function extractHtmlToc(outputDir, providedPageInfo = null) {
       chapterNum++
     }
 
-    // Build display title for the TOC entry
-    let displayTitle = entry.title
-    if (!entry.tocLevel && inPart && chapterNum > 0) {
-      const stripped = entry.title.replace(/^(Lab|Lecture)\s+\d+[:.]\s*/i, '').replace(/^Lecture\s+\d+$/i, '')
-      displayTitle = stripped ? `Chapter ${chapterNum}: ${stripped}` : `Chapter ${chapterNum}`
-    }
-
     const htmlPath = join(outputDir, entry.file)
     if (!existsSync(htmlPath)) {
       console.warn(`  Skipping ${entry.file} (not found)`)
@@ -111,6 +128,17 @@ export function extractHtmlToc(outputDir, providedPageInfo = null) {
     }
 
     const html = readFileSync(htmlPath, 'utf8')
+
+    // Build display title for the TOC entry. The position prefix comes off
+    // every entry, in or out of a part — see `stripPositionPrefix`. A title
+    // that was ONLY a position leaves nothing behind, so the document's own
+    // first heading names it; the app cannot invent a name beyond that, and a
+    // document with neither keeps whatever string it had.
+    let displayTitle = stripPositionPrefix(entry.title) || firstHeadingText(html) || entry.title
+    if (!entry.tocLevel && inPart && chapterNum > 0) {
+      displayTitle = displayTitle ? `Chapter ${chapterNum}: ${displayTitle}` : `Chapter ${chapterNum}`
+    }
+
     const headings = extractHeadings(html, i + 1, displayTitle, entry.tocLevel) // 1-indexed
     console.log(`  ${entry.file}: ${headings.length} headings`)
     toc.push(...headings)
