@@ -13,11 +13,11 @@
 //
 // So: boot the real server, open a real fleet socket, and do it the way an
 // agent does — declare, collide, strip, re-apply.
-import WebSocket from 'ws'
 import { spawn } from 'child_process'
 import { existsSync, rmSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import { ResilientWS } from '../shared/fleet-transport.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
@@ -28,7 +28,6 @@ const useTls = existsSync(`${process.env.HOME}/.config/tlda/localhost+2.pem`)
 if (useTls) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 const proto = useTls ? 'https' : 'http'
 const wsProto = useTls ? 'wss' : 'ws'
-const wsOpts = useTls ? { rejectUnauthorized: false } : {}
 
 let srv
 let failures = 0
@@ -69,9 +68,16 @@ async function waitHealth() {
 
 function openFleet() {
   return new Promise((resolve) => {
-    const ws = new WebSocket(`${wsProto}://localhost:${PORT}/ws/fleet`, wsOpts)
-    ws.on('open', () => setTimeout(() => resolve(ws), 200))
-    ws.on('error', (e) => fail(`fleet WS error: ${e.message}`))
+    const transport = new ResilientWS({
+      url: () => `${wsProto}://localhost:${PORT}/ws/fleet`,
+      label: 'singleton-label-wire-test',
+      onOpen: ws => setTimeout(() => resolve(ws), 200),
+      onMessage: () => {},
+      onClose: reason => fail(`fleet WS closed before completion: ${reason}`),
+      connectAttemptTimeoutMs: 8_000,
+      log: () => {},
+    })
+    transport.connect()
   })
 }
 
