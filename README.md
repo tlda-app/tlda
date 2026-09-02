@@ -183,8 +183,8 @@ $$
 $$
 ```
 
-LaTeX-style references still work: say
-`@eq:primal-loss` where you would say `\ref{eq:primal-loss}` in LaTeX. And it
+LaTeX references work directly: write `\ref{eq:primal-loss}` just as you would
+in LaTeX. And it
 supports agent-focused interactive features. An agent can use simple Markdown
 syntax to ask you multiple-choice questions and subscribe to clicks. So they
 hear what you choose when you choose it. Agents can use the familiar Mermaid
