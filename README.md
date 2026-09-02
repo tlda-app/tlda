@@ -316,9 +316,13 @@ tlda project link <project-name> <main-file>
 
 Here, `<project-url>` is the paper's Git clone URL, not its tlda viewer URL.
 `<project-name>` is the hosted tlda project and `<main-file>` is the paper's
-entry file in your clone. Your changes will be pushed to the server unless
-simultaneous editing results in merge conflicts. If so, resolve using Git,
-commit, and keep writing.
+entry file in your clone. `tlda project link` is the current command; there is
+no separate `tlda project add` command on `main`. Linking puts the checkout on
+the `tlda/<project>` branch when Git can do that without forcing local state;
+that is the branch where tracked changes and deletions are submitted
+automatically. Add new files with Git before expecting tlda to include them.
+Your changes will be pushed to the server unless simultaneous editing results in
+merge conflicts. If so, resolve using Git, commit, and keep writing.
 
 ### Work with your own agents
 

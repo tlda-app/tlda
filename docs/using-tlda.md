@@ -72,6 +72,9 @@ cd /path/to/eiv-paper
 tlda project link eiv-paper least-squares.tex
 ```
 
+On current `main`, `tlda project add` is not a separate command. Use
+`tlda project link` to create or relink a project from an existing Git checkout.
+
 Linking seeds the version wheel from the current working copy's Git history. By
 default the seed ends at the checked-out branch's `HEAD`. Positional paths are
 document roots. Use `--version branch@commit` to choose another endpoint:
@@ -87,7 +90,12 @@ versions. If the checkout already contains mirrored tlda history, that history
 is carried instead.
 
 The local path belongs only to this machine's daemon binding. The daemon watches
-the checkout and sends revision-checked source transactions to the server.
+the checkout and sends revision-checked source transactions to the server. The
+link puts the checkout on `tlda/<project>` when Git can do that without forcing
+local state. While that branch is checked out, tracked file changes and
+deletions are committed and submitted automatically; new files are included
+after you add them with Git. If the checkout is on another branch, the daemon
+refuses to sync it and tells you to run `git checkout tlda/<project>`.
 For Markdown, pass the document itself. tlda infers the format from the `.md`
 extension and includes the local Markdown files and assets it links to:
 
@@ -131,11 +139,16 @@ and run the same command again. A project with a long history may take a moment
 to link.
 
 Local, Git-remote, and browser edits submit through the revision-checked source
-transaction boundary. A Git-backed daemon can auto-merge clean divergence or
-stop at a conflict for ordinary working-copy resolution.
-The server does not silently overwrite a linked local checkout with a browser
-edit. The checkout discovers the newer server revision when it next submits and
-then receives a merge conflict to resolve locally.
+transaction boundary. If the server accepted a newer revision first, the daemon
+keeps that head, tries a Git merge against the local revision, and submits the
+combined commit when the merge is clean. If Git reports conflicted paths,
+unresolved files, or an in-progress merge, the daemon stops and leaves the
+checkout for ordinary Git resolution. The server does not silently overwrite a
+linked local checkout with a browser edit.
+
+There is no current `tlda merge` command on `main`. Today the implemented way
+to get accepted app history back into Git is a linked checkout or a linked Git
+remote; a separate replay command is not available in this build.
 
 ## Document formats
 

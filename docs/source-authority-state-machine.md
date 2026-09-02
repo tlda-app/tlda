@@ -39,8 +39,9 @@ by one of three routes, and leaves it by a fourth:
 | the browser source editor | the room checkpoints the text |
 | a linked Git remote — Overleaf or any other | its daemon submits like any other checkout |
 
-**They get it back out with `tlda merge`**, specified in the next section. Three
-ways in, one way out.
+On current `main`, they get it back out through a linked checkout or linked Git
+remote. The specified `tlda merge` replay operation below is not a current
+command on `main`.
 
 Two rules hold everywhere below, and a person can rely on them without reading
 the mechanism:
@@ -56,6 +57,13 @@ the mechanism:
 
 ## Getting the work back out: the merge operation
 
+> **CURRENT MAIN STATUS, inspected 2026-09-02.** There is no `tlda merge`
+> command on `main`: `cli/tlda.mjs` has no `cmdMerge`, the removed-command guard
+> does not name `merge`, and `rg` finds no `server/lib/merge-replay.mjs` or
+> `/shadow/bundle` route on `main`. Do not tell a user to run `tlda merge` on
+> this build. The current implemented route out is the linked checkout or linked
+> Git remote path.
+>
 > **BUILT on branch `tlda-merge`, 2026-08-22. Not on `main` and not deployed.**
 > The operation is `server/lib/merge-replay.mjs`; the CLI call site is
 > `cmdMerge` in `cli/tlda.mjs`; the server serves the history at
