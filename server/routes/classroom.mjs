@@ -231,7 +231,7 @@ async function frozenTemplateSource(store, assignmentId, resolveTemplateSource) 
 async function submissionBuild(contentRef) {
   const project = await readProject(contentRef)
   if (!project) return { buildStatus: 'missing', buildAt: null }
-  const lifecycle = projectRevisionStatus((await sourceLifecycleStore(contentRef)).listRevisionLifecycles(contentRef))
+  const lifecycle = projectRevisionStatus((await sourceLifecycleStore(contentRef, { existingProject: project })).listRevisionLifecycles(contentRef))
   return { buildStatus: lifecycle.status, buildAt: project.lastBuildSuccess || project.lastBuild || null }
 }
 
@@ -347,10 +347,14 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
 
   router.get('/courses/:courseId/status', instructor, async (req, res) => {
     const status = store.status(req.params.courseId)
-    await Promise.all(status.rows.flatMap(row => row.assignments.map(async cell => {
-      if (!cell.contentRef) return
-      Object.assign(cell, await resolveSubmissionBuild(cell.contentRef))
-    })))
+    const builds = new Map()
+    for (const row of status.rows) {
+      for (const cell of row.assignments) {
+        if (!cell.contentRef) continue
+        if (!builds.has(cell.contentRef)) builds.set(cell.contentRef, await resolveSubmissionBuild(cell.contentRef))
+        Object.assign(cell, builds.get(cell.contentRef))
+      }
+    }
     res.json(status)
   })
 

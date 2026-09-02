@@ -434,8 +434,8 @@ export function outputDir(name) {
 
 // Dormant authority store for the lifecycle rollout. Current ingress paths do
 // not call this until the revision contract is wired atomically in Phase B.
-export async function sourceLifecycleStore(name, options = {}) {
-  const project = await readProject(name)
+export async function sourceLifecycleStore(name, { existingProject = null, ...options } = {}) {
+  const project = existingProject || await readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
   return createSourceLifecycleStore({
     // liveProjectDir, not projectDir: this store is the durable revision git and
