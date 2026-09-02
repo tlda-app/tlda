@@ -50,7 +50,7 @@
  * ---------------------------------------------------------------------------
  */
 
-import { setCrashSessionId } from './crashBeacon'
+import { setCrashSessionId } from './crashBeacon.ts'
 
 type Level = 'debug' | 'info' | 'warn' | 'error' | 'off'
 

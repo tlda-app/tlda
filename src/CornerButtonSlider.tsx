@@ -1,5 +1,6 @@
 import React, { useCallback, useRef, useState } from 'react'
 import { stopEventPropagation } from 'tldraw'
+import { log } from './logger'
 
 export type CornerButtonSliderOption = {
   id: string
@@ -104,6 +105,8 @@ export function PersistentCornerButtonSlider({
   const pointerRef = useRef<number | null>(null)
   const pointerStartRef = useRef<{ clientX: number; clientY: number; button: HTMLButtonElement | null } | null>(null)
   const valueSourceRef = useRef<PersistentRailValueSource | null>(null)
+  // What the rail last told the reader it would do. See `pointAt`.
+  const pointedRef = useRef<PersistentRailTarget | null>(null)
   const [active, setActive] = useState<{ label: string; x: number } | null>(null)
 
   const valueSourceForButton = useCallback((button: HTMLButtonElement | null): PersistentRailValueSource | null => {
@@ -166,7 +169,20 @@ export function PersistentCornerButtonSlider({
     return source ? targetForValueSource(source, clientX) : targetForButton(button)
   }, [pickButton, targetForButton, targetForValueSource])
 
+  // The hover and the commit used to be two independent computations of the
+  // same thing, and they are allowed to disagree: `targetAt` re-runs
+  // `pickButton` at the release coordinate, and a pointerup's coordinate is not
+  // the last pointermove's. A finger that drifts a pixel off the button as it
+  // lifts -- into the `gap: 3px` between buttons, into the coarse-pointer hit
+  // slop band, or off the rail -- makes `pickButton` return null, so the whole
+  // commit block was skipped while the highlight from the last move was still
+  // on screen. Skip: "It's not like it's missing what you're over. The hover is
+  // right. It isn't fucking doing it."
+  //
+  // So the hover is now the record, and the commit reads it. One fact, one
+  // encoding: whatever the rail last told you it would do is what it does.
   const pointAt = useCallback((target: PersistentRailTarget | null) => {
+    pointedRef.current = target
     if (!target) { setActive(null); return }
     setActive({
       label: target.label,
@@ -183,6 +199,19 @@ export function PersistentCornerButtonSlider({
     onPointerDownCapture={(e) => {
       stopEventPropagation(e)
       e.preventDefault()
+      // A previous gesture that never reached `onPointerUp` at all. The rail's
+      // release is a bubble-phase React handler, and `dragCoordinator` installs
+      // a document capture-phase `pointerup` that calls `stopImmediatePropagation`
+      // whenever any fleet drag is claimed, so a stale claim from another shape
+      // swallows this rail's commit before React sees it. That is a second and
+      // separate route to "the hover was right and nothing happened", it is not
+      // fixed here, and this is the record that would show it.
+      if (pointerRef.current !== null) {
+        log.metric('composer-rail', 'previous gesture never delivered pointerup', {
+          strandedPointerId: pointerRef.current,
+          pointerType: e.pointerType,
+        })
+      }
       pointerRef.current = e.pointerId
       e.currentTarget.setPointerCapture(e.pointerId)
       const button = pickButton(e.clientX, e.clientY)
@@ -204,7 +233,20 @@ export function PersistentCornerButtonSlider({
       const start = pointerStartRef.current
       valueSourceRef.current = null
       pointerStartRef.current = null
-      const target = targetAt(source, e.clientX, e.clientY)
+      const pointed = pointedRef.current
+      const released = targetAt(source, e.clientX, e.clientY)
+      // The release point decides, and the hover decides when the release point
+      // resolves to nothing. Releasing on a real target still commits that
+      // target -- this only recovers the case where the geometric test comes
+      // back empty and the rail was nonetheless showing you an action.
+      const target = released ?? pointed
+      if (!released && pointed) {
+        log.metric('composer-rail', 'release hit-test empty; committed the pointed target', {
+          action: pointed.action,
+          value: pointed.value,
+          pointerType: e.pointerType,
+        })
+      }
       pointAt(target)
       if (target) {
         const dx = start ? e.clientX - start.clientX : 0
@@ -212,7 +254,9 @@ export function PersistentCornerButtonSlider({
         const noTravel = Math.hypot(dx, dy) < 4
         const value = source && !noTravel ? target.value : null
         if (target.action) onSelect?.(target.action, value)
+        else log.metric('composer-rail', 'target carried no action; nothing committed', { label: target.label })
       }
+      pointedRef.current = null
       window.setTimeout(() => setActive(null), 140)
     }}
     onPointerCancel={(e) => {
@@ -221,6 +265,7 @@ export function PersistentCornerButtonSlider({
       pointerRef.current = null
       valueSourceRef.current = null
       pointerStartRef.current = null
+      pointedRef.current = null
       setActive(null)
     }}
   >
