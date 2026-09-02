@@ -54,7 +54,7 @@ function request(ws, id, type, payload) {
       const message = JSON.parse(String(raw))
       if (message.id !== id) return
       ws.off('message', onMessage)
-      if (message.error) reject(new Error(message.error)); else resolve(message.result)
+      if (message.error) reject(new Error(typeof message.error === 'string' ? message.error : JSON.stringify(message.error))); else resolve(message.result)
     }
     ws.on('message', onMessage)
     ws.send(JSON.stringify({ id, type, ...payload }))
@@ -105,7 +105,9 @@ async function withFleet({ withRecipientSocket = true, loginKind = 'claude', res
   const now = new Date().toISOString()
   await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
   await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
+  await store.upsertAgent({ id: 'fleet:target', friendly_name: 'target', labels: [], registered_at: now, last_seen: now })
   await store.ensureSubscription({ owner: 'fleet:recipient', query: subscriptionQuery, notificationPolicy })
+  await store.ensureSubscription({ owner: 'fleet:target', query: 'to:me', notificationPolicy: 'immediate' })
   for (const subscription of extraSubscriptions) {
     await store.ensureSubscription({ owner: 'fleet:recipient', ...subscription })
   }
@@ -220,6 +222,26 @@ test('a direct batched subscription crosses the notification channel after its w
     while (!receivedAt && Date.now() < deadline) await sleep(25)
     assert.ok(receivedAt, 'the direct batch must eventually reach the recipient channel')
     assert.ok(receivedAt - sentAt >= 200, `batch arrived before its window: ${receivedAt - sentAt}ms`)
+  })
+})
+
+test('an observer batch records its due time without reserving undrainable timer state', async () => {
+  await withFleet({
+    extraSubscriptions: [{ query: 'fleet:sender <> fleet:target', notificationPolicy: 'batch(250ms)' }],
+  }, async senderWs => {
+    const sent = await request(senderWs, 23, 'chat', {
+      from: 'fleet:sender',
+      to: 'target',
+      message: 'observer batch state must not leak',
+      _tempId: 'observer-batch-no-reservation-proof',
+    })
+    const readBack = await request(senderWs, 24, 'event-by-id', { event_id: sent.event_ids[0] })
+    const deliveries = readBack.event.metadata.subscription_deliveries
+    assert.equal(deliveries.length, 1)
+    assert.equal(deliveries[0].recipient, 'fleet:recipient')
+    assert.equal(deliveries[0].delivery, 'batched')
+    assert.ok(deliveries[0].notifyBy, 'the observer delivery still records when its batch becomes due')
+    assert.equal(deliveries[0].batch_key, undefined, 'observer-only delivery must not reserve timer state that nothing drains')
   })
 })
 
