@@ -36,27 +36,61 @@ export interface LayerStore {
 export class LayerMoveFailed extends Error {}
 
 /**
+ * The conversion between the two layers' coordinate frames.
+ *
+ * Skip, 2026-08-15 16:06:06 EDT, raising the move as a window-manager question:
+ * *"clearly, since layers have, like, a relative position, right, the idea is,
+ * like, moves happen while the layer to layer relationship is like, the
+ * transforms are static, and they happen in that coordinate frame. So, you
+ * know, the common coordinate frame created by the relative transform."*
+ *
+ * Build it from the WM with `wm.translate(point, sourceLayer, destinationLayer)`
+ * — see `layerFrameConversion`. It is a required argument rather than an
+ * optional one because the default it would otherwise have is the identity, and
+ * the identity is exactly the assumption this exists to remove: it is right
+ * today for classroom layers, which sit at the same origin, and it is right for
+ * a reason nobody would restate when that stops being true.
+ */
+export type LayerFrameConversion = (point: { x: number; y: number }) => { x: number; y: number }
+
+/** The identity, for two layers whose relative transform really is identity. */
+export const sameFrame: LayerFrameConversion = point => point
+
+/**
  * What to write into the destination for one shape.
  *
- * Identity and position are carried across deliberately: the same id, so the
- * thing on the other layer is the same annotation rather than a lookalike, and
- * the same page coordinates, so it does not appear to jump. The layers share a
- * camera, so page coordinates mean the same thing in both.
+ * Identity is carried across deliberately: the same id, so the thing on the
+ * other layer is the same annotation rather than a lookalike.
+ *
+ * Position is *converted*, not carried. A shape parented to its page has `x`
+ * and `y` in its own layer's frame, and the destination's frame is a different
+ * one; writing the same numbers puts the annotation wherever those numbers
+ * happen to land over there. A shape nested inside another moved shape is
+ * positioned relative to that parent, which is moving with it, so its offset is
+ * already in the right frame and is left alone.
  *
  * `index` is dropped rather than carried. It orders a shape against its
  * siblings, and the siblings are different in the destination — a fractional
  * index from another room is meaningless there, and reusing it is how two
  * shapes end up claiming one position.
  */
-export function shapeForDestination(shape: TLShape, destinationPageId: string): Partial<TLShape> {
+export function shapeForDestination(
+  shape: TLShape,
+  destinationPageId: string,
+  toDestinationFrame: LayerFrameConversion,
+): Partial<TLShape> {
   const carried: Partial<TLShape> & { index?: unknown } = { ...shape }
   delete carried.index
   const { parentId, ...rest } = carried
+  const nested = (parentId as string)?.startsWith('shape:')
+  const placed = nested ? { x: shape.x, y: shape.y } : toDestinationFrame({ x: shape.x, y: shape.y })
   return {
     ...rest,
+    x: placed.x,
+    y: placed.y,
     // A shape parented to its page is re-parented to the destination's page.
     // One nested inside another moved shape keeps its parent, which is moving too.
-    parentId: (parentId as string)?.startsWith('shape:') ? parentId : (destinationPageId as TLShape['parentId']),
+    parentId: nested ? parentId : (destinationPageId as TLShape['parentId']),
   } as Partial<TLShape>
 }
 
@@ -66,12 +100,17 @@ export function shapeForDestination(shape: TLShape, destinationPageId: string): 
  * Returns the ids that moved. Throws `LayerMoveFailed` without deleting anything
  * if the destination did not take them.
  */
-export function moveShapesToLayer(source: LayerStore, destination: LayerStore, ids: TLShapeId[]): TLShapeId[] {
+export function moveShapesToLayer(
+  source: LayerStore,
+  destination: LayerStore,
+  ids: TLShapeId[],
+  toDestinationFrame: LayerFrameConversion,
+): TLShapeId[] {
   const shapes = ids.map(id => source.getShape(id)).filter((s): s is TLShape => Boolean(s))
   if (shapes.length === 0) return []
 
   const destinationPageId = destination.getCurrentPageId()
-  destination.createShapes(shapes.map(shape => shapeForDestination(shape, destinationPageId)))
+  destination.createShapes(shapes.map(shape => shapeForDestination(shape, destinationPageId, toDestinationFrame)))
 
   // Confirm before dropping. A store that silently rejected a record — a schema
   // it does not know, a parent it cannot find — reports nothing, and deleting on
@@ -116,6 +155,7 @@ export function copyShapesToLayer(
   destination: LayerStore,
   ids: TLShapeId[],
   makeId: () => TLShapeId,
+  toDestinationFrame: LayerFrameConversion,
 ): TLShapeId[] {
   const shapes = ids.map(id => source.getShape(id)).filter((s): s is TLShape => Boolean(s))
   if (shapes.length === 0) return []
@@ -124,7 +164,7 @@ export function copyShapesToLayer(
   const copiedId = new Map<TLShapeId, TLShapeId>(shapes.map(shape => [shape.id, makeId()]))
 
   destination.createShapes(shapes.map(shape => {
-    const written = { ...shapeForDestination(shape, destinationPageId) } as Record<string, unknown>
+    const written = { ...shapeForDestination(shape, destinationPageId, toDestinationFrame) } as Record<string, unknown>
     written.id = copiedId.get(shape.id)
     const parent = written.parentId
     if (typeof parent === 'string' && parent.startsWith('shape:')) {
@@ -145,6 +185,25 @@ export function copyShapesToLayer(
   }
 
   return arrived
+}
+
+/**
+ * The relative transform between two layers, as a point conversion.
+ *
+ * This is the one place a move or a copy learns where the destination frame is,
+ * and it asks the WM rather than assuming. `wm.translate` is the primitive that
+ * composes the two layers' effective transforms, so the answer stays right when
+ * one layer moves relative to the next — which Skip named as the thing that is
+ * allowed to happen: *"we can have problems with one layer moving relative to
+ * the next, Wrong. But, like, shit in a layer stays in the fucking like, that's
+ * crucial."*
+ */
+export function layerFrameConversion(
+  wm: { translate(point: { x: number; y: number }, from: string, to: string): { x: number; y: number } },
+  sourceLayerId: string,
+  destinationLayerId: string,
+): LayerFrameConversion {
+  return point => wm.translate(point, sourceLayerId, destinationLayerId)
 }
 
 /** Narrow a tldraw Editor to what a move needs. */

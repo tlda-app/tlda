@@ -19,6 +19,7 @@ import {
 import { readPermanentGuides, writePermanentGuides } from './fleet-permanent-guide-store'
 import { getFleetNudgeStrengthPx } from '../readabilityProfile'
 import { dispatchFleetHudReset, getHudEditor, markMainEditorHistoryStoppingPoint } from '../wm/editor-host-bridge'
+import { getEditorWMCore } from '../wm/editor-wm'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import { clientPointToPage } from '../wm/viewport-coordinates'
 import {
@@ -142,10 +143,30 @@ function fleetNudgeRectForCurrentShape(shape: TLShape): FleetNudgeRect | null {
   return fleetNudgeRectForBox(shape.id, panel.x, panel.y, w, h)
 }
 
+/**
+ * The panels a drag may align against: mine, not the one being dragged, not
+ * something else in the selection — **and in the same layer as the drag.**
+ *
+ * Skip, 2026-08-12 20:05:12 EDT, on a nudge reaching across to the ribbon and
+ * the document margin: *"it's not supposed to fucking cross layers, dude."* And
+ * on math notes swept into panel snapping, 2026-08-13 03:49:21 EDT: *"That's
+ * not even the right fucking layer, dude."*
+ *
+ * Ownership was doing the layer's job here. `isMyFleetShape` is a fact about
+ * who made a shape, and two panels I own can be in different layers — a panel
+ * the HUD is projecting is in the HUD viewport's coordinate layer while the
+ * same kind of panel on the bare canvas is in `document-page`. Those layers
+ * both take page coordinates, so the numbers compare cleanly and mean nothing:
+ * identical page coordinates in two layers are nowhere near each other on the
+ * display. A rect built from `getShapePageBounds` cannot show that, which is
+ * why the pull looked correct and landed somewhere else.
+ */
 function collectFleetPanelNudgeCandidates(editor: Editor, current: TLShape): FleetNudgeRect[] {
   const selectedIds = new Set(editor.getSelectedShapeIds())
+  const wm = getEditorWMCore(editor)
   return editor.getCurrentPageShapes()
     .filter(shape => shape.id !== current.id && !selectedIds.has(shape.id) && isMyFleetShape(shape))
+    .filter(shape => wm.sameLayer(shape, current))
     // Add a group restriction here if fleet-panel nudging becomes group-scoped.
     .map(shape => fleetNudgeRectForShape(editor, shape))
     .filter((rect): rect is FleetNudgeRect => rect !== null)

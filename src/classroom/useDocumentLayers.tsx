@@ -12,7 +12,9 @@ import {
   type BookLayerState,
   type BookLayerId,
 } from './bookLayers'
-import { moveShapesToLayer, copyShapesToLayer, layerStore } from './moveBetweenLayers'
+import { moveShapesToLayer, copyShapesToLayer, layerStore, layerFrameConversion } from './moveBetweenLayers'
+import { getEditorWMCore } from '../wm/editor-wm'
+import { ensureClassroomLayer } from '../wm/classroom-layers'
 import type { LayersValue } from './layersContext'
 
 /**
@@ -124,12 +126,31 @@ export function useDocumentLayers({
 
   const selectionCount = targetEditor ? trackedSelectionCount : 0
 
+  /**
+   * The conversion from the write target's frame into `destination`'s.
+   *
+   * Both layers are declared here rather than looked up, so the conversion is
+   * asked of the model in every case — including the one where the answer is
+   * the identity, which is what it is for classroom layers today. Special-casing
+   * that would put the assumption back.
+   */
+  const frameConversionTo = useCallback((destination: BookLayerId) => {
+    if (!documentEditor) return null
+    const wm = getEditorWMCore(documentEditor)
+    return layerFrameConversion(
+      wm,
+      ensureClassroomLayer(wm, layers.target),
+      ensureClassroomLayer(wm, destination),
+    )
+  }, [documentEditor, layers.target])
+
   const moveSelectionToLayer = useCallback((destination: BookLayerId) => {
     const destinationEditor = editorForLayer(destination)
-    if (!targetEditor || !destinationEditor || destination === layers.target) return
+    const toDestinationFrame = frameConversionTo(destination)
+    if (!targetEditor || !destinationEditor || !toDestinationFrame || destination === layers.target) return
     const ids = targetEditor.getSelectedShapeIds()
     try {
-      moveShapesToLayer(layerStore(targetEditor), layerStore(destinationEditor), ids)
+      moveShapesToLayer(layerStore(targetEditor), layerStore(destinationEditor), ids, toDestinationFrame)
       setMoveError('')
       // The destination is now where the work is, so that is where he is writing.
       setLayers(current => setWriteTarget(current, destination))
@@ -139,21 +160,22 @@ export function useDocumentLayers({
       // "something was lost" look identical from here.
       setMoveError((error as Error).message)
     }
-  }, [targetEditor, editorForLayer, layers.target])
+  }, [targetEditor, editorForLayer, frameConversionTo, layers.target])
 
   // Copy does not move the write target: the originals are still on it, so that
   // is still where he is working. A move follows the work to its destination.
   const copySelectionToLayer = useCallback((destination: BookLayerId) => {
     const destinationEditor = editorForLayer(destination)
-    if (!targetEditor || !destinationEditor || destination === layers.target) return
+    const toDestinationFrame = frameConversionTo(destination)
+    if (!targetEditor || !destinationEditor || !toDestinationFrame || destination === layers.target) return
     const ids = targetEditor.getSelectedShapeIds()
     try {
-      copyShapesToLayer(layerStore(targetEditor), layerStore(destinationEditor), ids, createShapeId)
+      copyShapesToLayer(layerStore(targetEditor), layerStore(destinationEditor), ids, createShapeId, toDestinationFrame)
       setMoveError('')
     } catch (error) {
       setMoveError((error as Error).message)
     }
-  }, [targetEditor, editorForLayer, layers.target])
+  }, [targetEditor, editorForLayer, frameConversionTo, layers.target])
 
   const layersValue = useMemo<LayersValue>(() => ({
     state: layers,
