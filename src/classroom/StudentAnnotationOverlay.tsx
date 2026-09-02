@@ -87,7 +87,14 @@ interface StudentAnnotationOverlayProps {
   /** Whether marks land here. Exactly one layer is the write target. */
   isWriteTarget: boolean
   /** This layer's editor, so a move between layers has both stores. */
-  onEditorMount?: (editor: Editor | null) => void
+  onEditorMount?: (editor: Editor) => void
+  /**
+   * This canvas's editor is going. It is passed rather than implied, because the
+   * receiver has to be able to tell whether the editor it holds is this one — a
+   * remount can run this teardown after the replacement has already registered,
+   * and an unconditional release would drop the live editor.
+   */
+  onEditorRelease?: (editor: Editor) => void
 }
 
 export function StudentAnnotationOverlay({
@@ -97,6 +104,7 @@ export function StudentAnnotationOverlay({
   visible,
   isWriteTarget,
   onEditorMount,
+  onEditorRelease,
 }: StudentAnnotationOverlayProps) {
   const roomId = studentOverlayRoomId(bookRoomId, studentId)
   const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
@@ -183,7 +191,7 @@ export function StudentAnnotationOverlay({
         onMount={editor => {
           setOverlayEditor(editor)
           onEditorMount?.(editor)
-          return () => { setOverlayEditor(null); onEditorMount?.(null) }
+          return () => { setOverlayEditor(null); onEditorRelease?.(editor) }
         }}
         components={OVERLAY_COMPONENTS}
       />
