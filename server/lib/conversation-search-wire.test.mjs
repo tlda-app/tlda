@@ -251,12 +251,22 @@ test('a one-sided filter spends its limit on matching rows, not on the traffic a
       TLDA_FLEET_DB: dbPath,
       TLDA_DEV_SERVER: '1',
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
+      TLDA_SLOWQUERY_MS: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  let requestLog = ''
+  child.stderr.on('data', chunk => { requestLog += chunk })
   try {
     await waitForServer(child)
+    requestLog = ''
     const result = await searchWire(port, 'from:skip', { limit: 10 })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const selectorQueries = (requestLog.match(/WITH matches AS/g) || []).length
+    assert.ok(
+      selectorQueries <= 2,
+      `one annotated filter leaf reran its selector query ${selectorQueries} times while filtering ten rows`,
+    )
     const texts = result.results.map(row => row.text)
     assert.ok(texts.includes('the thing skip said'), `page of 10 lost the one message from him: ${JSON.stringify(texts)}`)
     assert.deepEqual(texts.filter(t => t.startsWith('reply ')), [], 'replies are not from him and must not occupy the page')

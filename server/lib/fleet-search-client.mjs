@@ -10,6 +10,13 @@ const METHODS = [
   'searchAll',
 ]
 
+function requestContext(args) {
+  for (const arg of args || []) {
+    if (arg?._requestContext) return arg._requestContext
+  }
+  return null
+}
+
 export class FleetSearchClient {
   constructor(dbPath) {
     this.dbPath = dbPath
@@ -71,7 +78,7 @@ export class FleetSearchClient {
     if (this._closed) return Promise.reject(new Error('fleet search client is closed'))
     const id = ++this._seq
     return this._ready.then(() => new Promise((resolve, reject) => {
-      this._pending.set(id, { resolve, reject, queuedAt: performance.now(), context: args[1]?._requestContext || null })
+      this._pending.set(id, { resolve, reject, queuedAt: performance.now(), context: requestContext(args) })
       this._child.send({ id, method, args })
     }))
   }
