@@ -1,0 +1,176 @@
+/* The doc-view's spacetime body and its transport.
+ *
+ * The bar docks to the bottom of the shape rather than floating: a doc-view is
+ * a framed thing and its controls belong inside the frame. In `auto-hide` the
+ * bar translates below the edge and a strip along the bottom brings it back. */
+
+/* The header control's three states, monochrome: gone, on hover, on screen. */
+.docview-timectl.is-off { opacity: 0.35; }
+.docview-timectl.is-auto-hide { opacity: 0.7; }
+.docview-timectl.is-pinned { opacity: 1; text-decoration: underline; }
+
+.docview-spacetime-canvas {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+
+.docview-spacetime-canvas .tl-container {
+  position: absolute;
+  inset: 0;
+}
+
+.docview-spacetime-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.15;
+  font-size: 11px;
+}
+
+.docview-spacetime-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* The strip that reveals an auto-hidden bar. It has to be a sibling: a bar that
+   has translated off the bottom edge cannot be hovered to bring itself back. */
+.docview-spacetime-reveal {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 14px;
+  pointer-events: all;
+}
+
+.docview-spacetime-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  background: var(--color-panel, rgba(252, 252, 252, 0.96));
+  border-top: 1px solid var(--color-divider, rgba(0, 0, 0, 0.08));
+  transform: translateY(100%);
+  transition: transform 120ms ease-out;
+  pointer-events: all;
+}
+
+.docview-spacetime-bar.is-shown {
+  transform: translateY(0);
+}
+
+.docview-spacetime-btn {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  color: var(--color-text, #1d1d1d);
+}
+
+.docview-spacetime-btn:hover:not(:disabled) {
+  background: var(--color-hint, rgba(0, 0, 0, 0.06));
+}
+
+.docview-spacetime-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.docview-spacetime-pick {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+
+.docview-spacetime-time {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
+}
+
+.docview-spacetime-slider {
+  flex: 1 1 auto;
+  min-width: 30px;
+  margin: 0;
+}
+
+.docview-spacetime-list {
+  position: absolute;
+  left: 4px;
+  bottom: 100%;
+  margin-bottom: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  min-width: 180px;
+  background: var(--color-panel, #fcfcfc);
+  border: 1px solid var(--color-divider, rgba(0, 0, 0, 0.1));
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+}
+
+.docview-spacetime-list__empty {
+  padding: 8px 10px;
+  font-size: 11px;
+  opacity: 0.5;
+}
+
+.docview-spacetime-list__item {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 5px 10px;
+  font-size: 11px;
+  text-align: left;
+  color: var(--color-text, #1d1d1d);
+}
+
+.docview-spacetime-list__item:hover {
+  background: var(--color-hint, rgba(0, 0, 0, 0.06));
+}
+
+.docview-spacetime-list__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docview-spacetime-list__dur {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+}
+
+.docview-spacetime-review {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  font-size: 10px;
+  background: var(--color-panel, #fcfcfc);
+  border-top: 1px solid var(--color-divider, rgba(0, 0, 0, 0.08));
+  pointer-events: all;
+}
+
+.docview-spacetime-review input[type='number'] {
+  width: 56px;
+}
