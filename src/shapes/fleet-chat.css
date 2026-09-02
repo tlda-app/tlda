@@ -1588,7 +1588,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
    the gutter so it starts at the spine, and it takes no clicks: collapsing is
    the spine control's job once the middle is open. */
 .fleet-chat-shape .pretty-expand-btn.thread-fold-open {
-  margin-left: -20px;
+  /* The gutter width, so the line starts at the spine. Same variable, because
+     -20px only reached the spine while the column was hard-coded to 20px. */
+  margin-left: calc(-1 * var(--chat-collapse-gutter));
   padding: 0;
   height: 0;
   border-top: 1px solid var(--accent, #7a9ec8);
@@ -1609,13 +1611,60 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
    box is clipped, so the control was invisible and unhittable. Skip: "it needs
    to be further out, maybe even outside the edge of the card", "you can't really
    see it", "nor can you click it". Reserving the column puts it beyond the
-   card's edge while staying inside the scroller. */
+   card's edge while staying inside the scroller.
+
+   The column's width and the control's painted width were two encodings of one
+   quantity and they only agreed at an 11px base font. The control is rotated
+   -90deg, so its painted WIDTH is its layout HEIGHT -- its vertical padding plus
+   one line of its own type -- while the column was a hard-coded 20px. But
+   `--fleet-base-font` is a per-device reader preference ranging 8..24px
+   (`readabilityProfile.ts`), so at the 14px default the control paints ~23px
+   into a 20px column and at 24px it paints ~32px. `justify-self: center` splits
+   the excess both ways, so the overflow lands in the text column. Derive both
+   from one expression instead. */
+.fleet-chat-shape {
+  --chat-collapse-pad: 6px;
+  /* Matches `.semantic-operation-collapse`'s font-size below, and its
+     `line-height: 1`, so this IS the control's painted width. */
+  --chat-collapse-line: calc(var(--fleet-base-font, 11px) * 0.818182);
+  --chat-collapse-clear: 4px;
+  --chat-collapse-gutter: calc(
+    var(--chat-collapse-pad) * 2 + var(--chat-collapse-line) + var(--chat-collapse-clear)
+  );
+}
 .fleet-chat-shape .semantic-operation-expanded-shell {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr);
   gap: 0;
   align-items: start;
   position: relative;
+}
+/* Only the thread card has a control to hold. A search card's collapse was
+   deleted in `3d4454abe` and its column is empty, so it keeps the width it had
+   -- widening dead space there would be an appearance change nobody asked for. */
+.fleet-chat-shape .thread-shell {
+  grid-template-columns: var(--chat-collapse-gutter) minmax(0, 1fr);
+}
+/* The column only ever reserved space against the thread rows beneath it. The
+   shell is nested inside `.tool-run-card > .tool-run-body`
+   (`activity-render.mjs:1213`), and the card's tool lines are siblings that span
+   the full body width -- straight across the same strip. `useFloatingCollapse`
+   then parks the control at the vertical middle of the VIEWPORT, which is where
+   those lines and the message text are, so the control read as sitting in the
+   middle of the card behind text rather than in a gutter beside it. Skip: "It's
+   just, like, right in the middle, super awkwardly occluded by text."
+   Indenting the card's own lines by the same column makes the strip empty for
+   the card's whole height, which is the side gutter he asked for.
+
+   Gated on `.thread-shell`, NOT on `.thread-shell.thread-middle-open` -- i.e.
+   on the card having a spine at all, not on the control currently being
+   visible. Gating it on the open state would move this padding when the middle
+   opens, which re-wraps the lines and changes the row's height, and
+   docs/chat-rendering.md §"`position: sticky` cannot work" requires this
+   control to stay a passenger in the re-entrancy map rather than a participant.
+   Reserved always, it is static: nothing about expand/collapse changes layout. */
+.fleet-chat-shape .tool-run-card:has(.thread-shell) .tool-line {
+  padding-left: calc(6px + var(--chat-collapse-gutter));
 }
 .fleet-chat-shape .semantic-operation-expanded-shell > .semantic-operation-view {
   grid-column: 2;
@@ -1639,9 +1688,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: transparent;
   color: var(--accent, #7a9ec8);
   font: inherit;
-  font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
+  /* Both of these feed --chat-collapse-gutter above. Change them there. */
+  font-size: var(--chat-collapse-line);
   line-height: 1;
-  padding: 6px 0;
+  padding: var(--chat-collapse-pad) 0;
   text-align: center;
   cursor: pointer;
   /* Skip: "you can't really see it is the problem." */
