@@ -116,6 +116,44 @@ for all of them.
 The filter is a plain `--path` with no rename, so the shadow keeps the project's
 original paths and patches apply where they belong with no translation.
 
+### The shadow's own bookkeeping is not the paper
+
+`writeShadowGuardFiles` writes a `.gitignore` and a `CLAUDE.md` reading "DO NOT
+WRITE HERE" into every shadow at creation, and a shadow with no origin — which
+is what every locally-linked project has — commits them as its `init` commit.
+The first `Build at …` commit then deletes that `CLAUDE.md`, because
+`commitSnapshot` clears the tree and rebuilds it from the revision's files.
+
+**Observed 2026-09-02**, on a shadow built by the real `commitSnapshot`:
+
+```
+init                A .gitignore  A CLAUDE.md
+Build at …          D CLAUDE.md   A main.tex
+Build at …          M main.tex
+```
+
+Replayed unfiltered into an author's repository, that lands the server's two
+files on top of theirs and then deletes their `CLAUDE.md` — data loss in the one
+command whose job is getting their work back. Measured before the filter
+existed: `--ff-only` refused on patch 1 of 3, so the command did not work at all
+on the projects it exists for.
+
+So the replay is scoped to the paper, and **the scope rule is the existing one
+rather than a new one**: `readShadowSourceScope` already skips exactly these two
+by name when it decides which files are the paper's. The pathspec is applied to
+the patch-id pairing, to `format-patch`, and on both sides — a commit that
+carries only bookkeeping is not selected, and a commit that carries a paper
+change *and* a bookkeeping deletion contributes only its paper half.
+
+**The trade-off, stated rather than discovered later:** a project whose paper
+genuinely contains a root `.gitignore` will not have changes to it replayed
+back. That is the safe direction, and it is the answer the existing scope rule
+already gives. Root-level only — a `docs/CLAUDE.md` the author wrote is theirs.
+
+A commit that carries only bookkeeping is reported, not silently dropped, and it
+is reported **separately** from a commit that is genuinely empty: those are two
+different facts about the history and a reader acts on them differently.
+
 New shas on the target side are expected and are not a problem to be solved.
 Commits are matched by `git patch-id` — a hash of the normalised diff, identical
 for two commits that make the same change whatever their shas. The technique is
