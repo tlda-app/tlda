@@ -34,6 +34,11 @@ import { getHudEditor } from '../wm/editor-host-bridge'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import { completeFleetAgentChatDrop } from '../fleet/fleet-onboarding'
 import { pagePointToClient } from '../wm/viewport-coordinates'
+import {
+  fleetInteractionFrame,
+  fleetShapesUnderPointer,
+  type FleetInteractionFrame,
+} from '../wm/fleet-interaction-frame'
 import { materializeMarkdownChip } from './markdown-chip-materialize'
 import { type UiIntentTransaction } from '../uiIntentTelemetry'
 import {
@@ -515,6 +520,14 @@ export async function dropPillOnTarget(
   pagePoint: { x: number; y: number },
   content?: string,
   showError?: (message: string) => void,
+  /**
+   * The frame the drop gesture happened in. Optional because not every caller
+   * has one to hand; without it the drop resolves its layer from `hitEditor`
+   * with no viewport, which is the main canvas — correct for a drop that did
+   * not come from a projected panel, and wrong for one that did, which is why
+   * the callers that have a frame pass it.
+   */
+  frame?: FleetInteractionFrame,
 ) {
   const draggedPillType = (editor.getShape(pillId)?.props as { pillType?: string } | undefined)?.pillType
   const completeAgentDropGuide = () => {
@@ -546,29 +559,34 @@ export async function dropPillOnTarget(
   const targetPagePoint = pagePoint
   // Find fleet-chat under the drop point manually — getShapeAtPoint skips locked shapes
   // Cast to any: custom fleet shape types aren't in tldraw's built-in type union
-  const allChats = hitEditor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat') as any[]
-  let hitShape: any
-  for (const chat of allChats) {
-    const bounds = hitEditor.getShapePageBounds(chat.id)
-    if (bounds &&
-      targetPagePoint.x >= bounds.x && targetPagePoint.x <= bounds.x + bounds.w &&
-      targetPagePoint.y >= bounds.y && targetPagePoint.y <= bounds.y + bounds.h) {
-      hitShape = chat
-      break
-    }
-  }
+  // Both hit tests below go through the WM rather than comparing the drop point
+  // against page bounds directly.
+  //
+  // Skip, 2026-08-13 03:42:21 EDT: "we can't have coordinate frame bugs if
+  // things are in the right fucking coordinate frames... shit in a layer stays
+  // in the fucking [layer], that's crucial." A page-bounds comparison asks
+  // whether two numbers overlap. When the candidates are in different layers
+  // those numbers measure different frames, so the comparison succeeds without
+  // meaning anything — and it succeeds silently, which is why the type filter
+  // (`fleet-chat`, `FLEET_TYPES`) looked like it was doing the job. It was
+  // standing in for membership, the same way ownership was in the nudge
+  // collector. `wm.hitTest` converts the probe point into each candidate's own
+  // layer first, so a hit is decided in the frame the shape actually lives in.
+  const dropFrame = fleetInteractionFrame(hitEditor, frame?.viewportId)
+  const allChats = hitEditor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat')
+  const hitShape: any = fleetShapesUnderPointer(hitEditor, dropFrame, targetPagePoint, allChats)[0]?.shape
+
   // Whether the drop landed on ANY fleet shape (the HUD), not just a fleet-chat.
   // A sticky/new-chat must never be created on top of the HUD — it sits over the
   // fixed overlay and becomes undismissable. So if the drop is over a fleet
   // shape and isn't a handled fleet-chat interaction, the create paths below
   // evaporate it (see the guard before the create branches).
-  const overFleet = hitEditor.getCurrentPageShapes().some(s => {
-    if (!FLEET_TYPES.has(s.type as string)) return false
-    const b = hitEditor.getShapePageBounds(s.id)
-    return !!b &&
-      targetPagePoint.x >= b.x && targetPagePoint.x <= b.x + b.w &&
-      targetPagePoint.y >= b.y && targetPagePoint.y <= b.y + b.h
-  })
+  const overFleet = fleetShapesUnderPointer(
+    hitEditor,
+    dropFrame,
+    targetPagePoint,
+    hitEditor.getCurrentPageShapes().filter(s => FLEET_TYPES.has(s.type as string)),
+  ).length > 0
 
   // A filter overlay is showing a LIVE preview (a pill is hovering it), so the
   // drop commits that preview to the overlay's target chat — wherever the drop

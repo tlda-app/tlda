@@ -39,12 +39,13 @@ import {
   searchAutocompleteSuggestions,
   type SearchAutocompleteSuggestion,
 } from '../fleet/search-autocomplete'
-import { FleetHudRenderGate, useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { FleetHudRenderGate, useIsInViewport } from './useIsInViewport'
 import { dropPillOnTarget } from './FleetPillShape'
 import { deleteFleetPill } from './fleet-pill-forensics'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { dragCoordinator } from './dragCoordinator'
-import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+import { fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+import { useFleetInteractionFrame } from '../wm/useFleetInteractionFrame'
 import { FleetSearchResultsView, visibleFleetSearchResultCount } from './FleetSearchResultsView'
 import { usePillDrag as useCanonicalPillDrag } from './FleetAgentsShape'
 import { ProjectContext } from '../PanelContext'
@@ -119,8 +120,7 @@ interface DragState {
 
 function usePillDrag() {
   const editor = useEditor()
-  const viewportId = useVisibilityViewportId()
-  const frame = useMemo(() => fleetInteractionFrame(viewportId), [viewportId])
+  const frame = useFleetInteractionFrame()
   const dragRef = useRef<DragState | null>(null)
   const releaseRef = useRef<null | (() => void)>(null)
   const cancelDrag = useCallback(() => {
@@ -198,7 +198,7 @@ function usePillDrag() {
         markFleetPillInactive(String(drag.pillId))
         const id = drag.pillId as TLShapeId
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
-        dropPillOnTarget(editor, id, drag.value, pagePos, drag.content)
+        dropPillOnTarget(editor, id, drag.value, pagePos, drag.content, undefined, frame)
         editor.run(() => {
           deleteFleetPill(editor, id, 'drag-drop', { surface: 'search' })
         }, { history: 'ignore' })

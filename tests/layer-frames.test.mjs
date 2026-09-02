@@ -184,3 +184,25 @@ test('an unregistered viewport is reported as such, not as the document', () => 
   assert.equal(resolution.kind, 'unregistered')
   assert.equal(resolution.layerId, null)
 })
+
+test('the same resolution is the same object, so a consumer can depend on it', () => {
+  const registry = new Map([['viewport:hud', { coordinateLayerId: 'wm:viewport-camera:viewport:hud' }]])
+  const lookup = id => registry.get(id)
+
+  // Interning is not a performance detail here. Without it, every render hands
+  // the fleet panels a new frame object, their gesture handlers are rebuilt,
+  // and the chat's document-level listeners are torn down and re-added on each
+  // pass. The alternative — a memo whose deps name the fields while its body
+  // rebuilds the object — would be a second copy of the resolution logic.
+  assert.equal(resolveContextLayer(undefined, lookup), resolveContextLayer(undefined, lookup))
+  assert.equal(resolveContextLayer('viewport:hud', lookup), resolveContextLayer('viewport:hud', lookup))
+  assert.notEqual(resolveContextLayer('viewport:hud', lookup), resolveContextLayer(undefined, lookup))
+
+  // And it tracks the answer, not the question: the same viewport resolving
+  // differently must not be served the old object.
+  registry.set('viewport:hud', { coordinateLayerId: 'wm:viewport-camera:other' })
+  assert.notEqual(
+    resolveContextLayer('viewport:hud', lookup).layerId,
+    'wm:viewport-camera:viewport:hud',
+  )
+})

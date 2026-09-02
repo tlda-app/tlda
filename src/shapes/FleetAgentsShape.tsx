@@ -26,8 +26,9 @@ import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } f
 import { agentDisplayLabel, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { dragCoordinator } from './dragCoordinator'
-import { FleetHudRenderGate, useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
-import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+import { FleetHudRenderGate, useIsInViewport } from './useIsInViewport'
+import { fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+import { useFleetInteractionFrame } from '../wm/useFleetInteractionFrame'
 import { cancelWMDrop, finishWMDrop, updateWMDrop } from '../wm/drop-targets'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import { ProjectContext } from '../PanelContext'
@@ -297,8 +298,7 @@ export type FleetPillDropData = {
 
 export function usePillDrag() {
   const editor = useEditor()
-  const viewportId = useVisibilityViewportId()
-  const frame = useMemo(() => fleetInteractionFrame(viewportId), [viewportId])
+  const frame = useFleetInteractionFrame()
   const dragRef = useRef<DragState | null>(null)
 
   const cancelDrag = useCallback(() => {
@@ -409,7 +409,7 @@ export function usePillDrag() {
           data: { editor, pillId: drag.pillId, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, pagePoint: pagePos },
         }, { x: ev.clientX, y: ev.clientY })
         if (!handled) {
-          dropPillOnTarget(editor, drag.pillId as TLShapeId, drag.value, pagePos)
+          dropPillOnTarget(editor, drag.pillId as TLShapeId, drag.value, pagePos, undefined, undefined, frame)
         }
         editor.run(() => {
           try {

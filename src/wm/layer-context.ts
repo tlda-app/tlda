@@ -45,14 +45,37 @@ export type ContextLayerResolution =
  * Pure, so the three cases can be exercised directly. `useCurrentLayer` is the
  * React binding and adds nothing but the two lookups.
  */
+/**
+ * Resolutions are interned: the same inputs return the same object.
+ *
+ * A resolution is fully determined by its contents, so two of them are either
+ * identical or different — there is nothing for a caller to hold that a second
+ * copy would not also say. Interning makes that a fact about identity too,
+ * which is what lets a React consumer depend on one without rebuilding its
+ * gesture handlers every render. The alternative was a memo whose dependency
+ * list named the fields while its body rebuilt the object, i.e. a second copy
+ * of the logic below — the one thing this module exists to prevent.
+ *
+ * Bounded by the number of viewports the app registers, which is small.
+ */
+const interned = new Map<string, ContextLayerResolution>()
+
+function intern(resolution: ContextLayerResolution): ContextLayerResolution {
+  const key = `${resolution.kind}|${resolution.layerId ?? ''}|${(resolution as { viewportId?: string }).viewportId ?? ''}`
+  const existing = interned.get(key)
+  if (existing) return existing
+  interned.set(key, resolution)
+  return resolution
+}
+
 export function resolveContextLayer(
   viewportId: TLViewportId | undefined,
   lookup: ViewportLayerLookup,
 ): ContextLayerResolution {
-  if (!viewportId) return { kind: 'document', layerId: FLEET_HUD_DOCUMENT_LAYER_ID }
+  if (!viewportId) return intern({ kind: 'document', layerId: FLEET_HUD_DOCUMENT_LAYER_ID })
   const registered = lookup(viewportId)
-  if (!registered) return { kind: 'unregistered', layerId: null, viewportId }
-  return { kind: 'viewport', layerId: registered.coordinateLayerId, viewportId }
+  if (!registered) return intern({ kind: 'unregistered', layerId: null, viewportId })
+  return intern({ kind: 'viewport', layerId: registered.coordinateLayerId, viewportId })
 }
 
 /** The lookup half, bound to an editor's registry. */
