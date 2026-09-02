@@ -947,7 +947,18 @@ const SLIDES_BRIDGE_SCRIPT = `
       // slide centred 14500px down it, which is why the canvas looked empty.
       // They belong to the slide's own rect instead.
       '.reveal-viewport.reveal-scroll .scroll-page-sticky{position:relative!important;height:100%!important;top:auto!important}',
-      '.reveal-viewport.reveal-scroll .scroll-page-content{height:100%!important}',
+      // Height pins the box to the slide; overflow must NOT clip it.
+      //
+      // Reveal gives .scroll-page-content overflow:hidden because in its own
+      // scroll view a page is a viewport-sized window. Here the page IS the
+      // slide and the canvas is infinite, so a slide whose content runs long
+      // should spill downward onto empty canvas rather than be cut off.
+      //
+      // Measured: content ending at 1535px inside a 1000px box was clipped at
+      // 1000; with overflow visible it renders in full. Everything else in the
+      // chain -- sticky, section, page -- was already visible, so this one rule
+      // was the whole of it.
+      '.reveal-viewport.reveal-scroll .scroll-page-content{height:100%!important;overflow:visible!important}',
       // Reveal's scroll-snap markers. They are siblings of the slide inside
       // .scroll-page, they inherit the strip's height the same way the boxes
       // above did -- measured at 1290 x 31000, 39 of them -- and being later in
