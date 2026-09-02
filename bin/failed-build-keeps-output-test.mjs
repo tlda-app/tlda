@@ -127,6 +127,9 @@ assert.equal(recorded?.args?.[3], 'build_failed',
   'a build that rendered nothing must record itself as failed, not silently as built')
 assert.ok(failed.seen.some((entry) => entry.method === 'publishBuildDiagnostics'),
   'a failed build must carry its log out of the instance, or nothing can say why it failed')
+const failureReport = failed.seen.find((entry) => entry.method === 'reportBuildFailure')
+assert.deepEqual(failureReport?.args?.slice(0, 2), [NAME, '[qmd] document root not found: chapter-that-does-not-exist.qmd'],
+  'a failed worker must cross the server boundary that publishes reader status and the conversation build card')
 // `logMissing`: the diagnostics wire existed and had nothing on it, because the
 // format builders logged to console.log and never wrote a build.log at all.
 assert.ok(failed.buildLog, 'a failed build must leave a build.log in the live project')

@@ -253,6 +253,11 @@ process.on('message', async (msg) => {
       console.error(`[build-worker] could not preserve diagnostics for ${msg.name}: ${diagError?.message || diagError}`)
     }
     try {
+      await callParent('reportBuildFailure', [msg.name, e?.message || String(e), msg.sourceRevision, msg.acceptSeq])
+    } catch (reportError) {
+      e.message = `${e?.message || String(e)}; build failure delivery failed: ${reportError?.message || reportError}`
+    }
+    try {
       await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, 'build_failed', { ok: false, error: e?.message || String(e) }])
     } catch (recordError) {
       e.message = `${e?.message || String(e)}; build disposition persistence failed: ${recordError?.message || recordError}`

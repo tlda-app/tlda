@@ -2518,11 +2518,8 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
     try { await _reporter.updateProject(name, { buildStatus: 'failed' }) } catch (e2) { console.error(`[build] failed to set failed status for ${name}: ${e2.message}`) }
     try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch (e2) { console.error(`[build] failed to write build.log for ${name}: ${e2.message}`) }
 
-    await recordPersistentBuildStatus(name, e.message, sourceRevision, acceptSeq)
-    await signalBuildStatus(name, e.message)
-    signalBuildProgress(name, 'failed', e.message)
+    await reportBuildFailure(name, e.message, sourceRevision, acceptSeq)
     emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), errors: [e.message] })
-    await emitBuildFailureCard(name, e.message)
     throw e
   } finally {
     buildChildProcesses.delete(buildId)
@@ -2590,6 +2587,13 @@ async function recordPersistentBuildStatus(name, errorMessage, sourceRevision, a
   } catch (e) {
     console.error(`[build:${name}] Failed to update persistent build status: ${e.message}`)
   }
+}
+
+export async function reportBuildFailure(name, message, sourceRevision = null, acceptSeq = null) {
+  await recordPersistentBuildStatus(name, message, sourceRevision, acceptSeq)
+  await signalBuildStatus(name, message)
+  signalBuildProgress(name, 'failed', message)
+  await emitBuildFailureCard(name, message)
 }
 
 async function emitBuildFailureCard(name, message) {
