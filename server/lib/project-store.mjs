@@ -880,6 +880,34 @@ export async function extractPipelineWarningsAsync(name) {
 }
 
 /**
+ * The same question as `extractBuildErrors`, asked of a NON-LaTeX build.
+ *
+ * `latex.log` is produced by latexmk and by nothing else, so for markdown, qmd,
+ * html and slides it never exists — and `extractBuildErrors` returned
+ * `logMissing: true` on its absence. That is why a failed .qmd build reported
+ * `Build failed and left no log — nothing to show. This is a defect: report it.`
+ * while its `build.log` sat in the project directory the whole time: the log was
+ * written by `withBuildLog`, carried out of the instance by
+ * `publishBuildDiagnostics` (which names BOTH files), and then read by nobody.
+ * `extractPipelineWarnings` does read `build.log`, but only for LaTeX-pipeline
+ * markers, so a `[build] ...` failure line matched nothing there either.
+ *
+ * `[build] ` is the failure marker rather than a heuristic: `withBuildLog`'s
+ * catch and the worker's missing-main path are the only two writers of it, and
+ * both write it because the build failed. Everything else in the file is a
+ * builder's own progress log, prefixed with its format (`[qmd]`, `[markdown]`).
+ */
+async function buildLogErrors(name) {
+  const logText = await readTextOrNull(join(projectDir(name), 'build.log'))
+  if (logText === null) return { errors: [], warnings: [], logMissing: true }
+  const errors = logText.split('\n')
+    .filter((line) => line.startsWith('[build] '))
+    .map((line) => ({ message: line.slice('[build] '.length).trim() }))
+    .filter((error) => error.message)
+  return { errors, warnings: [], logMissing: false }
+}
+
+/**
  * Extract structured errors and warnings from a LaTeX log file.
  * Returns { errors: [{ message, line?, file? }], warnings: string[] }
  */
@@ -895,7 +923,7 @@ export async function extractBuildErrors(name) {
   // of a failed build's instance by publishBuildDiagnostics.
   const logPath = join(projectDir(name), 'latex.log')
   const logText = await readTextOrNull(logPath)
-  if (logText === null) return { errors: [], warnings: [], logMissing: true }
+  if (logText === null) return buildLogErrors(name)
   const result = parseLatexErrors(logText)
   result.logMissing = false
 

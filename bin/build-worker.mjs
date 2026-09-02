@@ -239,13 +239,18 @@ process.on('message', async (msg) => {
     // instance: the log is the only account of why this failed, and it exists
     // nowhere but inside the instance. Diagnostics only — no artifacts cross,
     // so the last good render stays the published one.
-    if (instanceProject) {
-      try {
-        await callParent('publishBuildDiagnostics', [msg.name, instanceProject])
-      } catch (diagError) {
-        // Never let saving the explanation replace the failure being explained.
-        console.error(`[build-worker] could not preserve diagnostics for ${msg.name}: ${diagError?.message || diagError}`)
-      }
+    // Unconditional, and that is the point: `instanceProject` is still null for
+    // every failure that happens before the instance is materialized — a
+    // missing source revision, an unopenable lifecycle store, the
+    // materialization itself. Gated on the instance, those failures wrote no
+    // log anywhere and `tlda project errors` reported the absence as a defect
+    // with nothing to point at. The reason is passed so there is always
+    // something to write when there was nothing to carry out.
+    try {
+      await callParent('publishBuildDiagnostics', [msg.name, instanceProject, e?.message || String(e)])
+    } catch (diagError) {
+      // Never let saving the explanation replace the failure being explained.
+      console.error(`[build-worker] could not preserve diagnostics for ${msg.name}: ${diagError?.message || diagError}`)
     }
     try {
       await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, 'build_failed', { ok: false, error: e?.message || String(e) }])
