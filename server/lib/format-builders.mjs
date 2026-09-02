@@ -93,7 +93,14 @@ export async function buildQmd(name) {
   await getBuildReporter().regenerateBookTocs(name)
 }
 
+// Wrapped for the same reason markdown and qmd are: a build that fails has to
+// leave an account of why. These two threw plain errors into a `console.log`
+// that nothing keeps, so `No HTML file found in source` reached no reader.
 export async function buildHtml(name) {
+  return withBuildLog(name, () => buildHtmlDocument(name))
+}
+
+async function buildHtmlDocument(name) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -141,6 +148,10 @@ export async function buildHtml(name) {
 }
 
 export async function buildSlides(name) {
+  return withBuildLog(name, () => buildSlidesDocument(name))
+}
+
+async function buildSlidesDocument(name) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)

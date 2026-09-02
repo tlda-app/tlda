@@ -119,10 +119,10 @@ const BUILD_DIAGNOSTIC_FILES = ['build.log', 'latex.log']
  * live project that has none — so `build/status` says `error` while
  * `tlda project errors` says `Clean.` about the same build.
  */
-export function publishBuildDiagnostics(name, instanceProject) {
+export function publishBuildDiagnostics(name, instanceProject, failureReason = null) {
   const liveProject = projectDir(name)
   const copied = []
-  for (const file of BUILD_DIAGNOSTIC_FILES) {
+  for (const file of instanceProject ? BUILD_DIAGNOSTIC_FILES : []) {
     const from = join(instanceProject, file)
     if (!existsSync(from)) continue
     // Written, not renamed: the instance is about to be removed wholesale, and
@@ -131,7 +131,25 @@ export function publishBuildDiagnostics(name, instanceProject) {
     cpSync(from, join(liveProject, file))
     copied.push(file)
   }
-  return { copied }
+
+  // A build can fail BEFORE it has an instance to log into — resolving the
+  // source revision, opening the lifecycle store, or materializing the instance
+  // itself all run first, and `instanceProject` is still null for every one of
+  // them. There was nothing to carry out and so nothing was written anywhere,
+  // which is the case that reads as "failed and left no log" with no defect
+  // visible in any build the reader can find. The reason is the only account
+  // that exists, so it becomes the log.
+  let wrote = null
+  if (copied.length === 0 && failureReason) {
+    try {
+      writeFileSync(join(liveProject, 'build.log'), `[build] ${failureReason}\n`)
+      wrote = 'build.log'
+    } catch (e) {
+      // Never let recording the reason replace the failure being recorded.
+      console.error(`[build] could not write failure log for ${name}: ${e?.message || e}`)
+    }
+  }
+  return { copied, wrote }
 }
 
 /**
