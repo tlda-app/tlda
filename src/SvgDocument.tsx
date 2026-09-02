@@ -112,7 +112,6 @@ import { BookLayersSlot } from './classroom/BookLayersSlot'
 import { FollowingBadge } from './pills/FollowingBadge'
 import { FleetIconPill } from './pills/FleetIconPill'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
-import { setDraftMode } from './annotationVisibility'
 import { AnnotationViewer } from './overlays/AnnotationViewer'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
@@ -494,15 +493,23 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   // Role only meaningful in presentation (slides) format
   useMemo(() => {
     initRole(projectName)
-    if (isPresentation) setDraftMode(getRole() === 'viewer')
   }, [projectName, isPresentation])
   const role = useSyncExternalStore(subscribeRole, getRole)
 
-  // Presentation: broadcast presenter identity + sync draft mode to role
+  // Presentation: broadcast presenter identity.
+  //
+  // This used to put viewers into draft mode as well. Skip rejected draft mode
+  // itself — "not the fking mode itself" — and its controls have left this
+  // surface, so entering viewers into a mode they cannot see or leave would
+  // strand their marks: created as drafts, never publishable. `draftMode` is
+  // module state defaulting to false and is not persisted, so removing this
+  // leaves it off rather than leaving anyone in it.
+  //
+  // The mechanism is untouched. `annotationVisibility.ts` still tracks,
+  // publishes and toggles drafts for whatever mounts a control for it.
   useEffect(() => {
     if (!isPresentation) return
     if (role === 'presenter') broadcastPresenter(true)
-    setDraftMode(role === 'viewer')
   }, [role, isPresentation])
 
   const {
