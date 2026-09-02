@@ -1,4 +1,4 @@
-import { useBook } from '../BookContext'
+import { useLayers } from './layersContext'
 import { BookLayersControl } from './BookLayersControl'
 
 // The layer control, where the ordinary controls are.
@@ -18,10 +18,10 @@ import { BookLayersControl } from './BookLayersControl'
 // whatever surface the document is on — presentation included — and it moves
 // when they move.
 export function BookLayersSlot() {
-  const book = useBook()
-  const layers = book?.layers
-  // Not in a book, or one layer: nothing to choose between, so no control. Not
-  // a gate on who is reading — there is no such gate anywhere on this path now.
+  const layers = useLayers()
+  // No layers on this surface, or one layer: nothing to choose between, so no
+  // control. Not a gate on who is reading — there is no such gate anywhere on
+  // this path now, and no longer a gate on being in a book either.
   if (!layers || layers.state.layers.length < 2) return null
   return (
     <BookLayersControl
