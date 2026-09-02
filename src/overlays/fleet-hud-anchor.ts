@@ -122,6 +122,10 @@ export function computeFleetHudDefaultAnchor({
   // before — and not a screen clamp. A clamp is what was tried here before and
   // it dragged the layout over the middle of the slide; see the note below,
   // which stands.
+  // `farEdge` and `nearMarginFarEdge` are read on the 'x' branch only, and a
+  // deck is always 'y'. So the near-margin group's far edge cannot affect deck
+  // placement by any input — structurally, not as a case that happens to work
+  // out. Worth stating at that strength: "harmless" invites a re-check later.
   const layoutNearEdge = marginAxis === 'x' ? bounds.x : bounds.y
   const acrossFlow = marginAxis === 'x'
     ? docNearScreen - marginGap - farEdge
