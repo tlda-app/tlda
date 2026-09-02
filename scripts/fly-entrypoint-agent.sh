@@ -170,12 +170,6 @@ fi
 # tmux needs a sane TERM for the codex TUI to render in a pane.
 export TERM="${TERM:-xterm-256color}"
 
-# Friend-box Codex agents primarily need fleet chat/task tools. The full tlda MCP
-# document tool catalog is large enough that Codex may not expose chat in the
-# initial tool surface, making spawned agents unable to answer messages. Keep the
-# agent-box MCP surface fleet-only so register/my_task/chat are always present.
-export TLDA_MCP_FLEET_ONLY="${TLDA_MCP_FLEET_ONLY:-1}"
-
 echo "[entrypoint] starting fleet-daemon → ${TLDA_SERVER} (machine_id=${TLDA_MACHINE_ID})"
 if [ -n "$PROJECT_DIR" ]; then
   cd "$PROJECT_DIR"

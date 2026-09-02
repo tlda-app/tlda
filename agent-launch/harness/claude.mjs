@@ -45,9 +45,6 @@ function mcpConfig() {
         type: 'stdio',
         command: process.execPath,
         args: [path.join(repoRoot(), 'mcp-server', 'index.mjs')],
-        env: {
-          TLDA_MCP_FLEET_ONLY: '1',
-        },
       },
     },
   }

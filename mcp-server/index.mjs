@@ -56,7 +56,6 @@ const TLDA_SERVER = getServerUrl();
 const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
 const STORE_IS_LOCAL = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(TLDA_SERVER);
 const ALLOW_LOCAL_DOC_DISK = !!process.env.TLDA_SYNC_SERVER || STORE_IS_LOCAL;
-const FLEET_ONLY_MCP = process.env.TLDA_MCP_FLEET_ONLY === '1';
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
 async function serverFetch(urlPath, options = {}) {
@@ -1839,42 +1838,38 @@ const httpServer = http.createServer(async (req, res) => {
 // Start HTTP server (skip if port in use — collab mode may already have it)
 const HTTP_PORT = 5174;
 let httpRunning = false;
-if (!FLEET_ONLY_MCP) {
-  httpServer.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`Port ${HTTP_PORT} in use — skipping HTTP server (collab instance likely running)`);
-      return;
-    }
-    throw err;
-  });
-  httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
-    httpRunning = true;
-    console.error(`Feedback HTTP server running on port ${HTTP_PORT}`);
-  });
-}
+httpServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${HTTP_PORT} in use — skipping HTTP server (collab instance likely running)`);
+    return;
+  }
+  throw err;
+});
+httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
+  httpRunning = true;
+  console.error(`Feedback HTTP server running on port ${HTTP_PORT}`);
+});
 
 // WebSocket server for forward sync (Claude → iPad)
 const WS_PORT = 5175;
 let wss = null;
 const wsClients = new Set();
 
-if (!FLEET_ONLY_MCP) {
-  try {
-    wss = new WebSocketServer({ port: WS_PORT });
-    wss.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        console.error(`Port ${WS_PORT} in use — skipping WebSocket server (collab instance likely running)`);
-        wss = null;
-        return;
-      }
-      throw err;
-    });
-  } catch (err) {
-    if (err?.code === 'EADDRINUSE') {
-      console.error(`Port ${WS_PORT} in use — skipping WebSocket server`);
-    } else {
-      throw err;
+try {
+  wss = new WebSocketServer({ port: WS_PORT });
+  wss.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${WS_PORT} in use — skipping WebSocket server (collab instance likely running)`);
+      wss = null;
+      return;
     }
+    throw err;
+  });
+} catch (err) {
+  if (err?.code === 'EADDRINUSE') {
+    console.error(`Port ${WS_PORT} in use — skipping WebSocket server`);
+  } else {
+    throw err;
   }
 }
 
@@ -1954,7 +1949,7 @@ const server = new Server(
 
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: FLEET_ONLY_MCP ? getFleetTools() : [
+  tools: [
     {
       name: 'screenshot',
       description: 'Capture an image of part of the document viewer: the current document viewport, an annotation region (via screenshotRef from an annotations result), requested shapes, or explicit canvas bounds. This does not capture the user\'s screen or browser UI.',
