@@ -11,7 +11,8 @@ import { SvgDocumentEditor } from './SvgDocument'
 import { STORE_HTTP } from './activeConfig'
 import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
-import { BookContext, type BookMember, type BookContextValue, type BookLayersValue } from './BookContext'
+import { BookContext, type BookMember, type BookContextValue } from './BookContext'
+import { LayersContext, type LayersValue } from './classroom/layersContext'
 import { findBookMemberIndex } from './bookMemberNavigation'
 import { StudentAnnotationOverlay } from './classroom/StudentAnnotationOverlay'
 import { readerLayers, studentLayers, teacherLayers, setLayerVisible, setWriteTarget, type BookLayerState, type BookLayerId } from './classroom/bookLayers'
@@ -356,7 +357,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // draws the ordinary controls. Nothing here is conditional on who is reading:
   // one layer means the control has nothing to offer and does not appear, which
   // is the same rule for every reader.
-  const layersValue = useMemo<BookLayersValue>(() => ({
+  const layersValue = useMemo<LayersValue>(() => ({
     state: layers,
     setVisible: (id, visible) => setLayers(current => setLayerVisible(current, id, visible)),
     setTarget: id => { setMoveError(''); setLayers(current => setWriteTarget(current, id)) },
@@ -371,8 +372,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     members,
     activeIndex,
     switchTo,
-    layers: layersValue,
-  }), [bookName, members, activeIndex, switchTo, layersValue])
+  }), [bookName, members, activeIndex, switchTo])
 
   // The book's editor, kept so the overlay above it can follow its camera and
   // its tool selection. Passed on to the original caller unchanged.
@@ -392,6 +392,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
 
   return (
     <BookContext.Provider value={ctx}>
+      <LayersContext.Provider value={layersValue}>
       <div className="book-viewer">
         {/* Who is reading, said once, where the course cannot be confused with
             it. `identity` is already the answer from the enrolment token; the
@@ -450,6 +451,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
           </>
         )}
       </div>
+      </LayersContext.Provider>
     </BookContext.Provider>
   )
 }
