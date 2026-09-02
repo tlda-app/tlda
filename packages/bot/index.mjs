@@ -62,6 +62,7 @@ export function createBot({
   pidFile = null, WebSocketClass = WebSocket, handshakeTimeoutMs = 10_000,
   reconnectInitialMs = 500, reconnectMaxMs = 5000, subscriptionFilter = undefined,
   livenessProbeIntervalMs = 30_000, livenessProbeTimeoutMs = 10_000,
+  canonicalRefreshIntervalMs = 30_000, canonicalRefreshTimeoutMs = 10_000,
 } = {}) {
   const key = (process.env.TLDA_BOT_NAME || name).toLowerCase();
   const SERVER = server || process.env.TLDA_SERVER || getServerUrl();
@@ -106,6 +107,73 @@ export function createBot({
 
   function isCanonical() {
     return assignedName === key;
+  }
+
+  // A rename is the sanctioned bot stop: rename a bot off its canonical name and
+  // it goes inert, rename it back and it resumes. Both directions have to work
+  // with no lifecycle call — AGENTS.md §"DEATH IS A FLAG IN THE DATABASE", and
+  // Skip on being told otherwise: "that means renaming the agent doesn't do
+  // anything. You need to rename them and kill them? That's fucking insane."
+  //
+  // Resuming is the direction that was broken here. `loginFleet` reads the
+  // assigned name once and skips `subscribe-filter` when the bot is inert, and
+  // `open` — where dev arms its sweep and nobody its poll — fires only for a
+  // canonical bot. So a bot that logged in under a rotated name stayed deaf and
+  // unarmed for the life of the process, and renaming it back moved a cached
+  // string and nothing else. dev and todd sat in that state from 2026-08-26
+  // until they were cycled, six days later, at load 61.
+  //
+  // So the assignment is a live input, not a login snapshot: every path that
+  // learns a new name routes through here, and a flip to canonical redoes the
+  // work login would have done. The stop direction needs nothing added — it was
+  // already gated everywhere by `isCanonical()`.
+  async function noteAssignment(agent) {
+    const was = isCanonical();
+    updateAssignedNameFromAgent(agent);
+    if (!isCanonical() || was || !rws.connected) return;
+    try {
+      await subscribeCanonical();
+      log('canonical again — resubscribed and re-firing open');
+      fire('open', { ok: true, agent: { id, friendly_name: assignedName } });
+    } catch (e) {
+      // reconnect(), not close(): a failed resume must leave the retry loop
+      // armed, or the rename-back needs the restart this exists to remove.
+      log(`resume after rename failed: ${e.message}`);
+      rws.reconnect();
+    }
+  }
+
+  // Read the authoritative roster rather than waiting for an `agents-delta`
+  // event, which can sit behind already-running request work on a loaded bot —
+  // the rule todd states at its own scheduling boundary (`bots/todd/todd.mjs`,
+  // `hibernationSweep`). Over HTTP on purpose: the socket is exactly what is not
+  // trustworthy in the state this recovers from.
+  //
+  // A lookup that answers nothing leaves the cached name alone. Silence must not
+  // grant canonicality to an inert bot, and must not revoke it from a working
+  // one; only an answer moves the flag.
+  async function refreshAssignedName() {
+    const agent = await confirmRegisteredFromRoster(SERVER, id, canonicalRefreshTimeoutMs);
+    if (agent) await noteAssignment(agent);
+    return isCanonical();
+  }
+
+  // Armed in `start()`, never in `open`. A watch that only runs while the bot is
+  // canonical cannot notice that it has become canonical again — that is the
+  // same defect one level up, and it is why an inert bot must keep asking.
+  let canonicalTimer = null;
+  function disarmCanonicalWatch() {
+    if (!canonicalTimer) return;
+    clearInterval(canonicalTimer);
+    canonicalTimer = null;
+  }
+  function armCanonicalWatch() {
+    disarmCanonicalWatch();
+    if (!canonicalRefreshIntervalMs) return;
+    canonicalTimer = setInterval(() => {
+      refreshAssignedName().catch(e => log(`assigned-name refresh failed: ${e.message}`));
+    }, canonicalRefreshIntervalMs);
+    canonicalTimer.unref?.();
   }
 
   // Every bot connected to this package used to get a second implementation of
@@ -272,18 +340,21 @@ export function createBot({
       result = { ok: true, agent };
     }
     updateAssignedNameFromAgent(result?.agent);
-    if (isCanonical()) {
-      await requestRaw({
-        type: 'subscribe-filter',
-        subId: `bot-chat-${id}`,
-        filter: subscriptionFilter === undefined
-          ? [[['to', id]], [['from', id]]]
-          : subscriptionFilter,
-        window: 0,
-      });
-    }
+    if (isCanonical()) await subscribeCanonical();
     if (!isCanonical()) log(`inert: requested "${key}", assigned "${assignedName || '(none)'}"`);
     return result;
+  }
+  // The one subscription a canonical bot needs, so that becoming canonical after
+  // login can take it out rather than reimplement it.
+  function subscribeCanonical() {
+    return requestRaw({
+      type: 'subscribe-filter',
+      subId: `bot-chat-${id}`,
+      filter: subscriptionFilter === undefined
+        ? [[['to', id]], [['from', id]]]
+        : subscriptionFilter,
+      window: 0,
+    });
   }
   function chat(to, message) { send({ type: 'chat', from: id, to, message }); }
 
@@ -319,11 +390,11 @@ export function createBot({
       return;
     }
     if (msg.agents && !msg.event) {
-      updateAssignedNameFromAgent((msg.agents || []).find(a => a.id === id));
+      noteAssignment((msg.agents || []).find(a => a.id === id)).catch(e => log('assignment error:', e.message));
       return;
     }
     if (msg.event === 'agents-delta') {
-      updateAssignedNameFromAgent((msg.data?.changed || []).find(a => a.id === id));
+      noteAssignment((msg.data?.changed || []).find(a => a.id === id)).catch(e => log('assignment error:', e.message));
       return;
     }
     if (!isCanonical()) return;
@@ -362,6 +433,7 @@ export function createBot({
     process.on('exit', cleanup);
     log(`starting (pid ${process.pid}) on ${SERVER}`);
     connect();
+    armCanonicalWatch();
     return api;
   }
   function waitFor(predicate, timeoutMs = 10_000) {
@@ -382,6 +454,7 @@ export function createBot({
   }
   function stop() {
     stopped = true;
+    disarmCanonicalWatch();
     rws.close();
   }
 
@@ -389,7 +462,7 @@ export function createBot({
     id, key, name: key, server: SERVER,
     get assignedName() { return assignedName; },
     get canonical() { return isCanonical(); },
-    isCanonical, registry,
+    isCanonical, refreshAssignedName, registry,
     start, stop, send, request, waitFor, sendAndWait, chat, addressedText,
     onCommand: (cb) => { cbs.command.push(cb); return api; },
     onMessage: (cb) => { cbs.message.push(cb); return api; },
