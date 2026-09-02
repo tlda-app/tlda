@@ -7,7 +7,7 @@ import path from 'node:path'
 import { ClassroomStore } from '../server/lib/classroom-store.mjs'
 import { classroomPrincipal, createClassroomRouter } from '../server/routes/classroom.mjs'
 
-async function serverFixture() {
+async function serverFixture({ resolveSubmissionBuild = async contentRef => ({ buildStatus: contentRef === 'hw1-ada' ? 'success' : 'missing', buildAt: '2026-09-02T03:41:51Z' }) } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-api-'))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
   store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
@@ -17,7 +17,7 @@ async function serverFixture() {
   store.submit({ assignmentId: 'hw1', studentId: 'ada', contentRef: 'hw1-ada' })
   store.addFeedback({ id: 'draft', assignmentId: 'hw1', studentId: 'ada', title: 'Draft', text: 'Private.' })
   const app = express(); app.use(express.json())
-  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: req => req.headers.authorization === 'Bearer read-access', resolveManifestAccess: req => req.query.token === 'read-access', resolveSubmissionBuild: async contentRef => ({ buildStatus: contentRef === 'hw1-ada' ? 'success' : 'missing', buildAt: '2026-09-02T03:41:51Z' }), resolveTemplateVersion(docKey) {
+  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: req => req.headers.authorization === 'Bearer read-access', resolveManifestAccess: req => req.query.token === 'read-access', resolveSubmissionBuild, resolveTemplateVersion(docKey) {
     if (docKey !== 'hw1-handout') throw new Error('template document not found')
     return 'build-abc'
   }, resolvePrincipal(req, classroomStore) {
@@ -77,6 +77,24 @@ test('instructor status lists submission acceptance and build state without expo
 
     response = await f.request('/courses/qtm285/status', 'ada')
     assert.equal(response.status, 403)
+  } finally { f.close() }
+})
+
+test('instructor status bounds submission build lookups', async () => {
+  let active = 0
+  let maxActive = 0
+  const f = await serverFixture({ resolveSubmissionBuild: async () => {
+    active += 1
+    maxActive = Math.max(maxActive, active)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    active -= 1
+    return { buildStatus: 'success', buildAt: null }
+  } })
+  try {
+    f.store.submit({ assignmentId: 'hw1', studentId: 'grace', contentRef: 'hw1-grace' })
+    const response = await f.request('/courses/qtm285/status', 'instructor')
+    assert.equal(response.status, 200)
+    assert.equal(maxActive, 1)
   } finally { f.close() }
 })
 
