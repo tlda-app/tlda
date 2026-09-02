@@ -866,9 +866,19 @@ const SLIDES_BRIDGE_SCRIPT = `
   var deckLayoutRetry = null;
   var deckLayoutStyle = null;
 
-  function deckSlideElements() {
-    return Array.prototype.slice.call(document.querySelectorAll('.slides section'))
-      .filter(function(el) { return !el.querySelector('section'); });
+  // The pages reveal actually built, in the order it built them.
+  //
+  // Enumerating .slides section instead is off by the hidden macro-definition
+  // sections Quarto emits: measured on one deck, that gives 33 where reveal
+  // builds 31 .scroll-page wrappers, so every rect after the first hidden
+  // section lands on the wrong slide. The wrappers are what we position, so
+  // they are also what we count -- one list, no correspondence to maintain.
+  function deckPageElements() {
+    return Array.prototype.slice.call(document.querySelectorAll('.scroll-page'));
+  }
+
+  function deckSectionOf(page) {
+    return page.querySelector('section');
   }
 
   // The extent is enumerated per slide. Reveal's own getHorizontalSlides() and
@@ -878,7 +888,12 @@ const SLIDES_BRIDGE_SCRIPT = `
   // not a source of extent here or anywhere.
   function reportDeckExtent() {
     if (window.parent === window) return;
-    var slides = deckSlideElements().map(function(el, i) {
+    var pages = deckPageElements();
+    // Nothing to report until reveal has built its pages; the retry below is
+    // what brings us back, the same wait the layout needs.
+    if (!pages.length) return false;
+    var slides = pages.map(function(page, i) {
+      var el = deckSectionOf(page) || page;
       var at = Reveal.getIndices(el) || {};
       return { index: i, indexh: at.h || 0, indexv: at.v || 0, id: el.id || '' };
     });
@@ -958,8 +973,16 @@ const SLIDES_BRIDGE_SCRIPT = `
     if (!deckMode) Reveal.slide(indexh, indexv, 0);
 
     if (deckMode) {
-      reportDeckExtent();
-      applyDeckLayout(pendingDeckLayout);
+      // Reveal builds its .scroll-page wrappers asynchronously, so neither half
+      // can run at init: the extent has nothing to enumerate and the layout has
+      // nothing to position. One retry drives both.
+      (function announceDeck() {
+        if (reportDeckExtent() === false) {
+          setTimeout(announceDeck, 100);
+          return;
+        }
+        applyDeckLayout(pendingDeckLayout);
+      })();
     }
 
     // Signal parent that this slide is ready to show (triggers fade-in)
