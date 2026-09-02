@@ -606,15 +606,16 @@ function traceGate1(stage, detail) {
 // or copied route state does not fabricate hibernation.
 const runtimeStatusStore = createAgentRuntimeStatusStore({
   onChange: agentId => {
+    syncRuntimeProjection(agentId).catch(e => console.error(`[runtime-status] projection refresh failed for ${agentId}: ${e?.message || e}`))
     if (typeof broadcastState === 'function') broadcastState(agentId)
   },
 })
 fleetStore.setRuntimeProjector(agent => runtimeStatusStore.project(agent))
 
-async function resolveChatRecipientsCurrent(filterAst, options) {
-  const agents = await fleetStore.getAliveAgents()
-  const runtimeProjections = Object.fromEntries(agents.map(agent => [agent.id, agent.runtime_status]))
-  return fleetStore.resolveChatRecipients(filterAst, { ...options, runtimeProjections })
+async function syncRuntimeProjection(agentId) {
+  const agent = await fleetStore.getAgent(agentId)
+  if (!agent) return
+  await fleetStore.refreshAgentLiveness(agentId, agent.runtime_status)
 }
 
 const humanPresence = createHumanPresenceTracker({
@@ -7102,7 +7103,7 @@ async function dispatchFleetWsMessage(ws, msg) {
       return
     }
     reply({
-      recipients: await resolveChatRecipientsCurrent(filterAst, {
+      recipients: await fleetStore.resolveChatRecipients(filterAst, {
         from: msg.from || null,
         filter: msg.to || '',
       }),
@@ -7764,7 +7765,7 @@ async function dispatchFleetWsMessage(ws, msg) {
     // an old `preread` row + the live `preread`) → the sender sees their
     // message twice. To reach a dead agent, reanimate it first (it goes live,
     // then matches here). No "prefer the live one" — dead is simply excluded.
-    const recipients = await resolveChatRecipientsCurrent(filterAst, { from, filter: rawTo })
+    const recipients = await fleetStore.resolveChatRecipients(filterAst, { from, filter: rawTo })
     // Server-owner pseudo-recipient: not in the roster, so evaluate the filter
     // against its literal id/name label set. An empty filter (null) does NOT
     // fan out to the owner.
