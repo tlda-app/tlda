@@ -23,7 +23,25 @@ const { computeFleetHudDefaultAnchor } = await import('../src/overlays/fleet-hud
 
 const VIEWPORT_H = 834
 
-/** Screen span of the layout band, given the anchor's across-flow offset. */
+/**
+ * Screen span of the layout band, given the anchor's across-flow offset.
+ *
+ * THE ONE ASSUMPTION THIS SUITE CANNOT SEE. `bounds.y + acrossFlow` is a model
+ * of how the anchor is projected, not something the tests observe. It is sound
+ * today because `FleetHUD.tsx` hands `computeFleetHudDefaultAnchor` the same
+ * `bounds` the layout was built from, so the `bounds.y` in the offset and the
+ * `bounds.y` in the position are the same number and cancel exactly:
+ *
+ *     acrossFlow = docNearScreen + marginGap - bounds.y
+ *     screen top = bounds.y + acrossFlow = docNearScreen + marginGap
+ *
+ * **If that projection ever stops being additive, or the anchor is handed
+ * different bounds from the ones the band is drawn at, the cancellation breaks
+ * and every test in this file stays green.** A test cannot catch that — it is
+ * the model itself that would be wrong — so it is written down here instead.
+ * The live signal is the same one that found the original defect: panel
+ * `bottom` on a real deck.
+ */
 function screenSpan({ boundsNear, boundsExtent, acrossFlow }) {
   return { top: boundsNear + acrossFlow, bottom: boundsNear + boundsExtent + acrossFlow }
 }
