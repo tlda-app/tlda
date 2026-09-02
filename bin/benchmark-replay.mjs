@@ -282,8 +282,8 @@ async function replay() {
     // A null here means "not measured" and must never be read as zero — a zero
     // that means "no instrument" is the failure this repo keeps paying for.
     //
-    //   editToVisibleMs  — live: the server's own freshness, sourceRevision
-    //                      accepted vs lastBuild advanced, sampled on the timeline.
+    //   editToVisibleMs  — NEEDS --browser. Ends at the rendered document, not at
+    //                      server freshness; null without a tab in the loop.
     //   chatRoundTripMs  — live: authenticated request round trip.
     //   notificationMs   — NEEDS A DRIVER. It is the interval from a chat send to
     //                      the target agent being notified, and nothing observable
