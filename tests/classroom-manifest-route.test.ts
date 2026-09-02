@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { shouldLoadClassroomManifest } from '../src/classroom/useClassroomManifest'
+import { shouldResolveDocumentLayerIdentity } from '../src/classroom/classroomSurface'
 
 test('the instructor marking route does not request the student classroom identity', () => {
   const params = new URLSearchParams({
@@ -16,4 +17,19 @@ test('the instructor marking route does not request the student classroom identi
 test('a classroom student project still loads its course manifest', () => {
   const params = new URLSearchParams({ project: 'course-book', token: 'read-token' })
   assert.equal(shouldLoadClassroomManifest(params, true), true)
+})
+
+test('the instructor marking route does not resolve document-layer identity', () => {
+  const marking = new URLSearchParams({
+    project: 'submission-hw-1-student',
+    markingCourse: 'course',
+    markingAssignment: 'hw-1',
+    markingStudent: 'student',
+  })
+  assert.equal(shouldResolveDocumentLayerIdentity(marking), false)
+})
+
+test('ordinary and classroom documents still resolve document-layer identity', () => {
+  assert.equal(shouldResolveDocumentLayerIdentity(new URLSearchParams()), true)
+  assert.equal(shouldResolveDocumentLayerIdentity(new URLSearchParams({ course: 'course' })), true)
 })

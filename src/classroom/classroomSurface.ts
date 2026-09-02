@@ -19,3 +19,7 @@
 export function isClassroomSurface(): boolean {
   return !!new URLSearchParams(window.location.search).get('course')
 }
+
+export function shouldResolveDocumentLayerIdentity(params: URLSearchParams): boolean {
+  return !params.get('markingCourse')
+}
