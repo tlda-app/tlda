@@ -80,7 +80,7 @@ test('a failure with no build instance still leaves its reason in the live proje
   assert.deepEqual(result.errors, [{ message: 'requires an immutable source revision' }])
 })
 
-test('an instance log is carried out and is not overwritten by the reason', async t => {
+test('an instance log is carried out and retains the outer worker failure', async t => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-build-log-instance-wins-'))
   await initProjectStore(root)
   t.after(async () => { await closeProjectStore(); rmSync(root, { recursive: true, force: true }) })
@@ -88,10 +88,15 @@ test('an instance log is carried out and is not overwritten by the reason', asyn
 
   const instance = join(root, 'private-instance', 'deck')
   mkdirSync(instance, { recursive: true })
-  writeFileSync(join(instance, 'build.log'), '[qmd] rendering\n[build] quarto exited 1\n')
+  writeFileSync(join(instance, 'build.log'), '[2026-09-02T23:23:20.000Z] Build complete in 21.7s')
 
-  const { copied, wrote } = publishBuildDiagnostics('deck', instance, 'a less specific outer message')
+  const { copied, wrote } = publishBuildDiagnostics('deck', instance, 'build worker RPC publishBuildInstance got no answer')
   assert.deepEqual(copied, ['build.log'])
-  assert.equal(wrote, null, 'the instance log is the better account; do not replace it')
-  assert.match(readFileSync(join(root, 'deck', 'build.log'), 'utf8'), /quarto exited 1/)
+  assert.equal(wrote, 'build.log')
+  const log = readFileSync(join(root, 'deck', 'build.log'), 'utf8')
+  assert.match(log, /Build complete in 21\.7s/, 'the successful inner build log must remain')
+  assert.match(log, /publishBuildInstance got no answer/, 'the outer worker failure must remain too')
+  assert.deepEqual((await extractBuildErrors('deck')).errors, [
+    { message: 'build worker RPC publishBuildInstance got no answer' },
+  ])
 })
