@@ -104,7 +104,28 @@ export function computeFleetHudDefaultAnchor({
   // document with a hole for my document to go in".
   const layoutFarEdge = marginAxis === 'x' ? bounds.x + bounds.w : bounds.y + bounds.h
   const farEdge = nearMarginFarEdge ?? layoutFarEdge
-  const acrossFlow = docNearScreen - marginGap - farEdge
+  // Beside the document, the layout's FAR edge lands one marginGap BEFORE the
+  // document's near edge — outside it, never over it. That is the rule below and
+  // it is right for a paper, which leaves the width for it.
+  //
+  // A deck leaves no such room. It runs across, so the margin across its flow is
+  // above it, and a deck fills the viewport's height — so "far edge one
+  // marginGap before the near edge" puts the whole band off the top. Measured on
+  // pic-dev b3134a531: deck top at screen 0, panels at bottom -55, 0 of 6 on
+  // screen. The rule was satisfied and the layout was invisible.
+  //
+  // So on a deck the NEAR edge lands one marginGap AFTER the document's near
+  // edge: the band begins just inside the top and runs along it. Skip: "having
+  // fleet shapes run along the top of decks like really helps me write decks."
+  //
+  // Note this is the same sentence, transposed — near-for-far and after-for-
+  // before — and not a screen clamp. A clamp is what was tried here before and
+  // it dragged the layout over the middle of the slide; see the note below,
+  // which stands.
+  const layoutNearEdge = marginAxis === 'x' ? bounds.x : bounds.y
+  const acrossFlow = marginAxis === 'x'
+    ? docNearScreen - marginGap - farEdge
+    : docNearScreen + marginGap - layoutNearEdge
 
   // The margin is where the layout WANTS to be. Being on screen is what it has
   // to be. Skip: "you also make a layout that actually works on a slideshow...
