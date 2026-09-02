@@ -14,7 +14,7 @@ export function GradebookWorkspace() {
     const next = new URLSearchParams(window.location.search)
     next.delete('workspace')
     next.delete('course')
-    next.set('doc', contentRef)
+    next.set('project', contentRef)
     next.set('markingCourse', courseId)
     next.set('markingAssignment', assignmentId)
     next.set('markingStudent', studentId)
