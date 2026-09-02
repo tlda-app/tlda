@@ -65,6 +65,17 @@ export function initAuth() {
 
 export function isTokenGatingEnabled() { return gatingEnabled }
 
+/**
+ * The ordering on access levels: rw > read > none.
+ *
+ * This is not a new concept. `requireRw` has always treated a read token as
+ * strictly less than an RW one — that is what its 403 "read-only token" says.
+ * Naming the rank makes the comparison available to the two places that have to
+ * refuse a downgrade, rather than each re-deriving it from a chain of ifs.
+ */
+const TOKEN_LEVEL_RANK = { rw: 2, read: 1 }
+function rankOf(level) { return TOKEN_LEVEL_RANK[level] ?? 0 }
+
 /** Returns 'rw' | 'read' | null */
 export function validateToken(token) {
   if (!gatingEnabled) return 'rw'
@@ -86,15 +97,49 @@ function parseCookies(req) {
   return cookies
 }
 
-/** Extract token from Authorization header, ?token= query param, or tlda_token cookie */
+/**
+ * The strongest credential this request carries, out of the Authorization
+ * header, the `?token=` query param, and the `tlda_token` cookie.
+ *
+ * It used to be the first of those three that was present, which is what made a
+ * link able to take access away. The course syllabus points at `/app?token=…`
+ * carrying the class's read token; following it from a browser that already
+ * holds an RW cookie produced a request whose read token outranked the cookie by
+ * being written down in a more preferred place. The session was not replaced —
+ * the RW cookie was still sitting there, unread.
+ *
+ * So the choice is by level rather than by source. Nothing is consumed, nothing
+ * is dropped, and a caller that holds only one credential is unaffected: a
+ * student with no cookie still resolves to the token in their link.
+ *
+ * This has to happen on the server because it is the only place both credentials
+ * are legible — the cookie is HttpOnly, so the page cannot read it, and cannot
+ * know that the token in its URL is the weaker of the two.
+ *
+ * With gating off `validateToken` answers 'rw' for everything and with no valid
+ * credential every candidate ranks 0; both cases fall through to the first
+ * present source, which is the old header > query > cookie order.
+ */
 export function extractToken(req) {
+  const candidates = []
   const auth = req.headers?.authorization
-  if (auth?.startsWith('Bearer ')) return auth.slice(7)
+  if (auth?.startsWith('Bearer ')) candidates.push(auth.slice(7))
   const url = new URL(req.url, `http://${req.headers?.host || 'localhost'}`)
   const qp = url.searchParams.get('token')
-  if (qp) return qp
+  if (qp) candidates.push(qp)
   const cookies = parseCookies(req)
-  return cookies.tlda_token || null
+  if (cookies.tlda_token) candidates.push(cookies.tlda_token)
+
+  let best = null
+  let bestRank = -1
+  for (const candidate of candidates) {
+    const rank = rankOf(validateToken(candidate))
+    if (rank > bestRank) {
+      best = candidate
+      bestRank = rank
+    }
+  }
+  return best
 }
 
 /** GET /auth/login?token=xxx[&redirect=/path] — set cookie, redirect to viewer */
@@ -106,11 +151,19 @@ export function loginRoute(req, res) {
   const level = validateToken(token)
   if (!level) return res.status(401).send('Invalid token')
 
-  // 30 days, HttpOnly, SameSite=Lax (works for top-level navigation)
-  // Secure only when accessed over HTTPS (Funnel); allow plain HTTP for Tailscale direct
-  const secure = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https'
-  const flags = `HttpOnly; SameSite=Lax; Path=/; Max-Age=${30 * 86400}${secure ? '; Secure' : ''}`
-  res.setHeader('Set-Cookie', `tlda_token=${encodeURIComponent(token)}; ${flags}`)
+  // Following a link never costs the browser access it already had. This is the
+  // one route that overwrites the cookie outright, so it is the one that can
+  // strand somebody: there is no logout, so a cookie replaced by a weaker token
+  // is a 30-day demotion with nothing to undo it. The login still succeeds and
+  // still redirects — the weaker token simply has nothing to add.
+  const existing = validateToken(parseCookies(req).tlda_token)
+  if (rankOf(level) >= rankOf(existing)) {
+    // 30 days, HttpOnly, SameSite=Lax (works for top-level navigation)
+    // Secure only when accessed over HTTPS (Funnel); allow plain HTTP for Tailscale direct
+    const secure = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https'
+    const flags = `HttpOnly; SameSite=Lax; Path=/; Max-Age=${30 * 86400}${secure ? '; Secure' : ''}`
+    res.setHeader('Set-Cookie', `tlda_token=${encodeURIComponent(token)}; ${flags}`)
+  }
 
   const redirect = url.searchParams.get('redirect') || '/'
   res.redirect(302, redirect)
@@ -123,9 +176,13 @@ export function requireRead(req, res, next) {
   const level = validateToken(token)
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
   req.authLevel = level
-  // Auto-set cookie when ?token= is valid (so sub-requests like images get auth)
+  // Auto-set cookie when ?token= is valid (so sub-requests like images get auth).
+  // Only ever upward: `extractToken` has already picked the strongest credential
+  // present, so writing it back can add access and never remove any. The strict
+  // comparison is also what stops this re-sending an identical cookie on every
+  // request once the browser is already holding it.
   const cookies = parseCookies(req)
-  if (!cookies.tlda_token && token) {
+  if (token && rankOf(level) > rankOf(validateToken(cookies.tlda_token))) {
     const secure = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https'
     const flags = `HttpOnly; SameSite=Lax; Path=/; Max-Age=${30 * 86400}${secure ? '; Secure' : ''}`
     res.setHeader('Set-Cookie', `tlda_token=${encodeURIComponent(token)}; ${flags}`)
