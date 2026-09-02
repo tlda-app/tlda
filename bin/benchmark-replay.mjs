@@ -244,14 +244,10 @@ async function replay() {
   const useBrowser = has('browser')
   let pendingSince = null
 
-  // Curve 2 needs two agents: one sends the recorded chat event, the other
-  // timestamps arrival. Nothing observable from outside the app substitutes for
-  // it, so without the driver the curve stays null rather than proxied.
-  let notifyDriver = null
   if (has('notify')) {
-    const mod = await import('./benchmark-notify-driver.mjs')
-    notifyDriver = await mod.open({ sender: arg('notify-sender'), receiver: arg('notify-receiver') })
+    die('--notify is disabled until the benchmark uses the real agent MCP path')
   }
+  const notifyDriver = null
 
   if (useBrowser) {
     // The tab must already be on the project: replay measures, it does not
@@ -443,7 +439,7 @@ else {
 
   replay  --trace FILE --into DISPOSABLE [--speed 1] [--base URL] [--dry-run]
           [--browser]                  curve 1 ends at the rendered document
-          [--notify --notify-sender A --notify-receiver B]   curve 2
+          --notify is disabled until curve 2 uses the real agent MCP path
 
   report  --trace FILE
           two curves kept separate, covariate alongside, saturation knee
