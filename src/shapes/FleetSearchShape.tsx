@@ -198,7 +198,7 @@ function usePillDrag() {
         markFleetPillInactive(String(drag.pillId))
         const id = drag.pillId as TLShapeId
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
-        dropPillOnTarget(editor, id, drag.value, pagePos, drag.content, undefined, frame)
+        dropPillOnTarget(editor, id, drag.value, pagePos, frame, drag.content)
         editor.run(() => {
           deleteFleetPill(editor, id, 'drag-drop', { surface: 'search' })
         }, { history: 'ignore' })

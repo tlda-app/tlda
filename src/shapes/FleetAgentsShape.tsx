@@ -409,7 +409,7 @@ export function usePillDrag() {
           data: { editor, pillId: drag.pillId, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, pagePoint: pagePos },
         }, { x: ev.clientX, y: ev.clientY })
         if (!handled) {
-          dropPillOnTarget(editor, drag.pillId as TLShapeId, drag.value, pagePos, undefined, undefined, frame)
+          dropPillOnTarget(editor, drag.pillId as TLShapeId, drag.value, pagePos, frame)
         }
         editor.run(() => {
           try {

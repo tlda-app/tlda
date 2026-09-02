@@ -35,8 +35,8 @@ import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import { completeFleetAgentChatDrop } from '../fleet/fleet-onboarding'
 import { pagePointToClient } from '../wm/viewport-coordinates'
 import {
-  fleetInteractionFrame,
   fleetShapesUnderPointer,
+  frameFromHudPresence,
   type FleetInteractionFrame,
 } from '../wm/fleet-interaction-frame'
 import { materializeMarkdownChip } from './markdown-chip-materialize'
@@ -270,6 +270,7 @@ function reportArtifactUrl(url?: string, path?: string) {
 async function createReportArtifactShapeFromPill(
   editor: Editor,
   screenPoint: { x: number; y: number },
+  frame: FleetInteractionFrame,
   pill: FleetPillRecord,
   content?: string,
   showError?: (message: string) => void,
@@ -303,13 +304,14 @@ async function createReportArtifactShapeFromPill(
     title,
     ...(pill?.props?.value ? { sourceEventId: String(pill.props.value) } : {}),
     generatedAt: new Date().toISOString(),
-  })
+  }, { frame })
   return true
 }
 
 async function createMarkdownDocviewShapeFromPill(
   editor: Editor,
   pagePoint: { x: number; y: number },
+  frame: FleetInteractionFrame,
   pill: FleetPillRecord,
   content?: string,
   showError?: (message: string) => void,
@@ -348,7 +350,7 @@ async function createMarkdownDocviewShapeFromPill(
     return true
   }
   const url = `/docs/${projectName}/${materializedPart.outputFile}?t=${Date.now()}`
-  await createMarkdownDocviewFromContent(editor, pagePoint, title, markdown, {
+  await createMarkdownDocviewFromContent(editor, pagePoint, frame, title, markdown, {
     materializedDoc: projectName,
     materializedFile: materializedPart.outputFile,
     ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
@@ -359,6 +361,7 @@ async function createMarkdownDocviewShapeFromPill(
 export async function createMarkdownDocviewFromContent(
   editor: Editor,
   pagePoint: { x: number; y: number },
+  frame: FleetInteractionFrame,
   title: string,
   markdown: string,
   meta: Record<string, unknown> = {},
@@ -374,11 +377,7 @@ export async function createMarkdownDocviewFromContent(
   // while placeFleetShapeAtScreenPoint un-projects with the HUD's put the
   // docview off by the overlay transform — non-zero whenever the layout has
   // ridden the document.
-  const docviewScreenPoint = screenPoint || pagePointToClient(
-    editor,
-    pagePoint,
-    getHudEditor() ? (FLEET_HUD_VIEWPORT_ID as TLViewportId) : undefined,
-  )
+  const docviewScreenPoint = screenPoint || pagePointToClient(editor, pagePoint, frame.viewportId)
   await placeFleetShapeAtScreenPoint(editor, 'fleet-docview', docviewScreenPoint.x, docviewScreenPoint.y, MARKDOWN_DOCVIEW_W, MARKDOWN_DOCVIEW_H, {
     sources: '[]',
     label: '',
@@ -388,7 +387,7 @@ export async function createMarkdownDocviewFromContent(
     title,
     targetShapeId: String(materialized.shapeId),
     useFullBounds: true,
-  })
+  }, { frame })
   return true
 }
 
@@ -518,16 +517,20 @@ export async function dropPillOnTarget(
   pillId: TLShapeId,
   value: string,
   pagePoint: { x: number; y: number },
+  /**
+   * The frame the drop gesture happened in. **Required**, and positioned before
+   * the optionals so it cannot be skipped by omission.
+   *
+   * It was optional for one revision, defaulting to the main canvas. That is
+   * the same defect as a `LayerFrameConversion` defaulting to the identity: the
+   * default is right for a drop that did not come from a projected panel and
+   * silently wrong for one that did, and nothing at the call site says which
+   * kind it is. A caller with no gesture context says so with
+   * `frameFromHudPresence`.
+   */
+  frame: FleetInteractionFrame,
   content?: string,
   showError?: (message: string) => void,
-  /**
-   * The frame the drop gesture happened in. Optional because not every caller
-   * has one to hand; without it the drop resolves its layer from `hitEditor`
-   * with no viewport, which is the main canvas — correct for a drop that did
-   * not come from a projected panel, and wrong for one that did, which is why
-   * the callers that have a frame pass it.
-   */
-  frame?: FleetInteractionFrame,
 ) {
   const draggedPillType = (editor.getShape(pillId)?.props as { pillType?: string } | undefined)?.pillType
   const completeAgentDropGuide = () => {
@@ -572,7 +575,7 @@ export async function dropPillOnTarget(
   // standing in for membership, the same way ownership was in the nudge
   // collector. `wm.hitTest` converts the probe point into each candidate's own
   // layer first, so a hit is decided in the frame the shape actually lives in.
-  const dropFrame = fleetInteractionFrame(hitEditor, frame?.viewportId)
+  const dropFrame = frame
   const allChats = hitEditor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat')
   const hitShape: any = fleetShapesUnderPointer(hitEditor, dropFrame, targetPagePoint, allChats)[0]?.shape
 
@@ -678,7 +681,7 @@ export async function dropPillOnTarget(
     const pill: unknown = editor.getShape(pillId)
     const pillType = isFleetPillRecord(pill) ? pill.props.pillType : undefined
     if (isFleetPillRecord(pill) && (pillType === 'file' || pillType === 'doc') &&
-        await createMarkdownDocviewShapeFromPill(createEditor, createPagePoint, pill, content, showError)) {
+        await createMarkdownDocviewShapeFromPill(createEditor, createPagePoint, frame, pill, content, showError)) {
       return
     }
     // Project with the camera that will read it back. This point is handed to
@@ -689,13 +692,9 @@ export async function dropPillOnTarget(
     // artifact off by the overlay transform — non-zero whenever the layout has
     // ridden the document. Naming the same viewport on both sides makes the
     // round trip the identity it was always assumed to be.
-    const reportDropScreenPoint = pagePointToClient(
-      hitEditor,
-      targetPagePoint,
-      getHudEditor() ? (FLEET_HUD_VIEWPORT_ID as TLViewportId) : undefined,
-    )
+    const reportDropScreenPoint = pagePointToClient(hitEditor, targetPagePoint, frame.viewportId)
     if (isFleetPillRecord(pill) && (pillType === 'file' || pillType === 'doc') &&
-        await createReportArtifactShapeFromPill(createEditor, reportDropScreenPoint, pill, content, showError)) {
+        await createReportArtifactShapeFromPill(createEditor, reportDropScreenPoint, frame, pill, content, showError)) {
       return
     }
   }
@@ -1012,7 +1011,13 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       dropPoint.x -= CHAT_W / 2
       dropPoint.y -= CHAT_H / 2
     }
-    dropPillOnTarget(editor, pill.id, pill.props.value, dropPoint)
+    // A pill dragged on the canvas by tldraw's own translate. There is no
+    // projected panel behind this gesture, so the frame is stated rather than
+    // inferred downstream.
+    dropPillOnTarget(
+      editor, pill.id, pill.props.value, dropPoint,
+      frameFromHudPresence(editor, FLEET_HUD_VIEWPORT_ID as TLViewportId, !!getHudEditor()),
+    )
     finishFleetPillTranslation(editor, pill.id, _snapState)
   }
 

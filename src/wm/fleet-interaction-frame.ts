@@ -32,6 +32,23 @@ export function fleetInteractionFrame(editor: Editor, viewportId?: TLViewportId)
   return { viewportId, resolution, layerId: resolution.layerId }
 }
 
+/**
+ * The frame for a caller that has no gesture context: a placement at fixed
+ * screen coordinates, or a drop handled outside any projected panel.
+ *
+ * It is the old `getHudEditor() ? HUD : undefined` heuristic, kept exactly, and
+ * moved to where it can be seen. Callers that *do* know their frame must not
+ * use this — the point of naming it is that a reader can tell the two apart,
+ * which is impossible when the guess is buried in a helper's default.
+ */
+export function frameFromHudPresence(
+  editor: Editor,
+  hudViewportId: TLViewportId,
+  hudIsOpen: boolean,
+): FleetInteractionFrame {
+  return fleetInteractionFrame(editor, hudIsOpen ? hudViewportId : undefined)
+}
+
 export function fleetPointerPagePoint(
   editor: Editor,
   frame: FleetInteractionFrame,

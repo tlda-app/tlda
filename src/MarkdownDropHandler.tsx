@@ -9,7 +9,7 @@ import type { TLViewportId } from 'tldraw'
 import { useEditor } from 'tldraw'
 import { createMarkdownDocviewFromContent } from './shapes/FleetPillShape'
 import { materializeMarkdownChip } from './shapes/markdown-chip-materialize'
-import { clientPointToPage } from './wm/viewport-coordinates'
+import { fleetInteractionFrame, fleetPointerPagePoint } from './wm/fleet-interaction-frame'
 
 function isMarkdownFile(file: File): boolean {
   return file.name.endsWith('.md') || file.name.endsWith('.markdown')
@@ -74,7 +74,13 @@ export function MarkdownDropHandler() {
         const name = fileNameToProjectName(file.name)
         const title = file.name.replace(/\.(md|markdown)$/i, '') || name
         const screenPoint = { x: e.clientX, y: e.clientY }
-        const pagePoint = clientPointToPage(editor, screenPoint, dropViewportId(e.target))
+        // The drop's own frame, resolved once. `dropViewportId` reads the
+        // viewport off the DOM host the file landed on; the frame turns that
+        // into the layer through the WM registry, and carries both to everything
+        // downstream so the un-projection at the far end uses the same camera
+        // this projection did.
+        const frame = fleetInteractionFrame(editor, dropViewportId(e.target))
+        const pagePoint = fleetPointerPagePoint(editor, frame, screenPoint)
 
         const reader = new FileReader()
         reader.onload = async () => {
@@ -86,7 +92,7 @@ export function MarkdownDropHandler() {
             return
           }
           const url = `/docs/${projectName}/${materialized.outputFile}?t=${Date.now()}`
-          await createMarkdownDocviewFromContent(editor, pagePoint, title, markdown, {
+          await createMarkdownDocviewFromContent(editor, pagePoint, frame, title, markdown, {
             materializedDoc: projectName,
             materializedFile: materialized.outputFile,
             sourceFileName: file.name,
