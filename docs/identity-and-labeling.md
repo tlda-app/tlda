@@ -297,7 +297,61 @@ If a name cannot be rotated it is cleared — the index is partial on
 The rest of the rule is enforced in code by `checkNameAvailable` (`:2892`): one
 gate, one error shape, several reasons — unaddressable syntax, reserved routing
 word (`PSEUDO_LABELS`, `shared/fleet-labels.mjs:28`), agent id, living friendly
-name, and, only when assigning a name, another agent's label.
+name, a singleton label another living agent holds, and, only when assigning a
+name, another agent's label.
+
+**Both rename paths call it.** The HTTP route always did; the WS `rename`
+handler asked only `nameTakenByOther`, which compares names against names, so
+over that socket a rename could take a name equal to another living agent's
+label — the fan-out this gate exists to stop — and could take a reserved routing
+word besides. Fixed in the singleton-label commit, found by its wire test rather
+than by looking.
+
+## Singleton labels
+
+A **singleton label** is a label at most one living agent may hold. Skip,
+2026-09-01 03:55 EDT:
+
+> labels should be, at creation time, marked singleton or not
+>
+> like we alreayd have the mechanism for friendlynames
+>
+> then firendlynames would just be like, effetively singleton labels
+>
+> but i'm thinking like on-call — perhaps we don't want multiple on-call agents
+>
+> so if you try to apply on-call and someone has it, you get an error telling
+> you that like, if you really mean it, strip it and then apply it
+
+So it is **reject and name the holder**, never an implicit move. An atomic move
+was proposed in that same exchange and withdrawn within twenty seconds; it is a
+rejected route, not an open question.
+
+`label_definitions` holds the property. It is **not** a fold over events, and
+that asymmetry is the point: which agents hold a label is computed from labeling
+events, while whether the label is singleton is a fact about the *token*,
+declared once and read back. Rows are never deleted, so a label nobody currently
+holds keeps its rule rather than quietly becoming ordinary when its last holder
+dies.
+
+**Why it is not an index.** This is the same wall as label-against-living-name
+above: a label is a string inside the `agents.labels` JSON array rather than a
+row, so nothing can see a second holder the way `idx_agents_live_name` sees a
+second holder of a name. Enforcement is therefore `checkNameAvailable`, and — as
+with the rule above — the register/login path strips rather than throwing, in
+`upsertAgent`, because that path has no caller to raise to. Without that strip,
+login is a way around the rule.
+
+**`on-call` is singleton by migration**, per his "we should like make on-call
+singleton as a migration or wahtever / obvs". The migration declares the rule and
+touches nobody's labels: several living holders today keep it and the next
+application is what is refused. Which of them is actually on call is not a
+question a migration can answer, so it logs the count and leaves them alone.
+
+**What was deliberately not built:** friendly names are not reimplemented on top
+of this. He described the relationship — names are effectively singleton labels —
+he did not ask for the enforcement to move off `idx_agents_live_name`, and moving
+it is the schema change §"The namespace already exists as a projection" is about.
 
 ### The addressability rule
 
