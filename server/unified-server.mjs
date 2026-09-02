@@ -1561,6 +1561,8 @@ const filterPushStartedAt = new Date().toISOString()
 
 async function pushFilteredEvent(data, { updateOnly = false } = {}) {
   if (!data) return
+  const startedAtMs = performance.now()
+  const traceId = traceIdFromFleetEvent(data)
   filterPushCounters.eventsSeen++
   filterPushCounters.lastEventAt = new Date().toISOString()
   let matched
@@ -1573,6 +1575,20 @@ async function pushFilteredEvent(data, { updateOnly = false } = {}) {
     return
   }
   filterPushCounters.evaluations += matched.evaluations || 0
+  if (traceId) {
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'broadcast.filter-match',
+      status: 'matched',
+      detail: {
+        event_id: data?.id || data?.event_id,
+        evaluations: matched.evaluations || 0,
+        deliveries: matched.length,
+        duration_ms: Number((performance.now() - startedAtMs).toFixed(1)),
+      },
+    })
+  }
   if (matched.length) {
     filterPushCounters.eventsMatched++
     filterPushCounters.deliveries += matched.length
@@ -1587,6 +1603,19 @@ async function pushFilteredEvent(data, { updateOnly = false } = {}) {
       // travel anywhere a live row is compared against a fetched one.
       if (conn.readyState === 1) conn.send(JSON.stringify({ event: 'filter-event', data: { subId, event: publicData, ...(updateOnly ? { updateOnly: true } : {}) } }))
     } catch { /* the socket's own close path cleans up */ }
+  }
+  if (traceId) {
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'broadcast.filter-send',
+      status: 'sent',
+      detail: {
+        event_id: data?.id || data?.event_id,
+        deliveries: matched.length,
+        duration_ms: Number((performance.now() - startedAtMs).toFixed(1)),
+      },
+    })
   }
 }
 
@@ -7780,7 +7809,19 @@ async function dispatchFleetWsMessage(ws, msg) {
     const watchRecipients = new Set()
     const subscriptionDeliveriesAll = []
     // Resolve subscriptions per recipient — tap labels are matched against this `to`.
+    const deliveryResolveStartedAtMs = performance.now()
     const eventSubscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, recipients.length === 1 ? recipients[0] : recipients, 'chat', filterAst) || []
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'chat.delivery-resolve',
+      status: 'matched',
+      detail: {
+        recipients: recipients.length,
+        subscription_matches: eventSubscriptionMatches.length,
+        duration_ms: Number((performance.now() - deliveryResolveStartedAtMs).toFixed(1)),
+      },
+    })
     for (let recipientIndex = 0; recipientIndex < recipients.length; recipientIndex++) {
       const to = recipients[recipientIndex]
       const subscriptionMatches = eventSubscriptionMatches.filter(match => match.direct ? match.recipient === to : recipientIndex === 0)
