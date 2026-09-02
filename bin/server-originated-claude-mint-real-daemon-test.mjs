@@ -267,7 +267,6 @@ async function startMcpClient() {
       FLEET_NAME: REQUESTER_NAME,
       FLEET_HARNESS: 'codex',
       FLEET_TMUX_SESSION: 'fleet-real-mint-requester',
-      TLDA_MCP_FLEET_ONLY: '1',
       TLDA_FLEET_DURABLE_SEND_DEADLINE_MS: String(DURABLE_SEND_DEADLINE_MS),
       // No deadline override here. Nothing ever read
       // TLDA_FLEET_DURABLE_SEND_DEADLINE_MS -- the constant in fleet-tools.mjs is

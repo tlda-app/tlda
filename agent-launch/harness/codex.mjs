@@ -206,7 +206,6 @@ export function buildCmd({
     ...(localAgentId ? [`FLEET_MINT_ID=${sq(localAgentId)}`] : []),
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
     'FLEET_HARNESS=codex',
-    'TLDA_MCP_FLEET_ONLY=1',
   ]
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
@@ -237,7 +236,6 @@ export function buildCmd({
   if (name) parts.push(cenv('FLEET_NAME', name))
   parts.push(cenv('FLEET_HARNESS', 'codex'))
   parts.push(cenv('FLEET_TMUX_SESSION', tmuxSession))
-  parts.push(cenv('TLDA_MCP_FLEET_ONLY', '1'))
   const configName = activeEnvName(config, env)
   if (configName) parts.push(cenv('TLDA_ENV', configName))
   if (env.TLDA_MACHINE_ID) parts.push(cenv('TLDA_MACHINE_ID', env.TLDA_MACHINE_ID))
