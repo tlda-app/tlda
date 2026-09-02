@@ -909,7 +909,10 @@ function showSourceContextCard(
       // Use HUD editor for pill creation (chat shapes live in HUD coordinate system)
       const hudEditor = window.__tldraw_hud_editor__ as Editor | undefined
       const pillEditor = hudEditor || editor
-      const frame = fleetInteractionFrame(hudEditor ? FLEET_HUD_VIEWPORT_ID as TLViewportId : undefined)
+      // Built against the editor that owns the gesture, so the frame's layer
+      // comes from that editor's registry rather than from the viewport id
+      // alone — the same single derivation the React panels now use.
+      const frame = fleetInteractionFrame(pillEditor, hudEditor ? FLEET_HUD_VIEWPORT_ID as TLViewportId : undefined)
       dragState = { pillId: null, startX: e.clientX, startY: e.clientY, started: false }
 
       dragCoordinator.claim(
@@ -963,7 +966,7 @@ function showSourceContextCard(
             const pillId = drag.pillId as TLShapeId
             markFleetPillInactive(String(pillId))
             const dropPoint = fleetPointerEventPagePoint(pillEditor, frame, ev)
-            dropPillOnTarget(pillEditor, pillId, token, dropPoint, token)
+            dropPillOnTarget(pillEditor, pillId, token, dropPoint, token, undefined, frame)
             pillEditor.run(() => {
               deleteFleetPill(pillEditor, pillId, 'drag-drop', { surface: 'highlighter' })
             }, { history: 'ignore' })

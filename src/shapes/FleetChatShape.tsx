@@ -96,7 +96,7 @@ import { prettyFoldKey } from './fleet-chat-fold-key.mjs'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { Terminal } from 'xterm'
-import { FleetHudRenderGate, useVisibilityViewportId } from './useIsInViewport'
+import { FleetHudRenderGate } from './useIsInViewport'
 import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
@@ -108,7 +108,8 @@ import {
   requestManagedSurface,
 } from '../wm/managed-surfaces'
 import { clientPointToPage } from '../wm/viewport-coordinates'
-import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+import { fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+import { useFleetInteractionFrame } from '../wm/useFleetInteractionFrame'
 import { cancelWMDrop, finishWMDrop, registerWMDropTarget, updateWMDrop, type WMDropPayload } from '../wm/drop-targets'
 import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipFromTargetElement } from './fleet-chat-markdown-open'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
@@ -2921,7 +2922,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const { addToast } = useToasts()
   recordFleetChatRender(shape)
   const editor = useEditor()
-  const viewportId = useVisibilityViewportId()
+  const interactionFrame = useFleetInteractionFrame()
   const doc = useContext(ProjectContext)
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
@@ -6155,7 +6156,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const logEl = chatLogEl
     if (!logEl) return
-    const frame = fleetInteractionFrame(viewportId)
+    const frame = interactionFrame
 
     // Document-level capture listeners: fires before tldraw's tl-container
     // listener can intercept. We scope to this chat by checking if the target
@@ -6810,6 +6811,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           pagePos,
           drag.content,
           (message) => addToast({ title: message, severity: 'error' }),
+          frame,
         )
       }
       try {
@@ -6834,7 +6836,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       document.removeEventListener('pointerup', clearPendingPointer, { capture: true })
       document.removeEventListener('pointercancel', clearPendingPointer, { capture: true })
     }
-  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, suppressSkillHoverDuringChatDrag])
+  }, [addToast, chatLogEl, editor, interactionFrame, openMarkdownChipFromTarget, suppressSkillHoverDuringChatDrag])
 
   // Deleting an in-flight pill belongs to unmount alone, so it is its own effect.
   // It used to sit in the cleanup above, which re-runs on every dep change --
