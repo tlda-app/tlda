@@ -12,6 +12,13 @@ The wrapper package `tldraw` and the editor's six sibling packages remain the
 ordinary published `5.2.0` packages. Only the editor is forked, from upstream
 `5.2.0`.
 
+The published `tldraw@5.2.0` wrapper has one local package patch:
+`patches/tldraw+5.2.0.patch`. It caps pattern-fill raster generation at 16,384
+pixels so tlda's extended spatial-map zoom range cannot ask the browser for
+32,768- or 65,536-pixel canvases. `postinstall` applies the patch with
+`patch-package`; a context mismatch is an installation failure, not a skipped
+patch.
+
 ## Why the pin names an artifact commit
 
 The editor source lives at `packages/editor` in a Yarn monorepo. npm cannot
@@ -147,3 +154,13 @@ Before changing tlda's pin, compare the packed artifact with the previous
 artifact. A build includes the entire current fork checkout, so the package
 diff—not the source edit alone—is the record of what the dependency update
 will ship.
+
+The wrapper version and its local patch are part of the same upgrade check. On
+every `tldraw` wrapper upgrade, inspect
+`packages/tldraw/src/lib/shapes/shared/defaultStyleDefs.tsx` upstream. Remove
+`patches/tldraw+5.2.0.patch` if upstream now bounds the pattern raster; otherwise
+regenerate the patch for the new wrapper version with `patch-package`. In a
+disposable install, alter one patched context line and confirm that
+`npm run postinstall` exits nonzero, then restore the package and run the clean
+install and production-build checks above. Do not add a second patching or
+upgrade path.

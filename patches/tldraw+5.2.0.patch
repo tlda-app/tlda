@@ -1,0 +1,89 @@
+diff --git a/node_modules/tldraw/dist-cjs/lib/shapes/shared/defaultStyleDefs.js b/node_modules/tldraw/dist-cjs/lib/shapes/shared/defaultStyleDefs.js
+index e85fa54..d0841d7 100644
+--- a/node_modules/tldraw/dist-cjs/lib/shapes/shared/defaultStyleDefs.js
++++ b/node_modules/tldraw/dist-cjs/lib/shapes/shared/defaultStyleDefs.js
+@@ -70,9 +70,11 @@ function getFillDefForCanvas() {
+   };
+ }
+ const TILE_PATTERN_SIZE = 8;
++const MAX_PATTERN_IMAGE_SIZE = 16384;
+ const generateImage = (dpr, currentZoom, solid) => {
+   return new Promise((resolve, reject) => {
+-    const size = TILE_PATTERN_SIZE * currentZoom * dpr;
++    const rasterZoom = Math.min(currentZoom, MAX_PATTERN_IMAGE_SIZE / TILE_PATTERN_SIZE / dpr);
++    const size = TILE_PATTERN_SIZE * rasterZoom * dpr;
+     const canvasEl = (0, import_editor.getGlobalDocument)().createElement("canvas");
+     canvasEl.width = size;
+     canvasEl.height = size;
+@@ -85,9 +87,9 @@ const generateImage = (dpr, currentZoom, solid) => {
+     ctx.fillRect(0, 0, size, size);
+     ctx.globalCompositeOperation = "destination-out";
+     ctx.lineCap = "round";
+-    ctx.lineWidth = 1.25 * currentZoom * dpr;
++    ctx.lineWidth = 1.25 * rasterZoom * dpr;
+     const t = 8 / 12;
+-    const s = (v) => v * currentZoom * dpr;
++    const s = (v) => v * rasterZoom * dpr;
+     ctx.beginPath();
+     ctx.moveTo(s(t * 1), s(t * 3));
+     ctx.lineTo(s(t * 3), s(t * 1));
+diff --git a/node_modules/tldraw/dist-esm/lib/shapes/shared/defaultStyleDefs.mjs b/node_modules/tldraw/dist-esm/lib/shapes/shared/defaultStyleDefs.mjs
+index 5d9181e..333a44c 100644
+--- a/node_modules/tldraw/dist-esm/lib/shapes/shared/defaultStyleDefs.mjs
++++ b/node_modules/tldraw/dist-esm/lib/shapes/shared/defaultStyleDefs.mjs
+@@ -57,9 +57,11 @@ function getFillDefForCanvas() {
+   };
+ }
+ const TILE_PATTERN_SIZE = 8;
++const MAX_PATTERN_IMAGE_SIZE = 16384;
+ const generateImage = (dpr, currentZoom, solid) => {
+   return new Promise((resolve, reject) => {
+-    const size = TILE_PATTERN_SIZE * currentZoom * dpr;
++    const rasterZoom = Math.min(currentZoom, MAX_PATTERN_IMAGE_SIZE / TILE_PATTERN_SIZE / dpr);
++    const size = TILE_PATTERN_SIZE * rasterZoom * dpr;
+     const canvasEl = getGlobalDocument().createElement("canvas");
+     canvasEl.width = size;
+     canvasEl.height = size;
+@@ -72,9 +74,9 @@ const generateImage = (dpr, currentZoom, solid) => {
+     ctx.fillRect(0, 0, size, size);
+     ctx.globalCompositeOperation = "destination-out";
+     ctx.lineCap = "round";
+-    ctx.lineWidth = 1.25 * currentZoom * dpr;
++    ctx.lineWidth = 1.25 * rasterZoom * dpr;
+     const t = 8 / 12;
+-    const s = (v) => v * currentZoom * dpr;
++    const s = (v) => v * rasterZoom * dpr;
+     ctx.beginPath();
+     ctx.moveTo(s(t * 1), s(t * 3));
+     ctx.lineTo(s(t * 3), s(t * 1));
+diff --git a/node_modules/tldraw/src/lib/shapes/shared/defaultStyleDefs.tsx b/node_modules/tldraw/src/lib/shapes/shared/defaultStyleDefs.tsx
+index fb6c4e6..13239e3 100644
+--- a/node_modules/tldraw/src/lib/shapes/shared/defaultStyleDefs.tsx
++++ b/node_modules/tldraw/src/lib/shapes/shared/defaultStyleDefs.tsx
+@@ -64,10 +64,12 @@ export function getFillDefForCanvas(): TLShapeUtilCanvasSvgDef {
+ 	}
+ }
+ const TILE_PATTERN_SIZE = 8
++const MAX_PATTERN_IMAGE_SIZE = 16_384
+ 
+ const generateImage = (dpr: number, currentZoom: number, solid: string) => {
+ 	return new Promise<Blob>((resolve, reject) => {
+-		const size = TILE_PATTERN_SIZE * currentZoom * dpr
++		const rasterZoom = Math.min(currentZoom, MAX_PATTERN_IMAGE_SIZE / TILE_PATTERN_SIZE / dpr)
++		const size = TILE_PATTERN_SIZE * rasterZoom * dpr
+ 
+ 		const canvasEl = getGlobalDocument().createElement('canvas')
+ 		canvasEl.width = size
+@@ -86,10 +88,10 @@ const generateImage = (dpr: number, currentZoom: number, solid: string) => {
+ 		ctx.globalCompositeOperation = 'destination-out'
+ 
+ 		ctx.lineCap = 'round'
+-		ctx.lineWidth = 1.25 * currentZoom * dpr
++		ctx.lineWidth = 1.25 * rasterZoom * dpr
+ 
+ 		const t = 8 / 12
+-		const s = (v: number) => v * currentZoom * dpr
++		const s = (v: number) => v * rasterZoom * dpr
+ 
+ 		ctx.beginPath()
+ 		ctx.moveTo(s(t * 1), s(t * 3))
