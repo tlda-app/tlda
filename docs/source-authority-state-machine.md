@@ -39,9 +39,8 @@ by one of three routes, and leaves it by a fourth:
 | the browser source editor | the room checkpoints the text |
 | a linked Git remote — Overleaf or any other | its daemon submits like any other checkout |
 
-On current `main`, they get it back out through a linked checkout or linked Git
-remote. The specified `tlda merge` replay operation below is not a current
-command on `main`.
+**They get it back out with `tlda project merge`**, specified in the next
+section. Three ways in, one way out.
 
 Two rules hold everywhere below, and a person can rely on them without reading
 the mechanism:
@@ -57,43 +56,41 @@ the mechanism:
 
 ## Getting the work back out: the merge operation
 
-> **CURRENT MAIN STATUS, inspected 2026-09-02.** There is no `tlda merge`
-> command on `main`: `cli/tlda.mjs` has no `cmdMerge`, the removed-command guard
-> does not name `merge`, and `rg` finds no `server/lib/merge-replay.mjs` or
-> `/shadow/bundle` route on `main`. Do not tell a user to run `tlda merge` on
-> this build. The current implemented route out is the linked checkout or linked
-> Git remote path.
+> **THE COMMAND IS `tlda project merge`.** Skip, 2026-09-02 02:27:01 EDT: *"also
+> it should be tlda project merge probably yes?"* The 2026-08-22 candidate
+> spelled it as a top-level `tlda merge`; that spelling is refused and points
+> here, the same as every other command that lives under its noun.
 >
-> **BUILT on branch `tlda-merge`, 2026-08-22. Not on `main` and not deployed.**
-> The operation is `server/lib/merge-replay.mjs`; the CLI call site is
-> `cmdMerge` in `cli/tlda.mjs`; the server serves the history at
-> `GET /api/projects/:name/shadow/bundle`.
+> **The operation is `server/lib/merge-replay.mjs`; the CLI call site is
+> `cmdProjectMerge` in `cli/tlda.mjs`; the server serves the history at
+> `GET /api/projects/:name/shadow/bundle`.**
 >
-> **Observed 2026-08-22**, both by running them on that branch, on a throwaway
-> project and throwaway repositories — nothing of Skip's was touched:
+> **Observed 2026-09-02**, on a throwaway project and throwaway repositories —
+> nothing of anyone's real work was touched:
 >
-> - `node bin/a-replay-that-lands-on-a-real-branch-test.mjs` — nine stories over
+> - `node bin/a-replay-that-lands-on-a-real-branch-test.mjs` — 57 checks over
 >   real git repositories, including a source repo built by the real
 >   `git-filter-repo --path` so that it shares no commit identity with its
 >   target.
-> - `node bin/work-gets-out-of-the-app-test.mjs` — the real `tlda merge` binary,
->   as a subprocess, against the real `server/routes/projects.mjs` router
->   listening on a socket. Both ends and the wire between them.
+> - `node bin/work-gets-out-of-the-app-test.mjs` — the real `tlda project merge`
+>   binary, as a subprocess, against the real `server/routes/projects.mjs`
+>   router listening on a socket, with the project store initialised the way a
+>   server initialises it. Both ends and the wire between them.
 >
 > **What has NOT been established:** the server-side call site. The module has
 > two call sites specified and one written — the CLI. **The CLI path is proven;
 > the server path is not written at all**, so "the server runs `--ff-only`
 > unattended" below is still in the **specified** register. It is blocked on two
 > decisions rather than on effort — see §"The two that block the server call
-> site". And nothing here has run against a deployment: a freeze was on.
+> site". And nothing here has run against a deployment.
 >
 > The rest of this section is written in the present indicative, which is how a
 > specification reads and also how a description of working code reads. Which
 > sentences are which is the paragraph above, and nothing else on this page.
 
-`tlda merge` takes the version history tlda has accumulated for a project and
-lands it on a real branch — the author's own repository, or a linked remote such
-as Overleaf.
+`tlda project merge` takes the version history tlda has accumulated for a
+project and lands it on a real branch — the author's own repository, or a linked
+remote such as Overleaf.
 
 **It is one module with two call sites**, the CLI and the server, rather than two
 implementations. A second copy is how the two ends come to disagree about what a
@@ -111,10 +108,10 @@ itself, a few lines below, explaining why it removes the origin remote:
 > the project repo is not upstream of the shadow
 
 Nothing in the shadow can merge back by git identity. It can only be re-applied
-as content. `tlda merge` therefore **replays**: `git format-patch` on the shadow
-side, `git am` on the target. Author, date and message survive, so the target
-gains one commit per real change rather than a single commit standing for all of
-them.
+as content. `tlda project merge` therefore **replays**: `git format-patch` on
+the shadow side, `git am` on the target. Author, date and message survive, so
+the target gains one commit per real change rather than a single commit standing
+for all of them.
 
 The filter is a plain `--path` with no rename, so the shadow keeps the project's
 original paths and patches apply where they belong with no translation.
@@ -151,7 +148,7 @@ half-applied branch — the one state the server must never be able to reach.
 
 - **Fast-forward** → the server applies it. Nothing to resolve, safe unattended.
 - **Not fast-forward** → the server stops and says so, and hands the branch off:
-  *take this branch, run `tlda merge` without `--ff-only` on your box, resolve
+  *take this branch, run `tlda project merge` without `--ff-only` on your box, resolve
   it, and submit the finished branch back.* The server then fast-forwards what
   comes back.
 
@@ -165,7 +162,7 @@ is not transportable.
 
 ### Every participant is a real process with git behind it
 
-`tlda merge` shells out to `git`. That settles something outside this document:
+`tlda project merge` shells out to `git`. That settles something outside this document:
 the browser editor's daemon has to be a real process on a box with a git binary,
 not something living in the page. The rule that forces it is the existing one —
 every editor is a participant with a daemon — so it is decided once, for all
@@ -199,9 +196,9 @@ come from Skip directly are marked **inferred** rather than presented as his.
 
 #### The two that block the server call site
 
-**`tlda merge` has two call sites specified and one written. The CLI path is
+**`tlda project merge` has two call sites specified and one written. The CLI path is
 built and proven; the server path is not written at all.** Nobody should read
-"`tlda merge` exists" as meaning the server can call it — it cannot, and the
+"`tlda project merge` exists" as meaning the server can call it — it cannot, and the
 reason is not effort. It is these two, and both are Skip's:
 
 - **Which repository the server lands on.** §"Where each rule above comes from"
@@ -221,7 +218,7 @@ Answering them is the whole of the remaining work for the unattended path.
 
 #### The rest
 
-- **What the operation reads.** Whether `tlda merge` replays from
+- **What the operation reads.** Whether `tlda project merge` replays from
   `refs/tlda/shadow/HEAD` in the local checkout, which the daemon already
   maintains, or fetches the shadow from the server.
 
@@ -245,7 +242,7 @@ Answering them is the whole of the remaining work for the unattended path.
   exactly the source commits whose `patch-id` is not already on the target
   branch — no base has to be remembered, nothing is recorded on either side, and
   the second merge is the same computation as the first. It is what `git cherry`
-  does. Measured: a second `tlda merge` of an unchanged project lands nothing and
+  does. Measured: a second `tlda project merge` of an unchanged project lands nothing and
   does not move the branch.
 **Direct-to-Overleaf** and **who is told when the server cannot fast-forward**
 were the two other entries in this list. They are the two above, stated there as

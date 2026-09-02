@@ -72,9 +72,6 @@ cd /path/to/eiv-paper
 tlda project link eiv-paper least-squares.tex
 ```
 
-On current `main`, `tlda project add` is not a separate command. Use
-`tlda project link` to create or relink a project from an existing Git checkout.
-
 Linking seeds the version wheel from the current working copy's Git history. By
 default the seed ends at the checked-out branch's `HEAD`. Positional paths are
 document roots. Use `--version branch@commit` to choose another endpoint:
@@ -103,6 +100,47 @@ extension and includes the local Markdown files and assets it links to:
 cd /path/to/notes
 tlda project link proof-notes README.md
 ```
+
+### Adding a file to a project you already linked
+
+`tlda project add` puts another document into a project without relinking it:
+
+```sh
+cd /path/to/eiv-paper
+tlda project add supplement.tex
+```
+
+It does three things, in this order. If the file is present but untracked it
+runs `git add` on it, which is what puts the file in the next submitted
+revision — the daemon submits tracked changes only. It then appends the file to
+the project's document roots, which is what makes the server render it as a
+document of the project; the existing roots, their order and their formats are
+untouched. Then it submits, so the document is in the project when the command
+returns.
+
+The order is not cosmetic: a declared document root that is not in the settled
+tree stops the project syncing, and it does so quietly, so the file is staged
+before it is declared.
+
+**The project keeps the branch and history it already has.** Nothing is
+unlinked, nothing is reseeded, and `tlda/<project>` does not move. Running the
+command twice adds nothing the second time.
+
+To take a file that is not in this working tree at all — one that exists only on
+another branch — name the branch:
+
+```sh
+tlda project add notes.md --from main
+```
+
+That runs `git checkout main -- notes.md`, which writes the file into your tree
+and stages it. It refuses rather than overwriting a file you already have.
+
+Only a document can be a root: `.tex`, `.md`, `.markdown`, `.qmd`, `.html`,
+`.htm`. Figures, `.bib`, `.sty` and other assets travel automatically as part of
+a document's closure, so they are not added by hand.
+
+### Git remotes
 
 The checkout remains the project source when it also has a hosted Git remote.
 Manage that remote through the project command:
@@ -146,9 +184,45 @@ unresolved files, or an in-progress merge, the daemon stops and leaves the
 checkout for ordinary Git resolution. The server does not silently overwrite a
 linked local checkout with a browser edit.
 
-There is no current `tlda merge` command on `main`. Today the implemented way
-to get accepted app history back into Git is a linked checkout or a linked Git
-remote; a separate replay command is not available in this build.
+### Getting the app's history back into your repository
+
+`tlda project merge` lands the version history tlda accumulated for a project on
+a real branch of your own repository:
+
+```sh
+cd /path/to/eiv-paper
+tlda project merge eiv-paper
+```
+
+tlda's copy of your paper is a filtered rewrite of your history, so it shares no
+commit identity with your repository and cannot be merged by Git identity. The
+command therefore **replays**: it fetches the project's history, runs
+`git format-patch` over it, and applies the patches with `git am --3way`, one at
+a time. Each change arrives as its own commit, keeping its author, date and
+message — you get one commit per real change, not one commit standing for all of
+them.
+
+Commits are paired by `git patch-id`, a hash of the change itself, so a change
+that is already on your branch under a different sha is recognised and skipped.
+Running it twice lands nothing the second time.
+
+The patches are applied in a scratch worktree, and your branch moves only once
+the whole sequence has landed. So:
+
+- **A conflict leaves your branch exactly where it was.** The command stops,
+  names the patch that stopped it, and prints the scratch worktree the conflict
+  is sitting in. Resolve it there with `git am --continue` (or `--skip` to drop
+  that patch), then run `tlda project merge --continue`. `--status` says what is
+  stopped; `--abort` drops the whole thing.
+- **`--ff-only` never resolves anything.** It plays the whole sequence or moves
+  nothing, and reports which patch it could not apply. This is the mode meant
+  for unattended use.
+- **It refuses rather than overwriting an uncommitted edit.** If the target
+  branch is checked out and you have changes that the replay would overwrite, it
+  says so and applies nothing.
+
+`--into <branch>` lands on a branch other than the checked-out one, and
+`--repo <path>` runs against a repository other than the current directory.
 
 ## Document formats
 

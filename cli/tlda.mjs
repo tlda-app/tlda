@@ -8,7 +8,7 @@
  */
 
 import { resolve, relative, basename, dirname, join, delimiter } from 'path'
-import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
+import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync, rmSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname, tmpdir } from 'os'
 import { createHash, randomBytes, randomUUID } from 'crypto'
@@ -75,7 +75,8 @@ import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
-import { documentRootsToDeclare, normalizeDocumentRoots } from '../shared/document-roots.mjs'
+import { documentRootsToDeclare, formatForDocumentPath, normalizeDocumentRoots } from '../shared/document-roots.mjs'
+import { mergeAbort, mergeContinue, mergeReplay, mergeStatus } from '../server/lib/merge-replay.mjs'
 
 // --- Argument parsing ---
 
@@ -86,7 +87,7 @@ import { documentRootsToDeclare, normalizeDocumentRoots } from '../shared/docume
 // are their own top-level commands.)
 const PROJECT_SUBS = new Set([
   'open', 'push', 'list', 'ls', 'status', 'errors',
-  'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'unlink', 'remote',
+  'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'unlink', 'add', 'merge', 'remote',
   'repo-doctor', 'init-shadow',
 ])
 const REMOVED_PROJECT_SUBS = new Set(['create', 'preview', 'init'])
@@ -107,6 +108,8 @@ const TOP_LEVEL_COMMANDS = [
 ]
 const PROJECT_COMMANDS = [
   ['link', 'Link an existing project, push files, build'],
+  ['add', 'Add a file to the project as a document root'],
+  ['merge', 'Land the project\'s version history on a real branch'],
   ['remote', 'Manage the linked Git repository remotes'],
   ['unlink', 'Detach a local checkout from a project'],
   ['open', 'Open the viewer'],
@@ -210,6 +213,8 @@ const COMMAND_HELP = {
   book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
   link:    'tlda project link <name> <root> [root ...] [--version <branch>@<commit>] [--github] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Create a project from the current existing Git repository. Positional paths are document roots; each root and its include graph seed project history. --version selects the branch and endpoint (default: the checked-out branch at HEAD). --github creates a private repository with the authenticated gh account and adds it through the ordinary Git remote path.\n  An existing different binding is refused until it is explicitly unlinked.',
   unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local checkout currently linked to the project. The source must match the existing binding.',
+  add:     'tlda project add <file> [file ...] [--project <name>] [--from <branch>]\n\n  Add files to the project this checkout is linked to, as document roots.\n\n  The project keeps the branch and history it already has: this appends to the\n  declared document roots and never unlinks, reseeds, or moves the tlda branch.\n  Running it twice adds nothing the second time.\n\n  A file that is present but untracked is staged with `git add` first, because a\n  declared root that is not in the settled tree stops the project syncing.\n  --from  Take a file that is not in this working tree from another branch\n          (`git checkout <branch> -- <file>`), which is how you pull a file\n          that only exists on main into the project.',
+  merge:   'tlda project merge [project] [--into <branch>] [--repo <path>] [--ff-only] [--from <repo>]\ntlda project merge --continue | --abort | --status [--repo <path>]\n\n  Land the version history tlda accumulated for a project on a real branch —\n  your own repository, or a linked remote such as Overleaf.\n\n  The app\'s copy shares no commit identity with your repository, so this is a\n  replay rather than a merge: every change is re-applied as its own commit,\n  keeping its author, date and message. Commits already present are recognised\n  by content, so running it twice lands nothing the second time.\n\n  --ff-only  Play the whole sequence or move nothing. This is the mode the\n             server runs unattended; it never resolves a conflict.\n  (default)  Play patches until one needs a decision, then stop with that\n             conflict in a scratch working tree for you to resolve.\n\n  --into     Branch to land on (default: the checked-out branch).\n  --repo     Repository to land in (default: the current directory).\n  --from     Replay from a repository already on this box instead of fetching.',
   remote:  'tlda project remote add <remote> <url> [--project <name>]\ntlda project remote delete <remote> [--project <name>]\ntlda project remote pull|push|checkout <remote> [branch] [--project <name>]\n\n  Manage remotes on the existing Git repository linked to the project. The project is inferred from the current checkout unless --project is supplied.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
@@ -239,7 +244,7 @@ const VALUE_FLAGS = new Set([
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'name', 'kind',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'poll', 'config',
-  'label', 'plist', 'only', 'version', 'project',
+  'label', 'plist', 'only', 'version', 'project', 'repo', 'into', 'from',
   'course', 'course-title', 'instructor-preferred-name', 'instructor-pronouns', 'assignment', 'assignment-title', 'due',
   'source', 'handout', 'solutions', 'solutions-version', 'handout-filter', 'solution-filter',
   'homework-root', 'homework', 'project-prefix', 'quarto-bin',
@@ -1122,6 +1127,173 @@ async function cmdUnlink() {
   }
   const result = await callLocalDaemonLifecycle('project-source-unlink', { project: name, sourceDir })
   console.log(result.alreadyUnlinked ? dim(`Project "${name}" is not linked on this machine.`) : `Unlinked ${name} from ${result.sourceDir}.`)
+}
+
+/**
+ * `tlda project add <file...>` — put a file into a project this checkout is
+ * already linked to, as a document root.
+ *
+ * Skip, 2026-09-02 02:28:21 EDT: *"do we not need an add when we want to like,
+ * pull a new file from main into our tlda project?"* — and, on how: *"i mean
+ * it's effectively unlink and link with a new set of roots yes?"* (02:28:59),
+ * *"like an unlink link hack is fine"* (02:38:14).
+ *
+ * IT DOES NOT UNLINK. The unlink/link phrasing is a description of the effect —
+ * the same checkout, a wider root set — and unlink/link is one way to get there.
+ * It is not the way taken here, because relinking re-runs the history seed and
+ * `cmdCreate`'s create-or-update path, and the thing that must survive is the
+ * project's existing tlda branch and history. Appending to the declaration
+ * reaches the stated effect and cannot lose those, so there is nothing for a
+ * reseed to buy. This is the shape `adoptClickedFileAsDocumentRoot` in
+ * server/routes/projects.mjs already uses for the chat click, for the same
+ * reason: it is a read-modify-write on the record, and it appends.
+ *
+ * THREE STEPS, AND THE ORDER IS LOAD-BEARING.
+ *
+ *   1. get the file into the working tree — it may only exist on another
+ *      branch, which is the `--from` case and literally "pull a new file from
+ *      main"
+ *   2. stage it, if it is untracked. The settle stages tracked changes only
+ *      (`git add -u` in daemon/git-project-sync.mjs `settledCommit`), so an
+ *      untracked file is not in the settled tree — and `filteredProjectCommit`
+ *      throws `configured document root is absent` for a declared root that is
+ *      not there, which is caught at warn and stops the project syncing AT ALL.
+ *      Stage, THEN declare. Skip chose staging over refusing on 2026-08-24.
+ *   3. declare it, and submit, so the file is in the project now rather than at
+ *      whatever moment something else happens to settle.
+ *
+ * IDEMPOTENT. A file that is already a root is reported and written nowhere; a
+ * file that is already tracked is not re-staged. Running it twice changes
+ * nothing the second time.
+ */
+async function cmdProjectAdd() {
+  const files = getPositionals()
+  if (!files.length) {
+    console.error('Usage: tlda project add <file> [file ...] [--project <name>] [--from <branch>]')
+    process.exit(1)
+  }
+
+  const dir = resolve(getFlag('dir') || '.')
+  let repoRoot
+  try {
+    repoRoot = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+  } catch {
+    console.error(red(`Refusing to add from ${dir}`))
+    console.error(red('  — tlda project add requires the current working copy to be an existing Git repository.'))
+    process.exit(1)
+  }
+
+  const name = getFlag('project') || getFlag('name') || await inferProjectName()
+  if (!name) exitNotLinkedHere('tlda project add <file> --project <name>')
+
+  const record = await api('GET', `/api/projects/${encodeURIComponent(name)}`).catch(() => null)
+  const project = (record?.project || record) || null
+  if (!project) {
+    console.error(red(`No project "${name}".`))
+    process.exit(1)
+  }
+
+  const fromBranch = getFlag('from')
+  const git = (...gitArgs) => execFileSync('git', ['-C', repoRoot, ...gitArgs], { encoding: 'utf8' }).trim()
+  const isTracked = path => {
+    try {
+      execFileSync('git', ['-C', repoRoot, 'ls-files', '--error-unmatch', '--', path], { stdio: 'ignore' })
+      return true
+    } catch { return false }
+  }
+
+  const existing = normalizeDocumentRoots(project.documentRoots, { mainFile: project.mainFile, format: project.format })
+  const additions = []
+  const alreadyRoots = []
+  for (const file of files) {
+    const absolute = resolve(dir, file)
+    const path = relative(repoRoot, absolute).replace(/\\/g, '/')
+    if (!path || path === '..' || path.startsWith('../')) {
+      console.error(red(`${file} is outside ${repoRoot} — a document root must be inside the linked working copy.`))
+      process.exit(1)
+    }
+
+    // A file that is only on another branch. `git checkout <branch> -- <path>`
+    // writes it into the working tree AND stages it, which is both of the first
+    // two steps at once. It refuses on its own if the branch has no such path.
+    if (!existsSync(absolute)) {
+      if (!fromBranch) {
+        console.error(red(`${path} is not in this working copy.`))
+        console.error(`  If it is on another branch, take it from there: tlda project add ${file} --from <branch>`)
+        process.exit(1)
+      }
+      try {
+        git('checkout', fromBranch, '--', path)
+      } catch (e) {
+        // Not swallowed — this exits. `git checkout` already says exactly what
+        // was wrong (no such branch, no such path on it), and letting the throw
+        // bubble would print that same text wrapped in a stack trace under a
+        // wrapper's name. Nothing has been written yet, so there is no state to
+        // unwind.
+        console.error(red(`Could not take ${path} from ${fromBranch}: ${e.message.trim()}`))
+        process.exit(1)
+      }
+      console.log(dim(`  took ${path} from ${fromBranch}`))
+    } else if (fromBranch) {
+      // Overwriting a file that is already here with another branch's copy is a
+      // different operation and it destroys work. `--from` is for a file this
+      // tree does not have.
+      console.error(red(`${path} is already in this working copy; --from would overwrite it.`))
+      console.error('  Drop --from to add the file you have, or resolve the two versions with git first.')
+      process.exit(1)
+    }
+
+    const format = formatForDocumentPath(path)
+    if (!format) {
+      console.error(red(`${path} is not a document, so it cannot be a document root.`))
+      console.error(dim('  Figures, .bib, .sty and other assets travel automatically as part of a document\'s closure.'))
+      process.exit(1)
+    }
+
+    if (!isTracked(path)) {
+      git('add', '--', path)
+      console.log(dim(`  staged ${path}`))
+    }
+
+    if (existing.some(root => root.path === path) || additions.some(root => root.path === path)) {
+      alreadyRoots.push(path)
+      continue
+    }
+    additions.push({ path, format })
+  }
+
+  for (const path of alreadyRoots) console.log(dim(`${path} is already a document root of "${name}".`))
+
+  if (!additions.length) {
+    console.log(`Nothing to add: "${name}" already declares ${alreadyRoots.length === 1 ? 'it' : 'them'}.`)
+    return
+  }
+
+  // Append. The existing entries, their order and their formats are untouched,
+  // which is what makes this non-destructive rather than a rewrite of the
+  // declaration.
+  const documentRoots = [...existing, ...additions]
+  await api('PATCH', `/api/projects/${encodeURIComponent(name)}/document-roots`, { documentRoots })
+  for (const root of additions) console.log(green(`Added ${root.path} to "${name}" (${root.format}).`))
+
+  // Submit now, through the same daemon call `tlda project push` makes, so the
+  // file is in the project when this command returns. Without it the file waits
+  // for whatever settles next, and the person is told it was added while the
+  // document is not there.
+  //
+  // ONLY THIS STEP RETRIES. The staging and the append above are not re-runnable
+  // in a loop — `--from` refuses a file that is already in the tree, which is
+  // exactly the state a retry would find. Resubmitting is, and it is the step
+  // that flakes, so the retry goes around it and nothing else.
+  const linked = await finishCliOperation('project add submission', async () => {
+    const projectMetadata = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
+    return callLocalDaemonLifecycle('project-source-link', {
+      project: name,
+      sourceDir: repoRoot,
+      projectMetadata,
+    })
+  })
+  printSubmittedRevision(linked.submission)
 }
 
 async function cmdRemote() {
@@ -6594,6 +6766,144 @@ async function cmdDevUrl() {
   console.log(token ? `${base}?token=${token}` : base)
 }
 
+/**
+ * `tlda project merge` — land the version history tlda accumulated for a
+ * project on a real branch of the author's own repository.
+ *
+ * This is the ONE way work gets back out of the app. Three ways in (a linked
+ * checkout, the browser source editor, a linked Git remote), one way out.
+ *
+ * Skip, 2026-09-02 02:26:20 EDT, on why the tlda commands exist at all: *"we
+ * want to like filter onto tlda branches but retain history and then map
+ * back"*. This is the map-back, and the history is retained by replaying one
+ * commit per change rather than collapsing them.
+ *
+ * THE SPELLING IS NESTED. Skip, 02:27:01 EDT: *"also it should be tlda project
+ * merge probably yes?"* The earlier unmerged candidate spelled it as a
+ * top-level `tlda merge`; `PROJECT_SUBS` now carries `merge`, so that spelling
+ * is refused with a pointer at this one, the same as every other moved command.
+ *
+ * The operation itself is server/lib/merge-replay.mjs, which the server calls
+ * too. Everything here is acquiring the two repositories and printing.
+ */
+async function cmdProjectMerge() {
+  const targetRepo = resolve(getFlag('repo') || getFlag('dir') || '.')
+  if (!existsSync(join(targetRepo, '.git'))) {
+    console.error(`${targetRepo} is not a Git checkout. Run this in your repository, or pass --repo <path>.`)
+    process.exit(1)
+  }
+
+  if (hasFlag('status')) {
+    const state = await mergeStatus({ targetRepo })
+    if (state.status === 'idle') { console.log('No merge in progress.'); return }
+    console.log(`A merge onto ${cyan(state.branch)} is stopped.`)
+    console.log(`  ${state.remaining} patch(es) still to apply`)
+    if (state.failedCommit) console.log(`  stopped on: ${state.failedCommit.subject} — ${state.failedCommit.author}`)
+    console.log(`  working tree: ${state.worktree}`)
+    if (state.amOpen) console.log(dim(`  the conflicted patch is still open there — git -C ${state.worktree} am --continue`))
+    return
+  }
+
+  if (hasFlag('abort')) {
+    const result = await mergeAbort({ targetRepo })
+    console.log(`Dropped the stopped merge onto ${result.branch}. The branch was never moved.`)
+    return
+  }
+
+  if (hasFlag('continue')) {
+    const result = await mergeContinue({ targetRepo, onProgress: printMergeProgress })
+    if (result.status === 'conflict') { printMergeConflict(result); process.exit(1) }
+    console.log(green(`Landed on ${result.branch} (${result.how}).`))
+    console.log(dim(`  ${result.newTip.slice(0, 7)}`))
+    return
+  }
+
+  const ffOnly = hasFlag('ff-only')
+  const name = getPositional(0) || await inferProjectName()
+  if (!name) { console.error('Usage: tlda project merge [project] [--into <branch>] [--ff-only]'); process.exit(1) }
+
+  // WHERE THE HISTORY COMES FROM. The spec leaves open whether the operation
+  // reads `refs/tlda/shadow/HEAD` in the local checkout or fetches from the
+  // server. `--from` takes a repository that is already on this box; with no
+  // `--from` it fetches, because that ref is written only by a daemon path
+  // nothing currently triggers, so a checkout that has never been mirrored
+  // does not have it.
+  let sourceRepo = getFlag('from') ? resolve(getFlag('from')) : null
+  let temp = null
+  if (!sourceRepo) {
+    console.log(`Fetching the version history for ${cyan(name)}…`)
+    const { head, bundleBase64 } = await api('GET', `/api/projects/${encodeURIComponent(name)}/shadow/bundle`, null, { timeoutMs: 120000 })
+    temp = join(tmpdir(), `tlda-merge-${name}-${randomUUID().slice(0, 8)}`)
+    mkdirSync(temp, { recursive: true })
+    const bundlePath = join(temp, 'history.bundle')
+    writeFileSync(bundlePath, Buffer.from(bundleBase64, 'base64'))
+    sourceRepo = join(temp, 'history')
+    execFileSync('git', ['clone', '-q', bundlePath, sourceRepo], { stdio: ['ignore', 'ignore', 'pipe'] })
+    console.log(dim(`  history at ${head.slice(0, 7)}`))
+  }
+
+  try {
+    const result = await mergeReplay({
+      sourceRepo,
+      targetRepo,
+      targetBranch: getFlag('into'),
+      ffOnly,
+      onProgress: printMergeProgress,
+    })
+
+    if (result.status === 'up-to-date') {
+      console.log(`${cyan(result.branch)} already has everything the app holds.`)
+      return
+    }
+    if (result.status === 'merged') {
+      console.log(green(`Landed ${result.commits} commit(s) on ${result.branch} (${result.how}).`))
+      console.log(dim(`  ${result.oldTip.slice(0, 7)} → ${result.newTip.slice(0, 7)}`))
+      return
+    }
+    if (result.status === 'refused') {
+      // --ff-only. The branch did not move. Say which patch stopped it and what
+      // the next action is; do not attempt anything else.
+      console.error(red(`Cannot fast-forward ${result.branch}. Nothing was applied.`))
+      console.error(`  stopped on patch ${result.failedAt.position}/${result.failedAt.of}: ${result.failedAt.subject}`)
+      console.error(`  ${dim(result.failedAt.author)} ${dim(result.failedAt.date)}`)
+      console.error(`\n  Run without --ff-only to replay it here and resolve the conflict.`)
+      process.exit(1)
+    }
+    printMergeConflict(result)
+    process.exit(1)
+  } finally {
+    if (temp) rmSync(temp, { recursive: true, force: true })
+  }
+}
+
+function printMergeProgress(event) {
+  if (event.kind === 'selected') {
+    const owed = event.selected.length
+    console.log(`${owed} commit(s) to replay${event.alreadyPresent ? dim(`, ${event.alreadyPresent} already present`) : ''}.`)
+    if (event.emptyCommits.length) {
+      console.log(dim(`  ${event.emptyCommits.length} commit(s) have an empty diff and cannot be replayed.`))
+    }
+    return
+  }
+  if (event.kind === 'applied') {
+    process.stdout.write(dim(`\r  applied ${event.index + 1}/${event.total}`))
+    if (event.index + 1 === event.total) process.stdout.write('\n')
+  }
+}
+
+function printMergeConflict(result) {
+  console.error(red(`\nStopped at a conflict. ${result.branch} has not moved.`))
+  if (result.failedAt) {
+    console.error(`  patch ${result.failedAt.position}/${result.failedAt.of}: ${result.failedAt.subject}`)
+    console.error(`  ${dim(result.failedAt.author)} ${dim(result.failedAt.date)}`)
+  }
+  console.error(`\n  Resolve it in ${cyan(result.worktree)}:`)
+  console.error(`    git -C ${result.worktree} am --continue     ${dim('(or --skip to drop that patch)')}`)
+  console.error(`  Then finish the sequence — ${result.remaining} patch(es) left:`)
+  console.error(`    tlda project merge --continue`)
+  console.error(`  Or drop the whole thing:  tlda project merge --abort`)
+}
+
 // --- Main ---
 
 async function main() {
@@ -6615,6 +6925,18 @@ async function main() {
       case 'push':   await finishCliOperation('project push', cmdPush); break
       case 'link':   await finishCliOperation('project link', cmdLink); break
       case 'unlink': await finishCliOperation('project unlink', cmdUnlink); break
+      // NOT wrapped in finishCliOperation, and that is deliberate for both.
+      //
+      // `finishCliOperation` retries anything 5xx or connection-shaped, forever,
+      // with a 30s ceiling. That is right for a push, where the daemon flaking is
+      // ordinary and the operation is a plain resubmission. It is wrong here:
+      // a merge is a git-mutating sequence over the person's own repository, and
+      // `add` writes the working tree before it talks to anything. Measured while
+      // building this: a 500 from the bundle route turned one honest error into an
+      // unbounded loop that printed `Fetching the version history…` eleven times and
+      // never stopped. The retry that helps a push hides the failure here.
+      case 'add':    await cmdProjectAdd(); break
+      case 'merge':  await cmdProjectMerge(); break
       case 'remote': await finishCliOperation('project remote', cmdRemote); break
       case 'daemon': await cmdDaemon(); break
       case 'bot': await cmdBot(); break

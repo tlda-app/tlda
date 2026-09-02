@@ -62,11 +62,10 @@ slide loaders. A Quarto render produces it after inspecting the output;
 pre-rendered HTML may supply it, while the server otherwise derives it from the
 top-level HTML files.
 
-`tlda project link` is the current create/relink command; `tlda project add` is
-not a current command on `main`. The CLI first proves the current directory is a
-Git repository with `git rev-parse --show-toplevel`, resolves positional
-arguments as document roots, creates or updates the project through the server
-API, and calls the local daemon with `project-source-link`.
+`tlda project link` is the create/relink command. The CLI first proves the
+current directory is a Git repository with `git rev-parse --show-toplevel`,
+resolves positional arguments as document roots, creates or updates the project
+through the server API, and calls the local daemon with `project-source-link`.
 
 The daemon seeds existing project history by configuring a `tlda` Git remote for
 the server's `/git/<project>` endpoint and pushing the chosen revision to the
@@ -84,6 +83,31 @@ commit, then the document-root dependency closure is written as
 The daemon updates `refs/heads/tlda/<project>`, resets the real index mixed to
 that branch, and pushes the revision to
 `refs/tlda/proposals/<daemon>/<branch>/<revision>` on the server.
+
+`tlda project add <file...>` widens an existing binding rather than replacing
+it. The CLI resolves each argument against `git rev-parse --show-toplevel` and
+refuses a path outside it; with `--from <branch>` it runs
+`git checkout <branch> -- <path>` for a file the working tree does not have, and
+refuses rather than overwriting one it does; it runs `git add -- <path>` when
+`git ls-files --error-unmatch` says the file is untracked; then it
+read-modify-writes the record through `PATCH /api/projects/:name/document-roots`
+with the existing roots followed by the new ones, and calls the daemon with
+`project-source-link` for the same `sourceDir` — no unlink, no `seedBranch` or
+`seedRevision`, so `refs/heads/tlda/<project>` and the revision chain are
+untouched. A file that is already a root writes nothing.
+
+**Staging and declaring do two different jobs, and both are needed.** The settle
+stages tracked changes only, so an untracked file is not in the settled tree —
+and the roots the revision is built from are **computed from that tree** by the
+include graph in `documentRootsIn`, not read from the stored declaration. The
+stored declaration is what the server renders from: `latexDocumentRootPaths` in
+`build-runner.mjs` takes it as the render entry points, and `/:name/files` builds
+its document list from it. So `git add` is what puts the file in the revision,
+and the `PATCH` is what makes the server treat it as a document of the project.
+The order matters in the other direction too: `filteredProjectCommit` throws
+`configured document root is absent` for a declared root that is not in the
+settled tree, and that throw is caught at warn, so declaring before staging stops
+the project syncing silently.
 
 When the server reports a different accepted head, the daemon fetches or records
 that head and runs Git's merge machinery against the local revision. A clean
@@ -103,9 +127,39 @@ remote path: it polls the remote branch, records it at
 `refs/tlda/remote/observed`, merges it locally when it moved, and pushes accepted
 revisions only when the remote head is an ancestor.
 
-There is no current `tlda merge` command on `main`. The implemented route out of
-the app is the linked checkout or linked remote described above; a separate
-history replay command is not available in this build.
+`tlda project merge` is the route out. `GET /api/projects/:name/shadow/bundle`
+answers `git bundle create --all` over the project's shadow repository, resolved
+through `shadowRepoDir` — which is `liveProjectDir`, not the build-instance
+`projectDir` override — and the CLI clones that bundle into a temporary
+directory. `server/lib/merge-replay.mjs` then does the replay, and it is one
+module the CLI and the server both call rather than two implementations.
+
+The shadow is built by `git clone` plus `git-filter-repo --path`, which rewrites
+every commit, so it shares no commit identity with the author's repository and
+nothing in it can merge by Git identity. The replay pairs commits by
+`git patch-id --stable` over `git log -p` on both sides in one pipe, and what is
+still owed is exactly the source commits whose patch-id is not already on the
+target branch — the same computation on the second run as on the first, with no
+base recorded anywhere. Each owed commit is written out with
+`git format-patch -1 --stdout --no-signature --keep-subject --binary` (plus
+`--root` for a root commit), the source objects are fetched into the target
+under `refs/tlda/merge-source/<oldTip>` so `--3way` has the preimage blobs, and
+`git worktree add --detach` creates a scratch worktree at the target branch's
+current tip. Patches are applied there one at a time with `git am -k --3way`.
+
+The real branch moves only after the whole sequence lands: `git merge --ff-only`
+when the target branch is the checked-out one, `git update-ref refs/heads/<branch>
+<new> <old>` — a compare-and-swap — when it is not. `git am` is not atomic, so
+without the scratch worktree a failure on patch five would leave patches one
+through four on the branch. On a conflict in the default mode the state file
+`tlda-merge.json` and the patch directory are left in the target's git directory
+for `--continue`, `--status` and `--abort`; with `--ff-only` the `am` is aborted,
+the scratch worktree removed, and the branch is left exactly where it was.
+
+The server-side call site is specified but not written; the CLI is the only
+caller today. See
+[Source authority](source-authority-state-machine.md) §"The two that block the
+server call site".
 
 ## Machine daemon
 
