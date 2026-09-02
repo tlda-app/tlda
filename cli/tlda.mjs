@@ -6883,6 +6883,13 @@ function printMergeProgress(event) {
     if (event.emptyCommits.length) {
       console.log(dim(`  ${event.emptyCommits.length} commit(s) have an empty diff and cannot be replayed.`))
     }
+    // Said separately from the empty ones, because the reason is different and
+    // it is the reason somebody would otherwise go looking for a missing
+    // commit: these carry only the server's own `.gitignore`/`CLAUDE.md`, which
+    // are not part of anyone's paper.
+    if (event.bookkeepingCommits?.length) {
+      console.log(dim(`  ${event.bookkeepingCommits.length} commit(s) touch only root .gitignore / CLAUDE.md, which are not replayed.`))
+    }
     return
   }
   if (event.kind === 'applied') {

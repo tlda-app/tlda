@@ -189,7 +189,13 @@ module the CLI and the server both call rather than two implementations.
 
 The shadow is built by `git clone` plus `git-filter-repo --path`, which rewrites
 every commit, so it shares no commit identity with the author's repository and
-nothing in it can merge by Git identity. The replay pairs commits by
+nothing in it can merge by Git identity. The replay is scoped to the paper with
+the pathspec `-- . :(exclude,top).gitignore :(exclude,top)CLAUDE.md`, applied to
+the pairing and to `format-patch` on both sides, because `writeShadowGuardFiles`
+commits those two files into every shadow and the first `Build at …` commit then
+deletes the `CLAUDE.md` — see
+[Source authority](source-authority-state-machine.md) §"The shadow's own
+bookkeeping is not the paper". The replay pairs commits by
 `git patch-id --stable` over `git log -p` on both sides in one pipe, and what is
 still owed is exactly the source commits whose patch-id is not already on the
 target branch — the same computation on the second run as on the first, with no

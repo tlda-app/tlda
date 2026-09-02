@@ -59,6 +59,48 @@ const execFile = promisify(execFileCb)
 const STATE_FILE = 'tlda-merge.json'
 const PATCH_DIR = 'tlda-merge-patches'
 
+/**
+ * The shadow's own bookkeeping, which is NOT the author's paper and must never
+ * be replayed into their repository.
+ *
+ * `writeShadowGuardFiles` in server/lib/shadow-repo.mjs writes a `.gitignore`
+ * and a `CLAUDE.md` reading "DO NOT WRITE HERE" into every shadow at creation,
+ * and a shadow with no origin — which is what EVERY locally-linked project has,
+ * as `commitSnapshot` says where it refuses to skip creation — commits them as
+ * its `init` commit. Then the first `Build at …` commit deletes the `CLAUDE.md`
+ * again, because `commitSnapshot` clears the tree and rebuilds it from the
+ * revision's files.
+ *
+ * MEASURED on a real shadow built by the real `commitSnapshot`, 2026-09-02:
+ *
+ *   init                A .gitignore  A CLAUDE.md
+ *   Build at …          D CLAUDE.md   A main.tex
+ *   Build at …          M main.tex
+ *
+ * Replayed unfiltered into an author's repository that has its own two files,
+ * that lands the server's `.gitignore` and its "DO NOT WRITE HERE" `CLAUDE.md`
+ * on top of theirs and then DELETES the `CLAUDE.md`. It is data loss in the one
+ * command whose whole job is getting their work back. Before this filter,
+ * `--ff-only` refused outright on patch 1 of 3 — so the command did not work at
+ * all on the projects it exists for.
+ *
+ * The rule is not invented here. `readShadowSourceScope` in shadow-repo.mjs
+ * already skips exactly these two by name when it works out which files are the
+ * paper's, so as far as the rest of the system is concerned they are not
+ * project content. This is that same rule, applied to the replay.
+ *
+ * THE TRADE-OFF, stated rather than discovered: a project whose paper genuinely
+ * contains a root `.gitignore` will not have changes to it replayed back. That
+ * is the safe direction — not carrying one file is recoverable, silently
+ * deleting the author's is not — and it is the answer the existing scope rule
+ * already gives.
+ *
+ * Root-level only. `writeShadowGuardFiles` writes at the repository root, and a
+ * `docs/CLAUDE.md` the author wrote is theirs.
+ */
+const SHADOW_BOOKKEEPING = ['.gitignore', 'CLAUDE.md']
+const PAPER_ONLY = ['--', '.', ...SHADOW_BOOKKEEPING.map(path => `:(exclude,top)${path}`)]
+
 async function git(cwd, args, { timeout = 120000 } = {}) {
   try {
     const { stdout, stderr } = await execFile('git', args, { cwd, timeout, maxBuffer: 64 * 1024 * 1024 })
@@ -90,9 +132,18 @@ async function gitOut(cwd, args, opts) {
  * per-commit form at roughly 15x slower, which is the difference between a
  * check that runs and one nobody enables.
  */
-function patchIdPipe(cwd, revArgs) {
+function patchIdPipe(cwd, revArgs, { paperOnly = true } = {}) {
   return new Promise((resolve, reject) => {
-    const log = spawn('git', ['log', '-p', '--no-color', '--no-textconv', '--no-merges', ...revArgs], {
+    // `paperOnly` on BOTH sides of the pairing, so it is like for like. A commit
+    // whose whole diff is bookkeeping produces no diff here and therefore no
+    // patch-id line, which is what keeps it out of the selection.
+    //
+    // `paperOnly: false` asks the other question — does this commit change
+    // ANYTHING — which is how a commit that carries only bookkeeping is told
+    // apart from one that is genuinely empty. They cannot both be replayed and
+    // they are not the same fact about the history.
+    const scope = paperOnly ? PAPER_ONLY : []
+    const log = spawn('git', ['log', '-p', '--no-color', '--no-textconv', '--no-merges', ...revArgs, ...scope], {
       cwd, stdio: ['ignore', 'pipe', 'ignore'],
     })
     const ids = spawn('git', ['patch-id', '--stable'], { cwd, stdio: [log.stdout, 'pipe', 'ignore'] })
@@ -140,10 +191,20 @@ export async function selectCommits({ sourceRepo, sourceRef, targetRepo, targetB
   const onTarget = new Set((await patchIdPipe(targetRepo, [targetBranch])).map(r => r.patchId))
   const sourceRows = await patchIdPipe(sourceRepo, ['--reverse', sourceRef])
 
-  const withDiff = new Set(sourceRows.map(r => r.commit))
+  // TWO REASONS A COMMIT CANNOT BE REPLAYED, kept apart because they are
+  // different facts and a reader acts on them differently.
+  //
+  // `rev-list` is deliberately NOT scoped: scoping it makes git's history
+  // simplification drop a commit that touches no path at all, which is exactly
+  // the empty commit this is trying to report. Written that way first, and the
+  // empty-commit story went red — the fix for the bookkeeping files must not
+  // take that report with it.
+  const withPaperDiff = new Set(sourceRows.map(r => r.commit))
+  const withAnyDiff = new Set((await patchIdPipe(sourceRepo, ['--reverse', sourceRef], { paperOnly: false })).map(r => r.commit))
   const allSource = (await gitOut(sourceRepo, ['rev-list', '--reverse', '--no-merges', sourceRef]))
     .split('\n').filter(Boolean)
-  const emptyCommits = allSource.filter(sha => !withDiff.has(sha))
+  const emptyCommits = allSource.filter(sha => !withAnyDiff.has(sha))
+  const bookkeepingCommits = allSource.filter(sha => withAnyDiff.has(sha) && !withPaperDiff.has(sha))
 
   const selected = []
   for (const row of sourceRows) {
@@ -153,7 +214,13 @@ export async function selectCommits({ sourceRepo, sourceRef, targetRepo, targetB
     const date = await gitOut(sourceRepo, ['log', '-1', '--format=%aI', row.commit])
     selected.push({ commit: row.commit, patchId: row.patchId, subject, author, date })
   }
-  return { selected, alreadyPresent: sourceRows.length - selected.length, emptyCommits, totalSource: allSource.length }
+  return {
+    selected,
+    alreadyPresent: sourceRows.length - selected.length,
+    emptyCommits,
+    bookkeepingCommits,
+    totalSource: allSource.length,
+  }
 }
 
 async function isRootCommit(repo, sha) {
@@ -170,6 +237,11 @@ async function writePatches({ sourceRepo, selected, patchDir }) {
     const args = ['format-patch', '-1', '--stdout', '--no-signature', '--keep-subject', '--binary']
     if (await isRootCommit(sourceRepo, commit)) args.push('--root')
     args.push(commit)
+    // The patch carries the paper and not the shadow's bookkeeping. Filtering
+    // only the SELECTION would still write patches that add the server's
+    // `.gitignore` and delete the author's `CLAUDE.md` as a side effect of a
+    // commit that also touches a real file.
+    args.push(...PAPER_ONLY)
     const { stdout } = await git(sourceRepo, args)
     const path = join(patchDir, `${String(i + 1).padStart(4, '0')}-${commit.slice(0, 7)}.patch`)
     writeFileSync(path, stdout)

@@ -237,6 +237,13 @@ Commits are paired by `git patch-id`, a hash of the change itself, so a change
 that is already on your branch under a different sha is recognised and skipped.
 Running it twice lands nothing the second time.
 
+Only your paper is replayed. tlda's copy carries two files of its own at the
+repository root — a `.gitignore` and a `CLAUDE.md` marking the mirror as
+server-managed — and those are never brought across, so your own `.gitignore`
+and `CLAUDE.md` are left exactly as you wrote them. The command says how many
+commits it skipped for that reason. The cost is that changes to a root
+`.gitignore` are not replayed back either.
+
 The patches are applied in a scratch worktree, and your branch moves only once
 the whole sequence has landed. So:
 
