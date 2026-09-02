@@ -9,7 +9,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync
 import { join, basename } from 'path'
 import { sourceDir as getSourceDir, outputDir as getOutputDir, projectDir, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter } from './build-runner.mjs'
-import { buildPerSlideDocuments } from './slides-parser.mjs'
+import { deckPageInfo } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
 import { buildQmdDocument } from './build-qmd.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
@@ -155,16 +155,16 @@ export async function buildSlides(name) {
   if (htmlFiles.length === 0) throw new Error('No HTML file found in source')
 
   const htmlContent = readFileSync(join(outDir, htmlFiles[0]), 'utf8')
-  const slides = buildPerSlideDocuments(htmlContent, htmlFiles[0])
-  if (!slides) throw new Error(`${htmlFiles[0]} is not a reveal.js deck`)
-  for (const slide of slides) {
-    writeFileSync(join(outDir, slide.filename), slide.html)
-  }
-  const pageInfo = slides.map(slide => slide.pageInfo)
+  const deck = deckPageInfo(htmlContent, htmlFiles[0])
+  if (!deck.slides.length) throw new Error(`${htmlFiles[0]} is not a reveal.js deck`)
+  // One document, not one per slide: the deck keeps a single webR session, so a
+  // name defined on one slide is visible on the rest. Placement is the window
+  // manager's job and reads `slides` for the address space.
+  const pageInfo = [deck]
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
 
   await writeSourceScope(name, srcDir)
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
   signalReload(name, pageInfo.length)
-  console.log(`[slides] ${name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
+  console.log(`[slides] ${name}: deck of ${deck.slides.length} slides from ${htmlFiles[0]}`)
 }
