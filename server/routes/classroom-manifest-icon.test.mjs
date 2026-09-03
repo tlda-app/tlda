@@ -5,7 +5,7 @@ import { classroomWebManifest } from './classroom.mjs'
 
 const manifest = classroomWebManifest({ course: { id: 'pic', title: 'PIC' }, project: 'fixture', readToken: 'read' })
 assert.deepEqual(manifest.icons, [{ src: '/tlda-mark.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }])
-for (const deployment of ['pic', 'pic-dev']) {
+for (const deployment of ['pic', 'pic-dev', 'pic-preview']) {
   const bytes = await readFile(new URL(`../../config/deployments/${deployment}/dist-overrides/tlda-mark.svg`, import.meta.url))
   assert.equal(createHash('sha256').update(bytes).digest('hex'), '323ad80d4ee25abb4f5660af7e7d07b7fa9769295ba9b8afaa67700c590668ad')
   const artwork = bytes.toString('utf8')

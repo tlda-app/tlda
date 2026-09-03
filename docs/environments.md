@@ -1,4 +1,4 @@
-# What the four servers are for
+# What the servers are for
 
 Skip, 2026-09-01 22:03 EDT, explaining it because agents kept asking:
 
@@ -28,6 +28,40 @@ own development.
 **So "which server" for class work is `pic-dev`, and it is not a judgement call.**
 Skip named it directly for the deck work: *"the deck shit should go to fucking
 pic dev — that's where we fucking do fucking class dev."*
+
+### `pic-preview` sits between them
+
+**The two-pair framing above is unchanged: `pic-preview` is not a third pair and
+not a place to develop anything.** It is the frozen candidate between the two —
+what is about to become `pic`, held still so it can be walked through before
+students get it.
+
+Skip, message `3674144`, deciding it: three tiers, where **`pic-dev` is live
+content development and expected to move**, **`pic-preview` holds an exact
+candidate snapshot of app plus course content plus class configuration, invisible
+to students**, and **`pic` is the published student surface.**
+
+**The defining property, and it is the whole point of the tier:** build once, put
+that exact artifact and content snapshot on `pic-preview`, run the journeys, then
+promote **the same bytes** to `pic` **without rebuilding**. A promotion step that
+rebuilds is not this — it re-opens the gap the tier exists to close, because what
+students then get is not what anyone walked through.
+
+Two mechanisms already in the tree carry that, and neither is new:
+
+| what promotes | how, without a rebuild |
+|---|---|
+| the app | one image. `config/deployments/` for every deployment is baked into it and `TLDA_DEPLOYMENT` selects which one boots, so `pic-preview` and `pic` are the same image running two configurations. Promotion is `fly deploy --image <the digest already validated on the candidate>`, which builds nothing. |
+| the content | `scripts/course-release.mjs`. `stage` runs the builds and writes one immutable manifest; `deploy` moves native pointers and **never invokes a build command**. See [Staged course releases](course-release.md). |
+
+**It is tailnet-only and ungated, and those two go together.** It runs
+`tailscale serve` rather than `funnel`, so only a device on the tailnet reaches it
+at all — that is what makes it invisible to students, and it is also its
+authentication, which is why `config/deployments/pic-preview/server.yaml` sets
+`tokenGating: false`. That is what lets it be opened by a plain link: with gating
+on, every way in carries `?token=`, and a token in a URL persists into the browser
+profile it is opened in. **Funnelling this box without changing that line would
+publish an ungated surface to the internet.**
 
 ## The app pair
 
