@@ -6660,9 +6660,13 @@ async function dispatchFleetWsMessage(ws, msg) {
     const label = String(msg.label || '').trim()
     if (!label) { error('backfill-hidden-for-label requires label'); return }
     try {
-      const before = fleetStore.panelAgentCounts(label)
+      // Awaited because the store is on a worker: every proxied method returns
+      // a Promise, and an un-awaited one is a truthy object whose every
+      // property is undefined. `before.panelRows` would have reported
+      // `undefined` either side and read as a run that changed nothing.
+      const before = await fleetStore.panelAgentCounts(label)
       const result = await fleetStore.backfillHiddenForLabel(label)
-      const after = fleetStore.panelAgentCounts(label)
+      const after = await fleetStore.panelAgentCounts(label)
       broadcastState()
       reply({
         label,
