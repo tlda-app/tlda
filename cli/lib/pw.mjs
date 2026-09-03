@@ -1111,7 +1111,7 @@ const CENTER_DOC_EVAL = `() => { var ed=window.__tldraw_editor__; if(!ed) return
  * the instrument was solving for the main canvas.
  */
 function centerFleetEval(shapeTypes, label) {
-  return `() => {
+  return `async () => {
   var ed = window.__tldraw_editor__
   if (!ed) return 'no editor'
   var want = ${JSON.stringify(shapeTypes)}
@@ -1174,6 +1174,12 @@ function centerFleetEval(shapeTypes, label) {
     window.__tldaFleetHudSuppressCameraTrackingUntil = Date.now() + 4000
     var c = ed.getCamera()
     ed.setCamera({ x: c.x + dx / c.z, y: c.y + dy / c.z, z: c.z }, { animation: { duration: 0 } })
+    // setCamera writes the store; the panels move when React re-renders and the
+    // browser lays out. Measuring straight after it reads the OLD rect and
+    // reports onScreen:false for a camera that is already correct — which is a
+    // verification tool manufacturing its own false negative. Two frames: one
+    // for the render, one for the layout that follows it.
+    await new Promise(function (res) { requestAnimationFrame(function () { requestAnimationFrame(res) }) })
   }
 
   var after = box() || before
