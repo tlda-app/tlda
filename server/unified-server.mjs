@@ -47,6 +47,7 @@ import { createHash, randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, getRwToken, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
+import { createFleetFrameStallTracker, resolveStallMs } from './lib/fleet-frame-stalls.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat } from '../shared/document-formats.mjs'
@@ -1763,13 +1764,48 @@ async function surfaceFleetWsError(ws, msg, err) {
   }
 }
 
+// Nothing anywhere recorded that a fleet WS frame ARRIVED, and that is the exact
+// gap in the first-load identity hang: the client sends `agents-page`, waits 45s,
+// and times out, with no server-side record either way. So the two remaining
+// shapes are indistinguishable —
+//
+//   frame recorded, never answered  -> it arrived and the handler stalled
+//   never recorded                  -> it never reached the router, and the
+//                                      question is connection acceptance
+//
+// Measured 2026-09-03 before building this: across the page-hang window
+// (06:54–07:29Z) the lag profiler dumped every ~70s with no gaps, all 252–428ms
+// and idle-dominated. The server took the frames, was not busy, and did not
+// answer — so the loop is excluded and this is what is left to ask.
+//
+// NOT logged per frame. stdout is the wrong sink anyway: `fly logs` holds ~57
+// seconds, which cannot answer a question asked after the fact. The hot path does
+// a Map set and delete for id-bearing frames only — no string building, no I/O —
+// and a low-frequency sweep appends only frames that are still unanswered. A
+// healthy server writes nothing at all.
+const FLEET_FRAME_STALL_MS = resolveStallMs()
+const FLEET_FRAME_STALL_LOG = join(CONFIG_DIR, 'fleet-frame-stalls.log')
+const fleetFrameStalls = createFleetFrameStallTracker({
+  stallMs: FLEET_FRAME_STALL_MS,
+  // Async on purpose: sync IO on this process's loop is the documented hazard here,
+  // and a diagnostic must never be the thing that stalls the server.
+  append: lines => fs.appendFile(FLEET_FRAME_STALL_LOG, lines, () => {}),
+})
+
+setInterval(() => fleetFrameStalls.sweep(), Math.max(5000, Math.floor(FLEET_FRAME_STALL_MS / 2))).unref()
+
 async function handleFleetWsFrame(ws, raw) {
   let msg = null
+  let frameKey = null
   try {
     msg = JSON.parse(raw.toString())
+    // Only frames that expect a reply can be "unanswered".
+    if (msg?.id) frameKey = fleetFrameStalls.note(ws, msg)
     await fleetOperationContext.run(msg.fleet_operation || null, () => handleFleetWsMessage(ws, msg))
   } catch (err) {
     await surfaceFleetWsError(ws, msg, err)
+  } finally {
+    fleetFrameStalls.settle(frameKey)
   }
 }
 
