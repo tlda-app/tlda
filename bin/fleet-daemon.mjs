@@ -809,9 +809,14 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   return { ...result, workBranch, submission }
 }
 
-function rpcUnlinkProjectSource({ project, sourceDir }) {
+async function rpcUnlinkProjectSource({ project, sourceDir }) {
   if (!project) throw new Error('project is required')
   const result = sourceSync.unbindSource(project, sourceDir)
+  const registration = await sendMsgWithReply({
+    type: 'source-bindings-set',
+    source_bindings: sourceSync.bindingRecords(),
+  })
+  if (!registration?.ok) throw new Error('server did not confirm source binding registration')
   applyProjectWorldOwnership('local-source-unlink')
   return result
 }

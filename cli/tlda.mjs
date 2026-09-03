@@ -3272,13 +3272,31 @@ async function cmdDelete() {
   const name = getPositional(0)
   if (!name) { console.error('Usage: tlda project delete <name>'); process.exit(1) }
 
+  const result = await deleteProjectAndLocalBinding(name)
+  console.log(result.deleted
+    ? green(`Project "${name}" deleted.`)
+    : dim(`Project "${name}" is already absent.`))
+}
+
+export async function deleteProjectAndLocalBinding(name, {
+  apiImpl = api,
+  lifecycleImpl = callLocalDaemonLifecycle,
+} = {}) {
+  let deleted = true
   try {
-    await api('DELETE', `/api/projects/${name}`)
-    console.log(green(`Project "${name}" deleted.`))
+    await apiImpl('DELETE', `/api/projects/${name}`)
   } catch (error) {
     if (Number(error?.status) !== 404) throw error
-    console.log(dim(`Project "${name}" is already absent.`))
+    deleted = false
   }
+  let binding
+  try {
+    binding = await lifecycleImpl('project-source-unlink', { project: name })
+  } catch (error) {
+    const serverState = deleted ? 'deleted on the server' : 'already absent from the server'
+    throw new Error(`Project "${name}" was ${serverState}, but the local source binding could not be removed (${error.message}). Re-run the same command once the daemon is up.`, { cause: error })
+  }
+  return { deleted, binding }
 }
 
 async function fetchAgentsByExactCwd(cwd, { apiImpl = api } = {}) {
