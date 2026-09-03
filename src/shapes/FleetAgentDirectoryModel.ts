@@ -33,6 +33,25 @@ export function fleetAgentLabelColor(name: string): string {
   return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length]
 }
 
+// Whether the agents panel lists this agent. Skip, 2026-09-01 23:21:45: "we
+// need to add an agent metadata field 'hidden' which hides agents from the
+// agent panel. use it for probes so they don't clutter the panel".
+//
+// `hidden` is a DISPLAY property and only that. A hidden agent is still
+// addressable, still receives mail, still resolves by name, and still appears
+// in roster() and in history -- so this rule lives here, in the panel's model,
+// and has no counterpart in any query, any filter, or any delivery path. It is
+// also not death: see AGENTS.md "DEATH IS A FLAG IN THE DATABASE".
+//
+// It reads the metadata field rather than the `dev-probe` label the minters
+// already set, because that is what he asked for and because a label or name
+// pattern eventually catches something that is not a probe.
+export function fleetAgentListed(agent: { dead?: unknown; metadata?: { hidden?: unknown } | null } | null | undefined): boolean {
+  if (agent?.dead) return false
+  if (agent?.metadata?.hidden) return false
+  return true
+}
+
 export function fleetAgentCategory(agent: any): 'awake' | 'hibernating' {
   const category = fleetRosterCategory(agent)
   return category === 'awake' ? 'awake' : 'hibernating'
