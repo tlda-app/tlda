@@ -1,0 +1,74 @@
+# fly.pic-preview.toml — the frozen pre-publication candidate surface for QTM 285.
+#
+# Three tiers, and this is the middle one:
+#   pic-dev      live content development; expected to move.
+#   pic-preview  an exact candidate snapshot of app + course content + class
+#                configuration, invisible to students.
+#   pic          the published student surface.
+#
+# THE DEFINING PROPERTY: build once, put that exact artifact and content snapshot
+# here, run the journeys, then promote THE SAME BYTES to pic without rebuilding.
+# Two mechanisms already in the tree carry it, and neither is new:
+#
+#   the app     one image, deployed by digest to both apps. The image holds every
+#               deployment's config under config/deployments/ and TLDA_DEPLOYMENT
+#               below selects which one boots, so pic-preview and pic are the same
+#               image running two configurations — promotion is `fly deploy
+#               --image <the digest already validated here>`, which does not build.
+#   the content scripts/course-release.mjs. `stage` runs the builds and writes one
+#               immutable manifest; `deploy` moves pointers and NEVER invokes a
+#               build command. See docs/course-release.md.
+#
+# If a promotion step you are about to run rebuilds anything, it is not this.
+#
+# Deploy with:  fly deploy -c fly.pic-preview.toml
+app = "pic-preview"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.live"
+
+[env]
+  PORT = "5176"
+  HOST = "::"
+  NODE_ENV = "production"
+  # Everything else this server needs lives in config/deployments/pic-preview/,
+  # committed and baked into the image. TLDA_DEPLOYMENT names that directory and
+  # is the only pointer that must arrive from outside it.
+  TLDA_DEPLOYMENT = "pic-preview"
+  # The tailnet node name, and therefore the URL:
+  # pic-preview.cormorant-matrix.ts.net. It must stay inside
+  # *.cormorant-matrix.ts.net — the tldraw license is bound to that domain and a
+  # *.fly.dev name would lose the canvas.
+  TS_HOSTNAME = "pic-preview"
+
+# NO TS_FUNNEL, deliberately, and it is the mechanism rather than a preference.
+# Without it scripts/fly-entrypoint-live.sh runs `tailscale serve` instead of
+# `tailscale funnel`, so this box answers only to devices on the tailnet. That is
+# what makes it invisible to students, and it is also the authentication: the
+# deployment's server.yaml sets `tokenGating: false`, so there is no token in any
+# URL that reaches it. Setting TS_FUNNEL here without changing that line would
+# publish an ungated box to the internet.
+
+# No [http_service] — access is tailnet-only via `tailscale serve`. No Fly public
+# service means no autostop, so the machine stays running on its CMD and its
+# persistent volume.
+#
+# Single process, unlike fly.pic.toml. pic's separate `edge` process exists so a
+# staged release can swing the student front door's upstream pointer without
+# dropping live student connections. Nothing depends on this box's continuity, so
+# it takes the single-process entrypoint — which is also what gives it its own
+# tailnet identity, since that entrypoint skips the tailscale block only for the
+# `live` and `pic` deployments.
+[[vm]]
+  size = "performance-2x"
+  # Matches pic's app process. This box serves a candidate of pic's content, so
+  # it is sized like pic; the heavy class builds stay on pic-dev.
+  memory = "4096"
+
+# Course content, fleet.db and sync data. Same mount point as pic so the shared
+# entrypoint's symlinks resolve. This is the candidate's OWN state — validating a
+# candidate must not write into the student box's rooms.
+[mounts]
+  source = "sync_data"
+  destination = "/app/server/persist"
