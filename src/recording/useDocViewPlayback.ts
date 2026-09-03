@@ -15,6 +15,13 @@ import { getRecording, recordingAudioUrl, type RecordingSummary } from './record
 import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
 import { documentShapeUtils, frozenPlaybackStore, parseRecordingRef } from './docViewPlayback'
 
+/**
+ * `HTMLMediaElement.HAVE_METADATA` — enough of the track has loaded for
+ * `currentTime` to mean something. Named rather than written as `1` because the
+ * whole reconcile below turns on it, and a bare `>= 1` reads as arbitrary.
+ */
+const HAVE_METADATA = 1
+
 export type LoadedRecording = RecordingMeta & {
   privateDraft?: boolean
   publication?: RecordingSummary['publication']
@@ -119,6 +126,28 @@ export function useDocViewPlayback(projectName: string, ref: string | undefined)
     }
     setPlaying(true)
     const tick = () => {
+      // Audio IS the recorded timeline whenever it is actually running, so the
+      // origin is re-derived from it every frame. `RecordingViewer` drove the
+      // drawing straight off `audio.currentTime`, which meant picture and sound
+      // could not drift — a guarantee it had by construction and never wrote
+      // down. Seeking once at `play()` and then free-running loses it: a
+      // buffering stall or any rate difference desynchronises them permanently
+      // for that playback.
+      //
+      // NOT gated on unmuted. A muted element still advances `currentTime` —
+      // muting changes output, not the clock. Gating on it would hand clock
+      // authority back and forth on a volume control, so pressing mute would
+      // make the drawing free-run and unmuting would snap it, which is a worse
+      // artifact than the drift. It also abandons sync for someone watching
+      // muted, who is watching the picture and needs it most.
+      //
+      // The wall clock stays authoritative for exactly the three cases this
+      // clock was changed for: no audio track, autoplay refused, and audio
+      // errored. All three leave the element paused or without metadata.
+      const runningAudio = audioRef.current
+      if (runningAudio && runningAudio.readyState >= HAVE_METADATA && !runningAudio.paused) {
+        originRef.current = performance.now() - runningAudio.currentTime * 1000
+      }
       const next = Math.min(duration, performance.now() - originRef.current)
       setCurrentMs(next)
       engineRef.current?.seek(next)
