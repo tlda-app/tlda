@@ -23,24 +23,30 @@ const {
 // states — `off`, `auto-hide`, `pinned`. Classroom defaults pinned; elsewhere
 // off. There is no separate spacetime-mode toggle.
 
-test('the classroom gate now sets a default, not whether the feature exists', () => {
-  // This is `RecordingsButton`'s old `IS_CLASSROOM` gate, moved. It used to
-  // decide whether a way in to playback was rendered at all, which is why no
-  // doc-view outside a classroom could reach a recording by any route.
+test('the surface picks the default, and never overrides an explicit choice', () => {
+  // This is `RecordingsButton`'s old `IS_CLASSROOM` gate, moved — it used to
+  // decide whether a way in to playback was rendered at all.
   onSurface('?course=qtm285')
   assert.equal(defaultTimeControlsMode(), 'pinned', 'classroom: on screen, for discoverability')
 
   onSurface('')
   assert.equal(defaultTimeControlsMode(), 'off', 'elsewhere: quiet until asked for')
 
-  // The part that makes it a default rather than a gate: `off` is reachable
-  // from a classroom and `pinned` from outside one. If either of these ever
-  // fails, the gate has grown back.
+  // What THIS asserts, exactly: the resolver returns a stored value unchanged
+  // on either surface, so the surface only supplies the answer when nobody has
+  // chosen. That is one half of "default, not gate".
+  //
+  // It is NOT reachability, and an earlier version of this comment claimed it
+  // was. Whether a reader can PRODUCE a stored value lives in
+  // `cycleTimeControls` and in the header button being rendered
+  // unconditionally, neither of which this file touches — so if the gate grew
+  // back as `{IS_CLASSROOM && <button …>}` every assertion here would still
+  // pass. That case needs the rendered control, and it is on the browser list.
   assert.equal(timeControlsMode('off'), 'off')
   onSurface('?course=qtm285')
-  assert.equal(timeControlsMode('off'), 'off', 'a classroom doc-view can turn them off')
+  assert.equal(timeControlsMode('off'), 'off', 'a stored `off` survives on a classroom surface')
   onSurface('')
-  assert.equal(timeControlsMode('pinned'), 'pinned', 'a doc-view outside a classroom can pin them')
+  assert.equal(timeControlsMode('pinned'), 'pinned', 'a stored `pinned` survives off a classroom surface')
 })
 
 test('an unset control falls to the surface default, and stays unset', () => {
