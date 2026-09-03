@@ -1124,6 +1124,22 @@ body.text-select-mode ::selection {
   opacity: var(--ui-tone-active);
 }
 
+/* Same rule as the bottom-right controls in DocumentPanel.css: a control that
+   rests at --ui-tone-dormant and is only revealed by :hover cannot be seen on a
+   device with no hover. Leaving pen mode is exactly the kind of thing that has
+   to work without a keyboard, and a pen device is the one most likely to have
+   no pointer hovering over it.
+   .line-number-label and .file-seam below share this dormant + hover-only
+   shape and are deliberately NOT included: they are margin decoration rather
+   than controls, so being faint blocks no action, and brightening them on every
+   touch device would change how the source editor looks for a defect nobody
+   has reported. */
+@media (hover: none) {
+  .exit-pen-mode-btn {
+    opacity: var(--ui-tone-active);
+  }
+}
+
 .exit-pen-mode-stack {
   position: relative;
   display: inline-block;

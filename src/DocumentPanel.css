@@ -2461,6 +2461,25 @@ html[data-theme="dark"] .voice-note-btn {
 .mic-toggle-btn { bottom: 82px; }
 .mic-toggle-btn:hover { opacity: var(--ui-tone-active); }
 
+/* A dormant control whose only route to visible is :hover is invisible on a
+   device that cannot hover. These three rest at --ui-tone-dormant (0.2) and
+   escalate to --ui-tone-active only on :hover, so on a touch device they stay
+   at one fifth opacity for the whole session -- present and tappable, which is
+   why the cursor changes over them and nothing appears. Measured on the
+   deployed deck at 1200x834: all three painting, all three at 0.2.
+   The highlighter and the mic are the primary controls that have to work
+   without a keyboard, so hover cannot be the thing that reveals them. The
+   media query is the general rule -- the condition is "hover is unreachable",
+   not "this is an iPad". Position-only overrides for coarse pointers live
+   further down; this is the one place resting opacity is corrected. */
+@media (hover: none) {
+  .phone-hl-btn,
+  .voice-note-btn,
+  .mic-toggle-btn {
+    opacity: var(--ui-tone-active);
+  }
+}
+
 body.phone-mode .mic-toggle-btn {
   bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
   right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
