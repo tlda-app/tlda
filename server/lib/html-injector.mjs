@@ -1218,16 +1218,25 @@ const SLIDES_BRIDGE_SCRIPT = `
     // Listen for messages from parent (edge tap zones, dark mode)
     window.addEventListener('message', function(e) {
       if (!e.data || !e.data.type) return;
+      // Step the fragment directly rather than through next()/prev(). In the
+      // deck strip nothing scrolls, so reveal's scroll view treats next() as a
+      // navigation it cannot perform and the fragment never advances -- which
+      // left the deck stuck on a fragment slide once its address started
+      // moving. nextFragment()/prevFragment() act on the current slide's
+      // fragments without navigating, and availableFragments() above already
+      // guarantees there is one to step.
       if (e.data.type === 'tlda-fragment-next') {
         var avail = Reveal.availableFragments();
         if (avail && avail.next) {
-          Reveal.next();
+          if (Reveal.nextFragment) Reveal.nextFragment(); else Reveal.next();
+          setTimeout(reportFragmentState, 50);
         }
       }
       if (e.data.type === 'tlda-fragment-prev') {
         var avail = Reveal.availableFragments();
         if (avail && avail.prev) {
-          Reveal.prev();
+          if (Reveal.prevFragment) Reveal.prevFragment(); else Reveal.prev();
+          setTimeout(reportFragmentState, 50);
         }
       }
       if (e.data.type === 'tlda-fragment-goto') {
