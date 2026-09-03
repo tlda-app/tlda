@@ -555,7 +555,12 @@ function sendOneShotWS(envName, type, params = {}, opts = {}) {
       if (settled) return;
       settled = true;
       try { ws.close(); } catch { /* best-effort cleanup; timeout is already reported */ }
-      reject(new Error(`fleet WS request timed out after ${deadlineMs}ms (env=${envName}, type=${type})`));
+      // Same read, same caller, same remedy -- this branch is only taken because
+      // the tool named an env. A caller's deadline message must not depend on
+      // which of the two sockets carried its query.
+      reject(typeof opts.makeDeadlineError === 'function'
+        ? opts.makeDeadlineError({ type, deadlineMs })
+        : new Error(`fleet WS request timed out after ${deadlineMs}ms (env=${envName}, type=${type})`));
     }, deadlineMs);
     function finish(fn, value) {
       if (settled) return;
@@ -4628,6 +4633,19 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       };
     };
 
+    // What a thread read can actually do about its own deadline. The generic
+    // transport sentence names the socket and the number, so it reads as a
+    // network fault; the thing that expires here is almost always the query --
+    // a bounded thread (since AND until both set) raises the row limit to
+    // 10,000, and an unbounded one takes `page_size`. Skip hit this at
+    // 45,000ms and asked for the message, 2026-09-01 23:14:01.
+    const threadReadDeadlineError = ({ type, deadlineMs }) => new Error(
+      `the thread read (${type}) did not come back within ${deadlineMs}ms. `
+      + `This is the query being larger than the deadline, not the server being down. `
+      + `Ask for less of it: lower page_size (currently ${pageSize}), or narrow the window with since/until. `
+      + `A thread with BOTH since and until set is bounded and reads up to 10,000 rows in one go, which is the shape that most often expires.`,
+    );
+
     const fetchEventsForAgent = async (agentId) => {
       // Fetch one extra row so we can detect "there's more" without a COUNT.
       const params = {
@@ -4643,7 +4661,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       if (resolvedUntil) params.before = resolvedUntil;
       if (args.types?.length === 1) params.eventType = args.types[0];
       else if (args.types?.length > 1) params.eventTypes = args.types;
-      const data = await mcpFleetTransport.ephemeral('fleet-search', params);
+      const data = await mcpFleetTransport.ephemeral('fleet-search', params, { makeDeadlineError: threadReadDeadlineError });
       if (!data) return;
       for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
         filtered.push(toThreadMessage(e));
@@ -4667,7 +4685,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       if (resolvedUntil) params.before = resolvedUntil;
       if (args.types?.length === 1) params.eventType = args.types[0];
       else if (args.types?.length > 1) params.eventTypes = args.types;
-      const data = await mcpFleetTransport.ephemeral('fleet-search', params);
+      const data = await mcpFleetTransport.ephemeral('fleet-search', params, { makeDeadlineError: threadReadDeadlineError });
       if (!data) return;
       threadUnresolvedNames = data.unresolvedNames || [];
       for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
@@ -5445,7 +5463,7 @@ let _channelRWS = null;  // ResilientWS instance
 
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
-const FLEET_TOOL_READ_WAIT_MS = 45_000;
+const FLEET_TOOL_READ_WAIT_MS = Number(process.env.TLDA_FLEET_READ_DEADLINE_MS || 45_000);
 
 // Recipient resolution is a READ that happens before anything is enqueued, so a
 // deadline here costs a retry and cannot lose a message -- unlike a deadline on
@@ -5490,6 +5508,10 @@ function _sendWSOnce(type, params = {}, opts = {}) {
     type,
     idleTimeoutMs,
     deadlineMs,
+    // A caller that knows what its read costs can say so. Without this the
+    // deadline reports only the transport and the number, which is true of
+    // every expired read and actionable for none of them.
+    makeDeadlineError: opts.makeDeadlineError,
     send: () => _channelRWS.send({
       type,
       ...params,
@@ -5694,6 +5716,7 @@ let mcpFleetTransport = createFleetOperationTransport({
     sendFleetRequestAttempt(operation, payload, {
       deadlineMs: Number.isFinite(options.deadlineMs) ? options.deadlineMs : FLEET_TOOL_READ_WAIT_MS,
       idleTimeoutMs: Number.isFinite(options.idleTimeoutMs) ? options.idleTimeoutMs : null,
+      makeDeadlineError: options.makeDeadlineError,
     }),
   sendDurable: sendDurableFleet,
   resolveSender: () => activeAgentId(),
