@@ -4042,6 +4042,31 @@ export class FleetStore {
     return this.getAgent(id);
   }
 
+  // Reporting only, for the backfill below.
+  //
+  // `hidden` is filtered CLIENT-side, in the panel's model, so no server query
+  // changes when a row is flagged — `getAliveAgents()` returns exactly what it
+  // returned before. Reporting that count either side of a run would show two
+  // identical numbers and read as "nothing happened".
+  //
+  // So this mirrors the panel's own rule here, for the report and nothing else:
+  // `panelRows` is what the panel renders (alive, not a mint shell, not
+  // hidden), and `labelledPending` is how many rows the backfill still has to
+  // do. Nothing reads these to make a decision.
+  panelAgentCounts(label) {
+    const notShell = "COALESCE(json_extract(agents.metadata, '$.shell'), 0) != 1";
+    const notHidden = "COALESCE(json_extract(agents.metadata, '$.hidden'), 0) != 1";
+    const hasLabel = "EXISTS (SELECT 1 FROM json_each(COALESCE(agents.labels, '[]')) WHERE value = @label)";
+    const count = (where) => this.db.prepare(
+      `SELECT COUNT(*) AS n FROM agents WHERE agents.dead = 0 AND ${where}`,
+    ).get({ label }).n;
+    return {
+      panelRows: count(`${notShell} AND ${notHidden}`),
+      labelled: count(`${notShell} AND ${hasLabel}`),
+      labelledPending: count(`${notShell} AND ${notHidden} AND ${hasLabel}`),
+    };
+  }
+
   // Flag every live agent carrying `label` as hidden from the agents panel.
   //
   // This is the backfill half of the `hidden` metadata field. The field alone

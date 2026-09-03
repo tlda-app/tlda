@@ -183,3 +183,22 @@ test('the batch bound holds at 100 however large the caller asks for', async () 
     assert.deepEqual(sizes, [100, 100, 50])
   })
 })
+
+test('the reported counts are the ones that actually move', async () => {
+  await withStore(async store => {
+    for (let i = 0; i < 30; i++) addAgent(store, `fleet:probe-${i}`, { labels: ['dev-probe'] })
+    for (let i = 0; i < 12; i++) addAgent(store, `fleet:agent-${i}`, { labels: ['app'] })
+
+    const before = store.panelAgentCounts('dev-probe')
+    assert.deepEqual(before, { panelRows: 42, labelled: 30, labelledPending: 30 })
+
+    await store.backfillHiddenForLabel('dev-probe')
+
+    const after = store.panelAgentCounts('dev-probe')
+    // The panel loses exactly the probes and keeps everything else. `labelled`
+    // is unchanged because nothing was deleted -- the rows are still there and
+    // still carry the label, which is the whole difference between hiding and
+    // removing.
+    assert.deepEqual(after, { panelRows: 12, labelled: 30, labelledPending: 0 })
+  })
+})
