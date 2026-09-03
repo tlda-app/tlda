@@ -6645,44 +6645,6 @@ async function dispatchFleetWsMessage(ws, msg) {
     return
   }
 
-  // ONE-SHOT. Delete this with the commit that reports its run.
-  //
-  // The backfill half of the `hidden` agent-metadata field. It has to run in
-  // THIS process: `updateAgentMeta` calls `_syncAgentRegistry`, and the agents
-  // panel reads `_aliveAgentRosterView` rather than the table, so rows written
-  // by anything else would not reach a running server's panel.
-  //
-  // The counts come back rather than an ok, because the point is the numbers:
-  // `matched` is what the panel would have listed under the label, `flagged` is
-  // what this changed, and `converged` says whether it finished or stopped on a
-  // row it could not write. A second call is safe and reports `flagged: 0`.
-  if (type === 'backfill-hidden-for-label') {
-    const label = String(msg.label || '').trim()
-    if (!label) { error('backfill-hidden-for-label requires label'); return }
-    try {
-      // Awaited because the store is on a worker: every proxied method returns
-      // a Promise, and an un-awaited one is a truthy object whose every
-      // property is undefined. `before.panelRows` would have reported
-      // `undefined` either side and read as a run that changed nothing.
-      const before = await fleetStore.panelAgentCounts(label)
-      const result = await fleetStore.backfillHiddenForLabel(label)
-      const after = await fleetStore.panelAgentCounts(label)
-      broadcastState()
-      reply({
-        label,
-        before,
-        after,
-        flagged: result.flagged,
-        batches: result.batches,
-        converged: result.converged,
-        stalledOn: result.stalledOn,
-      })
-    } catch (e) {
-      error(e)
-    }
-    return
-  }
-
   if (type === 'fleet-roster-truth') {
     const agents = await fleetStore.getAliveAgents?.() || []
     const totals = await fleetStore.getAgentSummary?.() || { total: agents.length }
