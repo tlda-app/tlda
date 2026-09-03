@@ -1236,7 +1236,33 @@ const SLIDES_BRIDGE_SCRIPT = `
         setTimeout(reportSlideHeight, 50);
       }
       if (e.data.type === 'tlda-slide-goto') {
-        Reveal.slide(e.data.indexh || 0, e.data.indexv || 0, 0);
+        var gotoH = e.data.indexh || 0;
+        var gotoV = e.data.indexv || 0;
+        // The deck strip does not scroll: the CSS above makes
+        // .reveal-viewport.reveal-scroll overflow:visible and absolutely
+        // positions every .scroll-page, because tlda flies a camera over the
+        // strip instead. Reveal's scroll view tracks its address from scroll
+        // position, so with nothing scrolling Reveal.slide() moves nothing and
+        // getCurrentSlide() stays on the first slide forever. That is what fed
+        // reportFragmentState a permanent 0/0 and made the navigator skip every
+        // fragment. setCurrentScrollPage sets the address without scrolling;
+        // once it is right, availableFragments() and next() drive fragments
+        // normally, so nothing else here has to change.
+        var movedByScrollPage = false;
+        if (Reveal.isScrollView && Reveal.isScrollView() && Reveal.setCurrentScrollPage) {
+          var gotoPages = document.querySelectorAll('.scroll-page');
+          for (var gi = 0; gi < gotoPages.length; gi++) {
+            var gotoSection = gotoPages[gi].querySelector('section');
+            if (!gotoSection) continue;
+            var gotoIdx = Reveal.getIndices(gotoSection);
+            if (gotoIdx && gotoIdx.h === gotoH && (gotoIdx.v || 0) === gotoV) {
+              Reveal.setCurrentScrollPage(gotoSection, gi, 0);
+              movedByScrollPage = true;
+              break;
+            }
+          }
+        }
+        if (!movedByScrollPage) Reveal.slide(gotoH, gotoV, 0);
         setTimeout(reportFragmentState, 50);
         setTimeout(reportSlideHeight, 50);
       }
