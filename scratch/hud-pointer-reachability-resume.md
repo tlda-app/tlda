@@ -4,8 +4,25 @@ Written 2026-09-02 ~20:05 EDT by `hud-pointer-opus`, on a stop order from
 `cleanup-chief` (no nontrivial computation on the Mini). Force-added because it
 is a resumption point, not a report: the next session works *from* it.
 
-Branch `hud-pointer-reachability`, at `01c1138cf`, off `main` at `96ced8b73`.
-Working tree clean. Nothing deployed, nothing merged, `shared-3` released.
+Branch `hud-pointer-reachability`, off `main` at `96ced8b73`. Working tree
+clean. Nothing deployed, nothing merged, `shared-3` released.
+
+## Which commit holds what
+
+**Review the branch, not the tip.** An earlier version of this note gave the tip
+sha and the branch-wide diffstat in one breath, and a reviewer reasonably read
+the tip as the code commit — `33dc82010` touches only two scratch files, so the
+review came back "no code". The code is two commits below it.
+
+| commit | file | change |
+|---|---|---|
+| `5e82aadf6` | `cli/lib/pw.mjs` | +131 / −6 — the fix |
+| `01c1138cf` | `cli/lib/pw.mjs` | +8 / −1 — await two frames before re-measuring |
+| `33dc82010` | `scratch/` ×2 | this note and the verify script |
+| `3c7d58f85` | `scratch/hud-pointer-verify.sh` | exit status authoritative, hold enforced |
+
+`git diff --stat main..hud-pointer-reachability` is the whole change:
+`cli/lib/pw.mjs` +131/−6 plus the two scratch files.
 
 ## The blocker was the instrument, not the app
 
@@ -122,11 +139,14 @@ upstream of it is measured. Do not report this as verified.
 
 ## Next actions, in order, when the Mini is available again
 
-1. `zsh scratchpad/verify.sh` — or re-create it; it runs
+1. `TLDA_HUD_VERIFY_HOLD_CLEARED=1 zsh scratch/hud-pointer-verify.sh`. It
+   refuses to run without that variable, because the Mini hold is enforced in
+   the file rather than described in it. It runs
    `node /Users/skip/worktrees/hud-pointer-reachability/cli/tlda-dev.mjs`,
    **not** the `tlda-dev` on PATH, which currently symlinks to
    `~/worktrees/land-tonight` and would exercise the old code. Expect step 4 to
-   show the search panel at x≈24 with `onScreen: true`.
+   show the search panel at x≈24 with the whole box inside the viewport,
+   against x≈−921 at step 2.
 2. Then the original task's gate: type a query into the centred search panel,
    get a card carrying `Show more messages`, click it with real pooled pointer
    input, observe the additional messages and no console error.
