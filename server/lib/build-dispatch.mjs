@@ -304,6 +304,7 @@ export function createDispatcherWithOptions(transport, options = {}) {
     store: options.store || new BuildQueueStore(options.storePath || ':memory:'),
     serializeProject: serializedPublication,
     recordAdmission,
+    recordDisposition,
     async getCurrentHead(name) {
       return (await (await sourceLifecycleStore(name)).gitRepository()).head(name)
     },
@@ -384,6 +385,53 @@ function dispatcher() { return activeDispatcher || initBuildDispatcher() }
 async function recordAdmission(job) {
   return (await sourceLifecycleStore(job.name))
     .recordRevisionAdmission(job.name, job.sourceRevision, job.acceptSeq)
+}
+
+/**
+ * Record a build's outcome on the PROJECT when the worker could not record it
+ * itself.
+ *
+ * The worker's own catch sets the project's status and writes its reason, and
+ * for every failure that throws inside the worker that is what happens. A
+ * worker that dies without running it — SIGKILL, the OOM killer, its parent
+ * going away — leaves the queue row settled correctly by `onExit` and the
+ * project untouched: `buildStatus` stays at the `building` that build-runner
+ * set when it started, and nothing writes a log. Measured on a live box: a
+ * project reading `building` with `logMissing` for six days, whose queue row
+ * had long since settled.
+ *
+ * `settle` has always called this hook and nothing has ever supplied it, so
+ * the admission half of the queue's reporting was wired and the disposition
+ * half was not.
+ *
+ * Only `failed`. A row settles to `killed` for `superseded`, `needs-rebase`
+ * and `cancelled`, none of which are a build that went wrong, and marking a
+ * project broken because a newer revision replaced its build would be a false
+ * report. `complete` is already the worker's to record, and re-recording it
+ * here would race the success it just wrote.
+ */
+async function recordDisposition(job, state, result = null) {
+  if (state !== 'failed') return
+  const reason = result?.error || result?.reason || 'build worker exited without recording a reason'
+  try {
+    await updateProject(job.name, { buildStatus: 'error' })
+  } catch (e) {
+    // Best effort, and deliberately not fatal: this runs from the queue's
+    // settle path, where throwing would abandon the rest of the disposition and
+    // take `drain()` with it — so a project whose status could not be written
+    // would also stop the next build from starting. The log below is the more
+    // important of the two records and is still worth writing without it.
+    console.error(`[build] could not record failed disposition for ${job.name}: ${e?.message || e}`)
+  }
+  // No instance: this path runs after the worker is gone and its instance has
+  // been removed, so the reason is the only account that exists. This is the
+  // same call the worker makes, doing the same thing with the same writer.
+  try {
+    publishBuildDiagnostics(job.name, null, reason)
+  } catch (e) {
+    // Never let recording the reason replace the failure being recorded.
+    console.error(`[build] could not write failure log for ${job.name}: ${e?.message || e}`)
+  }
 }
 
 export async function admitProposal(submission, options = {}) {
