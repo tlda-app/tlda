@@ -121,10 +121,28 @@ export function extractHtmlToc(outputDir, providedPageInfo = null) {
       chapterNum++
     }
 
+    // A structural entry declares no file at all — a part heading that is a
+    // title and not a page — so there is nothing it could have produced and
+    // nothing missing. Before this guard existed such an entry fell through
+    // the `tocLevel === 'part'` branch above, which unlike the `entry.group`
+    // branch does not `continue`, and died on `join(outputDir, undefined)`.
+    if (!entry.file) continue
+
+    // A declared page whose HTML is absent is a failed build, not a page to
+    // skip. Same rule as `Fail incomplete alternate renders` (815ee96d3):
+    // something declared did not get produced.
+    //
+    // Which path this actually guards, because it is not the obvious one:
+    // `buildQmdDocument` (`build-qmd.mjs`) reaches here with a `pageInfo` it
+    // derived from files it observed on disk, and it throws earlier still via
+    // `qmdMissingDeclaredOutputFiles`. So the qmd build cannot trip this. What
+    // can is the CLI entry below, run against a `page-info.json` this build
+    // did not generate. The exemption is keyed on whether an entry names a
+    // file rather than on `tocLevel`, because a part that names one has
+    // declared a page.
     const htmlPath = join(outputDir, entry.file)
     if (!existsSync(htmlPath)) {
-      console.warn(`  Skipping ${entry.file} (not found)`)
-      continue
+      throw new Error(`[toc] ${pageInfoPath} declares ${entry.file}, but ${htmlPath} was not produced`)
     }
 
     const html = readFileSync(htmlPath, 'utf8')
