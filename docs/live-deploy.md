@@ -382,3 +382,79 @@ So none of this is in any commit, `git log` will never show it, and a search of
 this tree for the fix will find only this paragraph. Editing it changes the
 release path for the next push with no review and no rollback but a backup —
 treat it accordingly.
+
+## Which boxes have a guarded remote
+
+As of 2026-09-03 there are five, under `~/work/deploy/`: `testing`
+(`fly.live.toml`), `stable`, `pic`, and — added that day — `pic-dev` and
+`pic-preview`. Each is a bare repository whose `hooks/pre-receive` is a
+six-line wrapper that exports `DEPLOY_REPO_NAME`, `DEPLOY_FLY_CONFIG`,
+`DEPLOY_HEALTH_URL` and `DEPLOY_ROOT`, then `exec`s the shared
+`hooks/pre-receive-common.sh`. Adding a box is that file and nothing else.
+
+**`DEPLOY_HEALTH_URL` must be probed before it is written down.**
+`verify_serving` fails closed on a URL that does not answer, so a wrong one
+does not degrade the deploy, it blocks every deploy to that box. Check
+`curl -fsS "$URL/api/build-info"` returns JSON first.
+
+### Two ways a new deploy remote is born broken
+
+Both were hit creating `pic-dev` and `pic-preview`, and neither announces
+itself — the first looks like a hang, the second looks like success.
+
+**An empty bare repository makes the first push transfer the entire history**,
+and the hook does not run until the pack has arrived. Three attempts timed out
+at two and three minutes with no output. Seed it instead:
+
+```sh
+git clone --bare --local ~/work/tlda ~/work/deploy/<box>   # hardlinked, instant
+```
+
+**With no refs at all, `git push` has nothing to negotiate against and repacks
+all ~11,000 commits on every push.** That is why each repository keeps a
+`refs/deploy/base` pointing at a recent `main` commit. It is a negotiation base
+and nothing else reads it. **Do not tidy it away** — deleting it reintroduces
+the multi-minute push.
+
+**`refs/heads/main` must be absent until the first real deploy.** Seed the
+objects, then delete every ref the clone brought over:
+
+```sh
+git --git-dir=<repo> for-each-ref --format='delete %(refname)' \
+  | git --git-dir=<repo> update-ref --stdin
+git --git-dir=<repo> update-ref refs/deploy/base <a recent main sha>
+```
+
+If `refs/heads/main` is left at the current tip, the first `git push … main`
+reports **`Everything up-to-date`**, the pre-receive hook never runs, and
+nothing is built or deployed. **That is a deploy remote that silently does
+nothing** — the exact failure this whole path exists to remove, wearing the
+costume of a successful push.
+
+**Verifying a new remote costs no build.** Push a non-`main` ref: `check_ref`
+rejects it before `npm ci`, which proves the hook is wired, executable and
+reached.
+
+```
+$ git push ~/work/deploy/pic-preview <sha>:refs/heads/wiring-probe
+remote: push rejected: only refs/heads/main is deployable, got refs/heads/wiring-probe
+```
+
+## A guarded remote does not stop anyone going around it
+
+On 2026-09-03 `tlda-pic` — the student-facing box, which **had** a working
+guarded remote — was deployed by hand instead: `server/build-info.json` was
+written by hand to get past the Docker build failing on that gitignored file,
+then `fly deploy --process-groups app` was run directly. The box served a build
+whose stamp no build step produced.
+
+It was identifiable only because the hand-written stamp carried **six**
+fractional-second digits (`datetime.isoformat()`) where the hook's generator
+emits **three** (`new Date().toISOString()`), and because `pic/deploy-logs` had
+nothing since `2bee45d53` that morning.
+
+**So the reason to bypass is a build error, and the bypass is always available
+when a config sits in the root.** Deleting `fly.toml` removed the unflagged
+version of it. It did not remove the motive, and no mechanism in this document
+does. If you are hand-writing a build artifact to get a deploy through, that is
+the signal to fix the build, not the deploy.
