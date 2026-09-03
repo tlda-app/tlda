@@ -91,23 +91,44 @@ run() {
 }
 
 # Ask the page who it is rather than baking one agent's fleet id into the file.
+#
+# Ownership is decided by `props.userId === me`, which is the SAME predicate the
+# tool under test uses. An earlier version matched a substring of the shape id
+# instead: one question with two authorities inside one change, so the verifier
+# could disagree with the thing it verifies and the disagreement would read as a
+# code failure.
 MEASURE='() => {
+  var ed = window.__tldraw_editor__
+  if (!ed) return "no editor"
   var me = typeof window.__tldaFleetIdentity === "function" ? window.__tldaFleetIdentity().id : null
   if (!me) return "no fleet identity yet"
-  var owner = me.replace("fleet:", "")
+
+  var wanted = {}
+  var shapes = ed.getCurrentPageShapes()
+  for (var i = 0; i < shapes.length; i++) {
+    var s = shapes[i]
+    if (String(s.type).indexOf("fleet-") !== 0) continue
+    if (!s.props || s.props.userId !== me) continue
+    wanted[s.id] = true
+  }
+
   var vis = [], all = document.querySelectorAll(".fleet-shape")
-  for (var i = 0; i < all.length; i++) {
-    var el = all[i]
+  for (var j = 0; j < all.length; j++) {
+    var el = all[j]
     if (getComputedStyle(el).visibility === "hidden") continue
     var h = el.closest("[data-shape-id]")
-    var id = h ? h.getAttribute("data-shape-id") : ""
-    if (id.indexOf(owner) === -1) continue
+    if (!h || !wanted[h.getAttribute("data-shape-id")]) continue
     var r = el.getBoundingClientRect()
-    vis.push({ id: id.replace("shape:fleet-", ""), x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) })
+    vis.push({ id: h.getAttribute("data-shape-id").replace("shape:fleet-", ""), x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) })
   }
-  var ed = window.__tldraw_editor__
   return JSON.stringify({ owner: me, cam: ed.getCamera(), vp: { w: innerWidth, h: innerHeight }, visibleMine: vis }, null, 1)
 }'
+
+# Which project the tab is pointed at is not incidental: a browser launch writes
+# fleet shapes into that project's synced room. Assert it before touching
+# anything, so this cannot be run against a project somebody works in.
+EXPECT_PROJECT=${TLDA_HUD_VERIFY_PROJECT:-dev-linked-remote-probe}
+WHERE='() => JSON.stringify({ url: location.href, project: new URLSearchParams(location.search).get("project") })'
 
 RESET='() => {
   var ed = window.__tldraw_editor__
@@ -116,6 +137,19 @@ RESET='() => {
   ed.setCamera({ x: 200, y: 50, z: c.z }, { animation: { duration: 0 } })
   return "reset to x=200"
 }'
+
+ASSERT=${0:a:h}/hud-pointer-assert.mjs
+if [[ ! -f $ASSERT ]]; then
+  print -u2 "refusing to run: assertion script not found at $ASSERT"
+  exit 3
+fi
+
+print "STEP 0: confirm which project this tab is pointed at"
+run 0-where pw eval "$WHERE" || exit 1
+if ! node $ASSERT --project $EXPECT_PROJECT $OUT/0-where.txt; then
+  print -u2 "       Override with TLDA_HUD_VERIFY_PROJECT=<name> if that is deliberate."
+  exit 1
+fi
 
 print "STEP 1: reset the camera to the broken starting state (x=200)"
 run 1-reset pw eval "$RESET" || exit 1
@@ -129,4 +163,15 @@ run 3-center pw center search || exit 1
 print "STEP 4: measure AFTER — expect the search panel fully on screen"
 run 4-after pw eval "$MEASURE" || exit 1
 
-print "ALL STEPS PASSED — read $OUT/2-before.txt against $OUT/4-after.txt"
+# The steps above only establish that four commands ran. `pw center` exits 0
+# whatever it finds -- including every bail-out string -- so a run in which the
+# panel never moved reaches this line with everything green. THE ASSERTION IS THE
+# TEST; the four steps are just how the numbers get collected.
+print "STEP 5: assert the panel actually moved from outside to inside"
+if ! node $ASSERT $OUT/2-before.txt $OUT/4-after.txt search; then
+  print -u2 "FAILED — artifacts in $OUT"
+  exit 1
+fi
+
+print "PASSED — the search panel moved from outside the viewport to fully inside it."
+print "artifacts: $OUT"

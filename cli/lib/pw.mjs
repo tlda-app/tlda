@@ -1084,7 +1084,16 @@ function forwardConsole(rest) {
 //
 // A document page is drawn by the main canvas, so its page bounds and the main
 // camera are in the same equation and solving it puts the page where you asked.
-const CENTER_DOC_EVAL = `() => { var ed=window.__tldraw_editor__; if(!ed) return 'no editor'; var ps=ed.getCurrentPageShapes().filter(function(s){return s.type==='svg-page'||s.type==='html-page'}); if(!ps.length) return 'no pages'; ps.sort(function(a,b){var ba=ed.getShapePageBounds(a.id),bb=ed.getShapePageBounds(b.id); return ba.y-bb.y||ba.x-bb.x}); var b=ed.getShapePageBounds(ps[0].id); var c=ed.getCamera(); ed.setCamera({x:-b.minX+32,y:-b.minY+32,z:c.z},{animation:{duration:0}}); return 'centered doc'; }`
+//
+// The suppression flag matters here for a reason that has nothing to do with
+// documents: ANY main-camera write the HUD sees as a deliberate pan makes it
+// persist a displaced anchor through saveAnchorOffsets, into the synced room.
+// `doc` is the most-used region, so it was the biggest producer of that debris
+// while the fleet regions were the ones being discussed. The anchor id is per
+// identity+device, so what it displaces is the HUD of the identity the pw tab
+// runs as, and what it leaves behind is debris in the room it was pointed at --
+// it does not move another participant's HUD.
+const CENTER_DOC_EVAL = `() => { var ed=window.__tldraw_editor__; if(!ed) return 'no editor'; var ps=ed.getCurrentPageShapes().filter(function(s){return s.type==='svg-page'||s.type==='html-page'}); if(!ps.length) return 'no pages'; ps.sort(function(a,b){var ba=ed.getShapePageBounds(a.id),bb=ed.getShapePageBounds(b.id); return ba.y-bb.y||ba.x-bb.x}); var b=ed.getShapePageBounds(ps[0].id); var c=ed.getCamera(); window.__tldaFleetHudSuppressCameraTrackingUntil = Date.now() + 4000; ed.setCamera({x:-b.minX+32,y:-b.minY+32,z:c.z},{animation:{duration:0}}); return 'centered doc'; }`
 
 /**
  * A fleet panel is NOT drawn by the main canvas when the HUD is open, so the
@@ -1184,6 +1193,11 @@ function centerFleetEval(shapeTypes, label) {
 
   var after = box() || before
   var onScreen = after.l >= 0 && after.t >= 0 && after.r <= vw && after.b <= vh
+  // Stated, not left to be inferred from rect.w > viewport.w. An onScreen:false
+  // that means "correctly aligned, too big to ever fit" is a different fact from
+  // one that means "did not move", and reading them as the same is exactly the
+  // false negative the frame-wait above exists to prevent.
+  var fitsViewport = (after.r - after.l) <= vw - 2 * pad && (after.b - after.t) <= vh - 2 * pad
   return JSON.stringify({
     region: '${label}',
     owner: me,
@@ -1192,6 +1206,7 @@ function centerFleetEval(shapeTypes, label) {
     rect: { x: Math.round(after.l), y: Math.round(after.t), w: Math.round(after.r - after.l), h: Math.round(after.b - after.t) },
     viewport: { w: vw, h: vh },
     onScreen: onScreen,
+    fitsViewport: fitsViewport,
   })
 }`
 }
