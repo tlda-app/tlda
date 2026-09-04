@@ -431,6 +431,26 @@ nothing is built or deployed. **That is a deploy remote that silently does
 nothing** — the exact failure this whole path exists to remove, wearing the
 costume of a successful push.
 
+### A push prints nothing for its first several minutes
+
+`check_ref` runs `node --check` over every server `.mjs`, the server-import
+check and the conflict-marker scans **before** the deploy lock is taken — and
+`deploy-logs/` is not written until after it. So there is a stretch at the
+start of every push with **no log file to tail and no output on the push**.
+
+The hook's own comment claimed *"about a minute on a warm checkout. Measured at
+62s."* **Measured 2026-09-03 on `pic-preview` at load average ~20 on 10 cores:
+about nine minutes.** Both are real — the box was busier for the second — which
+is why any figure here has to carry the load it was taken at.
+
+**This is worth knowing before you push, not after.** Nine silent minutes reads
+as a hang at exactly the point where the hook is doing its most valuable work,
+and a person who concludes that either kills a good deploy or goes around it.
+Going around it is what this whole path exists to prevent.
+
+(The comment in `pre-receive-common.sh` has been corrected, but that file is
+outside git — see below — so this is the copy that survives.)
+
 **Verifying a new remote costs no build.** Push a non-`main` ref: `check_ref`
 rejects it before `npm ci`, which proves the hook is wired, executable and
 reached.
@@ -439,6 +459,51 @@ reached.
 $ git push ~/work/deploy/pic-preview <sha>:refs/heads/wiring-probe
 remote: push rejected: only refs/heads/main is deployable, got refs/heads/wiring-probe
 ```
+
+## A bare `fly deploy` from a fresh checkout fails under two different names
+
+`Dockerfile.live` copies two things **the guarded path is the only producer of**:
+
+| line | copies | written by |
+|---|---|---|
+| `261` | `server/build-info.json` | the hook's stamp, or `live-deploy-preflight.mjs` |
+| `319` | `dist/` | `npm run build` (`tsc -b && vite build`) |
+
+Both are gitignored, so **a fresh worktree has neither**, and the image build
+cannot start. Measured 2026-09-03 with `fly deploy --build-only` from a clean
+detached worktree at `4490e53ac`: **exit 1**, with *both* COPY steps failing —
+
+```
+#26 [22/39] COPY server/build-info.json ./server/build-info.json
+#26 ERROR: ... "/server/build-info.json": not found
+#39 [35/39] COPY dist/ ./dist/
+#39 ERROR: ... "/dist": not found
+```
+
+**The single top-level `Error:` line named `/dist`.** On an earlier occasion
+the same fault, on the same Dockerfile, surfaced as
+`"/server/build-info.json": not found`.
+
+**BuildKit is a DAG, not a script.** It schedules both COPY steps in parallel
+and reports whichever resolves last, so **the error wording is not stable
+across runs** even though the fault is identical. Two consequences, and the
+second is the expensive one:
+
+- **Someone who hits this twice will reasonably believe they have two
+  different problems**, and will go looking for a missing `dist` on one day and
+  a missing stamp on the next.
+- **Neither wording names the cause.** The true statement is *nothing built the
+  products this image consumes*, and no error says it. What both actually mean
+  is **you are deploying from outside the guarded path.**
+
+**Do not "fix" this by generating the stamp unconditionally.** Until
+`fly.toml` was deleted, this loud failure was the only thing standing between a
+bare `fly deploy` and silently shipping a stale client — the `dist/` in the
+context would simply have been whatever was last built there, which is how a
+client 35 commits behind reached a live box. **The trap is the last thing
+standing between a bare `fly deploy` and shipping a stale client, and it should
+stay until something else refuses first. With `fly.toml` deleted, something
+else now does.**
 
 ## A guarded remote does not stop anyone going around it
 
