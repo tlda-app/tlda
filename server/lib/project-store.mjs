@@ -24,6 +24,7 @@ import { resolveContainedPath } from './path-containment.mjs'
 import { createSourceLifecycleStore, projectRevisionStatus } from './source-lifecycle.mjs'
 import { ProjectLifecycleStatusIndex, UNKNOWN_PROJECT_LIFECYCLE_STATUS } from './project-lifecycle-status-index.mjs'
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
+import { formatForDocumentPath } from '../../shared/document-roots.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { scanTexDependencyClosure } from '../../shared/tex-deps.mjs'
 import { documentRootsIn, normalizeDocumentRoots } from '../../shared/document-roots.mjs'
@@ -95,7 +96,31 @@ export async function readProject(name) {
 // both imagined-randomization projects got a mainFile that does not exist.
 // Undeclared is a state the build tolerates; declared-and-absent is an error.
 // Readers that need a LaTeX name still fall back to `main.tex` at read time.
-export function createProject({ name, title, mainFile, format = 'svg', members, documentRoots = null }) {
+/**
+ * A project's format is DERIVED from its main file when the caller does not say.
+ *
+ * It used to default to `svg` outright, and `svg` means "build this with LaTeX".
+ * So the fallback for "I was not told what this is" was "run pdflatex on it" —
+ * observed end to end, not inferred: a project whose main file was a `.pdf`
+ * arrived as `format: 'svg'` with its own root coerced to `svg` too, was handed
+ * to the LaTeX runner, and failed with `DVI file not created`, a message naming
+ * the symptom and never the cause.
+ *
+ * `formatForDocumentPath` is the same map that already decides a document
+ * ROOT's format, so this makes the project agree with its own documents instead
+ * of guessing separately. It is Skip's rule one field over — document roots are
+ * a computed property of the branch, and so is this.
+ *
+ * `svg` remains the last resort, for a project with no main file at all. An
+ * explicit `format` still wins over both: every current caller that cares passes
+ * one, and the ones that do not are LaTeX projects whose `.tex` derives to `svg`
+ * anyway, so no existing caller changes behaviour.
+ */
+function formatForNewProject(mainFile, format) {
+  return format || formatForDocumentPath(mainFile) || 'svg'
+}
+
+export function createProject({ name, title, mainFile, format = null, members, documentRoots = null }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -104,6 +129,7 @@ export function createProject({ name, title, mainFile, format = 'svg', members, 
   mkdirSync(join(dir, 'source'), { recursive: true })
   mkdirSync(join(dir, 'output'), { recursive: true })
 
+  format = formatForNewProject(mainFile, format)
   const isBook = format === 'book'
   const project = {
     name,
