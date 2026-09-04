@@ -866,3 +866,67 @@ evidence**, and reading the second as a regression is a mistake waiting to be ma
 **This is why the RC is worth having**, incidentally. On a box with no usable TeX the PDF
 path is the one that still produces a readable document — which is the sentence Skip started
 from.
+
+---
+
+# Disposition as of 2026-09-03 20:35 EDT {#disposition}
+
+**Relative to:** `main` = `4490e53ac`. Working branch **`rc-docformat`** at `e5a4af8db`,
+cut from that same `main`, **not merged, not deployed, nowhere near `testing` / `pic` /
+`pic-dev`.** `pdf-document-architecture` is untouched and remains the specification.
+
+## Done, with evidence {#disposition-done}
+
+| | |
+|---|---|
+| **the RC located** | branch intact, reverted for being merged rather than for being wrong — Skip 12:00:45 on 08-21, fifteen seconds before the revert commit |
+| **why it was never used** | it cannot start against a store that has projects. Measured with a positive control; a record carrying both shapes is rejected too, so the conversion cannot even be staged |
+| **the PDF half** | **works.** Letter and A4, single and multi-page, 117 word-level anchors, no TeX. Counterfactual refuses a non-PDF main file |
+| **step one landed** | `c0e028a1c` — 16 new modules, axes added *beside* the existing API, nothing `main` reads changed. `tsc -b` 0, eslint clean |
+| **step two landed** | `841f51719` — `.pdf` is a document kind, and the build worker can render one |
+| **unknown → LaTeX** | no longer a lead. Observed end to end: a PDF project came out `svg`, root coerced to `svg`, handed to `pdflatex` |
+
+## The next unit, and why I stopped short of it {#disposition-next}
+
+**The next increment is the client, and it has to be done in the right order.**
+
+`rc-read-pdf` identified five sites where **"LaTeX SVG document" is the unmarked default** —
+negative tests against `HTML_PAGE_FORMATS` plus an inline `['png','slides']` literal repeated
+at four of them. Read directly, two of them are genuinely wrong for a PDF:
+
+- **`annotationSourceAnchor.ts`** — a format not in `HTML_PAGE_FORMATS` falls through to
+  `canvasToPdf` and the synctex lookup. **A PDF has no synctex**, so every annotation on one
+  would take the LaTeX anchoring path.
+- **`SvgDocument.tsx`** — the same fall-through loads a **source map that does not exist**
+  for a PDF.
+
+**And one of the five is already correct and must not be "fixed":** `svgPageFetchPolicy.ts`
+skips SVG page fetching for the html formats plus `png`/`slides`. A PDF document **does** have
+SVG pages — `build-pdf.mjs` writes one per page and the manifest declares
+`view.kind: 'svg-pages'` — so falling through to SVG fetching is the right behaviour there.
+Three of five, not five of five.
+
+**The clean repair is to replace the negative tests with `hasSourceMapping(project)`**, which
+is already landed and answers exactly the question being asked: `sourceFormat === 'tex' &&
+renderer === 'latex'`. It also gets the existing cases right — a LaTeX document carries **no**
+`format` key on the client at all, per `rc-read-view`, and `legacyDocumentAxes` maps that
+absence to `svg` → `tex`/`latex` → true.
+
+**I did not write it, on purpose.** The repair only bites when a client document actually
+carries `pdf`, and per `rc-read-view` the loaders **restamp** `format` so only `html`,
+`slides`, `png` and `undefined` are reachable today. **Writing it now is code for a state that
+cannot occur, and therefore code nobody can check** — which is the failure this whole RC keeps
+running into. It comes after the loader work, not before.
+
+## The two decisions still with the chief {#disposition-decisions}
+
+1. **The axes proposal** — delete `renderer`, compute `sourceFormat`. Shrinks the RC.
+2. **Route A or B** — I recommended B and have started it, on the grounds that Route A/B is
+   an implementation strategy rather than a product decision. **Say so if that was mine to
+   take and I took it wrongly.**
+
+## One thing anyone testing this needs to know {#disposition-warning}
+
+**An agent-started local server cannot complete a LaTeX build.** The fence shim refuses
+`pdflatex` when `FLEET_ID` is set, two stages upstream of the error you actually see. **A red
+LaTeX test and a green PDF test on the same box are not comparable evidence.**
