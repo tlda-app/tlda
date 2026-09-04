@@ -1178,6 +1178,40 @@ const SLIDES_BRIDGE_SCRIPT = `
       }
     }
 
+    // Bring in the images for the slides the reader can actually see.
+    //
+    // Quarto emits every figure as a lazy img with data-src, never an eager
+    // one with src -- measured on the built deck: 34 lazy, 0 eager. Reveal
+    // swaps data-src to src in its visibility sweep, and in scroll view that
+    // sweep decides what is near FROM SCROLL POSITION. The strip never scrolls
+    // (see the deck CSS above), so the sweep always answers with the same few
+    // slides and every other figure stays unloaded for the life of the deck.
+    // Skip: "the picture on the Friday's Lab slide is there. From then on, I
+    // don't see pictures."
+    //
+    // This is the third symptom of that one cause, after navigation and
+    // fragments. The next person will meet a fourth.
+    //
+    // The slidechanged event is NOT the missing half -- measured, it fires on
+    // every move, 14 for 14. The loader is simply never called, so call it.
+    //
+    // Neighbours, not just the target: the deck is one row and he presents
+    // zoomed out, so the camera shows more than the slide it is addressed to.
+    // The distance is reveal's own configured viewDistance rather than a
+    // literal -- and when reveal does not state one we load the target alone
+    // rather than inventing a number. Unloading is deliberately left to reveal.
+    function loadSlidesNear(pages, index) {
+      if (!Reveal.loadSlide || !pages || !pages.length) return;
+      var config = Reveal.getConfig ? Reveal.getConfig() : null;
+      var distance = config && typeof config.viewDistance === 'number' ? config.viewDistance : 0;
+      var first = Math.max(0, index - distance);
+      var last = Math.min(pages.length - 1, index + distance);
+      for (var li = first; li <= last; li++) {
+        var section = pages[li].querySelector('section');
+        if (section) Reveal.loadSlide(section);
+      }
+    }
+
     // Report initial fragment state
     setTimeout(reportSlideBackground, 50);
     setTimeout(reportFragmentState, 200);
@@ -1266,6 +1300,7 @@ const SLIDES_BRIDGE_SCRIPT = `
             var gotoIdx = Reveal.getIndices(gotoSection);
             if (gotoIdx && gotoIdx.h === gotoH && (gotoIdx.v || 0) === gotoV) {
               Reveal.setCurrentScrollPage(gotoSection, gi, 0);
+              loadSlidesNear(gotoPages, gi);
               movedByScrollPage = true;
               break;
             }
