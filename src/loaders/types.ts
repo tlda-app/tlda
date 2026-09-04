@@ -63,7 +63,10 @@ export interface SvgDocument {
   deckLayout?: DeckLayout
   macros?: Record<string, string>
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
-  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'
+  // `pdf` is a document whose pages are SVGs rendered from a PDF rather than
+  // from a LaTeX build. It matters here because it looks exactly like `svg` at
+  // this layer and is not: it has no synctex, no source map and no proof data.
+  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd' | 'pdf'
   targets?: TargetInfo[]  // present for multi-target projects
   // Markdown parts (notes/scratch) attached to a non-html/markdown project —
   // e.g. a LaTeX project's scratch columns. Rendered as html-page shapes on
