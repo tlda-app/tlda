@@ -47,8 +47,8 @@ let failedPhase = null
 // would fire on a phase still legitimately waiting for a build.
 const PHASE_TIMEOUT_MS = 180_000
 
-function phase(name, body) {
-  test(name, { timeout: PHASE_TIMEOUT_MS }, async t => {
+function phase(name, body, timeout = PHASE_TIMEOUT_MS) {
+  test(name, { timeout }, async t => {
     if (failedPhase) {
       t.skip(`not run: "${failedPhase}" failed`)
       return
@@ -229,8 +229,9 @@ phase('rendered page', async () => {
   assert.equal(pageResponse.status, 200)
   assert.match(await pageResponse.text(), /Rendered through the daemon Git remote/)
 
-  assert.equal((await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim(), authorRevision)
-  assert.notEqual(authorRevision, submission.revision, 'daemon proposal commit must not move the author working copy')
+  assert.equal((await git(checkout, ['symbolic-ref', '--short', 'HEAD'])).stdout.trim(), `tlda/${project}`)
+  assert.equal((await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim(), submission.revision)
+  assert.notEqual(authorRevision, submission.revision, 'link creates the filtered project branch once')
   // `refs/tlda/applied/<binding>` used to be the answer here. Nothing writes it
   // any more — git-project-sync says so where it declines to export the name,
   // "publishing the name invites a reader that would be reading a fossil". The
@@ -325,6 +326,8 @@ phase('cross-daemon accepted head convergence', async () => {
   assert.match(await peerPageResponse.text(), /Accepted from the peer daemon/)
 })
 
+// This phase encloses two independent 120s build polls plus clone, link,
+// submission, external-remote edit, and fetch work.
 phase('remote-backed edit convergence', async () => {
   externalRemote = join(root, 'external.git')
   externalSeed = join(root, 'external-seed')
@@ -409,7 +412,7 @@ phase('remote-backed edit convergence', async () => {
   remotePageResponse = await fetch(`${base}/docs/${remoteProject}/index.html`)
   assert.equal(remotePageResponse.status, 200)
   assert.match(await remotePageResponse.text(), /Edit arriving from the external remote/)
-})
+}, 480_000)
 
 phase('divergent edit withholding and resolution', async () => {
   // The parked ref, not the applied fossil — see the note at the first use.

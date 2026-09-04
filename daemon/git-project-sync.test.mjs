@@ -59,9 +59,22 @@ test('settle submits an immutable daemon proposal and HeadChanged fetches exact 
 
   const submitted = []
   const arrived = []
-  const sync = createGitProjectSync({ sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a', onSubmitted: value => submitted.push(value), onMirrorArrived: value => arrived.push(value) })
+  const gitCalls = []
+  const sync = createGitProjectSync({
+    sourceDir: checkout,
+    project: 'paper',
+    daemonId: 'daemon-a',
+    bindingId: 'binding-a',
+    onSubmitted: value => submitted.push(value),
+    onMirrorArrived: value => arrived.push(value),
+    runGit: async (args, options = {}) => {
+      gitCalls.push(args)
+      return execFile('git', args, { cwd: checkout, encoding: 'utf8', timeout: 30000, ...options })
+    },
+  })
   writeFileSync(join(checkout, 'chapter.tex'), 'two\n')
   await sync.standOnWorkBranch()
+  gitCalls.length = 0
   const proposal = await sync.editClusterSettled()
   assert.equal(proposal.status, 'SubmittedToBuildQueue')
   assert.equal(submitted.length, 1)
@@ -70,6 +83,8 @@ test('settle submits an immutable daemon proposal and HeadChanged fetches exact 
   await git(checkout, ['merge-base', '--is-ancestor', remoteSibling, proposal.revision])
   assert.deepEqual((await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'), ['chapter.tex', 'main.tex'])
   await assert.rejects(git(remote, ['cat-file', '-e', `${proposal.revision}:notes.txt`]))
+  assert.equal(gitCalls.some(args => args[0] === 'archive'), false, 'ordinary settle must not materialize the source tree')
+  assert.equal(gitCalls.some(args => args[0] === 'ls-tree'), false, 'ordinary settle must not walk project membership')
   assert.equal((await git(remote, ['rev-parse', 'refs/tlda/source/paper'])).stdout.trim(), base, 'submission does not advance shared head')
 
   await git(remote, ['update-ref', 'refs/tlda/source/paper', proposal.revision, base])
