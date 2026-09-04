@@ -370,11 +370,13 @@ export function createGitProjectSync({
       const index = path.join(archiveDir, 'index')
       const env = { ...process.env, GIT_INDEX_FILE: index }
       await git(['read-tree', '--empty'], { env })
+      const indexArgs = ['update-index', '--add']
       for (const member of [...members].sort()) {
         const entry = committedEntry(member)
         if (!entry) throw new Error(`${project}: immutable closure member is absent: ${member}`)
-        await git(['update-index', '--add', '--cacheinfo', `${entry.mode},${entry.sha},${member}`], { env })
+        indexArgs.push('--cacheinfo', `${entry.mode},${entry.sha},${member}`)
       }
+      await git(indexArgs, { env })
       const tree = (await git(['write-tree'], { env })).stdout.trim()
       // Fetched server history is never proposal ancestry. This chain used to
       // fall through to the fetched and applied refs, so on a FIRST sync — when
