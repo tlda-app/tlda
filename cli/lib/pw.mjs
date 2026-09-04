@@ -429,7 +429,8 @@ function runPlaywrightCli(args, { budgetName, ...opts } = {}) {
   const budget = budgetName || (isOpen ? 'TLDA_PW_OPEN_TIMEOUT_MS' : 'TLDA_PW_VERB_TIMEOUT_MS')
   // cwd PINNED to the canonical workspace so this command targets the ONE shared
   // daemon regardless of where the agent invoked tlda-dev pw from (see PW_CWD).
-  const result = spawnSync(playwrightCliBin(), args, {
+  const invocation = playwrightCliInvocation(playwrightCliBin(), args)
+  const result = spawnSync(invocation.command, invocation.args, {
     encoding: 'utf8', cwd: PW_CWD, killSignal: 'SIGKILL', ...opts, timeout,
   })
   const timedOut = result.error?.code === 'ETIMEDOUT' ||
@@ -449,6 +450,10 @@ function runPlaywrightCli(args, { budgetName, ...opts } = {}) {
   // spawnSync leaves `status` null on timeout, and callers do `.status ?? 0` —
   // which would report a killed verb as SUCCESS. Synthesize the failure.
   return { ...result, status: PW_EXIT_TIMEOUT, timedOut: true }
+}
+
+export function playwrightCliInvocation(bin, args) {
+  return { command: '/usr/bin/nice', args: ['-n', '5', bin, ...args] }
 }
 
 function pw(args, opts = {}) {
