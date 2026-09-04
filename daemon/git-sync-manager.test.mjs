@@ -209,11 +209,7 @@ test('initial project link submits the existing checkout through the ordinary pr
   assert.equal(submitted.status, 'SubmittedToBuildQueue')
   assert.match(submitted.proposalRef, /^refs\/tlda\/proposals\/daemon-link\/main\/[0-9a-f]{40}$/)
   assert.equal((await git(remote, ['rev-parse', submitted.proposalRef])).stdout.trim(), submitted.revision)
-  // Both documents are watched, not just the declared one. d5a264fe0 made roots
-  // a computed property of the branch, so `unrelated-broken.tex` — which nothing
-  // includes — is a root of its own and is watched like any other. The stored
-  // `documentRoots` above no longer narrows anything.
-  assert.deepEqual(watcher.added.slice().sort(), [join(checkout, 'main.tex'), join(checkout, 'unrelated-broken.tex')])
+  assert.deepEqual(watcher.added.slice().sort(), [join(checkout, 'main.tex')])
   // The listed tip is the WORK BRANCH, not the revision. 84c48f6e4 split the two:
   // `refs/tlda/project/<p>` is the chain, a filtered projection carrying only the
   // documents, and `refs/heads/tlda/<p>` is the author's real settled tree. This
@@ -257,7 +253,7 @@ test('initial project link submits the existing checkout through the ordinary pr
   }
   assert.deepEqual(
     watcher.added.slice().sort(),
-    [join(checkout, 'child.tex'), join(checkout, 'main.tex'), join(checkout, 'unrelated-broken.tex')].sort(),
+    [join(checkout, 'child.tex'), join(checkout, 'main.tex')].sort(),
   )
   assert.equal(watcher.added.includes(join(checkout, 'unrelated.txt')), false)
   await manager.closeAll()

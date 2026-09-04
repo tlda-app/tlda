@@ -1,30 +1,14 @@
 /**
- * **A published revision contains every document in the tree.**
+ * **A published revision follows the project's document roots.**
  *
  * This is a behaviour test: it builds a real checkout, settles it the way the
  * daemon does, and reads what actually landed in the published revision. It
  * does not reach into how the projection is computed, so the projection can be
  * rewritten without touching this file.
  *
- * **The behaviour it pins down.** `filteredProjectCommit` builds the revision
- * from a set of document roots. That set used to come from the project's STORED
- * `documentRoots`, written once when somebody linked the project and appended
- * to by the chat click-adopt path — and never recomputed. So a document added to
- * the branch afterwards was not in the list, and the revision published without
- * it while the file sat in the tree. Measured on a three-root project: one edit,
- * and two of the three documents returned 404 from `/source` while still on
- * disk.
- *
- * Skip specified the replacement on 2026-08-26 — *"document roots is just a
- * computed property of the git branch"*, *"create the directed include graph.
- * roots are roots"*, *"xr = link"* — and this asserts the consequence rather
- * than the mechanism: **add a paper to the branch and it is published, with
- * nobody declaring anything.**
- *
- * The two other properties here are the ones a naive "just publish everything"
- * would break, which is why they are asserted alongside: an `\input`-ed chapter
- * is part of its document rather than a document, and a paper that only
- * cross-references another with `xr` does not drag that other paper in.
+ * A declared-root project is limited to those roots and their dependencies.
+ * A project with no declaration derives roots from the branch. Included files
+ * remain dependencies rather than separate documents, and `xr` remains a link.
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -81,9 +65,7 @@ async function settled(dir, { documentRoots = [] } = {}) {
   return { sync, result }
 }
 
-test('a document added to the branch is published, with nothing declared', async () => {
-  // The seed declares ONE root, the way a project linked with one document has
-  // one. The second paper arrives later, the way a real one does.
+test('declared roots keep an unrelated document out of the project revision', async () => {
   const dir = checkout({ 'first.tex': String.raw`\documentclass{article}\begin{document}one\end{document}` })
   try {
     write(dir, { 'second.tex': String.raw`\documentclass{article}\begin{document}two\end{document}` })
@@ -91,8 +73,8 @@ test('a document added to the branch is published, with nothing declared', async
     const { sync, result } = await settled(dir, { documentRoots: ['first.tex'] })
     assert.ok(result?.ok !== false, `the settle succeeded (got ${JSON.stringify(result)})`)
     const files = publishedFiles(dir, sync)
-    assert.ok(files.includes('second.tex'),
-      `the paper added after linking is in the published revision (got ${files.join(', ')})`)
+    assert.ok(!files.includes('second.tex'),
+      `an unrelated paper is outside the declared project (got ${files.join(', ')})`)
     assert.ok(files.includes('first.tex'), 'and so is the one that was declared')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
