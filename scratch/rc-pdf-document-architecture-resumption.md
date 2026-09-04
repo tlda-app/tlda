@@ -807,3 +807,62 @@ ignores `*.pdf` and skips any `.pdf` with a sibling `.svg` via
 manifest asks *is it in the include graph*, the shadow repo asks *does it have a generated
 `.svg` sibling*. **A PDF document root must survive both or it gets no version history**,
 and that site was missing from the original cost table.
+
+---
+
+# Step two, and two things the end-to-end run settled {#port-step-2}
+
+`pm-rc-docformat`, 2026-09-03 20:20 EDT. Commit `ad74d2c19` on `rc-docformat`.
+
+**A `.pdf` is now a document kind** — it joins the extension map and the format set, so
+`formatForDocumentPath('paper.pdf')` stops returning null and `documentRootsIn` stops
+dropping it. **And the build worker can render one**, added to `main`'s existing builder map
+rather than by swapping the block for the RC's adapter registry, so the four behaviours
+`main` added after the branch stay where they are.
+
+## The acceptance test does not pass, and should not yet {#port-e2e-scope}
+
+`daemon/native-pdf-git-visible.test.mjs` **encodes the RC's end state, not an intermediate
+one.** It sends `sourceFormat` / `renderer` / `documentFormat` over the daemon sync wire and
+asserts the project carries **no `format` key at all**. That needs the axes to reach the
+server and the store — the rest of the port. **It is the right acceptance test for the RC
+and the wrong one for this commit**, and I would rather say so than quietly not run it.
+
+## What running it did settle: unknown-format-becomes-LaTeX, observed {#port-svg-confirmed}
+
+Reported earlier as a lead from reading. **Now observed end to end through a real server:**
+
+```
+"format":"svg", "documentRoots":[{"path":"book.pdf","format":"svg"}]
+[build:native-pdf-document] BUILD FAILED: DVI file not created
+```
+
+**A PDF project came out as `svg`, its `book.pdf` root was coerced to `svg` as well, and the
+whole thing was handed to `pdflatex`.** The fallback for *"I do not know what this is"* really
+is *"run LaTeX on it"*, and the failure it produces names the symptom and never the cause —
+exactly the signature `rc-read-build` characterised from the build runner.
+
+## And the fence shim: mechanism confirmed, incidence now measured {#port-fence-shim}
+
+`rc-read-build` reported this as a **mechanism it could not establish had ever happened**,
+and was careful to mark it a gap rather than a finding. **It happens.** From this run's own
+server log:
+
+```
+[build:native-pdf-document-1] --yes-really-compile.
+[build:native-pdf-document] pdflatex exited with warnings (continuing): Command failed: pdflatex …
+[build:native-pdf-document] BUILD FAILED: DVI file not created
+```
+
+**That is `~/.claude/bin/pdflatex` refusing to compile because the server process inherited
+`FLEET_ID`.** Real TeX is installed at `/opt/homebrew/bin` and works from Skip's own shell.
+
+**The consequence for anyone testing this RC, and it is not small: an agent-started local
+server cannot complete a LaTeX build at all.** Every `svg`-path test an agent runs locally
+will fail with `DVI file not created` for a reason that has nothing to do with the code
+under test. **A green PDF test and a red LaTeX test on the same box are not comparable
+evidence**, and reading the second as a regression is a mistake waiting to be made.
+
+**This is why the RC is worth having**, incidentally. On a box with no usable TeX the PDF
+path is the one that still produces a readable document — which is the sentence Skip started
+from.
