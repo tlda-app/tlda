@@ -992,3 +992,61 @@ take `main`'s file and apply only the format-dispatch change, exactly as I did b
 
 **The RC's own new modules and the axes remain entirely portable.** It is only these four
 rewritten files where the branch has to be read as a specification rather than copied.
+
+---
+
+# The A4 problem is in the layout, not only the transform {#a4-layout}
+
+`pm-rc-docformat`, 2026-09-03 21:15 EDT. **This sharpens my own "the PDF half works" claim
+and I would rather sharpen it than let it travel as-is.**
+
+`rc-read-pdf` found the PDF→canvas *transform* hardcoded to `612 × 792` in three places. **It
+is also in the client's page LAYOUT, which is a bigger deal**, because the transform decides
+where an annotation lands and the layout decides what shape the page is.
+
+`createSvgDocumentLayout` in `src/loaders/svgLoader.ts`:
+
+```ts
+const width = TARGET_WIDTH
+const height = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
+```
+
+and `src/layoutConstants.ts` labels the constants itself:
+
+```ts
+export const PDF_WIDTH = constants.PDF_WIDTH   // US Letter width in points
+export const PDF_HEIGHT = constants.PDF_HEIGHT // US Letter height in points
+```
+
+**Every page of every SVG-path document is laid out at the US Letter aspect ratio, from a
+shared constant, regardless of what the document's pages actually measure.** US Letter is
+1.294; A4 is 1.415. **An A4 PDF would be drawn into a box eight per cent too short for its
+width**, and every annotation coordinate would be mapped against a page box the document does
+not have.
+
+## What this does and does not change {#a4-layout-scope}
+
+**The builder remains correct and that is measured** — `build-pdf.mjs` reads real dimensions
+per page from `pdfinfo` and records them, and my A4 run recorded `595 × 842` with anchors
+scaled to it. **The manifest already carries the right numbers.** Nothing needs discovering;
+the client simply does not read them.
+
+**So my earlier sentence — "the PDF half works" — is true of the build and not yet of the
+view, for anything that is not US Letter.** That is the honest form of it and it is how it
+should be repeated.
+
+**Stated as a read, not an observation.** I established this from the source and the
+constants file. **I have not rendered an A4 PDF in a browser**, so I have a mechanism and an
+arithmetic consequence, not a screenshot. Saying which is the difference between this being
+useful and being another confident claim about code nobody looked at.
+
+## Why I have not fixed it tonight {#a4-layout-defer}
+
+**`createSvgDocumentLayout` is shared with every LaTeX document**, which is the overwhelming
+majority of what this app renders. Changing how it derives a page box is a change to the
+layout of every existing paper, and the honest way to make it is to take per-page dimensions
+from the manifest **where they exist** and keep the constant as the fallback — which is a
+small change with a large blast radius and no way for me to see the result tonight.
+
+**It is the first thing I would do next**, and it belongs with the loader work rather than
+before it.
