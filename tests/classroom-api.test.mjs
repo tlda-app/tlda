@@ -61,7 +61,7 @@ test('student can read own submission but not another student or instructor draf
   } finally { f.close() }
 })
 
-test('instructor status lists submission acceptance and build state without exposing it to a student', async () => {
+test('instructor status lists submission acceptance and build state; a student reads the same endpoint and gets only their own row', async () => {
   const f = await serverFixture()
   try {
     let response = await f.request('/courses/qtm285/status', 'instructor')
@@ -75,8 +75,20 @@ test('instructor status lists submission acceptance and build state without expo
     assert.equal(missing.state, 'not-submitted')
     assert.equal('buildStatus' in missing, false)
 
+    // A student reads the same endpoint and gets the same shape holding only
+    // their own row. What must not come back is anybody else — checked by
+    // looking for the other student anywhere in the payload rather than only in
+    // the place we expect her, since a leak that lands somewhere unexpected is
+    // the one worth catching.
     response = await f.request('/courses/qtm285/status', 'ada')
-    assert.equal(response.status, 403)
+    assert.equal(response.status, 200)
+    const mine = await response.json()
+    assert.deepEqual(mine.rows.map(row => row.id), ['ada'])
+    assert.equal(mine.viewer.role, 'student')
+    assert.equal(JSON.stringify(mine).includes('grace'), false)
+    // Every assignment is still listed, submitted or not: an absence is the
+    // thing a student most needs to see.
+    assert.deepEqual(mine.assignments.map(a => a.id), ['hw1'])
   } finally { f.close() }
 })
 
@@ -251,11 +263,17 @@ test('device transfer rejects instructor, anonymous, wrong-course and expired at
   } finally { f.close() }
 })
 
-test('only instructor can read gradebook and return feedback', async () => {
+test('status is asymmetric rather than instructor-only, and only an instructor returns feedback', async () => {
   const f = await serverFixture()
   try {
-    assert.equal((await f.request('/courses/qtm285/status', 'ada')).status, 403)
+    // Status is the one page both sides read; the server narrows it by who is
+    // asking. Returning feedback stays instructor-only.
+    const student = await f.request('/courses/qtm285/status', 'ada')
+    assert.equal(student.status, 200)
+    assert.deepEqual((await student.json()).rows.map(row => row.id), ['ada'])
     assert.equal((await f.request('/courses/qtm285/status', 'instructor')).status, 200)
+    // A student of another course reaches nothing here.
+    assert.equal((await f.request('/courses/other/status', 'ada')).status, 403)
     assert.equal((await f.request('/assignments/hw1/submissions/ada/return', 'ada', { method: 'POST' })).status, 403)
     const returned = await f.request('/assignments/hw1/submissions/ada/return', 'instructor', { method: 'POST' })
     assert.equal(returned.status, 200)
