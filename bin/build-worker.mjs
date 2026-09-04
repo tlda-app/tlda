@@ -10,6 +10,7 @@
 import { runBuild, finalizeBuildVersion, setBuildReporter, setBuildOutputSink } from '../server/lib/build-runner.mjs'
 import { initProjectStore, readProject, projectDir, sourceLifecycleStore, setProjectPathOverride } from '../server/lib/project-store.mjs'
 import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
+import { buildPdfDocument } from '../server/lib/build-pdf.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
 import { missingDeclaredMainFile, missingMainFileMessage, shouldBuildOnPush } from '../server/lib/build-decision.mjs'
 import { setPriority, constants as osConstants } from 'node:os'
@@ -210,7 +211,29 @@ process.on('message', async (msg) => {
         throw new Error(message)
       }
 
-      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides, qmd: buildQmd }[project?.format]
+      // `pdf` is added to the EXISTING map rather than the whole block being
+      // replaced by the RC's adapter registry, and that is deliberate for now.
+      // Everything below this line -- the relevance skip that publishes source
+      // without rendering, `finalizeBuildVersion`, the `replacedItems` that lets
+      // a skipped render still advance the head, the `not_required` result --
+      // landed on main AFTER the RC branch and is absent from it. Swapping the
+      // block out is how all four get deleted without anyone noticing, because
+      // each of them fails by simply not happening. The registry swap is its own
+      // commit, and it has to carry them.
+      //
+      // The `pdf` entry is wrapped because the signatures differ: every builder
+      // in this map takes (name, options), while `buildPdfDocument` takes
+      // (name, addLog). Passing it straight in hands `{ changedFiles }` where a
+      // log function is expected, and it dies on the first `addLog(...)` call --
+      // at the END of the build, after the pages have been written, so the
+      // artifacts would be on disk and the build would still report failure.
+      const builder = {
+        markdown: buildMarkdown,
+        html: buildHtml,
+        slides: buildSlides,
+        qmd: buildQmd,
+        pdf: name => buildPdfDocument(name, console.log),
+      }[project?.format]
       if (relevance?.skip) {
         // Nothing this revision changed is read by the render, so the render is
         // skipped and the revision still lands: `['source']` below advances the
