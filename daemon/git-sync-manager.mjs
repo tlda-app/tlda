@@ -15,7 +15,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 3000, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
 
@@ -372,11 +372,11 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   }
 
   /** Put a bound checkout on its work branch. Called at link; see git-project-sync. */
-  async function standOnWorkBranch(project) {
+  async function standOnWorkBranch(project, options = {}) {
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
     const runtime = await start(item)
-    return runtime.sync.standOnWorkBranch()
+    return runtime.sync.standOnWorkBranch(options)
   }
 
   async function submit(project, options = {}) {

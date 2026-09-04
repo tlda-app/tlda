@@ -478,14 +478,11 @@ export function createGitProjectSync({
     if (await rev('MERGE_HEAD')) return { ok: false, status: 'merge-in-progress' }
     const settled = await settledCommit()
     if (!settled) return { ok: false, status: 'empty-checkout' }
-    const filtered = await filteredProjectCommit(settled)
-    // The chain gets the projection; the BRANCH gets the person's real tree.
-    // These were one ref, and the branch held the projection — a subset of the
-    // author's tracked files, which is why it could not be stood on. settle()
-    // has already established that HEAD is this branch, so moving it to a commit
-    // parented on HEAD is a fast-forward and the working tree goes CLEAN: the
-    // author's edits are now committed under them, which is the whole design.
-    await git(['update-ref', localRef, filtered.commit])
+    // Link and document-add are where a checkout is filtered into its project
+    // branch. Once that branch is checked out, its settled commit already is the
+    // project revision; rebuilding another projection on every save only repeats
+    // work whose result is already embodied by the branch.
+    await git(['update-ref', localRef, settled])
     await git(['update-ref', workBranchRef, settled])
     // Bring the author's index up to the commit we just made under them.
     //
@@ -508,10 +505,8 @@ export function createGitProjectSync({
     // and may be sitting anywhere, and resetting an index against a branch the
     // tree is not on would be a corruption rather than a repair.
     if (await currentBranchRef() === workBranchRef) await git(['reset', '-q', '--mixed'])
-    if (filtered.dropped.length) {
-      log.warn?.(`${project}: not in the revision — tracked, but no document root reaches them: ${filtered.dropped.join(', ')}`)
-    }
-    return { ok: true, revision: filtered.commit, changed: filtered.changed, roots: filtered.roots, members: filtered.members, dropped: filtered.dropped }
+    const members = (await git(['ls-tree', '-r', '--name-only', settled])).stdout.split('\n').filter(Boolean)
+    return { ok: true, revision: settled, changed: true, roots: configuredRoots, members, dropped: [] }
   }
 
   // `members` rides along so the caller can say WHO edited. The daemon knows --
@@ -818,11 +813,19 @@ export function createGitProjectSync({
    *                          has something here we must not overwrite, so the
    *                          refusal is reported verbatim rather than forced.
    */
-  async function standOnWorkBranch() {
+  async function standOnWorkBranch({ refilter = false } = {}) {
     const adopted = await adoptWorkBranch()
     if (!adopted?.ok) return { ok: false, status: adopted?.reason || 'adoption-failed', branch: workBranchRef }
     const head = await currentBranchRef()
-    if (head === workBranchRef) return { ok: true, status: 'already-on-it', branch: workBranchRef }
+    if (head === workBranchRef && !refilter) return { ok: true, status: 'already-on-it', branch: workBranchRef }
+    if (head === workBranchRef) {
+      const linkedSource = await settledCommit()
+      const filtered = await filteredProjectCommit(linkedSource)
+      await git(['update-ref', localRef, filtered.commit])
+      await git(['update-ref', workBranchRef, filtered.commit])
+      await git(['reset', '-q', '--mixed'])
+      return { ok: true, status: 'refiltered', branch: workBranchRef }
+    }
     const shortBranch = `tlda/${projectPart}`
     const branchTip = await rev(workBranchRef)
     try {
@@ -864,7 +867,23 @@ export function createGitProjectSync({
         // answers null, and the branch is unborn exactly as before.
         if (!hasCommits) { try { await fetchHead() } catch { /* no shared head yet: the branch is unborn, as before */ } }
         const projectHead = hasCommits ? null : (await rev(fetchedRef)) || (await rev(revisionRef))
-        if (projectHead) await git(['checkout', '-b', shortBranch, projectHead])
+        if (hasCommits) {
+          // Linking is where the repository branch becomes this project: keep
+          // the declared document roots and their dependencies once, then stand
+          // on that already-filtered branch. Capture tracked edits made before
+          // link first; they are part of the source being linked. Saves advance
+          // the resulting branch directly.
+          const linkedSource = await settledCommit()
+          const filtered = await filteredProjectCommit(linkedSource)
+          await git(['update-ref', workBranchRef, filtered.commit])
+          // Point HEAD at the already-created project branch without rewriting
+          // the working directory. Files outside the project become ordinary
+          // untracked checkout contents; link must not delete them merely to
+          // make the branch contain less.
+          await git(['symbolic-ref', 'HEAD', workBranchRef])
+          await git(['reset', '-q', '--mixed'])
+        }
+        else if (projectHead) await git(['checkout', '-b', shortBranch, projectHead])
         else await git(['checkout', '-b', shortBranch])
       }
       else if (branchTip === await rev(revisionRef)) await git(['checkout', '-B', shortBranch])
@@ -899,7 +918,7 @@ export function createGitProjectSync({
     // branch without rebuilding the string.
     get refs() { return { localRef, revisionRef, workBranchRef, sharedRef, fetchedRef } },
     editClusterSettled: () => serialized(settle),
-    standOnWorkBranch: () => serialized(standOnWorkBranch),
+    standOnWorkBranch: options => serialized(() => standOnWorkBranch(options)),
     submitCurrent: options => serialized(() => submitCurrent(options)),
     headChanged: revision => serialized(() => headChanged(revision)),
     recover: () => serialized(recover),
