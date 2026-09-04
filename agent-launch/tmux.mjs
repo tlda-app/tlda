@@ -6,6 +6,7 @@ import { promisify } from 'util'
 import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
 const execFileP = promisify(execFile)
+const AGENT_NICE_INCREMENT = 5
 
 export function tmuxArgs(tmuxSocket, ...args) {
   return [...(tmuxSocket ? ['-L', tmuxSocket] : []), ...args]
@@ -21,6 +22,10 @@ async function tmux(tmuxSocket, ...args) {
 
 function shellQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`
+}
+
+export function nicedAgentCommand(cmd) {
+  return `exec /usr/bin/nice -n ${AGENT_NICE_INCREMENT} /bin/zsh -lc ${shellQuote(cmd)}`
 }
 
 async function enableCrashCapture(session, logPath, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
@@ -150,9 +155,10 @@ export async function terminateTmuxSession(session, { tmuxSocket = process.env.T
 
 export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKeys = false, tmuxSocket = process.env.TMUX_SOCKET || null, crashLogPath = null } = {}) {
   const launchViaShell = sendKeys || !!crashLogPath
+  const launchCommand = nicedAgentCommand(cmd)
   try {
     const args = ['respawn-pane', '-t', exactTmuxTarget(session), '-c', cwd]
-    if (!launchViaShell) args.push(cmd)
+    if (!launchViaShell) args.push(launchCommand)
     await tmux(tmuxSocket, ...args)
   } catch {
     if (await sessionHasRuntime(session, { tmuxSocket })) return false
@@ -166,7 +172,7 @@ export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKey
       // No existing session: safe to create a new one.
     }
     const args = ['new-session', '-d', '-s', session, '-c', cwd]
-    if (!launchViaShell) args.push(cmd)
+    if (!launchViaShell) args.push(launchCommand)
     await tmux(tmuxSocket, ...args)
   }
   await enableCrashCapture(session, crashLogPath, { tmuxSocket })
@@ -174,7 +180,7 @@ export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKey
   await tmux(tmuxSocket, 'resize-window', '-t', exactTmuxTarget(session), '-x', '120', '-y', '40')
   if (launchViaShell) {
     const script = path.join(os.tmpdir(), `tlda-launch-${process.pid}-${Date.now()}.sh`)
-    fs.writeFileSync(script, `exec zsh -lc ${shellQuote(cmd)}\n`, { mode: 0o600 })
+    fs.writeFileSync(script, `${launchCommand}\n`, { mode: 0o600 })
     await tmux(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), '--', `source ${script}`)
     await tmux(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter')
   }
