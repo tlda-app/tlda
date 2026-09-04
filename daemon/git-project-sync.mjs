@@ -91,6 +91,13 @@ export function createGitProjectSync({
   const sharedRef = `refs/tlda/source/${projectPart}`
   const fetchedRef = `refs/tlda/fetched/${projectPart}`
   let chain = Promise.resolve()
+  let configuredRoots = []
+  function setDocumentRoots(values = []) {
+    configuredRoots = [...new Set(values
+      .map(value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, ''))
+      .filter(Boolean))]
+  }
+  setDocumentRoots(documentRoots)
 
   async function git(args, options = {}) {
     if (runGit) return runGit(args, options)
@@ -209,32 +216,19 @@ export function createGitProjectSync({
       const paths = [...treeEntries.entries()]
         .filter(([, entry]) => entry.type !== 'tree')
         .map(([file]) => file)
-      // **The documents are computed from the tree being published, not read
-      // from a stored list.**
-      //
-      // Skip, 2026-08-26: *"document roots is just a computed property of the
-      // git branch"* / *"create the directed include graph. roots are roots"*.
-      //
-      // `configuredRoots` is the stored `documentRoots`, written once at link
-      // time and appended to by the chat click-adopt path. Nothing recomputes
-      // it, so it is a snapshot of the moment somebody linked the project — and
-      // it seeds the projection, which decides what a published revision
-      // CONTAINS. A stored list that has fallen behind the branch therefore
-      // publishes a revision missing documents that are sitting in the tree.
-      //
-      // It also used to hard-throw when a stored root had since left the tree,
-      // which fails the whole settle for every document because one entry in a
-      // list nobody maintains went stale.
-      //
-      // The graph answers from the tree instead: a document is a node nothing
-      // includes. That is strictly better than the old no-roots-configured
-      // fallback too, which took every `.tex`/`.md`/`.qmd` in the tree and so
-      // treated an `\input`-ed chapter as a document of its own.
-      const computed = await documentRootsIn(paths, async file => {
-        try { return await fs.promises.readFile(path.join(extracted, file), 'utf8') } catch { return null }
-      })
-      const computedRoots = computed.map(root => root.path)
+      // A project that declares roots publishes those roots and their build
+      // dependencies. Discovering every root in a course checkout on each save
+      // made a one-page project scan the entire course before it could submit.
+      // Projects without declared roots retain branch-derived discovery.
+      const computedRoots = configuredRoots.length
+        ? configuredRoots
+        : (await documentRootsIn(paths, async file => {
+            try { return await fs.promises.readFile(path.join(extracted, file), 'utf8') } catch { return null }
+          })).map(root => root.path)
       if (!computedRoots.length) throw new Error(`${project}: no document roots in settled tree`)
+      for (const root of computedRoots) {
+        if (!treeEntries.has(root)) throw new Error(`${project}: configured document root is absent: ${root}`)
+      }
       const qmdRoots = computedRoots.filter(file => /\.qmd$/i.test(file))
       // `talk.html` beside `talk.qmd` is that root's render output, not a document.
       // Nothing includes it, so the graph returns it as a root of its own, and an
@@ -908,6 +902,7 @@ export function createGitProjectSync({
     headChanged: revision => serialized(() => headChanged(revision)),
     recover: () => serialized(recover),
     members: () => serialized(members),
+    setDocumentRoots,
     fetchHead,
     pushRevision,
   }
