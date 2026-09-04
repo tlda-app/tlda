@@ -930,3 +930,65 @@ running into. It comes after the loader work, not before.
 **An agent-started local server cannot complete a LaTeX build.** The fence shim refuses
 `pdflatex` when `FLEET_ID` is set, two stages upstream of the error you actually see. **A red
 LaTeX test and a green PDF test on the same box are not comparable evidence.**
+
+---
+
+# The enumeration is complete, and it settles Route A vs Route B {#enum-complete}
+
+`pm-rc-docformat`, 2026-09-03 21:05 EDT. The four remaining files were enumerated by
+`rc-enum-sol` (a codex/sol agent, the mechanical half handed off deliberately). Full table:
+`scratch/rc-main-four-block-enumeration.md`.
+
+**About sixty behaviours on `main` sit inside regions this branch rewrites, and the branch
+does not have them.** Not because it rejected them — **every symbol checked is zero at the
+merge-base `dc30b1805` and present on `main`.** The branch predates them.
+
+## Four of them are authority boundaries, and that decides the route {#enum-authority}
+
+**I re-ran these myself rather than relay them, because they are severe enough that relaying
+is endorsing:**
+
+```
+symbol                 dc30b1805 (merge-base)   4490e53ac (main)   branch     [control: server.listen=1]
+classroomRoomAccess              0                    3               0
+resolveLocalImage                0                    2               0
+sourceProposalChains             0                    4               0
+maxRecipients                    0                    4               0
+```
+
+- **`classroomRoomAccess`** — enforces classroom access on the document and source WebSocket
+  upgrades, and filters the document manifest by principal. Absent, the manifest is served
+  unfiltered and neither upgrade is checked.
+- **`resolveLocalImage`** — resolves an uploaded local image through the **contained** local-image
+  resolver. Absent, any existing absolute path is accepted, **including outside the permitted
+  roots.**
+- **`sourceProposalChains`** — serializes source-proposal admission per project and validates the
+  daemon's ref and revision.
+- **`maxRecipients`** — enforces the caller's fan-out cap before a filtered chat goes out.
+
+**`AGENTS.md` §"Limits that are not authorization" names path containment and the daemon
+ownership checks as boundaries that stay even under the no-auth-between-agents rule.** Two of
+these four are exactly that.
+
+## So Route A is not merely riskier, it is unsafe {#enum-route-a}
+
+**Reverting the revert and resolving toward the branch would silently remove classroom access
+enforcement and image path containment.** It would typecheck. The suite would very likely pass.
+The loss shows up as a thing that stops being checked — which is the definition of the failure
+class this repo keeps paying for.
+
+**Route B — writing onto current `main` — cannot produce this failure at all**, because nothing
+is being reverted. That is no longer a preference I argued from failure modes; it is the
+measured difference between the two routes.
+
+## And it re-prices the RC honestly {#enum-reprice}
+
+**The ~556 changed lines are still right, and they were never the difficulty.** What the
+enumeration shows is that four of the ten files — `cli/tlda.mjs`, `src/App.tsx`,
+`src/BookViewer.tsx`, `server/unified-server.mjs` — have accumulated so much since 08-21 that
+the branch's versions of them are **not portable at all.** For those four, the right move is to
+take `main`'s file and apply only the format-dispatch change, exactly as I did by hand with
+`Dockerfile.live` and for the same reason.
+
+**The RC's own new modules and the axes remain entirely portable.** It is only these four
+rewritten files where the branch has to be read as a specification rather than copied.
