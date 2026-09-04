@@ -450,6 +450,14 @@ export function createGitProjectSync({
       // repository someone else owns; this branch only runs where the app is the
       // only writer.
       await git(['add', '-u'], { env })
+      // Attribution needs the paths in THIS edit, not every member of the
+      // project. The temporary index already contains exactly the settle Git is
+      // about to commit, so compare it with HEAD while it is available. Listing
+      // the completed commit afterwards walked the whole project on every save
+      // and recomputed information link/add had already fixed in the branch.
+      const members = head
+        ? (await git(['diff', '--cached', '--name-only', '-z', head], { env })).stdout.split('\0').filter(Boolean)
+        : (await git(['ls-files', '-z'], { env })).stdout.split('\0').filter(Boolean)
       const tree = (await git(['write-tree'], { env })).stdout.trim()
       // An empty answer is not a tree, and passing it on produces `git
       // commit-tree  -m ...` with the argument silently missing — which is what
@@ -461,11 +469,11 @@ export function createGitProjectSync({
       if (!/^[0-9a-f]{40}$/.test(tree)) {
         throw new Error(`${project}: write-tree produced no tree id (${JSON.stringify(tree)}) — the staged index was unreadable, so nothing was committed`)
       }
-      if (head && (await git(['rev-parse', `${head}^{tree}`])).stdout.trim() === tree) return head
+      if (head && (await git(['rev-parse', `${head}^{tree}`])).stdout.trim() === tree) return { commit: head, members }
       if (!head && tree === EMPTY_TREE) return null
       const args = ['commit-tree', tree, '-m', 'tlda settled edit cluster']
       if (head) args.push('-p', head)
-      return (await git(args)).stdout.trim()
+      return { commit: (await git(args)).stdout.trim(), members }
     } finally {
       await fs.promises.rm(tmpIndex, { force: true })
     }
@@ -476,8 +484,9 @@ export function createGitProjectSync({
     if (conflicts.length) return { ok: false, status: 'conflicted', conflicted: conflicts }
     // A merge the PERSON started is theirs to finish, and MERGE_HEAD is theirs too.
     if (await rev('MERGE_HEAD')) return { ok: false, status: 'merge-in-progress' }
-    const settled = await settledCommit()
-    if (!settled) return { ok: false, status: 'empty-checkout' }
+    const settledState = await settledCommit()
+    if (!settledState) return { ok: false, status: 'empty-checkout' }
+    const { commit: settled, members } = settledState
     // Link and document-add are where a checkout is filtered into its project
     // branch. Once that branch is checked out, its settled commit already is the
     // project revision; rebuilding another projection on every save only repeats
@@ -505,7 +514,6 @@ export function createGitProjectSync({
     // and may be sitting anywhere, and resetting an index against a branch the
     // tree is not on would be a corruption rather than a repair.
     if (await currentBranchRef() === workBranchRef) await git(['reset', '-q', '--mixed'])
-    const members = (await git(['ls-tree', '-r', '--name-only', settled])).stdout.split('\n').filter(Boolean)
     return { ok: true, revision: settled, changed: true, roots: configuredRoots, members, dropped: [] }
   }
 
@@ -820,7 +828,7 @@ export function createGitProjectSync({
     if (head === workBranchRef && !refilter) return { ok: true, status: 'already-on-it', branch: workBranchRef }
     if (head === workBranchRef) {
       const linkedSource = await settledCommit()
-      const filtered = await filteredProjectCommit(linkedSource)
+      const filtered = await filteredProjectCommit(linkedSource.commit)
       await git(['update-ref', localRef, filtered.commit])
       await git(['update-ref', workBranchRef, filtered.commit])
       await git(['reset', '-q', '--mixed'])
@@ -874,7 +882,7 @@ export function createGitProjectSync({
           // link first; they are part of the source being linked. Saves advance
           // the resulting branch directly.
           const linkedSource = await settledCommit()
-          const filtered = await filteredProjectCommit(linkedSource)
+          const filtered = await filteredProjectCommit(linkedSource.commit)
           await git(['update-ref', workBranchRef, filtered.commit])
           // Point HEAD at the already-created project branch without rewriting
           // the working directory. Files outside the project become ordinary

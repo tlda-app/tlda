@@ -22,11 +22,9 @@
  * member, because it is a committed blob and the built document needs it to
  * find its figures. The immutable check itself is NOT relaxed.
  *
- * **And it is covered.** Nothing in a real repository reaches that check any
- * more — the in-repo symlink was the one route to it, and resolving that route
- * is what this change does — so the last test drives it through the module's
- * `runGit` injection, making the tree lose a member after the closure is built.
- * Deleting the check turns that test, and only that test, red.
+ * The last test reaches that check at link/refilter time: the archive retains
+ * the dependency while the injected immutable tree listing omits it. Removing
+ * the check makes that counterfactual fail on the missing named refusal.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -172,33 +170,19 @@ test('a symlink pointing OUT of the repository ships nothing and does not wedge 
     `nothing from outside the repository was carried in (saw ${JSON.stringify(paths)})`)
 })
 
-test('the immutable check refuses a member the tree loses after the closure is built', async () => {
-  // THE CHECK ITSELF, reached on purpose.
-  //
-  // Nothing in a real repository reaches it any more: a file that does not
-  // exist never becomes a closure member (the closure is scanned against a
-  // materialisation of the settled tree), and the in-repo symlink -- the one
-  // route that did reach it -- is what the fix above resolves. An earlier
-  // version of this file claimed the check was covered and it was not:
-  // replacing it with `continue` passed every test.
-  //
-  // So the tree is made to lose the member AFTER the closure is built, through
-  // the `runGit` injection the module already takes. `read-tree --empty` is the
-  // marker: it runs immediately before the final verification loop, so
-  // everything before it is closure construction and everything after it is the
-  // check. That is a semantic boundary rather than a call count, which would
-  // shift the moment anyone added a git call.
-  const root = mkdtempSync(join(tmpdir(), 'tlda-immutable-check-'))
+test('link-time filtering refuses a closure member absent from the immutable tree', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-immutable-link-check-'))
   const { remote, checkout } = await repoWithASymlinkedFigureDir(root)
 
-  let closureBuilt = false
   const runGit = async (args, options = {}) => {
-    if (args[0] === 'read-tree') closureBuilt = true
-    // The document itself, gone from the tree only once the check is looking.
-    if (closureBuilt && args[0] === 'ls-tree' && args.includes('scratch/book/main.tex')) {
-      return { stdout: '', stderr: '' }
+    const result = await execFile('git', args, { cwd: checkout, encoding: 'utf8', timeout: 30_000, ...options })
+    if (args[0] !== 'ls-tree' || !args.includes('-z')) return result
+    return {
+      ...result,
+      stdout: result.stdout.split('\0')
+        .filter(record => !record.endsWith('\tlectures/figs/plot.png'))
+        .join('\0'),
     }
-    return execFile('git', args, { cwd: checkout, encoding: 'utf8', timeout: 30_000, ...options })
   }
 
   const sync = createGitProjectSync({
@@ -213,18 +197,9 @@ test('the immutable check refuses a member the tree loses after the closure is b
   })
 
   await assert.rejects(
-    () => sync.editClusterSettled(),
-    error => {
-      assert.match(String(error?.message || error), /immutable closure member is absent: scratch\/book\/main\.tex/,
-        `it refuses the member by name: ${error?.message || error}`)
-      return true
-    },
-    'a closure member missing from the tree must stop the revision rather than be dropped from it',
+    () => sync.standOnWorkBranch({ refilter: true }),
+    /immutable closure member is absent: scratch\/book\/figs\/plot\.png/,
   )
-
-  // AND NOTHING WAS PUBLISHED. A check that throws after pushing would satisfy
-  // the assertion above and still ship the incomplete document.
-  const refs = (await git(remote, ['for-each-ref', '--format=%(objectname)', 'refs/tlda/proposals/'])).stdout
-    .split('\n').filter(Boolean)
-  assert.equal(refs.length, 0, 'no proposal reached the remote')
+  const refs = (await git(remote, ['for-each-ref', '--format=%(objectname)', 'refs/tlda/proposals/'])).stdout.trim()
+  assert.equal(refs, '', 'no proposal reached the remote')
 })
