@@ -115,7 +115,7 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd' | 'pdf'
   // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
   renderedFormat?: 'html' | 'slides'
   members?: string[]
@@ -438,6 +438,21 @@ function DocumentApp() {
           basePath: fullBasePath,
         }))
         document = createSvgDocumentLayout(projectName, fullBasePath, targets)
+        // Name what this is instead of leaving it to be inferred from silence.
+        //
+        // This branch is the unmarked default: everything that is not html,
+        // markdown, slides or png lands here, and the layout it builds carries
+        // no `format` at all. So a LaTeX render was never SELECTED downstream --
+        // it was whatever fell through -- and five sites ask "is this document
+        // absent from HTML_PAGE_FORMATS" when what they mean is "does this have
+        // synctex". Those are the same question only while LaTeX is the only
+        // thing down here, and a PDF makes them different.
+        //
+        // Stamping is behaviour-neutral for the existing case: the sites below
+        // test `format` against sets that contain neither '' nor 'svg', so a
+        // LaTeX document answers them identically named or unnamed. Checked that
+        // nothing tests for the ABSENCE of format before making it present.
+        document.format = shownAs === 'pdf' ? 'pdf' : 'svg'
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch
