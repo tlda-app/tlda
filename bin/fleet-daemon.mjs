@@ -767,7 +767,13 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   const metadataRoots = Array.isArray(projectMetadata?.documentRoots)
     ? projectMetadata.documentRoots.map(root => (typeof root === 'string' ? root : root?.path)).filter(Boolean)
     : null
-  const bindingHasRoots = Array.isArray(status.binding?.documentRoots) && status.binding.documentRoots.length > 0
+  const boundRoots = Array.isArray(status.binding?.documentRoots)
+    ? status.binding.documentRoots.map(root => (typeof root === 'string' ? root : root?.path)).filter(Boolean)
+    : []
+  const bindingHasRoots = boundRoots.length > 0
+  const rootsChanged = status.alreadyLinked && Array.isArray(metadataRoots)
+    ? JSON.stringify(boundRoots) !== JSON.stringify(metadataRoots)
+    : false
   const effectiveRoots = Array.isArray(documentRoots)
     ? documentRoots
     : (bindingHasRoots && metadataRoots?.length ? metadataRoots : null)
@@ -802,7 +808,9 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   // Reported rather than thrown. A checkout that could not be moved is still
   // linked and still has its history on the server; failing the link would be a
   // worse outcome than a link that says which branch to check out.
-  const workBranch = await sourceSync.standOnWorkBranch(project).catch(error => ({ ok: false, status: 'error', reason: error.message }))
+  const workBranch = await sourceSync.standOnWorkBranch(project, {
+    refilter: !status.alreadyLinked || rootsChanged,
+  }).catch(error => ({ ok: false, status: 'error', reason: error.message }))
   if (!workBranch.ok) log.warn?.(`${project}: linked, but this checkout is not on its work branch — ${workBranch.reason || workBranch.status}`)
   const submission = await sourceSync.submit(project, { forceRebuild })
   applyProjectWorldOwnership('local-source-link')

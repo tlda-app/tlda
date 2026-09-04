@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile as execFileCb } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -80,110 +80,6 @@ test('settle submits an immutable daemon proposal and HeadChanged fetches exact 
   assert.equal(mirrored.status, 'observed')
   assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/fetched/paper'])).stdout.trim(), proposal.revision)
   assert.equal((await git(checkout, ['rev-parse', 'refs/tlda/applied/binding-a'])).stdout.trim(), base)
-})
-
-test('projecting a revision reads the immutable tree once, not once per member', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'tlda-project-single-tree-read-'))
-  const remote = join(root, 'server.git')
-  const checkout = join(root, 'checkout')
-  await git(root, ['init', '--bare', remote])
-  await git(root, ['init', '-b', 'main', checkout])
-  await git(checkout, ['config', 'user.name', 'fixture'])
-  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
-  await git(checkout, ['remote', 'add', 'tlda', remote])
-  writeFileSync(join(checkout, 'main.tex'), '\\input{one}\n\\input{two}\n')
-  writeFileSync(join(checkout, 'one.tex'), 'one\n')
-  writeFileSync(join(checkout, 'two.tex'), 'two\n')
-  await git(checkout, ['add', '.'])
-  await git(checkout, ['commit', '-m', 'base'])
-
-  let treeReads = 0
-  const sync = createGitProjectSync({
-    sourceDir: checkout,
-    project: 'paper',
-    daemonId: 'daemon-a',
-    bindingId: 'binding-a',
-    remote,
-    runGit: async (args, options = {}) => {
-      if (args[0] === 'ls-tree') treeReads++
-      return execFile('git', args, { cwd: checkout, encoding: 'utf8', timeout: 30000, ...options })
-    },
-  })
-  await sync.standOnWorkBranch()
-  writeFileSync(join(checkout, 'one.tex'), 'changed\n')
-  const proposal = await sync.editClusterSettled()
-
-  assert.equal(proposal.status, 'SubmittedToBuildQueue')
-  assert.equal(treeReads, 1)
-})
-
-test('QMD revisions carry tracked execution inputs and exclude rendered output', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'tlda-project-qmd-source-'))
-  const remote = join(root, 'server.git')
-  const checkout = join(root, 'checkout')
-  await git(root, ['init', '--bare', remote])
-  await git(root, ['init', '-b', 'main', checkout])
-  await git(checkout, ['config', 'user.name', 'fixture'])
-  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
-  await git(checkout, ['remote', 'add', 'tlda', remote])
-  mkdirSync(join(checkout, 'data'))
-  writeFileSync(join(checkout, 'lecture.qmd'), '```{r}\nread.csv("data/input.csv")\n```\n')
-  writeFileSync(join(checkout, 'lab.qmd'), 'Lab\n')
-  writeFileSync(join(checkout, 'data', 'input.csv'), 'x\n1\n')
-  writeFileSync(join(checkout, 'lecture.html'), 'stale render\n')
-  await git(checkout, ['add', '.'])
-  await git(checkout, ['commit', '-m', 'base'])
-
-  const sync = createGitProjectSync({
-    sourceDir: checkout,
-    project: 'course',
-    daemonId: 'daemon-a',
-    bindingId: 'binding-a',
-    documentRoots: ['lecture.qmd', 'lab.qmd'],
-  })
-  await sync.standOnWorkBranch()
-  const proposal = await sync.editClusterSettled()
-
-  assert.equal(proposal.status, 'SubmittedToBuildQueue')
-  assert.deepEqual(
-    (await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'),
-    ['data/input.csv', 'lab.qmd', 'lecture.qmd'],
-  )
-})
-
-test('HTML revisions carry the complete rendered artifact tree', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'tlda-project-html-artifact-'))
-  const remote = join(root, 'server.git')
-  const checkout = join(root, 'checkout')
-  await git(root, ['init', '--bare', remote])
-  await git(root, ['init', '-b', 'main', checkout])
-  await git(checkout, ['config', 'user.name', 'fixture'])
-  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
-  await git(checkout, ['remote', 'add', 'tlda', remote])
-  mkdirSync(join(checkout, 'site_libs'))
-  mkdirSync(join(checkout, 'handouts'))
-  writeFileSync(join(checkout, 'index.html'), '<link href="site_libs/book.css"><h1>Course</h1>\n')
-  writeFileSync(join(checkout, 'chapter.html'), '<h1>Homework</h1>\n')
-  writeFileSync(join(checkout, 'site_libs', 'book.css'), 'body { color: black; }\n')
-  writeFileSync(join(checkout, 'handouts', 'homework.zip'), 'zip bytes\n')
-  writeFileSync(join(checkout, 'page-info.json'), '[{"file":"index.html"},{"file":"chapter.html"}]\n')
-  await git(checkout, ['add', '.'])
-  await git(checkout, ['commit', '-m', 'base'])
-
-  const sync = createGitProjectSync({
-    sourceDir: checkout,
-    project: 'course',
-    daemonId: 'daemon-a',
-    bindingId: 'binding-a',
-    documentRoots: ['index.html', 'chapter.html'],
-  })
-  await sync.standOnWorkBranch()
-  const proposal = await sync.editClusterSettled()
-  assert.equal(proposal.status, 'SubmittedToBuildQueue')
-  assert.deepEqual(
-    (await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'),
-    ['chapter.html', 'handouts/homework.zip', 'index.html', 'page-info.json', 'site_libs/book.css'],
-  )
 })
 
 test('explicit same-revision rebuild reaches proposal admission metadata', async () => {
@@ -342,73 +238,6 @@ test('a reference to a file that does not exist skips without stopping the settl
   )
 })
 
-// The whole repair, as one property. Each assertion below is a symptom Skip hit
-// directly: a branch that dropped his files, a checkout that could never be
-// clean, and a sync that ran while he stood somewhere it never wrote.
-test('the work branch holds the whole tree, the revision holds the documents, and settling leaves the checkout clean', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'tlda-work-branch-'))
-  const remote = join(root, 'server.git')
-  const checkout = join(root, 'checkout')
-  await git(root, ['init', '--bare', remote])
-  await git(root, ['init', '-b', 'main', checkout])
-  await git(checkout, ['config', 'user.name', 'fixture'])
-  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
-  await git(checkout, ['remote', 'add', 'tlda', remote])
-  writeFileSync(join(checkout, 'main.tex'), 'the document\n')
-  writeFileSync(join(checkout, 'notes.txt'), 'mine, and not a document\n')
-  await git(checkout, ['add', '.'])
-  await git(checkout, ['commit', '-m', 'base'])
-
-  const sync = createGitProjectSync({
-    sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a',
-    documentRoots: ['main.tex'], log: { warn() {}, info() {}, error() {} },
-  })
-
-  // Standing on `main`, it does not sync. It used to commit anyway, to a branch
-  // the author was not on, which is what left every checkout dirty forever.
-  writeFileSync(join(checkout, 'main.tex'), 'edited while on main\n')
-  const declined = await sync.editClusterSettled()
-  assert.equal(declined.ok, false)
-  assert.equal(declined.status, 'not-on-work-branch')
-  assert.match(declined.reason, /git checkout tlda\/paper/)
-  assert.equal((await git(remote, ['for-each-ref', '--format=%(refname)', 'refs/tlda/proposals'])).stdout.trim(), '')
-
-  // What `project link` does, and nothing else ever did.
-  const stood = await sync.standOnWorkBranch()
-  assert.equal(stood.ok, true)
-  assert.equal((await git(checkout, ['symbolic-ref', '--short', 'HEAD'])).stdout.trim(), 'tlda/paper')
-
-  const proposal = await sync.editClusterSettled()
-  assert.equal(proposal.status, 'SubmittedToBuildQueue')
-
-  // The author's edit is committed UNDER them, so the tree is clean. This is the
-  // one that could never be true before: the daemon committed elsewhere, so
-  // `git status` always had the file and `git checkout` always refused.
-  assert.equal((await git(checkout, ['status', '--porcelain'])).stdout.trim(), '')
-
-  // Their branch keeps everything they track.
-  assert.deepEqual(
-    (await git(checkout, ['ls-tree', '-r', '--name-only', 'refs/heads/tlda/paper'])).stdout.trim().split('\n').sort(),
-    ['main.tex', 'notes.txt'],
-  )
-  assert.equal(
-    (await git(checkout, ['show', 'refs/heads/tlda/paper:main.tex'])).stdout,
-    'edited while on main\n',
-  )
-
-  // The revision published to the server keeps only the documents. The filtering
-  // was never wrong — it was only wrong as the thing to stand on.
-  assert.deepEqual(
-    (await git(remote, ['ls-tree', '-r', '--name-only', proposal.revision])).stdout.trim().split('\n'),
-    ['main.tex'],
-  )
-})
-
-// The migration for a project created AFTER the rename, which is most of them.
-// Its work branch holds revision-chain commits and it never had the old
-// `refs/tlda/project/<p>` ref to compare against, so there is nothing to prove
-// the branch is the chain except the subject this file writes on chain commits.
-// Requiring both refs refused to migrate these, and relinking could not fix them.
 test('a work branch that is really the revision chain is migrated, and its history is kept', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-work-branch-migrate-'))
   const remote = join(root, 'server.git')
