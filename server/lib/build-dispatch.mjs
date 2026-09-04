@@ -57,6 +57,14 @@ async function regenerateBookTocs(name) {
 const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, regenerateBookTocs, reportBuildFailure }
 const publicationLocks = new Map()
 
+async function notifyPublishedHead(notifyHeadChanged, name, sourceRevision, logError = console.error) {
+  try {
+    await notifyHeadChanged?.(name, sourceRevision)
+  } catch (error) {
+    logError(`[build:${name}] published ${sourceRevision}, but notifying the source room failed: ${error?.message || error}`)
+  }
+}
+
 function serializedPublication(name, operation) {
   const previous = publicationLocks.get(name) || Promise.resolve()
   const current = previous.then(operation, operation)
@@ -345,7 +353,7 @@ export function createDispatcherWithOptions(transport, options = {}) {
           pName, pRevision, pAcceptSeq, pInstance, pReports, pReplaced || PUBLISH_REPLACED_ITEMS, sinks)
         if (!result.published) throw new Error(`stale build ${job.sourceRevision} cannot publish over ${result.currentHead || 'no head'}`)
         await queue.publishedHeadChanged(name, job.sourceRevision)
-        await options.notifyHeadChanged?.(name, job.sourceRevision)
+        await notifyPublishedHead(options.notifyHeadChanged, name, job.sourceRevision)
         return result
       }
       const sink = sinks[message.m]
