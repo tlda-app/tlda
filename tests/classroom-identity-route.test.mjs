@@ -78,3 +78,13 @@ test('an instructor gets the course-owned preferred name and no student id', asy
   assert.equal(who.body.preferredName, 'Professor Example')
   assert.equal(who.body.pronouns, 'they/them')
 })
+
+test('instructor identity failures name the condition that failed', async t => {
+  const { store, server, get } = await serve(() => ({ role: 'instructor' }))
+  t.after(() => server.close())
+  store.upsertCourse({ id: 'unnamed', title: 'Unnamed' })
+
+  assert.deepEqual(await get('/me'), { status: 400, body: { error: 'course is required' } })
+  assert.deepEqual(await get('/me?course=missing'), { status: 404, body: { error: 'Course not found' } })
+  assert.deepEqual(await get('/me?course=unnamed'), { status: 409, body: { error: 'Course instructor preferred name is not configured' } })
+})

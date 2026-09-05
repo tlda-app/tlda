@@ -477,7 +477,9 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     const p = req.classroomPrincipal
     if (p.role === 'student') return res.json({ role: 'student', studentId: p.studentId, courseId: p.courseId, displayName: p.displayName, preferredName: p.preferredName || p.displayName, pronouns: p.pronouns || null })
     const courseId = String(req.query?.course || '')
-    const course = courseId && store.getCourse(courseId)
+    if (!courseId) return res.status(400).json({ error: 'course is required' })
+    const course = store.getCourse(courseId)
+    if (!course) return res.status(404).json({ error: 'Course not found' })
     if (!course?.preferred_name) return res.status(409).json({ error: 'Course instructor preferred name is not configured' })
     res.json({ role: 'instructor', courseId, preferredName: course.preferred_name, pronouns: course.pronouns || null })
   })
