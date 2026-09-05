@@ -22,6 +22,7 @@ test('a classroom student project still loads its course manifest', () => {
 test('the instructor marking route does not resolve document-layer identity', () => {
   const marking = new URLSearchParams({
     project: 'submission-hw-1-student',
+    course: 'course',
     markingCourse: 'course',
     markingAssignment: 'hw-1',
     markingStudent: 'student',
@@ -29,7 +30,7 @@ test('the instructor marking route does not resolve document-layer identity', ()
   assert.equal(shouldResolveDocumentLayerIdentity(marking), false)
 })
 
-test('ordinary and classroom documents still resolve document-layer identity', () => {
-  assert.equal(shouldResolveDocumentLayerIdentity(new URLSearchParams()), true)
+test('only classroom documents resolve document-layer identity', () => {
+  assert.equal(shouldResolveDocumentLayerIdentity(new URLSearchParams()), false)
   assert.equal(shouldResolveDocumentLayerIdentity(new URLSearchParams({ course: 'course' })), true)
 })
