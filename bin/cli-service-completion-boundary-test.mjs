@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
+import { resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -196,9 +197,10 @@ fi
 exit 0
 `, { mode: 0o755 })
 try {
+  const applyCliRoot = process.env.TLDA_CONFIG_APPLY_CLI_ROOT || root
   const startedAt = Date.now()
-  const apply = spawnSync(process.execPath, [join(root, 'cli', 'tlda.mjs'), 'config', 'apply', '--env', 'stable'], {
-    cwd: root,
+  const apply = spawnSync(process.execPath, [join(applyCliRoot, 'cli', 'tlda.mjs'), 'config', 'apply', '--env', 'stable'], {
+    cwd: applyCliRoot,
     encoding: 'utf8',
     timeout: 15_000,
     env: {
@@ -218,6 +220,11 @@ try {
   assert.match(apply.stdout, /Nothing was unloaded/)
   assert.match(apply.stdout, /tlda config apply complete/)
   assert.equal(readFileSync(join(applyConfigDir, 'config-apply-attempts'), 'utf8').trim(), '1')
+  const daemonScript = join(applyCliRoot, 'bin', 'fleet-daemon.mjs')
+  const expectedScript = resolveMainDaemonScript(daemonScript) || daemonScript
+  const plist = readFileSync(join(applyFixture, 'Library', 'LaunchAgents', 'com.tlda.fleet-daemon.stable.plist'), 'utf8')
+  assert.match(plist, new RegExp(expectedScript.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(plist, new RegExp(dirname(dirname(expectedScript)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   console.log('cli config completion boundary: ok')
 } finally {
   rmSync(applyFixture, { recursive: true, force: true })
