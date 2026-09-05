@@ -42,6 +42,8 @@ export const fleetDocviewProps = {
   sources: T.optional(T.string),
   targetShapeId: T.optional(T.string),
   useFullBounds: T.optional(T.boolean),
+  timeControls: T.optional(T.string),
+  recordingId: T.optional(T.string),
 }
 
 export const fleetSourceEditorProps = {
