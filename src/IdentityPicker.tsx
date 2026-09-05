@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useFleetIdentity } from './fleet-data-adapter'
 import { subscribeCanPresent } from './authToken'
 import { isUsableIdentityName, sanitizeIdentityName, shouldAutoAssignTemporaryIdentity, shouldUseRequestedIdentity, temporaryIdentityName } from './fleet/identity-persistence.mjs'
-import { isClassroomSurface } from './classroom/classroomSurface'
+import { shouldResolveDocumentLayerIdentity } from './classroom/classroomSurface'
 import { classroomApi } from './classroom/api'
 import { classroomFleetIdentity } from './classroom/classroomIdentity'
 
@@ -15,7 +15,7 @@ export function IdentityPicker() {
   const { id, name, identityResolved, needsIdentity, login, register } = useFleetIdentity()
   const [notice, setNotice] = useState<string | null>(null)
   const [, setAuthTick] = useState(0)
-  const classroom = isClassroomSurface()
+  const classroom = shouldResolveDocumentLayerIdentity(new URLSearchParams(window.location.search))
   const classroomAuthorityRef = useRef('')
 
   // Re-render when auth data arrives from the server (isDevMode() updates)
