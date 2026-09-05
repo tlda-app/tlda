@@ -77,6 +77,7 @@ import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mj
 import { createGitRemotes } from '../shared/git-remotes.mjs'
 import { documentRootsToDeclare, formatForDocumentPath, normalizeDocumentRoots } from '../shared/document-roots.mjs'
 import { mergeAbort, mergeContinue, mergeReplay, mergeStatus } from '../server/lib/merge-replay.mjs'
+import { resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
 
 // --- Argument parsing ---
 
@@ -1344,11 +1345,17 @@ const FLEET_DAEMON_SOCKET = daemonLifecycleSocketPath(CONFIG_DIR, DAEMON_WORLD_N
 const FLEET_DAEMON_LABEL = `com.tlda.fleet-daemon${DAEMON_WORLD_SUFFIX}`
 const FLEET_DAEMON_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${FLEET_DAEMON_LABEL}.plist`)
 const _cliDir = dirname(fileURLToPath(import.meta.url))
-const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/(?:\.claude\/worktrees|\.worktrees)\//)
-const FLEET_DAEMON_MAIN_ROOT = _cliWorktreeMatch ? _cliWorktreeMatch[1] : join(_cliDir, '..')
-const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
-  ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
-  : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
+const _cliDaemonScript = join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
+let _cliDaemonIdentity = { isWorktree: false, mainCheckoutPath: null }
+try {
+  const gitdir = readFileSync(join(_cliDir, '..', '.git'), 'utf8').trim()
+  const worktree = gitdir.match(/^gitdir: (.+)\/\.git\/worktrees\/[^/]+$/)
+  if (worktree) _cliDaemonIdentity = { isWorktree: true, mainCheckoutPath: worktree[1] }
+} catch {
+  // A packaged install has no .git file and already points at its own daemon.
+}
+const FLEET_DAEMON_SCRIPT = resolveMainDaemonScript(_cliDaemonScript, () => _cliDaemonIdentity) || _cliDaemonScript
+const FLEET_DAEMON_MAIN_ROOT = dirname(dirname(FLEET_DAEMON_SCRIPT))
 const FLEET_DAEMON_DNS_ALIAS_PRELOAD = join(FLEET_DAEMON_MAIN_ROOT, 'shared', 'node-dns-alias.cjs')
 
 function fleetDaemonSocketForConfig(configName) {
