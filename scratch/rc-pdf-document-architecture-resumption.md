@@ -1050,3 +1050,91 @@ small change with a large blast radius and no way for me to see the result tonig
 
 **It is the first thing I would do next**, and it belongs with the loader work rather than
 before it.
+
+---
+
+# Status as of 2026-09-05 17:05 EDT {#status-0905}
+
+**Re-checked against `main` at the moment of writing, not carried forward.** Two days have
+passed since the previous section and this supersedes it where they differ.
+
+## Branch and head {#status-0905-head}
+
+| | |
+|---|---|
+| **working branch** | `rc-docformat` at **`267158a70`**, 9 commits ahead of `main` |
+| **`main` now** | **`b173af93e`** *"Align identity picker classroom gate"*, 2026-09-05 16:32 |
+| **`main` when I branched** | `4490e53ac`, 2026-09-03 16:18 — **19 commits ago** |
+| **spec branch** | `pdf-document-architecture` at `4a35bf534`, untouched |
+| **merges onto today's `main`** | **cleanly** — `git merge-tree --write-tree` exits 0 with no conflict list |
+
+**Nothing merged, nothing deployed, nothing near a real environment.**
+
+## What user-visible wire is proven: none {#status-0905-wire}
+
+**I want to answer this one exactly, because the honest answer is not the flattering one.**
+
+**Proven, and re-run just now against the current branch:** the *build* wire, end to end from
+a project nobody declared a format for.
+
+```
+1. derived format ............ pdf
+2. worker picks a builder .... yes
+3. build ..................... ok
+4. output .................... 1 svg, 1 text-geometry, manifest:false
+
+counterfactual: had format been 'svg', builder = MISSING -> runBuild (LaTeX)
+```
+
+**That is the join between my two commits** — `254411ed3` derives the format from the main
+file, `841f51719` routes `pdf` in the worker's builder map — and neither commit proved they
+connect. Now they do. Earlier runs proved the extraction itself on US Letter and A4, single
+and multi-page, 117 word-level anchors, no TeX anywhere.
+
+**Not proven, and I am not going to let it be read as proven:**
+
+- **No browser has opened one.** No user-visible surface has rendered a PDF document.
+- **Not through the daemon sync wire.** `daemon/native-pdf-git-visible.test.mjs` still fails,
+  correctly — it encodes the RC's end state and asserts the project carries no `format` key.
+
+## And that run found something I did not know {#status-0905-manifest}
+
+**`manifest:false`.** The build produces its pages and text geometry and **never writes
+`document-manifest.json`.**
+
+`server/lib/document-manifest.mjs` has the writer. `buildPdfDocument` only *returns* the
+manifest — on the RC branch it is `buildDocument()`, the single completion boundary, that
+publishes it, and **I deliberately did not port that boundary** because swapping the worker's
+dispatch block is what silently deletes the four behaviours `main` added after the branch.
+
+**So the build looks entirely healthy and the document is not serveable as a PDF**, because
+`view.kind` — the client's whole contract — lives in a file nobody wrote. **That is the exact
+shape this RC keeps producing: a green result about the wrong question.**
+
+## What remains, in the order I would do it {#status-0905-remains}
+
+1. **Publish the manifest.** The narrow version is to write it from the PDF builder; the
+   correct version is the `buildDocument` completion boundary carrying the four behaviours.
+   **Nothing downstream can work until this exists.**
+2. **The axes over the daemon sync wire**, which is what the end-to-end test is waiting for.
+3. **The A4 layout constant** — `createSvgDocumentLayout` derives every page box from
+   constants labelled "US Letter", so a non-Letter PDF is laid out at the wrong aspect ratio.
+   Shared with every LaTeX document, so it wants care.
+4. **The four heavily-drifted files**, where the branch's versions are not portable and
+   `main`'s file takes only the dispatch change.
+
+## Did anything supersede my last report? No {#status-0905-superseded}
+
+**19 commits landed on `main` in two days and none of them touched this.**
+
+```
+shared/document-formats.mjs      0        bin/build-worker.mjs             0
+shared/document-roots.mjs        0        server/lib/project-store.mjs     0
+src/annotationSourceAnchor.ts    0        [control: src/ = 6 commits]
+```
+
+The control returns 6, so those zeros are real rather than a broken query. **One commit is
+adjacent and worth knowing about** — `54e523dff` *"Honor declared roots during source
+settle"* changed `daemon/git-project-sync.mjs` and `daemon/git-sync-manager.mjs`, which is
+the sync path item 2 above has to cross. It moved in a direction that looks helpful, but I
+have not read it.
