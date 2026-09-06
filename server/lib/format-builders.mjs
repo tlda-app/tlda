@@ -181,7 +181,36 @@ export async function buildSlides(name) {
   return withBuildLog(name, () => buildSlidesDocument(name))
 }
 
-async function buildSlidesDocument(name) {
+/**
+ * Describe what a slides build produced.
+ *
+ * A deck is ONE page carrying N slide coordinates, not N pages. That is the
+ * shape `buildSlidesDocument` already writes to `page-info.json` — `[deck]`,
+ * where `deck.slides` is the address space — and it is a product decision
+ * rather than an artifact of the parser: the deck keeps a single webR session,
+ * so a name defined on one slide is visible on the rest, and splitting it into
+ * a page per slide would split the session with it.
+ *
+ * So the manifest reports `pages.length === 1` for a deck of any size, and the
+ * slide count lives in `pages[0].slides`. A manifest that reported one page per
+ * slide would describe a different document from the one the viewer loads.
+ *
+ * `presentation: true` is the whole point of the view, and it is declared here
+ * rather than derived because — unlike quarto, which only learns what it made
+ * after rendering — this builder has already refused anything that is not a
+ * reveal.js deck by the time it gets here.
+ */
+function slidesManifest(project, pageInfo) {
+  return createDocumentManifest(project, pageInfo, {
+    sourceMapping: 'none',
+    view: {
+      kind: 'slides',
+      capabilities: { presentation: true, sourceMapping: false, searchableText: true },
+    },
+  })
+}
+
+export async function buildSlidesDocument(name) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -208,4 +237,5 @@ async function buildSlidesDocument(name) {
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
   signalReload(name, pageInfo.length)
   console.log(`[slides] ${name}: deck of ${deck.slides.length} slides from ${htmlFiles[0]}`)
+  return { manifest: slidesManifest(await readProject(name), pageInfo) }
 }
