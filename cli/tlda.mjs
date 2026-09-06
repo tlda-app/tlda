@@ -1773,6 +1773,7 @@ function isManagedLaunchdLabel(label) {
 
 async function existingManagedLaunchdJobs() {
   const dir = launchAgentsDir()
+  const desiredJobs = desiredLaunchdJobs()
   const onDisk = existsSync(dir) ? readdirSync(dir)
     .filter(file => file.endsWith('.plist')).map(file => {
       const label = file.slice(0, -'.plist'.length)
@@ -1781,20 +1782,58 @@ async function existingManagedLaunchdJobs() {
       return { label, plist, content: readFileSync(plist, 'utf8') }
     }).filter(Boolean) : []
   const byLabel = new Map(onDisk.map(job => [job.label, job]))
-  for (const desired of desiredLaunchdJobs()) {
+  for (const desired of desiredJobs) {
     if (!byLabel.has(desired.label)) byLabel.set(desired.label, { label: desired.label, plist: desired.plist, content: null })
   }
-  return [...byLabel.values()].map(job => ({ ...job, loaded: isLaunchdJobLoaded(job.label) }))
+  const desiredByLabel = new Map(desiredJobs.map(job => [job.label, job]))
+  return [...byLabel.values()].map(job => {
+    const loadedDefinition = readLoadedLaunchdJob(job.label)
+    const desired = desiredByLabel.get(job.label)
+    return {
+      ...job,
+      loaded: loadedDefinition !== null,
+      loadedDefinitionMatches: loadedDefinition === null || !desired
+        ? null
+        : launchdDefinitionMatches(desired.content, loadedDefinition),
+    }
+  })
+}
+
+function readLoadedLaunchdJob(label) {
+  try {
+    const invocation = launchctlCommand(['print', daemonLaunchdTarget(label)], { uid: process.getuid() })
+    return execFileSync(invocation.command, invocation.args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch {
+    return null
+  }
 }
 
 function isLaunchdJobLoaded(label) {
-  try {
-    const invocation = launchctlCommand(['print', daemonLaunchdTarget(label)], { uid: process.getuid() })
-    execFileSync(invocation.command, invocation.args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    return true
-  } catch {
-    return false
-  }
+  return readLoadedLaunchdJob(label) !== null
+}
+
+function decodePlistString(value) {
+  return String(value)
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&gt;', '>')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&amp;', '&')
+}
+
+function launchdDefinitionMatches(plist, printed) {
+  const argumentArray = plist.match(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1]
+  const expectedArguments = argumentArray
+    ? [...argumentArray.matchAll(/<string>([\s\S]*?)<\/string>/g)].map(match => decodePlistString(match[1]))
+    : null
+  const expectedWorkingDirectory = plist.match(/<key>WorkingDirectory<\/key>\s*<string>([\s\S]*?)<\/string>/)?.[1]
+  const loadedArguments = printed.match(/(?:^|\n)\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1]
+    ?.split('\n').map(line => line.trim()).filter(Boolean)
+  const loadedWorkingDirectory = printed.match(/(?:^|\n)\s*working directory = (.+)/)?.[1]?.trim()
+  if (!expectedArguments || !expectedWorkingDirectory || !loadedArguments || !loadedWorkingDirectory) return null
+  return expectedArguments.length === loadedArguments.length &&
+    expectedArguments.every((argument, index) => argument === loadedArguments[index]) &&
+    decodePlistString(expectedWorkingDirectory) === loadedWorkingDirectory
 }
 
 function writeLaunchdJob(job) {

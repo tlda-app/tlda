@@ -179,23 +179,28 @@ models: {}
 writeFileSync(join(applyConfigDir, 'server.yaml'), '')
 writeFileSync(join(applyBinDir, 'launchctl'), `#!/bin/sh
 if [ "$1" = "managername" ]; then echo Aqua; exit 0; fi
-loaded="$TLDA_CONFIG_DIR/loaded.plist"
-if [ "$1" = "print" ]; then test -f "$loaded"; exit $?; fi
+loaded="$TLDA_CONFIG_DIR/loaded.definition"
+if [ "$1" = "print" ]; then test -f "$loaded" && cat "$loaded"; exit $?; fi
 if [ "$1" = "bootout" ]; then rm -f "$loaded"; exit 0; fi
 if [ "$1" = "bootstrap" ]; then
-  cp "$3" "$loaded"
+  {
+    echo "arguments = {"
+    /usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$3"
+    /usr/libexec/PlistBuddy -c "Print :ProgramArguments:1" "$3"
+    /usr/libexec/PlistBuddy -c "Print :ProgramArguments:2" "$3"
+    echo "}"
+    printf "working directory = "
+    /usr/libexec/PlistBuddy -c "Print :WorkingDirectory" "$3"
+  } > "$loaded"
   exit 0
 fi
 if [ "$1" = "kickstart" ]; then test -f "$loaded"; exit $?; fi
 exit 0
 `, { mode: 0o755 })
 const applyPlist = join(applyFixture, 'Library', 'LaunchAgents', 'com.tlda.fleet-daemon.stable.plist')
-writeFileSync(applyPlist, '<plist><dict><key>Label</key><string>com.tlda.fleet-daemon.stable</string></dict></plist>\n')
-writeFileSync(join(applyConfigDir, 'loaded.plist'), readFileSync(applyPlist, 'utf8'))
 try {
   const applyCliRoot = process.env.TLDA_CONFIG_APPLY_CLI_ROOT || root
-  const startedAt = Date.now()
-  const apply = spawnSync(process.execPath, [join(applyCliRoot, 'cli', 'tlda.mjs'), 'config', 'apply', '--env', 'stable'], {
+  const runApply = () => spawnSync(process.execPath, [join(applyCliRoot, 'cli', 'tlda.mjs'), 'config', 'apply', '--only', 'stable', '--env', 'stable'], {
     cwd: applyCliRoot,
     encoding: 'utf8',
     timeout: 15_000,
@@ -209,6 +214,19 @@ try {
       PATH: `${applyBinDir}:${process.env.PATH}`,
     },
   })
+  const initialApply = runApply()
+  assert.equal(initialApply.status, 0, initialApply.stderr)
+  assert.match(initialApply.stdout, /Added com\.tlda\.fleet-daemon\.stable/)
+  const canonicalPlist = readFileSync(applyPlist, 'utf8')
+  writeFileSync(join(applyConfigDir, 'loaded.definition'), `arguments = {
+/bin/zsh
+-fc
+exec /opt/homebrew/bin/node --import tsx "/Users/skip/worktrees/land-tonight/bin/fleet-daemon.mjs"
+}
+working directory = /Users/skip/worktrees/land-tonight
+`)
+  const startedAt = Date.now()
+  const apply = runApply()
   const elapsed = Date.now() - startedAt
   assert.equal(apply.status, 0, apply.stderr)
   assert.ok(elapsed < 2000, `config apply should replace a loaded job without retrying (${elapsed}ms)`)
@@ -218,9 +236,12 @@ try {
   const daemonScript = join(applyCliRoot, 'bin', 'fleet-daemon.mjs')
   const expectedScript = resolveMainDaemonScript(daemonScript) || daemonScript
   const plist = readFileSync(applyPlist, 'utf8')
+  assert.equal(plist, canonicalPlist)
   assert.match(plist, new RegExp(expectedScript.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   assert.match(plist, new RegExp(dirname(dirname(expectedScript)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
-  assert.equal(readFileSync(join(applyConfigDir, 'loaded.plist'), 'utf8'), plist)
+  const loadedDefinition = readFileSync(join(applyConfigDir, 'loaded.definition'), 'utf8')
+  assert.match(loadedDefinition, new RegExp(expectedScript.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(loadedDefinition, new RegExp(dirname(dirname(expectedScript)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   console.log('cli config completion boundary: ok')
 } finally {
   rmSync(applyFixture, { recursive: true, force: true })

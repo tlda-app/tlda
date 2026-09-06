@@ -24,7 +24,7 @@ export function planLaunchdApply({ desiredJobs, existingJobs }) {
       add.push(job)
     } else if (current.loaded === false) {
       add.push({ ...job, previous: current })
-    } else if (current.content !== job.content || current.plist !== job.plist) {
+    } else if (current.loadedDefinitionMatches === false || current.content !== job.content || current.plist !== job.plist) {
       update.push({ ...job, previous: current })
     } else {
       unchanged.push(job)

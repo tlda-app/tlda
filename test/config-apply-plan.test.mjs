@@ -42,6 +42,16 @@ test('planLaunchdApply bootstraps desired jobs that exist on disk but are unload
   assert.deepEqual(plan.remove, [])
 })
 
+test('planLaunchdApply updates a job whose loaded definition differs from its plist', () => {
+  const job = { label: 'com.tlda.fleet-daemon.testing', plist: '/a/testing.plist', content: 'same' }
+  const plan = planLaunchdApply({
+    desiredJobs: [job],
+    existingJobs: [{ ...job, loaded: true, loadedDefinitionMatches: false }],
+  })
+  assert.deepEqual(plan.update.map(j => j.label), [job.label])
+  assert.deepEqual(plan.unchanged, [])
+})
+
 test('planLaunchdApply removes stale managed jobs', () => {
   const plan = planLaunchdApply({
     desiredJobs: [{ label: 'com.tlda.fleet-daemon.testing', plist: '/a/testing.plist', content: 'new' }],
