@@ -105,7 +105,7 @@ const callsTo = (calls, method) => calls.filter(c => c.method === method)
 
 /** A project with a real accepted revision, which is what the worker requires. */
 async function stagedProject(prefix, { name, mainFile, format, files }) {
-  const root = mkdtempSync(join(tmpdir(), prefix))
+  const root = trackTemp(prefix)
   await initProjectStore(root)
   // The parent performs the publication, and publishing touches sync rooms.
   // Without this the publish RPC throws and the worker faithfully reports a
@@ -124,22 +124,128 @@ async function stagedProject(prefix, { name, mainFile, format, files }) {
   return { root, name, revision, git }
 }
 
+// ── classification ──────────────────────────────────────────────────────────
+//
+// An earlier version of this script caught every exception and then exited 0
+// unconditionally. It could not fail anything: a control that broke for a
+// reason nobody anticipated printed FAIL and the gate still reported success.
+// That is the shape this repository warns about -- a check that cannot go red
+// -- and it was in the gate itself.
+//
+// So outcomes are now classified, and the exit code is the classification.
+
+/**
+ * Is this the known 5-second exec timeout in `shadow-repo.mjs`?
+ *
+ * EXACT signature only. Measured across 800 invocations of
+ * `git rev-parse --verify HEAD 2>/dev/null || true` in a bare temp repo, no
+ * build involved: 22/400 and 9/400 failed, and every single failure was
+ * `{ killed: true, signal: 'SIGTERM', code: null, stderr: '' }`.
+ *
+ * That command ends in `|| true` and so cannot exit non-zero on its own
+ * merits, which is what identifies the kill as the timeout rather than as git
+ * disagreeing with us. `shadow-repo.mjs` has 33 `execAsync(..., { timeout:
+ * 5000 })` call sites.
+ *
+ * Anything that does not match exactly is NOT environment. A near miss -- a
+ * different signal, a real exit code, any stderr at all -- is a genuine
+ * failure and must not be laundered into "the box was busy".
+ */
+export function classifyExecFailure(e) {
+  return e?.killed === true && e?.signal === 'SIGTERM' && e?.code === null && e?.stderr === ''
+    ? 'ENVIRONMENT'
+    : null
+}
+
+/**
+ * What does an outcome mean, given what the control expected?
+ *
+ * BASELINE-RED  expected to fail before the cutover, and it did
+ * GREEN         expected to hold, and it does
+ * ENVIRONMENT   the known timeout; the run proves nothing either way
+ * RESOLVED      expected to fail and it PASSED -- the obligation is satisfied.
+ *               Not a silent success: the cutover commit flips the expectation,
+ *               and until it does this must stop the gate.
+ * UNEXPECTED    anything else, including a GREEN baseline that broke
+ */
+export function categorize({ expect, passed, environment }) {
+  if (environment) return 'ENVIRONMENT'
+  if (expect === 'RED') return passed ? 'RESOLVED' : 'BASELINE-RED'
+  return passed ? 'GREEN' : 'UNEXPECTED'
+}
+
+const OK_CATEGORIES = new Set(['BASELINE-RED', 'GREEN'])
+const EXIT = { OK: 0, ENVIRONMENT: 2, UNEXPECTED: 3, SELFTEST: 4, CLEANUP: 5 }
+
+// Every mkdtemp root this process creates, so cleanup is an asserted observable
+// rather than a hope. `stagedProject` and the inline controls both register
+// here, and the end of the run proves none survive.
+const tempRoots = []
+const trackTemp = prefix => { const root = mkdtempSync(join(tmpdir(), prefix)); tempRoots.push(root); return root }
+
 const results = []
-async function control(label, expectation, run) {
+async function control(label, expect, run) {
   const t0 = Date.now()
-  let root = null
+  let passed = false
+  let environment = false
+  let detail = ''
   try {
-    root = await run()
-    results.push({ label, expectation, status: 'PASS', detail: '' })
+    await run()
+    passed = true
   } catch (e) {
-    root = e.root || root
-    results.push({ label, expectation, status: 'FAIL', detail: (e?.message || String(e)).replace(/\s+/g, ' ').slice(0, 400) })
+    environment = classifyExecFailure(e) === 'ENVIRONMENT'
+    detail = (e?.message || String(e)).replace(/\s+/g, ' ').slice(0, 400)
   } finally {
     setBuildReporter(null)
     try { await closeProjectStore() } catch { /* a control that failed early may have no store */ }
-    if (typeof root === 'string') rmSync(root, { recursive: true, force: true })
-    process.stdout.write(`  ${results.at(-1).status.padEnd(4)} ${label}  (${((Date.now() - t0) / 1000).toFixed(1)}s)\n`)
+    const category = categorize({ expect, passed, environment })
+    results.push({ label, expect, category, detail })
+    process.stdout.write(`  ${category.padEnd(12)} ${label}  (${((Date.now() - t0) / 1000).toFixed(1)}s)\n`)
   }
+}
+
+// ── the classifier's own controls, before anything else runs ────────────────
+//
+// A classifier that never rejects would relabel every genuine failure as
+// "the box was busy", which is worse than not classifying at all. So it is
+// tested here with one positive and a row of NEAR MISSES -- each differing
+// from the real signature in exactly one field. If any of these is wrong the
+// script exits before running a single control, because nothing it reported
+// afterwards could be trusted.
+const ENV_SIGNATURE = { killed: true, signal: 'SIGTERM', code: null, stderr: '' }
+const CLASSIFIER_CASES = [
+  ['the measured signature', ENV_SIGNATURE, 'ENVIRONMENT'],
+  ['near miss: not killed', { ...ENV_SIGNATURE, killed: false }, null],
+  ['near miss: SIGKILL', { ...ENV_SIGNATURE, signal: 'SIGKILL' }, null],
+  ['near miss: a real exit code', { ...ENV_SIGNATURE, code: 1, signal: null }, null],
+  ['near miss: git said something', { ...ENV_SIGNATURE, stderr: 'fatal: not a git repository' }, null],
+  ['near miss: killed field absent', { signal: 'SIGTERM', code: null, stderr: '' }, null],
+  ['near miss: stderr absent', { killed: true, signal: 'SIGTERM', code: null }, null],
+  ['an ordinary assertion failure', new Error('OBSERVABLE build.log: absent'), null],
+]
+const CATEGORY_CASES = [
+  ['expected red, failed', { expect: 'RED', passed: false, environment: false }, 'BASELINE-RED'],
+  ['expected red, PASSED', { expect: 'RED', passed: true, environment: false }, 'RESOLVED'],
+  ['expected green, passed', { expect: 'GREEN', passed: true, environment: false }, 'GREEN'],
+  ['expected green, FAILED', { expect: 'GREEN', passed: false, environment: false }, 'UNEXPECTED'],
+  ['environment beats a red expectation', { expect: 'RED', passed: false, environment: true }, 'ENVIRONMENT'],
+  ['environment beats a green expectation', { expect: 'GREEN', passed: false, environment: true }, 'ENVIRONMENT'],
+]
+{
+  const failures = []
+  for (const [label, input, want] of CLASSIFIER_CASES) {
+    const got = classifyExecFailure(input)
+    if (got !== want) failures.push(`classifyExecFailure(${label}) = ${got}, want ${want}`)
+  }
+  for (const [label, input, want] of CATEGORY_CASES) {
+    const got = categorize(input)
+    if (got !== want) failures.push(`categorize(${label}) = ${got}, want ${want}`)
+  }
+  if (failures.length) {
+    console.error('classifier self-test FAILED:\n  ' + failures.join('\n  '))
+    process.exit(EXIT.SELFTEST)
+  }
+  console.log(`classifier self-test: ${CLASSIFIER_CASES.length} classifier cases, ${CATEGORY_CASES.length} category cases, all correct\n`)
 }
 
 // ── 1. the boundary has to be loadable at all ───────────────────────────────
@@ -148,7 +254,7 @@ async function control(label, expectation, run) {
 // build-document's missing `completeBuildSuccess`. An ESM link error is not a
 // latent bug -- the module cannot be imported, so everything downstream of it
 // is unreachable and reports nothing.
-await control('both halves of the boundary load', 'RED until the cutover', async () => {
+await control('both halves of the boundary load', 'RED', async () => {
   await import('../server/lib/build-adapter-registry.mjs')
   await import('../server/lib/build-document.mjs')
   return null
@@ -160,8 +266,8 @@ await control('both halves of the boundary load', 'RED until the cutover', async
 // writes a build log. So a failed markdown, qmd, html or slides build through
 // the adapter leaves no log, no errors and no recorded reason -- the exact
 // logMissing outage those wrappers were added to fix.
-await control('a failed adapter build writes build.log', 'RED until the cutover', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cutover-buildlog-'))
+await control('a failed adapter build writes build.log', 'RED', async () => {
+  const root = trackTemp('cutover-buildlog-')
   await initProjectStore(root)
   createProject({ name: 'deck', mainFile: 'deck.html' })
   mkdirSync(join(root, 'deck', 'source'), { recursive: true })
@@ -174,7 +280,6 @@ await control('a failed adapter build writes build.log', 'RED until the cutover'
   const log = join(projectDir('deck'), 'build.log')
   if (!existsSync(log)) throw Object.assign(new Error('OBSERVABLE build.log: absent (adapter bypasses withBuildLog)'), { root })
   assert.match(readFileSync(log, 'utf8'), /not a reveal\.js deck/, 'build.log must carry the reason')
-  return root
 })
 
 // ── 3. book ToC regeneration, markdown and qmd only ─────────────────────────
@@ -182,8 +287,8 @@ await control('a failed adapter build writes build.log', 'RED until the cutover'
 // `if (result.regenerateBookTocs)`, and no adapter sets the flag. One needs a
 // mechanism built, the other needs a flag set. Together, the missing mechanism
 // would hide behind the missing flag.
-await control('the markdown adapter asks for book ToC regeneration', 'RED until the cutover', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cutover-toc-'))
+await control('the markdown adapter asks for book ToC regeneration', 'RED', async () => {
+  const root = trackTemp('cutover-toc-')
   await initProjectStore(root)
   createProject({ name: 'notes', mainFile: 'notes.md' })
   mkdirSync(join(root, 'notes', 'source'), { recursive: true })
@@ -194,24 +299,22 @@ await control('the markdown adapter asks for book ToC regeneration', 'RED until 
   if (result?.regenerateBookTocs !== true) {
     throw Object.assign(new Error(`OBSERVABLE result.regenerateBookTocs: ${JSON.stringify(result?.regenerateBookTocs)}, want true`), { root })
   }
-  return root
 })
 
 // ── 4. the declared-main predicate, as a predicate ──────────────────────────
-await control('the declared-main predicate refuses an absent main file', 'GREEN, must stay green', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cutover-predicate-'))
+await control('the declared-main predicate refuses an absent main file', 'GREEN', async () => {
+  const root = trackTemp('cutover-predicate-')
   await initProjectStore(root)
   createProject({ name: 'talk', mainFile: 'main.tex' })
   assert.ok(missingDeclaredMainFile(await readProject('talk'), 'talk'),
     'the predicate must catch a declared main file with nothing behind it')
-  return root
 })
 
 // ── 5. REAL WORKER: the failure tails ───────────────────────────────────────
 // Three separate callParent invocations in the worker's catch, each
 // individually wrapped so losing one does not lose the others. Counted
 // separately for that reason.
-await control('a failed build records diagnostics, a report and one build_failed', 'GREEN, must stay green', async () => {
+await control('a failed build records diagnostics, a report and one build_failed', 'GREEN', async () => {
   const { root, name, revision } = await stagedProject('cutover-tails-', {
     name: 'talk', mainFile: 'main.tex', files: { 'notes.md': 'no main.tex anywhere' },
   })
@@ -227,7 +330,6 @@ await control('a failed build records diagnostics, a report and one build_failed
   assert.equal(updates[0].args[1].buildStatus, 'error', 'OBSERVABLE buildStatus')
   assert.equal(callsTo(calls, 'publishBuildInstance').length, 0,
     'OBSERVABLE publications on failure: must be 0 so the last good render stays published')
-  return root
 })
 
 // ── 6. REAL WORKER: the relevance skip ──────────────────────────────────────
@@ -238,7 +340,7 @@ await control('a failed build records diagnostics, a report and one build_failed
 // reachable on the svg path alone. Three earlier attempts at this control used
 // a markdown fixture and could never have skipped.
 const TEX = '\\documentclass{article}\n\\begin{document}\nOne page of prose.\n\\end{document}\n'
-await control('a render-irrelevant revision publishes source only and records not_required', 'GREEN, must stay green', async () => {
+await control('a render-irrelevant revision publishes source only and records not_required', 'GREEN', async () => {
   const { root, name, revision, git } = await stagedProject('cutover-skip-', {
     name: 'paper-skip', mainFile: 'main.tex',
     files: { 'main.tex': TEX, 'notes.txt': 'first notes, never read by the render' },
@@ -263,7 +365,6 @@ await control('a render-irrelevant revision publishes source only and records no
   const results_ = callsTo(calls, 'recordBuildResult')
   assert.equal(results_.length, 1, 'OBSERVABLE recordBuildResult count')
   assert.equal(results_[0].args[3], 'not_required', 'OBSERVABLE disposition')
-  return root
 })
 
 // ── 7. REAL WORKER: one build, one version ──────────────────────────────────
@@ -274,7 +375,7 @@ await control('a render-irrelevant revision publishes source only and records no
 //
 // runBuild already calls finalizeBuildVersion internally; buildDocument would
 // call it again afterwards with different arguments.
-await control('one successful build records exactly one version', 'GREEN, must stay green', async () => {
+await control('one successful build records exactly one version', 'GREEN', async () => {
   const { root, name, revision } = await stagedProject('cutover-version-', {
     name: 'paper-version', mainFile: 'main.md', format: 'markdown', files: { 'main.md': '# Paper\n\nProse.\n' },
   })
@@ -283,11 +384,10 @@ await control('one successful build records exactly one version', 'GREEN, must s
   assert.equal(ok, true, `control: the build must succeed, or a version count is meaningless (${error || ''})`)
   const after = (await listVersions(name, { limit: 50 })).length
   assert.equal(after - before, 1, `OBSERVABLE versions recorded: ${after - before}`)
-  return root
 })
 
 // ── 8. REAL WORKER: one completion, one publication ─────────────────────────
-await control('one successful build publishes once and records one built disposition', 'GREEN, must stay green', async () => {
+await control('one successful build publishes once and records one built disposition', 'GREEN', async () => {
   const { root, name, revision } = await stagedProject('cutover-once-', {
     name: 'paper-once', mainFile: 'main.md', format: 'markdown', files: { 'main.md': '# Paper\n\nProse.\n' },
   })
@@ -298,14 +398,45 @@ await control('one successful build publishes once and records one built disposi
   assert.equal(results_.length, 1, 'OBSERVABLE recordBuildResult count')
   assert.equal(results_[0].args[3], 'built', 'OBSERVABLE disposition')
   assert.equal(callsTo(calls, 'publishBuildDiagnostics').length, 0, 'OBSERVABLE diagnostics on success: must be 0')
-  return root
 })
+
+// ── cleanup, as an asserted observable ──────────────────────────────────────
+// Every mkdtemp root this process made is removed here and then PROVED gone.
+// Cleanup that is merely attempted is indistinguishable from cleanup that
+// silently failed, and this script creates a store, a git repo and build
+// instances under each root.
+const survivors = []
+for (const root of tempRoots) {
+  try { rmSync(root, { recursive: true, force: true }) } catch { /* reported below by the existence check */ }
+  if (existsSync(root)) survivors.push(root)
+}
 
 console.log('\n──────────────────────────────────────────────────────────────')
 for (const r of results) {
-  console.log(`${r.status.padEnd(4)}  ${r.label}`)
-  console.log(`      expected: ${r.expectation}${r.detail ? `\n      got: ${r.detail}` : ''}`)
+  console.log(`${r.category.padEnd(12)}  ${r.label}`)
+  console.log(`              expected ${r.expect}${r.detail ? `\n              got: ${r.detail}` : ''}`)
 }
-const red = results.filter(r => r.status === 'FAIL').length
-console.log(`\n${results.length - red} pass, ${red} fail`)
-process.exit(0)
+
+const counts = results.reduce((acc, r) => ({ ...acc, [r.category]: (acc[r.category] || 0) + 1 }), {})
+console.log('\n' + Object.entries(counts).map(([k, v]) => `${k}: ${v}`).join('   '))
+console.log(`temp roots created: ${tempRoots.length}, surviving: ${survivors.length}`)
+
+const environment = results.filter(r => r.category === 'ENVIRONMENT')
+const unexpected = results.filter(r => !OK_CATEGORIES.has(r.category) && r.category !== 'ENVIRONMENT')
+
+if (survivors.length) {
+  console.error(`\nFAILED: ${survivors.length} temp root(s) survived cleanup:\n  ${survivors.join('\n  ')}`)
+  process.exit(EXIT.CLEANUP)
+}
+if (unexpected.length) {
+  console.error(`\nFAILED: ${unexpected.length} unexpected outcome(s). A RESOLVED row means a red obligation now holds`
+    + ` -- the cutover commit flips its expectation; it is not a silent pass.`)
+  process.exit(EXIT.UNEXPECTED)
+}
+if (environment.length) {
+  console.error(`\nINCONCLUSIVE: ${environment.length} control(s) hit the known 5s shadow-repo exec timeout.`
+    + ` This run proves nothing either way -- re-run on a quieter host.`)
+  process.exit(EXIT.ENVIRONMENT)
+}
+console.log('\nAll outcomes as expected.')
+process.exit(EXIT.OK)
