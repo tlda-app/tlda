@@ -30,6 +30,7 @@ import type { Editor } from 'tldraw'
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { ProjectContext } from '../PanelContext'
+import { useBook } from '../BookContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { onBuildStatusSignal, type BuildError } from '../useYjsSync'
 import { loadLookup } from '../synctexLookup'
@@ -44,6 +45,9 @@ import { optionalJson } from '../optionalJson'
 import { FleetHudRenderGate } from './useIsInViewport'
 import { resolveDocViewTargetShapeId } from './docViewTarget'
 import { isFleetDocviewContentShape } from './fleet-docview-shape-predicate'
+import { DocViewSpacetimeBody, DocViewTimeControls } from './DocViewSpacetime'
+import { useDocViewPlayback } from '../recording/useDocViewPlayback'
+import { timeControlsMode, type TimeControlsMode } from '../recording/docViewPlayback'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -85,7 +89,11 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
   static override props = fleetDocviewProps
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, sources: DEFAULT_REF_SOURCES, label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '', deviceId: '', targetShapeId: '', useFullBounds: false }
+    // `timeControls` is left empty rather than resolved here: an empty string
+    // means nobody has chosen, which `timeControlsMode` reads as the surface's
+    // default. Baking the default in at creation would freeze a classroom's
+    // answer onto a shape that later opens somewhere else.
+    return { w: DEFAULT_W, h: DEFAULT_H, sources: DEFAULT_REF_SOURCES, label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '', deviceId: '', targetShapeId: '', useFullBounds: false, timeControls: '', recordingId: '' }
   }
   override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
   override onResize = (shape: any, info: any) => nudgeFleetPanelResize(this.editor, shape, info)
@@ -408,6 +416,34 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   const errorHeaderH = 22
   const panelH = currentError ? h - errorHeaderH : h
 
+  // Spacetime. The doc-view is always capable of this; what varies is whether
+  // the transport is on screen and which recording is in the body. Both live on
+  // the shape, so two doc-views can be showing two different recordings, and a
+  // third can be showing the live document.
+  const book = useBook()
+  const recordingProject = book?.bookName ?? doc?.projectName ?? ''
+  const spacetimeMode = timeControlsMode(shape.props.timeControls)
+  const selectedRecording: string | undefined = shape.props.recordingId || undefined
+  const playback = useDocViewPlayback(recordingProject, selectedRecording)
+  const replaying = !!selectedRecording
+
+  const setShapeProps = (props: Record<string, unknown>) => {
+    if (!mainEditor) return
+    // Same unlock-then-write the shape's other controls use: a fleet panel can
+    // be locked, and a locked shape silently refuses the update.
+    if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+    mainEditor.updateShape({ id: shape.id, type: shape.type, props })
+  }
+  const cycleTimeControls = () => {
+    const next: Record<TimeControlsMode, TimeControlsMode> =
+      { off: 'auto-hide', 'auto-hide': 'pinned', pinned: 'off' }
+    const mode = next[spacetimeMode]
+    // Turning the transport off puts the live document back in the body. A
+    // hidden transport over a replayed body would be a doc-view showing an old
+    // document with no way to see that it is doing so.
+    setShapeProps(mode === 'off' ? { timeControls: mode, recordingId: '' } : { timeControls: mode })
+  }
+
   const docviewSurface = useMemo<FleetDocviewSurfaceState | null>(() => {
     if (!mainEditor || !bounds) return null
     if (targetShapeId && targetShapePageBounds) {
@@ -545,6 +581,20 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
       {/* Top-right nav group */}
       <div className="fleet-btn-group fleet-btn-group-topright" onPointerDown={(e: any) => e.stopPropagation()}>
+        {/* The way to the transport on a surface whose default is `off`. The
+            old entry point was a chrome button that existed only in a
+            classroom, which is what made playback unreachable everywhere else;
+            the gate now sets this shape's default rather than deciding whether
+            the feature exists. */}
+        <button
+          className={`fleet-layout-btn docview-timectl is-${spacetimeMode}`}
+          onPointerUp={(e: any) => { e.stopPropagation(); cycleTimeControls() }}
+          title={
+            spacetimeMode === 'off' ? 'Show time controls'
+              : spacetimeMode === 'auto-hide' ? 'Time controls: reveal on hover — click to pin'
+                : 'Time controls: pinned — click to hide and return to the live document'
+          }
+        >⏱</button>
         {activeSource === 'errors' && resolvedErrors.length > 1 ? (
           <>
             <button
@@ -703,7 +753,9 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         className="fleet-docview-body"
         style={{ height: panelH }}
       >
-        {bounds && docviewSurface && mainEditor && (targetShapeId || svgReady) ? (
+        {replaying ? (
+          <DocViewSpacetimeBody playback={playback} height={panelH} />
+        ) : bounds && docviewSurface && mainEditor && (targetShapeId || svgReady) ? (
           <CanvasClipPanel
             mainEditor={mainEditor}
             bounds={bounds}
@@ -725,6 +777,14 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
           </div>
         )}
       </div>
+
+      <DocViewTimeControls
+        playback={playback}
+        projectName={recordingProject}
+        mode={spacetimeMode}
+        selected={selectedRecording}
+        onSelect={(ref) => setShapeProps({ recordingId: ref })}
+      />
     </div>
   )
 }
