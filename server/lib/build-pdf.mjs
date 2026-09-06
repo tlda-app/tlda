@@ -3,7 +3,7 @@ import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import { basename, extname, join } from 'node:path'
 import { readProject, sourceDir, outputDir, readClientSourceManifest } from './project-store.mjs'
-import { createDocumentManifest } from './document-manifest.mjs'
+import { createDocumentManifest, writeDocumentManifest } from './document-manifest.mjs'
 
 const execFile = promisify(execFileCb)
 
@@ -104,6 +104,25 @@ export async function buildPdfDocument(name, addLog = console.log) {
     outputPdf: basename(mainFile),
   })
   const pages = manifest.pages
+
+  // Publish the manifest, because a PDF that is not described is not readable.
+  //
+  // `createDocumentManifest` above only builds the object; something has to put
+  // it on disk. On the RC branch that is `buildDocument()`, the single
+  // completion boundary — which is not ported yet, deliberately, because
+  // swapping the build worker's dispatch block for it is what silently deletes
+  // the four behaviours `main` grew after the branch (render relevance, the
+  // skip disposition, version finalization, the `not_required` result).
+  //
+  // So the builder publishes its own manifest for now. Measured before adding
+  // this: the build completed, wrote its pages and its text geometry, and left
+  // no `document-manifest.json` at all — so it looked entirely healthy while
+  // `view.kind`, which is the client's whole contract for this document, lived
+  // in a file nobody had written.
+  //
+  // This moves to `buildDocument()` when that boundary lands, and this call goes
+  // with it rather than being left behind as a second writer.
+  writeDocumentManifest(outDir, manifest)
 
   const files = (await readClientSourceManifest(name)).filter(rel => existsSync(join(srcDir, rel))).sort()
   writeFileSync(join(outDir, 'relevant-files.json'), `${JSON.stringify({ generated_at: new Date().toISOString(), files }, null, 2)}\n`)
