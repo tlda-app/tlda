@@ -52,18 +52,22 @@ export function transferRegion({
   const source = fsImpl.readFileSync(sourcePath);
   const target = fsImpl.readFileSync(targetPath);
   const sourceSpan = lineContentSpan(source, sourceStartLine, sourceEndLine, 'source');
-  const targetSpan = lineContentSpan(target, targetStartLine, targetEndLine, 'target');
-  const current = target.subarray(targetSpan.start, targetSpan.end);
+  const targetWindow = lineContentSpan(target, targetStartLine, targetEndLine, 'target');
   const expectedBytes = Buffer.from(expected, 'utf8');
-  if (!current.equals(expectedBytes)) {
-    throw new Error(`target range does not match expected (${current.length} bytes found, ${expectedBytes.length} expected).`);
+  const firstMatch = target.indexOf(expectedBytes, targetWindow.start);
+  if (firstMatch < 0 || firstMatch + expectedBytes.length > targetWindow.end) {
+    throw new Error('expected text was not found inside the target range.');
+  }
+  const secondMatch = target.indexOf(expectedBytes, firstMatch + 1);
+  if (secondMatch >= 0 && secondMatch + expectedBytes.length <= targetWindow.end) {
+    throw new Error('expected text occurs more than once inside the target range.');
   }
 
   const replacement = source.subarray(sourceSpan.start, sourceSpan.end);
   const output = Buffer.concat([
-    target.subarray(0, targetSpan.start),
+    target.subarray(0, firstMatch),
     replacement,
-    target.subarray(targetSpan.end),
+    target.subarray(firstMatch + expectedBytes.length),
   ]);
   const targetStat = fsImpl.statSync(targetPath);
   const tempPath = path.join(
@@ -98,8 +102,9 @@ export function transferRegion({
     sourcePath,
     targetPath,
     sourceBytes: replacement.length,
-    replacedBytes: current.length,
-    oldString: current.toString('utf8'),
+    replacedBytes: expectedBytes.length,
+    targetLine: target.subarray(0, firstMatch).reduce((line, byte) => line + (byte === 0x0a ? 1 : 0), 1),
+    oldString: expected,
     newString: replacement.toString('utf8'),
   };
 }
