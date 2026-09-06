@@ -28,6 +28,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
+import { assertOwnerCapableLaunchdManager, transitionLaunchdJob } from './lib/config-apply-transition.mjs'
 import { botServicePaths as declaredBotServicePaths, parseBotMintId, resolveBotScript } from '../shared/bot-declaration.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import { rotateBeforeOpen } from '../shared/rotating-log.mjs'
@@ -1455,9 +1456,9 @@ async function writeDaemonPlist({ plist = FLEET_DAEMON_PLIST, label = FLEET_DAEM
   return plist
 }
 
-async function runLaunchctl(args, { ignoreFailure = false } = {}) {
+async function runLaunchctl(args, { ignoreFailure = false, allowManagedRemoval = false } = {}) {
   const verb = args[0]
-  if (verb === 'bootout' || verb === 'unload' || verb === 'remove') {
+  if (!allowManagedRemoval && (verb === 'bootout' || verb === 'unload' || verb === 'remove')) {
     throw new Error(`Refusing launchctl ${verb}: unloading a managed job can strand it outside the owner login session.`)
   }
   const { execFileSync } = await import('child_process')
@@ -1813,40 +1814,40 @@ function writeLaunchdJob(job) {
 }
 
 async function applyLaunchdOperation(job, operation) {
-  const target = daemonLaunchdTarget(job.label)
-  const pending = lines => ({ ok: true, pending: lines.join('\n') })
+  const bootoutIfLoaded = async targetJob => {
+    try {
+      await runLaunchctl(['bootout', daemonLaunchdTarget(targetJob.label)], { allowManagedRemoval: true })
+    } catch (e) {
+      const text = e?.message || String(e)
+      if (/No such process/i.test(text) || /Could not find service/i.test(text)) return
+      throw e
+    }
+  }
+  const bootstrapAndKickstart = async targetJob => {
+    await bootstrapLaunchdJob({
+      plist: targetJob.plist,
+      label: targetJob.label,
+      domain: daemonLaunchdDomain(),
+      runLaunchctl,
+    })
+  }
   try {
-    if (operation === 'add' || operation === 'update') {
-      const loaded = isLaunchdJobLoaded(job.label)
-      writeLaunchdJob(job)
-      if (loaded) return pending([
-        'plist written; the loaded job is still running its previous configuration.',
-        `      launchctl bootout ${target}`,
-        `      launchctl bootstrap ${daemonLaunchdDomain()} ${JSON.stringify(job.plist)}`,
-      ])
-      try {
-        await bootstrapLaunchdJob({ plist: job.plist, label: job.label, domain: daemonLaunchdDomain(), runLaunchctl })
-        return { ok: true }
-      } catch (error) {
-        return pending([
-          `plist written; loading it needs the owner login session (${error?.message || String(error)}).`,
-          `      launchctl bootstrap ${daemonLaunchdDomain()} ${JSON.stringify(job.plist)}`,
-        ])
-      }
-    }
-    if (operation === 'remove') {
-      if (isLaunchdJobLoaded(job.label)) return pending([
-        'plist kept; unloading the loaded job needs the owner login session.',
-        `      launchctl bootout ${target}`,
-        `      rm ${JSON.stringify(job.plist)}`,
-      ])
-      if (existsSync(job.plist)) unlinkSync(job.plist)
-      return { ok: true }
-    }
-    throw new Error(`unknown launchd apply operation: ${operation}`)
+    return await transitionLaunchdJob(job, operation, {
+      install: async targetJob => writeLaunchdJob(targetJob),
+      remove: async targetJob => {
+        if (existsSync(targetJob.plist)) unlinkSync(targetJob.plist)
+      },
+      bootout: bootoutIfLoaded,
+      bootstrap: bootstrapAndKickstart,
+    })
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }
   }
+}
+
+async function requireOwnerLaunchdConfigurationContext() {
+  const managerName = await runLaunchctl(['managername'])
+  assertOwnerCapableLaunchdManager(managerName)
 }
 
 function printApplyGroup(title, jobs) {
@@ -1901,27 +1902,25 @@ async function cmdConfigApply() {
     return
   }
 
-  const pending = []
+  try {
+    await requireOwnerLaunchdConfigurationContext()
+  } catch (error) {
+    console.error(red(error?.message || String(error)))
+    process.exit(1)
+  }
+
   const failures = []
   const runGroup = async (jobs, op, doneVerb) => {
     for (const job of jobs) {
       const result = await applyLaunchdOperation(job, op)
       if (!result.ok) failures.push({ job, op, error: result.error })
-      else if (result.pending) {
-        pending.push({ job, detail: result.pending })
-        console.log(yellow(`Pending ${job.label}`) + dim(` — ${op}`))
-      } else console.log(green(`${doneVerb} ${job.label}`))
+      else console.log(green(`${doneVerb} ${job.label}`))
     }
   }
   await runGroup(plan.add, 'add', 'Added')
   await runGroup(plan.update, 'update', 'Updated')
   await runGroup(plan.remove, 'remove', 'Removed')
 
-  if (pending.length) {
-    console.log(yellow(`${pending.length} job(s) need the owner login session to take effect:`))
-    for (const item of pending) console.log(`  ${item.job.label}: ${item.detail}`)
-    console.log(dim('  Nothing was unloaded; every running job remains running.'))
-  }
   if (failures.length) {
     for (const failure of failures) console.error(red(`${failure.op} ${failure.job.label}: ${failure.error}`))
     process.exit(1)
