@@ -9,20 +9,41 @@ A tlda document has three independent axes:
 | document format | `paged`, `html`, `slides` | viewer and interaction model |
 
 These are stored as `sourceFormat`, `renderer`, and `documentFormat`, and they
-are authoritative for source and build identity. Runtime startup rejects records without all
-three axes or with the removed `format` field; there is no compatibility or
-startup migration path.
+are authoritative for source and build identity.
 
-Every builder writes `output/document-manifest.json`. It identifies the source
-root and renderer, the document format, ordered display pages with dimensions,
-assets, optional searchable-text geometry, and the available source-mapping
-mode. Its `view` capabilities are the sole runtime viewer behavior contract.
+**A record carrying only the older `format` field is derived from, not
+rejected.** `documentAxes()` maps the legacy value to the three axes; a project
+written as `format: 'svg'` reads back as `tex`/`latex`/`paged`. An earlier
+version of this layer did reject such records at startup, and that sentence
+stood here describing it — but the rejection meant the server would not start
+against any store that predated the change, which is every existing store. The
+derivation replaced it. There is still no migration step, because none is
+needed: nothing has to be rewritten for a legacy record to resolve.
+
+Every builder returns a document manifest and `buildDocument()` writes it to
+`output/document-manifest.json`. It identifies the source root and renderer, the
+document format, ordered display pages with dimensions, assets, optional
+searchable-text geometry, and the available source-mapping mode. Its `view`
+capabilities are the sole runtime viewer behavior contract.
 
 Renderer adapters are registered in `server/lib/build-adapter-registry.mjs`.
-Each returns one `BuildResult`; `buildDocument()` is the sole completion
-boundary that records the version disposition, publishes the manifest and
-project state, signals reload, and reports success. The worker and build
+Each returns one `BuildResult`, and `buildDocument()` is the completion
+boundary. For an adapter that does not set `ownsCompletion` it owns the build
+log — those run inside `withBuildLog`, so a build that throws still leaves its
+reason on disk — and it records the version disposition, publishes the manifest
+and project state, signals reload, and reports success. The LaTeX adapters do
+set `ownsCompletion`, and their logging, project-state and version-disposition
+updates, reload signaling and completion reporting all stay inside `runBuild`;
+for them the boundary writes the manifest and nothing else. The worker and build
 decision code ask the registry and contain no format switch.
+
+**Two adapters complete themselves, and the boundary defers to them.** The
+`latex` and `latex-slides` adapters are `runBuild`, which has always written its
+own project update, reload signal, `build.log`, version and build-complete
+webhook. Running the common tail over that would version twice, complete twice
+and reload the viewer twice, so those adapters declare `ownsCompletion: true`
+and the boundary does the one thing `runBuild` does not — put the manifest on
+disk. Every other adapter gets the full tail.
 
 The manifest's `view.kind` and capabilities are the client contract. Direct
 open and foreign auto-open both call the registry in
