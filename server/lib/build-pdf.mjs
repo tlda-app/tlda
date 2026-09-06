@@ -3,6 +3,7 @@ import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import { basename, extname, join } from 'node:path'
 import { readProject, sourceDir, outputDir, readClientSourceManifest } from './project-store.mjs'
+import { getBuildReporter } from './build-runner.mjs'
 import { createDocumentManifest, writeDocumentManifest } from './document-manifest.mjs'
 
 const execFile = promisify(execFileCb)
@@ -126,6 +127,33 @@ export async function buildPdfDocument(name, addLog = console.log) {
 
   const files = (await readClientSourceManifest(name)).filter(rel => existsSync(join(srcDir, rel))).sort()
   writeFileSync(join(outDir, 'relevant-files.json'), `${JSON.stringify({ generated_at: new Date().toISOString(), files }, null, 2)}\n`)
+
+  // Report the pages and targets onto the project record, the way
+  // build-markdown does. Without this the build succeeds, the manifest is
+  // served correctly, and the VIEWER still cannot draw it: the client's SVG
+  // path builds its layout from `config.targets`, and
+  // `createSvgDocumentLayout` throws outright when there are none rather than
+  // inventing a name — "the page filename is keyed on the tex base, which is
+  // not derivable from the project name."
+  //
+  // Measured on the RC server before adding this: buildStatus `success`, a
+  // four-page manifest served with correct geometry, and `pages: 0`,
+  // `targets: null` on the project. A document that builds and cannot be
+  // opened.
+  //
+  // `targets` carries the same shape the LaTeX finalizer writes, because it
+  // feeds the same client code — the base name is what page filenames are
+  // keyed on, and for a PDF that is the PDF's own name.
+  //
+  // Belongs in `buildDocument()` with the manifest publish when that boundary
+  // is ported; both move together.
+  const targets = [{ texBase: target, mainFile, pages: pages.length }]
+  await getBuildReporter().updateProject(name, {
+    pages: pages.length,
+    targets,
+    lastBuild: new Date().toISOString(),
+  })
+
   addLog(`[pdf] ${name}: extracted ${pages.length} page${pages.length === 1 ? '' : 's'}`)
-  return { manifest, targets: [{ texBase: target, mainFile, pages: pages.length }] }
+  return { manifest, targets }
 }
