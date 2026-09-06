@@ -5549,10 +5549,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     () => activeComposerAgentLabel(filter, sendTargets, agents),
     [filterKey, sendTargets, agents],
   )
-  // Records the pointerdown that started on the traffic toggle, so a cycle only
-  // fires on a deliberate tap (down AND up on the toggle, little movement) — not
-  // on a stray touch or a scroll-drag that merely lifts off over it. This is the
-  // `93aba2cd` spurious-filter-cycling fix.
   const composerTrafficMode = useMemo<ComposerTrafficFilterMode>(
     () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
     [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
@@ -7199,7 +7195,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 onPointerDown={stopEventPropagation}
                 onClick={(e) => {
                   stopEventPropagation(e as any)
-                  activateComposerRailAction(`terminal-${control.id}`, null)
+                  if (e.detail === 0) activateComposerRailAction(`terminal-${control.id}`, null)
                 }}
                 onMouseEnter={() => {
                   if (termHideTimerRef.current) {
@@ -7239,11 +7235,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               data-composer-rail-values="dm-quiet,dm,agent"
               data-composer-rail-labels="DM|DM tools|All"
               data-composer-rail-current-value={composerTrafficMode}
-              // Click cycles; a drag release over a traffic slot passes that slot
-              // value through the same composer-rail action function.
               onClick={(e) => {
                 stopEventPropagation(e)
-                activateComposerRailAction('traffic', null)
+                if (e.detail === 0) activateComposerRailAction('traffic', null)
               }}
               disabled={!composerAgentLabel}
               title={!composerAgentLabel
