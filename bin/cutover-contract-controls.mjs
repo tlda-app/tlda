@@ -28,7 +28,7 @@
 // RUN OUTSIDE THE FENCE: env -u FLEET_ID node bin/cutover-contract-controls.mjs
 
 import assert from 'node:assert/strict'
-import { fork } from 'node:child_process'
+import { execFileSync, fork } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -323,19 +323,60 @@ await control('a failed build through the boundary writes build.log', 'GREEN', n
 //
 // So this asserts the builder's OWN lines, by content. Size and existence are
 // exactly the two things that did not distinguish the broken state.
-await control('a successful build log carries the builder\'s own output', 'GREEN', null, async () => {
-  const { root, name, revision } = await stagedProject('cutover-successlog-', {
-    name: 'paper-log', mainFile: 'main.md', format: 'markdown',
-    files: { 'main.md': '# Paper\n\nProse enough to index.\n' },
+// Parameterized over EVERY non-LaTeX adapter, because the defect was in the
+// wire between the wrapper and the adapter, and each adapter is a separate
+// strand of it: markdown, Quarto and native PDF took `addLog` already; HTML and
+// slides took no logger at all and wrote to the console, so their logs stayed
+// one byte after the first fix. One control per adapter, each asserting that
+// adapter's OWN line.
+//
+// Quarto is deliberately absent: its render needs the `quarto` binary and takes
+// tens of seconds, and its builder receives `context.log` through exactly the
+// same parameter as markdown and PDF, both covered here. That is a stated
+// omission, not an oversight.
+const PDF_TEX = '\\documentclass{article}\n\\begin{document}\nA page for the pdf adapter.\n\\end{document}\n'
+function fixturePdf() {
+  const dir = trackTemp('cutover-pdfsrc-')
+  writeFileSync(join(dir, 'doc.tex'), PDF_TEX)
+  execFileSync('pdflatex', ['-interaction=nonstopmode', 'doc.tex'], { cwd: dir, stdio: 'ignore' })
+  return readFileSync(join(dir, 'doc.pdf'))
+}
+
+const LOG_ADAPTERS = [
+  { adapter: 'markdown', name: 'log-markdown', mainFile: 'main.md', format: 'markdown',
+    files: () => ({ 'main.md': '# Paper\n\nProse enough to index.\n' }),
+    expect: n => new RegExp(`\\[markdown\\] ${n}: indexed \\d+ column`) },
+  { adapter: 'html', name: 'log-html', mainFile: 'index.html',
+    files: () => ({ 'index.html': '<html><head><title>A page</title></head><body><p>Prose.</p></body></html>' }),
+    expect: n => new RegExp(`\\[html\\] ${n}: \\d+ pages`) },
+  { adapter: 'slides', name: 'log-slides', mainFile: 'deck.html', format: 'slides',
+    files: () => ({ 'deck.html': `<html><head><title>A deck</title></head><body>
+      <div class="reveal"><div class="slides">
+        <section class="slide level2" id="one"><h2>One</h2></section>
+        <section class="slide level2" id="two"><h2>Two</h2></section>
+      </div></div></body></html>` }),
+    expect: n => new RegExp(`\\[slides\\] ${n}: deck of \\d+ slides`) },
+  { adapter: 'native-pdf', name: 'log-pdf', mainFile: 'paper.pdf', format: 'pdf',
+    files: () => ({ 'paper.pdf': fixturePdf() }),
+    expect: n => new RegExp(`\\[pdf\\] ${n}: extracted \\d+ page`) },
+]
+
+for (const spec of LOG_ADAPTERS) {
+  await control(`a successful ${spec.adapter} build logs its own output`, 'GREEN', null, async () => {
+    const { root, name, revision } = await stagedProject(`cutover-log-${spec.adapter}-`, {
+      name: spec.name, mainFile: spec.mainFile, format: spec.format, files: spec.files(),
+    })
+    const { ok, error } = await runWorker({ projectsDir: root, name, sourceRevision: revision })
+    assert.equal(ok, true, `control: the build must SUCCEED -- a failed build's log proves nothing here (${error || ''})`)
+    const log = join(projectDir(name), 'build.log')
+    assert.ok(existsSync(log), 'OBSERVABLE build.log: absent')
+    const text = readFileSync(log, 'utf8')
+    // By CONTENT. Existence and size are exactly the two things that did not
+    // distinguish the broken state -- a one-byte newline satisfied both.
+    assert.match(text, spec.expect(spec.name), `OBSERVABLE build.log content for ${spec.adapter}: ${JSON.stringify(text.slice(0, 120))}`)
+    void root
   })
-  const { ok, error } = await runWorker({ projectsDir: root, name, sourceRevision: revision })
-  assert.equal(ok, true, `control: the build must SUCCEED -- a failed build's log proves nothing here (${error || ''})`)
-  const log = join(projectDir(name), 'build.log')
-  assert.ok(existsSync(log), 'OBSERVABLE build.log: absent')
-  const text = readFileSync(log, 'utf8')
-  assert.match(text, /\[markdown\] Reading /, 'OBSERVABLE build.log content: the builder\'s read line')
-  assert.match(text, /\[markdown\] paper-log: indexed \d+ column/, 'OBSERVABLE build.log content: the builder\'s index line')
-})
+}
 
 // ── 3. book ToC regeneration, markdown and qmd only ─────────────────────────
 // A DIFFERENT fix from control 2: finalizeDocumentBuild already has the hook,
