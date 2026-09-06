@@ -20,6 +20,7 @@ import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
 
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
 import { getBuildReporter, streamChildOutput } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
@@ -323,6 +324,35 @@ async function writeSourceScope(name, srcDir, outDir) {
   )
 }
 
+/**
+ * A Quarto build's manifest.
+ *
+ * Quarto is the one renderer whose view is not a property of its adapter. The
+ * registry declares a `view` for `latex`, `latex-slides` and the identity
+ * adapters, and deliberately none for `quarto` — because quarto renders a .qmd
+ * to a scrolling document or to a reveal deck depending on the `format:` its
+ * author wrote, and only the build knows which it produced. That is the same
+ * fact `renderedFormat` exists to carry and `viewFormat()` exists to read.
+ *
+ * So this derives the view from what was rendered rather than from a constant
+ * or from the adapter. Getting it from the adapter would mean guessing before
+ * quarto ran.
+ *
+ * Pages come from `pageInfo` unchanged — the same entries written to
+ * `page-info.json`, so the manifest and the viewer cannot describe different
+ * documents.
+ */
+function qmdManifest(project, pageInfo, renderedFormat) {
+  const isDeck = renderedFormat === 'slides'
+  return createDocumentManifest(project, pageInfo, {
+    sourceMapping: 'none',
+    view: {
+      kind: isDeck ? 'slides' : 'html-pages',
+      capabilities: { presentation: isDeck, sourceMapping: false, searchableText: true },
+    },
+  })
+}
+
 export async function buildQmdDocument(name, addLog = console.log) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
@@ -403,7 +433,11 @@ export async function buildQmdDocument(name, addLog = console.log) {
       timestamp: Date.now(),
     })
     addLog(`[qmd] ${name}: rendered tlda project with ${renderedProject.pageInfo.length} pages`)
-    return
+    // A tlda Quarto project is always the scrolling document, which is why the
+    // patch above hardcodes renderedFormat 'html'. Both return paths describe
+    // themselves or the cutover would work for one kind of qmd and not the
+    // other — and this one returns early, so it is the one easy to miss.
+    return { manifest: qmdManifest(await readProject(name), renderedProject.pageInfo, 'html') }
   }
 
   const pageInfo = []
@@ -457,12 +491,19 @@ export async function buildQmdDocument(name, addLog = console.log) {
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
   await writeSourceScope(name, srcDir, outDir)
+  // Computed once and used twice, deliberately. This condition decides both
+  // what the project records and what the manifest's view says, and two copies
+  // of it would be two answers to "is this a deck" that can drift apart —
+  // exactly the split `renderedFormat` was added to stop.
+  const renderedFormat = mainFiles.length === 1 && anyDeck && pageInfo.every((entry) => entry.variant !== 'chapter') ? 'slides' : 'html'
   await reporter.updateProject(name, {
     buildStatus: 'success',
     pages: pageInfo.length,
-    renderedFormat: mainFiles.length === 1 && anyDeck && pageInfo.every((entry) => entry.variant !== 'chapter') ? 'slides' : 'html',
+    renderedFormat,
     lastBuild: new Date().toISOString(),
   })
   reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: Date.now() })
   addLog(`[qmd] ${name}: rendered ${mainFiles.length} document root(s)`)
+
+  return { manifest: qmdManifest(await readProject(name), pageInfo, renderedFormat) }
 }
