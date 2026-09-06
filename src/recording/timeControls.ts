@@ -7,7 +7,7 @@
 // to it, the classroom default below could only be asserted by reading the
 // source. Here it can be exercised.
 
-import { isClassroomSurface } from '../classroom/classroomSurface'
+import { isClassroomSurface } from '../classroom/classroomSurface.ts'
 
 /** Where the transport sits: gone, revealed on hover, or always on screen. */
 export type TimeControlsMode = 'off' | 'auto-hide' | 'pinned'
