@@ -309,6 +309,34 @@ await control('a failed build through the boundary writes build.log', 'GREEN', n
   assert.match(readFileSync(log, 'utf8'), /not a reveal\.js deck/, 'build.log must carry the reason')
 })
 
+// ── 2b. a SUCCESSFUL build's log carries the builder's own output ───────────
+//
+// The failing-build control above is not enough, and believing it was cost a
+// live defect. `withBuildLog` appends the error to its own `lines` in the
+// catch, so a failed build's `build.log` has content whether or not the
+// builder's output was ever captured. Only a SUCCESSFUL build proves the wire.
+//
+// It was broken exactly there: `buildDocument` built `run` as a zero-argument
+// arrow, so the wrapper's `addLog` went nowhere and the adapter kept logging to
+// the console. A successful markdown build wrote a ONE BYTE log -- a newline --
+// and every check that asked "is there a build.log" passed.
+//
+// So this asserts the builder's OWN lines, by content. Size and existence are
+// exactly the two things that did not distinguish the broken state.
+await control('a successful build log carries the builder\'s own output', 'GREEN', null, async () => {
+  const { root, name, revision } = await stagedProject('cutover-successlog-', {
+    name: 'paper-log', mainFile: 'main.md', format: 'markdown',
+    files: { 'main.md': '# Paper\n\nProse enough to index.\n' },
+  })
+  const { ok, error } = await runWorker({ projectsDir: root, name, sourceRevision: revision })
+  assert.equal(ok, true, `control: the build must SUCCEED -- a failed build's log proves nothing here (${error || ''})`)
+  const log = join(projectDir(name), 'build.log')
+  assert.ok(existsSync(log), 'OBSERVABLE build.log: absent')
+  const text = readFileSync(log, 'utf8')
+  assert.match(text, /\[markdown\] Reading /, 'OBSERVABLE build.log content: the builder\'s read line')
+  assert.match(text, /\[markdown\] paper-log: indexed \d+ column/, 'OBSERVABLE build.log content: the builder\'s index line')
+})
+
 // ── 3. book ToC regeneration, markdown and qmd only ─────────────────────────
 // A DIFFERENT fix from control 2: finalizeDocumentBuild already has the hook,
 // `if (result.regenerateBookTocs)`, and no adapter sets the flag. One needs a

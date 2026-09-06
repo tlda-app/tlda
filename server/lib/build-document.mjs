@@ -38,7 +38,18 @@ export async function buildDocument(project, context, services = {}) {
   // the `logMissing` outage that made a failed markdown or .qmd build
   // undiagnosable. Binding the builders through the registry bypassed the
   // wrappers that used to do this, so it moved here rather than being lost.
-  const run = () => adapter.build({ ...context, view: adapter.view })
+  // `run` MUST take the wrapper's logger and hand it to the adapter as `log`.
+  //
+  // Written first as `() => adapter.build({ ...context, view })`, which threw
+  // the logger away: `withBuildLog` passed `addLog` to a function that ignored
+  // it, the adapter kept `context.log` (console.log), and the wrapper captured
+  // nothing. A SUCCESSFUL build then wrote a one-byte `build.log` -- a newline.
+  //
+  // It looked fixed because the only control was a FAILING build, and the
+  // failure path appends the error to `lines` inside `withBuildLog` itself, so
+  // that log had content whether or not the builder's output was captured. The
+  // control proved the catch, not the wire.
+  const run = addLog => adapter.build({ ...context, log: addLog ?? context.log, view: adapter.view })
   const result = adapter.ownsCompletion ? await run() : await withBuildLog(context.name, run)
 
   if (result?.disposition === 'superseded') return { adapter: adapter.id, disposition: 'superseded' }
