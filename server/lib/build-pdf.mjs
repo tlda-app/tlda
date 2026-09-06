@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import { basename, extname, join } from 'node:path'
@@ -14,6 +14,48 @@ function decodeXml(value) {
     .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+}
+
+/**
+ * Give every page's SVG ids its own namespace.
+ *
+ * `pdftocairo -svg` emits one glyph definition per distinct glyph as
+ * `<g id="glyph-0-3">`, and draws text as `<use xlink:href="#glyph-0-3">`. It
+ * numbers from zero **per page**, so page 1 and page 2 both define `glyph-0-3`.
+ *
+ * Every page of a document is in ONE dom. A duplicate id is not an error in
+ * HTML; the reference simply resolves to the first match in document order, so
+ * page 2 draws page 1's outline wherever their glyph numbers collide.
+ *
+ * **Sharing an id is not by itself the fault, and the count of shared ids does
+ * not measure one.** Poppler numbers glyphs in encounter order, so two pages
+ * drawn from the same font program usually agree: the same id names the same
+ * outline and resolving to the wrong page's copy is invisible. Measured on a
+ * four-page single-font document — 232 shared id pairs across all pages, **zero**
+ * naming different geometry, and the document renders correctly with all of page
+ * 2's ids resolving to page 1's.
+ *
+ * The fault is cross-page reuse of an id for a DIFFERENT outline, which happens
+ * as soon as the pages do not share a font program. Measured on a two-page
+ * fixture with a different font per page: 43 shared ids, **39 of them naming
+ * different geometry**, and page 2's heading renders as `Page on i  Tms i i
+ * kmam` where it should read `Page two in Bookman`. That is the corruption this
+ * prevents.
+ *
+ * Fixed in the artifact rather than at every reader: the file is made
+ * self-consistent once, at build time, instead of each viewer rewriting ids on
+ * injection.
+ *
+ * Deliberately renames EVERY id, not only `glyph-`. Today poppler emits nothing
+ * else for these documents — no clip paths, no masks, no `url(#…)` — but a
+ * rename that covers only the ids we happened to see is the kind that breaks
+ * quietly on the first document that has one more.
+ */
+export function namespaceSvgIds(svg, prefix) {
+  return svg
+    .replace(/\bid="([^"]+)"/g, (_, id) => `id="${prefix}${id}"`)
+    .replace(/\b(xlink:href|href)="#([^"]+)"/g, (_, attr, id) => `${attr}="#${prefix}${id}"`)
+    .replace(/url\(#([^)]+)\)/g, (_, id) => `url(#${prefix}${id})`)
 }
 
 export function parsePdfInfo(text) {
@@ -71,6 +113,9 @@ export async function extractPdfArtifacts({ pdfPath, outDir, target, project, ou
     await execFile('pdftocairo', ['-svg', '-f', String(pageNumber), '-l', String(pageNumber), pdfPath, join(outDir, svgFile)], {
       maxBuffer: 50 * 1024 * 1024,
     })
+    // Namespace this page's ids before anything can load it beside another page.
+    const svgPath = join(outDir, svgFile)
+    writeFileSync(svgPath, namespaceSvgIds(readFileSync(svgPath, 'utf8'), `p${pageNumber}-`))
     const { stdout: bboxXml } = await execFile('pdftotext', ['-f', String(pageNumber), '-l', String(pageNumber), '-bbox-layout', pdfPath, '-'], {
       encoding: 'utf8',
       maxBuffer: 50 * 1024 * 1024,
