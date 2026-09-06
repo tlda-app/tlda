@@ -103,6 +103,18 @@ const LEGACY_AXES = {
   qmd:      { sourceFormat: 'qmd',  renderer: 'quarto',   documentFormat: 'html' },
   png:      { sourceFormat: 'png',  renderer: 'identity', documentFormat: 'paged' },
   book:     { sourceFormat: 'book', renderer: 'identity', documentFormat: 'book' },
+  // `pdf` was missing here for six commits after it became a project format,
+  // and the omission was silent in the worst way: an unknown key falls back to
+  // the `svg` row, so a PDF project reported sourceFormat `tex` and renderer
+  // `latex`. That is not a cosmetic wrong answer — `hasSourceMapping` reads
+  // exactly those two fields, so every PDF would have claimed synctex and sent
+  // its annotations down the LaTeX anchoring path, defeating the client change
+  // made specifically to stop that.
+  //
+  // The fallback is what hid it. A missing row does not throw or return
+  // undefined; it silently answers "LaTeX", which is the same unmarked-default
+  // problem this table exists to remove, reproduced inside the table itself.
+  pdf:      { sourceFormat: 'pdf',  renderer: 'identity', documentFormat: 'paged' },
 }
 
 export function legacyDocumentAxes(project = {}) {
