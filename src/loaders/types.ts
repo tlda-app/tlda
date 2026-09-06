@@ -52,6 +52,19 @@ export interface TargetInfo {
   title: string
   pages: number
   basePath: string
+  /**
+   * The real size of each page, in points, when the builder knows it.
+   *
+   * A LaTeX target does not carry this and does not need to: its pages are
+   * rendered from a class that fixes the paper size, and the layout's US Letter
+   * constant has always described them. A PDF is the opposite — it arrives at
+   * whatever size its author chose, and `pdfinfo` reads that per page, so the
+   * page box has to come from the document rather than from a constant.
+   *
+   * Optional on purpose. Absent means "use the constant", which is what every
+   * existing caller does.
+   */
+  pageSizes?: { width: number; height: number }[]
 }
 
 export interface SvgDocument {

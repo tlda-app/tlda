@@ -147,7 +147,21 @@ export async function buildPdfDocument(name, addLog = console.log) {
   //
   // Belongs in `buildDocument()` with the manifest publish when that boundary
   // is ported; both move together.
-  const targets = [{ texBase: target, mainFile, pages: pages.length }]
+  // Page SIZES deliberately do not go here. They live in the manifest, which
+  // already records width and height per page and is already served, so putting
+  // them on `targets` as well would be a second encoding of one fact — the
+  // thing this RC exists to remove.
+  //
+  // It was tried, and it broke the build: adding `pageSizes` to this array made
+  // every PDF build fail at `git rev-parse HEAD` in the shadow repo, while a
+  // markdown control on the same server kept succeeding. Bisected to this one
+  // field. I did not chase why the coupling exists, because the field should
+  // not have been here in the first place.
+  const targets = [{
+    texBase: target,
+    mainFile,
+    pages: pages.length,
+  }]
   await getBuildReporter().updateProject(name, {
     buildStatus: 'success',
     pages: pages.length,

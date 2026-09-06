@@ -431,11 +431,33 @@ function DocumentApp() {
       } else {
         // SVG: create layout immediately, pages fetched async after editor mounts.
         // targets[] always present from API; map to TargetInfo for the layout.
+        // A document that knows its own page sizes says so in its manifest.
+        //
+        // The layout otherwise derives every page box from a US Letter constant,
+        // which is a true description of a LaTeX render and false for a PDF —
+        // measured in a browser: an A4 document drawn at ratio 1.294 where A4 is
+        // 1.414, in a box identical to the Letter document beside it.
+        //
+        // Read from the manifest rather than carried on `targets`, because the
+        // manifest already records width and height per page. Copying them onto
+        // `targets` would be a second encoding of one fact, and when I tried it
+        // every PDF build began failing in the shadow repo.
+        //
+        // Only for `pdf`: a LaTeX project has no manifest, and asking for one on
+        // every document load would be a 404 per open to learn nothing.
+        let pageSizes: { width: number; height: number }[] | undefined
+        if (shownAs === 'pdf') {
+          pageSizes = await fetch(`${fullBasePath}document-manifest.json`)
+            .then(r => (r.ok ? r.json() : null))
+            .then(m => m?.pages?.map((p: { width: number; height: number }) => ({ width: p.width, height: p.height })))
+            .catch(() => undefined)
+        }
         const targets = config.targets?.map(t => ({
           name: t.texBase,
           title: t.texBase.replace(/_/g, ' '),
           pages: t.pages,
           basePath: fullBasePath,
+          pageSizes,
         }))
         document = createSvgDocumentLayout(projectName, fullBasePath, targets)
         // Name what this is instead of leaving it to be inferred from silence.

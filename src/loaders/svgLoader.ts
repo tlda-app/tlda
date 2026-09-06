@@ -40,7 +40,33 @@ export const pageSpacing = PAGE_GAP
 export function createSvgDocumentLayout(name: string, basePath: string, targets?: TargetInfo[]): SvgDocument {
   const pages: SvgPage[] = []
   const width = TARGET_WIDTH
-  const height = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
+
+  // The page box comes from the DOCUMENT when the document knows it.
+  //
+  // This used to be `PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)` for every page of
+  // every document, and `layoutConstants.ts` labels those two as US Letter. That
+  // is a true description of a LaTeX render — its class fixes the paper size —
+  // and it is false for a PDF, which arrives at whatever size its author chose.
+  //
+  // Measured in a browser before this change: an A4 document rendered in a box
+  // of 800 x 1035, ratio 1.294, identical to the Letter document beside it. A4
+  // is 1.414. The manifest carried 595.276 x 841.89 the whole time; nothing
+  // read it.
+  //
+  // Annotation placement maps canvas coordinates through this same box, so the
+  // wrong shape is not only a wrong picture — every anchor on a non-Letter page
+  // was displaced by the same factor.
+  //
+  // Per PAGE rather than per document, because a PDF may mix page sizes and
+  // `pdfinfo` reports each one. Absent `pageSizes` keeps the constant, which is
+  // every LaTeX caller, so their layout is unchanged to the pixel.
+  const heightFor = (target: TargetInfo, pageIndex: number) => {
+    const size = target.pageSizes?.[pageIndex]
+    if (!size || !(size.width > 0) || !(size.height > 0)) {
+      return PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
+    }
+    return size.height * (TARGET_WIDTH / size.width)
+  }
   let globalIdx = 0
 
   if (!targets?.length) {
@@ -52,7 +78,7 @@ export function createSvgDocumentLayout(name: string, basePath: string, targets?
   const effectiveTargets = targets
   const pageBounds = layoutPageBounds(
     effectiveTargets.flatMap(target =>
-      Array.from({ length: target.pages }, () => ({ width, height }))
+      Array.from({ length: target.pages }, (_, i) => ({ width, height: heightFor(target, i) }))
     ),
     'vertical',
     pageSpacing,
@@ -71,7 +97,7 @@ export function createSvgDocumentLayout(name: string, basePath: string, targets?
         assetId: AssetRecordType.createId(pageId),
         shapeId: createShapeId(pageId),
         width,
-        height,
+        height: heightFor(target, i),
         targetBasePath: basePath,
         pageInTarget: i + 1,
         targetName: target.name,
