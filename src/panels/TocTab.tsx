@@ -97,6 +97,7 @@ export function TocTab({ query = '' }: { query?: string }) {
   const [localAirplaneState, setLocalAirplaneState] = useState<AirplaneState>('off')
   const [localAirplaneProgress, setLocalAirplaneProgress] = useState<OfflineProgress>({ complete: 0, total: 0 })
   const [localAirplaneError, setLocalAirplaneError] = useState('')
+  const compactControls = useSyncExternalStore(subscribePref, () => getPref('toc-controls-compact'))
 
   // Hot session: most recently pushed book member (must be before any early returns)
   const book = useBook()
@@ -627,17 +628,21 @@ export function TocTab({ query = '' }: { query?: string }) {
         </div>
       )}
       <div className="toc-bottom-controls">
-        <button
-          className={`toc-diff-hint toc-state-control${airplaneState === 'ready' ? ' toc-state-control--active' : ''}${airplaneState === 'error' ? ' toc-state-control--error' : ''}`}
-          type="button"
-          onClick={toggleAirplaneMode}
-          disabled={airplaneState === 'loading' || offlineProjects.length === 0}
-          title={airplaneError || (airplaneState === 'ready' ? 'Turn Airplane mode off' : 'Cache this project for offline reading')}
-          aria-pressed={airplaneState === 'ready'}
-        >
-          <AirplaneIcon />
-          <span>{airplaneState === 'loading' ? `Caching ${airplaneProgress.complete}/${airplaneProgress.total}` : airplaneState === 'ready' ? 'Ready offline' : airplaneState === 'error' ? 'Offline failed' : 'Airplane mode'}</span>
-        </button>
+        <div className={`toc-state-controls${compactControls ? ' toc-state-controls--compact' : ''}`}>
+          <button
+            className={`toc-diff-hint toc-state-control${airplaneState === 'ready' ? ' toc-state-control--active' : ''}${airplaneState === 'error' ? ' toc-state-control--error' : ''}`}
+            type="button"
+            onClick={toggleAirplaneMode}
+            disabled={airplaneState === 'loading' || offlineProjects.length === 0}
+            title={airplaneError || (airplaneState === 'ready' ? 'Turn Airplane mode off' : 'Cache this project for offline reading')}
+            aria-pressed={airplaneState === 'ready'}
+          >
+            <AirplaneIcon />
+            <span className="toc-state-control-label">{airplaneState === 'loading' ? `Caching ${airplaneProgress.complete}/${airplaneProgress.total}` : airplaneState === 'ready' ? 'Ready offline' : airplaneState === 'error' ? 'Offline failed' : 'Airplane mode'}</span>
+          </button>
+          <CameraLinkToggle />
+          <JoinVoiceVideoToggle />
+        </div>
         {ctx?.onToggleWholeDocumentDiff && (
           <button
             className={`toc-diff-hint history-compare-btn${ctx.wholeDocumentDiffVisible ? ' active' : ''}`}
@@ -650,8 +655,6 @@ export function TocTab({ query = '' }: { query?: string }) {
           </button>
         )}
         <PlaceStackNav />
-        <CameraLinkToggle />
-        <JoinVoiceVideoToggle />
       </div>
       {/* HideDefsToggle removed */}
     </div>
@@ -707,7 +710,7 @@ export function CameraLinkToggle() {
       aria-pressed={linked}
     >
       <GlassesIcon />
-      <span>{linked ? 'Cameras linked' : 'Link cameras'}</span>
+      <span className="toc-state-control-label">{linked ? 'Cameras linked' : 'Link cameras'}</span>
     </button>
   )
 }
@@ -783,7 +786,7 @@ export function JoinVoiceVideoToggle() {
           aria-label="Join the live voice room for this paper"
         >
           <WhisperIcon />
-          <span>Voice unavailable</span>
+          <span className="toc-state-control-label">Voice unavailable</span>
         </button>
         <button
           className="toc-diff-hint toc-state-control"
@@ -797,7 +800,7 @@ export function JoinVoiceVideoToggle() {
           aria-label="Video chat is not configured on this server; drag to place video"
         >
           <VideoCameraIcon />
-          <span>Video unavailable</span>
+          <span className="toc-state-control-label">Video unavailable</span>
         </button>
       </>
     )
@@ -814,7 +817,7 @@ export function JoinVoiceVideoToggle() {
         aria-pressed={s.intent && !s.muteIntent}
       >
         <WhisperIcon />
-        <span>{s.intent && !s.muteIntent ? 'Voice on' : 'Voice off'}</span>
+        <span className="toc-state-control-label">{s.intent && !s.muteIntent ? 'Voice on' : 'Voice off'}</span>
       </button>
       <button
         className={`toc-diff-hint toc-state-control${s.cameraIntent || s.cameraOn ? ' toc-state-control--active' : ''}`}
@@ -836,7 +839,7 @@ export function JoinVoiceVideoToggle() {
         aria-pressed={s.cameraIntent || s.cameraOn}
       >
         <VideoCameraIcon />
-        <span>{s.cameraIntent || s.cameraOn ? 'Video on' : 'Video off'}</span>
+        <span className="toc-state-control-label">{s.cameraIntent || s.cameraOn ? 'Video on' : 'Video off'}</span>
       </button>
     </>
   )
