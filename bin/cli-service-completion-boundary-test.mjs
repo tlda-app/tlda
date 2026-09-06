@@ -179,23 +179,19 @@ models: {}
 writeFileSync(join(applyConfigDir, 'server.yaml'), '')
 writeFileSync(join(applyBinDir, 'launchctl'), `#!/bin/sh
 if [ "$1" = "managername" ]; then echo Aqua; exit 0; fi
-if [ "$1" = "print" ]; then exit 113; fi
+loaded="$TLDA_CONFIG_DIR/loaded.plist"
+if [ "$1" = "print" ]; then test -f "$loaded"; exit $?; fi
+if [ "$1" = "bootout" ]; then rm -f "$loaded"; exit 0; fi
 if [ "$1" = "bootstrap" ]; then
-  case "$3" in
-    *capcheck*) exit 0 ;;
-    *)
-      counter="$TLDA_CONFIG_DIR/config-apply-attempts"
-      n=0
-      if [ -f "$counter" ]; then n=$(cat "$counter"); fi
-      n=$((n + 1))
-      echo "$n" > "$counter"
-      if [ "$n" -eq 1 ]; then echo "transient bootstrap refusal" >&2; exit 7; fi
-      exit 0
-      ;;
-  esac
+  cp "$3" "$loaded"
+  exit 0
 fi
+if [ "$1" = "kickstart" ]; then test -f "$loaded"; exit $?; fi
 exit 0
 `, { mode: 0o755 })
+const applyPlist = join(applyFixture, 'Library', 'LaunchAgents', 'com.tlda.fleet-daemon.stable.plist')
+writeFileSync(applyPlist, '<plist><dict><key>Label</key><string>com.tlda.fleet-daemon.stable</string></dict></plist>\n')
+writeFileSync(join(applyConfigDir, 'loaded.plist'), readFileSync(applyPlist, 'utf8'))
 try {
   const applyCliRoot = process.env.TLDA_CONFIG_APPLY_CLI_ROOT || root
   const startedAt = Date.now()
@@ -215,16 +211,16 @@ try {
   })
   const elapsed = Date.now() - startedAt
   assert.equal(apply.status, 0, apply.stderr)
-  assert.ok(elapsed < 2000, `config apply should report pending without retrying (${elapsed}ms)`)
-  assert.match(apply.stdout, /Pending com\.tlda\.fleet-daemon\.stable/)
-  assert.match(apply.stdout, /Nothing was unloaded/)
+  assert.ok(elapsed < 2000, `config apply should replace a loaded job without retrying (${elapsed}ms)`)
+  assert.match(apply.stdout, /Updated com\.tlda\.fleet-daemon\.stable/)
+  assert.doesNotMatch(apply.stdout, /Pending/)
   assert.match(apply.stdout, /tlda config apply complete/)
-  assert.equal(readFileSync(join(applyConfigDir, 'config-apply-attempts'), 'utf8').trim(), '1')
   const daemonScript = join(applyCliRoot, 'bin', 'fleet-daemon.mjs')
   const expectedScript = resolveMainDaemonScript(daemonScript) || daemonScript
-  const plist = readFileSync(join(applyFixture, 'Library', 'LaunchAgents', 'com.tlda.fleet-daemon.stable.plist'), 'utf8')
+  const plist = readFileSync(applyPlist, 'utf8')
   assert.match(plist, new RegExp(expectedScript.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   assert.match(plist, new RegExp(dirname(dirname(expectedScript)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.equal(readFileSync(join(applyConfigDir, 'loaded.plist'), 'utf8'), plist)
   console.log('cli config completion boundary: ok')
 } finally {
   rmSync(applyFixture, { recursive: true, force: true })
