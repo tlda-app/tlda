@@ -938,7 +938,7 @@ export async function buildMarkdownDocument(name, addLog = console.log, { view =
       },
     ),
     // Book tables of contents are regenerated after a markdown build. That used
-    // to live in the `buildMarkdown` wrapper, which called
+    // to live in an exported wrapper around this function, which called
     // `getBuildReporter().regenerateBookTocs(name)` after the builder returned
     // -- so routing through the registry, which binds THIS function, silently
     // stopped regenerating them. `finalizeDocumentBuild` already had the hook
