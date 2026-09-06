@@ -3,6 +3,7 @@ import type { SvgPage, SvgDocument, SlideInfo } from './types'
 import { deckLayout, type DeckSlide } from './deckLayout'
 
 export type SlidePageEntry = SlideInfo
+export type SlidePageEntryInput = Omit<SlideInfo, 'variant'> & { variant?: 'chapter' | 'slides' }
 
 /**
  * Load a reveal deck as ONE document on the canvas.
@@ -36,8 +37,18 @@ export async function loadSlidesDocument(
   if (!Array.isArray(allPageInfos)) {
     throw new Error(`page-info.json for "${name}" is not a list of pages`)
   }
+  return createSlidesDocumentFromPageInfo(name, basePath, allPageInfos)
+}
+
+export function createSlidesDocumentFromPageInfo(
+  name: string,
+  basePath: string,
+  allPageInfos: SlidePageEntryInput[],
+): SvgDocument {
   const slideVariant = allPageInfos.filter(info => info.variant === 'slides')
-  const pageInfos = slideVariant.length > 0 ? slideVariant : allPageInfos
+  const pageInfos: SlideInfo[] = (slideVariant.length > 0
+    ? slideVariant
+    : allPageInfos.filter(info => info.variant !== 'chapter')) as SlideInfo[]
 
   const deck = pageInfos[0]
   if (!deck) {
