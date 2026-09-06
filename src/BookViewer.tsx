@@ -110,6 +110,12 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
           basePath: member.basePath,
         }))
         doc = createSvgDocumentLayout(member.key, member.basePath, targets)
+        // Same stamping as the standalone path in App.tsx, and it has to be
+        // here too or the two disagree: a PDF opened on its own would know it
+        // has no synctex while the same PDF as a book member would not, and
+        // every annotation on it would take the LaTeX anchoring path. A gap
+        // like that is invisible until someone puts a PDF in a book.
+        doc.format = shownAs === 'pdf' ? 'pdf' : 'svg'
       }
       setDocument(doc)
     } catch (e) {

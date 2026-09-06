@@ -15,6 +15,11 @@
 
 import { exec as execCb, execSync, spawn } from 'child_process'
 import { promisify } from 'util'
+// Same read as server/routes/projects.mjs and mcp-server/lib/pdfCoords.mjs — one
+// JSON file is the source of truth for page geometry, and this is how the
+// server side already reads it.
+import { createDocumentManifest } from './document-manifest.mjs'
+const layoutConstants = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'shared', 'layout-constants.json'), 'utf8'))
 const _execAsync = promisify(execCb)
 // Ensure TeX binaries are available (launchd doesn't inherit full shell PATH).
 // Check common TeX locations across platforms.
@@ -2030,6 +2035,28 @@ export async function recordBuildVersion({
   return { hash: result.hash, committed: true, result }
 }
 
+/**
+ * Announce a finished build, for adapters that do not announce their own.
+ *
+ * `runBuild` has always ended with these two lines (the `done` progress signal
+ * and the build-complete webhook) inside its own tail. Markdown, Quarto, HTML,
+ * slides and native PDF never had them: they updated the project record and
+ * broadcast a reload, and nothing told the webhook or the progress pill that
+ * the build was over.
+ *
+ * `buildDocument()` calls this for every adapter that does not own its own
+ * completion, which is what makes "one build, one completion" a property of
+ * the boundary rather than of each builder remembering.
+ *
+ * It was imported by `build-document.mjs` from the day that module landed and
+ * was never written -- an ESM link error, so `buildDocument()` could not be
+ * imported at all and neither could anything importing it.
+ */
+export function completeBuildSuccess(name, { elapsed, pages }) {
+  signalBuildProgress(name, 'done', `${elapsed}s`)
+  emitBuildComplete(name, { status: 'success', elapsed, pages, errors: [] })
+}
+
 export async function finalizeBuildVersion({
   name,
   ctx = { addLog: (message) => console.log(`[build:${name}] ${message}`) },
@@ -2162,7 +2189,41 @@ export async function finalizeBuildVersion({
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
-export async function runBuild(name, { sourceRevision = null, acceptSeq = null } = {}) {
+/**
+ * A target's real page size, from its DVI.
+ *
+ * Not from the emitted SVG, because a LaTeX build emits none: pages are
+ * rendered on demand by `buildCurrentPage`, so at build time there is no image
+ * to measure. Listing a real build's whole `output/` shows the DVI, the synctex
+ * and the lookup maps, and no `-page-N.svg` at all.
+ *
+ * The DVI is what dvisvgm reads, and it is invoked with `--bbox=papersize` — so
+ * the paper size the renderer will use is the `papersize` special written into
+ * the DVI. Reading the same special is reading the same fact, one step earlier,
+ * and it needs no renderer: measured on a real Beamer DVI as
+ * `!papersize=364.19536pt,273.14662pt`, which is Beamer's 128x96mm landscape.
+ *
+ * A plain `article` writes no such special — `geometry` and `beamer` do — and
+ * for that case the driver's default page is what dvisvgm falls back to, which
+ * is the US Letter constant. So the fallback here is not a guess; it is the
+ * same answer by the same rule.
+ */
+export function dviPaperSize(dviPath) {
+  const fallback = { width: layoutConstants.PDF_WIDTH, height: layoutConstants.PDF_HEIGHT }
+  try {
+    if (!existsSync(dviPath)) return fallback
+    const match = readFileSync(dviPath, 'latin1').match(/papersize=([\d.]+)pt,([\d.]+)pt/)
+    if (!match) return fallback
+    const width = Number(match[1])
+    const height = Number(match[2])
+    if (!(width > 0) || !(height > 0)) return fallback
+    return { width, height }
+  } catch {
+    return fallback
+  }
+}
+
+export async function runBuild(name, { sourceRevision = null, acceptSeq = null, view = null } = {}) {
   // Serialize builds per project: wait for any in-flight build to finish before starting.
   while (_buildLocks.has(name)) {
     // Kill the running build so we don't wait for it to complete naturally.
@@ -2180,7 +2241,7 @@ export async function runBuild(name, { sourceRevision = null, acceptSeq = null }
   const previousActiveBuild = activeBuilds.get(name)
 
   try {
-    return await _runBuildInner(name, { sourceRevision, acceptSeq })
+    return await _runBuildInner(name, { sourceRevision, acceptSeq, view })
   } catch (e) {
     // _runBuildInner marks the project building before validating its inputs.
     // Its own catch starts later, after the active-build record is created, so
@@ -2201,7 +2262,7 @@ export async function runBuild(name, { sourceRevision = null, acceptSeq = null }
   }
 }
 
-async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } = {}) {
+async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null, view = null } = {}) {
   // Increment version so any in-flight mirror callbacks from previous builds
   // can detect they've been superseded and skip.
 
@@ -2491,6 +2552,47 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
     }
 
     signalReload(name, null)
+
+    // Describe what was built, so a LaTeX render can pass through the same
+    // completion boundary as every other renderer.
+    //
+    // `buildDocument()` refuses an adapter that returns no manifest, and the
+    // LaTeX adapter is `runBuild` — so until this existed, LaTeX could not be
+    // routed through the shared boundary at all, and production kept its own
+    // dispatch. That is the gap: the registry named a `latex` adapter that
+    // nothing could call.
+    //
+    // Built from `targetMeta`, which already carries every target's tex base,
+    // main file and page count — the same three facts the `targets` patch above
+    // writes. Page geometry is the US Letter constant here and that is correct:
+    // a LaTeX document's size comes from its class, and dvisvgm's viewBox is
+    // `-72 -72 612 792`. Only a PDF needs its size measured.
+    //
+    // ADDITIVE for now. Nothing consumes this yet; `runBuild` still performs
+    // its own completion below, and the worker still dispatches directly. The
+    // cutover removes both, and doing it in one commit is how the behaviours
+    // main grew after the RC branch get deleted without anyone noticing.
+    const manifest = createDocumentManifest(
+      { ...(await readProject(name)), mainFile: targetMeta[0]?.mainFile || null },
+      targetMeta.flatMap(t => {
+        const size = dviPaperSize(join(outDir, `${t.texBase}.dvi`))
+        return Array.from({ length: t.expectedPages || 0 }, (_, i) => ({
+          file: `${t.texBase}-page-${i + 1}.svg`,
+          width: size.width,
+          height: size.height,
+        }))
+      }),
+      {
+        sourceMapping: 'synctex',
+        // The adapter's own declaration when there is one. `latex-slides`
+        // carries `presentation: true` and `latex` carries false, and hardcoding
+        // the second labelled every Beamer deck as not a presentation. The
+        // fallback is the paged case, which is what a direct caller of runBuild
+        // is building.
+        view: view || { kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false } },
+      },
+    )
+    status.manifest = manifest
 
     await _reporter.updateProject(name, {
       buildStatus: 'success',

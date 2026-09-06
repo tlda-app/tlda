@@ -50,7 +50,8 @@ import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { createFleetFrameStallTracker, resolveStallMs } from './lib/fleet-frame-stalls.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
-import { viewFormat } from '../shared/document-formats.mjs'
+import { viewFormat, hasSourceMapping } from '../shared/document-formats.mjs'
+import { resolveContainedPath } from './lib/path-containment.mjs'
 import { resolveLocalImage } from '../shared/local-image.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
@@ -4921,6 +4922,32 @@ app.use('/docs', (req, res, next) => {
     // a project whose targets were missing served 404 for every real page while
     // claiming the page was out of range. That is two lies in one response: the
     // page exists, and the reason is not its number.
+    // A page that is already rendered is served, not rebuilt.
+    //
+    // Everything below this point is the LaTeX on-demand renderer: it asks
+    // shadow-repo to compile a DVI and rasterise the page, because for a LaTeX
+    // document the page does not exist until someone asks for it. A document
+    // whose renderer is `identity` has the opposite property — its pages were
+    // written once at build time and there is no source to re-render from, so
+    // routing it here produced a 404 for a file sitting in `output/`.
+    //
+    // Measured: `paper-page-1.svg` 404 while `paper-page-1-text.json` and
+    // `paper.pdf` from the SAME directory both served 200. The document built,
+    // reported four pages, published a correct manifest, and could not show a
+    // single one.
+    //
+    // `hasSourceMapping` is the same question the annotation anchor and the
+    // source-map loader ask — is this a LaTeX render — so the three agree by
+    // construction instead of each testing for a set of formats.
+    if (!hasSourceMapping(project)) {
+      const rendered = join(PROJECTS_DIR, name, 'output', `${texBase}-page-${pageNum}.svg`)
+      const contained = resolveContainedPath(join(PROJECTS_DIR, name, 'output'), `${texBase}-page-${pageNum}.svg`)
+      if (contained && existsSync(rendered)) {
+        res.set('Cache-Control', 'no-cache')
+        return res.sendFile(resolve(rendered), { dotfiles: 'allow' })
+      }
+    }
+
     const targets = Array.isArray(project?.targets) ? project.targets : []
     if (targets.length === 0) {
       return res.status(409).json({

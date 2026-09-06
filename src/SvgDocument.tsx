@@ -66,7 +66,7 @@ import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
 import { FleetChatTool } from './tools/FleetChatTool'
 import { FleetAgentsTool } from './tools/FleetAgentsTool'
-import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
+import { hasSourceMapping } from '../shared/document-formats.mjs'
 import { fetchDocumentSvgPages } from './svgPageFetchPolicy'
 import { FleetSearchTool } from './tools/FleetSearchTool'
 import { FleetInboxTool } from './tools/FleetInboxTool'
@@ -1301,7 +1301,17 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           // Load source map (labels index) for ref resolution.
           // For multi-target docs, pass targets so per-target source-maps are merged
           // with global page offsets — the bare alias only covers the primary target.
-          if (!HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')) {
+          // The same question as the annotation anchor asks, and for the same
+          // reason: a source map is a LaTeX build artifact, so ask whether this
+          // document has source mapping rather than listing the formats that do
+          // not. The old test was a negative against HTML_PAGE_FORMATS plus an
+          // inline ['png','slides'] literal repeated at four sites — the drift
+          // that shared/document-formats.mjs was written to end, still spelled
+          // out by hand here.
+          //
+          // A PDF reaches this line with pages and a targets array, so under the
+          // old test it would fetch a labels index that no build ever wrote.
+          if (hasSourceMapping(document)) {
             sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
           }
 

@@ -1,22 +1,20 @@
 /**
- * Format-specific build logic for non-SVG project formats.
+ * The HTML and slides builders, and the build-log wrapper every non-LaTeX
+ * adapter runs inside.
  *
- * Each builder: copies source → output, generates page-info.json,
- * updates project metadata, signals reload to viewers.
+ * Each builder copies source → output, generates page-info.json, and returns a
+ * document manifest. It does NOT update the project record, publish the
+ * manifest or signal a reload: `buildDocument()` owns those, and this file said
+ * otherwise until the cutover moved them.
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
 import { join, basename } from 'path'
-import { sourceDir as getSourceDir, outputDir as getOutputDir, projectDir, readClientSourceManifest } from './project-store.mjs'
+import { sourceDir as getSourceDir, outputDir as getOutputDir, projectDir, readProject, readClientSourceManifest } from './project-store.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
-import { buildMarkdownDocument } from './build-markdown.mjs'
-import { buildQmdDocument } from './build-qmd.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
-
-function signalReload(name, pages) {
-  getBuildReporter().broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: Date.now() })
-}
 
 /**
  * Declare paper scope for the formats whose project IS a rendered document.
@@ -59,7 +57,7 @@ async function writeSourceScope(name, srcDir) {
  * the diagnostics path (on failure) and the publish swap (on success) read it
  * from. Written in a `finally` because the failure is the case that needs it.
  */
-async function withBuildLog(name, run) {
+export async function withBuildLog(name, run) {
   const lines = []
   const addLog = (message) => {
     lines.push(String(message))
@@ -80,27 +78,35 @@ async function withBuildLog(name, run) {
   }
 }
 
-export async function buildMarkdown(name) {
-  await withBuildLog(name, (addLog) => buildMarkdownDocument(name, addLog))
-  await getBuildReporter().regenerateBookTocs(name)
+/**
+ * Describe what an HTML build produced, from what the build already knows.
+ *
+ * The one fact worth deriving rather than declaring is source mapping. An HTML
+ * project usually holds a rendered document and nothing that produced it, so
+ * there is no source to map back to. But a tlda-aware Quarto render ships a
+ * `tlda-manifest.json`, and `pageInfoFromTldaManifest` requires every page in it
+ * to name its `.qmd` — so when that manifest is present each page DOES carry a
+ * source coordinate, and when it is absent none does.
+ *
+ * That is why this reads `renderedProject` rather than declaring a constant:
+ * the same builder produces both kinds of document, and only the build knows
+ * which one it just handled. Declaring `false` would tell every reader that a
+ * tlda render cannot map back to its source, which is the one case where it can.
+ *
+ * Pages are `pageInfo` unchanged — the same entries written to `page-info.json`,
+ * so the manifest and the viewer cannot describe different documents.
+ */
+function htmlManifest(project, pageInfo, mapsToSource) {
+  return createDocumentManifest(project, pageInfo, {
+    sourceMapping: mapsToSource ? 'page-source' : 'none',
+    view: {
+      kind: 'html-pages',
+      capabilities: { presentation: false, sourceMapping: mapsToSource, searchableText: true },
+    },
+  })
 }
 
-// Takes no options, like its three siblings. The worker passes `changedFiles`
-// to every builder and the others have always ignored it: it decides whether to
-// build at all (build-decision.mjs), not how much of a project to render.
-export async function buildQmd(name) {
-  await withBuildLog(name, (addLog) => buildQmdDocument(name, addLog))
-  await getBuildReporter().regenerateBookTocs(name)
-}
-
-// Wrapped for the same reason markdown and qmd are: a build that fails has to
-// leave an account of why. These two threw plain errors into a `console.log`
-// that nothing keeps, so `No HTML file found in source` reached no reader.
-export async function buildHtml(name) {
-  return withBuildLog(name, () => buildHtmlDocument(name))
-}
-
-async function buildHtmlDocument(name) {
+export async function buildHtmlDocument(name, addLog = console.log) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -143,15 +149,40 @@ async function buildHtmlDocument(name) {
 
   await writeSourceScope(name, srcDir)
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
-  signalReload(name, pageInfo.length)
-  console.log(`[html] ${name}: ${pageInfo.length} pages`)
+  addLog(`[html] ${name}: ${pageInfo.length} pages`)
+  return { manifest: htmlManifest(await readProject(name), pageInfo, Boolean(renderedProject)) }
 }
 
-export async function buildSlides(name) {
-  return withBuildLog(name, () => buildSlidesDocument(name))
+/**
+ * Describe what a slides build produced.
+ *
+ * A deck is ONE page carrying N slide coordinates, not N pages. That is the
+ * shape `buildSlidesDocument` already writes to `page-info.json` — `[deck]`,
+ * where `deck.slides` is the address space — and it is a product decision
+ * rather than an artifact of the parser: the deck keeps a single webR session,
+ * so a name defined on one slide is visible on the rest, and splitting it into
+ * a page per slide would split the session with it.
+ *
+ * So the manifest reports `pages.length === 1` for a deck of any size, and the
+ * slide count lives in `pages[0].slides`. A manifest that reported one page per
+ * slide would describe a different document from the one the viewer loads.
+ *
+ * `presentation: true` is the whole point of the view, and it is declared here
+ * rather than derived because — unlike quarto, which only learns what it made
+ * after rendering — this builder has already refused anything that is not a
+ * reveal.js deck by the time it gets here.
+ */
+function slidesManifest(project, pageInfo) {
+  return createDocumentManifest(project, pageInfo, {
+    sourceMapping: 'none',
+    view: {
+      kind: 'slides',
+      capabilities: { presentation: true, sourceMapping: false, searchableText: true },
+    },
+  })
 }
 
-async function buildSlidesDocument(name) {
+export async function buildSlidesDocument(name, addLog = console.log) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -176,6 +207,6 @@ async function buildSlidesDocument(name) {
 
   await writeSourceScope(name, srcDir)
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
-  signalReload(name, pageInfo.length)
-  console.log(`[slides] ${name}: deck of ${deck.slides.length} slides from ${htmlFiles[0]}`)
+  addLog(`[slides] ${name}: deck of ${deck.slides.length} slides from ${htmlFiles[0]}`)
+  return { manifest: slidesManifest(await readProject(name), pageInfo) }
 }
