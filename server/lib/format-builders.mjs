@@ -125,7 +125,7 @@ function htmlManifest(project, pageInfo, mapsToSource) {
   })
 }
 
-export async function buildHtmlDocument(name) {
+export async function buildHtmlDocument(name, addLog = console.log) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -168,7 +168,7 @@ export async function buildHtmlDocument(name) {
 
   await writeSourceScope(name, srcDir)
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
-  console.log(`[html] ${name}: ${pageInfo.length} pages`)
+  addLog(`[html] ${name}: ${pageInfo.length} pages`)
   return { manifest: htmlManifest(await readProject(name), pageInfo, Boolean(renderedProject)) }
 }
 
@@ -205,7 +205,7 @@ function slidesManifest(project, pageInfo) {
   })
 }
 
-export async function buildSlidesDocument(name) {
+export async function buildSlidesDocument(name, addLog = console.log) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -230,6 +230,6 @@ export async function buildSlidesDocument(name) {
 
   await writeSourceScope(name, srcDir)
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
-  console.log(`[slides] ${name}: deck of ${deck.slides.length} slides from ${htmlFiles[0]}`)
+  addLog(`[slides] ${name}: deck of ${deck.slides.length} slides from ${htmlFiles[0]}`)
   return { manifest: slidesManifest(await readProject(name), pageInfo) }
 }
