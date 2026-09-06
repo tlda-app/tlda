@@ -7,7 +7,8 @@
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
 import { join, basename } from 'path'
-import { sourceDir as getSourceDir, outputDir as getOutputDir, projectDir, readClientSourceManifest } from './project-store.mjs'
+import { sourceDir as getSourceDir, outputDir as getOutputDir, projectDir, readProject, readClientSourceManifest } from './project-store.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
@@ -100,7 +101,35 @@ export async function buildHtml(name) {
   return withBuildLog(name, () => buildHtmlDocument(name))
 }
 
-async function buildHtmlDocument(name) {
+/**
+ * Describe what an HTML build produced, from what the build already knows.
+ *
+ * The one fact worth deriving rather than declaring is source mapping. An HTML
+ * project usually holds a rendered document and nothing that produced it, so
+ * there is no source to map back to. But a tlda-aware Quarto render ships a
+ * `tlda-manifest.json`, and `pageInfoFromTldaManifest` requires every page in it
+ * to name its `.qmd` — so when that manifest is present each page DOES carry a
+ * source coordinate, and when it is absent none does.
+ *
+ * That is why this reads `renderedProject` rather than declaring a constant:
+ * the same builder produces both kinds of document, and only the build knows
+ * which one it just handled. Declaring `false` would tell every reader that a
+ * tlda render cannot map back to its source, which is the one case where it can.
+ *
+ * Pages are `pageInfo` unchanged — the same entries written to `page-info.json`,
+ * so the manifest and the viewer cannot describe different documents.
+ */
+function htmlManifest(project, pageInfo, mapsToSource) {
+  return createDocumentManifest(project, pageInfo, {
+    sourceMapping: mapsToSource ? 'page-source' : 'none',
+    view: {
+      kind: 'html-pages',
+      capabilities: { presentation: false, sourceMapping: mapsToSource, searchableText: true },
+    },
+  })
+}
+
+export async function buildHtmlDocument(name) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -145,6 +174,7 @@ async function buildHtmlDocument(name) {
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
   signalReload(name, pageInfo.length)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
+  return { manifest: htmlManifest(await readProject(name), pageInfo, Boolean(renderedProject)) }
 }
 
 export async function buildSlides(name) {
