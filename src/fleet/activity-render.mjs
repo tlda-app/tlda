@@ -737,7 +737,7 @@ export function renderEditDiff(input, ctx, opts = {}) {
   </div>`
 }
 
-function unifiedDiffToEditStrings(diff) {
+function unifiedDiffToEditStrings(diff, { includeHunks = true } = {}) {
   const oldLines = []
   const newLines = []
   let sawChange = false
@@ -755,12 +755,14 @@ function unifiedDiffToEditStrings(diff) {
       rawLine.startsWith('\\ No newline at end of file')
     ) continue
     if (rawLine.startsWith('@@')) {
-      if (oldLines.length || newLines.length) {
-        oldLines.push('')
-        newLines.push('')
+      if (includeHunks) {
+        if (oldLines.length || newLines.length) {
+          oldLines.push('')
+          newLines.push('')
+        }
+        oldLines.push(rawLine)
+        newLines.push(rawLine)
       }
-      oldLines.push(rawLine)
-      newLines.push(rawLine)
       continue
     }
     if (rawLine.startsWith('-')) {
@@ -782,6 +784,13 @@ function unifiedDiffToEditStrings(diff) {
     old_string: oldLines.join('\n'),
     new_string: newLines.join('\n'),
   }
+}
+
+function regionTransferEditInput(toolName, input, prettyResult) {
+  if (!String(toolName || '').toLowerCase().endsWith('region_transfer')) return null
+  const diff = String(prettyResult || '').match(/```diff\n([\s\S]*?)\n```/)?.[1]
+  const sides = diff ? unifiedDiffToEditStrings(diff, { includeHunks: false }) : null
+  return sides ? { ...input, file_path: input?.target_file, ...sides } : null
 }
 
 export function renderUnifiedEditDiff(input, ctx, opts = {}) {
@@ -1165,8 +1174,9 @@ export function renderActivityGroup(group, ctx) {
       const isPropose = tnLower.endsWith('propose_edit') && t._toolInput?.old_string && t._toolInput?.new_string
       const canonicalDisplay=t._toolInput?.canonical_source?.scope||t._toolInput?.canonical_source?.display
       const canonicalEdit=['edit','write','multiedit'].includes(tnLower)&&canonicalDisplay
-      const renderInput=canonicalEdit?{...t._toolInput,file_path:t._toolInput.canonical_source.file,old_string:canonicalDisplay.old_source||'',new_string:canonicalDisplay.new_source||''}:t._toolInput
-      const isEdit = ((tnLower === 'edit' || isPropose) && t._toolInput?.old_string && t._toolInput?.new_string)||canonicalEdit
+      const regionTransferInput = regionTransferEditInput(tnLower, t._toolInput, t._prettyResult)
+      const renderInput=regionTransferInput||(canonicalEdit?{...t._toolInput,file_path:t._toolInput.canonical_source.file,old_string:canonicalDisplay.old_source||'',new_string:canonicalDisplay.new_source||''}:t._toolInput)
+      const isEdit = Boolean(regionTransferInput)||((tnLower === 'edit' || isPropose) && t._toolInput?.old_string && t._toolInput?.new_string)||canonicalEdit
       const isUnifiedEdit = tnLower === 'edit' && typeof t._toolInput?.diff === 'string' && t._toolInput.diff.trim()
       const hasDiff = (isEdit || isUnifiedEdit) ? ' has-diff' : ''
       // The propose result text ("**Proposal proposal-1** …") carries the id the
@@ -1193,7 +1203,7 @@ export function renderActivityGroup(group, ctx) {
       const semanticKind = semanticOperationKind(t._toolName)
       const prettyHtml = semanticKind
         ? renderSemanticOperationResult(t._toolName, '', ctx, t._toolInput, t.timestamp, t._toolArg, t.from)
-        : (t._prettyResult && !isPropose)
+        : (t._prettyResult && !isPropose && !regionTransferInput)
           ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
           : ''
       return `<div class="tool-line${hasDiff}"${cmdAttr}${t._toolCallId ? ` data-tool-id="${esc(String(t._toolCallId))}"` : ''} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
