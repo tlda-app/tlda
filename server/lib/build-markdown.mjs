@@ -904,7 +904,6 @@ export async function buildMarkdownDocument(name, addLog = console.log, { view =
   const buildReadyAt = Date.now()
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
   // The sentinel is written by recordBuildVersion, with the real commit hash.
-  reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
 
   // Re-aggregate any book that contains this doc as a member
   for (const proj of await listProjects()) {
@@ -938,5 +937,12 @@ export async function buildMarkdownDocument(name, addLog = console.log, { view =
         view: view || { kind: 'html-pages', capabilities: { presentation: false, sourceMapping: false, searchableText: true } },
       },
     ),
+    // Book tables of contents are regenerated after a markdown build. That used
+    // to live in the `buildMarkdown` wrapper, which called
+    // `getBuildReporter().regenerateBookTocs(name)` after the builder returned
+    // -- so routing through the registry, which binds THIS function, silently
+    // stopped regenerating them. `finalizeDocumentBuild` already had the hook
+    // and nothing set the flag.
+    regenerateBookTocs: true,
   }
 }

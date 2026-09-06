@@ -428,16 +428,12 @@ export async function buildQmdDocument(name, addLog = console.log) {
       renderedFormat: 'html',
       lastBuild: new Date().toISOString(),
     })
-    reporter.broadcastSignal(`doc-${name}`, 'signal:reload', {
-      pages: renderedProject.pageInfo.length,
-      timestamp: Date.now(),
-    })
     addLog(`[qmd] ${name}: rendered tlda project with ${renderedProject.pageInfo.length} pages`)
     // A tlda Quarto project is always the scrolling document, which is why the
     // patch above hardcodes renderedFormat 'html'. Both return paths describe
     // themselves or the cutover would work for one kind of qmd and not the
     // other — and this one returns early, so it is the one easy to miss.
-    return { manifest: qmdManifest(await readProject(name), renderedProject.pageInfo, 'html') }
+    return { manifest: qmdManifest(await readProject(name), renderedProject.pageInfo, 'html'), regenerateBookTocs: true }
   }
 
   const pageInfo = []
@@ -502,8 +498,7 @@ export async function buildQmdDocument(name, addLog = console.log) {
     renderedFormat,
     lastBuild: new Date().toISOString(),
   })
-  reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: Date.now() })
   addLog(`[qmd] ${name}: rendered ${mainFiles.length} document root(s)`)
 
-  return { manifest: qmdManifest(await readProject(name), pageInfo, renderedFormat) }
+  return { manifest: qmdManifest(await readProject(name), pageInfo, renderedFormat), regenerateBookTocs: true }
 }

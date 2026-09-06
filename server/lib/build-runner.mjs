@@ -2035,6 +2035,28 @@ export async function recordBuildVersion({
   return { hash: result.hash, committed: true, result }
 }
 
+/**
+ * Announce a finished build, for adapters that do not announce their own.
+ *
+ * `runBuild` has always ended with these two lines (the `done` progress signal
+ * and the build-complete webhook) inside its own tail. Markdown, Quarto, HTML,
+ * slides and native PDF never had them: they updated the project record and
+ * broadcast a reload, and nothing told the webhook or the progress pill that
+ * the build was over.
+ *
+ * `buildDocument()` calls this for every adapter that does not own its own
+ * completion, which is what makes "one build, one completion" a property of
+ * the boundary rather than of each builder remembering.
+ *
+ * It was imported by `build-document.mjs` from the day that module landed and
+ * was never written -- an ESM link error, so `buildDocument()` could not be
+ * imported at all and neither could anything importing it.
+ */
+export function completeBuildSuccess(name, { elapsed, pages }) {
+  signalBuildProgress(name, 'done', `${elapsed}s`)
+  emitBuildComplete(name, { status: 'success', elapsed, pages, errors: [] })
+}
+
 export async function finalizeBuildVersion({
   name,
   ctx = { addLog: (message) => console.log(`[build:${name}] ${message}`) },

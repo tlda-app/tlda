@@ -7,10 +7,9 @@
 // writes) are shipped back to the parent over IPC, which performs them in the
 // server process where the live rooms actually are. See setBuildReporter.
 
-import { runBuild, finalizeBuildVersion, setBuildReporter, setBuildOutputSink } from '../server/lib/build-runner.mjs'
+import { getBuildReporter, setBuildReporter, setBuildOutputSink } from '../server/lib/build-runner.mjs'
 import { initProjectStore, readProject, projectDir, sourceLifecycleStore, setProjectPathOverride } from '../server/lib/project-store.mjs'
-import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
-import { buildPdfDocument } from '../server/lib/build-pdf.mjs'
+import { buildDocument } from '../server/lib/build-document.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
 import { missingDeclaredMainFile, missingMainFileMessage, shouldBuildOnPush } from '../server/lib/build-decision.mjs'
 import { setPriority, constants as osConstants } from 'node:os'
@@ -211,29 +210,25 @@ process.on('message', async (msg) => {
         throw new Error(message)
       }
 
-      // `pdf` is added to the EXISTING map rather than the whole block being
-      // replaced by the RC's adapter registry, and that is deliberate for now.
-      // Everything below this line -- the relevance skip that publishes source
-      // without rendering, `finalizeBuildVersion`, the `replacedItems` that lets
-      // a skipped render still advance the head, the `not_required` result --
-      // landed on main AFTER the RC branch and is absent from it. Swapping the
-      // block out is how all four get deleted without anyone noticing, because
-      // each of them fails by simply not happening. The registry swap is its own
-      // commit, and it has to carry them.
+      // THE DISPATCH IS GONE. Every format now goes through `buildDocument()`,
+      // which picks the adapter from the project's three axes and owns the
+      // completion tail. What used to be here was a map from `project.format`
+      // to a builder, plus a fall-through to `runBuild` for everything else.
       //
-      // The `pdf` entry is wrapped because the signatures differ: every builder
-      // in this map takes (name, options), while `buildPdfDocument` takes
-      // (name, addLog). Passing it straight in hands `{ changedFiles }` where a
-      // log function is expected, and it dies on the first `addLog(...)` call --
-      // at the END of the build, after the pages have been written, so the
-      // artifacts would be on disk and the build would still report failure.
-      const builder = {
-        markdown: buildMarkdown,
-        html: buildHtml,
-        slides: buildSlides,
-        qmd: buildQmd,
-        pdf: name => buildPdfDocument(name, console.log),
-      }[project?.format]
+      // What did NOT move, and must not: everything AROUND this call. The
+      // relevance skip below, `replacedItems`, the `not_required` disposition,
+      // the missing-main check above, and the three failure tails in the catch
+      // all landed on `main` after the RC branch and are absent from it.
+      // Swapping this block out carelessly is how all of them get deleted
+      // without anyone noticing, because each fails by simply not happening.
+      // `bin/cutover-contract-controls.mjs` exists to catch exactly that and
+      // counts each one against the real worker.
+      //
+      // Versioning moved INTO the boundary rather than being dropped: it used
+      // to be this branch's `finalizeBuildVersion` for non-LaTeX formats, while
+      // LaTeX reached it inside `runBuild`. `buildDocument` versions the
+      // adapters that do not version themselves, and skips the two LaTeX ones
+      // that do -- so it stays exactly one version per build either way.
       if (relevance?.skip) {
         // Nothing this revision changed is read by the render, so the render is
         // skipped and the revision still lands: `['source']` below advances the
@@ -241,15 +236,15 @@ process.on('message', async (msg) => {
         // Skipping the ADMISSION instead would strand the push — the head only
         // ever moves inside publishBuildInstance.
         console.log(`[build-worker] ${msg.name}: ${msg.sourceRevision.slice(0, 12)} is ${relevance.reason}, publishing source without rendering`)
-      } else if (builder) {
-        await builder(msg.name, { changedFiles: relevance.changedFiles })
-        // A build happened, so it gets a version — same as LaTeX, which reaches
-        // recordBuildVersion through runBuild's finalizer. Versioning used to
-        // live inside the LaTeX branch, which is why these formats built for
-        // months without ever recording one.
-        await finalizeBuildVersion({ name: msg.name, sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
       } else {
-        await runBuild(msg.name, { sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
+        await buildDocument(project, {
+          name: msg.name,
+          sourceRevision: msg.sourceRevision,
+          acceptSeq: msg.acceptSeq,
+          changedFiles: relevance?.changedFiles,
+          reporter: getBuildReporter(),
+          log: console.log,
+        })
       }
     }
     const replacedItems = relevance?.skip ? ['source'] : null

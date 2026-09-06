@@ -15,10 +15,6 @@ import { buildMarkdownDocument } from './build-markdown.mjs'
 import { buildQmdDocument } from './build-qmd.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
 
-function signalReload(name, pages) {
-  getBuildReporter().broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: Date.now() })
-}
-
 /**
  * Declare paper scope for the formats whose project IS a rendered document.
  *
@@ -60,7 +56,7 @@ async function writeSourceScope(name, srcDir) {
  * the diagnostics path (on failure) and the publish swap (on success) read it
  * from. Written in a `finally` because the failure is the case that needs it.
  */
-async function withBuildLog(name, run) {
+export async function withBuildLog(name, run) {
   const lines = []
   const addLog = (message) => {
     lines.push(String(message))
@@ -172,7 +168,6 @@ export async function buildHtmlDocument(name) {
 
   await writeSourceScope(name, srcDir)
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
-  signalReload(name, pageInfo.length)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
   return { manifest: htmlManifest(await readProject(name), pageInfo, Boolean(renderedProject)) }
 }
@@ -235,7 +230,6 @@ export async function buildSlidesDocument(name) {
 
   await writeSourceScope(name, srcDir)
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
-  signalReload(name, pageInfo.length)
   console.log(`[slides] ${name}: deck of ${deck.slides.length} slides from ${htmlFiles[0]}`)
   return { manifest: slidesManifest(await readProject(name), pageInfo) }
 }

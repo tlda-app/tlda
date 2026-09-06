@@ -40,6 +40,7 @@ const {
 } = await import('../server/lib/project-store.mjs')
 const { missingDeclaredMainFile } = await import('../server/lib/build-decision.mjs')
 const { buildAdapterFor } = await import('../server/lib/build-adapter-registry.mjs')
+const { buildDocument } = await import('../server/lib/build-document.mjs')
 const { publishBuildInstance, PUBLISH_REPLACED_ITEMS } = await import('../server/lib/build-dispatch.mjs')
 const { initSyncRooms } = await import('../server/lib/sync-rooms.mjs')
 const { listVersions } = await import('../server/lib/shadow-repo.mjs')
@@ -273,7 +274,7 @@ const CATEGORY_CASES = [
 // build-document's missing `completeBuildSuccess`. An ESM link error is not a
 // latent bug -- the module cannot be imported, so everything downstream of it
 // is unreachable and reports nothing.
-await control('both halves of the boundary load', 'RED', /completeBuildSuccess/, async () => {
+await control('both halves of the boundary load', 'GREEN', null, async () => {
   await import('../server/lib/build-adapter-registry.mjs')
   await import('../server/lib/build-document.mjs')
   return null
@@ -285,7 +286,11 @@ await control('both halves of the boundary load', 'RED', /completeBuildSuccess/,
 // writes a build log. So a failed markdown, qmd, html or slides build through
 // the adapter leaves no log, no errors and no recorded reason -- the exact
 // logMissing outage those wrappers were added to fix.
-await control('a failed adapter build writes build.log', 'RED', /OBSERVABLE build\.log: absent/, async () => {
+// Through `buildDocument()`, which is the path production takes -- not through
+// `adapter.build()` directly. Calling the adapter would test a component that
+// never runs on its own; the log belongs to the boundary, because binding the
+// inner builders is what bypassed the wrappers that used to write it.
+await control('a failed build through the boundary writes build.log', 'GREEN', null, async () => {
   const root = trackTemp('cutover-buildlog-')
   await initProjectStore(root)
   createProject({ name: 'deck', mainFile: 'deck.html' })
@@ -293,11 +298,14 @@ await control('a failed adapter build writes build.log', 'RED', /OBSERVABLE buil
   writeFileSync(join(root, 'deck', 'source', 'deck.html'), '<html><body><p>not a reveal deck</p></body></html>')
   await updateProject('deck', { format: 'slides' })
   setBuildReporter(QUIET_REPORTER)
-  const adapter = buildAdapterFor(await readProject('deck'))
-  await assert.rejects(() => adapter.build({ name: 'deck', log: () => {} }), /not a reveal\.js deck/,
-    'control: the build must fail for the reason we chose')
+  const project = await readProject('deck')
+  await assert.rejects(
+    () => buildDocument(project, { name: 'deck', sourceRevision: null, acceptSeq: 1, reporter: QUIET_REPORTER, log: () => {} }),
+    /not a reveal\.js deck/,
+    'control: the build must fail for the reason we chose',
+  )
   const log = join(projectDir('deck'), 'build.log')
-  if (!existsSync(log)) throw Object.assign(new Error('OBSERVABLE build.log: absent (adapter bypasses withBuildLog)'), { root })
+  if (!existsSync(log)) throw Object.assign(new Error('OBSERVABLE build.log: absent'), { root })
   assert.match(readFileSync(log, 'utf8'), /not a reveal\.js deck/, 'build.log must carry the reason')
 })
 
@@ -306,7 +314,7 @@ await control('a failed adapter build writes build.log', 'RED', /OBSERVABLE buil
 // `if (result.regenerateBookTocs)`, and no adapter sets the flag. One needs a
 // mechanism built, the other needs a flag set. Together, the missing mechanism
 // would hide behind the missing flag.
-await control('the markdown adapter asks for book ToC regeneration', 'RED', /OBSERVABLE result\.regenerateBookTocs/, async () => {
+await control('the markdown adapter asks for book ToC regeneration', 'GREEN', null, async () => {
   const root = trackTemp('cutover-toc-')
   await initProjectStore(root)
   createProject({ name: 'notes', mainFile: 'notes.md' })
