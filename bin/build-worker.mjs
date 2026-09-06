@@ -189,7 +189,7 @@ process.on('message', async (msg) => {
       // Before any format is chosen and before anything renders. A project that
       // declares a main file which is not there has no document to build, and
       // every builder below would otherwise go looking for something else to
-      // render: buildSlides takes the first .html it finds, runBuild derives a
+      // render: `buildSlidesDocument` takes the first .html it finds, runBuild derives a
       // texBase from a path that does not exist. That is how a Quarto talk
       // declaring `main.tex` built "successfully" for four days.
       const missingMain = missingDeclaredMainFile(project, msg.name)

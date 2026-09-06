@@ -381,7 +381,7 @@ export async function buildQmdDocument(name, addLog = console.log) {
   const quarto = await resolveQuarto()
 
   mkdirSync(outDir, { recursive: true })
-  // The whole tree, for the reason buildSlides copies it: a .qmd depends on
+  // The whole tree, for the reason `buildSlidesDocument` copies it: a .qmd depends on
   // sibling data files, figures, _quarto.yml, and any _extensions/ it uses, and
   // a render that cannot see them fails in a way that reads as bad source.
   cpSync(srcDir, outDir, { recursive: true })

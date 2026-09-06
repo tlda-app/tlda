@@ -1,8 +1,11 @@
 /**
- * Format-specific build logic for non-SVG project formats.
+ * The HTML and slides builders, and the build-log wrapper every non-LaTeX
+ * adapter runs inside.
  *
- * Each builder: copies source → output, generates page-info.json,
- * updates project metadata, signals reload to viewers.
+ * Each builder copies source → output, generates page-info.json, and returns a
+ * document manifest. It does NOT update the project record, publish the
+ * manifest or signal a reload: `buildDocument()` owns those, and this file said
+ * otherwise until the cutover moved them.
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
@@ -11,8 +14,6 @@ import { sourceDir as getSourceDir, outputDir as getOutputDir, projectDir, readP
 import { createDocumentManifest } from './document-manifest.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
-import { buildMarkdownDocument } from './build-markdown.mjs'
-import { buildQmdDocument } from './build-qmd.mjs'
 import { readTldaManifest } from './tlda-manifest.mjs'
 
 /**
@@ -75,26 +76,6 @@ export async function withBuildLog(name, run) {
       console.error(`[build] could not write build.log for ${name}: ${writeError?.message || writeError}`)
     }
   }
-}
-
-export async function buildMarkdown(name) {
-  await withBuildLog(name, (addLog) => buildMarkdownDocument(name, addLog))
-  await getBuildReporter().regenerateBookTocs(name)
-}
-
-// Takes no options, like its three siblings. The worker passes `changedFiles`
-// to every builder and the others have always ignored it: it decides whether to
-// build at all (build-decision.mjs), not how much of a project to render.
-export async function buildQmd(name) {
-  await withBuildLog(name, (addLog) => buildQmdDocument(name, addLog))
-  await getBuildReporter().regenerateBookTocs(name)
-}
-
-// Wrapped for the same reason markdown and qmd are: a build that fails has to
-// leave an account of why. These two threw plain errors into a `console.log`
-// that nothing keeps, so `No HTML file found in source` reached no reader.
-export async function buildHtml(name) {
-  return withBuildLog(name, () => buildHtmlDocument(name))
 }
 
 /**
@@ -170,10 +151,6 @@ export async function buildHtmlDocument(name, addLog = console.log) {
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
   addLog(`[html] ${name}: ${pageInfo.length} pages`)
   return { manifest: htmlManifest(await readProject(name), pageInfo, Boolean(renderedProject)) }
-}
-
-export async function buildSlides(name) {
-  return withBuildLog(name, () => buildSlidesDocument(name))
 }
 
 /**
