@@ -1209,3 +1209,65 @@ still applies to it.
 **The fixture is US Letter**, because the test builds its own minimal PDF with
 `MediaBox [0 0 612 792]`. My separate A4 runs cover the builder and the manifest; this run
 does not.
+
+---
+
+# The browser test: Letter renders, A4 renders wrong {#browser-test}
+
+`pm-rc-docformat`, 2026-09-06 02:35 EDT. RC server `https://davids-mac-mini.cormorant-matrix.ts.net:5190`,
+branch `rc-docformat` at `0805d4128`. **Not a completion claim.**
+
+**Fixture: a real four-page LaTeX document I wrote and compiled with pdfTeX-1.40.29** — real
+font programs, ligatures, display and inline math, a table, four pages. Built twice, once for
+Letter and once typeset for A4. **No project of Skip's was touched.**
+
+## Letter: correct {#browser-letter}
+
+The document renders on the canvas and is legible — title, section headings, prose, the
+display integral and sum, inline math. The page box measures **800 × 1035**, a ratio of
+**1.294**, which is exactly US Letter (792/612).
+
+## A4: renders, at the wrong shape {#browser-a4}
+
+**The A4 document renders in a page box of 800 × 1035 — ratio 1.294 — identical to the Letter
+document. A4 is 1.414.**
+
+```
+document        rendered box     ratio     correct ratio
+rc-pdf-letter    800 x 1035      1.294        1.294   ✓
+rc-pdf-a4        800 x 1035      1.294        1.414   ✗
+```
+
+**This is the `createSvgDocumentLayout` constant, observed rather than predicted.** I flagged
+it from reading on 09-03: every page box is derived from `PDF_WIDTH`/`PDF_HEIGHT`, which
+`layoutConstants.ts` labels as US Letter. **The manifest carries the right numbers —
+`595.276 × 841.89` — and the client does not read them.**
+
+**It is not only cosmetic.** Annotation placement maps canvas coordinates through the same
+page box, so on a non-Letter document the geometry is wrong by the same factor.
+
+## An instrument failure of my own, worth recording {#browser-instrument}
+
+**My first DOM query said nothing had rendered** — zero `img` elements with `-page-` in the
+src, zero `.tl-shape`, no `.tl-canvas`. **I was one step from reporting that the client does
+not render a PDF at all.**
+
+**The screenshot showed the document plainly.** The selectors were wrong: pages are inline
+`<svg>` rather than `<img>`, and this canvas does not use the class names I guessed. A query
+that returns zero because it asks about the wrong elements is indistinguishable from a query
+that returns zero because nothing is there — which is the failure this RC has produced at
+every layer, and I produced it again with my own instrument.
+
+**`textNodes: 0` is a real property, not a failure:** `pdftocairo -svg` converts glyphs to
+paths, so there is no selectable DOM text. **Search must come from the extracted
+`-text.json` geometry**, which is exactly why the build writes it.
+
+## What is proven and what is not {#browser-scope}
+
+**Proven in a real browser:** a PDF with no TeX anywhere becomes a document that loads and is
+readable, at correct geometry for US Letter.
+
+**Not proven, and not attempted yet:** text selection and search against the extracted
+geometry, page-to-page navigation, and annotation placement. **A4 fails on geometry**, so
+annotation placement on A4 is expected to fail with it and testing it before the layout fix
+would only re-measure the same defect.
