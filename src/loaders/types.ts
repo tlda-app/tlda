@@ -24,6 +24,25 @@ export interface SvgPage {
   shapeId: TLShapeId
   width: number
   height: number
+  /**
+   * The page's real size in POINTS, and the offset its SVG's viewBox starts at.
+   *
+   * `width`/`height` above are canvas pixels. The coordinate mappings need
+   * points, and until now they used the US Letter constants for every document
+   * plus a fixed 72pt offset — both true of a LaTeX render and neither true of
+   * a PDF.
+   *
+   * The offset is a **dvisvgm** artifact: a LaTeX page's SVG viewBox starts at
+   * `-72`, so synctex coordinates are shifted by that much. A `pdftocairo` SVG
+   * has no such offset, which is why a PDF annotation was displaced by 72
+   * points in both axes even on US Letter, where the scale happened to be right.
+   *
+   * Absent means "use the constants", which is every LaTeX page — so their
+   * arithmetic is untouched.
+   */
+  pdfWidth?: number
+  pdfHeight?: number
+  viewBoxOffset?: number
   textData?: PageTextData | null
   tldrawPageId?: string  // TLDraw page ID for multipage HTML docs
   tldrawPageName?: string  // Display name for the TLDraw page

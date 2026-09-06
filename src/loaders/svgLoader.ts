@@ -98,6 +98,17 @@ export function createSvgDocumentLayout(name: string, basePath: string, targets?
         shapeId: createShapeId(pageId),
         width,
         height: heightFor(target, i),
+        // The page's own size in points, and no viewBox offset, when the
+        // builder measured it. A `pdftocairo` SVG starts at 0,0 — the 72pt
+        // shift the mappings apply by default is dvisvgm's, and applying it
+        // here displaced every PDF annotation by 72 points in both axes.
+        ...(target.pageSizes?.[i]
+          ? {
+            pdfWidth: target.pageSizes[i].width,
+            pdfHeight: target.pageSizes[i].height,
+            viewBoxOffset: 0,
+          }
+          : {}),
         targetBasePath: basePath,
         pageInTarget: i + 1,
         targetName: target.name,
