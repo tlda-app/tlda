@@ -1680,6 +1680,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   grid-column: 1;
   grid-row: 1;
   position: absolute;
+  left: calc((var(--chat-collapse-gutter) - 52px) / 2);
   /* Only the value before useFloatingCollapse's first placement, and the
      resting value if the card is ever mounted outside a chat log. */
   top: 50%;
