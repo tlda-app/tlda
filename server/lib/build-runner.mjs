@@ -2167,7 +2167,41 @@ export async function finalizeBuildVersion({
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
-export async function runBuild(name, { sourceRevision = null, acceptSeq = null } = {}) {
+/**
+ * A target's real page size, from its DVI.
+ *
+ * Not from the emitted SVG, because a LaTeX build emits none: pages are
+ * rendered on demand by `buildCurrentPage`, so at build time there is no image
+ * to measure. Listing a real build's whole `output/` shows the DVI, the synctex
+ * and the lookup maps, and no `-page-N.svg` at all.
+ *
+ * The DVI is what dvisvgm reads, and it is invoked with `--bbox=papersize` — so
+ * the paper size the renderer will use is the `papersize` special written into
+ * the DVI. Reading the same special is reading the same fact, one step earlier,
+ * and it needs no renderer: measured on a real Beamer DVI as
+ * `!papersize=364.19536pt,273.14662pt`, which is Beamer's 128x96mm landscape.
+ *
+ * A plain `article` writes no such special — `geometry` and `beamer` do — and
+ * for that case the driver's default page is what dvisvgm falls back to, which
+ * is the US Letter constant. So the fallback here is not a guess; it is the
+ * same answer by the same rule.
+ */
+export function dviPaperSize(dviPath) {
+  const fallback = { width: layoutConstants.PDF_WIDTH, height: layoutConstants.PDF_HEIGHT }
+  try {
+    if (!existsSync(dviPath)) return fallback
+    const match = readFileSync(dviPath, 'latin1').match(/papersize=([\d.]+)pt,([\d.]+)pt/)
+    if (!match) return fallback
+    const width = Number(match[1])
+    const height = Number(match[2])
+    if (!(width > 0) || !(height > 0)) return fallback
+    return { width, height }
+  } catch {
+    return fallback
+  }
+}
+
+export async function runBuild(name, { sourceRevision = null, acceptSeq = null, view = null } = {}) {
   // Serialize builds per project: wait for any in-flight build to finish before starting.
   while (_buildLocks.has(name)) {
     // Kill the running build so we don't wait for it to complete naturally.
@@ -2185,7 +2219,7 @@ export async function runBuild(name, { sourceRevision = null, acceptSeq = null }
   const previousActiveBuild = activeBuilds.get(name)
 
   try {
-    return await _runBuildInner(name, { sourceRevision, acceptSeq })
+    return await _runBuildInner(name, { sourceRevision, acceptSeq, view })
   } catch (e) {
     // _runBuildInner marks the project building before validating its inputs.
     // Its own catch starts later, after the active-build record is created, so
@@ -2206,7 +2240,7 @@ export async function runBuild(name, { sourceRevision = null, acceptSeq = null }
   }
 }
 
-async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } = {}) {
+async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null, view = null } = {}) {
   // Increment version so any in-flight mirror callbacks from previous builds
   // can detect they've been superseded and skip.
 
@@ -2518,14 +2552,22 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
     // main grew after the RC branch get deleted without anyone noticing.
     const manifest = createDocumentManifest(
       { ...(await readProject(name)), mainFile: targetMeta[0]?.mainFile || null },
-      targetMeta.flatMap(t => Array.from({ length: t.expectedPages || 0 }, (_, i) => ({
-        file: `${t.texBase}-page-${i + 1}.svg`,
-        width: layoutConstants.PDF_WIDTH,
-        height: layoutConstants.PDF_HEIGHT,
-      }))),
+      targetMeta.flatMap(t => {
+        const size = dviPaperSize(join(outDir, `${t.texBase}.dvi`))
+        return Array.from({ length: t.expectedPages || 0 }, (_, i) => ({
+          file: `${t.texBase}-page-${i + 1}.svg`,
+          width: size.width,
+          height: size.height,
+        }))
+      }),
       {
         sourceMapping: 'synctex',
-        view: { kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false } },
+        // The adapter's own declaration when there is one. `latex-slides`
+        // carries `presentation: true` and `latex` carries false, and hardcoding
+        // the second labelled every Beamer deck as not a presentation. The
+        // fallback is the paged case, which is what a direct caller of runBuild
+        // is building.
+        view: view || { kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false } },
       },
     )
     status.manifest = manifest
