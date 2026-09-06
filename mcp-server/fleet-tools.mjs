@@ -79,6 +79,7 @@ import { formatLoginMarker } from '../agent-runtime/daemon-jsonl-hot-path.mjs';
 import { resolveMintFacts } from '../daemon/mint-store.mjs';
 import { matchesLocalParentThread, parentTranscriptContainsToolUse } from './lib/native-parent-thread.mjs';
 import { normalizeThreadFilterExpression } from './lib/thread-filter-normalize.mjs';
+import { transferRegion } from './lib/region-transfer.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -1512,6 +1513,24 @@ export function getFleetTools() {
   const tools = [
     // ---- Registration & Identity ----
     {
+      name: 'region_transfer',
+      description: 'Atomically replace an exact target line range with bytes from a Markdown staging-file line range. Line ranges are 1-based and inclusive; the final selected line ending is outside each range. The call has no inline replacement text.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          source_file: { type: 'string', description: 'Markdown staging file, absolute or relative to the agent working directory.' },
+          source_start_line: { type: 'integer', minimum: 1, description: 'First source line (inclusive).' },
+          source_end_line: { type: 'integer', minimum: 1, description: 'Last source line (inclusive).' },
+          target_file: { type: 'string', description: 'Target file, absolute or relative to the agent working directory.' },
+          target_start_line: { type: 'integer', minimum: 1, description: 'First target line (inclusive).' },
+          target_end_line: { type: 'integer', minimum: 1, description: 'Last target line (inclusive).' },
+          expected: { type: 'string', description: 'Exact UTF-8 string currently expected in the target range.' },
+        },
+        required: ['source_file', 'source_start_line', 'source_end_line', 'target_file', 'target_start_line', 'target_end_line', 'expected'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'login',
       description: 'Log this agent process into an existing server-created shell. Spawned agents call this at session start.',
       inputSchema: {
@@ -2620,6 +2639,23 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
   }
   try {
   // ==== Registration & Identity ====
+
+  if (name === 'region_transfer') {
+    try {
+      const result = transferRegion({
+        sourceFile: args?.source_file,
+        sourceStartLine: args?.source_start_line,
+        sourceEndLine: args?.source_end_line,
+        targetFile: args?.target_file,
+        targetStartLine: args?.target_start_line,
+        targetEndLine: args?.target_end_line,
+        expected: args?.expected,
+      }, { cwd: getAgentCwd() || process.env.PWD || process.cwd() });
+      return { content: [{ type: 'text', text: `Transferred ${result.sourceBytes} bytes from ${result.sourcePath} into ${result.targetPath}; replaced ${result.replacedBytes} bytes.` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `region_transfer: ${error.message}` }], isError: true };
+    }
+  }
 
   // ---- login ----
   // Identity in this block is SPECIFIED. Read scratch/daemon-mint-sift.md
