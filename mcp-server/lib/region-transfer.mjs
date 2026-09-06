@@ -99,5 +99,19 @@ export function transferRegion({
     targetPath,
     sourceBytes: replacement.length,
     replacedBytes: current.length,
+    oldString: current.toString('utf8'),
+    newString: replacement.toString('utf8'),
   };
+}
+
+export function regionTransferDiff({ targetPath, targetStartLine, oldString, newString }) {
+  const oldLines = oldString.replaceAll('\r\n', '\n').split('\n');
+  const newLines = newString.replaceAll('\r\n', '\n').split('\n');
+  return [
+    `--- ${targetPath}`,
+    `+++ ${targetPath}`,
+    `@@ -${targetStartLine},${oldLines.length} +${targetStartLine},${newLines.length} @@`,
+    ...oldLines.map(line => `-${line}`),
+    ...newLines.map(line => `+${line}`),
+  ].join('\n');
 }

@@ -79,7 +79,7 @@ import { formatLoginMarker } from '../agent-runtime/daemon-jsonl-hot-path.mjs';
 import { resolveMintFacts } from '../daemon/mint-store.mjs';
 import { matchesLocalParentThread, parentTranscriptContainsToolUse } from './lib/native-parent-thread.mjs';
 import { normalizeThreadFilterExpression } from './lib/thread-filter-normalize.mjs';
-import { transferRegion } from './lib/region-transfer.mjs';
+import { regionTransferDiff, transferRegion } from './lib/region-transfer.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -2651,7 +2651,13 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         targetEndLine: args?.target_end_line,
         expected: args?.expected,
       }, { cwd: getAgentCwd() || process.env.PWD || process.cwd() });
-      return { content: [{ type: 'text', text: `Transferred ${result.sourceBytes} bytes from ${result.sourcePath} into ${result.targetPath}; replaced ${result.replacedBytes} bytes.` }] };
+      const diff = regionTransferDiff({
+        targetPath: result.targetPath,
+        targetStartLine: args.target_start_line,
+        oldString: result.oldString,
+        newString: result.newString,
+      });
+      return { content: [{ type: 'text', text: `Transferred ${result.sourceBytes} bytes from ${result.sourcePath} into ${result.targetPath}; replaced ${result.replacedBytes} bytes.\n\n\`\`\`diff\n${diff}\n\`\`\`` }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `region_transfer: ${error.message}` }], isError: true };
     }
