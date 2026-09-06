@@ -191,6 +191,14 @@ if [ "$1" = "bootstrap" ]; then
     echo "}"
     printf "working directory = "
     /usr/libexec/PlistBuddy -c "Print :WorkingDirectory" "$3"
+    echo "environment = {"
+    printf "PATH => "
+    /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PATH" "$3"
+    printf "TLDA_ENV => "
+    /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:TLDA_ENV" "$3"
+    printf "NODE_OPTIONS => "
+    /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:NODE_OPTIONS" "$3"
+    echo "}"
   } > "$loaded"
   exit 0
 fi
@@ -218,12 +226,20 @@ try {
   assert.equal(initialApply.status, 0, initialApply.stderr)
   assert.match(initialApply.stdout, /Added com\.tlda\.fleet-daemon\.stable/)
   const canonicalPlist = readFileSync(applyPlist, 'utf8')
+  const daemonScript = join(applyCliRoot, 'bin', 'fleet-daemon.mjs')
+  const expectedScript = resolveMainDaemonScript(daemonScript) || daemonScript
+  const expectedRoot = dirname(dirname(expectedScript))
   writeFileSync(join(applyConfigDir, 'loaded.definition'), `arguments = {
 /bin/zsh
 -fc
-exec /opt/homebrew/bin/node --import tsx "/Users/skip/worktrees/land-tonight/bin/fleet-daemon.mjs"
+exec /opt/homebrew/bin/node --import tsx "${expectedScript}"
 }
-working directory = /Users/skip/worktrees/land-tonight
+working directory = ${expectedRoot}
+environment = {
+PATH => /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+TLDA_ENV => stable
+NODE_OPTIONS => --require=/Users/skip/worktrees/land-tonight/shared/node-dns-alias.cjs
+}
 `)
   const startedAt = Date.now()
   const apply = runApply()
@@ -233,8 +249,6 @@ working directory = /Users/skip/worktrees/land-tonight
   assert.match(apply.stdout, /Updated com\.tlda\.fleet-daemon\.stable/)
   assert.doesNotMatch(apply.stdout, /Pending/)
   assert.match(apply.stdout, /tlda config apply complete/)
-  const daemonScript = join(applyCliRoot, 'bin', 'fleet-daemon.mjs')
-  const expectedScript = resolveMainDaemonScript(daemonScript) || daemonScript
   const plist = readFileSync(applyPlist, 'utf8')
   assert.equal(plist, canonicalPlist)
   assert.match(plist, new RegExp(expectedScript.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
@@ -242,6 +256,7 @@ working directory = /Users/skip/worktrees/land-tonight
   const loadedDefinition = readFileSync(join(applyConfigDir, 'loaded.definition'), 'utf8')
   assert.match(loadedDefinition, new RegExp(expectedScript.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   assert.match(loadedDefinition, new RegExp(dirname(dirname(expectedScript)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(loadedDefinition, new RegExp(join(dirname(dirname(expectedScript)), 'shared', 'node-dns-alias.cjs').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   console.log('cli config completion boundary: ok')
 } finally {
   rmSync(applyFixture, { recursive: true, force: true })

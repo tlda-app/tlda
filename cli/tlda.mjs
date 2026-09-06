@@ -1827,13 +1827,26 @@ function launchdDefinitionMatches(plist, printed) {
     ? [...argumentArray.matchAll(/<string>([\s\S]*?)<\/string>/g)].map(match => decodePlistString(match[1]))
     : null
   const expectedWorkingDirectory = plist.match(/<key>WorkingDirectory<\/key>\s*<string>([\s\S]*?)<\/string>/)?.[1]
+  const environmentDict = plist.match(/<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/)?.[1]
+  const expectedEnvironment = environmentDict
+    ? new Map([...environmentDict.matchAll(/<key>([\s\S]*?)<\/key>\s*<string>([\s\S]*?)<\/string>/g)]
+      .map(match => [decodePlistString(match[1]), decodePlistString(match[2])]))
+    : null
   const loadedArguments = printed.match(/(?:^|\n)\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1]
     ?.split('\n').map(line => line.trim()).filter(Boolean)
   const loadedWorkingDirectory = printed.match(/(?:^|\n)\s*working directory = (.+)/)?.[1]?.trim()
-  if (!expectedArguments || !expectedWorkingDirectory || !loadedArguments || !loadedWorkingDirectory) return null
+  const loadedEnvironmentBlock = printed.match(/(?:^|\n)\s*environment = \{\n([\s\S]*?)\n\s*\}/)?.[1]
+  const loadedEnvironment = loadedEnvironmentBlock
+    ? new Map(loadedEnvironmentBlock.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+      const separator = line.indexOf(' => ')
+      return separator < 0 ? [line, null] : [line.slice(0, separator), line.slice(separator + 4)]
+    }))
+    : null
+  if (!expectedArguments || !expectedWorkingDirectory || !expectedEnvironment || !loadedArguments || !loadedWorkingDirectory || !loadedEnvironment) return null
   return expectedArguments.length === loadedArguments.length &&
     expectedArguments.every((argument, index) => argument === loadedArguments[index]) &&
-    decodePlistString(expectedWorkingDirectory) === loadedWorkingDirectory
+    decodePlistString(expectedWorkingDirectory) === loadedWorkingDirectory &&
+    [...expectedEnvironment].every(([key, value]) => loadedEnvironment.get(key) === value)
 }
 
 function writeLaunchdJob(job) {
