@@ -168,9 +168,18 @@ export function classifyExecFailure(e) {
  *               and until it does this must stop the gate.
  * UNEXPECTED    anything else, including a GREEN baseline that broke
  */
-export function categorize({ expect, passed, environment }) {
+export function categorize({ expect, passed, environment, reasonMatched }) {
   if (environment) return 'ENVIRONMENT'
-  if (expect === 'RED') return passed ? 'RESOLVED' : 'BASELINE-RED'
+  if (expect === 'RED') {
+    if (passed) return 'RESOLVED'
+    // A red control that fails for the WRONG reason is not the baseline. Until
+    // this existed, any exception at all inside an `expect: 'RED'` control
+    // counted as the intended failure -- so a typo, an import error, or the
+    // shadow-repo timeout would all have been reported as "the obligation is
+    // still outstanding, as expected". The gate would have looked identical
+    // whether or not it was measuring anything.
+    return reasonMatched ? 'BASELINE-RED' : 'WRONG-REASON'
+  }
   return passed ? 'GREEN' : 'UNEXPECTED'
 }
 
@@ -184,22 +193,30 @@ const tempRoots = []
 const trackTemp = prefix => { const root = mkdtempSync(join(tmpdir(), prefix)); tempRoots.push(root); return root }
 
 const results = []
-async function control(label, expect, run) {
+/**
+ * @param expect 'RED' | 'GREEN'
+ * @param because for a RED control, the failure it is REQUIRED to produce.
+ *   Failing for any other reason is WRONG-REASON, not the baseline. Optional
+ *   for GREEN, which has nothing to match -- it either holds or it does not.
+ */
+async function control(label, expect, because, run) {
   const t0 = Date.now()
   let passed = false
   let environment = false
   let detail = ''
+  let reasonMatched = true
   try {
     await run()
     passed = true
   } catch (e) {
     environment = classifyExecFailure(e) === 'ENVIRONMENT'
     detail = (e?.message || String(e)).replace(/\s+/g, ' ').slice(0, 400)
+    reasonMatched = expect === 'RED' ? Boolean(because?.test(detail)) : true
   } finally {
     setBuildReporter(null)
     try { await closeProjectStore() } catch { /* a control that failed early may have no store */ }
-    const category = categorize({ expect, passed, environment })
-    results.push({ label, expect, category, detail })
+    const category = categorize({ expect, passed, environment, reasonMatched })
+    results.push({ label, expect, category, detail, because: because?.source })
     process.stdout.write(`  ${category.padEnd(12)} ${label}  (${((Date.now() - t0) / 1000).toFixed(1)}s)\n`)
   }
 }
@@ -224,12 +241,14 @@ const CLASSIFIER_CASES = [
   ['an ordinary assertion failure', new Error('OBSERVABLE build.log: absent'), null],
 ]
 const CATEGORY_CASES = [
-  ['expected red, failed', { expect: 'RED', passed: false, environment: false }, 'BASELINE-RED'],
-  ['expected red, PASSED', { expect: 'RED', passed: true, environment: false }, 'RESOLVED'],
-  ['expected green, passed', { expect: 'GREEN', passed: true, environment: false }, 'GREEN'],
-  ['expected green, FAILED', { expect: 'GREEN', passed: false, environment: false }, 'UNEXPECTED'],
-  ['environment beats a red expectation', { expect: 'RED', passed: false, environment: true }, 'ENVIRONMENT'],
-  ['environment beats a green expectation', { expect: 'GREEN', passed: false, environment: true }, 'ENVIRONMENT'],
+  ['expected red, failed for its stated reason', { expect: 'RED', passed: false, environment: false, reasonMatched: true }, 'BASELINE-RED'],
+  ['expected red, failed for the WRONG reason', { expect: 'RED', passed: false, environment: false, reasonMatched: false }, 'WRONG-REASON'],
+  ['expected red, PASSED', { expect: 'RED', passed: true, environment: false, reasonMatched: false }, 'RESOLVED'],
+  ['expected green, passed', { expect: 'GREEN', passed: true, environment: false, reasonMatched: true }, 'GREEN'],
+  ['expected green, FAILED', { expect: 'GREEN', passed: false, environment: false, reasonMatched: true }, 'UNEXPECTED'],
+  ['environment beats a red expectation', { expect: 'RED', passed: false, environment: true, reasonMatched: true }, 'ENVIRONMENT'],
+  ['environment beats a wrong-reason red', { expect: 'RED', passed: false, environment: true, reasonMatched: false }, 'ENVIRONMENT'],
+  ['environment beats a green expectation', { expect: 'GREEN', passed: false, environment: true, reasonMatched: true }, 'ENVIRONMENT'],
 ]
 {
   const failures = []
@@ -254,7 +273,7 @@ const CATEGORY_CASES = [
 // build-document's missing `completeBuildSuccess`. An ESM link error is not a
 // latent bug -- the module cannot be imported, so everything downstream of it
 // is unreachable and reports nothing.
-await control('both halves of the boundary load', 'RED', async () => {
+await control('both halves of the boundary load', 'RED', /completeBuildSuccess/, async () => {
   await import('../server/lib/build-adapter-registry.mjs')
   await import('../server/lib/build-document.mjs')
   return null
@@ -266,7 +285,7 @@ await control('both halves of the boundary load', 'RED', async () => {
 // writes a build log. So a failed markdown, qmd, html or slides build through
 // the adapter leaves no log, no errors and no recorded reason -- the exact
 // logMissing outage those wrappers were added to fix.
-await control('a failed adapter build writes build.log', 'RED', async () => {
+await control('a failed adapter build writes build.log', 'RED', /OBSERVABLE build\.log: absent/, async () => {
   const root = trackTemp('cutover-buildlog-')
   await initProjectStore(root)
   createProject({ name: 'deck', mainFile: 'deck.html' })
@@ -287,7 +306,7 @@ await control('a failed adapter build writes build.log', 'RED', async () => {
 // `if (result.regenerateBookTocs)`, and no adapter sets the flag. One needs a
 // mechanism built, the other needs a flag set. Together, the missing mechanism
 // would hide behind the missing flag.
-await control('the markdown adapter asks for book ToC regeneration', 'RED', async () => {
+await control('the markdown adapter asks for book ToC regeneration', 'RED', /OBSERVABLE result\.regenerateBookTocs/, async () => {
   const root = trackTemp('cutover-toc-')
   await initProjectStore(root)
   createProject({ name: 'notes', mainFile: 'notes.md' })
@@ -302,7 +321,7 @@ await control('the markdown adapter asks for book ToC regeneration', 'RED', asyn
 })
 
 // ── 4. the declared-main predicate, as a predicate ──────────────────────────
-await control('the declared-main predicate refuses an absent main file', 'GREEN', async () => {
+await control('the declared-main predicate refuses an absent main file', 'GREEN', null, async () => {
   const root = trackTemp('cutover-predicate-')
   await initProjectStore(root)
   createProject({ name: 'talk', mainFile: 'main.tex' })
@@ -314,7 +333,7 @@ await control('the declared-main predicate refuses an absent main file', 'GREEN'
 // Three separate callParent invocations in the worker's catch, each
 // individually wrapped so losing one does not lose the others. Counted
 // separately for that reason.
-await control('a failed build records diagnostics, a report and one build_failed', 'GREEN', async () => {
+await control('a failed build records diagnostics, a report and one build_failed', 'GREEN', null, async () => {
   const { root, name, revision } = await stagedProject('cutover-tails-', {
     name: 'talk', mainFile: 'main.tex', files: { 'notes.md': 'no main.tex anywhere' },
   })
@@ -340,7 +359,7 @@ await control('a failed build records diagnostics, a report and one build_failed
 // reachable on the svg path alone. Three earlier attempts at this control used
 // a markdown fixture and could never have skipped.
 const TEX = '\\documentclass{article}\n\\begin{document}\nOne page of prose.\n\\end{document}\n'
-await control('a render-irrelevant revision publishes source only and records not_required', 'GREEN', async () => {
+await control('a render-irrelevant revision publishes source only and records not_required', 'GREEN', null, async () => {
   const { root, name, revision, git } = await stagedProject('cutover-skip-', {
     name: 'paper-skip', mainFile: 'main.tex',
     files: { 'main.tex': TEX, 'notes.txt': 'first notes, never read by the render' },
@@ -375,7 +394,7 @@ await control('a render-irrelevant revision publishes source only and records no
 //
 // runBuild already calls finalizeBuildVersion internally; buildDocument would
 // call it again afterwards with different arguments.
-await control('one successful build records exactly one version', 'GREEN', async () => {
+await control('one successful build records exactly one version', 'GREEN', null, async () => {
   const { root, name, revision } = await stagedProject('cutover-version-', {
     name: 'paper-version', mainFile: 'main.md', format: 'markdown', files: { 'main.md': '# Paper\n\nProse.\n' },
   })
@@ -387,7 +406,7 @@ await control('one successful build records exactly one version', 'GREEN', async
 })
 
 // ── 8. REAL WORKER: one completion, one publication ─────────────────────────
-await control('one successful build publishes once and records one built disposition', 'GREEN', async () => {
+await control('one successful build publishes once and records one built disposition', 'GREEN', null, async () => {
   const { root, name, revision } = await stagedProject('cutover-once-', {
     name: 'paper-once', mainFile: 'main.md', format: 'markdown', files: { 'main.md': '# Paper\n\nProse.\n' },
   })
@@ -414,7 +433,8 @@ for (const root of tempRoots) {
 console.log('\n──────────────────────────────────────────────────────────────')
 for (const r of results) {
   console.log(`${r.category.padEnd(12)}  ${r.label}`)
-  console.log(`              expected ${r.expect}${r.detail ? `\n              got: ${r.detail}` : ''}`)
+  console.log(`              expected ${r.expect}${r.because ? ` because /${r.because}/` : ''}`
+    + `${r.detail ? `\n              got: ${r.detail}` : ''}`)
 }
 
 const counts = results.reduce((acc, r) => ({ ...acc, [r.category]: (acc[r.category] || 0) + 1 }), {})
@@ -429,8 +449,10 @@ if (survivors.length) {
   process.exit(EXIT.CLEANUP)
 }
 if (unexpected.length) {
-  console.error(`\nFAILED: ${unexpected.length} unexpected outcome(s). A RESOLVED row means a red obligation now holds`
-    + ` -- the cutover commit flips its expectation; it is not a silent pass.`)
+  console.error(`\nFAILED: ${unexpected.length} outcome(s) not as expected.`
+    + `\n  RESOLVED     a red obligation now holds -- the cutover commit flips its expectation; not a silent pass.`
+    + `\n  WRONG-REASON a red control failed, but NOT for the failure it declared. It is not measuring what it names.`
+    + `\n  UNEXPECTED   a green baseline broke.`)
   process.exit(EXIT.UNEXPECTED)
 }
 if (environment.length) {
