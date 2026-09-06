@@ -19,6 +19,7 @@ import { join, basename, dirname, posix } from 'path'
 import { readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
 import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
 import { getBuildReporter } from './build-runner.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { stripVolatileMarkdownMarkersForRender } from '../../shared/markdown-volatile.mjs'
 import { baseMacros } from '../../shared/katex-base-macros.mjs'
@@ -842,7 +843,7 @@ ${taskDocAssets.script}
 
 // ---- Main build function ----
 
-export async function buildMarkdownDocument(name, addLog = console.log) {
+export async function buildMarkdownDocument(name, addLog = console.log, { view = null } = {}) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -913,4 +914,29 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   }
 
   addLog(`[markdown] ${name}: indexed ${pageInfo.length} column${pageInfo.length === 1 ? '' : 's'}`)
+
+  // Describe what was built, so this renderer can pass through the same
+  // completion boundary as every other one. `buildDocument()` refuses an
+  // adapter that returns no manifest, and until every adapter returns one the
+  // worker cannot stop dispatching formats itself.
+  //
+  // The pages come straight from `pageInfo`, which already carries file, width
+  // and height per column — the same entries written to `page-info.json` just
+  // above. No second source of truth and no new measurement: if the two ever
+  // disagreed, the viewer and the manifest would be describing different
+  // documents.
+  //
+  // ADDITIVE. This builder still completes its own build above. The cutover
+  // removes that tail; doing both in one commit is how the lifecycle behaviours
+  // around it get dropped unnoticed.
+  return {
+    manifest: createDocumentManifest(
+      project,
+      pageInfo,
+      {
+        sourceMapping: 'none',
+        view: view || { kind: 'html-pages', capabilities: { presentation: false, sourceMapping: false, searchableText: true } },
+      },
+    ),
+  }
 }
