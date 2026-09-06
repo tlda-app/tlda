@@ -149,6 +149,7 @@ export async function buildPdfDocument(name, addLog = console.log) {
   // is ported; both move together.
   const targets = [{ texBase: target, mainFile, pages: pages.length }]
   await getBuildReporter().updateProject(name, {
+    buildStatus: 'success',
     pages: pages.length,
     targets,
     lastBuild: new Date().toISOString(),
