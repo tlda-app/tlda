@@ -314,6 +314,14 @@ const fleetStore = new FleetStoreClient(process.env.TLDA_FLEET_DB, {
   taskDocOptions: { projectsDir: PROJECTS_DIR },
 })
 await fleetStore.ready()
+const existingTldaIdentity = await fleetStore.getAgent('fleet:tlda')
+await fleetStore.upsertAgent({
+  id: 'fleet:tlda',
+  friendly_name: 'tlda',
+  registered_at: existingTldaIdentity?.registered_at || new Date().toISOString(),
+  dead: false,
+  human: false,
+})
 if (process.env.TLDA_TEST_THROW_ON_FULL_ROSTER === '1') {
   for (const method of ['getAliveAgents', 'getAliveAgentsPage']) {
     const original = fleetStore[method]?.bind(fleetStore)
