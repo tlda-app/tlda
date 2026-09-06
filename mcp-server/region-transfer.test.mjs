@@ -60,6 +60,18 @@ test('copies source bytes and leaves every byte outside the target range unchang
   assert.equal(result.sourceBytes, 11);
 });
 
+test('finds one exact target after earlier edits shift its line numbers', t => {
+  const { dir, source, target } = fixture(t);
+  fs.writeFileSync(target, Buffer.from('inserted\nprefix\nold one\nold two\nsuffix\n'));
+  const result = transferRegion({
+    sourceFile: source, sourceStartLine: 2, sourceEndLine: 3,
+    targetFile: target, targetStartLine: 1, targetEndLine: 5,
+    expected: 'old one\nold two',
+  }, { cwd: dir });
+  assert.equal(result.targetLine, 3);
+  assert.deepEqual(fs.readFileSync(target), Buffer.from('inserted\nprefix\nalpha\r\nbeta\nsuffix\n'));
+});
+
 test('stale expected text and invalid ranges leave the target unchanged', t => {
   const { dir, source, target } = fixture(t);
   const before = fs.readFileSync(target);
@@ -67,13 +79,25 @@ test('stale expected text and invalid ranges leave the target unchanged', t => {
     sourceFile: source, sourceStartLine: 2, sourceEndLine: 3,
     targetFile: target, targetStartLine: 2, targetEndLine: 3,
     expected: 'stale',
-  }, { cwd: dir }), /does not match expected/);
+  }, { cwd: dir }), /not found inside the target range/);
   assert.deepEqual(fs.readFileSync(target), before);
   assert.throws(() => transferRegion({
     sourceFile: source, sourceStartLine: 2, sourceEndLine: 99,
     targetFile: target, targetStartLine: 2, targetEndLine: 3,
     expected: 'old one\nold two',
   }, { cwd: dir }), /outside the file/);
+  assert.deepEqual(fs.readFileSync(target), before);
+});
+
+test('multiple exact matches inside the target range leave the target unchanged', t => {
+  const { dir, source, target } = fixture(t);
+  fs.writeFileSync(target, Buffer.from('prefix\nold one\nold one\nsuffix\n'));
+  const before = fs.readFileSync(target);
+  assert.throws(() => transferRegion({
+    sourceFile: source, sourceStartLine: 2, sourceEndLine: 3,
+    targetFile: target, targetStartLine: 1, targetEndLine: 4,
+    expected: 'old one',
+  }, { cwd: dir }), /more than once inside the target range/);
   assert.deepEqual(fs.readFileSync(target), before);
 });
 

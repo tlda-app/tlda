@@ -1514,7 +1514,7 @@ export function getFleetTools() {
     // ---- Registration & Identity ----
     {
       name: 'region_transfer',
-      description: 'Atomically replace an exact target line range with bytes from a Markdown staging-file line range. Line ranges are 1-based and inclusive; the final selected line ending is outside each range. The call has no inline replacement text.',
+      description: 'Atomically replace one exact string found inside a bounded target line range with bytes from a Markdown staging-file line range. The exact string must occur once in that range. Line ranges are 1-based and inclusive; the final selected line ending is outside each range. The call has no inline replacement text.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1522,9 +1522,9 @@ export function getFleetTools() {
           source_start_line: { type: 'integer', minimum: 1, description: 'First source line (inclusive).' },
           source_end_line: { type: 'integer', minimum: 1, description: 'Last source line (inclusive).' },
           target_file: { type: 'string', description: 'Target file, absolute or relative to the agent working directory.' },
-          target_start_line: { type: 'integer', minimum: 1, description: 'First target line (inclusive).' },
-          target_end_line: { type: 'integer', minimum: 1, description: 'Last target line (inclusive).' },
-          expected: { type: 'string', description: 'Exact UTF-8 string currently expected in the target range.' },
+          target_start_line: { type: 'integer', minimum: 1, description: 'First line of the bounded target search range (inclusive).' },
+          target_end_line: { type: 'integer', minimum: 1, description: 'Last line of the bounded target search range (inclusive).' },
+          expected: { type: 'string', description: 'Exact UTF-8 string to replace; it must occur exactly once inside the target search range.' },
         },
         required: ['source_file', 'source_start_line', 'source_end_line', 'target_file', 'target_start_line', 'target_end_line', 'expected'],
         additionalProperties: false,
@@ -2653,7 +2653,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       }, { cwd: getAgentCwd() || process.env.PWD || process.cwd() });
       const diff = regionTransferDiff({
         targetPath: result.targetPath,
-        targetStartLine: args.target_start_line,
+        targetStartLine: result.targetLine,
         oldString: result.oldString,
         newString: result.newString,
       });
