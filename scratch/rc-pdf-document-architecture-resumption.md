@@ -1138,3 +1138,74 @@ adjacent and worth knowing about** — `54e523dff` *"Honor declared roots during
 settle"* changed `daemon/git-project-sync.mjs` and `daemon/git-sync-manager.mjs`, which is
 the sync path item 2 above has to cross. It moved in a direction that looks helpful, but I
 have not read it.
+
+---
+
+# The user-visible wire is proven {#wire-proven}
+
+`pm-rc-docformat`, 2026-09-05 23:40 EDT. Branch `rc-docformat` at `e4def49c4`; `main` at
+`098007a53`; merges clean.
+
+**A PDF pushed through the real daemon Git path becomes a served, searchable document on a
+real server, with no TeX involved.** This is the gap Skip named — *"I've never used it"* —
+closed at the serving layer.
+
+## What ran {#wire-proven-run}
+
+`daemon/native-pdf-git-visible.test.mjs`, which is the branch's own end-to-end test: it binds
+a real `git-sync-manager`, commits a PDF into a checkout, submits it through the ordinary
+daemon path, waits for the build, then reads the served artifacts back over HTTP.
+
+**With only the two RC *end-state* assertions skipped as a labelled diagnostic, everything
+else passes:**
+
+- submission reaches `SubmittedToBuildQueue`
+- **`buildStatus` reaches `success`** with the submitted revision
+- `/docs/<project>/document-manifest.json` is served — 1 page, `sourceMapping: 'none'`,
+  `view.kind: 'svg-pages'`, capabilities `{presentation:false, sourceMapping:false,
+  searchableText:true}`
+- `output/book.pdf` and the page SVG both exist
+- **the served text geometry contains the document's actual words** — the assertion is a
+  regex against the PDF's text, so this is searchability, not a file count
+- the canonical Git root holds the real PDF bytes (`%PDF-1.4`)
+
+**The diagnostic was reverted immediately and the test file is byte-identical to its
+committed state.** `git status` clean, zero diagnostic lines remaining.
+
+## What the two remaining assertions are {#wire-proven-remaining}
+
+Both are the **factoring** half, not the PDF half:
+
+```
+[diag] format key still present: true -> pdf
+[diag] axes on record: {}
+```
+
+- **`format` still exists.** It is now correctly `'pdf'` — derived from the main file by
+  `254411ed3`, through the real daemon path, which is that commit's first end-to-end
+  confirmation. The test asserts the key is **absent**, which is the RC's end state.
+- **The axes are not stored on the project record.** The daemon's `sync()` accepts
+  `sourceFormat`/`renderer`/`documentFormat` in its project descriptors and **forwards none
+  of them** — it reads only `name` and `mainFile`. Nothing on the server stores them either.
+
+## Why the earlier run failed differently, and what that says {#wire-proven-delta}
+
+**On 09-03 this same test died at `BUILD FAILED: DVI file not created`** — the PDF project
+came out `format: 'svg'` and went to the LaTeX runner. **The only thing that changed is
+`254411ed3`, deriving the project's format from its main file instead of defaulting to
+`svg`.** That one commit moved this test from failing at the build to passing everything
+except the end-state cleanup.
+
+**It is worth naming that I nearly did not re-run it.** I had recorded the test as *"fails
+correctly, it encodes the end state"* and could have left it there — the derivation landed
+after that run, and a stale conclusion about a test is indistinguishable from a current one.
+
+## Honest limits {#wire-proven-limits}
+
+**No browser has rendered one.** This is the server and the daemon path; the client's own
+rendering is still unproven, and the US-Letter layout constant in `createSvgDocumentLayout`
+still applies to it.
+
+**The fixture is US Letter**, because the test builds its own minimal PDF with
+`MediaBox [0 0 612 792]`. My separate A4 runs cover the builder and the manifest; this run
+does not.
