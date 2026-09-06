@@ -3363,10 +3363,10 @@ async function patchEventMetadata(eventId, updater, { broadcast = true } = {}) {
   return next
 }
 
-async function patchRecipientAttachmentState(eventId, recipientId, attachmentId, record) {
-  return patchEventMetadata(eventId, metadata => (
-    setRecipientAttachmentState(metadata, recipientId, attachmentId, record)
-  ))
+async function patchRecipientAttachmentState(eventId, recipientId, attachmentId, record, options) {
+  const result = await fleetStore.updateRecipientAttachment(eventId, recipientId, attachmentId, record, options)
+  if (result?.metadata) broadcastEvent('event-update', { id: eventId, metadata_patch: result.metadata })
+  return result
 }
 
 // The event id is only known after insert, so provenance is backfilled here.
@@ -3392,29 +3392,6 @@ function placeholderSeenByRecipient(metadata = {}, recipientId, attachmentId) {
   const recipient = metadata?.recipient_refs?.[recipientId]
   const seen = new Set((recipient?.placeholder_seen_attachment_ids || []).map(String))
   return seen.has(String(attachmentId))
-}
-
-function placeholderSupersededForRecipient(metadata = {}, recipientId, attachmentId) {
-  const recipient = metadata?.recipient_refs?.[recipientId]
-  const superseded = new Set((recipient?.placeholder_superseded_attachment_ids || []).map(String))
-  return superseded.has(String(attachmentId))
-}
-
-function markPlaceholderSuperseded(metadata = {}, recipientId, attachmentId, { now = new Date().toISOString() } = {}) {
-  const next = { ...(metadata || {}) }
-  const refs = next.recipient_refs && typeof next.recipient_refs === 'object' ? next.recipient_refs : {}
-  const currentRecipient = refs[recipientId] || {}
-  const superseded = new Set((currentRecipient.placeholder_superseded_attachment_ids || []).map(String))
-  superseded.add(String(attachmentId))
-  next.recipient_refs = {
-    ...refs,
-    [recipientId]: {
-      ...currentRecipient,
-      placeholder_superseded_at: now,
-      placeholder_superseded_attachment_ids: Array.from(superseded),
-    },
-  }
-  return next
 }
 
 async function insertMaterializationAmend({ eventId, metadata }) {
@@ -3444,11 +3421,9 @@ async function insertMaterializationAmend({ eventId, metadata }) {
   return amendId
 }
 
-async function replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata }) {
-  if (placeholderSupersededForRecipient(metadata, recipientId, attachment.id)) return
-  const finalMetadata = await patchEventMetadata(eventId, current => (
-    markPlaceholderSuperseded(current, recipientId, attachment.id)
-  ))
+async function replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata, supersededNow }) {
+  if (!supersededNow) return
+  const finalMetadata = metadata
   await insertMaterializationAmend({ eventId, metadata: finalMetadata || metadata })
   if (!placeholderSeenByRecipient(metadata, recipientId, attachment.id)) return
   const ref = finalMetadata?.recipient_refs?.[recipientId]?.attachments?.[String(attachment.id)]
@@ -3507,7 +3482,7 @@ function notifyRecipientMaterializationFailures({ eventId, recipientId, failures
 async function materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }) {
   const recipient = await fleetStore.getAgent?.(recipientId)
   if (!recipient || recipient.human) return
-  const fail = (error) => {
+  const fail = async (error) => {
     const record = {
       kind: 'attachment',
       state: 'failed',
@@ -3525,7 +3500,7 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       daemonMaterializationError: error,
       updated_at: new Date().toISOString(),
     }
-    patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
+    await patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
     return { attachment, record }
   }
   const current = await agentRouteOrError(recipient, { requireTerminal: false })
@@ -3562,8 +3537,8 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       sha256: result.sha256,
       materialized_at: new Date().toISOString(),
     }
-    const updatedMetadata = patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-    await replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata: updatedMetadata })
+    const updated = await patchRecipientAttachmentState(eventId, recipientId, attachment.id, record, { supersede: true })
+    await replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata: updated?.metadata, supersededNow: updated?.supersededNow })
     return null
   } catch (e) {
     return fail(e.message || String(e))
@@ -3573,10 +3548,13 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
 function queueRecipientMaterialization({ eventId, recipientId, sourceAgent, attachments }) {
   const materializable = (attachments || []).filter(isMaterializableAttachment)
   if (materializable.length === 0) return
-  setImmediate(() => {
-    Promise.all(materializable.map(attachment => (
-      materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment })
-        .catch(e => {
+  setImmediate(async () => {
+    const results = []
+    try {
+      for (const attachment of materializable) {
+        try {
+          results.push(await materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }))
+        } catch (e) {
           const record = {
             kind: 'attachment',
             state: 'failed',
@@ -3593,15 +3571,16 @@ function queueRecipientMaterialization({ eventId, recipientId, sourceAgent, atta
             error: e.message || String(e),
             updated_at: new Date().toISOString(),
           }
-          patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-          return { attachment, record }
-        })
-    ))).then(results => {
+          await patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
+          results.push({ attachment, record })
+        }
+      }
       const failures = results.filter(Boolean)
       notifyRecipientMaterializationFailures({ eventId, recipientId, failures })
-    }).catch(e => {
+    } catch (e) {
+      // This queue is detached from the request; report a metadata-store failure here because no caller remains to receive it.
       console.error(`[materialization] batch notification failed for message ${eventId}: ${e.message}`)
-    })
+    }
   })
 }
 
