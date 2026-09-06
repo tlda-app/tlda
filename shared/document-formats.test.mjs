@@ -25,12 +25,36 @@ test('a pre-RC project record yields its axes instead of being refused', () => {
   })
 })
 
-test('every value a stored format can hold has axes — no project is unreadable', () => {
-  for (const format of ['svg', 'markdown', 'html', 'slides', 'qmd', 'png', 'book']) {
-    const axes = documentAxes({ format })
-    assert.ok(axes.sourceFormat && axes.renderer && axes.documentFormat,
-      `${format} must map to all three axes`)
+test('every value a stored format can hold maps to the RIGHT axes', () => {
+  // This test used to assert only that all three axes were PRESENT. That is why
+  // it passed while `pdf` was missing from the table for six commits: an unknown
+  // key falls back to the `svg` row, so a PDF project answered sourceFormat
+  // `tex`, renderer `latex` — all three present, all three wrong, and
+  // `hasSourceMapping` therefore claimed synctex for a document that has none.
+  //
+  // Presence is not the property worth checking when the failure mode is a
+  // silent fallback. Assert the values.
+  const expected = {
+    svg: ['tex', 'latex', 'paged'],
+    markdown: ['md', 'markdown', 'html'],
+    html: ['html', 'identity', 'html'],
+    slides: ['html', 'identity', 'slides'],
+    qmd: ['qmd', 'quarto', 'html'],
+    png: ['png', 'identity', 'paged'],
+    book: ['book', 'identity', 'book'],
+    pdf: ['pdf', 'identity', 'paged'],
   }
+  for (const [format, [sourceFormat, renderer, documentFormat]] of Object.entries(expected)) {
+    assert.deepEqual(documentAxes({ format }), { sourceFormat, renderer, documentFormat }, format)
+  }
+})
+
+test('a format the table does not know is the ONLY thing that falls back to LaTeX', () => {
+  // The fallback is deliberate — an unrecognised record still has to be
+  // readable. But it must be reachable only by a genuinely unknown format, not
+  // by one we added and forgot to describe, which is what happened with `pdf`.
+  assert.deepEqual(documentAxes({ format: 'banana' }),
+    { sourceFormat: 'tex', renderer: 'latex', documentFormat: 'paged' })
 })
 
 test('a qmd that rendered a deck is slides, which format alone cannot say', () => {
@@ -55,6 +79,15 @@ test('stored axes win over a stale format field', () => {
   const axes = documentAxes({ format: 'svg', sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged' })
   assert.equal(axes.sourceFormat, 'pdf')
   assert.equal(axes.renderer, 'identity')
+})
+
+test('a PDF project does not claim synctex it cannot have', () => {
+  // The regression the missing table row actually caused. hasSourceMapping is
+  // what the annotation anchor and the source-map loader ask, so a `true` here
+  // sends every annotation on a PDF to the LaTeX anchoring path and fetches a
+  // labels index no build ever wrote.
+  assert.equal(hasSourceMapping({ format: 'pdf' }), false)
+  assert.equal(documentAxes({ format: 'pdf' }).renderer, 'identity')
 })
 
 test('only a LaTeX build claims source mapping', () => {
