@@ -757,22 +757,23 @@ async function cmdCreate() {
   // this, `tlda project link x README.md` falls through to the LaTeX/svg
   // path, which uploads the ENTIRE directory — gigabytes if --dir is a code repo.
   // Explicit --format always wins; .tex/unknown keep the existing LaTeX default.
+  // Both of these asked the extension what a file is, and both answered from
+  // their own hand-written list while `formatForDocumentPath` — the map that
+  // already decides this everywhere else — sat imported at the top of the file.
+  //
+  // Three encodings of one fact, and they had drifted: neither list knew about
+  // `.pdf`, so linking a PDF produced a project correctly typed `pdf` whose own
+  // document root was recorded `svg`. A root recorded `svg` is a LaTeX render
+  // target — `latexDocumentRootPaths` selects exactly `format === 'svg'` — so
+  // the project and its only document disagreed about what it was.
+  //
+  // Using the shared map deletes both lists. `.tex` still resolves to `svg`,
+  // which is what the old code left it as by falling through.
   if (!format) {
-    const mainHint = mainArg
-    const ext = mainHint ? mainHint.toLowerCase().split('.').pop() : null
-    if (ext === 'md') format = 'markdown'
-    else if (ext === 'html' || ext === 'htm') format = 'html'
-    else if (ext === 'qmd') format = 'qmd'
-    if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainHint})`))
+    format = formatForDocumentPath(mainArg)
+    if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainArg})`))
   }
-  const inferDocumentRootFormat = path => {
-    if (format) return format
-    const ext = path.toLowerCase().split('.').pop()
-    if (ext === 'md' || ext === 'markdown') return 'markdown'
-    if (ext === 'html' || ext === 'htm') return 'html'
-    if (ext === 'qmd') return 'qmd'
-    return 'svg'
-  }
+  const inferDocumentRootFormat = path => format || formatForDocumentPath(path) || 'svg'
   const projectDocumentRoots = normalizeDocumentRoots(
     documentRoots.map(path => ({ path, format: inferDocumentRootFormat(path) })),
     { mainFile: mainArg, format: format || 'svg' },

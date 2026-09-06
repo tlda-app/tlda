@@ -115,7 +115,7 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd' | 'pdf'
   // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
   renderedFormat?: 'html' | 'slides'
   members?: string[]
@@ -431,13 +431,50 @@ function DocumentApp() {
       } else {
         // SVG: create layout immediately, pages fetched async after editor mounts.
         // targets[] always present from API; map to TargetInfo for the layout.
+        // A document that knows its own page sizes says so in its manifest.
+        //
+        // The layout otherwise derives every page box from a US Letter constant,
+        // which is a true description of a LaTeX render and false for a PDF —
+        // measured in a browser: an A4 document drawn at ratio 1.294 where A4 is
+        // 1.414, in a box identical to the Letter document beside it.
+        //
+        // Read from the manifest rather than carried on `targets`, because the
+        // manifest already records width and height per page. Copying them onto
+        // `targets` would be a second encoding of one fact, and when I tried it
+        // every PDF build began failing in the shadow repo.
+        //
+        // Only for `pdf`: a LaTeX project has no manifest, and asking for one on
+        // every document load would be a 404 per open to learn nothing.
+        let pageSizes: { width: number; height: number }[] | undefined
+        if (shownAs === 'pdf') {
+          pageSizes = await fetch(`${fullBasePath}document-manifest.json`)
+            .then(r => (r.ok ? r.json() : null))
+            .then(m => m?.pages?.map((p: { width: number; height: number }) => ({ width: p.width, height: p.height })))
+            .catch(() => undefined)
+        }
         const targets = config.targets?.map(t => ({
           name: t.texBase,
           title: t.texBase.replace(/_/g, ' '),
           pages: t.pages,
           basePath: fullBasePath,
+          pageSizes,
         }))
         document = createSvgDocumentLayout(projectName, fullBasePath, targets)
+        // Name what this is instead of leaving it to be inferred from silence.
+        //
+        // This branch is the unmarked default: everything that is not html,
+        // markdown, slides or png lands here, and the layout it builds carries
+        // no `format` at all. So a LaTeX render was never SELECTED downstream --
+        // it was whatever fell through -- and five sites ask "is this document
+        // absent from HTML_PAGE_FORMATS" when what they mean is "does this have
+        // synctex". Those are the same question only while LaTeX is the only
+        // thing down here, and a PDF makes them different.
+        //
+        // Stamping is behaviour-neutral for the existing case: the sites below
+        // test `format` against sets that contain neither '' nor 'svg', so a
+        // LaTeX document answers them identically named or unnamed. Checked that
+        // nothing tests for the ABSENCE of format before making it present.
+        document.format = shownAs === 'pdf' ? 'pdf' : 'svg'
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch
