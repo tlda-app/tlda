@@ -15,6 +15,11 @@
 
 import { exec as execCb, execSync, spawn } from 'child_process'
 import { promisify } from 'util'
+// Same read as server/routes/projects.mjs and mcp-server/lib/pdfCoords.mjs — one
+// JSON file is the source of truth for page geometry, and this is how the
+// server side already reads it.
+import { createDocumentManifest } from './document-manifest.mjs'
+const layoutConstants = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'shared', 'layout-constants.json'), 'utf8'))
 const _execAsync = promisify(execCb)
 // Ensure TeX binaries are available (launchd doesn't inherit full shell PATH).
 // Check common TeX locations across platforms.
@@ -2491,6 +2496,39 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
     }
 
     signalReload(name, null)
+
+    // Describe what was built, so a LaTeX render can pass through the same
+    // completion boundary as every other renderer.
+    //
+    // `buildDocument()` refuses an adapter that returns no manifest, and the
+    // LaTeX adapter is `runBuild` — so until this existed, LaTeX could not be
+    // routed through the shared boundary at all, and production kept its own
+    // dispatch. That is the gap: the registry named a `latex` adapter that
+    // nothing could call.
+    //
+    // Built from `targetMeta`, which already carries every target's tex base,
+    // main file and page count — the same three facts the `targets` patch above
+    // writes. Page geometry is the US Letter constant here and that is correct:
+    // a LaTeX document's size comes from its class, and dvisvgm's viewBox is
+    // `-72 -72 612 792`. Only a PDF needs its size measured.
+    //
+    // ADDITIVE for now. Nothing consumes this yet; `runBuild` still performs
+    // its own completion below, and the worker still dispatches directly. The
+    // cutover removes both, and doing it in one commit is how the behaviours
+    // main grew after the RC branch get deleted without anyone noticing.
+    const manifest = createDocumentManifest(
+      { ...(await readProject(name)), mainFile: targetMeta[0]?.mainFile || null },
+      targetMeta.flatMap(t => Array.from({ length: t.expectedPages || 0 }, (_, i) => ({
+        file: `${t.texBase}-page-${i + 1}.svg`,
+        width: layoutConstants.PDF_WIDTH,
+        height: layoutConstants.PDF_HEIGHT,
+      }))),
+      {
+        sourceMapping: 'synctex',
+        view: { kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false } },
+      },
+    )
+    status.manifest = manifest
 
     await _reporter.updateProject(name, {
       buildStatus: 'success',
