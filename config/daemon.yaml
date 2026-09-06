@@ -32,7 +32,6 @@ models:
         # this flag is the config passing codex's sandbox setting through.
         required:
           - "--dangerously-bypass-approvals-and-sandbox"
-          - "--dangerously-bypass-hook-trust"
         preferences: []
         controls: true
       group: codex
@@ -51,7 +50,6 @@ models:
         kind: codex
         required:
           - "--dangerously-bypass-approvals-and-sandbox"
-          - "--dangerously-bypass-hook-trust"
         preferences: []
         controls: true
       group: codex
@@ -70,7 +68,6 @@ models:
         kind: codex
         required:
           - "--dangerously-bypass-approvals-and-sandbox"
-          - "--dangerously-bypass-hook-trust"
         preferences: []
         controls: true
       group: codex
@@ -89,7 +86,6 @@ models:
         kind: codex
         required:
           - "--dangerously-bypass-approvals-and-sandbox"
-          - "--dangerously-bypass-hook-trust"
         preferences: []
         controls: true
       group: codex
