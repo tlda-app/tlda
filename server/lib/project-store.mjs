@@ -25,6 +25,7 @@ import { createSourceLifecycleStore, projectRevisionStatus } from './source-life
 import { ProjectLifecycleStatusIndex, UNKNOWN_PROJECT_LIFECYCLE_STATUS } from './project-lifecycle-status-index.mjs'
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
 import { formatForDocumentPath } from '../../shared/document-roots.mjs'
+import { documentAxes } from '../../shared/document-formats.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { scanTexDependencyClosure } from '../../shared/tex-deps.mjs'
 import { documentRootsIn, normalizeDocumentRoots } from '../../shared/document-roots.mjs'
@@ -87,7 +88,26 @@ export async function readProject(name) {
   const project = await projectFilesDb.readProject(name)
   if (!project) return project
   const { sourceDir: _sourceDir, ...sharedProject } = project
-  return sharedProject
+  // The three axes come out of the read path COMPUTED, not out of the record
+  // stored. Every reader gets them — including the project API response — and
+  // no project has to be migrated to acquire them.
+  //
+  // The alternative was to write them onto each project.json once. That is the
+  // shape the RC branch shipped, and it is why the RC has never been run
+  // against a store that already had anything in it: it paired stored axes with
+  // a startup assertion, so one project still carrying `format` stopped
+  // initProjectStore outright and the server did not start. A record carrying
+  // both shapes was rejected too, so the conversion could not even be staged
+  // across two passes.
+  //
+  // Deriving removes that whole class. There is no migration to run once,
+  // nothing to leave half-done, and re-running converges because nothing was
+  // written. It is Skip's rule one field over — document roots are a computed
+  // property of the branch, and so are these.
+  //
+  // `documentAxes` prefers axes already on the record, so an explicitly-declared
+  // project keeps its own answer and this only fills the gap.
+  return { ...sharedProject, ...documentAxes(sharedProject) }
 }
 
 // No default for mainFile. A caller that does not name one does not know one,
