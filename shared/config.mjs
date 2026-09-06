@@ -178,6 +178,7 @@ models:
         kind: codex
         required:
           - "--dangerously-bypass-approvals-and-sandbox"
+          - "--dangerously-bypass-hook-trust"
         preferences: []
         controls: false
       options:
@@ -193,6 +194,7 @@ models:
         kind: codex
         required:
           - "--dangerously-bypass-approvals-and-sandbox"
+          - "--dangerously-bypass-hook-trust"
         preferences: []
         controls: false
       options:
@@ -208,6 +210,7 @@ models:
         kind: codex
         required:
           - "--dangerously-bypass-approvals-and-sandbox"
+          - "--dangerously-bypass-hook-trust"
         preferences: []
         controls: false
       options:
@@ -223,6 +226,7 @@ models:
         kind: codex
         required:
           - "--dangerously-bypass-approvals-and-sandbox"
+          - "--dangerously-bypass-hook-trust"
         preferences: []
         controls: false
       options:

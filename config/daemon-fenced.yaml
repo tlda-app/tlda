@@ -31,6 +31,7 @@ models:
         required: []
         preferences:
           - "--dangerously-bypass-approvals-and-sandbox"
+          - "--dangerously-bypass-hook-trust"
         controls: true
       group: codex
       level: 1
@@ -49,6 +50,7 @@ models:
         required: []
         preferences:
           - "--dangerously-bypass-approvals-and-sandbox"
+          - "--dangerously-bypass-hook-trust"
         controls: true
       group: codex
       level: 2
@@ -67,6 +69,7 @@ models:
         required: []
         preferences:
           - "--dangerously-bypass-approvals-and-sandbox"
+          - "--dangerously-bypass-hook-trust"
         controls: true
       group: codex
       level: 3
@@ -85,6 +88,7 @@ models:
         required: []
         preferences:
           - "--dangerously-bypass-approvals-and-sandbox"
+          - "--dangerously-bypass-hook-trust"
         controls: true
       group: codex
       level: 4
