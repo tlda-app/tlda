@@ -1,0 +1,10 @@
+.classroom-docview-playback {
+  position: fixed;
+  right: 12px;
+  bottom: 58px;
+  z-index: var(--tlda-z-managed-surface);
+}
+
+.classroom-docview-playback__canvas {
+  box-shadow: 0 3px 18px rgb(0 0 0 / 18%);
+}
