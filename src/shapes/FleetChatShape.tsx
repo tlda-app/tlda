@@ -2155,12 +2155,14 @@ function ThreadChatOperationView({
   currentProject,
   host,
   restoreExpansions,
+  forgetExpansion,
 }: {
   descriptor: any
   renderCtx: any
   currentProject?: string
   host: HTMLElement
   restoreExpansions: (root: HTMLElement) => void
+  forgetExpansion: (moreRows: HTMLElement, index: number) => void
 }) {
   const semanticKey = String(descriptor?.semanticKey || '')
   const { since: windowSince, until: windowUntil, pageSize: windowPageSize } = threadWindow(descriptor)
@@ -2232,7 +2234,10 @@ function ThreadChatOperationView({
     stopEventPropagation(event)
     const root = viewRef.current
     if (!root) return
-    root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach(moreRows => {
+    root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach((moreRows, index) => {
+      // The row-height change re-renders the anchored list; clear the remembered
+      // fold first so its restore pass does not immediately reopen this middle.
+      forgetExpansion(moreRows, index)
       moreRows.style.display = 'none'
       const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
       if (btn) {
@@ -2241,7 +2246,7 @@ function ThreadChatOperationView({
       }
     })
     root.closest('.thread-shell')?.classList.remove('thread-middle-open')
-  }, [])
+  }, [forgetExpansion])
 
   return (
     <div className="semantic-operation-expanded-shell thread-shell">
@@ -2875,6 +2880,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
               currentProject={currentProject}
               host={body}
               restoreExpansions={restorePrettyExpansions}
+              forgetExpansion={(moreRows, index) => {
+                expanded.delete(prettyFoldKey(itemKey, moreRows, index))
+              }}
             />
           : <EditorContext.Provider value={editor}>
             <SemanticChatOperationView

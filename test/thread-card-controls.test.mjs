@@ -302,13 +302,15 @@ test('a thread mount point carries its semantic key', () => {
   assert.match(source, /class="semantic-operation-body" data-semantic-key="\$\{key\}"/)
 })
 
-// One function, called by both sides. Two call sites computing a key
+// One function, called by all three paths. Separate key computations
 // independently is what broke, and a second implementation would break it the
 // same way whatever the markup says.
-test('the click and the restore compute the fold key with the same function', () => {
+test('the click, restore and collapse compute the fold key with the same function', () => {
   const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
-  assert.equal((source.match(/prettyFoldKey\(itemKey, /g) || []).length, 2)
+  assert.equal((source.match(/prettyFoldKey\(itemKey, /g) || []).length, 3)
   assert.doesNotMatch(source, /`\$\{itemKey\}:pretty:\$\{i\}`/)
+  assert.match(source, /forgetExpansion\(moreRows, index\)/)
+  assert.match(source, /expanded\.delete\(prettyFoldKey\(itemKey, moreRows, index\)\)/)
 })
 
 // The two sides start from different elements -- the click holds the button,
