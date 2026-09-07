@@ -971,7 +971,14 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     () => fleetChatFilterForAgent(selectedAgent),
     [selectedAgent?.exactName],
   )
-  const chromeChatFilter = selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
+  const [chromeChatOverride, setChromeChatOverride] = useState<{
+    agentName: string | null
+    filter: FleetChatFilter
+  } | null>(null)
+  const selectedAgentName = selectedAgent?.exactName ?? null
+  const chromeChatFilter = chromeChatOverride?.agentName === selectedAgentName
+    ? chromeChatOverride.filter
+    : selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
   useEffect(() => {
     const controller = new AbortController()
     const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
@@ -1214,7 +1221,12 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       {/* The real chat, in an index editor. It brings its own header, filter
           pane, composer and voice control — the hand-rolled versions that used
           to be here are gone with it. See src/fleet/StandaloneChatPanel.tsx. */}
-      <StandaloneChatPanel className="index-top-chat" filter={chromeChatFilter} panelKey="index" />
+      <StandaloneChatPanel
+        className="index-top-chat"
+        filter={chromeChatFilter}
+        onFilterCommit={filter => setChromeChatOverride({ agentName: selectedAgentName, filter })}
+        panelKey="index"
+      />
 
       <div className="project-index-search-row">
         {/* No autoFocus. Focus follows a deliberate action everywhere else in

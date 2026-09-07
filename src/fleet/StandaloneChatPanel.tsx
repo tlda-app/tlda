@@ -19,7 +19,7 @@
  * and gets real answers for its own state and deliberate nothing for the canvas.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { EditorContext, TldrawUiToastsProvider, useValue } from 'tldraw'
 import { FleetChatMounted } from '../shapes/FleetChatShape'
 import { asEditorContextValue, createIndexEditor, type IndexEditorShape } from './index-editor'
@@ -52,10 +52,12 @@ function standaloneChatShape(id: string, filter: ChatFilter): IndexEditorShape {
 
 export function StandaloneChatPanel({
   filter,
+  onFilterCommit,
   className,
   panelKey = 'index',
 }: {
   filter: ChatFilter
+  onFilterCommit?: (filter: ChatFilter) => void
   className?: string
   /** Distinguishes one panel's state from another's. See panelShapeId. */
   panelKey?: string
@@ -63,7 +65,18 @@ export function StandaloneChatPanel({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const identity = useFleetIdentity()
   const shapeId = useMemo(() => panelShapeId(panelKey), [panelKey])
-  const [editor] = useState(() => createIndexEditor([standaloneChatShape(panelShapeId(panelKey), filter)]))
+  const onFilterCommitRef = useRef(onFilterCommit)
+  useLayoutEffect(() => {
+    onFilterCommitRef.current = onFilterCommit
+  }, [onFilterCommit])
+  // eslint-disable-next-line react-hooks/refs -- the editor callback reads the ref only on a later shape update
+  const [editor] = useState(() => createIndexEditor(
+    [standaloneChatShape(panelShapeId(panelKey), filter)],
+    (_shape, update) => {
+      if (!Object.prototype.hasOwnProperty.call(update.props ?? {}, 'filter')) return
+      onFilterCommitRef.current?.(update.props?.filter as ChatFilter)
+    },
+  ))
 
   // The panel sizes itself from its shape's w/h, which on the canvas is the box
   // you dragged. Here the box is the DOM element, so the element's size IS the
