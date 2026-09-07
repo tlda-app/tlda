@@ -1,4 +1,3 @@
-import chokidar from 'chokidar'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFile as execFileCb } from 'node:child_process'
@@ -10,12 +9,24 @@ import { historySeedRef } from '../shared/history-seed-ref.mjs'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
 
 const execFile = promisify(execFileCb)
+const watchSourceTree = (root, onChange) => fs.watch(root, { recursive: true, persistent: true }, onChange)
+
+export function createRuntimeSourceWatcher({ sourceDir, watchedMembers, note, watch = watchSourceTree }) {
+  return watch(sourceDir, (_eventType, filename) => {
+    if (filename == null) {
+      note(watchedMembers.values().next().value || path.join(sourceDir, '__tlda_ambiguous_source_event__'))
+      return
+    }
+    const file = path.resolve(sourceDir, String(filename))
+    if (watchedMembers.has(file)) note(file)
+  })
+}
 
 function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
 
@@ -155,10 +166,6 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     }
     async function refreshWatchedMembers() {
       const next = new Set((await sync.members()).map(file => path.join(item.sourceDir, file)))
-      const added = [...next].filter(file => !watchedMembers.has(file))
-      const removed = [...watchedMembers].filter(file => !next.has(file))
-      if (added.length) watcher.add(added)
-      if (removed.length) await watcher.unwatch(removed)
       watchedMembers.clear()
       for (const file of next) watchedMembers.add(file)
     }
@@ -233,11 +240,12 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       onRemoteSettled: () => cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
       log,
     }) : null
-    watcher = watch([], {
-      ignoreInitial: true,
-      persistent: true,
+    watcher = createRuntimeSourceWatcher({
+      sourceDir: item.sourceDir,
+      watchedMembers,
+      note: file => cluster.note(file),
+      watch,
     })
-    for (const event of ['add', 'change', 'unlink']) watcher.on(event, file => cluster.note(file))
     watcher.on('error', error => log.warn(`${item.project}: source watcher failed: ${error.message}`))
     const remoteTimer = remoteBridge ? setInterval(
       () => remoteBridge.poll().catch(error => log.warn(`${item.project}: remote Git poll failed: ${error.message}`)),
@@ -251,11 +259,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     // Re-derive what the working tree says, once, at startup.
     //
     // An edit made while this daemon was down reaches nothing otherwise. The
-    // watcher is constructed `ignoreInitial: true`, and `refreshWatchedMembers`
-    // re-adds every member through `watcher.add(added)` — one argument, so
-    // chokidar's `_internal` is undefined, `initialAdd` is true, and
-    // `!(initialAdd && ignoreInitial)` suppresses the event (chokidar 5.0.0,
-    // handler.js:395). So no `add` fires, no settle runs, and `recover()` cannot
+    // The watcher starts after the edit, so no event fires and recover() cannot
     // help: it only re-pushes a revision already at `localRef`, and the missed
     // edit never became one. The debouncer is pure memory, so anything pending
     // when the process died is gone too.

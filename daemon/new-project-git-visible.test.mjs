@@ -13,8 +13,10 @@ import { createGitSyncManager } from './git-sync-manager.mjs'
 
 function sourceWatcher() {
   const watcher = new EventEmitter()
-  watcher.add = () => {}
-  watcher.unwatch = async () => {}
+  watcher.watch = (_root, onChange) => {
+    watcher.change = onChange
+    return watcher
+  }
   watcher.close = async () => {}
   return watcher
 }
@@ -179,7 +181,7 @@ phase('daemon Git manager setup', async () => {
   manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-git-visible', server: base,
     token: 'fixture-token',
-    watch: () => watcher, quietMs: 10, log: { info() {}, warn() {}, error() {} },
+    watch: watcher.watch, quietMs: 10, log: { info() {}, warn() {}, error() {} },
   })
   manager.bindSource(project, checkout)
   await manager.sync([{ name: project, mainFile: 'README.md' }])
@@ -245,7 +247,7 @@ phase('rendered page', async () => {
 
 phase('local edit convergence', async () => {
   writeFileSync(join(checkout, 'README.md'), '# Git-visible paper\n\nVisible after a later local edit.\n')
-  watcher.emit('change', join(checkout, 'README.md'))
+  watcher.change('change', 'README.md')
   const editDeadline = Date.now() + 120_000
   while (Date.now() < editDeadline) {
     editedProject = await fetch(`${base}/api/projects/${project}`).then(response => response.json())
@@ -268,7 +270,7 @@ phase('local edit convergence', async () => {
 phase('local edit burst convergence', async () => {
   for (const content of ['burst one', 'burst two', 'burst settled']) {
     writeFileSync(join(checkout, 'README.md'), `# Git-visible paper\n\n${content}.\n`)
-    watcher.emit('change', join(checkout, 'README.md'))
+    watcher.change('change', 'README.md')
   }
   const burstDeadline = Date.now() + 120_000
   while (Date.now() < burstDeadline) {
