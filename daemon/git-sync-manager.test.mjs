@@ -10,10 +10,11 @@ import { createGitSyncManager } from './git-sync-manager.mjs'
 
 function testWatcher() {
   const watcher = new EventEmitter()
-  watcher.added = []
-  watcher.removed = []
-  watcher.add = paths => watcher.added.push(...paths)
-  watcher.unwatch = async paths => watcher.removed.push(...paths)
+  watcher.watch = (root, onChange) => {
+    watcher.root = root
+    watcher.change = onChange
+    return watcher
+  }
   watcher.close = async () => {}
   return watcher
 }
@@ -46,13 +47,13 @@ test('bound working-copy event settles through the one Git proposal path', async
   const watcher = testWatcher()
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-a', server: 'http://unused.test',
-    remoteUrlFor: () => remote, quietMs: 10, watch: () => watcher,
+    remoteUrlFor: () => remote, quietMs: 10, watch: watcher.watch,
     log: { info() {}, warn(value) { warnings.push(String(value)) }, error(value) { warnings.push(String(value)) } },
   })
   manager.bindSource('paper', checkout)
   await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
   writeFileSync(join(checkout, 'main.tex'), 'settled\n')
-  watcher.emit('change', join(checkout, 'main.tex'))
+  watcher.change('change', 'main.tex')
   const deadline = Date.now() + 30000
   let refs = ''
   while (Date.now() < deadline) {
