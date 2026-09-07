@@ -123,7 +123,10 @@ import { sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from 
 import { markAgentDead, wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
 import { compilePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
-import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
+import {
+  resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity,
+  resolveLiveSessionIdentityUntil as resolveLiveCodexSessionIdentityUntil,
+} from '../agent-launch/harness/codex.mjs'
 import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
 import {
   applyDaemonGrants,
@@ -1111,7 +1114,7 @@ daemonMintCore = createDaemonMintCore({
     // In particular, do not put the global session-tree fallback on the mint's
     // commit path: under machine load that synchronous walk held process_state
     // and the permission grant unwritten for minutes after the agent logged in.
-    void resolveLiveCodexSessionIdentity({
+    void resolveLiveCodexSessionIdentityUntil({
       agent: {
         id: processFact.fleet_id || params.fleet_id || null,
         friendly_name: processFact.name || params.name || null,
@@ -1122,6 +1125,8 @@ daemonMintCore = createDaemonMintCore({
       tmuxArgs: TMUX_ARGS,
       tmuxSocket: TMUX_SOCKET,
       processOwnedOnly: true,
+      deadlineMs: getMintRegistrationDeadlineMs(),
+      isProcessAlive: () => mintProcessAlive({ processState: processFact }),
     }).then(async live => {
       if (!live?.sessionId) return
       await daemonMintCore.recordSession(params.mint_id, {
@@ -1404,6 +1409,34 @@ async function rpcMint(params = {}) {
 }
 
 async function rpcWake(params = {}) {
+  const identifier = params.mint_id || params.mintId || params.fleet_id || params.fleetId || params.name
+  const facts = mintStore.resolve(identifier)
+  if (
+    facts?.processState?.harness === 'codex'
+    && !facts.joinedAt
+    && await mintProcessAlive(facts)
+  ) {
+    const live = await resolveLiveCodexSessionIdentityUntil({
+      agent: {
+        id: facts.fleetId || null,
+        friendly_name: facts.friendlyName || null,
+        cwd: facts.processState.cwd,
+        registered_at: facts.createdAt,
+      },
+      tmuxSession: facts.processState.tmux_session,
+      tmuxArgs: TMUX_ARGS,
+      tmuxSocket: TMUX_SOCKET,
+      processOwnedOnly: true,
+      deadlineMs: getMintRegistrationDeadlineMs(),
+      isProcessAlive: () => mintProcessAlive(facts),
+    })
+    if (live?.sessionId) {
+      await daemonMintCore.recordSession(facts.mintId, {
+        session_id: live.sessionId,
+        session_path: live.jsonlPath || null,
+      })
+    }
+  }
   return wakeMint(params)
 }
 
