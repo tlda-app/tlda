@@ -79,6 +79,7 @@ import { createGitRemotes } from '../shared/git-remotes.mjs'
 import { documentRootsToDeclare, formatForDocumentPath, normalizeDocumentRoots } from '../shared/document-roots.mjs'
 import { mergeAbort, mergeContinue, mergeReplay, mergeStatus } from '../server/lib/merge-replay.mjs'
 import { resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
+import { callLocalDaemonRpc } from '../shared/local-daemon-rpc.mjs'
 
 // --- Argument parsing ---
 
@@ -104,6 +105,7 @@ const TOP_LEVEL_COMMANDS = [
   ['env', 'show configured environments'],
   ['config', 'configure tlda'],
   ['system', 'show server, daemon, deploy stamp, and fleet runtime identity'],
+  ['build', 'rebuild a project from its published source revision'],
   ['doctor', 'health check'],
   ['logs', 'unified logs across all sources'],
   ['completions', 'output zsh completion script'],
@@ -225,7 +227,7 @@ const COMMAND_HELP = {
   share:   'tlda project share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific project\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
   status:  'tlda project status [name]\n\n  Show build status for a project.',
   errors:  'tlda project errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
-  build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
+  build:   'tlda build [name]\n\n  Rebuild the project from its published source revision.',
   delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
   server:  'tlda server [start|restart|stop|status|log|install|uninstall]\n\n  launchd supervises an installed server. Start and stop refuse rather than overriding that supervision; restart terminates the process and KeepAlive returns it. Config apply reconciles the service declaration.',
   bot:     'tlda bot [list|start|restart|stop|status|log|uninstall] [name]\n\n  One launchd bot manager keeps every declared bot running. Start and stop refuse; restart terminates the selected bot process and the manager returns it. Config apply reconciles the declaration.',
@@ -3022,6 +3024,14 @@ async function cmdStatus() {
   }
 }
 
+async function cmdBuild() {
+  const name = getPositional(0) || await inferProjectName()
+  if (!name) exitNotLinkedHere('tlda build <name>')
+  const result = await callLocalDaemonLifecycle('project-rebuild', { project: name })
+  printSubmittedRevision(result)
+  console.log(green(`Build triggered for "${name}".`))
+}
+
 async function cmdErrors() {
   const name = getPositional(0) || await inferProjectName()
   if (!name) exitNotLinkedHere('tlda project errors <name>')
@@ -3983,78 +3993,7 @@ export async function attachToAgent(name, {
 }
 
 async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = null, onEvent = null } = {}) {
-  const { createConnection } = await import('node:net')
-  return await new Promise((resolvePromise, reject) => {
-    const socket = createConnection(socketPath)
-    let buffer = ''
-    let settled = false
-    const fail = error => {
-      if (settled) return
-      settled = true
-      socket.destroy()
-      reject(error)
-    }
-    const timer = timeoutMs == null ? null : setTimeout(() => {
-      // Name the op and the bound. A classroom setup hit this on
-      // adopt-shadow-history-ref repeatedly while the daemon was up; the old
-      // text sent the reader after the daemon instead of after the stalled call.
-      fail(new Error(`local daemon ${op} timed out after ${timeoutMs}ms`))
-    }, timeoutMs)
-    socket.setEncoding('utf8')
-    socket.on('connect', () => {
-      socket.end(JSON.stringify({ op, params }))
-    })
-    const handlePayload = payload => {
-      if (payload.event) {
-        onEvent?.(payload.event, payload.data || {})
-        return
-      }
-      if (!payload.ok) throw new Error(payload.error || `local daemon ${op} failed`)
-      settled = true
-      if (timer) clearTimeout(timer)
-      resolvePromise(payload.result)
-    }
-    socket.on('data', chunk => {
-      buffer += chunk
-      for (;;) {
-        const nl = buffer.indexOf('\n')
-        if (nl === -1) break
-        const line = buffer.slice(0, nl).trim()
-        buffer = buffer.slice(nl + 1)
-        if (!line) continue
-        try {
-          handlePayload(JSON.parse(line))
-        } catch (e) {
-          fail(e)
-          break
-        }
-      }
-    })
-    socket.on('error', error => {
-      if (timer) clearTimeout(timer)
-      // Report the errno and the socket rather than diagnosing the daemon.
-      // ECONNREFUSED means nothing accepted this connection, which a saturated
-      // listener produces as readily as an absent one. ENOENT is the one case
-      // where the socket really is not there, and it now says exactly that.
-      const message = error.code === 'ENOENT'
-        ? `local daemon ${op} failed: no socket at ${socketPath} (ENOENT)`
-        : error.code === 'ECONNREFUSED'
-          ? `local daemon ${op} failed: connection refused at ${socketPath} (ECONNREFUSED)`
-          : `local daemon ${op} failed: ${error.message}`
-      fail(new Error(message))
-    })
-    socket.on('close', () => {
-      if (settled) return
-      if (timer) clearTimeout(timer)
-      try {
-        const line = buffer.trim()
-        if (!line) throw new Error(`local daemon ${op} ended without a result`)
-        handlePayload(JSON.parse(line))
-      } catch (e) {
-        fail(e)
-      }
-    })
-  })
+  return callLocalDaemonRpc(op, params, { socketPath, timeoutMs, onEvent })
 }
 
 function printMintLifecycleEvent(event, data = {}) {
@@ -7003,6 +6942,7 @@ async function main() {
     switch (command) {
       case 'server': await cmdServer(); break
       case 'system': await cmdSystem(); break
+      case 'build': await finishCliOperation('build', cmdBuild); break
       case 'classroom': await cmdClassroom(); break
       case 'scratch': await finishCliOperation('project scratch', cmdScratch); break
       case 'book':   await finishCliOperation('project book', cmdBook); break

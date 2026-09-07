@@ -44,13 +44,16 @@ import {
 } from './lib/formatCoords.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
 
-import { getFleetServerUrl, getServerUrl, DEFAULT_PORT } from '../shared/config.mjs'
+import { CONFIG_DIR, getActiveEnvName, getFleetServerUrl, getServerUrl, DEFAULT_PORT } from '../shared/config.mjs'
 import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
 import { uploadFileToServer } from '../shared/chat-file-processing.mjs'
+import { daemonLifecycleSocketPath } from '../shared/daemon-socket-path.mjs'
+import { callLocalDaemonRpc } from '../shared/local-daemon-rpc.mjs'
 
 const TLDA_TOKEN = resolveToken();
 const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {};
 const TLDA_SERVER = getServerUrl();
+const TLDA_DAEMON_SOCKET = daemonLifecycleSocketPath(CONFIG_DIR, getActiveEnvName() || process.env.TLDA_ENV || 'default');
 // Separate sync server for shapes/signals (e.g. Fly.io); defaults to the active
 // store server when no split-sync override is configured.
 const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
@@ -3165,7 +3168,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // If not already building (and not just a status check), trigger a new build
       if (!isBuilding && name !== 'build_status') {
-        await serverFetch(`/api/projects/${doc}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        await callLocalDaemonRpc('project-rebuild', { project: doc }, { socketPath: TLDA_DAEMON_SOCKET });
       }
 
       // Poll until build completes (or if already building, wait for it)
