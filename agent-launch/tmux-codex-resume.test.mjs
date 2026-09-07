@@ -120,3 +120,59 @@ test('Codex prompt injection retries Enter until the pasted kickoff is submitted
   assert.equal(delivered, true)
   assert.equal(enterCount, 2)
 })
+
+test('Codex prompt injection accepts a kickoff that completes before the post-Enter capture', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = '› Ask Codex to do anything'
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: pane }
+    assert.equal(command, 'send-keys')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter') {
+      enterCount += 1
+      pane = '› Ask Codex to do anything'
+    }
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 1000,
+    tmuxExec,
+    sleep: async () => {},
+  })
+
+  assert.equal(delivered, true)
+  assert.equal(enterCount, 1)
+})
+
+test('Codex prompt injection does not infer delivery from a failed post-Enter capture', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = '› Ask Codex to do anything'
+  let failCapture = false
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') {
+      if (failCapture) throw new Error('capture failed')
+      return { stdout: pane }
+    }
+    assert.equal(command, 'send-keys')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter') {
+      enterCount += 1
+      failCapture = true
+    }
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 10,
+    tmuxExec,
+    sleep: async () => new Promise(resolve => setTimeout(resolve, 1)),
+  })
+
+  assert.equal(delivered, false)
+  assert.equal(enterCount, 3)
+})
