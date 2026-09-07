@@ -78,6 +78,7 @@ import { createGitHttpHandler } from './lib/git-http.mjs'
 import { parseHistorySeedRef } from '../shared/history-seed-ref.mjs'
 import { selfBaseUrl } from '../shared/self-base-url.mjs'
 import { listProposalRefs, parseDaemonProposalRef } from './lib/git-proposals.mjs'
+import { createSourceProposalAdmissionConnectionDispatcher, createSourceProposalAdmissionHandler } from './lib/source-proposal-admission.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { classroomPrincipal, createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
 import { ClassroomStore } from './lib/classroom-store.mjs'
@@ -351,6 +352,15 @@ scheduleStartupTaskDocFlush()
 const SESSION_BACKFILL_STARTUP_DELAY_MS = Number(process.env.TLDA_SESSION_BACKFILL_STARTUP_DELAY_MS || 60_000)
 
 const HOT_OP_WARN_MS = Number(process.env.TLDA_HOT_OP_WARN_MS || 50)
+const sourceProposalAdmissionHandler = createSourceProposalAdmissionHandler({
+  parseDaemonProposalRef,
+  sourceLifecycleStore,
+  listProposalRefs,
+  admitProposal,
+  updateProject,
+  recordServerPerfEvent,
+  slowThresholdMs: HOT_OP_WARN_MS,
+})
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 })
 eventLoopDelay.enable()
 let lastEventLoopLag = { maxMs: 0, meanMs: 0, at: Date.now() }
@@ -5824,7 +5834,13 @@ server.on('upgrade', async (req, socket, head) => {
       })
       let daemonMessageChain = Promise.resolve()
       let sourceBindingsChain = Promise.resolve()
-      const sourceProposalChains = new Map()
+      const enqueueSourceProposal = createSourceProposalAdmissionConnectionDispatcher({
+        ws,
+        handleEnvelope: handleDaemonOutboxEnvelope,
+        handler: sourceProposalAdmissionHandler,
+        onHandlerError: e => console.error('[daemon-ws] handler error:', e?.message),
+        onDispatchError: e => console.error('[daemon-ws] dispatch error:', e?.message || e),
+      })
       ws.on('message', (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
@@ -5839,14 +5855,7 @@ server.on('upgrade', async (req, socket, head) => {
           return
         }
         if (msg.type === 'source-proposal-admit') {
-          const project = String(msg.project || '')
-          const previous = sourceProposalChains.get(project) || Promise.resolve()
-          const current = previous.then(dispatch)
-            .catch(e => console.error('[daemon-ws] dispatch error:', e?.message || e))
-          sourceProposalChains.set(project, current)
-          void current.finally(() => {
-            if (sourceProposalChains.get(project) === current) sourceProposalChains.delete(project)
-          })
+          enqueueSourceProposal(msg)
           return
         }
         daemonMessageChain = daemonMessageChain.then(dispatch)
@@ -9516,7 +9525,7 @@ async function setSentinelSyncError(projectName, syncError) {
 // rather than per message.
 const _unknownDaemonMessageTypes = new Set()
 
-async function handleDaemonWsMessage(ws, msg) {
+async function handleDaemonWsMessage(ws, msg, context = {}) {
   const { type } = msg
 
   if (type === 'activity-delivery-metrics') {
@@ -9671,50 +9680,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'source-proposal-admit') {
-    const { project, ref, revision } = msg
-    try {
-      const parsed = parseDaemonProposalRef(ref, ws._daemonKey)
-      if (!parsed || parsed.revision !== revision) throw new Error(`invalid proposal ref for ${ws._daemonKey || 'unknown daemon'}`)
-      const lifecycle = await sourceLifecycleStore(project)
-      const git = await lifecycle.gitRepository()
-      const proposal = (await listProposalRefs(git.gitDir)).find(item => item.ref === ref && item.revision === revision)
-      if (!proposal) throw new Error(`${project}: proposal ref is not present`)
-      const hasCurrentLifecycle = lifecycle.listRevisionLifecycles(project)
-        .some(item => item.sourceRevision === revision)
-      const row = await admitProposal({ project, ...proposal }, { retryTerminal: msg.retry_terminal === true || !hasCurrentLifecycle })
-      // Stamp who caused this revision, so the build card can be addressed to
-      // them. `resolveEditedBy` reads exactly this pair and requires it inside a
-      // ten-minute window; nothing had written it since f6d0f9089 on 08-20, so it
-      // returned null for every project and no agent had received a build card
-      // since 08-21. The daemon resolves the name from its own edit records --
-      // see resolveProposalEditor in bin/fleet-daemon.mjs -- and this is where it
-      // lands.
-      //
-      // Best-effort on purpose: a failed stamp costs a name on a chat message,
-      // and must not fail an admission that already succeeded.
-      if (msg.editedBy) {
-        try {
-          await updateProject(project, { lastEditedBy: msg.editedBy, lastEditedByAt: Date.now() })
-        } catch (e) {
-          // Swallowed deliberately: the admission above already SUCCEEDED and the
-          // revision is durable. Rethrowing would turn a missing name on a chat
-          // message into a failed push the daemon then retries.
-          console.error(`[${project}] recording edit attribution failed: ${e.message}`)
-        }
-      }
-      if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: {
-        ok: true,
-        project,
-        revision,
-        submissionId: row.id,
-        state: row.state,
-        startedOnce: row.started_once === 1,
-        terminalReason: row.terminal_reason || null,
-        lifecyclePresent: hasCurrentLifecycle,
-      } }))
-    } catch (e) {
-      if (msg.id) ws.send(JSON.stringify({ id: msg.id, error: e.message }))
-    }
+    await sourceProposalAdmissionHandler(ws, msg, context)
     return
   }
 
