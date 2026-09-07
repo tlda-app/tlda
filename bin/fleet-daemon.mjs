@@ -95,6 +95,7 @@ import {
   unlinkPidfileIfOwnPid,
 } from '../agent-runtime/daemon-guards.mjs'
 import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
+import { rebuildLinkedProject } from '../daemon/project-rebuild.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
 import { actionForSymptom, performNotificationSymptomAction } from '../daemon/notification-symptom-action.mjs'
@@ -829,6 +830,10 @@ async function rpcUnlinkProjectSource({ project, sourceDir }) {
   return result
 }
 
+async function rpcRebuildProject({ project }) {
+  return rebuildLinkedProject(sourceSync, project)
+}
+
 fs.watchFile(PROJECT_WORLDS_FILE, { interval: 500 }, () => applyProjectWorldOwnership('registry-change'))
 
 const localArtifacts = createLocalArtifacts({
@@ -1504,6 +1509,7 @@ function startLocalLifecycleRpc() {
           spawn: agentLauncher.handlers.spawn,
           'project-source-link': rpcLinkProjectSource,
           'project-source-unlink': rpcUnlinkProjectSource,
+          'project-rebuild': rpcRebuildProject,
           'project-git-remote': ({ project, operation, ...params }) => sourceSync.remoteOperation(project, operation, params),
         }
         const handler = handlers[op]
