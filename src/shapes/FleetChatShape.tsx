@@ -70,6 +70,7 @@ import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counter
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetIdentity, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent, searchFleet } from '../fleet-data-adapter'
 import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
 import { parseMessageFilter } from '../../shared/fleet-labels.mjs'
+import { threadAgentRequest } from '../fleet/thread-agent-request.mjs'
 // @ts-ignore — vanilla JS module
 import { CANONICAL_REFERENCE_SOURCE, canonicalEventReference, parseCanonicalEventReference, parseCanonicalSearchReference } from '../../shared/canonical-references.mjs'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
@@ -1918,12 +1919,13 @@ function threadWindow(descriptor: any) {
 }
 
 // Mirror what `thread` itself asks the server for, so the card renders the call
-// that was made: an agent read is `agent` plus the empty text query (which the
-// server serves agent-only), a filter read is the normalized message filter,
-// and event types stay unset unless the call named them.
-function threadSearchRequest(descriptor: any, agentId: string | null, currentProject?: string) {
+// that was made: an agent read is the caller/agent conversation, a filter read
+// is the normalized message filter, and event types stay unset unless the call
+// named them.
+function threadSearchRequest(descriptor: any, agent: string | null, currentProject?: string) {
   const view = descriptor?.view || {}
-  const filters: any = { eventOnly: true, historyOnly: true, currentProject, throwOnError: true }
+  const agentRequest = threadAgentRequest(descriptor, agent, currentProject)
+  const filters: any = agentRequest?.filters || { eventOnly: true, historyOnly: true, currentProject, throwOnError: true }
   // `me` is lexically bound to the activity row's caller. Keep the recorded
   // expression unchanged while evaluating it in the environment that issued it.
   if (descriptor?.caller) filters.me = descriptor.caller
@@ -1933,9 +1935,7 @@ function threadSearchRequest(descriptor: any, agentId: string | null, currentPro
   const { since, until, pageSize } = threadWindow(descriptor)
   if (since) filters.since = since
   if (until) filters.before = until
-  if (agentId) {
-    filters.agent = agentId
-  } else {
+  if (!agentRequest) {
     const raw = String(view.filter || descriptor?.filterExpression || '')
     let filterExpression = ''
     try {
@@ -2177,17 +2177,12 @@ function ThreadChatOperationView({
     setLoading(true)
     setError('')
     try {
-      let agentId: string | null = null
       const view = descriptor?.view || {}
       const agentArg = view.agent || (view.task_id
         ? (await fleetEphemeral('task-by-id', { task_id: view.task_id }))?.task?.agent
         : null)
       if (view.task_id && !view.agent && !agentArg) throw new Error(`Task ${view.task_id} not found`)
-      if (agentArg) {
-        const resolved = await fleetEphemeral('resolve-agent', { agent: agentArg })
-        agentId = resolved?.agent?.id || String(agentArg)
-      }
-      const request = threadSearchRequest(descriptor, agentId, currentProject)
+      const request = threadSearchRequest(descriptor, agentArg ? String(agentArg) : null, currentProject)
       const fetched = await searchFleet(request.query, request.limit, request.filters)
       const events = fetched
         .filter((r: any) => r.source === 'fleet')

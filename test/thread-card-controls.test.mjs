@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { renderActivityGroup, renderThreadRows, semanticOperationDescriptor } from '../src/fleet/activity-render.mjs'
+import { threadAgentRequest } from '../src/fleet/thread-agent-request.mjs'
 
 const ctx = {
   agentLabel: id => id,
@@ -165,12 +166,16 @@ test('a lexical me filter keeps its displayed text', () => {
 })
 
 test('the thread rerun evaluates me as the recorded caller', () => {
-  const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
-  const start = source.indexOf('function threadSearchRequest(')
-  const end = source.indexOf('\nfunction semanticSearchRequest(', start)
-  const request = source.slice(start, end)
+  const friendly = threadAgentRequest({ caller: 'fleet:agent', view: { agent: 'skip' } })
+  const exact = threadAgentRequest({ caller: 'fleet:agent', view: { agent: 'fleet:skip' } })
+  const task = threadAgentRequest({ caller: 'fleet:agent', view: { task_id: 'task:one' } }, 'fleet:owner')
 
-  assert.match(request, /if \(descriptor\?\.caller\) filters\.me = descriptor\.caller/)
+  assert.equal(friendly.filters.me, 'fleet:agent')
+  assert.equal(friendly.filters.filterExpression, 'me <> skip')
+  assert.equal(exact.filters.me, 'fleet:agent')
+  assert.equal(exact.filters.filterExpression, 'me <> fleet:skip')
+  assert.equal(task.filters.me, 'fleet:agent')
+  assert.equal(task.filters.filterExpression, 'me <> fleet:owner')
 })
 
 // Skip, 2026-08-19 05:37 EDT: "the search you just did returned four results.
