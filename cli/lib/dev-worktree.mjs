@@ -337,16 +337,58 @@ async function health(base) {
   }
 }
 
-async function waitForSandboxDaemon(pid, socketPath, logPath) {
-  for (let i = 0; i < 60; i++) {
-    if (!alive(pid)) {
-      const detail = existsSync(logPath) ? ` — see ${logPath}` : ''
-      throw new Error(`sandbox daemon exited during startup${detail}`)
+// A sandbox daemon that dies before it logs a line leaves `alive(pid)` saying
+// only "gone". Node knows more: `error` for a child that never started, and
+// `exit(code, signal)` for one that started and died. Those facts arrive once,
+// so record them from spawn time and read them in the wait.
+export function watchSandboxDaemon(child) {
+  const facts = { spawnError: null, exit: null }
+  child.once('error', error => { facts.spawnError = error })
+  child.once('exit', (code, signal) => { facts.exit = { code, signal } })
+  return facts
+}
+
+function daemonLogEvidence(logPath) {
+  if (!existsSync(logPath)) return { path: logPath, exists: false, size: 0, tail: '' }
+  const size = statSync(logPath).size
+  const tail = readFileSync(logPath, 'utf8').trimEnd().split('\n').slice(-10).join('\n')
+  return { path: logPath, exists: true, size, tail }
+}
+
+function describeDaemonLog(log) {
+  if (!log.exists) return `no log written at ${log.path}`
+  if (!log.size) return `empty log at ${log.path} (0 bytes)`
+  return `${log.path} (${log.size} bytes), last lines:\n${log.tail}`
+}
+
+function daemonStartupFailure(message, diagnosis) {
+  return Object.assign(new Error(message), { diagnosis })
+}
+
+export async function waitForSandboxDaemon(facts, socketPath, logPath, { attempts = 60, intervalMs = 250 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    const log = daemonLogEvidence(logPath)
+    if (facts.spawnError) {
+      throw daemonStartupFailure(
+        `sandbox daemon failed to spawn: ${facts.spawnError.message} — ${describeDaemonLog(log)}`,
+        { outcome: 'spawn-error', error: facts.spawnError.message, code: facts.spawnError.code ?? null, signal: null, log },
+      )
     }
-    if (existsSync(socketPath)) return
-    await new Promise(r => setTimeout(r, 250))
+    if (facts.exit) {
+      const { code, signal } = facts.exit
+      throw daemonStartupFailure(
+        `sandbox daemon exited before creating lifecycle socket ${socketPath} (code ${code}, signal ${signal}) — ${describeDaemonLog(log)}`,
+        { outcome: 'exit-before-lifecycle', code, signal, log },
+      )
+    }
+    if (existsSync(socketPath)) return { outcome: 'socket-ready', socketPath, log }
+    await new Promise(r => setTimeout(r, intervalMs))
   }
-  throw new Error(`sandbox daemon did not create lifecycle socket ${socketPath} within 15s — see ${logPath}`)
+  const log = daemonLogEvidence(logPath)
+  throw daemonStartupFailure(
+    `sandbox daemon did not create lifecycle socket ${socketPath} within ${Math.round(attempts * intervalMs / 1000)}s — ${describeDaemonLog(log)}`,
+    { outcome: 'no-lifecycle-socket', code: null, signal: null, log },
+  )
 }
 
 // ---- verbs ----
@@ -575,11 +617,12 @@ export async function cmdServeWorktree(args) {
         TMUX_PANE: undefined,
       },
     })
+    const dfacts = watchSandboxDaemon(dchild)
     dchild.unref()
     daemonPid = dchild.pid
     writeFileSync(daemonPidFile(branch), String(daemonPid))
     try {
-      await waitForSandboxDaemon(daemonPid, daemonSocket, daemonLogFile(branch))
+      await waitForSandboxDaemon(dfacts, daemonSocket, daemonLogFile(branch))
     } catch (error) {
       try { process.kill(daemonPid) } catch { /* already exited */ }
       try { process.kill(pid) } catch { /* already exited */ }
