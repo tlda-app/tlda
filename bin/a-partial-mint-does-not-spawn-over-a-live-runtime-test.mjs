@@ -206,14 +206,22 @@ function recovery({
   assert.equal(decision.reason, 'coherent-tuple')
 }
 
-// 10. A row that already has process state is not this path's business.
+// 10. A finished row is not this path's business. Recorded process state used
+//     to be the test for that, and it was the wrong one: the half-made row
+//     carries a live runtime with no grant and no join, so "has process state"
+//     excluded from repair exactly the row that most needed it. The join is
+//     what says finished, and mint-core sets it only after bindSeat succeeds.
 {
   const { run, asked } = recovery({
-    facts: { ...MINT, processState: { tmux_session: 'fleet-half-minted' } },
+    facts: {
+      ...MINT,
+      processState: { tmux_session: 'fleet-half-minted' },
+      joinedAt: '2026-09-08T10:00:00Z',
+    },
   })
   const decision = await run()
   assert.equal(decision.action, 'skip')
-  assert.equal(decision.reason, 'process-state-recorded')
+  assert.equal(decision.reason, 'already-joined')
   assert.deepEqual(asked.probed, [])
 }
 
@@ -462,10 +470,13 @@ const rebindTo = (facts, store) => {
 // wake-core: the same three decisions, on the path that was the other half of
 // the incident.
 
-function wakeHarness({ recoverExistingRuntime, liveSessions = ['fleet-half-minted', 'fleet-half-minted-2'] }) {
+function wakeHarness({ recoverExistingRuntime, liveSessions = ['fleet-half-minted', 'fleet-half-minted-2'], joinedAt = null }) {
   const calls = { resumed: 0, recovered: 0 }
   const live = new Set(liveSessions)
-  const store = memoryStore({ 'mint-1': { ...PARTIAL_ROW, joinedAt: '2026-09-08T10:00:00Z' } })
+  // Not joined. The recovery is offered every row that has not finished
+  // joining, which is what lets it reach the half-made row whose process state
+  // is recorded; a joined row is finished and skips it (case 28).
+  const store = memoryStore({ 'mint-1': { ...PARTIAL_ROW, joinedAt } })
   const wake = createDaemonWakeCore({
     store,
     // Shaped like the daemon's: it looks up the recorded session on the box and

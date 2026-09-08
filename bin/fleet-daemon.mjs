@@ -122,9 +122,10 @@ import { launchMintProcess } from '../agent-launch/index.mjs'
 import { listSessionNames, sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { sanitizeSessionName } from '../agent-launch/identity.mjs'
 import { resolvePartialMintRuntime } from '../daemon/partial-mint-runtime-recovery.mjs'
+import { resolvePartialMintPermissionAuthority } from '../daemon/partial-mint-permission-authority.mjs'
 import { markAgentDead, wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
-import { compilePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
+import { compilePermissionGrant, normalizePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
 import {
   resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity,
   resolveLiveSessionIdentityUntil as resolveLiveCodexSessionIdentityUntil,
@@ -1209,6 +1210,25 @@ async function partialMintObservedIdentity(facts, candidate) {
 // same call the launcher's result goes through, so the session facts and the
 // seat binding follow the existing join. Nothing here spawns a process,
 // requests a seat, or asks for a session name.
+// The grant this runtime is bound under, resolved from the two authorities and
+// normalized against this daemon's configuration -- before any write. The
+// ordering matters as much as the answer: `recordProcess` persists the process
+// fact and only then does `bindSeat` read the grant, so a grant rejected after
+// the fact is rejected after the row has already been changed.
+function partialMintPermissionGrant(facts, observed = {}) {
+  const cwd = observed.cwd || facts.processState?.cwd || facts.launchRecipe?.cwd || null
+  const config = withDaemonModelAliases(loadDaemonLaunchConfig(), readDaemonConfigForCwd(cwd))
+  return resolvePartialMintPermissionAuthority({
+    ledgerGrant: observed.permissionGrant || null,
+    ledgerBindsSingleRuntime: !!observed.ledgerBindsSingleRuntime,
+    // The recipe recorded on THIS mint row. `persistentLaunchRecipe` keeps
+    // `permissionGrant` across restarts precisely so a wake can replay the
+    // permissions the mint was issued under.
+    recipeGrant: facts.launchRecipe?.permissionGrant ?? null,
+    normalizeGrant: grant => normalizePermissionGrant(grant, config),
+  })
+}
+
 async function recoverPartialMintRuntime(facts) {
   const decision = await resolvePartialMintRuntime({
     facts,
@@ -1218,33 +1238,67 @@ async function recoverPartialMintRuntime(facts) {
     probeSession: session => sessionRuntimeState(session, { tmuxSocket: TMUX_SOCKET }),
     observeRuntimeIdentity: candidate => partialMintObservedIdentity(facts, candidate),
   })
-  if (decision.action !== 'rebind') {
+  const adopting = decision.action === 'rebind' || decision.action === 'enrich'
+  if (!adopting) {
     if (decision.action === 'hold') {
       log.warn(`mint ${facts.friendlyName || facts.mintId}: partial-mint recovery held (${decision.reason})`)
     }
     return decision
   }
   const observed = decision.observed || {}
+
+  // Before the write, and it refuses rather than defaulting. A runtime nobody
+  // can say what permissions it holds is not one to bind an identity to.
+  const authority = partialMintPermissionGrant(facts, observed)
+  if (!authority.ok) {
+    log.warn(`mint ${facts.friendlyName || facts.mintId}: partial-mint recovery held (${authority.reason})`)
+    return {
+      action: 'hold',
+      reason: authority.reason,
+      session: decision.session,
+      detail: authority.detail || null,
+      examined: decision.examined,
+    }
+  }
+
   const expected = partialMintExpectedIdentity(facts)
+  const recorded = facts.processState || {}
+  // An enrich fills gaps in the fact that is already there. Every identity
+  // field is taken from the record first, so completing the binding cannot
+  // move the agent onto a different mint, fleet id, name, session or tmux --
+  // and `updateProcessState` replaces the stored JSON wholesale, which is why
+  // the untouched fields have to be carried through explicitly rather than
+  // omitted.
+  const enriching = decision.action === 'enrich'
   const processFact = {
-    mint_id: facts.mintId,
-    fleet_id: expected.fleetId || observed.fleetId || null,
-    name: facts.friendlyName || observed.friendlyName || null,
-    tmux_session: decision.session,
-    cwd: observed.cwd || expected.cwd || null,
-    harness: observed.harness || expected.harness || null,
-    model: observed.model || expected.model || null,
-    session_id: observed.sessionId || null,
-    session_path: observed.sessionPath || null,
-    permission_grant: observed.permissionGrant || null,
-    machine_id: MACHINE_ID,
-    env_name: ACTIVE_ENV,
-    daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
+    ...recorded,
+    mint_id: recorded.mint_id || facts.mintId,
+    fleet_id: recorded.fleet_id || expected.fleetId || observed.fleetId || null,
+    name: recorded.name || facts.friendlyName || observed.friendlyName || null,
+    tmux_session: enriching ? recorded.tmux_session : decision.session,
+    cwd: recorded.cwd || observed.cwd || expected.cwd || null,
+    harness: recorded.harness || observed.harness || expected.harness || null,
+    model: recorded.model || observed.model || expected.model || null,
+    session_id: recorded.session_id || observed.sessionId || facts.sessionId || null,
+    session_path: recorded.session_path || observed.sessionPath || facts.sessionPath || null,
+    permission_grant: authority.grant,
+    machine_id: recorded.machine_id || MACHINE_ID,
+    env_name: recorded.env_name || ACTIVE_ENV,
+    daemon_key: recorded.daemon_key || `${MACHINE_ID}:${ACTIVE_ENV}`,
     alive: true,
   }
   const rebound = await daemonMintCore.recordProcess(facts.mintId, processFact)
-  log.info(`mint ${facts.friendlyName || facts.mintId}: rebound live runtime ${decision.session} (${decision.reason}) without spawning`)
-  return { action: 'rebound', reason: decision.reason, session: decision.session, facts: rebound }
+  log.info(
+    `mint ${facts.friendlyName || facts.mintId}: ${enriching ? 'completed' : 'rebound'} live runtime `
+    + `${processFact.tmux_session} (${decision.reason}, grant from ${authority.source}) without spawning`,
+  )
+  return {
+    action: enriching ? 'enriched' : 'rebound',
+    reason: decision.reason,
+    session: processFact.tmux_session,
+    grantSource: authority.source,
+    facts: rebound,
+  }
 }
 
 daemonMintCore = createDaemonMintCore({
