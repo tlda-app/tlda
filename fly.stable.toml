@@ -1,6 +1,6 @@
 # fly.stable.toml — staging/boot-verification Fly app for the live tlda backend.
 # Deploy with: fly deploy -c fly.stable.toml
-app = "tldraw-sync-skip-stable"
+app = "your-tlda-staging"
 primary_region = "sjc"
 
 [build]
