@@ -207,11 +207,16 @@ export function createDaemonMintCore({
     // CLI mint starts both actions before awaiting either. Server mint supplies
     // fleet_id and therefore uses this same core without starting a second seat request.
     const found = store.get(id)
-    // Only a row with no process state, and only before anything is launched.
-    // A `hold` is a refusal, not a slower launch: the recovery could not prove
-    // the runtime is absent, and spawning is the half of this that cannot be
-    // taken back.
-    if (reusedRow && !found?.processState && recoverExistingRuntime) {
+    // Any row this call picked up that has not finished joining, and always
+    // before anything is launched. Recorded process state is not a finished
+    // mint: the half-made row carries a live runtime with no grant and no join,
+    // and gating on its absence is what left that row unreachable by the only
+    // path that could complete it.
+    //
+    // A `hold` is a refusal, not a slower launch: the recovery could not settle
+    // what is running, and spawning is the half of this that cannot be taken
+    // back.
+    if (reusedRow && !found?.joinedAt && recoverExistingRuntime) {
       const recovery = await recoverExistingRuntime(found || store.get(id))
       if (recovery?.action === 'hold') {
         throw new Error(`mint ${id} refused: ${recovery.reason} (${recovery.session || (recovery.sessions || []).join(', ') || 'no session named'})`)

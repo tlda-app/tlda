@@ -31,9 +31,30 @@
 // evidence of absence, and spawning is the irreversible half of this decision.
 
 export const RECOVERY_REBIND = 'rebind'
+export const RECOVERY_ENRICH = 'enrich'
 export const RECOVERY_LAUNCH = 'launch'
 export const RECOVERY_HOLD = 'hold'
 export const RECOVERY_SKIP = 'skip'
+
+// A recorded process state is not the same thing as a finished mint. The row
+// left behind by a partial mint carries the real tmux session, PID and session
+// of a live runtime, a null permission grant, and no join -- so treating "has
+// process state" as "nothing to do here" left it permanently half-made: alive,
+// unbound, unaddressable, and invisible to a path that only looked at rows with
+// no process state at all.
+//
+// Joined is the fact that says finished. mint-core sets it only after bindSeat
+// succeeds, so a row that has joined needs nothing and a row that has not is
+// either missing its runtime or missing the binding for the one it has.
+//
+//   none    joined; there is nothing to repair
+//   enrich  process state recorded, never joined: complete THIS process fact in
+//           place -- fill what is missing, rewrite no identity, allocate nothing
+//   rebind  no process state: find the live runtime and adopt it
+export function partialMintRepairMode(facts) {
+  if (facts?.joinedAt) return 'none'
+  return facts?.processState?.tmux_session ? RECOVERY_ENRICH : RECOVERY_REBIND
+}
 
 // Fields that identify the agent itself. A match on any one of these is a match
 // on the identity, not on a coincidence of arrangement.
@@ -125,13 +146,24 @@ export async function resolvePartialMintRuntime({
   observeRuntimeIdentity,
 }) {
   if (!facts?.mintId) return { action: RECOVERY_SKIP, reason: 'no-mint-facts', examined: [] }
-  if (facts.processState?.tmux_session) {
-    return { action: RECOVERY_SKIP, reason: 'process-state-recorded', examined: [] }
+  const mode = partialMintRepairMode(facts)
+  if (mode === 'none') {
+    return { action: RECOVERY_SKIP, reason: 'already-joined', examined: [] }
   }
+
+  // An enrich has exactly one candidate and it is not up for discovery: the
+  // session this mint already recorded. Searching for others would be looking
+  // for a different runtime to call this agent, which is the identity rewrite
+  // this path must not perform. It is still probed, and still has to survive the
+  // same verdict -- a recorded session that is dead, unprobed, or running
+  // somebody else refuses here exactly as it would on the rebind path.
+  const sources = mode === RECOVERY_ENRICH
+    ? [{ tmuxSession: facts.processState.tmux_session, source: 'recorded-process-state' }]
+    : (await candidateSessions(facts)) || []
 
   const candidates = []
   const seen = new Set()
-  for (const candidate of (await candidateSessions(facts)) || []) {
+  for (const candidate of sources) {
     const key = candidateKey(candidate)
     if (!key) continue
     // Same session named by two sources is one candidate with two reasons, not
@@ -211,7 +243,7 @@ export async function resolvePartialMintRuntime({
     }
   }
   return {
-    action: RECOVERY_REBIND,
+    action: mode,
     reason: verdict.basis,
     session: candidateKey(candidate),
     candidate,

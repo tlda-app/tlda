@@ -33,12 +33,16 @@ export function createDaemonWakeCore({
     // adopts the runtime that is already up -- that agent is awake, which is
     // what the wake was for -- and a hold refuses rather than relaunching over
     // it. Anything else falls through to the unchanged wake below.
-    if (recoverExistingRuntime && !facts.processState?.tmux_session) {
+    if (recoverExistingRuntime && !facts.joinedAt) {
       const recovery = await recoverExistingRuntime(facts)
       if (recovery?.action === 'hold') {
         throw new Error(`wake refused for mint ${facts.mintId}: ${recovery.reason} (${recovery.session || (recovery.sessions || []).join(', ') || 'no session named'})`)
       }
-      if (recovery?.action === 'rebound') {
+      // `rebound` and `enriched` differ in what the recovery had to find -- a
+      // runtime, or the binding for the one already recorded -- and not at all
+      // in what has to be true afterwards. Both are confirmed the same way,
+      // against the facts the recovery produced.
+      if (recovery?.action === 'rebound' || recovery?.action === 'enriched') {
         // Confirm against what the rebind actually wrote, never against the row
         // this call started from. The pre-recovery `facts` carry no process
         // state -- that absence is the whole reason the recovery ran -- so
@@ -62,7 +66,7 @@ export function createDaemonWakeCore({
           throw new Error(`wake rebound mint ${facts.mintId} to ${reboundSession}, but no live runtime was confirmed there`)
         }
         facts = rebound
-        return { ok: true, alreadyAlive: true, rebound: true, ...facts }
+        return { ok: true, alreadyAlive: true, rebound: true, ...(recovery.action === 'enriched' ? { enriched: true } : {}), ...facts }
       }
     }
     // A mint with facts but no session is not unresumable — it is the partially
