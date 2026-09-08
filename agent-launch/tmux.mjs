@@ -237,6 +237,23 @@ export async function injectCodexPrompt(session, prompt, {
 } = {}) {
   const deadline = Date.now() + timeoutMs
   const promptMarker = prompt.slice(0, Math.min(prompt.length, 48))
+  const composerState = (pane = '') => {
+    const lines = pane.split('\n')
+    const promptIndex = lines.findLastIndex((line) => line.trimStart().startsWith('›'))
+    if (promptIndex < 0) return { promptIndex: -1, containsMarker: false, busyAfter: false }
+    return {
+      promptIndex,
+      containsMarker: lines[promptIndex].includes(promptMarker),
+      busyAfter: lines.slice(promptIndex + 1).some((line) =>
+        ['Working', 'Transmuting', 'Thinking', 'esc to interrupt', 'ESC to interrupt']
+          .some((marker) => line.includes(marker))),
+    }
+  }
+  const modelReady = (pane = '') => {
+    const status = pane.split('\n').findLast((line) =>
+      line.includes('model: loading') || (line.includes(' default') && line.includes('·')))
+    return !!status && status.includes(' default') && status.includes('·')
+  }
   while (Date.now() < deadline) {
     try {
       const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p')
@@ -268,22 +285,29 @@ export async function injectCodexPrompt(session, prompt, {
           await sleep(25)
         }
         await sleep(500)
-        const pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
-        if (!pasted.stdout.includes(promptMarker)) continue
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'Enter')
-          await sleep(1000)
+        let pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
+        if (!composerState(pasted.stdout).containsMarker) continue
+        while (!modelReady(pasted.stdout) && pasted.stdout.includes('model: loading') && Date.now() < deadline) {
+          await sleep(500)
+          pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
+          if (!composerState(pasted.stdout).containsMarker) return false
+        }
+        if (!modelReady(pasted.stdout) && pasted.stdout.includes('model: loading')) return false
+        if (!composerState(pasted.stdout).containsMarker) return false
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'Enter')
+        while (Date.now() < deadline) {
+          await sleep(500)
           let submitted
           try {
             submitted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p')
           } catch {
             continue
           }
-          if (['Working', 'Transmuting', 'Thinking', 'esc to interrupt', 'ESC to interrupt']
-            .some((marker) => submitted.stdout.includes(marker))) return true
-          if (!submitted.stdout.includes(promptMarker)) return true
+          const state = composerState(submitted.stdout)
+          if (state.busyAfter) return true
+          if (state.promptIndex >= 0 && !state.containsMarker) return true
         }
-        continue
+        return false
       }
     } catch {
       // Prompt polling tolerates transient tmux capture failures until timeout.
