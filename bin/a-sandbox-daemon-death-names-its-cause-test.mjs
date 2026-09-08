@@ -9,7 +9,7 @@ import { createServer } from 'net'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { watchSandboxDaemon, waitForSandboxDaemon } from '../cli/lib/dev-worktree.mjs'
+import { watchSpawnedChild, waitForSandboxDaemon } from '../cli/lib/dev-worktree.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-sandbox-daemon-death-'))
 // Node itself takes ~1s to start on a loaded box, so a real death needs a
@@ -22,7 +22,7 @@ const cleanup = []
 
 function start(script, logPath, { command = process.execPath } = {}) {
   const child = spawn(command, ['-e', script], { stdio: 'ignore' })
-  const facts = watchSandboxDaemon(child)
+  const facts = watchSpawnedChild(child)
   cleanup.push(() => { try { child.kill('SIGKILL') } catch { /* already gone */ } })
   return { child, facts, logPath }
 }
