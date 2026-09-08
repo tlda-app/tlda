@@ -95,7 +95,7 @@ test('Codex prompt injection ignores an update dialog left in scrollback', async
   assert.equal(sent.some(args => args.at(-1) === '2'), false)
 })
 
-test('Codex prompt injection sends Enter once when the submitted kickoff remains in transcript', async () => {
+test('Codex prompt injection retries Enter until the pasted kickoff is submitted', async () => {
   const prompt = 'Call login() and check your inbox.'
   let pane = '› Summarize recent commits'
   let enterCount = 0
@@ -106,7 +106,7 @@ test('Codex prompt injection sends Enter once when the submitted kickoff remains
     if (literalIndex >= 0) pane += args[literalIndex + 1]
     if (args.at(-1) === 'Enter') {
       enterCount += 1
-      pane += '\n\n› Ask Codex to do anything'
+      if (enterCount === 2) pane += '\n\n• Working (0s • esc to interrupt)'
     }
     return { stdout: '' }
   }
@@ -118,33 +118,7 @@ test('Codex prompt injection sends Enter once when the submitted kickoff remains
   })
 
   assert.equal(delivered, true)
-  assert.equal(enterCount, 1)
-})
-
-test('Codex prompt injection observes Working after one Enter without sending more input', async () => {
-  const prompt = 'Call login() and check your inbox.'
-  let pane = '› Summarize recent commits'
-  let enterCount = 0
-  const tmuxExec = async (_socket, command, ...args) => {
-    if (command === 'capture-pane') return { stdout: pane }
-    assert.equal(command, 'send-keys')
-    const literalIndex = args.indexOf('-l')
-    if (literalIndex >= 0) pane += args[literalIndex + 1]
-    if (args.at(-1) === 'Enter') {
-      enterCount += 1
-      pane += '\n\n• Working (0s • esc to interrupt)'
-    }
-    return { stdout: '' }
-  }
-
-  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
-    timeoutMs: 1000,
-    tmuxExec,
-    sleep: async () => {},
-  })
-
-  assert.equal(delivered, true)
-  assert.equal(enterCount, 1)
+  assert.equal(enterCount, 2)
 })
 
 test('Codex prompt injection accepts a kickoff that completes before the post-Enter capture', async () => {
@@ -200,5 +174,5 @@ test('Codex prompt injection does not infer delivery from a failed post-Enter ca
   })
 
   assert.equal(delivered, false)
-  assert.equal(enterCount, 1)
+  assert.equal(enterCount, 3)
 })
