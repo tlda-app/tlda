@@ -392,6 +392,38 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return result
   }
 
+  /**
+   * Publish a revision that already exists in the project's repository.
+   *
+   * `submit` publishes the working tree: it settles the edit cluster, commits
+   * what is there, and pushes the commit it just made. That is the right thing
+   * when someone has edited files, and the wrong thing when the revision to
+   * publish is one git already holds -- because reaching it through `submit`
+   * would first have to put it in the working tree, which means touching a
+   * checkout that belongs to somebody else.
+   *
+   * This reads the commit out of the object database instead, so the working
+   * tree, the branch, the index and the binding are all untouched, and a dirty
+   * checkout is not an obstacle. `pushRevision` is the same call `submit` ends
+   * at; the difference is only which revision it is handed.
+   */
+  async function publishRevision(project, revision) {
+    if (!revision) throw new Error('publishRevision requires a revision')
+    const item = record(project)
+    if (!item) throw new Error(`project ${project} is not bound on this daemon`)
+    const runtime = await start(item)
+    // Fail on a revision this repository does not hold, rather than pushing a
+    // ref that resolves to something else. `^{commit}` is the load-bearing
+    // part: without it a tag or a tree of the same name would satisfy the
+    // check and then publish as something other than a commit.
+    try {
+      await execFile('git', ['cat-file', '-e', `${revision}^{commit}`], { cwd: item.sourceDir })
+    } catch {
+      throw new Error(`revision ${revision} is not present in the repository bound to ${project}`)
+    }
+    return runtime.sync.pushRevision(revision, { forceRebuild: true })
+  }
+
   async function remoteOperation(project, operation, params = {}) {
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
@@ -481,6 +513,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     standOnWorkBranch,
     remoteOperation,
     submit,
+    publishRevision,
     pushHistorySeed,
     queuePaths,
     sourceFileForAbsolutePath,
