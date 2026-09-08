@@ -837,6 +837,16 @@ async function rpcRebuildProject({ project }) {
   return rebuildLinkedProject(sourceSync, project)
 }
 
+// Republish a revision the project's repository already holds. `project-rebuild`
+// publishes the working tree, so it cannot be used on a checkout somebody else
+// is editing; this one reads the commit from the object database and leaves the
+// tree, the branch and the binding alone.
+async function rpcPublishProjectRevision({ project, revision }) {
+  if (!project) throw new Error('project is required')
+  if (!revision) throw new Error('revision is required')
+  return sourceSync.publishRevision(project, revision)
+}
+
 fs.watchFile(PROJECT_WORLDS_FILE, { interval: 500 }, () => applyProjectWorldOwnership('registry-change'))
 
 const localArtifacts = createLocalArtifacts({
@@ -1543,6 +1553,7 @@ function startLocalLifecycleRpc() {
           'project-source-link': rpcLinkProjectSource,
           'project-source-unlink': rpcUnlinkProjectSource,
           'project-rebuild': rpcRebuildProject,
+          'project-publish-revision': rpcPublishProjectRevision,
           'project-git-remote': ({ project, operation, ...params }) => sourceSync.remoteOperation(project, operation, params),
         }
         const handler = handlers[op]
