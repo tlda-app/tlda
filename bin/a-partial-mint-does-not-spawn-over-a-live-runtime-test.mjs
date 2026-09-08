@@ -462,16 +462,19 @@ const rebindTo = (facts, store) => {
 // wake-core: the same three decisions, on the path that was the other half of
 // the incident.
 
-function wakeHarness({ recoverExistingRuntime }) {
+function wakeHarness({ recoverExistingRuntime, liveSessions = ['fleet-half-minted', 'fleet-half-minted-2'] }) {
   const calls = { resumed: 0, recovered: 0 }
+  const live = new Set(liveSessions)
   const store = memoryStore({ 'mint-1': { ...PARTIAL_ROW, joinedAt: '2026-09-08T10:00:00Z' } })
   const wake = createDaemonWakeCore({
     store,
-    // Shaped like the daemon's: it reads the recorded session and knows nothing
-    // else. A harness that closes over an `alive` flag instead cannot tell
-    // whether the confirmation looked at the facts the wake produced or at the
-    // stale ones it started from, which is the difference under test here.
-    processAlive: async facts => !!facts.processState?.tmux_session,
+    // Shaped like the daemon's: it looks up the recorded session on the box and
+    // knows nothing else. A harness that closes over an `alive` flag instead
+    // cannot tell whether the confirmation looked at the facts the wake
+    // produced or at the stale ones it started from, and cannot tell a session
+    // that is recorded from one that is running -- both differences are under
+    // test here.
+    processAlive: async facts => live.has(facts.processState?.tmux_session),
     resumeSession: async () => {
       calls.resumed += 1
       return { tmux_session: 'fleet-half-minted-2' }
@@ -535,21 +538,24 @@ function wakeHarness({ recoverExistingRuntime }) {
   assert.equal(calls.resumed, 0, 'a failed rebind does not fall through to a spawn either')
 }
 
-// 26. The same, one step later: the write landed but nothing is running under
-//     the session it named. The recovery's earlier probe does not stand in for
-//     a confirmation taken after the write.
+// 26. The same, one step later: the write landed, and nothing is running under
+//     the session it named -- the runtime died between the recovery's probe and
+//     the write. The recovery's earlier observation does not stand in for a
+//     confirmation taken after the write, so this is a failed wake and not an
+//     awake agent.
 {
   const { wake, calls } = wakeHarness({
+    liveSessions: ['fleet-half-minted-2'],
     recoverExistingRuntime: (facts, store) => {
       store.updateProcessState(facts.mintId, { tmux_session: 'fleet-half-minted' })
-      return { action: 'rebound', session: 'fleet-half-minted', facts: { ...store.get(facts.mintId), processState: { tmux_session: null } } }
+      return { action: 'rebound', session: 'fleet-half-minted', facts: store.get(facts.mintId) }
     },
   })
   await assert.rejects(
     () => wake({ mint_id: 'mint-1' }),
-    /could not rebind mint mint-1/,
+    /wake rebound mint mint-1 to fleet-half-minted, but no live runtime was confirmed there/,
   )
-  assert.equal(calls.resumed, 0)
+  assert.equal(calls.resumed, 0, 'a rebind that could not be confirmed does not fall through to a spawn')
 }
 
 // ---------------------------------------------------------------------------
