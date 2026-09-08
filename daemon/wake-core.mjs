@@ -18,14 +18,31 @@ export function createDaemonWakeCore({
   targetDaemonKey = null,
   resumeSession,
   retryPolicy = null,
+  recoverExistingRuntime = null,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
 }) {
   return async function wake(input) {
     const params = input && typeof input === 'object' ? input : { fleet_id: input }
     const identifier = params.mint_id || params.mintId || params.fleet_id || params.fleetId || params.name
     if (!identifier) throw new Error('wake requires a local mint, fleet, or friendly-name identifier')
-    const facts = store.resolve(identifier)
+    let facts = store.resolve(identifier)
     if (!facts) throw new Error(`no daemon mint facts for ${identifier}`)
+    // `processAlive` reads `processState.tmux_session`, so on a row that has no
+    // process state it answers false for a reason that has nothing to do with
+    // whether a process is running. Ask the bounded sources first. A rebind
+    // adopts the runtime that is already up -- that agent is awake, which is
+    // what the wake was for -- and a hold refuses rather than relaunching over
+    // it. Anything else falls through to the unchanged wake below.
+    if (recoverExistingRuntime && !facts.processState?.tmux_session) {
+      const recovery = await recoverExistingRuntime(facts)
+      if (recovery?.action === 'hold') {
+        throw new Error(`wake refused for mint ${facts.mintId}: ${recovery.reason} (${recovery.session || (recovery.sessions || []).join(', ') || 'no session named'})`)
+      }
+      if (recovery?.action === 'rebound') {
+        facts = recovery.facts || facts
+        return { ok: true, alreadyAlive: true, rebound: true, ...facts }
+      }
+    }
     // A mint with facts but no session is not unresumable — it is the partially
     // minted agent: the daemon prepared it, the launch recipe is on disk, and no
     // harness ever logged in to produce a session id. Finishing that is what the

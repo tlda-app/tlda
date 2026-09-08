@@ -68,6 +68,12 @@ export function createDaemonMintCore({
   // for callers that construct a core without one.
   registrationDeadlineMs = 5 * 60_000,
   monotonicNow = () => Date.now(),
+  // Asked once, before any launch, about a mint row that carries no process
+  // state. A row with no `process_state` is the daemon having no record of a
+  // process, which is not the same as no process running -- and this path used
+  // to read it as the second, spawn a duplicate harness beside the live one,
+  // and take a rotated session name for it. See partial-mint-runtime-recovery.
+  recoverExistingRuntime = null,
 }) {
   if (!store || !launchProcess || !bindSeat) throw new Error('mint core dependencies are required')
   const joins = new Map()
@@ -169,6 +175,15 @@ export function createDaemonMintCore({
   } = {}) {
     const lifecycle = onLifecycleEvent || on_lifecycle_event
     const id = suppliedMintId || mintId()
+    // Whether this row is one this call is creating or one it is picking up.
+    // The runtime recovery below belongs only to the second: a mint id already
+    // in the store is an agent the daemon prepared earlier, and finishing it is
+    // the case where a live process can already exist under its name. A row
+    // being created here has no history to recover from, and running the
+    // recovery on it would read another agent's live session -- one that
+    // legitimately answers to the same requested name -- as a collision to
+    // refuse rather than a name for the seat allocator to resolve.
+    const reusedRow = suppliedMintId ? store.get(suppliedMintId) : null
     store.ensure(id)
     if (envName) store.setFact(id, 'env_name', envName)
     if (name) store.setFact(id, 'friendly_name', name)
@@ -191,6 +206,17 @@ export function createDaemonMintCore({
 
     // CLI mint starts both actions before awaiting either. Server mint supplies
     // fleet_id and therefore uses this same core without starting a second seat request.
+    const found = store.get(id)
+    // Only a row with no process state, and only before anything is launched.
+    // A `hold` is a refusal, not a slower launch: the recovery could not prove
+    // the runtime is absent, and spawning is the half of this that cannot be
+    // taken back.
+    if (reusedRow && !found?.processState && recoverExistingRuntime) {
+      const recovery = await recoverExistingRuntime(found || store.get(id))
+      if (recovery?.action === 'hold') {
+        throw new Error(`mint ${id} refused: ${recovery.reason} (${recovery.session || (recovery.sessions || []).join(', ') || 'no session named'})`)
+      }
+    }
     const existing = store.get(id)
     const reuseExistingProcess = !!existing?.processState && (!processAlive || await processAlive(existing))
     const processPromise = reuseExistingProcess
