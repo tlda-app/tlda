@@ -70,6 +70,26 @@ export function compareIdentityTuple(expected = {}, observed = {}, fields = [...
   return { matched, conflicts, unknown }
 }
 
+// Where an observed field came from. A value read off the running process is
+// evidence about that process. A value read out of the permission ledger is
+// evidence about a row, and a row is only evidence about a runtime while it
+// coherently binds that one runtime -- so `observed.ledgerBindsSingleRuntime`
+// has to hold before a ledger-derived identity counts as identity at all.
+//
+// Nothing here waives a conflict check. A ledger-derived fleet id that is not
+// admissible as strong is still compared, and still refuses when it disagrees;
+// it merely stops carrying the adoption on its own, which throws the decision
+// back on the whole arrangement tuple. That matters for a Claude runtime,
+// whose command carries no FLEET_ID for the process probe to read.
+export const RUNTIME_OBSERVED_SOURCES = ['runtime-argv', 'harness-runtime']
+
+function strongFieldAdmissible(field, observed) {
+  const source = observed?.strongFieldSources?.[field] || null
+  if (!source) return false
+  if (RUNTIME_OBSERVED_SOURCES.includes(source)) return true
+  return source === 'ledger' && !!observed.ledgerBindsSingleRuntime
+}
+
 // May this live runtime be adopted as this mint's own?
 export function adoptionVerdict(expected = {}, observed = {}) {
   const comparison = compareIdentityTuple(expected, observed)
@@ -79,13 +99,15 @@ export function adoptionVerdict(expected = {}, observed = {}) {
   if (comparison.conflicts.length) {
     return { ok: false, reason: 'identity-conflict', ...comparison }
   }
-  const strong = comparison.matched.filter(field => STRONG_IDENTITY_FIELDS.includes(field))
-  if (strong.length) return { ok: true, basis: `identity:${strong.join('+')}`, ...comparison }
+  const matchedStrong = comparison.matched.filter(field => STRONG_IDENTITY_FIELDS.includes(field))
+  const strong = matchedStrong.filter(field => strongFieldAdmissible(field, observed))
+  const demoted = matchedStrong.filter(field => !strong.includes(field))
+  if (strong.length) return { ok: true, basis: `identity:${strong.join('+')}`, demoted, ...comparison }
   const missing = TUPLE_IDENTITY_FIELDS.filter(field => !comparison.matched.includes(field))
   if (missing.length) {
-    return { ok: false, reason: 'insufficient-identity-evidence', missing, ...comparison }
+    return { ok: false, reason: 'insufficient-identity-evidence', missing, demoted, ...comparison }
   }
-  return { ok: true, basis: 'coherent-tuple', ...comparison }
+  return { ok: true, basis: 'coherent-tuple', demoted, ...comparison }
 }
 
 function candidateKey(candidate) {
