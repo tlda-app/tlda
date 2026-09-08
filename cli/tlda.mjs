@@ -4634,7 +4634,7 @@ export async function cleanupFailedFreshBinding(result, {
   if (result.localAgentId) {
     const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
     const localLedger = createLocalAgentLedger(localAgentLedgerPath || undefined)
-    try { localLedger.delete(result.localAgentId) } finally { localLedger.close() }
+    try { localLedger.markDead(result.localAgentId) } finally { localLedger.close() }
   }
   if (result.fleetId && api) await api('POST', `/api/agents/${encodeURIComponent(result.fleetId)}/mark-dead`)
   return { terminated: true }
