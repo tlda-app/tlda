@@ -21,9 +21,8 @@ project:
 #   inline-svg   — inlines SVGs so they render in iframes and support dark mode
 #   image-toggle — (optional) scrollytelling multi-image figures
 #
-# Install with:
-#   quarto add davidahirshberg/quarto-inline-svg
-#   quarto add davidahirshberg/quarto-image-toggle
+# Copy the bundled extension directories into the project's `_extensions/`
+# directory.
 filters:
   - inline-svg
   # - image-toggle  # uncomment if you use .image-toggle divs

@@ -59,12 +59,8 @@ only the configured status and scoped token responses from tlda.
 For the Fly applications, put those three values in `~/.livekit`, then run:
 
 ```sh
-scripts/set-livekit-secrets.sh tldraw-sync-skip
-scripts/set-livekit-secrets.sh tldraw-sync-skip-stable
+scripts/set-livekit-secrets.sh <fly-app>
 ```
 
-Setting Fly secrets restarts the selected application. Both deployed Fly
-applications currently report `configured: true`, and the live token endpoint
-returns room, URL, and token fields. This documentation audit did not perform a
-two-client media call, so it does not claim current end-to-end microphone,
-camera, or playback verification.
+Setting Fly secrets restarts the selected application. The token endpoint
+returns room, URL, and token fields when configuration is valid.
