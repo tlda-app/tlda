@@ -38,6 +38,10 @@ const OWN_IDENTITY = {
   model: 'opus',
   envName: 'testing',
   daemonKey: 'mini:testing',
+  // Read off the running process and its open rollout: evidence about the
+  // runtime, not about a row that describes it.
+  strongFieldSources: { fleetId: 'runtime-argv', sessionId: 'harness-runtime' },
+  ledgerBindsSingleRuntime: true,
 }
 
 function recovery({
@@ -237,6 +241,80 @@ function recovery({
   assert.ok(verdict.unknown.includes('fleetId'), 'a fleet id only one side knows is not a match')
 }
 
+// 13. A fleet id that came out of the permission ledger rather than off the
+//     process. It identifies the runtime only while that row is the one row
+//     bound to it -- so with a coherent single binding it carries the adoption.
+{
+  const { run } = recovery({
+    observed: {
+      ...OWN_IDENTITY,
+      sessionId: null,
+      strongFieldSources: { fleetId: 'ledger', sessionId: null },
+      ledgerBindsSingleRuntime: true,
+    },
+  })
+  const decision = await run()
+  assert.equal(decision.action, 'rebind')
+  assert.equal(decision.reason, 'identity:fleetId')
+}
+
+// 14. The same ledger-derived fleet id, from a ledger that has drifted from the
+//     box -- two rows naming one tmux session, so the row is bookkeeping rather
+//     than evidence about the process. It is demoted, and with the arrangement
+//     tuple incomplete there is nothing left to adopt on. This is the Claude
+//     case: no FLEET_ID in the command for the probe to read.
+{
+  const { run } = recovery({
+    observed: {
+      ...OWN_IDENTITY,
+      sessionId: null,
+      model: null,
+      daemonKey: null,
+      strongFieldSources: { fleetId: 'ledger', sessionId: null },
+      ledgerBindsSingleRuntime: false,
+    },
+  })
+  const decision = await run()
+  assert.equal(decision.action, 'hold')
+  assert.equal(decision.reason, 'insufficient-identity-evidence')
+  assert.deepEqual(decision.verdict.demoted, ['fleetId'], 'a drifted ledger row is not identity evidence')
+  assert.deepEqual(decision.verdict.missing, ['model', 'daemonKey'])
+}
+
+// 15. Control for 14 -- the demotion is not a waiver. A ledger-derived fleet id
+//     that DISAGREES still refuses, ahead of anything the tuple says.
+{
+  const { run } = recovery({
+    observed: {
+      ...OWN_IDENTITY,
+      fleetId: 'fleet:c07dedea',
+      strongFieldSources: { fleetId: 'ledger', sessionId: 'harness-runtime' },
+      ledgerBindsSingleRuntime: false,
+    },
+  })
+  const decision = await run()
+  assert.equal(decision.action, 'hold')
+  assert.equal(decision.reason, 'identity-conflict', 'a demoted field is still a compared field')
+}
+
+// 16. Control for 14 the other way -- drifted ledger, but every arrangement
+//     field observed and agreeing. The demotion costs the shortcut, not the
+//     adoption.
+{
+  const { run } = recovery({
+    observed: {
+      ...OWN_IDENTITY,
+      sessionId: null,
+      strongFieldSources: { fleetId: 'ledger', sessionId: null },
+      ledgerBindsSingleRuntime: false,
+    },
+  })
+  const decision = await run()
+  assert.equal(decision.action, 'rebind')
+  assert.equal(decision.reason, 'coherent-tuple')
+  assert.deepEqual(decision.verdict.demoted, ['fleetId'])
+}
+
 // ---------------------------------------------------------------------------
 // mint-core: the decision has to reach the launcher.
 
@@ -322,7 +400,7 @@ const rebindTo = (facts, store) => {
   return { action: 'rebound', facts: store.get(facts.mintId) }
 }
 
-// 13. A reused partial row whose runtime is already live: the mint completes
+// 17. A reused partial row whose runtime is already live: the mint completes
 //     with zero launches, zero seat requests, and the live session recorded.
 {
   const { core, store, calls } = mintHarness({ row: PARTIAL_ROW, recoverExistingRuntime: rebindTo })
@@ -335,7 +413,7 @@ const rebindTo = (facts, store) => {
   assert.equal(calls.bound, 1, 'the existing seat is bound, not a new one')
 }
 
-// 14. Counterfactual for 13, and the positive control for this whole file: the
+// 18. Counterfactual for 17, and the positive control for this whole file: the
 //     same row and the same store with the recovery absent. If this does not
 //     spawn, 13 proves nothing about the fix.
 {
@@ -344,7 +422,7 @@ const rebindTo = (facts, store) => {
   assert.equal(calls.launched, 1, 'without the recovery this path is exactly the duplicate spawn')
 }
 
-// 15. Proven absence launches, and launches once.
+// 19. Proven absence launches, and launches once.
 {
   const { core, calls } = mintHarness({
     row: PARTIAL_ROW,
@@ -354,7 +432,7 @@ const rebindTo = (facts, store) => {
   assert.equal(calls.launched, 1)
 }
 
-// 16. A hold refuses the mint. It does not launch, and it says which session it
+// 20. A hold refuses the mint. It does not launch, and it says which session it
 //     could not settle.
 {
   const { core, calls } = mintHarness({
@@ -369,7 +447,7 @@ const rebindTo = (facts, store) => {
   assert.equal(calls.seats, 0)
 }
 
-// 17. A mint id the store has never seen is a new agent, not a partial row. The
+// 21. A mint id the store has never seen is a new agent, not a partial row. The
 //     recovery is not consulted at all -- otherwise a live session belonging to
 //     another agent of the same requested name would read as a collision to
 //     refuse, where the seat allocator is what resolves that.
@@ -386,14 +464,16 @@ const rebindTo = (facts, store) => {
 
 function wakeHarness({ recoverExistingRuntime }) {
   const calls = { resumed: 0, recovered: 0 }
-  let resumedRuntimeLive = false
   const store = memoryStore({ 'mint-1': { ...PARTIAL_ROW, joinedAt: '2026-09-08T10:00:00Z' } })
   const wake = createDaemonWakeCore({
     store,
-    processAlive: async facts => !!facts.processState?.tmux_session || resumedRuntimeLive,
+    // Shaped like the daemon's: it reads the recorded session and knows nothing
+    // else. A harness that closes over an `alive` flag instead cannot tell
+    // whether the confirmation looked at the facts the wake produced or at the
+    // stale ones it started from, which is the difference under test here.
+    processAlive: async facts => !!facts.processState?.tmux_session,
     resumeSession: async () => {
       calls.resumed += 1
-      resumedRuntimeLive = true
       return { tmux_session: 'fleet-half-minted-2' }
     },
     recoverExistingRuntime: async facts => { calls.recovered += 1; return recoverExistingRuntime(facts, store) },
@@ -401,7 +481,7 @@ function wakeHarness({ recoverExistingRuntime }) {
   return { wake, store, calls }
 }
 
-// 18. Waking a partial row whose runtime is already up returns that agent as
+// 22. Waking a partial row whose runtime is already up returns that agent as
 //     awake. It does not relaunch it under a rotated name.
 {
   const { wake, calls } = wakeHarness({ recoverExistingRuntime: rebindTo })
@@ -413,7 +493,7 @@ function wakeHarness({ recoverExistingRuntime }) {
   assert.equal(calls.resumed, 0, 'the runtime is already live; resuming would be the duplicate')
 }
 
-// 19. A hold refuses the wake without resuming.
+// 23. A hold refuses the wake without resuming.
 {
   const { wake, calls } = wakeHarness({
     recoverExistingRuntime: () => ({ action: 'hold', reason: 'ambiguous-candidates', sessions: ['a', 'b'] }),
@@ -425,8 +505,11 @@ function wakeHarness({ recoverExistingRuntime }) {
   assert.equal(calls.resumed, 0)
 }
 
-// 20. Proven absence falls through to the wake that was already there: the
-//     partial row is finished from its recipe, exactly once.
+// 24. Proven absence falls through to the wake that was already there: the
+//     partial row is finished from its recipe, exactly once. The confirmation
+//     reads the session the resume just produced, not the empty process state
+//     the row carried into the call -- which is what used to make a successful
+//     partial-mint resume report `wake did not produce a live runtime`.
 {
   const { wake, calls } = wakeHarness({
     recoverExistingRuntime: () => ({ action: 'launch', reason: 'absence-proven' }),
@@ -435,6 +518,172 @@ function wakeHarness({ recoverExistingRuntime }) {
   assert.equal(result.ok, true)
   assert.equal(result.resumed, true)
   assert.equal(calls.resumed, 1)
+}
+
+// 25. A rebind whose write did not land. The recovery saw a live runtime, and
+//     the mint is still bound to nothing -- so the wake must not report the
+//     agent awake on the strength of that earlier observation. Liveness
+//     observed before a failed write is not liveness of anything addressable.
+{
+  const { wake, calls } = wakeHarness({
+    recoverExistingRuntime: (facts) => ({ action: 'rebound', session: 'fleet-half-minted', facts }),
+  })
+  await assert.rejects(
+    () => wake({ mint_id: 'mint-1' }),
+    /could not rebind mint mint-1: the recovery adopted fleet-half-minted but no process state was recorded/,
+  )
+  assert.equal(calls.resumed, 0, 'a failed rebind does not fall through to a spawn either')
+}
+
+// 26. The same, one step later: the write landed but nothing is running under
+//     the session it named. The recovery's earlier probe does not stand in for
+//     a confirmation taken after the write.
+{
+  const { wake, calls } = wakeHarness({
+    recoverExistingRuntime: (facts, store) => {
+      store.updateProcessState(facts.mintId, { tmux_session: 'fleet-half-minted' })
+      return { action: 'rebound', session: 'fleet-half-minted', facts: { ...store.get(facts.mintId), processState: { tmux_session: null } } }
+    },
+  })
+  await assert.rejects(
+    () => wake({ mint_id: 'mint-1' }),
+    /could not rebind mint mint-1/,
+  )
+  assert.equal(calls.resumed, 0)
+}
+
+// ---------------------------------------------------------------------------
+// 27. Production-shaped, end to end: the real decision module, the real mint
+//     core doing the write, and the real wake core confirming it. The only
+//     fakes are the box itself -- tmux, the runtime probe, and the ledger.
+//
+//     A row with process_state null, one live session carrying the mint's own
+//     FLEET_ID: the wake must come back with that agent awake and addressable,
+//     having spawned nothing, resumed nothing, requested no seat, and allocated
+//     no session name.
+{
+  const calls = { launched: 0, seats: 0, resumed: 0, namesAllocated: 0, bound: 0 }
+  const store = memoryStore({ 'mint-1': { ...PARTIAL_ROW, joinedAt: null } })
+
+  const LIVE_SESSION = 'fleet-half-minted'
+  const box = {
+    sessions: [LIVE_SESSION, 'fleet-someone-else'],
+    runtimes: { [LIVE_SESSION]: { probed: true, runtime: true, fleetId: 'fleet:a8196c6d', envName: 'testing', daemonKey: 'mini:testing' } },
+    ledger: [{
+      id: 'fleet:a8196c6d',
+      friendlyName: 'half-minted',
+      tmuxSession: LIVE_SESSION,
+      sessionKind: 'codex',
+      sessionId: 'session-live',
+      sessionPath: '/rollouts/session-live.jsonl',
+      model: 'opus',
+      cwd: '/Users/skip/work/tlda',
+      envName: 'testing',
+      daemonKey: 'mini:testing',
+    }],
+  }
+
+  const core = createDaemonMintCore({
+    store,
+    envName: 'testing',
+    processAlive: async facts => !!box.runtimes[facts.processState?.tmux_session]?.runtime,
+    launchProcess: async () => {
+      calls.launched += 1
+      calls.namesAllocated += 1
+      throw new Error('the live runtime was spawned over')
+    },
+    requestSeat: async () => { calls.seats += 1; return { fleet_id: 'fleet:new' } },
+    bindSeat: async () => { calls.bound += 1 },
+  })
+
+  const recoverExistingRuntime = async facts => {
+    const decision = await resolvePartialMintRuntime({
+      facts,
+      expectedIdentity: f => ({
+        fleetId: f.fleetId,
+        mintId: f.mintId,
+        sessionId: f.sessionId,
+        friendlyName: f.friendlyName,
+        cwd: f.launchRecipe?.cwd,
+        harness: f.launchRecipe?.kind,
+        model: f.launchRecipe?.model,
+        envName: f.envName,
+        daemonKey: 'mini:testing',
+      }),
+      candidateSessions: f => {
+        const found = []
+        const row = box.ledger.find(entry => entry.id === f.fleetId)
+        if (row?.tmuxSession) found.push({ tmuxSession: row.tmuxSession, source: 'ledger-fleet-id', binding: row })
+        found.push({ tmuxSession: `fleet-${f.friendlyName}`, source: 'launch-recipe-session' })
+        return found
+      },
+      listSessions: async () => ({ probed: true, names: box.sessions }),
+      probeSession: async session => box.runtimes[session] || { probed: true, runtime: false },
+      observeRuntimeIdentity: async candidate => {
+        const rows = box.ledger.filter(entry => entry.tmuxSession === candidate.tmuxSession)
+        const binding = candidate.binding || rows[0] || null
+        return {
+          fleetId: candidate.probe?.fleetId || binding?.id || null,
+          sessionId: binding?.sessionId || null,
+          sessionPath: binding?.sessionPath || null,
+          friendlyName: binding?.friendlyName || null,
+          cwd: binding?.cwd || null,
+          harness: binding?.sessionKind || null,
+          model: binding?.model || null,
+          envName: candidate.probe?.envName || binding?.envName || null,
+          daemonKey: candidate.probe?.daemonKey || binding?.daemonKey || null,
+          ledgerBindsSingleRuntime: rows.length === 1,
+          strongFieldSources: {
+            fleetId: candidate.probe?.fleetId ? 'runtime-argv' : (binding?.id ? 'ledger' : null),
+            sessionId: binding?.sessionId ? 'ledger' : null,
+          },
+        }
+      },
+    })
+    if (decision.action !== 'rebind') return decision
+    const observed = decision.observed
+    const rebound = await core.recordProcess(facts.mintId, {
+      mint_id: facts.mintId,
+      fleet_id: facts.fleetId,
+      name: facts.friendlyName,
+      tmux_session: decision.session,
+      cwd: observed.cwd,
+      harness: observed.harness,
+      model: observed.model,
+      session_id: observed.sessionId,
+      session_path: observed.sessionPath,
+    })
+    return { action: 'rebound', reason: decision.reason, session: decision.session, facts: rebound }
+  }
+
+  const wake = createDaemonWakeCore({
+    store,
+    processAlive: async facts => !!box.runtimes[facts.processState?.tmux_session]?.runtime,
+    resumeSession: async () => { calls.resumed += 1; return { tmux_session: 'fleet-half-minted-2' } },
+    recoverExistingRuntime,
+  })
+
+  assert.equal(store.get('mint-1').processState, undefined, 'the row starts with no process state')
+
+  const result = await wake({ mint_id: 'mint-1' })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.rebound, true)
+  assert.equal(result.alreadyAlive, true)
+  assert.equal(result.processState.tmux_session, LIVE_SESSION, 'the session already up, not a rotated one')
+  assert.equal(calls.launched, 0, 'nothing spawned')
+  assert.equal(calls.resumed, 0, 'nothing resumed')
+  assert.equal(calls.seats, 0, 'no seat requested')
+  assert.equal(calls.namesAllocated, 0, 'no session name allocated')
+
+  // Addressable, not merely running: the seat is bound and the mint is joined,
+  // which is what a delivery needs and what the duplicate-spawn outcome never
+  // produced for the agent that was actually alive.
+  assert.equal(calls.bound, 1)
+  const row = store.get('mint-1')
+  assert.equal(row.joinedAt, '2026-09-08T11:00:00Z')
+  assert.equal(row.sessionId, 'session-live')
+  assert.equal(row.processState.tmux_session, LIVE_SESSION)
 }
 
 console.log('a partial mint does not spawn over a live runtime: ok')

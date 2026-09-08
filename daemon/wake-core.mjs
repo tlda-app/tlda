@@ -39,7 +39,29 @@ export function createDaemonWakeCore({
         throw new Error(`wake refused for mint ${facts.mintId}: ${recovery.reason} (${recovery.session || (recovery.sessions || []).join(', ') || 'no session named'})`)
       }
       if (recovery?.action === 'rebound') {
-        facts = recovery.facts || facts
+        // Confirm against what the rebind actually wrote, never against the row
+        // this call started from. The pre-recovery `facts` carry no process
+        // state -- that absence is the whole reason the recovery ran -- so
+        // asking `processAlive` about them answers a question about a stale
+        // row, and answering it `false` was how the wake path reported failure
+        // over a runtime it had just successfully adopted.
+        //
+        // The write is checked before the runtime, so a rebind that did not
+        // land cannot ride out on the recovery's earlier observation. A live
+        // probe taken before a failed write is not evidence that the mint is
+        // now bound to anything.
+        const rebound = recovery.facts || null
+        const reboundSession = rebound?.processState?.tmux_session || null
+        if (!reboundSession) {
+          throw new Error(
+            `wake could not rebind mint ${facts.mintId}: the recovery adopted ${recovery.session || 'a live runtime'} `
+            + 'but no process state was recorded for it',
+          )
+        }
+        if (!await processAlive(rebound)) {
+          throw new Error(`wake rebound mint ${facts.mintId} to ${reboundSession}, but no live runtime was confirmed there`)
+        }
+        facts = rebound
         return { ok: true, alreadyAlive: true, rebound: true, ...facts }
       }
     }
@@ -136,6 +158,13 @@ export function createDaemonWakeCore({
     let resumed = null
     let resumeError = null
     let runtimeConfirmed = false
+    // The process facts as they stand now, replaced by each attempt's result.
+    // A partial mint starts with none, and the confirmation below reads the
+    // recorded session -- so confirming against `facts` asked about the row the
+    // wake began with and reported "did not produce a live runtime" for a
+    // resume that had just produced one. The store is only written after
+    // confirmation, which is why the freshest facts have to be carried here.
+    let latestProcess = facts.processState || null
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       params.onLifecycleEvent?.('wake-attempt', {
         local_agent_id: facts.mintId,
@@ -145,12 +174,13 @@ export function createDaemonWakeCore({
       })
       try {
         const attemptResult = await resumeSession(facts, params)
+        if (attemptResult?.tmux_session || attemptResult?.tmuxSession) latestProcess = attemptResult
         if (!resumed) resumed = attemptResult
         resumeError = null
       } catch (error) {
         resumeError = error
       }
-      runtimeConfirmed = await processAlive(facts)
+      runtimeConfirmed = await processAlive(latestProcess === facts.processState ? facts : { ...facts, processState: latestProcess })
       if (runtimeConfirmed) break
       if (attempt + 1 < attempts) {
         params.onLifecycleEvent?.('wake-deferred', {

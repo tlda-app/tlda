@@ -1148,9 +1148,18 @@ function partialMintExpectedIdentity(facts) {
 // those carries. A field nobody observed stays null, so it compares as unknown
 // instead of as agreement.
 async function partialMintObservedIdentity(facts, candidate) {
-  const binding = candidate.binding
-    || permissionLedger.listProcessBindings().find(row => row.tmuxSession === candidate.tmuxSession)
-    || null
+  // A ledger row speaks for a runtime only while it is the one row bound to it.
+  // Two rows naming the same tmux session, or a row whose session is not the
+  // one being adopted, is a ledger that has drifted from the box -- and a fleet
+  // id taken from it is then a claim about bookkeeping rather than about the
+  // process. It is still compared, so it can still refuse; it just stops being
+  // able to authorize the adoption by itself.
+  const rowsForSession = permissionLedger.listProcessBindings()
+    .filter(row => row.tmuxSession && row.tmuxSession === candidate.tmuxSession)
+  const binding = candidate.binding || rowsForSession[0] || null
+  const ledgerBindsSingleRuntime = !!binding
+    && rowsForSession.length === 1
+    && binding.tmuxSession === candidate.tmuxSession
   const harness = binding?.sessionKind || facts.launchRecipe?.kind || null
   const agent = {
     id: candidate.probe?.fleetId || binding?.id || facts.fleetId || null,
@@ -1180,6 +1189,11 @@ async function partialMintObservedIdentity(facts, candidate) {
     mintId: null,
     sessionId: live?.sessionId || binding?.sessionId || null,
     sessionPath: live?.jsonlPath || binding?.sessionPath || null,
+    ledgerBindsSingleRuntime,
+    strongFieldSources: {
+      fleetId: candidate.probe?.fleetId ? 'runtime-argv' : (binding?.id ? 'ledger' : null),
+      sessionId: live?.sessionId ? 'harness-runtime' : (binding?.sessionId ? 'ledger' : null),
+    },
     friendlyName: binding?.friendlyName || null,
     cwd: binding?.cwd || null,
     harness,
