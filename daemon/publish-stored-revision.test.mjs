@@ -113,6 +113,39 @@ test('publishRevision refuses a revision the repository does not hold', async ()
   await manager.closeAll()
 })
 
+test('publishRevision publishes nothing when the revision does not descend from the accepted head', async () => {
+  // The defect this exists for: the server rejects a proposal that does not
+  // descend from the accepted head, and `pushRevision`'s recovery -- correct
+  // for a person's edit that raced the server -- combines the two and publishes
+  // a commit nobody named, authored as the checkout's owner. A republication
+  // must publish one exact commit or nothing.
+  const { remote, checkout, manager, accepted } = await fixture()
+
+  // The server's ancestry rule, in the words the client parses.
+  writeFileSync(join(remote, 'hooks', 'update'), `#!/bin/sh
+head=$(git rev-parse refs/tlda/accepted 2>/dev/null) || exit 0
+[ -z "$head" ] && exit 0
+if git merge-base --is-ancestor "$head" "$3"; then exit 0; fi
+echo "WrongHead $head" >&2
+exit 1
+`, { mode: 0o755 })
+  const laterHead = await git(checkout, ['rev-parse', 'owners-branch'])
+  await git(checkout, ['push', '-q', remote, `${laterHead}:refs/tlda/accepted`])
+
+  const refsBefore = await git(checkout, ['for-each-ref', '--format=%(refname) %(objectname)'])
+  await assert.rejects(
+    () => manager.publishRevision('paper', accepted),
+    /Nothing was published/,
+    'a revision that cannot be published exactly must fail loudly',
+  )
+  await manager.closeAll()
+
+  const proposals = await git(remote, ['for-each-ref', '--format=%(refname)', 'refs/tlda/proposals'])
+  assert.equal(proposals, '', 'nothing may reach the remote')
+  assert.equal(await git(checkout, ['for-each-ref', '--format=%(refname) %(objectname)']), refsBefore,
+    'a call that published nothing must not have moved a ref either')
+})
+
 test('publishRevision refuses a project that is not bound here', async () => {
   const { manager, accepted } = await fixture()
   await assert.rejects(
