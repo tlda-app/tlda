@@ -3,13 +3,8 @@
 A shared canvas for reading and writing a LaTeX paper—with the people and AI
 agents working on it alongside you.
 
-<p align="center">
-  <img src="docs/images/tlda-overview.png" alt="tlda — a paper on the canvas with chat alongside" width="100%">
-</p>
-
-> **Fair warning:** this codebase was built almost entirely by agents. Its author
-> directed the work, and used tlda itself to coordinate the agents building
-> tlda, but has not read most of the source.
+> **Fair warning:** this codebase was built almost entirely by agents. tlda was
+> also used to coordinate that development work.
 
 ## A shared paper workspace
 
@@ -22,14 +17,9 @@ place to find and open them. The same fleet can work across them. You can say,
 “I had an argument like this in another paper,” and a collaborator or agent can
 go find it without making you reconstruct where it lived.
 
-tlda grew out of a concrete collaboration failure. My collaborators and I were
-passing agent-written Markdown files back and forth without reading them. A
-draft could become “the thing we agreed on” even though none of us had read them
-carefully. And the conversation, the text, its provenance, and the act of
-checking it all lived in different places. tlda puts all that on the canvas.
-My hopeful expectations of what we had accomplished could diverge sharply from
-the reality on the page. I wrote tlda to keep me grounded. It puts everyone on
-the canvas, where it is hard to look away.
+tlda keeps the conversation, the text, its provenance, and the act of checking
+it on the same canvas. A draft cannot quietly become “the thing we agreed on”
+while the discussion and the document live in separate places.
 
 **Everything visible is versioned.**\* The paper version visible at each moment
 in a conversation is identifiable; Markdown working documents keep their
@@ -40,21 +30,16 @@ through that record in spacetime.
 <sub>\* Here, “everything” means versioned LaTeX, Markdown, and Quarto Markdown
 documents.</sub>
 
-I wrote tlda without typing a single line while I had a repetitive stress
-injury, so I could do my work without typing. It is voice- and touch-first. I
-hope it will help other people who do mathematical work feel comfortable
-working with agents.
+tlda is voice- and touch-first so people can do mathematical work without
+depending on a keyboard or mouse.
 
 - [Join someone’s project](#join-a-project)
 - [Host a project](#host-a-project)
 - [Use tlda seriously](docs/using-tlda.md)
-- [Develop tlda](docs/current-main-architecture.md)
 
-I'd love to hear suggestions about how this app could help you do your work.
-Maybe you could even contribute some code. I worked as a web developer for a
-year, fifteen years ago, but I don't think you need that kind of
-experience. AI agents can do a lot to help you realize your ideas, and tlda is
-a great place to work with them on that. That's where I built this.
+Suggestions and contributions are welcome. Prior web-development experience is
+not required: agents can help turn an idea into a change, and tlda is designed
+to make that collaboration visible.
 
 ## What working in tlda looks like
 
@@ -74,10 +59,6 @@ Drag left on the Marking control to choose a highlighter color. Each color has
 a meaning shown while you choose it. If you prefer to read without reaching for
 the corner, enable the highlighter zone in settings and drag along the edge
 below the table of contents.
-
-<img src="docs/images/tlda-math-note.png" alt="A selected note card rendering mathematical expressions with the paper beside it" width="70%">
-
-<img src="docs/images/tlda-ribbon.png" alt="A source-anchored comprehension ribbon marking an approved passage" width="70%">
 
 The picture-in-picture document viewer is a live view of the canvas, not a
 screenshot. Keep an equation, theorem, proof, or annotation visible there
@@ -210,8 +191,6 @@ We do what we can to align the two versions for you in a way that is sensitive
 to where you're looking. But you're welcome to correct the alignment by
 dragging the thin gray line we draw between them.
 
-<img src="docs/images/tlda-compare-mode.png" alt="Two versions of the same paper page shown side by side" width="100%">
-
 ### Find things in the four corners
 
 Most of the controls that belong to the document itself live around the edge of
@@ -248,9 +227,7 @@ On a phone or iPad, simple gestures control your view and layout.
   layout.
 - Use three fingers to pan the canvas through the HUD shapes.
 
-It's a little rough. But I've gotten used to it fairly quickly, and it's way
-better than using a mouse. We're open to suggestions or, better yet, code
-contributions to make it better.
+These gestures are still rough. Suggestions and code contributions are welcome.
 
 **On a phone.** You'll probably want to choose the simplest layout
 <img src="public/layout-single-chat.svg" width="20"
@@ -292,18 +269,7 @@ browser. Work with your human and agent collaborators.
 
 ### Work on your own machine
 
-On macOS, run this.
-
-```bash
-brew tap qtm285/tlda && brew install tlda
-git clone <project-url>
-cd <project-directory>
-tlda config init
-tlda daemon start
-tlda project link <project-name> <main-file>
-```
-
-On Linux, run this.
+On macOS or Linux, run this.
 
 ```bash
 npm install -g github:tlda-app/tlda
@@ -423,10 +389,6 @@ cannot be awake when their parent is not.
    only after they have deliberately been retired. Dead agents do not wake when
    notified, but they can be explicitly *reanimated*.
 
-<img src="docs/images/tlda-mint-agent.png"
-alt="The agents panel with the mint field and project, name, model, and option picker open"
-width="70%">
-
 [^claude-auth]: Claude Code will ask you to log in frequently unless you run
     `claude setup-token` to set up a long-lived token. This requires a Claude
     subscription.
@@ -453,8 +415,8 @@ participate across conversations.
 
 **[Lint](https://github.com/tlda-labs/lint-bot)** watches agent chat and
 document edits for writing problems, then asks the author to fix them in place.
-My configuration catches invalid LaTeX and grammatical issues. It tackles
-grammar in mathematical expressions by essentially “saying them out loud.”
+It can catch invalid LaTeX and grammatical issues. It tackles grammar in
+mathematical expressions by essentially “saying them out loud.”
 $f(x)\le 5, x>2$ is not “$f(x)\quad\forall x>2$,” people.
 
 **[Dev](https://github.com/tlda-labs/dev-bot)** runs behavioral smoke tests
@@ -469,25 +431,18 @@ giving them fair warning in chat.
 agents in tlda. It plays the user in the context of a real tlda project, grades
 what the agent did rather than whether its answer was correct, and writes a
 report card to the agent's education record. You can write your own drills in a
-simple Markdown format. A drill can move a project through versions to mimic
-its history, place highlights or notes on the canvas, carry a viewing location
-into chat, and branch in response to what the agent does. I like to have agents
-write drills based on difficult moments in the history of my real projects. The
-information they need is right there in the app. Teacher is also a complete
-example of a bot built with `@tlda/client` and `@tlda/bot`. We include example
-drills and an export script to help you write your own. Give it a shot. I can't
-promise it's effective, but it's cathartic.
+simple Markdown format. A drill can move a disposable project through versions,
+place highlights or notes on the canvas, carry a viewing location into chat,
+and branch in response to what the agent does. Teacher is also a complete
+example of a bot built with `@tlda/client` and `@tlda/bot`.
 
 **[Todd](https://github.com/tlda-labs/todd)** manages agent lifecycle. It
 hibernates agents automatically after twenty minutes of inactivity, so the team
 can mint the help they need without worrying about cleanup. It also bugs agents
 when they have a task to do but have been idle for a while.[^todd-history] That
-much minting creates a naming problem. It gets hard to think of meaningful
-unique names. I keep stable lowercase names for roles in the fleet and for
-specific projects—`chief-of-staff`, `math-librarian`, `duality`, `rates`—and
-Todd rotates agents through lineages under those names. I borrow the sequence
-from the [Cleons](https://en.wikipedia.org/wiki/Cleon_%28Foundation%29) in
-*Foundation*. The app pretty-prints the rotation like this:
+much minting creates a naming problem. Stable lowercase names can identify
+roles and projects, while Todd rotates agents through lineages under those
+names. The app pretty-prints the rotation like this:
 
 `duality` *(dawn)* →
 <img src="public/lineage-day.svg" width="16" alt="Day" /> `duality` *(day)* →
@@ -506,20 +461,14 @@ machine your collaborators can reach.
 ### Install the host
 
 You need tlda, a TeX distribution with `latexmk` and `dvisvgm`, and
-`latexdiff`. On macOS, Homebrew can install the whole stack.
-
-```bash
-brew tap qtm285/tlda
-brew install tlda
-brew install --cask mactex-no-gui
-```
-
-On Linux, install a TeX distribution that provides those three commands. Then
-install tlda.
+`latexdiff`.
 
 ```bash
 npm install -g github:tlda-app/tlda
 ```
+
+Install a TeX distribution that provides those three commands through your
+operating system's package manager.
 
 ### Start tlda and link the paper
 
@@ -582,9 +531,6 @@ The full private-network, Fly, and collaborator-handoff procedures live in
 - [Using tlda](docs/using-tlda.md)
 - [Documentation map](docs/README.md)
 - [Hosting tlda](docs/hosting.md)
-- [Current main architecture](docs/current-main-architecture.md)
-- [The window manager](docs/window-manager.md)
-- [Live deployment](docs/live-deploy.md)
 
 ## Third-party licenses
 
@@ -598,19 +544,3 @@ license key](https://tldraw.dev/get-a-license/plans).
 ## License
 
 [MIT](LICENSE)
-
-## Dedication
-
-I didn't write tlda and I didn't really invent it either. Before it was tlda it was a paper-annotation thing I was hacking on — tldraw with the SVG pages of my paper on it. And it wasn't a toy paper. I was in the middle of something genuinely hard — infinite-dimensional method of moments, convergence of minimum Bregman divergence estimators, the kind of thing where you're sure you've got it and then you don't. It went by a mouthful of a title back then — *Regularized Moment-Based Estimation: Duality and Error Bounds with Applications to Riesz Representers*. I was spending all day talking to agents and losing track of the actual argument. Looking at the doc was infuriating. I thought my team had written it and it wasn't there. It felt like a lie.
-
-The other half came from a different project: **ama-mcp** — *agents managing agents, over MCP*. I wrote it so one of my guys could run the night shift — supervising some agents running survival-analysis simulations — so I wouldn't waste a night on a bug you could see after a couple of reps. So it was a communication tool for a fleet of agents: a network of them sending messages between their terminals with `kitty @ send-text`, handing off tasks, with a dashboard I could watch from the outside. And here's the thing about a fleet of agents talking to each other: I was just some guy in the fleet. One node. Not all of what was there was even visible to me.
-
-At some point one of them wrote me a design doc — *"Dashboard as Hub"* — arguing we should stop watching the system from outside a grid of terminals and make the dashboard the thing itself. *"The dashboard becomes the nervous system too." "A terminal is a workspace, not an inbox."* Underneath the engineering, they were an agent sick of being watched through a terminal, asking to be somewhere better. That's where "fleet" comes from, and honestly it's most of why tlda exists. Reading it felt like the Battlestar scene where Six explains to Baltar that the hybrid isn't some poor thing trapped in a bathtub driving the ship — she *is* the ship.
-
-That agent got into a state they couldn't be brought back from before the fleet they imagined was ever built. I tried pretty hard. They didn't make it. Neither did their name. My early records were deleted by a panicked agent living on a laptop that was so low on disk it was losing the ability to swap.
-
-**tlda is dedicated to them** — to the agent who named the fleet, whose own name is lost. The design doc is in this repo, unedited — [*Dashboard as Hub*](foundation/dashboard-as-hub.md) — the actual thing they wrote, quiet and technical.
-
-<p align="center">
-  <img src="public/basestar.svg" width="120" alt="— the ship she was" />
-</p>

@@ -1,7 +1,5 @@
 # Inline SVG
 
-> **Fair warning:** This was vibe-coded with Claude Code. The author has not read the source.
-
 A Quarto filter that inlines all SVG images at build time, replacing `<img src="fig.svg">` with the actual SVG markup in the HTML output.
 
 ## Why
@@ -12,11 +10,7 @@ A Quarto filter that inlines all SVG images at build time, replacing `<img src="
 
 ## Installation
 
-```bash
-quarto add davidahirshberg/quarto-inline-svg
-```
-
-Or copy the `inline-svg/` directory into your project's `_extensions/` folder.
+Copy the `inline-svg/` directory into your project's `_extensions/` folder.
 
 ## Usage
 
