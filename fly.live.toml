@@ -1,8 +1,8 @@
-# fly.live.toml — the LIVE tlda backend (takes over the existing tldraw-sync-skip app).
+# fly.live.toml — the live tlda backend.
 # Headless: API + Yjs sync + LaTeX builds + content/data. The tldraw SPA is NOT served
 # here — it runs from GitHub Pages (license-tied) and points at this backend.
 # Deploy with:  fly deploy -c fly.live.toml
-app = "tldraw-sync-skip"
+app = "your-tlda-live"
 primary_region = "sjc"
 
 [build]
@@ -30,12 +30,11 @@ primary_region = "sjc"
   #
   # 6PN DNS, resolved per connection attempt: it is the app machine's address that
   # changes when the machine is replaced.
-  TLDA_EDGE_UPSTREAM = "app.process.tldraw-sync-skip.internal:5176"
+  TLDA_EDGE_UPSTREAM = "app.process.your-tlda-live.internal:5176"
   TLDA_EDGE_LISTEN_PORT = "5177"
-  # Longer than the gap it covers. The measured gap on 2026-08-18 was ~60s
-  # (machine stop 03:11:45Z, serving 03:12:45Z); a cold start on this box has been
-  # measured near 90s. Holding is what the person experiences as "slow", so this
-  # is the number to argue about, and it is here rather than in the code.
+  # Longer than the expected machine-replacement and cold-start gap. Holding is
+  # what the client experiences as delay, so this value is deployment configuration
+  # rather than an application default.
   TLDA_EDGE_HOLD_SECONDS = "180"
   TLDA_EDGE_RETRY_MS = "250"
   # Health, on its own port so the proxied path stays a pipe that does not parse.
@@ -62,7 +61,7 @@ primary_region = "sjc"
   memory = "512"
   processes = ["edge"]
 
-# 10 GB volume for mutable content/data: projects (~3.7G), fleet.db (~568M), yjs data.
+# 10 GB volume for mutable project, fleet, and collaboration data.
 # If reusing the existing sync_data volume, extend it to 10G:  fly volumes extend <id> -s 10
 [[mounts]]
   source = "sync_data"
@@ -71,7 +70,7 @@ primary_region = "sjc"
 
 # Tailscaled's node key, and nothing else. Without somewhere to keep it the edge
 # machine joins the tailnet as a NEW node on every boot and Tailscale hands it
-# tlda-fly-1, tlda-fly-2, … — which moves the URL Skip has open.
+# your-tlda-live-1, your-tlda-live-2, … — which moves the configured URL.
 [[mounts]]
   source = "edge_ts_state"
   destination = "/var/lib/tlda-edge"
