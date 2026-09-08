@@ -43,6 +43,7 @@ import { hasTls, resolveConfig, loadServerConfig, CONFIG_DIR } from '../../share
 import { daemonLifecycleSocketPath } from '../../shared/daemon-socket-path.mjs'
 import { resolveRepoRoot, findFreePort } from './dev-vite.mjs'
 import { spawnDetachedServer } from './server-start.mjs'
+import { STARTUP_TRACE_FLAG } from '../../shared/startup-trace.mjs'
 import { findTailscaleIPv4 } from './share-url.mjs'
 import { acquireLease, releaseLease, listLeases } from './resource-leases.mjs'
 
@@ -414,6 +415,20 @@ export async function waitForSandboxDaemon(facts, socketPath, logPath, { attempt
 
 // ---- preview server readiness ----
 
+/**
+ * Which server entry this preview launches, and whether it traces its startup.
+ *
+ * Only `--sandbox` goes through the bootstrap: a sandbox startup is the one we
+ * have failed to diagnose, and it is the one nobody is reading over. Every
+ * other preview keeps the direct entry and an unset flag, so its process, its
+ * output, and its readiness are byte-for-byte what they were.
+ */
+export function previewServerEntry(worktreeDir, sandbox) {
+  return sandbox
+    ? { serverScript: join(worktreeDir, 'server', 'sandbox-boot.mjs'), traceEnv: { [STARTUP_TRACE_FLAG]: '1' } }
+    : { serverScript: join(worktreeDir, 'server', 'unified-server.mjs'), traceEnv: {} }
+}
+
 const SERVER_READY_MS = 30_000
 const SERVER_POLL_MS = 500
 
@@ -708,14 +723,16 @@ export async function cmdServeWorktree(args) {
   // when the launching agent hibernates). reclaimPort:false — our port came from
   // findFreePort, so we must never SIGKILL whatever might be on it.
   let serverFacts = noChildFacts()
+  const serverEntry = previewServerEntry(worktreeDir, flags.has('sandbox'))
   const pid = spawnDetachedServer({
-    serverScript: join(worktreeDir, 'server', 'unified-server.mjs'),
+    serverScript: serverEntry.serverScript,
     port,
     logFile: logFile(branch),
     reclaimPort: false,
     pidFile: pidFile(branch),
     onSpawn: child => { serverFacts = watchSpawnedChild(child) },
     env: {
+      ...serverEntry.traceEnv,
       HOST: '0.0.0.0',
       TLDA_ENV: configName(branch),
       TLDA_CONFIG_DIR: previewConfigDir(branch),

@@ -18,6 +18,13 @@
  *   PROJECTS_DIR — project storage (default: server/projects/)
  */
 
+// First statement of the module body — and it must stay first. Everything above
+// is static import evaluation, which produces no output at all, so under
+// TLDA_STARTUP_TRACE this marker is the line that separates "still importing"
+// from "importing finished". Below the refusal it would never print for a
+// process that dies on the guard, which is one of the cases worth seeing.
+markStartupPhase('server-body', 'mark')
+
 if (!process.argv.includes('--i-am-tlda-cli')) {
   console.error('Use `tlda server start` to run the server. Do not run unified-server.mjs directly.')
   process.exit(1)
@@ -139,6 +146,7 @@ import {
 } from '../shared/inbox-reference-materialization.mjs'
 import { formatMaterializationFailureNotification } from './lib/materialization-notifications.mjs'
 import { createBackendLogger } from './lib/observability/logger.mjs'
+import { markStartupPhase, traceStartupPhase, traceStartupPhaseSync } from '../shared/startup-trace.mjs'
 import {
   createControlPlaneTraceStore,
   createTraceId,
@@ -303,7 +311,7 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 const classroomStore = new ClassroomStore()
 
 // Initialize stores
-await initProjectStore(PROJECTS_DIR)
+await traceStartupPhase('init-project-store', () => initProjectStore(PROJECTS_DIR))
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
 initBuildDispatcher()
 
@@ -314,7 +322,7 @@ const fleetStore = new FleetStoreClient(process.env.TLDA_FLEET_DB, {
   taskDoc: true,
   taskDocOptions: { projectsDir: PROJECTS_DIR },
 })
-await fleetStore.ready()
+await traceStartupPhase('fleet-store-ready', () => fleetStore.ready())
 const existingTldaIdentity = await fleetStore.getAgent('fleet:tlda')
 await fleetStore.upsertAgent({
   id: 'fleet:tlda',
@@ -10218,17 +10226,19 @@ process.on('unhandledRejection', (err) => {
 // resolve the active config once at startup. A missing config or field throws
 // here and the server refuses to start, with a clear message.
 {
-  const cfg = resolveConfig()
+  const cfg = traceStartupPhaseSync('resolve-config', () => resolveConfig())
   console.log(`[config] active="${cfg.name}" database=${cfg.database.http} store=${cfg.store.http} license=${cfg.licenseKey ? 'set' : 'none'}`)
 }
 
 // Before anything reads a parts manifest: parts written before the root moved out
 // of `source/` are still under it, where nothing looks. See migrate-project-parts.
-migrateAllProjectParts(PROJECTS_DIR)
+traceStartupPhaseSync('migrate-project-parts', () => migrateAllProjectParts(PROJECTS_DIR))
 
-await recoverBuildPublications()
+await traceStartupPhase('recover-build-publications', () => recoverBuildPublications())
 
+markStartupPhase('listen', 'start')
 server.listen(PORT, HOST, () => {
+  markStartupPhase('listen', 'callback')
   const proto = useTls ? 'https' : 'http'
   console.log(`Unified server running on ${proto}://${HOST}:${PORT}`)
   if (useTls) console.log(`  TLS: ${TLS_CERT}`)
