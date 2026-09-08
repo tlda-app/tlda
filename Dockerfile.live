@@ -229,12 +229,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && apt-get update && apt-get install -y --no-install-recommends tailscale \
     && rm -rf /var/lib/apt/lists/*
 
-# --- rclone (feelings-export pushes chat JSONL + attachments to Skip's Google Drive) ---
-# Its own layer so it caches across app-code redeploys. The feelings-export job
-# (bin/feelings-export.mjs, scheduled by the entrypoint) shells out to `rclone copy`.
-RUN apt-get update && apt-get install -y --no-install-recommends rclone \
-    && rm -rf /var/lib/apt/lists/*
-
 # --- runtime deps ---
 # Install at /app (not server/) so BOTH server/*.mjs and shared/*.mjs resolve up to
 # one /app/node_modules. shared/ imports @tldraw/* too, and from /app/shared it can't
@@ -288,12 +282,6 @@ COPY agent-runtime/ ./agent-runtime/
 COPY daemon/ ./daemon/
 COPY migrations/ ./migrations/
 COPY cli/lib/ ./cli/lib/
-
-# Feelings export: server-side job reads fleet.db chat -> JSONL + copies referenced
-# attachments -> rclone to Skip's Drive. The entrypoint runs it on an interval
-# (Skip-authorized PII export). Opens the DB readonly, so it's safe alongside the
-# server's writer.
-COPY bin/feelings-export.mjs ./bin/feelings-export.mjs
 
 # Build worker: the server dispatches LaTeX builds to `node bin/build-worker.mjs`
 # (server/lib/build-dispatch.mjs spawns it as a subprocess). Without this file in
