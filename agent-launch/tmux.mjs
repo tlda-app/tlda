@@ -271,7 +271,7 @@ export async function injectCodexPrompt(session, prompt, {
         const pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
         if (!pasted.stdout.includes(promptMarker)) continue
         for (let attempt = 0; attempt < 3; attempt += 1) {
-          await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'C-m')
+          await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'Enter')
           await sleep(1000)
           let submitted
           try {

@@ -17,7 +17,7 @@ test('Codex prompt injection ignores startup warnings in a resumed transcript', 
     sent.push(args)
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
-    if (args.at(-1) === 'C-m' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
+    if (args.at(-1) === 'Enter' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
     return { stdout: '' }
   }
 
@@ -28,7 +28,7 @@ test('Codex prompt injection ignores startup warnings in a resumed transcript', 
   })
 
   assert.equal(delivered, true)
-  assert.equal(sent.some(args => args.at(-1) === 'C-m'), true)
+  assert.equal(sent.some(args => args.at(-1) === 'Enter'), true)
 })
 
 test('Codex prompt injection dismisses the update dialog before kickoff', async () => {
@@ -48,7 +48,7 @@ test('Codex prompt injection dismisses the update dialog before kickoff', async 
     if (args.at(-1) === 'Enter' && pane.includes('Update available!') && sent.some(call => call.at(-1) === '2')) pane = '› Summarize recent commits'
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
-    if (args.at(-1) === 'C-m' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
+    if (args.at(-1) === 'Enter' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
     return { stdout: '' }
   }
 
@@ -61,7 +61,7 @@ test('Codex prompt injection dismisses the update dialog before kickoff', async 
   assert.equal(delivered, true)
   assert.equal(sent[0].at(-1), '2')
   assert.equal(sent[1].at(-1), 'Enter')
-  assert.equal(sent.at(-1).at(-1), 'C-m')
+  assert.equal(sent.at(-1).at(-1), 'Enter')
 })
 
 test('Codex prompt injection ignores an update dialog left in scrollback', async () => {
@@ -80,7 +80,7 @@ test('Codex prompt injection ignores an update dialog left in scrollback', async
     sent.push(args)
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
-    if (args.at(-1) === 'C-m' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
+    if (args.at(-1) === 'Enter' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
     return { stdout: '' }
   }
 
@@ -104,7 +104,7 @@ test('Codex prompt injection retries Enter until the pasted kickoff is submitted
     assert.equal(command, 'send-keys')
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
-    if (args.at(-1) === 'C-m') {
+    if (args.at(-1) === 'Enter') {
       enterCount += 1
       if (enterCount === 2) pane += '\n\n• Working (0s • esc to interrupt)'
     }
@@ -130,7 +130,7 @@ test('Codex prompt injection accepts a kickoff that completes before the post-En
     assert.equal(command, 'send-keys')
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
-    if (args.at(-1) === 'C-m') {
+    if (args.at(-1) === 'Enter') {
       enterCount += 1
       pane = '› Ask Codex to do anything'
     }
@@ -160,7 +160,7 @@ test('Codex prompt injection does not infer delivery from a failed post-Enter ca
     assert.equal(command, 'send-keys')
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
-    if (args.at(-1) === 'C-m') {
+    if (args.at(-1) === 'Enter') {
       enterCount += 1
       failCapture = true
     }
