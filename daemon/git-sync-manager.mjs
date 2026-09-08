@@ -421,7 +421,19 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     } catch {
       throw new Error(`revision ${revision} is not present in the repository bound to ${project}`)
     }
-    return runtime.sync.pushRevision(revision, { forceRebuild: true })
+    // `exact`: publish this commit or nothing. Without it the server's
+    // ancestry rule turns a republication into a merge -- the accepted head
+    // combined with the named revision, published as a commit nobody asked
+    // for and authored as the checkout's owner. Measured on a real project
+    // before this option existed.
+    const result = await runtime.sync.pushRevision(revision, { forceRebuild: true, exact: true })
+    if (result?.status === 'WrongHead') {
+      throw new Error(
+        `refusing to publish ${revision.slice(0, 12)} for ${project}: the server's accepted head is ` +
+        `${String(result.head).slice(0, 12)} and this revision does not descend from it. Nothing was published.`,
+      )
+    }
+    return result
   }
 
   async function remoteOperation(project, operation, params = {}) {

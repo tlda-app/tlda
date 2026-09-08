@@ -571,7 +571,22 @@ export function createGitProjectSync({
     }
   }
 
-  async function pushRevision(revision, { forceRebuild = false, members = null, combined = false } = {}) {
+  /**
+   * `exact` publishes one named commit or nothing.
+   *
+   * The recovery below exists for a person whose edit raced the server: their
+   * work must not be lost, so it is combined with the accepted head and the
+   * combination is published. That is right for an edit and wrong for a
+   * republication, where the whole point is that a SPECIFIC commit becomes the
+   * published one. Combining would publish a commit that nobody named and that
+   * did not exist a moment earlier -- authored, because `commit-tree` uses the
+   * repository's identity, as the person who owns the checkout.
+   *
+   * So `exact` returns the rejection and stops: no `headChanged`, no merge, no
+   * `commit-tree`, no recursion. The caller learns the named revision is not
+   * publishable and decides what to do, which is not this function's call.
+   */
+  async function pushRevision(revision, { forceRebuild = false, members = null, combined = false, exact = false } = {}) {
     const proposalRef = `refs/tlda/proposals/${daemonPart}/${branchPart}/${revision}`
     try {
       const result = await git(['push', '--porcelain', remote, `${revision}:${proposalRef}`])
@@ -582,6 +597,11 @@ export function createGitProjectSync({
       const output = `${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`
       const match = output.match(/WrongHead\s+([0-9a-f]{40})/i)
       if (!match) throw error
+
+      // Before anything else, because `exact` must leave no trace: parking the
+      // accepted head is a ref write, and a call that published nothing should
+      // not have moved a ref either.
+      if (exact) return { ok: false, status: 'WrongHead', head: match[1], revision, exact: true }
 
       // Park the accepted head first. This is unchanged: the person's checkout
       // is not moved onto it, it simply becomes reachable at fetchedRef.
