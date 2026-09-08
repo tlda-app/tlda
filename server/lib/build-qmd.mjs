@@ -151,7 +151,12 @@ export function qmdDeclaredOutputFilesForSource(outDir, sourceFile) {
     const source = readFileSync(sourcePath, 'utf8')
     const frontMatter = source.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
     if (frontMatter) {
-      const format = parseYaml(frontMatter[1])?.format
+      const options = parseYaml(frontMatter[1])
+      const outputFile = options?.['output-file']
+      if (typeof outputFile === 'string' && outputFile.trim()) {
+        candidates.push(join(dirname(normalizedSource), outputFile).replace(/\\/g, '/'))
+      }
+      const format = options?.format
       if (format && typeof format === 'object' && !Array.isArray(format)) {
         for (const options of Object.values(format)) {
           if (!options || typeof options !== 'object' || Array.isArray(options)) continue
