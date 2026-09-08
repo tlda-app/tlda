@@ -7,6 +7,28 @@ import { tmpdir } from 'node:os'
 import { deckPageInfo } from './slides-parser.mjs'
 import { qmdDeckPageInfo, qmdDeclaredOutputFilesForSource, qmdMissingDeclaredOutputFiles, qmdRenderedOutputFilesForSource } from './build-qmd.mjs'
 
+test('a qmd source honors a top-level output-file', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-output-file-'))
+  try {
+    mkdirSync(join(root, 'homework'), { recursive: true })
+    writeFileSync(join(root, 'homework', 'homework-calibration.handout.qmd'), `---
+title: Homework
+output-file: homework-calibration.html
+---
+`)
+    writeFileSync(join(root, 'homework', 'homework-calibration.html'), '<html></html>')
+
+    assert.deepEqual(qmdDeclaredOutputFilesForSource(root, 'homework/homework-calibration.handout.qmd'), [
+      'homework/homework-calibration.html',
+    ])
+    assert.deepEqual(qmdRenderedOutputFilesForSource(root, 'homework/homework-calibration.handout.qmd'), [
+      'homework/homework-calibration.html',
+    ])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('a qmd source resolves both declared non-colliding output files', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-alternates-'))
   try {
