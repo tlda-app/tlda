@@ -35,6 +35,22 @@ let projectFilesDb = null
 let projectLifecycleStatusIndex = null
 const projectPathOverrides = new Map()
 const sourceReplacementLocks = new Map()
+const projectStoreLocks = new Map()
+const projectStoreReservations = new Set()
+
+export function serializeProjectStoreOperation(name, operation) {
+  projectStoreReservations.add(name)
+  const previous = projectStoreLocks.get(name) || Promise.resolve()
+  const current = previous.then(operation, operation)
+  const tracked = current.finally(() => {
+    if (projectStoreLocks.get(name) === tracked) {
+      projectStoreLocks.delete(name)
+      projectStoreReservations.delete(name)
+    }
+  }).catch(() => {})
+  projectStoreLocks.set(name, tracked)
+  return current
+}
 
 export function setProjectPathOverride(name, root = null) {
   if (root) projectPathOverrides.set(name, root)
@@ -76,6 +92,10 @@ export async function listProjects() {
 export function indexedProjectLifecycleStatuses() {
   if (!projectLifecycleStatusIndex) throw new Error('project lifecycle status index is not initialized')
   return projectLifecycleStatusIndex.list()
+}
+
+export function indexPromotedProject(name, lifecycle) {
+  projectLifecycleStatusIndex?.upsert(name, projectRevisionStatus(lifecycle.listRevisionLifecycles(name)))
 }
 
 export async function readProjectMeta() {
@@ -142,7 +162,7 @@ function formatForNewProject(mainFile, format) {
 
 export function createProject({ name, title, mainFile, format = null, members, documentRoots = null }) {
   const dir = join(projectsDir, name)
-  if (existsSync(join(dir, 'project.json'))) {
+  if (projectStoreReservations.has(name) || existsSync(dir)) {
     throw new Error(`Project "${name}" already exists`)
   }
 

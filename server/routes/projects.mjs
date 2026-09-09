@@ -35,8 +35,12 @@ import {
   sourceLifecycleStore,
   checkpointProjectPartWritebackOffloop,
   indexedProjectLifecycleStatuses,
+  indexPromotedProject,
+  liveProjectDir,
+  serializeProjectStoreOperation,
 } from '../lib/project-store.mjs'
-import { deleteProjectAndBuildSubmissions } from '../lib/build-dispatch.mjs'
+import { deleteProjectAndBuildSubmissions, serializedPublication } from '../lib/build-dispatch.mjs'
+import { exportProjectPromotion, importProjectPromotion, validatePromotionName } from '../lib/project-promotion.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
@@ -52,7 +56,7 @@ import { materializeRecordingAudioClip } from '../lib/recording-audio-clip.mjs'
 import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
-import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
+import { getActiveEnvName, getFleetServerUrl, getRwToken, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
 import { gitBlobId } from '../../shared/git-blob-id.mjs'
 import { writeSentinel } from '../lib/sentinel.mjs'
@@ -418,6 +422,64 @@ router.post('/', requireRw, async (req, res) => {
     res.status(201).json(project)
   } catch (e) {
     res.status(409).json({ error: e.message })
+  }
+})
+
+// A promotion source is read by another configured tlda environment, never by
+// a client-provided archive. Publication serialization makes metadata,
+// lifecycle identity, and output one coherent snapshot.
+router.get('/:name/promotion-export/:revision', requireRw, async (req, res) => {
+  try {
+    validatePromotionName(req.params.name)
+    const project = await readProject(req.params.name)
+    if (!project) return res.status(404).json({ error: 'Project not found' })
+    const lifecycle = await sourceLifecycleStore(req.params.name, { existingProject: project })
+    const artifact = await exportProjectPromotion({
+      name: req.params.name,
+      revision: req.params.revision,
+      sourceEnvironment: getActiveEnvName(),
+      projectRoot: liveProjectDir(req.params.name),
+      lifecycleStore: lifecycle,
+      serialize: serializedPublication,
+    })
+    res.json(artifact)
+  } catch (error) {
+    res.status(409).json({ error: error.message })
+  }
+})
+
+// The caller names only a configured source environment and exact revision.
+// The destination obtains and verifies the artifact server-to-server.
+router.post('/:name/promote', requireRw, async (req, res) => {
+  try {
+    validatePromotionName(req.params.name)
+    const sourceEnvironment = String(req.body?.sourceEnvironment || '')
+    const revision = String(req.body?.revision || '')
+    const sourceUrl = new URL(`/api/projects/${encodeURIComponent(req.params.name)}/promotion-export/${encodeURIComponent(revision)}`, getServerUrl(sourceEnvironment))
+    const token = getRwToken()
+    if (!token) throw new Error('server-to-server project promotion requires a configured write token')
+    const response = await fetch(sourceUrl, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(300000),
+    })
+    const artifact = await response.json()
+    if (!response.ok) throw new Error(`trusted source ${sourceEnvironment} refused promotion: ${artifact?.error || response.status}`)
+    const result = await importProjectPromotion({
+      artifact,
+      sourceEnvironment,
+      name: req.params.name,
+      revision,
+      projectsRoot: getProjectsDir(),
+      serialize: serializeProjectStoreOperation,
+      onActivated: async () => {
+        const lifecycle = await sourceLifecycleStore(req.params.name)
+        indexPromotedProject(req.params.name, lifecycle)
+      },
+    })
+    emitGlobalEvent('project-changed', { name: req.params.name })
+    res.status(result.promoted ? 201 : 200).json(result)
+  } catch (error) {
+    res.status(409).json({ error: error.message })
   }
 })
 

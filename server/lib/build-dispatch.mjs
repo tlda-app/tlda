@@ -65,7 +65,7 @@ async function notifyPublishedHead(notifyHeadChanged, name, sourceRevision, logE
   }
 }
 
-function serializedPublication(name, operation) {
+export function serializedPublication(name, operation) {
   const previous = publicationLocks.get(name) || Promise.resolve()
   const current = previous.then(operation, operation)
   // `.catch` on the TRACKING chain only. The caller still gets `current` and
