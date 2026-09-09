@@ -9724,6 +9724,28 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     return
   }
 
+  if (type === 'agent-status') {
+    if (!fleetStore) return
+    const agentId = msg.agent_id || msg.agentId
+    const activity = msg.activity || msg.state
+    if (!agentId || !['thinking', 'compacting', 'idle', 'unknown'].includes(activity)) return
+    const activityAtMs = Date.parse(msg.ts) || Date.now()
+    if (activity !== 'unknown') {
+      markAgentAlive(agentId, activityAtMs, {
+        source: 'daemon-read-pane',
+        reason: `pane status ${activity}`,
+        atMs: activityAtMs,
+      })
+    }
+    runtimeStatusStore.updateActivity(agentId, activity, {
+      tool: msg.tool || null,
+      atMs: activityAtMs,
+    })
+    broadcastEvent('agent-status', { agent: agentId, status: 'awake', activity, tool: msg.tool || null, ts: msg.ts || new Date(activityAtMs).toISOString() })
+    if (activity === 'thinking' || activity === 'compacting') touchActivity(agentId)
+    return
+  }
+
   if (type === 'activity-event') {
     if (!fleetStore) return
     const serverReceivedAtMs = Date.now()
@@ -9741,12 +9763,14 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       reason: 'activity extracted from harness stream',
       atMs: activityAtMs,
     })
-    const activityName = tool && !String(tool).startsWith('_') ? 'thinking' : 'unknown'
-    runtimeStatusStore.updateActivity(agent_id, activityName, {
-      tool: tool && !String(tool).startsWith('_') ? tool : null,
-      atMs: activityAtMs,
-    })
-    broadcastEvent('agent-status', { agent: agent_id, status: 'awake', activity: activityName, tool: tool || null, ts: msg.ts || new Date(activityAtMs).toISOString() })
+    const currentActivity = runtimeStatusStore.evidenceFor(agent_id)?.activity
+    if (tool && !String(tool).startsWith('_') && (currentActivity === 'thinking' || currentActivity === 'compacting')) {
+      runtimeStatusStore.updateActivity(agent_id, currentActivity, {
+        tool,
+        atMs: runtimeStatusStore.evidenceFor(agent_id)?.activity_at_ms || activityAtMs,
+      })
+      broadcastEvent('agent-status', { agent: agent_id, status: 'awake', activity: currentActivity, tool, ts: msg.ts || new Date(activityAtMs).toISOString() })
+    }
     touchActivity(agent_id)
     if (sourceEditActivity && (msg.status === 'completed' || msg.status === 'error')) return
     if (!shouldStoreDaemonActivity(msg)) return
