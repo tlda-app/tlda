@@ -8244,7 +8244,7 @@ async function dispatchFleetWsMessage(ws, msg) {
         }
       }
     }
-    const { eventId } = await completeTaskLifecycle({ fleetStore, agentId: agent, task })
+    const { eventId } = await completeTaskLifecycle({ fleetStore, agentId: agent, task, onCompleted: touchActivity })
     broadcastState()
     reply({ ok: true, task_id: task.id, event_id: eventId })
     return
@@ -8350,6 +8350,7 @@ async function dispatchFleetWsMessage(ws, msg) {
           close_reason: closeReason,
           closed_by: agent,
         },
+        onCompleted: touchActivity,
       })
       closeEventId = eventId || null
       controlPlaneTraces.append({
