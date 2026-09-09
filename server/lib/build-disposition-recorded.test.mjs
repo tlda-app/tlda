@@ -68,6 +68,50 @@ test('a worker that dies without recording leaves the project failed, with a rea
   assert.match(readFileSync(join(root, 'doc', 'build.log'), 'utf8'), /exited with code 137/)
 })
 
+test('a worker diagnostic survives onExit failed-disposition fallback', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-disposition-diagnostic-'))
+  await initProjectStore(root)
+  t.after(async () => {
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  })
+  createProject({ name: 'doc', mainFile: 'index.qmd', format: 'qmd' })
+  const diagnostic = 'staging failed\nError: staging failed\n    at build-dispatch.mjs:213:13'
+  const transport = {
+    start(_job, { onMessage, onExit }) {
+      setImmediate(() => {
+        onMessage({
+          t: 'rpc', id: 1, m: 'publishBuildDiagnostics',
+          a: ['doc', null, diagnostic],
+        }, {
+          send(reply) {
+            assert.equal(reply.ok, true)
+            onMessage({
+              t: 'done', ok: false, error: 'staging failed',
+              errorStack: 'Error: staging failed\n    at build-dispatch.mjs:213:13',
+            })
+            void onExit(1)
+          },
+        })
+      })
+      return { cancel() {} }
+    },
+  }
+  const dispatcher = createDispatcherWithOptions(transport, {
+    store: new BuildQueueStore(':memory:'),
+  })
+  await dispatcher.admitBuild('doc', { revision: 'r1', daemonId: 'd1', branch: 'main' })
+  for (let i = 0; i < 50 && dispatcher.inspect().running.length; i++) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+
+  const log = readFileSync(join(root, 'doc', 'build.log'), 'utf8')
+  assert.match(log, /build-dispatch\.mjs:213:13/,
+    'onExit must not replace a worker-published stack with its message-only fallback')
+  assert.equal(dispatcher.store.get('doc', 'r1')?.terminal_reason, 'staging failed',
+    'the public queue failure message must remain unchanged')
+})
+
 // The guard, and it is the half that could do damage. A row settles to `killed`
 // for `superseded`, `needs-rebase` and `cancelled` — a newer revision replacing
 // this build is not a build that went wrong. If this ever goes red, the test

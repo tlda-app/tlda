@@ -421,6 +421,7 @@ async function recordAdmission(job) {
 async function recordDisposition(job, state, result = null) {
   if (state !== 'failed') return
   const reason = result?.error || result?.reason || 'build worker exited without recording a reason'
+  const diagnostic = result?.errorStack ? `${reason}\n${result.errorStack}` : reason
   try {
     await updateProject(job.name, { buildStatus: 'error' })
   } catch (e) {
@@ -435,7 +436,7 @@ async function recordDisposition(job, state, result = null) {
   // been removed, so the reason is the only account that exists. This is the
   // same call the worker makes, doing the same thing with the same writer.
   try {
-    publishBuildDiagnostics(job.name, null, reason)
+    publishBuildDiagnostics(job.name, null, diagnostic)
   } catch (e) {
     // Never let recording the reason replace the failure being recorded.
     console.error(`[build] could not write failure log for ${job.name}: ${e?.message || e}`)
