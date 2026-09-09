@@ -151,7 +151,12 @@ export function qmdDeclaredOutputFilesForSource(outDir, sourceFile) {
     const source = readFileSync(sourcePath, 'utf8')
     const frontMatter = source.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
     if (frontMatter) {
-      const format = parseYaml(frontMatter[1])?.format
+      const options = parseYaml(frontMatter[1])
+      const outputFile = options?.['output-file']
+      if (typeof outputFile === 'string' && outputFile.trim()) {
+        candidates.push(join(dirname(normalizedSource), outputFile).replace(/\\/g, '/'))
+      }
+      const format = options?.format
       if (format && typeof format === 'object' && !Array.isArray(format)) {
         for (const options of Object.values(format)) {
           if (!options || typeof options !== 'object' || Array.isArray(options)) continue
@@ -304,6 +309,19 @@ async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject =
   }
 }
 
+/**
+ * Write the ToC the HTML panel reads, for the pages just rendered.
+ *
+ * Exported so the behaviour can be tested without a Quarto render: the native
+ * tlda-project branch returns before the shared tail, and it returning without
+ * this file is what made the panel say "No headings found".
+ */
+export function writeTocJson(outputDir, pageInfo) {
+  const toc = extractHtmlToc(outputDir, pageInfo)
+  writeFileSync(join(outputDir, 'toc.json'), JSON.stringify(toc, null, 2))
+  return toc
+}
+
 function isNativeTldaProject(dir) {
   for (const name of ['_quarto.yml', '_quarto.yaml']) {
     const path = join(dir, name)
@@ -421,6 +439,10 @@ export async function buildQmdDocument(name, addLog = console.log) {
       writeFileSync(path, stampFigureUrls(readFileSync(path, 'utf8')))
     }
     writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(renderedProject.pageInfo, null, 2))
+    // The ToC panel reads this file and says "No headings found" without it.
+    // The other branch writes it in the shared tail below, which this return
+    // skips.
+    writeTocJson(outDir, renderedProject.pageInfo)
     await writeSourceScope(name, srcDir, outDir)
     await reporter.updateProject(name, {
       buildStatus: 'success',

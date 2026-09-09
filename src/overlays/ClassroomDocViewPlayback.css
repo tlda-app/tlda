@@ -1,0 +1,22 @@
+.classroom-docview-playback {
+  position: fixed;
+  right: 12px;
+  bottom: 58px;
+  z-index: var(--tlda-z-managed-surface);
+}
+
+.classroom-docview-playback__canvas {
+  box-shadow: 0 3px 18px rgb(0 0 0 / 18%);
+}
+
+/* This is a transparent viewport over the live canvas. Its canvas chrome must
+   yield pointer ownership; only the doc-view shape itself is interactive. */
+.classroom-docview-playback .clip-panel,
+.classroom-docview-playback .clip-panel * {
+  pointer-events: none !important;
+}
+
+.classroom-docview-playback .fleet-docview,
+.classroom-docview-playback .fleet-docview * {
+  pointer-events: auto !important;
+}

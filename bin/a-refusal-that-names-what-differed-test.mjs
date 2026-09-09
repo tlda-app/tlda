@@ -1,153 +1,142 @@
 #!/usr/bin/env node
-// A refusal that names what differed.
-//
-// bregman, 2026-08-18. Skip's source pushes failed all night on the same three
-// lines, four times over two and a half hours:
-//
-//   source change rejected for bregman: Source transaction failed: stale-base
-//   source change rejected for bregman: Source transaction failed: stale-base
-//   source change rejected for bregman: Proposed snapshot does not match sourceManifest
-//
-// That message said the two sets differed and nothing else. Which WAY they
-// differed was the entire diagnosis: a path the manifest declares and the
-// snapshot lacks is a file the daemon never sent; a path the snapshot holds
-// and the manifest omits is one it should have deleted.
-//
-// ---------------------------------------------------------------------------
-// Re-derived for the new accept path, not repointed onto it.
-//
-// The old mechanism this asserted — a manifest-vs-snapshot mismatch producing
-// an English sentence naming one path — does not exist on the new path. The
-// new path's refusal is a git fast-forward check (`refusedRevision`,
-// `non-fast-forward`), a structurally different failure than a manifest
-// mismatch, and repointing this test onto it would swap what is proven rather
-// than preserve it.
-//
-// So this asserts the PROMISE, not the old wording: a refusal tells its
-// author what differed, so he is not stuck reconstructing it by hand for two
-// and a half hours. On the new path that promise is kept by
-// `lifecycle.submit()`'s `evidence.classifications` — a per-path report,
-// computed BEFORE any English sentence exists, naming every path touched on
-// either side and whether it is a clean rebase or a real conflict. It is
-// strictly more specific than the old sentence (which named one path); this
-// asserts it names the right ones, in both directions bregman's incident
-// named: a path only the project moved, and a path both sides moved.
+// A stale proposal must be refused without moving the accepted source ref.
+// The refusal names both revisions and preserves the refused commit alongside
+// the accepted history in a bundle the proposer can use for recovery/rebase.
+// A descendant proposal still accepts and advances the source ref.
+
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createSourceLifecycleStore } from '../server/lib/source-lifecycle.mjs'
+import { createSourceGitStore } from '../server/lib/source-git-store.mjs'
 
-const root = mkdtempSync(join(tmpdir(), 'tlda-named-refusal-'))
-const PROJECT = 'named-refusal'
+const root = mkdtempSync(join(tmpdir(), 'tlda-refusal-recovery-'))
+const gitDir = join(root, 'source.git')
+const bundlePath = join(root, 'refusal.bundle')
+const project = 'refusal-recovery'
 
-let failures = 0
-const check = (label, fn) => {
-  try { fn(); console.log(`  ok   ${label}`) }
-  catch (e) { failures++; console.error(`  FAIL ${label}: ${e.message}`) }
+execFileSync('git', ['init', '--bare', '--quiet', gitDir])
+const store = createSourceGitStore({ gitDir })
+
+function assertRefusalContract(result) {
+  assert.equal(result.ok, false, 'the stale proposal must be refused')
+  assert.equal(result.status, 'non-fast-forward')
+  assert.match(result.currentRevision || '', /^[0-9a-f]{40}$/, 'refusal must name currentRevision')
+  assert.match(result.refusedRevision || '', /^[0-9a-f]{40}$/, 'refusal must name refusedRevision')
+  assert.equal(result.recovery?.kind, 'bundle-rebase', 'refusal must name the bundle/rebase recovery path')
+  assert.ok(result.recovery?.bundleBase64, 'refusal must carry a recoverable bundle')
+}
+
+async function admitProposal(proposed) {
+  const decision = await store.fastForward(project, proposed)
+  if (decision.ok) {
+    return {
+      ok: true,
+      status: decision.status,
+      currentRevision: decision.revision,
+      previousRevision: decision.previous ?? null,
+    }
+  }
+
+  const previousRefused = await store.refused(project)
+  await store.markRefused(project, decision.proposed, previousRefused)
+  return {
+    ok: false,
+    status: decision.status,
+    currentRevision: decision.revision,
+    refusedRevision: decision.proposed,
+    recovery: {
+      kind: 'bundle-rebase',
+      bundleBase64: await store.bundleSince(project, decision.revision, {
+        includeRefused: true,
+        have: decision.proposed,
+      }),
+    },
+  }
 }
 
 try {
-  const lifecycle = createSourceLifecycleStore({
-    root, project: PROJECT, context: { format: 'svg', mainFile: 'main.tex' },
-  })
-
-  // The paper exists — without it there is nothing to refuse.
-  const bootstrap = await lifecycle.bootstrap({
-    expectedRevision: null,
-    sourceManifest: ['intro.tex', 'main.tex', 'refs.bib'],
+  const base = await store.acceptRevision({
+    project,
     files: [
-      { path: 'main.tex', content: 'main.tex\n' },
-      { path: 'intro.tex', content: 'intro.tex\n' },
-      { path: 'refs.bib', content: 'refs.bib\n' },
+      { path: 'main.tex', content: 'base main\n' },
+      { path: 'intro.tex', content: 'base intro\n' },
     ],
   })
-  check('the paper exists', () => assert.equal(bootstrap.ok, true, JSON.stringify(bootstrap)))
-  const base = bootstrap.authority.currentRevision
+  const initial = await admitProposal(base)
+  assert.equal(initial.ok, true)
+  assert.equal(await store.head(project), base)
 
-  // Someone else's push lands first, touching only `main.tex`. `submit` wants
-  // the complete manifest's worth of files every time — same "must be told
-  // the whole thing, not asked to remember" property `acceptRevision` has.
-  const landed = await lifecycle.submit({
-    expectedRevision: base,
-    sourceManifest: ['intro.tex', 'main.tex', 'refs.bib'],
+  const accepted = await store.acceptRevision({
+    project,
+    parent: base,
     files: [
-      { path: 'main.tex', content: 'main.tex, edited by someone else\n' },
-      { path: 'intro.tex', content: 'intro.tex\n' },
-      { path: 'refs.bib', content: 'refs.bib\n' },
+      { path: 'main.tex', content: 'accepted main\n' },
+      { path: 'intro.tex', content: 'base intro\n' },
     ],
   })
-  check('the other push lands', () => assert.equal(landed.ok, true, JSON.stringify(landed)))
+  const acceptedResult = await admitProposal(accepted)
+  assert.equal(acceptedResult.ok, true)
+  assert.equal(acceptedResult.currentRevision, accepted)
 
-  // bregman's push, built on the stale `base`, touches a DIFFERENT file
-  // (`intro.tex`, the direction where only this push moved a path) and the
-  // SAME file the other push already moved (`main.tex`, a real conflict).
-  const stale = await lifecycle.submit({
-    expectedRevision: base,
-    sourceManifest: ['intro.tex', 'main.tex', 'refs.bib'],
+  const stale = await store.acceptRevision({
+    project,
+    parent: base,
     files: [
-      { path: 'main.tex', content: 'main.tex, edited by bregman too\n' },
-      { path: 'intro.tex', content: 'intro.tex, edited by bregman\n' },
-      { path: 'refs.bib', content: 'refs.bib\n' },
+      { path: 'main.tex', content: 'stale main\n' },
+      { path: 'intro.tex', content: 'stale intro\n' },
     ],
   })
+  const refused = await admitProposal(stale)
+  assertRefusalContract(refused)
+  assert.equal(refused.currentRevision, accepted)
+  assert.equal(refused.refusedRevision, stale)
+  assert.equal(await store.head(project), accepted,
+    'refusing a stale proposal must not move the accepted source ref')
+  assert.equal(await store.refused(project), stale,
+    'the refused commit must remain reachable through the refused ref')
+  assert.equal((await store.readRevisionFile(stale, 'intro.tex')).toString(), 'stale intro\n',
+    'the refused work must remain readable')
 
-  check('it is still refused — the check is not being relaxed here', () => {
-    assert.equal(stale.ok, false, JSON.stringify(stale))
-    assert.equal(stale.status, 'stale-base')
+  writeFileSync(bundlePath, Buffer.from(refused.recovery.bundleBase64, 'base64'))
+  execFileSync('git', ['--git-dir', gitDir, 'bundle', 'verify', bundlePath], { stdio: 'pipe' })
+  const bundleHeads = execFileSync('git', ['bundle', 'list-heads', bundlePath], {
+    encoding: 'utf8',
   })
+  assert.match(bundleHeads, new RegExp(`${accepted}\\s+refs/tlda/source/${project}`),
+    'the recovery bundle must carry the accepted source ref')
+  assert.match(bundleHeads, new RegExp(`${stale}\\s+refs/tlda/refused/${project}`),
+    'the recovery bundle must carry the refused commit')
 
-  check('a refusal names the commit it refused, so it is not lost', () => {
-    assert.ok(stale.refusedRevision, 'no refusedRevision on the result')
-  })
+  // Counterfactual: refusal alone is not enough. Removing recoverability must
+  // make the contract check fail even though the non-fast-forward remains.
+  assert.throws(
+    () => assertRefusalContract({ ...refused, recovery: null }),
+    /bundle\/rebase recovery path/,
+  )
+  assert.throws(
+    () => assertRefusalContract({ ...refused, refusedRevision: null }),
+    /refusal must name refusedRevision/,
+  )
 
-  check('the refusal carries a per-path account, not a single sentence', () => {
-    assert.ok(Array.isArray(stale.evidence?.classifications), JSON.stringify(stale.evidence))
-  })
-
-  const byPath = Object.fromEntries(stale.evidence.classifications.map(c => [c.path, c]))
-
-  check('and it names the path that only this push touched — a clean rebase, not a conflict', () => {
-    assert.equal(byPath['intro.tex']?.status, 'clean-rebase-candidate',
-      `intro.tex classified as ${JSON.stringify(byPath['intro.tex'])}`)
-  })
-
-  check('— and it names the path both sides actually moved, as the real conflict it is', () => {
-    assert.equal(byPath['main.tex']?.status, 'conflict',
-      `main.tex classified as ${JSON.stringify(byPath['main.tex'])}`)
-  })
-
-  check('a path neither side touched is not mentioned as differing', () => {
-    assert.equal(byPath['refs.bib']?.status, 'clean-rebase-candidate',
-      `refs.bib classified as ${JSON.stringify(byPath['refs.bib'])}`)
-  })
-
-  // The refusal changed nothing: the project still holds what it held.
-  const after = await lifecycle.readAuthority()
-  check('a refused proposal must not move the project', () => {
-    assert.equal(after.currentRevision, landed.authority.currentRevision)
-  })
-
-  // A push that only touches the untouched-by-others path lands, because it
-  // is a clean rebase and the mechanism already knows that from the same
-  // classification this test just asserted.
-  const fine = await lifecycle.submit({
-    expectedRevision: base,
-    sourceManifest: ['intro.tex', 'main.tex', 'refs.bib'],
+  const descendant = await store.acceptRevision({
+    project,
+    parent: accepted,
     files: [
-      { path: 'main.tex', content: 'main.tex\n' },
-      { path: 'intro.tex', content: 'intro.tex, edited by bregman, alone this time\n' },
-      { path: 'refs.bib', content: 'refs.bib\n' },
+      { path: 'main.tex', content: 'accepted main\n' },
+      { path: 'intro.tex', content: 'descendant intro\n' },
     ],
   })
-  check('— and a push with no real conflict lands', () => {
-    assert.equal(fine.ok, true, JSON.stringify(fine))
-    assert.equal(fine.status, 'accepted-clean-rebase')
-  })
+  const descendantResult = await admitProposal(descendant)
+  assert.equal(descendantResult.ok, true)
+  assert.equal(descendantResult.status, 'accepted')
+  assert.equal(descendantResult.currentRevision, descendant)
+  assert.equal(await store.head(project), descendant,
+    'a descendant proposal must accept and move the source ref')
 } finally {
   rmSync(root, { recursive: true, force: true })
 }
 
-console.log(failures === 0 ? 'PASS a refusal that names what differed' : `FAIL a refusal that names what differed (${failures})`)
-process.exit(failures === 0 ? 0 : 1)
+console.log('PASS stale refusal preserves both revisions and a recoverable bundle; descendant accepts')

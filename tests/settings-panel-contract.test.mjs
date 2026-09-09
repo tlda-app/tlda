@@ -29,9 +29,12 @@ test('TOC compact controls setting is live and keeps labelled mode as the defaul
   assert.match(tocTabSource, /useSyncExternalStore\(subscribePref, \(\) => getPref\('toc-controls-compact'\)\)/)
 })
 
-test('TOC state controls use a labelled column or one compact glyph row', () => {
-  assert.match(tocTabSource, /toc-state-controls--compact/)
-  assert.match(documentPanelCss, /\.toc-state-controls \{[\s\S]*flex-direction: column/)
-  assert.match(documentPanelCss, /\.toc-state-controls--compact \{[\s\S]*flex-direction: row;[\s\S]*flex-wrap: nowrap/)
-  assert.match(documentPanelCss, /\.toc-state-controls--compact \.toc-state-control-label \{[\s\S]*display: none/)
+test('TOC keeps its established control order and can compact the state controls', () => {
+  assert.match(tocTabSource, /toc-bottom-controls.*toc-bottom-controls--compact[\s\S]*<PlaceStackNav \/>[\s\S]*<CameraLinkToggle \/>[\s\S]*<JoinVoiceVideoToggle \/>[\s\S]*onToggleWholeDocumentDiff[\s\S]*<AirplaneIcon \/>/)
+  assert.match(documentPanelCss, /\.toc-bottom-controls--compact \.toc-state-control \{[\s\S]*width: 22px;[\s\S]*height: 22px/)
+  assert.match(documentPanelCss, /\.toc-bottom-controls--compact \.toc-state-control-label \{[\s\S]*display: none/)
+})
+
+test('corner controls retain their dormant resting opacity without hover', () => {
+  assert.doesNotMatch(documentPanelCss, /@media \(hover: none\)[\s\S]*\.phone-hl-btn,[\s\S]*\.voice-note-btn,[\s\S]*\.mic-toggle-btn[\s\S]*opacity: var\(--ui-tone-active\)/)
 })

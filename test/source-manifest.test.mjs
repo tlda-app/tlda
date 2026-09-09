@@ -12,9 +12,23 @@ test('named Quarto book output directories are render output', () => {
   assert.equal(isQuartoRenderOutput('lectures/chapter.qmd', 'index.qmd'), false)
 })
 
-test('Quarto freeze directories are render output', () => {
-  assert.equal(isQuartoRenderOutput('_freeze/lectures/chapter/execute-results/html.json', 'index.qmd'), true)
+test('the freeze cache is source, because the server renders from it', () => {
+  assert.equal(isQuartoRenderOutput('_freeze/lectures/chapter/execute-results/html.json', 'index.qmd'), false)
+  assert.equal(isSourceFilePath('_freeze/lectures/chapter/execute-results/html.json', { format: 'qmd', mainFile: 'index.qmd' }), true)
   assert.equal(isQuartoRenderOutput('lectures/_freeze-notes/chapter.qmd', 'index.qmd'), false)
+})
+
+test('every other Quarto render directory is still output', () => {
+  for (const path of [
+    '.quarto/idx/index.json',
+    '_site/index.html',
+    '_book/index.html',
+    '_book-ctd/lectures/chapter.html',
+    'lectures/chapter_cache/html/chunk.rdb',
+    'lectures/chapter_files/figure-html/plot.svg',
+  ]) {
+    assert.equal(isQuartoRenderOutput(path, 'index.qmd'), true, path)
+  }
 })
 
 test('declared main file is source even when its extension is not generic source', () => {

@@ -70,6 +70,7 @@ import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counter
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetIdentity, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent, searchFleet } from '../fleet-data-adapter'
 import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
 import { parseMessageFilter } from '../../shared/fleet-labels.mjs'
+import { threadAgentRequest } from '../fleet/thread-agent-request.mjs'
 // @ts-ignore — vanilla JS module
 import { CANONICAL_REFERENCE_SOURCE, canonicalEventReference, parseCanonicalEventReference, parseCanonicalSearchReference } from '../../shared/canonical-references.mjs'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
@@ -1918,12 +1919,13 @@ function threadWindow(descriptor: any) {
 }
 
 // Mirror what `thread` itself asks the server for, so the card renders the call
-// that was made: an agent read is `agent` plus the empty text query (which the
-// server serves agent-only), a filter read is the normalized message filter,
-// and event types stay unset unless the call named them.
-function threadSearchRequest(descriptor: any, agentId: string | null, currentProject?: string) {
+// that was made: an agent read is the caller/agent conversation, a filter read
+// is the normalized message filter, and event types stay unset unless the call
+// named them.
+function threadSearchRequest(descriptor: any, agent: string | null, currentProject?: string) {
   const view = descriptor?.view || {}
-  const filters: any = { eventOnly: true, historyOnly: true, currentProject, throwOnError: true }
+  const agentRequest = threadAgentRequest(descriptor, agent, currentProject)
+  const filters: any = agentRequest?.filters || { eventOnly: true, historyOnly: true, currentProject, throwOnError: true }
   // `me` is lexically bound to the activity row's caller. Keep the recorded
   // expression unchanged while evaluating it in the environment that issued it.
   if (descriptor?.caller) filters.me = descriptor.caller
@@ -1933,9 +1935,7 @@ function threadSearchRequest(descriptor: any, agentId: string | null, currentPro
   const { since, until, pageSize } = threadWindow(descriptor)
   if (since) filters.since = since
   if (until) filters.before = until
-  if (agentId) {
-    filters.agent = agentId
-  } else {
+  if (!agentRequest) {
     const raw = String(view.filter || descriptor?.filterExpression || '')
     let filterExpression = ''
     try {
@@ -2155,12 +2155,14 @@ function ThreadChatOperationView({
   currentProject,
   host,
   restoreExpansions,
+  forgetExpansion,
 }: {
   descriptor: any
   renderCtx: any
   currentProject?: string
   host: HTMLElement
   restoreExpansions: (root: HTMLElement) => void
+  forgetExpansion: (moreRows: HTMLElement, index: number) => void
 }) {
   const semanticKey = String(descriptor?.semanticKey || '')
   const { since: windowSince, until: windowUntil, pageSize: windowPageSize } = threadWindow(descriptor)
@@ -2177,17 +2179,12 @@ function ThreadChatOperationView({
     setLoading(true)
     setError('')
     try {
-      let agentId: string | null = null
       const view = descriptor?.view || {}
       const agentArg = view.agent || (view.task_id
         ? (await fleetEphemeral('task-by-id', { task_id: view.task_id }))?.task?.agent
         : null)
       if (view.task_id && !view.agent && !agentArg) throw new Error(`Task ${view.task_id} not found`)
-      if (agentArg) {
-        const resolved = await fleetEphemeral('resolve-agent', { agent: agentArg })
-        agentId = resolved?.agent?.id || String(agentArg)
-      }
-      const request = threadSearchRequest(descriptor, agentId, currentProject)
+      const request = threadSearchRequest(descriptor, agentArg ? String(agentArg) : null, currentProject)
       const fetched = await searchFleet(request.query, request.limit, request.filters)
       const events = fetched
         .filter((r: any) => r.source === 'fleet')
@@ -2237,7 +2234,10 @@ function ThreadChatOperationView({
     stopEventPropagation(event)
     const root = viewRef.current
     if (!root) return
-    root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach(moreRows => {
+    root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach((moreRows, index) => {
+      // The row-height change re-renders the anchored list; clear the remembered
+      // fold first so its restore pass does not immediately reopen this middle.
+      forgetExpansion(moreRows, index)
       moreRows.style.display = 'none'
       const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
       if (btn) {
@@ -2246,7 +2246,7 @@ function ThreadChatOperationView({
       }
     })
     root.closest('.thread-shell')?.classList.remove('thread-middle-open')
-  }, [])
+  }, [forgetExpansion])
 
   return (
     <div className="semantic-operation-expanded-shell thread-shell">
@@ -2420,48 +2420,6 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const previousKeysRef = useRef<string[]>([])
   const [geometryVersion, setGeometryVersion] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
-  // A row's own content can grow after it's already positioned -- a search
-  // card's results arrive over the network well after the row was first
-  // measured at "loading..." height. Nothing else here re-measures rows on
-  // their own schedule (the effect below only runs when THIS component
-  // re-renders for an unrelated reason), so a growing card overflows the
-  // translateY slot it was given and overlaps the row below it instead of
-  // pushing it down. Observe every mounted row directly and re-trigger
-  // measurement the moment any of them actually changes size.
-  const rowResizeObserverRef = useRef<ResizeObserver | null>(null)
-  if (!rowResizeObserverRef.current && typeof ResizeObserver !== 'undefined') {
-    // A ResizeObserver delivers an observation the moment observe() is called,
-    // not only when a row resizes -- and the row ref below re-observes every
-    // mounted row on every render, because it is an inline callback whose
-    // identity changes each time, so React detaches and reattaches it. Bumping
-    // geometryVersion unconditionally therefore made each render schedule the
-    // next one: 294 observe() calls in 5s against geometry that did not change
-    // once across 120 samples at 20Hz. Ask whether a row actually moved, using
-    // the same measurement and the same 0.5px threshold as the layout effect
-    // below -- getBoundingClientRect rather than entry.contentRect, for the
-    // reason recorded there. The last height seen per row lives in this
-    // observer's own closure rather than in heightByKeyRef: the effect below
-    // owns that map and writes it on its own schedule, and reading a ref here
-    // would be a ref access during render.
-    const lastObservedHeight = new Map<string, number>()
-    rowResizeObserverRef.current = new ResizeObserver(entries => {
-      let moved = false
-      for (const entry of entries) {
-        const row = entry.target as HTMLElement
-        const key = row.dataset.chatItemKey
-        if (!key) continue
-        const nextHeight = row.getBoundingClientRect().height
-        if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue
-        const previousHeight = lastObservedHeight.get(key)
-        if (previousHeight !== undefined && Math.abs(nextHeight - previousHeight) <= 0.5) continue
-        lastObservedHeight.set(key, nextHeight)
-        moved = true
-      }
-      if (moved) setGeometryVersion(version => version + 1)
-    })
-  }
-  useEffect(() => () => rowResizeObserverRef.current?.disconnect(), [])
-
   const itemKeys = useMemo(() => items.map(item => String(item.key)), [items])
   const itemKeySignature = useMemo(() => itemKeys.join('\u0001'), [itemKeys])
 
@@ -2753,15 +2711,8 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
               <div
                 key={key}
                 ref={(el) => {
-                  const observer = rowResizeObserverRef.current
-                  const prev = rowElsRef.current.get(key)
-                  if (prev && prev !== el) observer?.unobserve(prev)
-                  if (el) {
-                    rowElsRef.current.set(key, el)
-                    observer?.observe(el)
-                  } else {
-                    rowElsRef.current.delete(key)
-                  }
+                  if (el) rowElsRef.current.set(key, el)
+                  else rowElsRef.current.delete(key)
                 }}
                 className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}
                 data-chat-item-key={key}
@@ -2880,6 +2831,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
               currentProject={currentProject}
               host={body}
               restoreExpansions={restorePrettyExpansions}
+              forgetExpansion={(moreRows, index) => {
+                expanded.delete(prettyFoldKey(itemKey, moreRows, index))
+              }}
             />
           : <EditorContext.Provider value={editor}>
             <SemanticChatOperationView
@@ -4829,24 +4783,26 @@ function FleetChatInner({ shape }: { shape: any }) {
 	    return installChatImageRetry(chatLogEl)
 	  }, [chatLogEl])
 
-	  const sendWithFailedRetry = useCallback((to: string, text: string, tempId: string, opts: any = {}, attempt = 1) => {
-	    sendMessage(to, text, { ...opts, _tempId: tempId }).then((result: any) => {
+	  const sendWithFailedRetry = useCallback(async (to: string, text: string, tempId: string, opts: any = {}, attempt = 1): Promise<boolean> => {
+	    try {
+	      const result: any = await sendMessage(to, text, { ...opts, _tempId: tempId })
 	      if (result?.queued) {
 	        updateOptimisticEvent(tempId, { _failed: false, _queued: true }, chatEventBufferKey)
-	        return
+	        return true
 	      }
 	      if (result?.ok) {
 	        updateOptimisticEvent(tempId, { _failed: false, _queued: false }, chatEventBufferKey)
-	        return
+	        return true
 	      }
 	      throw new Error('send failed')
-	    }).catch(() => {
+	    } catch {
 	      if (attempt < 3) {
-	        setTimeout(() => sendWithFailedRetry(to, text, tempId, opts, attempt + 1), 2000 * attempt)
-	      } else {
-	        updateOptimisticEvent(tempId, { _failed: true, _queued: false }, chatEventBufferKey)
+	        await new Promise(resolve => setTimeout(resolve, 2000 * attempt))
+	        return sendWithFailedRetry(to, text, tempId, opts, attempt + 1)
 	      }
-	    })
+	      updateOptimisticEvent(tempId, { _failed: true, _queued: false }, chatEventBufferKey)
+	      return false
+	    }
 	  }, [chatEventBufferKey])
 
 	  // Lightbox: click on chat-image opens full-size overlay
@@ -5592,7 +5548,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       timestamp: new Date().toISOString(),
       read: false,
     }, chatEventBufferKey)
-    void (async () => {
+    return (async () => {
       const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
       if (context) await enrichContextWithSourceLines(context)
       const bullets = consumeBulletContexts()
@@ -5646,7 +5602,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // ONE send for the whole target set. `to` is a filter expression, so the
       // union of the targets is the expression that ORs them — one message, one
       // event, every recipient, instead of N independent sends nothing rejoins.
-	      sendWithFailedRetry(targets.join('|'), text, tempId, sendOpts)
+	      return sendWithFailedRetry(targets.join('|'), text, tempId, sendOpts)
 	    })()
 	  }
 

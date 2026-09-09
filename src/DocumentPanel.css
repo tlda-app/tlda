@@ -1639,13 +1639,6 @@ html[data-theme="dark"] .history-compare-btn.active {
   padding: 2px 8px 6px;
 }
 
-.toc-state-controls {
-  display: flex;
-  flex: 1 0 100%;
-  flex-direction: column;
-  gap: 4px;
-}
-
 .toc-bottom-controls .toc-diff-hint {
   margin: 0;
   padding: 4px 0;
@@ -1701,14 +1694,7 @@ html[data-theme="dark"] .history-compare-btn.active {
   width: 100%;
 }
 
-.toc-state-controls--compact {
-  flex: 0 0 auto;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  gap: 7px;
-}
-
-.toc-state-controls--compact .toc-state-control {
+.toc-bottom-controls--compact .toc-state-control {
   justify-content: center;
   width: 22px;
   height: 22px;
@@ -1718,7 +1704,7 @@ html[data-theme="dark"] .history-compare-btn.active {
   border-radius: 0;
 }
 
-.toc-state-controls--compact .toc-state-control-label {
+.toc-bottom-controls--compact .toc-state-control-label {
   display: none;
 }
 
@@ -2116,7 +2102,7 @@ body.touch-toc-mode:not(.phone-mode) .phone-toc-modal {
   padding: 5px 0;
 }
 
-.phone-toc-modal .toc-state-controls--compact .toc-state-control {
+.phone-toc-modal .toc-bottom-controls--compact .toc-state-control {
   padding: 2px !important;
 }
 
@@ -2493,25 +2479,6 @@ html[data-theme="dark"] .voice-note-btn {
 }
 .mic-toggle-btn { bottom: 82px; }
 .mic-toggle-btn:hover { opacity: var(--ui-tone-active); }
-
-/* A dormant control whose only route to visible is :hover is invisible on a
-   device that cannot hover. These three rest at --ui-tone-dormant (0.2) and
-   escalate to --ui-tone-active only on :hover, so on a touch device they stay
-   at one fifth opacity for the whole session -- present and tappable, which is
-   why the cursor changes over them and nothing appears. Measured on the
-   deployed deck at 1200x834: all three painting, all three at 0.2.
-   The highlighter and the mic are the primary controls that have to work
-   without a keyboard, so hover cannot be the thing that reveals them. The
-   media query is the general rule -- the condition is "hover is unreachable",
-   not "this is an iPad". Position-only overrides for coarse pointers live
-   further down; this is the one place resting opacity is corrected. */
-@media (hover: none) {
-  .phone-hl-btn,
-  .voice-note-btn,
-  .mic-toggle-btn {
-    opacity: var(--ui-tone-active);
-  }
-}
 
 body.phone-mode .mic-toggle-btn {
   bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));

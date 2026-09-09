@@ -304,7 +304,7 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
 
 export function getFleetAgentDirectoryRows(agents: any[], options: FleetAgentDirectoryFormatOptions = {}): FleetAgentDirectoryRowModel[] {
   return agents
-    .filter((agent) => !agent.dead)
+    .filter(fleetAgentListed)
     .map((agent) => toFleetAgentDirectoryRow(agent, options))
     .filter((row) => !!row.exactName)
 }

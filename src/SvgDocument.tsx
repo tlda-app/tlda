@@ -100,6 +100,7 @@ import { setCurrentDocumentInfo, pageSpacing, type SvgDocument } from './svgDocu
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
+import { ClassroomDocViewPlayback } from './overlays/ClassroomDocViewPlayback'
 
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
@@ -1182,6 +1183,9 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
       </div>
       {!IS_CLASSROOM && editorRef.current && (
         <FleetHUD mainEditor={editorRef.current} />
+      )}
+      {IS_CLASSROOM && editorRef.current && (
+        <ClassroomDocViewPlayback mainEditor={editorRef.current} />
       )}
       </div>
       {editorRef.current && (

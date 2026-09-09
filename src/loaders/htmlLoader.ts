@@ -4,6 +4,7 @@ import {
   createShapeId,
 } from 'tldraw'
 import type { SvgPage, SvgDocument } from './types'
+import type { DeckSlide } from './deckLayout'
 
 export interface HtmlPageEntry {
   file: string
@@ -19,6 +20,7 @@ export interface HtmlPageEntry {
   indexv?: number
   tabLabel?: string
   variant?: 'chapter' | 'slides'
+  slides?: DeckSlide[]
   source?: {
     type?: string
     format?: string

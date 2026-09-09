@@ -99,6 +99,12 @@ export interface SvgDocument {
   // from a LaTeX build. It matters here because it looks exactly like `svg` at
   // this layer and is not: it has no synctex, no source map and no proof data.
   format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd' | 'pdf'
+  view?: {
+    kind: 'svg-pages' | 'html-pages' | 'slides' | 'image-pages'
+    capabilities: { presentation: boolean; sourceMapping: boolean; searchableText: boolean }
+  }
+  source?: { format: string; renderer: string; root?: string }
+  documentFormat?: string
   targets?: TargetInfo[]  // present for multi-target projects
   // Markdown parts (notes/scratch) attached to a non-html/markdown project —
   // e.g. a LaTeX project's scratch columns. Rendered as html-page shapes on

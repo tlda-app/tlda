@@ -95,6 +95,7 @@ import {
   unlinkPidfileIfOwnPid,
 } from '../agent-runtime/daemon-guards.mjs'
 import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
+import { rebuildLinkedProject } from '../daemon/project-rebuild.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
 import { actionForSymptom, performNotificationSymptomAction } from '../daemon/notification-symptom-action.mjs'
@@ -118,11 +119,17 @@ import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
-import { sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { listSessionNames, sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { sanitizeSessionName } from '../agent-launch/identity.mjs'
+import { resolvePartialMintRuntime } from '../daemon/partial-mint-runtime-recovery.mjs'
+import { resolvePartialMintPermissionAuthority } from '../daemon/partial-mint-permission-authority.mjs'
 import { markAgentDead, wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
-import { compilePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
-import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
+import { compilePermissionGrant, normalizePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
+import {
+  resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity,
+  resolveLiveSessionIdentityUntil as resolveLiveCodexSessionIdentityUntil,
+} from '../agent-launch/harness/codex.mjs'
 import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
 import {
   applyDaemonGrants,
@@ -829,6 +836,20 @@ async function rpcUnlinkProjectSource({ project, sourceDir }) {
   return result
 }
 
+async function rpcRebuildProject({ project }) {
+  return rebuildLinkedProject(sourceSync, project)
+}
+
+// Republish a revision the project's repository already holds. `project-rebuild`
+// publishes the working tree, so it cannot be used on a checkout somebody else
+// is editing; this one reads the commit from the object database and leaves the
+// tree, the branch and the binding alone.
+async function rpcPublishProjectRevision({ project, revision }) {
+  if (!project) throw new Error('project is required')
+  if (!revision) throw new Error('revision is required')
+  return sourceSync.publishRevision(project, revision)
+}
+
 fs.watchFile(PROJECT_WORLDS_FILE, { interval: 500 }, () => applyProjectWorldOwnership('registry-change'))
 
 const localArtifacts = createLocalArtifacts({
@@ -1083,9 +1104,207 @@ async function mintProcessConfirmedDead(facts) {
   return sessionConfirmedDead(await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET }))
 }
 
+// The bounded evidence a partial mint row can be checked against, in the order
+// the daemon already trusts it: the seat's own process binding, any binding
+// recorded under the same friendly name, and the tmux session the launch recipe
+// would have produced. Each entry names a session to look at; none of them is
+// itself permission to adopt one.
+function partialMintCandidateSessions(facts) {
+  const candidates = []
+  const add = (tmuxSession, source, binding = null) => {
+    if (tmuxSession) candidates.push({ tmuxSession, source, binding })
+  }
+  if (facts.fleetId) {
+    const row = permissionLedger.get(facts.fleetId)
+    if (row) add(row.tmuxSession, 'ledger-fleet-id', row)
+  }
+  if (facts.friendlyName) {
+    for (const row of permissionLedger.listProcessBindings()) {
+      if (row.friendlyName === facts.friendlyName) add(row.tmuxSession, 'ledger-friendly-name', row)
+    }
+    add(`fleet-${sanitizeSessionName(facts.friendlyName)}`, 'launch-recipe-session')
+  }
+  return candidates
+}
+
+function partialMintExpectedIdentity(facts) {
+  const recipe = facts.launchRecipe || {}
+  return {
+    fleetId: facts.fleetId || null,
+    mintId: facts.mintId || null,
+    sessionId: facts.sessionId || null,
+    friendlyName: facts.friendlyName || null,
+    cwd: recipe.cwd || null,
+    harness: recipe.kind || null,
+    model: recipe.modelSpec?.alias || recipe.model || null,
+    envName: facts.envName || ACTIVE_ENV,
+    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+  }
+}
+
+// What the running process says about itself, not what the mint hopes. The
+// probe reads FLEET_ID, TLDA_ENV and FLEET_DAEMON_KEY off the runtime's own
+// argv; the harness resolver reads the session the process has open, PID-owned
+// rather than by launch window; the ledger row supplies the fields neither of
+// those carries. A field nobody observed stays null, so it compares as unknown
+// instead of as agreement.
+async function partialMintObservedIdentity(facts, candidate) {
+  // A ledger row speaks for a runtime only while it is the one row bound to it.
+  // Two rows naming the same tmux session, or a row whose session is not the
+  // one being adopted, is a ledger that has drifted from the box -- and a fleet
+  // id taken from it is then a claim about bookkeeping rather than about the
+  // process. It is still compared, so it can still refuse; it just stops being
+  // able to authorize the adoption by itself.
+  const rowsForSession = permissionLedger.listProcessBindings()
+    .filter(row => row.tmuxSession && row.tmuxSession === candidate.tmuxSession)
+  const binding = candidate.binding || rowsForSession[0] || null
+  const ledgerBindsSingleRuntime = !!binding
+    && rowsForSession.length === 1
+    && binding.tmuxSession === candidate.tmuxSession
+  const harness = binding?.sessionKind || facts.launchRecipe?.kind || null
+  const agent = {
+    id: candidate.probe?.fleetId || binding?.id || facts.fleetId || null,
+    friendly_name: binding?.friendlyName || facts.friendlyName || null,
+    cwd: binding?.cwd || facts.launchRecipe?.cwd || null,
+    registered_at: facts.createdAt || null,
+  }
+  let live = null
+  if (harness === 'codex') {
+    live = await resolveLiveCodexSessionIdentity({
+      agent,
+      tmuxSession: candidate.tmuxSession,
+      tmuxArgs: TMUX_ARGS,
+      tmuxSocket: TMUX_SOCKET,
+      processOwnedOnly: true,
+    })
+  } else if (harness === 'claude') {
+    live = await resolveLiveClaudeSessionIdentity({
+      agent,
+      tmuxSession: candidate.tmuxSession,
+      tmuxArgs: TMUX_ARGS,
+      tmuxSocket: TMUX_SOCKET,
+    })
+  }
+  return {
+    fleetId: candidate.probe?.fleetId || binding?.id || null,
+    mintId: null,
+    sessionId: live?.sessionId || binding?.sessionId || null,
+    sessionPath: live?.jsonlPath || binding?.sessionPath || null,
+    ledgerBindsSingleRuntime,
+    strongFieldSources: {
+      fleetId: candidate.probe?.fleetId ? 'runtime-argv' : (binding?.id ? 'ledger' : null),
+      sessionId: live?.sessionId ? 'harness-runtime' : (binding?.sessionId ? 'ledger' : null),
+    },
+    friendlyName: binding?.friendlyName || null,
+    cwd: binding?.cwd || null,
+    harness,
+    model: binding?.model || null,
+    envName: candidate.probe?.envName || binding?.envName || null,
+    daemonKey: candidate.probe?.daemonKey || binding?.daemonKey || null,
+    permissionGrant: binding?.permissionGrant || null,
+  }
+}
+
+// The one write this path performs, and it is the write the mint was missing:
+// the process facts of a runtime that is already up. `recordProcess` is the
+// same call the launcher's result goes through, so the session facts and the
+// seat binding follow the existing join. Nothing here spawns a process,
+// requests a seat, or asks for a session name.
+// The grant this runtime is bound under, resolved from the two authorities and
+// normalized against this daemon's configuration -- before any write. The
+// ordering matters as much as the answer: `recordProcess` persists the process
+// fact and only then does `bindSeat` read the grant, so a grant rejected after
+// the fact is rejected after the row has already been changed.
+function partialMintPermissionGrant(facts, observed = {}) {
+  const cwd = observed.cwd || facts.processState?.cwd || facts.launchRecipe?.cwd || null
+  const config = withDaemonModelAliases(loadDaemonLaunchConfig(), readDaemonConfigForCwd(cwd))
+  return resolvePartialMintPermissionAuthority({
+    ledgerGrant: observed.permissionGrant || null,
+    ledgerBindsSingleRuntime: !!observed.ledgerBindsSingleRuntime,
+    // The recipe recorded on THIS mint row. `persistentLaunchRecipe` keeps
+    // `permissionGrant` across restarts precisely so a wake can replay the
+    // permissions the mint was issued under.
+    recipeGrant: facts.launchRecipe?.permissionGrant ?? null,
+    normalizeGrant: grant => normalizePermissionGrant(grant, config),
+  })
+}
+
+async function recoverPartialMintRuntime(facts) {
+  const decision = await resolvePartialMintRuntime({
+    facts,
+    expectedIdentity: partialMintExpectedIdentity,
+    candidateSessions: partialMintCandidateSessions,
+    listSessions: () => listSessionNames({ tmuxSocket: TMUX_SOCKET }),
+    probeSession: session => sessionRuntimeState(session, { tmuxSocket: TMUX_SOCKET }),
+    observeRuntimeIdentity: candidate => partialMintObservedIdentity(facts, candidate),
+  })
+  const adopting = decision.action === 'rebind' || decision.action === 'enrich'
+  if (!adopting) {
+    if (decision.action === 'hold') {
+      log.warn(`mint ${facts.friendlyName || facts.mintId}: partial-mint recovery held (${decision.reason})`)
+    }
+    return decision
+  }
+  const observed = decision.observed || {}
+
+  // Before the write, and it refuses rather than defaulting. A runtime nobody
+  // can say what permissions it holds is not one to bind an identity to.
+  const authority = partialMintPermissionGrant(facts, observed)
+  if (!authority.ok) {
+    log.warn(`mint ${facts.friendlyName || facts.mintId}: partial-mint recovery held (${authority.reason})`)
+    return {
+      action: 'hold',
+      reason: authority.reason,
+      session: decision.session,
+      detail: authority.detail || null,
+      examined: decision.examined,
+    }
+  }
+
+  const expected = partialMintExpectedIdentity(facts)
+  const recorded = facts.processState || {}
+  // An enrich fills gaps in the fact that is already there. Every identity
+  // field is taken from the record first, so completing the binding cannot
+  // move the agent onto a different mint, fleet id, name, session or tmux --
+  // and `updateProcessState` replaces the stored JSON wholesale, which is why
+  // the untouched fields have to be carried through explicitly rather than
+  // omitted.
+  const enriching = decision.action === 'enrich'
+  const processFact = {
+    ...recorded,
+    mint_id: recorded.mint_id || facts.mintId,
+    fleet_id: recorded.fleet_id || expected.fleetId || observed.fleetId || null,
+    name: recorded.name || facts.friendlyName || observed.friendlyName || null,
+    tmux_session: enriching ? recorded.tmux_session : decision.session,
+    cwd: recorded.cwd || observed.cwd || expected.cwd || null,
+    harness: recorded.harness || observed.harness || expected.harness || null,
+    model: recorded.model || observed.model || expected.model || null,
+    session_id: recorded.session_id || observed.sessionId || facts.sessionId || null,
+    session_path: recorded.session_path || observed.sessionPath || facts.sessionPath || null,
+    permission_grant: authority.grant,
+    machine_id: recorded.machine_id || MACHINE_ID,
+    env_name: recorded.env_name || ACTIVE_ENV,
+    daemon_key: recorded.daemon_key || `${MACHINE_ID}:${ACTIVE_ENV}`,
+    alive: true,
+  }
+  const rebound = await daemonMintCore.recordProcess(facts.mintId, processFact)
+  log.info(
+    `mint ${facts.friendlyName || facts.mintId}: ${enriching ? 'completed' : 'rebound'} live runtime `
+    + `${processFact.tmux_session} (${decision.reason}, grant from ${authority.source}) without spawning`,
+  )
+  return {
+    action: enriching ? 'enriched' : 'rebound',
+    reason: decision.reason,
+    session: processFact.tmux_session,
+    grantSource: authority.source,
+    facts: rebound,
+  }
+}
+
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
   envName: ACTIVE_ENV,
+  recoverExistingRuntime: recoverPartialMintRuntime,
   registrationDeadlineMs: getMintRegistrationDeadlineMs(),
   processAlive: mintProcessAlive,
   launchProcess: async params => {
@@ -1106,7 +1325,7 @@ daemonMintCore = createDaemonMintCore({
     // In particular, do not put the global session-tree fallback on the mint's
     // commit path: under machine load that synchronous walk held process_state
     // and the permission grant unwritten for minutes after the agent logged in.
-    void resolveLiveCodexSessionIdentity({
+    void resolveLiveCodexSessionIdentityUntil({
       agent: {
         id: processFact.fleet_id || params.fleet_id || null,
         friendly_name: processFact.name || params.name || null,
@@ -1117,6 +1336,8 @@ daemonMintCore = createDaemonMintCore({
       tmuxArgs: TMUX_ARGS,
       tmuxSocket: TMUX_SOCKET,
       processOwnedOnly: true,
+      deadlineMs: getMintRegistrationDeadlineMs(),
+      isProcessAlive: () => mintProcessAlive({ processState: processFact }),
     }).then(async live => {
       if (!live?.sessionId) return
       await daemonMintCore.recordSession(params.mint_id, {
@@ -1157,6 +1378,7 @@ daemonMintCore = createDaemonMintCore({
 const wakeMint = createDaemonWakeCore({
   store: mintStore,
   targetDaemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+  recoverExistingRuntime: recoverPartialMintRuntime,
   retryPolicy: facts => ({
     attempts: 6,
     delayMs: 100,
@@ -1399,6 +1621,34 @@ async function rpcMint(params = {}) {
 }
 
 async function rpcWake(params = {}) {
+  const identifier = params.mint_id || params.mintId || params.fleet_id || params.fleetId || params.name
+  const facts = mintStore.resolve(identifier)
+  if (
+    facts?.processState?.harness === 'codex'
+    && !facts.joinedAt
+    && await mintProcessAlive(facts)
+  ) {
+    const live = await resolveLiveCodexSessionIdentityUntil({
+      agent: {
+        id: facts.fleetId || null,
+        friendly_name: facts.friendlyName || null,
+        cwd: facts.processState.cwd,
+        registered_at: facts.createdAt,
+      },
+      tmuxSession: facts.processState.tmux_session,
+      tmuxArgs: TMUX_ARGS,
+      tmuxSocket: TMUX_SOCKET,
+      processOwnedOnly: true,
+      deadlineMs: getMintRegistrationDeadlineMs(),
+      isProcessAlive: () => mintProcessAlive(facts),
+    })
+    if (live?.sessionId) {
+      await daemonMintCore.recordSession(facts.mintId, {
+        session_id: live.sessionId,
+        session_path: live.jsonlPath || null,
+      })
+    }
+  }
   return wakeMint(params)
 }
 
@@ -1504,6 +1754,8 @@ function startLocalLifecycleRpc() {
           spawn: agentLauncher.handlers.spawn,
           'project-source-link': rpcLinkProjectSource,
           'project-source-unlink': rpcUnlinkProjectSource,
+          'project-rebuild': rpcRebuildProject,
+          'project-publish-revision': rpcPublishProjectRevision,
           'project-git-remote': ({ project, operation, ...params }) => sourceSync.remoteOperation(project, operation, params),
         }
         const handler = handlers[op]

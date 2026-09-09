@@ -10,10 +10,11 @@ import { createGitSyncManager } from './git-sync-manager.mjs'
 
 function testWatcher() {
   const watcher = new EventEmitter()
-  watcher.added = []
-  watcher.removed = []
-  watcher.add = paths => watcher.added.push(...paths)
-  watcher.unwatch = async paths => watcher.removed.push(...paths)
+  watcher.watch = (root, onChange) => {
+    watcher.root = root
+    watcher.change = onChange
+    return watcher
+  }
   watcher.close = async () => {}
   return watcher
 }
@@ -46,13 +47,13 @@ test('bound working-copy event settles through the one Git proposal path', async
   const watcher = testWatcher()
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-a', server: 'http://unused.test',
-    remoteUrlFor: () => remote, quietMs: 10, watch: () => watcher,
+    remoteUrlFor: () => remote, quietMs: 10, watch: watcher.watch,
     log: { info() {}, warn(value) { warnings.push(String(value)) }, error(value) { warnings.push(String(value)) } },
   })
   manager.bindSource('paper', checkout)
   await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
   writeFileSync(join(checkout, 'main.tex'), 'settled\n')
-  watcher.emit('change', join(checkout, 'main.tex'))
+  watcher.change('change', 'main.tex')
   const deadline = Date.now() + 30000
   let refs = ''
   while (Date.now() < deadline) {
@@ -344,4 +345,81 @@ test('a restart submits an edit made while the daemon was down, and submits noth
     'a restart with nothing outstanding submitted a revision anyway',
   )
   await third.closeAll()
+})
+
+test('concurrent starts share one initialization and one watcher', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-concurrent-start-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'paper.git')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+
+  let releaseEnsureRepo
+  let enteredEnsureRepo
+  const ensureRepoEntered = new Promise(resolve => { enteredEnsureRepo = resolve })
+  const ensureRepoGate = new Promise(resolve => { releaseEnsureRepo = resolve })
+  let delayed = false
+  let remoteAdds = 0
+  let watchers = 0
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-concurrent', server: 'http://unused.test',
+    remoteUrlFor: () => remote,
+    execFile: async (file, args, options) => {
+      if (!delayed && args[0] === 'rev-parse' && args[1] === '--git-dir') {
+        delayed = true
+        enteredEnsureRepo()
+        await ensureRepoGate
+      }
+      if (args[0] === 'remote' && args[1] === 'add') remoteAdds += 1
+      return execFile(file, args, options)
+    },
+    watch: (...args) => {
+      watchers += 1
+      return testWatcher().watch(...args)
+    },
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
+
+  const first = manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  await ensureRepoEntered
+  const second = manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  releaseEnsureRepo()
+  await Promise.all([first, second])
+
+  assert.equal(remoteAdds, 1)
+  assert.equal(watchers, 1)
+  await manager.closeAll()
+})
+
+test('a rejected start clears its reservation so a later call can retry', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-start-retry-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'paper.git')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+
+  let remoteLists = 0
+  let watchers = 0
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-retry', server: 'http://unused.test',
+    remoteUrlFor: () => remote,
+    execFile: async (file, args, options) => {
+      if (args[0] === 'remote' && args.length === 1 && ++remoteLists === 1) throw new Error('synthetic remote failure')
+      return execFile(file, args, options)
+    },
+    watch: (...args) => {
+      watchers += 1
+      return testWatcher().watch(...args)
+    },
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
+
+  await assert.rejects(manager.sync([{ name: 'paper', mainFile: 'main.tex' }]), /synthetic remote failure/)
+  await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+
+  assert.equal(remoteLists, 2)
+  assert.equal(watchers, 1)
+  await manager.closeAll()
 })

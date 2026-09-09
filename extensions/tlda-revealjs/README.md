@@ -9,13 +9,13 @@ It supplies the RevealJS defaults that tlda's `slides` document format expects.
 Create a new presentation from the included template.
 
 ```sh
-quarto use template davidahirshberg/quarto-tlda-revealjs
+quarto use template tlda-labs/quarto-tlda-revealjs
 ```
 
 Or add the format to an existing Quarto project.
 
 ```sh
-quarto add davidahirshberg/quarto-tlda-revealjs
+quarto add tlda-labs/quarto-tlda-revealjs
 ```
 
 Then select it in the document front matter. You can override ordinary
