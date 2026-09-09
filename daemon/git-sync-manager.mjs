@@ -1,4 +1,3 @@
-import chokidar from 'chokidar'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFile as execFileCb } from 'node:child_process'
@@ -9,15 +8,28 @@ import { createRemoteGitBridge } from './remote-git-bridge.mjs'
 import { historySeedRef } from '../shared/history-seed-ref.mjs'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
 
-const execFile = promisify(execFileCb)
+const defaultExecFile = promisify(execFileCb)
+const watchSourceTree = (root, onChange) => fs.watch(root, { recursive: true, persistent: true }, onChange)
+
+export function createRuntimeSourceWatcher({ sourceDir, watchedMembers, note, watch = watchSourceTree }) {
+  return watch(sourceDir, (_eventType, filename) => {
+    if (filename == null) {
+      note(watchedMembers.values().next().value || path.join(sourceDir, '__tlda_ambiguous_source_event__'))
+      return
+    }
+    const file = path.resolve(sourceDir, String(filename))
+    if (watchedMembers.has(file)) note(file)
+  })
+}
 
 function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = chokidar.watch, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile = defaultExecFile, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
+  const starts = new Map()
 
   function load() { try { return JSON.parse(fs.readFileSync(bindingsFile, 'utf8')) || {} } catch { return {} } }
   function save(value) {
@@ -98,8 +110,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return { project, ref, revision }
   }
 
-  async function start(item) {
-    if (runtimes.has(item.project)) return runtimes.get(item.project)
+  async function initialize(item) {
     await ensureRepo(item)
     let runtime
     const sync = createGitProjectSync({
@@ -155,10 +166,6 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     }
     async function refreshWatchedMembers() {
       const next = new Set((await sync.members()).map(file => path.join(item.sourceDir, file)))
-      const added = [...next].filter(file => !watchedMembers.has(file))
-      const removed = [...watchedMembers].filter(file => !next.has(file))
-      if (added.length) watcher.add(added)
-      if (removed.length) await watcher.unwatch(removed)
       watchedMembers.clear()
       for (const file of next) watchedMembers.add(file)
     }
@@ -233,11 +240,12 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       onRemoteSettled: () => cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
       log,
     }) : null
-    watcher = watch([], {
-      ignoreInitial: true,
-      persistent: true,
+    watcher = createRuntimeSourceWatcher({
+      sourceDir: item.sourceDir,
+      watchedMembers,
+      note: file => cluster.note(file),
+      watch,
     })
-    for (const event of ['add', 'change', 'unlink']) watcher.on(event, file => cluster.note(file))
     watcher.on('error', error => log.warn(`${item.project}: source watcher failed: ${error.message}`))
     const remoteTimer = remoteBridge ? setInterval(
       () => remoteBridge.poll().catch(error => log.warn(`${item.project}: remote Git poll failed: ${error.message}`)),
@@ -251,11 +259,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     // Re-derive what the working tree says, once, at startup.
     //
     // An edit made while this daemon was down reaches nothing otherwise. The
-    // watcher is constructed `ignoreInitial: true`, and `refreshWatchedMembers`
-    // re-adds every member through `watcher.add(added)` — one argument, so
-    // chokidar's `_internal` is undefined, `initialAdd` is true, and
-    // `!(initialAdd && ignoreInitial)` suppresses the event (chokidar 5.0.0,
-    // handler.js:395). So no `add` fires, no settle runs, and `recover()` cannot
+    // The watcher starts after the edit, so no event fires and recover() cannot
     // help: it only re-pushes a revision already at `localRef`, and the missed
     // edit never became one. The debouncer is pure memory, so anything pending
     // when the process died is gone too.
@@ -273,6 +277,18 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     await settleEditCluster()
     if (remoteBridge) await remoteBridge.poll()
     return runtime
+  }
+
+  function start(item) {
+    if (runtimes.has(item.project)) return Promise.resolve(runtimes.get(item.project))
+    if (starts.has(item.project)) return starts.get(item.project)
+    const starting = Promise.resolve().then(() => initialize(item))
+    starts.set(item.project, starting)
+    starting.then(
+      () => starts.delete(item.project),
+      () => starts.delete(item.project),
+    )
+    return starting
   }
 
   function bindSource(project, sourceDir, metadata = {}) {
@@ -388,6 +404,50 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return result
   }
 
+  /**
+   * Publish a revision that already exists in the project's repository.
+   *
+   * `submit` publishes the working tree: it settles the edit cluster, commits
+   * what is there, and pushes the commit it just made. That is the right thing
+   * when someone has edited files, and the wrong thing when the revision to
+   * publish is one git already holds -- because reaching it through `submit`
+   * would first have to put it in the working tree, which means touching a
+   * checkout that belongs to somebody else.
+   *
+   * This reads the commit out of the object database instead, so the working
+   * tree, the branch, the index and the binding are all untouched, and a dirty
+   * checkout is not an obstacle. `pushRevision` is the same call `submit` ends
+   * at; the difference is only which revision it is handed.
+   */
+  async function publishRevision(project, revision) {
+    if (!revision) throw new Error('publishRevision requires a revision')
+    const item = record(project)
+    if (!item) throw new Error(`project ${project} is not bound on this daemon`)
+    const runtime = await start(item)
+    // Fail on a revision this repository does not hold, rather than pushing a
+    // ref that resolves to something else. `^{commit}` is the load-bearing
+    // part: without it a tag or a tree of the same name would satisfy the
+    // check and then publish as something other than a commit.
+    try {
+      await execFile('git', ['cat-file', '-e', `${revision}^{commit}`], { cwd: item.sourceDir })
+    } catch {
+      throw new Error(`revision ${revision} is not present in the repository bound to ${project}`)
+    }
+    // `exact`: publish this commit or nothing. Without it the server's
+    // ancestry rule turns a republication into a merge -- the accepted head
+    // combined with the named revision, published as a commit nobody asked
+    // for and authored as the checkout's owner. Measured on a real project
+    // before this option existed.
+    const result = await runtime.sync.pushRevision(revision, { forceRebuild: true, exact: true })
+    if (result?.status === 'WrongHead') {
+      throw new Error(
+        `refusing to publish ${revision.slice(0, 12)} for ${project}: the server's accepted head is ` +
+        `${String(result.head).slice(0, 12)} and this revision does not descend from it. Nothing was published.`,
+      )
+    }
+    return result
+  }
+
   async function remoteOperation(project, operation, params = {}) {
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
@@ -477,6 +537,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     standOnWorkBranch,
     remoteOperation,
     submit,
+    publishRevision,
     pushHistorySeed,
     queuePaths,
     sourceFileForAbsolutePath,

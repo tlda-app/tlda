@@ -1,16 +1,10 @@
 # Image Toggle
 
-> **Fair warning:** This was vibe-coded with Claude Code. The author has not read the source.
-
 A Quarto filter for scrollytelling figures. Create multi-step image sequences where text on one side drives image changes on the other.
 
 ## Installation
 
-```bash
-quarto add davidahirshberg/quarto-image-toggle
-```
-
-Or copy the `image-toggle/` directory into your project's `_extensions/` folder.
+Copy the `image-toggle/` directory into your project's `_extensions/` folder.
 
 ## Usage
 

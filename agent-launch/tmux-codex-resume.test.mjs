@@ -15,6 +15,7 @@ test('Codex prompt injection ignores startup warnings in a resumed transcript', 
     if (command === 'capture-pane') return { stdout: pane }
     assert.equal(command, 'send-keys')
     sent.push(args)
+    if (args.at(-1) === 'C-u') pane = pane.replace(/›[^\n]*$/, '› ')
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
     if (args.at(-1) === 'Enter' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
@@ -46,6 +47,7 @@ test('Codex prompt injection dismisses the update dialog before kickoff', async 
     assert.equal(command, 'send-keys')
     sent.push(args)
     if (args.at(-1) === 'Enter' && pane.includes('Update available!') && sent.some(call => call.at(-1) === '2')) pane = '› Summarize recent commits'
+    if (args.at(-1) === 'C-u') pane = pane.replace(/›[^\n]*(?=\n|$)/g, '› ')
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
     if (args.at(-1) === 'Enter' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
@@ -78,6 +80,7 @@ test('Codex prompt injection ignores an update dialog left in scrollback', async
     if (command === 'capture-pane') return { stdout: pane }
     assert.equal(command, 'send-keys')
     sent.push(args)
+    if (args.at(-1) === 'C-u') pane = pane.replace(/›[^\n]*$/, '› ')
     const literalIndex = args.indexOf('-l')
     if (literalIndex >= 0) pane += args[literalIndex + 1]
     if (args.at(-1) === 'Enter' && pane.includes(prompt)) pane += '\n\n• Working (0s • esc to interrupt)'
@@ -95,7 +98,7 @@ test('Codex prompt injection ignores an update dialog left in scrollback', async
   assert.equal(sent.some(args => args.at(-1) === '2'), false)
 })
 
-test('Codex prompt injection retries Enter until the pasted kickoff is submitted', async () => {
+test('Codex prompt injection does not redeliver when the submitted kickoff remains in transcript', async () => {
   const prompt = 'Call login() and check your inbox.'
   let pane = '› Summarize recent commits'
   let enterCount = 0
@@ -106,7 +109,7 @@ test('Codex prompt injection retries Enter until the pasted kickoff is submitted
     if (literalIndex >= 0) pane += args[literalIndex + 1]
     if (args.at(-1) === 'Enter') {
       enterCount += 1
-      if (enterCount === 2) pane += '\n\n• Working (0s • esc to interrupt)'
+      pane += '\n\n› Ask Codex to do anything'
     }
     return { stdout: '' }
   }
@@ -118,5 +121,215 @@ test('Codex prompt injection retries Enter until the pasted kickoff is submitted
   })
 
   assert.equal(delivered, true)
-  assert.equal(enterCount, 2)
+  assert.equal(enterCount, 1)
+
+  let legacyPane = `› ${prompt}`
+  let legacyEnterCount = 0
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    legacyEnterCount += 1
+    legacyPane += '\n\n› Ask Codex to do anything'
+    if (!legacyPane.includes(prompt.slice(0, 48))) break
+  }
+  assert.equal(legacyEnterCount, 3, 'the former whole-pane marker check resubmits against retained transcript')
+})
+
+test('Codex prompt injection observes Working after one Enter without sending more input', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = '› Summarize recent commits'
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: pane }
+    assert.equal(command, 'send-keys')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter') {
+      enterCount += 1
+      pane += '\n\n• Working (0s • esc to interrupt)'
+    }
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 1000,
+    tmuxExec,
+    sleep: async () => {},
+  })
+
+  assert.equal(delivered, true)
+  assert.equal(enterCount, 1)
+})
+
+test('Codex prompt injection waits for model loading to finish before one Enter', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = 'model: loading\n› Summarize recent commits'
+  let loadingCaptures = 0
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') {
+      if (enterCount === 0 && pane.includes(prompt) && pane.includes('model: loading')) {
+        loadingCaptures += 1
+        if (loadingCaptures === 3) pane += '\n\ngpt-5.6-sol default · ~/work/tlda'
+      }
+      return { stdout: pane }
+    }
+    assert.equal(command, 'send-keys')
+    if (args.at(-1) === 'C-u') pane = pane.replace(/›[^\n]*(?=\n|$)/g, '› ')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane = pane.replace(/›[^\n]*(?=\n|$)/g, (line) => line + args[literalIndex + 1])
+    if (args.at(-1) === 'Enter') {
+      assert.equal(pane.includes('gpt-5.6-sol default ·'), true)
+      enterCount += 1
+      pane += '\n\n• Working (0s • esc to interrupt)'
+    }
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 1000,
+    tmuxExec,
+    sleep: async () => {},
+  })
+
+  assert.equal(delivered, true)
+  assert.equal(loadingCaptures, 3)
+  assert.equal(enterCount, 1)
+})
+
+test('Codex prompt injection trusts the live ready footer over stale model-loading text', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = 'model: loading\n\n› Summarize recent commits\n\ngpt-5.6-sol default · ~/work/tlda'
+  assert.equal(pane.includes('model: loading'), true, 'the former whole-pane readiness check remains red')
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: pane }
+    assert.equal(command, 'send-keys')
+    if (args.at(-1) === 'C-u') pane = pane.replace(/›[^\n]*(?=\n|$)/g, '› ')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane = pane.replace(/›[^\n]*(?=\n|$)/g, (line) => line + args[literalIndex + 1])
+    if (args.at(-1) === 'Enter') {
+      enterCount += 1
+      pane += '\n\n› Ask Codex to do anything'
+    }
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 1000,
+    tmuxExec,
+    sleep: async () => {},
+  })
+
+  assert.equal(delivered, true)
+  assert.equal(enterCount, 1)
+})
+
+test('Codex prompt injection does not trust stale ready text over the live loading status', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = 'gpt-5.6-sol default · ~/work/tlda\n\n› Summarize recent commits\n\nmodel: loading'
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: pane }
+    assert.equal(command, 'send-keys')
+    if (args.at(-1) === 'C-u') pane = pane.replace(/›[^\n]*(?=\n|$)/g, '› ')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane = pane.replace(/›[^\n]*(?=\n|$)/g, (line) => line + args[literalIndex + 1])
+    if (args.at(-1) === 'Enter') enterCount += 1
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 20,
+    tmuxExec,
+    sleep: async () => {},
+  })
+
+  assert.equal(delivered, false)
+  assert.equal(enterCount, 0)
+})
+
+test('Codex prompt injection does not press Enter if the kickoff leaves the composer while loading', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = 'model: loading\n› Summarize recent commits'
+  let pastedCaptures = 0
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') {
+      if (pane.includes(prompt)) {
+        pastedCaptures += 1
+        if (pastedCaptures === 2) pane = 'model: loading\n› Different input'
+      }
+      return { stdout: pane }
+    }
+    assert.equal(command, 'send-keys')
+    if (args.at(-1) === 'C-u') pane = pane.replace(/›[^\n]*$/, '› ')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter') enterCount += 1
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 1000,
+    tmuxExec,
+    sleep: async () => {},
+  })
+
+  assert.equal(delivered, false)
+  assert.equal(enterCount, 0)
+})
+
+test('Codex prompt injection accepts a kickoff that completes before the post-Enter capture', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = '› Ask Codex to do anything'
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: pane }
+    assert.equal(command, 'send-keys')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter') {
+      enterCount += 1
+      pane = '› Ask Codex to do anything'
+    }
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 1000,
+    tmuxExec,
+    sleep: async () => {},
+  })
+
+  assert.equal(delivered, true)
+  assert.equal(enterCount, 1)
+})
+
+test('Codex prompt injection does not infer delivery from a failed post-Enter capture', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  let pane = '› Ask Codex to do anything'
+  let failCapture = false
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') {
+      if (failCapture) throw new Error('capture failed')
+      return { stdout: pane }
+    }
+    assert.equal(command, 'send-keys')
+    const literalIndex = args.indexOf('-l')
+    if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter') {
+      enterCount += 1
+      failCapture = true
+    }
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 10,
+    tmuxExec,
+    sleep: async () => new Promise(resolve => setTimeout(resolve, 1)),
+  })
+
+  assert.equal(delivered, false)
+  assert.equal(enterCount, 1)
 })

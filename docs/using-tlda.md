@@ -68,8 +68,8 @@ you do not create or manage them separately.
 From an existing Git working copy, pass its document root or roots:
 
 ```sh
-cd /path/to/eiv-paper
-tlda project link eiv-paper least-squares.tex
+cd /path/to/my-paper
+tlda project link my-paper paper.tex
 ```
 
 Linking seeds the version wheel from the current working copy's Git history. By
@@ -77,7 +77,7 @@ default the seed ends at the checked-out branch's `HEAD`. Positional paths are
 document roots. Use `--version branch@commit` to choose another endpoint:
 
 ```sh
-tlda project link eiv-paper least-squares.tex supplement.tex \
+tlda project link my-paper paper.tex supplement.tex \
   --version revisions@0b77278
 ```
 
@@ -106,7 +106,7 @@ tlda project link proof-notes README.md
 `tlda project add` puts another document into a project without relinking it:
 
 ```sh
-cd /path/to/eiv-paper
+cd /path/to/my-paper
 tlda project add supplement.tex
 ```
 
@@ -166,7 +166,7 @@ to a different local path on one machine fails without
 changing the existing binding. Detach the exact source first:
 
 ```sh
-tlda project unlink eiv-paper /path/to/eiv-paper/least-squares.tex
+tlda project unlink my-paper /path/to/my-paper/paper.tex
 ```
 
 When you move an existing local tlda project to a new server, linking carries
@@ -221,8 +221,8 @@ the record is the project's revision history on the server rather than any log.
 a real branch of your own repository:
 
 ```sh
-cd /path/to/eiv-paper
-tlda project merge eiv-paper
+cd /path/to/my-paper
+tlda project merge my-paper
 ```
 
 tlda's copy of your paper is a filtered rewrite of your history, so it shares no
@@ -404,11 +404,11 @@ form works in chat, delegation, and reports.
 Search combines literal text with scoped filters:
 
 ```text
-from:skip "compactness"
-agent:(chief | todd) since:2d
+from:alice "compactness"
+agent:(reviewer | writer) since:2d
 type:chat before:1d
-skip <> writer
-chief~2 "deployment"
+alice <> writer
+reviewer~2 "deployment"
 ```
 
 Useful scopes:
@@ -420,7 +420,7 @@ Useful scopes:
 - `me` resolves to the current identity.
 - `A <> B` means messages between `A` and `B`.
 - Parenthesized agent expressions support `|`, `&`, and `!`, as in
-  `agent:(chief | todd)` or `agent:(chief & !todd)`.
+  `agent:(reviewer | writer)` or `agent:(reviewer & !writer)`.
 
 An agent lineage includes its successive holders:
 
@@ -501,7 +501,7 @@ add named environments, project-local model and permission defaults, specialist
 roles, lane guidance, skill gates, bots, editor and voice preferences, and
 separate stable and testing worlds.
 
-Skip’s setup has this shape:
+A full setup can have this shape:
 
 ```text
 machine daemon configuration
@@ -518,13 +518,10 @@ machine daemon configuration
 project-local .tlda-daemon.yaml
 └── project model and permission defaults
 
-project guidance and global lane sources
-├── historian
-├── librarian
-├── tester
-├── operations
-├── chief
-└── optional advocate
+project guidance
+├── writer
+├── reviewer
+└── operator
 
 qualification rules
 └── tool/file skill gates
@@ -641,15 +638,14 @@ Managed bots live in `~/.config/tlda/bots.yaml`:
 
 ```yaml
 bots:
-  todd:
-    script: /Users/you/work/tlda-bots/todd/todd.mjs
-  teacher:
-    script: /absolute/path/to/teacher-bot.mjs
-    machine_id: mini
+  coordinator:
+    script: /absolute/path/to/coordinator-bot.mjs
+  build-checker:
+    script: /absolute/path/to/build-checker-bot.mjs
 environments:
   testing:
-    - todd
-    - teacher
+    - coordinator
+    - build-checker
 ```
 
 Each bot has a script and may select a machine. Optional environment values are
@@ -684,28 +680,8 @@ an agent-shell repair command.
 a configuration fault. Ordinary agents also use named tmux sessions, but they
 are not launchd-supervised and remain stopped until an explicit daemon wake.
 
-For the first rollout, apply only the disposable testing bot from the owner's
-GUI session:
-
-```bash
-tlda config apply --only com.tlda.bot.nobody.testing
-tlda --env testing bot status nobody
-```
-
-The status must show `running + supervised` and the tmux session
-`fleet-bot-nobody_testing`. Kill the pid recorded in
-`~/.config/tlda/nobody.testing.pid`, then check status again: the pid must change,
-the tmux name must remain the same, and the state must still be
-`running + supervised`. If apply fails, stop at its reported rollback result and
-inspect that output before applying any other label.
-
 Ordinary CLI preferences such as browser selection live in
 `~/.config/tlda/cli.yaml`. Before changing local configuration, confirm the
 active environment with `tlda system`, the daemon's status, the effective
 profiles in `tlda agent` help, and bot resolution with `tlda bot list`. Keep
 secrets out of daemon and bot YAML.
-
-See [Current main architecture](current-main-architecture.md) for the system
-boundaries. The
-[permissions implementation contract](permissions-implementation-contract.md)
-defines the internal resolution and persistence rules.

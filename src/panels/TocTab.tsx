@@ -627,22 +627,10 @@ export function TocTab({ query = '' }: { query?: string }) {
           {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
         </div>
       )}
-      <div className="toc-bottom-controls">
-        <div className={`toc-state-controls${compactControls ? ' toc-state-controls--compact' : ''}`}>
-          <button
-            className={`toc-diff-hint toc-state-control${airplaneState === 'ready' ? ' toc-state-control--active' : ''}${airplaneState === 'error' ? ' toc-state-control--error' : ''}`}
-            type="button"
-            onClick={toggleAirplaneMode}
-            disabled={airplaneState === 'loading' || offlineProjects.length === 0}
-            title={airplaneError || (airplaneState === 'ready' ? 'Turn Airplane mode off' : 'Cache this project for offline reading')}
-            aria-pressed={airplaneState === 'ready'}
-          >
-            <AirplaneIcon />
-            <span className="toc-state-control-label">{airplaneState === 'loading' ? `Caching ${airplaneProgress.complete}/${airplaneProgress.total}` : airplaneState === 'ready' ? 'Ready offline' : airplaneState === 'error' ? 'Offline failed' : 'Airplane mode'}</span>
-          </button>
-          <CameraLinkToggle />
-          <JoinVoiceVideoToggle />
-        </div>
+      <div className={`toc-bottom-controls${compactControls ? ' toc-bottom-controls--compact' : ''}`}>
+        <PlaceStackNav />
+        <CameraLinkToggle />
+        <JoinVoiceVideoToggle />
         {ctx?.onToggleWholeDocumentDiff && (
           <button
             className={`toc-diff-hint history-compare-btn${ctx.wholeDocumentDiffVisible ? ' active' : ''}`}
@@ -654,7 +642,17 @@ export function TocTab({ query = '' }: { query?: string }) {
             {ctx.wholeDocumentDiffLoading ? 'Diffing…' : ctx.wholeDocumentDiffError ? 'Diff failed' : ctx.wholeDocumentDiffVisible ? 'Hide diff' : 'Show diff'}
           </button>
         )}
-        <PlaceStackNav />
+        <button
+          className={`toc-diff-hint toc-state-control${airplaneState === 'ready' ? ' toc-state-control--active' : ''}${airplaneState === 'error' ? ' toc-state-control--error' : ''}`}
+          type="button"
+          onClick={toggleAirplaneMode}
+          disabled={airplaneState === 'loading' || offlineProjects.length === 0}
+          title={airplaneError || (airplaneState === 'ready' ? 'Turn Airplane mode off' : 'Cache this project for offline reading')}
+          aria-pressed={airplaneState === 'ready'}
+        >
+          <AirplaneIcon />
+          <span className="toc-state-control-label">{airplaneState === 'loading' ? `Caching ${airplaneProgress.complete}/${airplaneProgress.total}` : airplaneState === 'ready' ? 'Ready offline' : airplaneState === 'error' ? 'Offline failed' : 'Airplane mode'}</span>
+        </button>
       </div>
       {/* HideDefsToggle removed */}
     </div>

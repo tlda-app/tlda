@@ -17,8 +17,8 @@ The `[env]` blocks now carry only what cannot live in a file:
 - `TLDA_DEPLOYMENT` — which directory here to install. A pointer cannot live
   inside the thing it points at.
 - `PORT`, `NODE_ENV` — the platform sets these before the app runs.
-- Secrets (`TLDA_TOKEN_READ`, `TLDA_TOKEN_RW`, `DEEPGRAM_API_KEY`, `TS_AUTHKEY`,
-  `FEELINGS_RCLONE_CONF_B64`) — these come from `fly secrets` and are never
+- Secrets (`TLDA_TOKEN_READ`, `TLDA_TOKEN_RW`, `DEEPGRAM_API_KEY`, `TS_AUTHKEY`) —
+  these come from `fly secrets` and are never
   written to a file in the image.
 
 `TLDA_ENV` is no longer set per deployment: each `daemon.yaml` below declares

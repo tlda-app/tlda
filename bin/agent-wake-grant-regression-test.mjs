@@ -46,13 +46,15 @@ const { runFleetSpawn } = await import(`../cli/tlda.mjs?agent-wake-grant-test=${
 const { MintStore } = await import('../daemon/mint-store.mjs')
 const { createPermissionLedger } = await import('../agent-launch/permission-ledger.mjs')
 
-async function recordAgent({ friendlyName, fleetId, cwd, ledgerGrant }) {
-  const mintStore = new MintStore(join(configDir, 'daemon-mints.sqlite'))
+async function recordAgent({ friendlyName, fleetId, cwd, metadata, ledgerGrant }) {
+  const mintStore = new MintStore(join(configDir, 'daemon-mints.sqlite'), { defaultEnvName: 'testing' })
   try {
     const mintId = `mint-${friendlyName}`
     mintStore.ensure(mintId)
     mintStore.setFact(mintId, 'fleet_id', fleetId)
     mintStore.setFact(mintId, 'friendly_name', friendlyName)
+    mintStore.setFact(mintId, 'env_name', 'testing')
+    mintStore.setFact(mintId, 'metadata', metadata)
     mintStore.setFact(mintId, 'launch_recipe', { cwd })
   } finally {
     mintStore.close()
@@ -66,19 +68,14 @@ async function recordAgent({ friendlyName, fleetId, cwd, ledgerGrant }) {
   }
 }
 
-async function wakeAndCapture(agent) {
+async function wakeAndCapture(friendlyName) {
   let captured = null
-  await runFleetSpawn([agent.friendly_name], {
+  await runFleetSpawn([friendlyName], {
     configDir,
     localAgentLedgerPath: join(configDir, 'daemon-mints.sqlite'),
-    apiImpl: async (method, path) => {
-      assert.equal(method, 'GET')
-      assert.equal(path, '/api/state')
-      return { agents: [agent] }
-    },
     lifecycleImpl: async (op, params) => {
       captured = { op, params }
-      return { ok: true, tmux_session: `fleet-${agent.friendly_name}`, agent_id: agent.id }
+      return { ok: true, tmux_session: `fleet-${friendlyName}` }
     },
   })
   return captured
@@ -89,35 +86,29 @@ try {
     friendlyName: 'wake-meta-proof',
     fleetId: 'fleet:wake-meta-proof',
     cwd: '/tmp/tlda-wake-meta-proof',
+    metadata: { kind: 'codex', permissionGrant: 'wd' },
     ledgerGrant: 'app-dev',
   })
-  const metadataGrant = await wakeAndCapture({
-    id: 'fleet:wake-meta-proof',
-    friendly_name: 'wake-meta-proof',
-    cwd: '/tmp/tlda-wake-meta-proof',
-    metadata: { kind: 'codex', permissionGrant: 'wd' },
-  })
+  const metadataGrant = await wakeAndCapture('wake-meta-proof')
   assert.equal(metadataGrant.op, 'wake')
-  assert.equal(metadataGrant.params.fleet_id, 'fleet:wake-meta-proof')
-  assert.equal(metadataGrant.params.permissionGrant, 'wd')
-  assert.ok(metadataGrant.params.permissionSet)
+  assert.equal(metadataGrant.params.mint_id, 'mint-wake-meta-proof')
+  assert.equal(metadataGrant.params.wait_until_complete, true)
+  assert.equal('permissionGrant' in metadataGrant.params, false,
+    'wake must leave durable grant resolution to the daemon instead of forwarding stale mint metadata')
 
   await recordAgent({
     friendlyName: 'wake-ledger-proof',
     fleetId: 'fleet:wake-ledger-proof',
     cwd: '/tmp/tlda-wake-ledger-proof',
+    metadata: { kind: 'codex' },
     ledgerGrant: 'app-dev',
   })
-  const ledgerGrant = await wakeAndCapture({
-    id: 'fleet:wake-ledger-proof',
-    friendly_name: 'wake-ledger-proof',
-    cwd: '/tmp/tlda-wake-ledger-proof',
-    metadata: { kind: 'codex' },
-  })
+  const ledgerGrant = await wakeAndCapture('wake-ledger-proof')
   assert.equal(ledgerGrant.op, 'wake')
-  assert.equal(ledgerGrant.params.fleet_id, 'fleet:wake-ledger-proof')
-  assert.equal(ledgerGrant.params.permissionGrant, 'app-dev')
-  assert.ok(ledgerGrant.params.permissionSet)
+  assert.equal(ledgerGrant.params.mint_id, 'mint-wake-ledger-proof')
+  assert.equal(ledgerGrant.params.wait_until_complete, true)
+  assert.equal('permissionGrant' in ledgerGrant.params, false,
+    'wake without an operator override must leave the durable ledger grant to the daemon')
 
   console.log('agent wake grant regression: ok')
 } finally {
