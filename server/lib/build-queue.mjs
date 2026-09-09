@@ -1,5 +1,13 @@
 import { BuildQueueStore } from './build-queue-store.mjs'
 
+export function failedBuildRpcResult(id, error) {
+  return {
+    t: 'rpc-result', id, ok: false,
+    error: error?.message || String(error),
+    errorStack: error?.stack || null,
+  }
+}
+
 export function createBuildQueue({
   transport,
   getProjectsDir,
@@ -154,7 +162,7 @@ export function createBuildQueue({
             const result = await relayMessage?.(job.name, message, job)
             channel?.send?.({ t: 'rpc-result', id: message.id, ok: true, result })
           } catch (error) {
-            channel?.send?.({ t: 'rpc-result', id: message.id, ok: false, error: error?.message || String(error) })
+            channel?.send?.(failedBuildRpcResult(message.id, error))
           }
           return
         }

@@ -149,7 +149,11 @@ process.on('message', async (msg) => {
     if (!pending) return
     pendingRpc.delete(msg.id)
     if (msg.ok) pending.resolve(msg.result)
-    else pending.reject(new Error(msg.error || 'worker RPC failed'))
+    else {
+      const error = new Error(msg.error || 'worker RPC failed')
+      error.remoteStack = msg.errorStack || null
+      pending.reject(error)
+    }
     return
   }
   if (msg?.t !== 'build') return
@@ -273,7 +277,8 @@ process.on('message', async (msg) => {
     // something to write when there was nothing to carry out.
     try {
       const reason = e?.message || String(e)
-      const diagnostic = e?.stack ? `${reason}\n${e.stack}` : reason
+      const stack = e?.remoteStack || e?.stack
+      const diagnostic = stack ? `${reason}\n${stack}` : reason
       await callParent('publishBuildDiagnostics', [msg.name, instanceProject, diagnostic])
     } catch (diagError) {
       // Never let saving the explanation replace the failure being explained.
