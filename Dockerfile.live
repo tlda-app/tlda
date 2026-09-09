@@ -183,6 +183,24 @@ RUN . /etc/os-release \
     && Rscript -e "install.packages(c('knitr','rmarkdown','ggplot2','purrr','tidyverse','htmltools','kableExtra','scales','maps','gt','grf','imager'), repos = 'https://packagemanager.posit.co/cran/__linux__/${VERSION_CODENAME}/latest', type = 'source')" \
     && Rscript -e 'pkgs <- c("knitr","rmarkdown","ggplot2","purrr","tidyverse","htmltools","kableExtra","scales","maps","gt","grf","imager"); missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]; if (length(missing)) stop("classroom R runtime incomplete, these namespaces will not load: ", paste(missing, collapse = ", ")); cat("classroom R runtime OK:", paste(pkgs, collapse = " "), "\n")'
 
+# The same `pkgType = "both"` that renv needs is what a student's pasted
+# install.packages() dies on, and it takes their whole submission down with it:
+# knitr halts, the render makes no pages, and the marking view waits forever on
+# a document that will never arrive. The guard file says why masking in the
+# global environment is the right blast radius. It is appended to the site
+# profile rather than shipped as a second profile so there is one file, read in
+# one order — and it goes here, after the runtime above, because the assertion
+# below is only worth anything once ggplot2 is actually installed.
+#
+# ASSERTED, like the runtime above: the first call must survive AND the package
+# must still load afterwards, so a guard that silently swallowed the library()
+# would fail the build rather than reach a student.
+COPY server/r/student-install-packages-guard.R /tmp/student-install-packages-guard.R
+RUN cat /tmp/student-install-packages-guard.R >> "$(R RHOME)/etc/Rprofile.site" \
+    && rm /tmp/student-install-packages-guard.R \
+    && Rscript -e 'install.packages("ggplot2"); library(ggplot2); cat("student install.packages() guard OK\n")' \
+    && Rscript -e 'install.packages(c("kableExtra","knitr","tidyverse")); cat("student install.packages() guard OK for a vector\n")'
+
 # Keep the restored packages on the persistent volume. Without this the renv
 # cache lives in the container filesystem and every machine replacement pays the
 # full restore again; with it, the first render on a new machine is the only slow
