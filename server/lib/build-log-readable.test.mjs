@@ -90,12 +90,16 @@ test('an instance log is carried out and retains the outer worker failure', asyn
   mkdirSync(instance, { recursive: true })
   writeFileSync(join(instance, 'build.log'), '[2026-09-02T23:23:20.000Z] Build complete in 21.7s')
 
-  const { copied, wrote } = publishBuildDiagnostics('deck', instance, 'build worker RPC publishBuildInstance got no answer')
+  const reason = 'build worker RPC publishBuildInstance got no answer'
+  const stack = 'Error: build worker RPC publishBuildInstance got no answer\n    at publishBuildInstance (build-dispatch.mjs:213:13)'
+  const { copied, wrote } = publishBuildDiagnostics('deck', instance, `${reason}\n${stack}`)
   assert.deepEqual(copied, ['build.log'])
   assert.equal(wrote, 'build.log')
   const log = readFileSync(join(root, 'deck', 'build.log'), 'utf8')
   assert.match(log, /Build complete in 21\.7s/, 'the successful inner build log must remain')
   assert.match(log, /publishBuildInstance got no answer/, 'the outer worker failure must remain too')
+  assert.match(log, /at publishBuildInstance \(build-dispatch\.mjs:213:13\)/,
+    'the outer failure file and line must survive diagnostics publication')
   assert.deepEqual((await extractBuildErrors('deck')).errors, [
     { message: 'build worker RPC publishBuildInstance got no answer' },
   ])

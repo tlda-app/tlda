@@ -272,7 +272,9 @@ process.on('message', async (msg) => {
     // with nothing to point at. The reason is passed so there is always
     // something to write when there was nothing to carry out.
     try {
-      await callParent('publishBuildDiagnostics', [msg.name, instanceProject, e?.message || String(e)])
+      const reason = e?.message || String(e)
+      const diagnostic = e?.stack ? `${reason}\n${e.stack}` : reason
+      await callParent('publishBuildDiagnostics', [msg.name, instanceProject, diagnostic])
     } catch (diagError) {
       // Never let saving the explanation replace the failure being explained.
       console.error(`[build-worker] could not preserve diagnostics for ${msg.name}: ${diagError?.message || diagError}`)
