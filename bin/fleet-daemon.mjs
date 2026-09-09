@@ -586,6 +586,11 @@ const sourceSync = createGitSyncManager({
     log.warn(`${project}: ${reason}`)
     sendMsg({ type: 'daemon-warning', project, warning: `sync-refused:${status}`, message: reason, head, workBranch })
   },
+  onRemotePublishFailed: ({ project, revision, error }) => {
+    const message = `${project}: preview reflection of ${String(revision).slice(0, 12)} failed: ${error?.message || error}`
+    log.warn(message)
+    sendMsg({ type: 'daemon-warning', project, warning: 'preview-reflection-failed', message, revision })
+  },
 })
 
 let lastInvalidSourceOwnerSignature = null

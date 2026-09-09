@@ -26,7 +26,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile = defaultExecFile, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile = defaultExecFile, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {}, onRemotePublishFailed = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
   const starts = new Map()
@@ -237,7 +237,11 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       sourceDir: item.sourceDir,
       remote: item.remote,
       branch: item.branch || 'main',
+      mode: item.mirrorMode === 'tlda-project' ? 'tlda-project' : 'branch',
+      project: item.project,
+      daemonId,
       onRemoteSettled: () => cluster.note(path.join(item.sourceDir, item.mainFile || '.')),
+      onPublishFailed: onRemotePublishFailed,
       log,
     }) : null
     watcher = createRuntimeSourceWatcher({
