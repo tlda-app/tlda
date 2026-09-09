@@ -40,7 +40,7 @@ import {
   serializeProjectStoreOperation,
 } from '../lib/project-store.mjs'
 import { deleteProjectAndBuildSubmissions, serializedPublication } from '../lib/build-dispatch.mjs'
-import { exportProjectPromotion, importProjectPromotion, validatePromotionName } from '../lib/project-promotion.mjs'
+import { importProjectPromotionStream, validatePromotionName, writeProjectPromotionStream } from '../lib/project-promotion.mjs'
 import { promotionExportHeaders, requirePromotionExport, validatePromotionSourceOrigin } from '../lib/promotion-source.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
@@ -435,17 +435,19 @@ router.get('/:name/promotion-export/:revision', requirePromotionExport, async (r
     const project = await readProject(req.params.name)
     if (!project) return res.status(404).json({ error: 'Project not found' })
     const lifecycle = await sourceLifecycleStore(req.params.name, { existingProject: project })
-    const artifact = await exportProjectPromotion({
+    res.status(200).type('application/vnd.tlda.promotion-v2')
+    await writeProjectPromotionStream({
       name: req.params.name,
       revision: req.params.revision,
       sourceEnvironment: getActiveEnvName(),
       projectRoot: liveProjectDir(req.params.name),
       lifecycleStore: lifecycle,
       serialize: serializedPublication,
+      destination: res,
     })
-    res.json(artifact)
   } catch (error) {
-    res.status(409).json({ error: error.message })
+    if (res.headersSent) res.destroy(error)
+    else res.status(409).json({ error: error.message })
   }
 })
 
@@ -462,10 +464,13 @@ router.post('/:name/promote', requireRw, async (req, res) => {
       headers: promotionExportHeaders(),
       signal: AbortSignal.timeout(300000),
     })
-    const artifact = await response.json()
-    if (!response.ok) throw new Error(`trusted source ${sourceEnvironment} refused promotion: ${artifact?.error || response.status}`)
-    const result = await importProjectPromotion({
-      artifact,
+    if (!response.ok) {
+      const refusal = await response.json().catch(() => ({}))
+      throw new Error(`trusted source ${sourceEnvironment} refused promotion: ${refusal?.error || response.status}`)
+    }
+    if (!response.body || response.headers.get('content-type') !== 'application/vnd.tlda.promotion-v2') throw new Error('trusted source returned an invalid promotion stream')
+    const result = await importProjectPromotionStream({
+      stream: response.body,
       sourceEnvironment,
       name: req.params.name,
       revision,
