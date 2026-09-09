@@ -4832,24 +4832,26 @@ function FleetChatInner({ shape }: { shape: any }) {
 	    return installChatImageRetry(chatLogEl)
 	  }, [chatLogEl])
 
-	  const sendWithFailedRetry = useCallback((to: string, text: string, tempId: string, opts: any = {}, attempt = 1) => {
-	    sendMessage(to, text, { ...opts, _tempId: tempId }).then((result: any) => {
+	  const sendWithFailedRetry = useCallback(async (to: string, text: string, tempId: string, opts: any = {}, attempt = 1): Promise<boolean> => {
+	    try {
+	      const result: any = await sendMessage(to, text, { ...opts, _tempId: tempId })
 	      if (result?.queued) {
 	        updateOptimisticEvent(tempId, { _failed: false, _queued: true }, chatEventBufferKey)
-	        return
+	        return true
 	      }
 	      if (result?.ok) {
 	        updateOptimisticEvent(tempId, { _failed: false, _queued: false }, chatEventBufferKey)
-	        return
+	        return true
 	      }
 	      throw new Error('send failed')
-	    }).catch(() => {
+	    } catch {
 	      if (attempt < 3) {
-	        setTimeout(() => sendWithFailedRetry(to, text, tempId, opts, attempt + 1), 2000 * attempt)
-	      } else {
-	        updateOptimisticEvent(tempId, { _failed: true, _queued: false }, chatEventBufferKey)
+	        await new Promise(resolve => setTimeout(resolve, 2000 * attempt))
+	        return sendWithFailedRetry(to, text, tempId, opts, attempt + 1)
 	      }
-	    })
+	      updateOptimisticEvent(tempId, { _failed: true, _queued: false }, chatEventBufferKey)
+	      return false
+	    }
 	  }, [chatEventBufferKey])
 
 	  // Lightbox: click on chat-image opens full-size overlay
@@ -5595,7 +5597,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       timestamp: new Date().toISOString(),
       read: false,
     }, chatEventBufferKey)
-    void (async () => {
+    return (async () => {
       const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
       if (context) await enrichContextWithSourceLines(context)
       const bullets = consumeBulletContexts()
@@ -5649,7 +5651,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // ONE send for the whole target set. `to` is a filter expression, so the
       // union of the targets is the expression that ORs them — one message, one
       // event, every recipient, instead of N independent sends nothing rejoins.
-	      sendWithFailedRetry(targets.join('|'), text, tempId, sendOpts)
+	      return sendWithFailedRetry(targets.join('|'), text, tempId, sendOpts)
 	    })()
 	  }
 

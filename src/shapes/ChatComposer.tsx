@@ -18,7 +18,7 @@ import { useEffect, useRef, useState } from 'react'
 import { setVoiceTarget, clearVoiceTarget, completeMessageSend, submitWhenVoiceFinal, isRecording, onRecordingChange } from '../voice.mjs'
 import { getComposerDraft, saveComposerDraft, flushComposerDraft, clearComposerDraft } from '../stores/composerDraftStore'
 
-export type ComposerSend = (text: string, targets: string[]) => void
+export type ComposerSend = (text: string, targets: string[]) => boolean | void | Promise<boolean | void>
 export type VoiceTargetHandle = {
   sendTargets: string[]
   agentNames: Record<string, string>
@@ -101,6 +101,9 @@ export function ChatComposer({
   const historyIndexRef = useRef<number>(-1)
   const submitCurrentRef = useRef<(submittedText?: string) => boolean>(() => false)
   const submitAlternateRef = useRef<(submittedText?: string) => boolean>(() => false)
+  const sendPendingRef = useRef(false)
+  const sendOwnerRef = useRef(0)
+  useEffect(() => () => { sendOwnerRef.current += 1 }, [])
   const voiceTargetRef = useRef<VoiceTargetHandle>({
     sendTargets: [],
     agentNames: {},
@@ -132,26 +135,50 @@ export function ChatComposer({
 
   const submitCurrent = (submittedText?: string) => {
     const ta = inputRef.current
-    const text = ta?.value.trim() || ''
-    if (!ta || !text || sendTargets.length === 0) return false
+    const rawText = ta?.value || ''
+    const text = rawText.trim()
+    if (!ta || !text || sendTargets.length === 0 || sendPendingRef.current) return false
     if (onCommand?.(text, sendTargets, ta)) return true
-    onSend(text, sendTargets)
-    ta.value = ''
-    if (draftKey) clearComposerDraft(draftKey)
-    ta.style.height = ''
-    // Clearing `.value` does not always make `field-sizing: content` recompute,
-    // so a sent multiline message left the composer tall until the next click or
-    // keystroke resized it — Skip: "if you send a long message and you hit
-    // enter, the composer doesn't resize until you click into it again. Or start
-    // typing again." Reading a layout property between an explicit height and
-    // clearing it forces the recalculation the send itself should have caused.
-    ta.style.height = 'auto'
-    void ta.offsetHeight
-    ta.style.height = ''
-    ta.dispatchEvent(new Event('input', { bubbles: true }))
-    completeMessageSend(submittedText ?? text)
-    sentHistoryRef.current = [...sentHistoryRef.current, text]
-    historyIndexRef.current = -1
+    const sendOwner = ++sendOwnerRef.current
+    const finish = (sent: boolean) => {
+      // The textarea that submitted may have been replaced while transport was
+      // pending. Its settlement does not own the replacement instance's draft.
+      if (sendOwnerRef.current !== sendOwner) return
+      sendPendingRef.current = false
+      if (!sent) {
+        recordDraft(ta)
+        return
+      }
+      // Voice may revise the field while the transport is pending. Clear only
+      // the exact text this operation submitted; newer words are the next draft.
+      if (ta.value === rawText) {
+        ta.value = ''
+        if (draftKey) clearComposerDraft(draftKey)
+        ta.style.height = ''
+        // Clearing `.value` does not always make `field-sizing: content` recompute,
+        // so a sent multiline message left the composer tall until the next click or
+        // keystroke resized it — Skip: "if you send a long message and you hit
+        // enter, the composer doesn't resize until you click into it again. Or start
+        // typing again." Reading a layout property between an explicit height and
+        // clearing it forces the recalculation the send itself should have caused.
+        ta.style.height = 'auto'
+        void ta.offsetHeight
+        ta.style.height = ''
+        ta.dispatchEvent(new Event('input', { bubbles: true }))
+      } else {
+        recordDraft(ta)
+      }
+      completeMessageSend(submittedText ?? text)
+      sentHistoryRef.current = [...sentHistoryRef.current, text]
+      historyIndexRef.current = -1
+    }
+    const result = onSend(text, sendTargets)
+    if (result && typeof (result as Promise<boolean | void>).then === 'function') {
+      sendPendingRef.current = true
+      void Promise.resolve(result).then(value => finish(value !== false), () => finish(false))
+    } else {
+      finish(result !== false)
+    }
     return true
   }
   submitCurrentRef.current = submitCurrent
