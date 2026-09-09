@@ -5,7 +5,8 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promise
 import { dirname, join, posix } from 'node:path'
 import { promisify } from 'node:util'
 import { projectRevisionStatus } from './source-lifecycle.mjs'
-import { encodeRefComponent } from './source-git-store.mjs'
+import { createSourceGitStore, encodeRefComponent } from './source-git-store.mjs'
+import { materializeAcceptedRevision } from './revision-tree-materializer.mjs'
 
 const execFileAsync = promisify(execFile)
 const METADATA_KEYS = new Set([
@@ -124,6 +125,15 @@ export async function importProjectPromotion({ artifact, sourceEnvironment, name
       if (importedHead !== revision) throw new Error('promotion bundle head mismatch')
       const tree = (await execFileAsync('git', [`--git-dir=${join(pending, '.source-lifecycle', 'git')}`, 'rev-parse', `${revision}^{tree}`], { encoding: 'utf8' })).stdout.trim()
       if (tree !== artifact.tree) throw new Error('promotion revision tree mismatch')
+      if (artifact.metadata.format === 'qmd') {
+        const imported = createSourceGitStore({ gitDir: join(pending, '.source-lifecycle', 'git') })
+        const files = await imported.readManifest(revision)
+        await materializeAcceptedRevision({
+          revision: { id: revision, files },
+          lifecycle: { readRevisionFile: (_id, path) => imported.readRevisionFile(revision, path) },
+          destination: join(pending, 'source'),
+        })
+      }
       await mkdir(join(pending, 'output'), { recursive: true })
       for (const row of artifact.output) {
         validateRelativePath(row.path)

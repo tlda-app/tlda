@@ -13,8 +13,8 @@
  * new rendering path inside an existing one.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
-import { dirname, join } from 'path'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, rmSync } from 'fs'
+import { dirname, join, relative } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
@@ -371,6 +371,18 @@ function qmdManifest(project, pageInfo, renderedFormat) {
   })
 }
 
+export function retainNativeTldaRender(outDir, manifestPath) {
+  const relativeManifest = relative(outDir, manifestPath).replace(/\\/g, '/')
+  const renderedRoot = relativeManifest.split('/')[0]
+  if (!renderedRoot || renderedRoot === '..' || !relativeManifest.includes('/') || relativeManifest.startsWith('../')) {
+    throw new Error('tlda manifest is outside the build output')
+  }
+  for (const entry of readdirSync(outDir)) {
+    if (entry === renderedRoot) continue
+    rmSync(join(outDir, entry), { recursive: true, force: true })
+  }
+}
+
 export async function buildQmdDocument(name, addLog = console.log) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
@@ -438,6 +450,7 @@ export async function buildQmdDocument(name, addLog = console.log) {
       const path = join(outDir, page.file)
       writeFileSync(path, stampFigureUrls(readFileSync(path, 'utf8')))
     }
+    retainNativeTldaRender(outDir, renderedProject.path)
     writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(renderedProject.pageInfo, null, 2))
     // The ToC panel reads this file and says "No headings found" without it.
     // The other branch writes it in the shared tail below, which this return

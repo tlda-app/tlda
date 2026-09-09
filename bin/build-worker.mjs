@@ -169,6 +169,7 @@ process.on('message', async (msg) => {
     if (!msg.sourceRevision) throw new Error(`build worker for ${msg.name} requires an immutable source revision`)
     const lifecycle = await sourceLifecycleStore(msg.name)
     const liveProject = projectDir(msg.name)
+    const acceptedProject = await readProject(msg.name)
     // BEFORE `setProjectPathOverride` below, and that ordering is the whole
     // reason this sits up here rather than beside the render it governs:
     // `shouldBuildOnPush` reads `relevant-files.json` out of `outputDir(name)`,
@@ -177,7 +178,13 @@ process.on('message', async (msg) => {
     // `no-relevant-files-yet` on every build forever — a filter that always
     // says yes, which is indistinguishable from the filter not being wired in.
     const relevance = msg.kind === 'parts' ? null : await renderRelevance(msg, lifecycle)
-    const instance = await materializeBuildInstance({ name: msg.name, sourceRevision: msg.sourceRevision, lifecycle, seedProject: liveProject })
+    const instance = await materializeBuildInstance({
+      name: msg.name,
+      sourceRevision: msg.sourceRevision,
+      lifecycle,
+      seedProject: liveProject,
+      materializeLinks: acceptedProject?.format === 'qmd',
+    })
     instanceRoot = instance.root
     instanceProject = instance.project
     setProjectPathOverride(msg.name, instanceProject)

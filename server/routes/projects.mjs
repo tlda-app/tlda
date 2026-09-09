@@ -41,6 +41,7 @@ import {
 } from '../lib/project-store.mjs'
 import { deleteProjectAndBuildSubmissions, serializedPublication } from '../lib/build-dispatch.mjs'
 import { exportProjectPromotion, importProjectPromotion, validatePromotionName } from '../lib/project-promotion.mjs'
+import { promotionExportHeaders, requirePromotionExport, validatePromotionSourceOrigin } from '../lib/promotion-source.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
@@ -56,7 +57,7 @@ import { materializeRecordingAudioClip } from '../lib/recording-audio-clip.mjs'
 import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
-import { getActiveEnvName, getFleetServerUrl, getRwToken, getServerUrl } from '../../shared/config.mjs'
+import { getActiveEnvName, getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
 import { gitBlobId } from '../../shared/git-blob-id.mjs'
 import { writeSentinel } from '../lib/sentinel.mjs'
@@ -428,7 +429,7 @@ router.post('/', requireRw, async (req, res) => {
 // A promotion source is read by another configured tlda environment, never by
 // a client-provided archive. Publication serialization makes metadata,
 // lifecycle identity, and output one coherent snapshot.
-router.get('/:name/promotion-export/:revision', requireRw, async (req, res) => {
+router.get('/:name/promotion-export/:revision', requirePromotionExport, async (req, res) => {
   try {
     validatePromotionName(req.params.name)
     const project = await readProject(req.params.name)
@@ -455,11 +456,10 @@ router.post('/:name/promote', requireRw, async (req, res) => {
     validatePromotionName(req.params.name)
     const sourceEnvironment = String(req.body?.sourceEnvironment || '')
     const revision = String(req.body?.revision || '')
-    const sourceUrl = new URL(`/api/projects/${encodeURIComponent(req.params.name)}/promotion-export/${encodeURIComponent(revision)}`, getServerUrl(sourceEnvironment))
-    const token = getRwToken()
-    if (!token) throw new Error('server-to-server project promotion requires a configured write token')
+    const sourceOrigin = validatePromotionSourceOrigin(getServerUrl(sourceEnvironment))
+    const sourceUrl = new URL(`/api/projects/${encodeURIComponent(req.params.name)}/promotion-export/${encodeURIComponent(revision)}`, sourceOrigin)
     const response = await fetch(sourceUrl, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: promotionExportHeaders(),
       signal: AbortSignal.timeout(300000),
     })
     const artifact = await response.json()
