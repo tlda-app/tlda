@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
+import { validatePromotionSourceOrigin } from '../server/lib/promotion-source.mjs'
 
 const SENTINEL = '__TLDA_PROMOTION_SOURCE_URL__'
 const [daemonPath] = process.argv.slice(2)
@@ -16,22 +17,11 @@ if (occurrences !== 2) {
 const value = process.env.TLDA_PROMOTION_SOURCE_URL
 if (!value) throw new Error('TLDA_PROMOTION_SOURCE_URL is required by this deployment config')
 
-let url
 try {
-  url = new URL(value)
+  const origin = validatePromotionSourceOrigin(value)
+  if (origin !== value) throw new Error('noncanonical promotion source origin')
 } catch {
-  throw new Error('TLDA_PROMOTION_SOURCE_URL must be a valid HTTPS origin')
-}
-if (
-  url.protocol !== 'https:' ||
-  url.username ||
-  url.password ||
-  url.pathname !== '/' ||
-  url.search ||
-  url.hash ||
-  url.origin !== value
-) {
-  throw new Error('TLDA_PROMOTION_SOURCE_URL must be a valid HTTPS origin')
+  throw new Error('TLDA_PROMOTION_SOURCE_URL must be a valid promotion source origin')
 }
 
 writeFileSync(daemonPath, source.replaceAll(SENTINEL, value))

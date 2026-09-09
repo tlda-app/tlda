@@ -9,13 +9,15 @@ const installer = new URL('../scripts/install-private-environment-url.mjs', impo
 const sentinel = '__TLDA_PROMOTION_SOURCE_URL__'
 const picSource = new URL('../config/deployments/pic/daemon.yaml', import.meta.url)
 
-function run(source, value) {
+function run(source, value, exportToken) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-private-environment-'))
   const daemonPath = join(dir, 'daemon.yaml')
   writeFileSync(daemonPath, source)
   const env = { ...process.env }
   delete env.TLDA_PROMOTION_SOURCE_URL
+  delete env.TLDA_PROMOTION_EXPORT_TOKEN
   if (value !== undefined) env.TLDA_PROMOTION_SOURCE_URL = value
+  if (exportToken !== undefined) env.TLDA_PROMOTION_EXPORT_TOKEN = exportToken
   const result = spawnSync(process.execPath, [installer.pathname, daemonPath], {
     encoding: 'utf8',
     env,
@@ -34,18 +36,46 @@ test('substitutes the private URL only in the installed copy', () => {
   assert.equal(readFileSync(picSource, 'utf8'), source)
 })
 
+test('accepts an authenticated Fly internal promotion origin with an explicit port', () => {
+  const result = run(
+    `database: ${sentinel}\nstore: ${sentinel}\n`,
+    'http://pic-preview.internal:5176',
+    'dedicated-token',
+  )
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(
+    result.installed,
+    'database: http://pic-preview.internal:5176\nstore: http://pic-preview.internal:5176\n',
+  )
+})
+
 test('fails closed when the required private URL is absent', () => {
   const result = run(`database: ${sentinel}\nstore: ${sentinel}\n`)
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /TLDA_PROMOTION_SOURCE_URL is required/)
 })
 
-test('fails closed for malformed or non-HTTPS private URLs without printing them', () => {
-  for (const value of ['not a URL', 'http://private.example.test', 'https://private.example.test/path']) {
+test('fails closed for malformed or untrusted private URLs without printing them', () => {
+  for (const value of [
+    'not a URL',
+    'http://private.example.test:5176',
+    'http://pic-preview.internal',
+    'http://pic-preview.internal:5176/',
+    'https://private.example.test/',
+    'https://private.example.test:443',
+    'https://private.example.test/path',
+  ]) {
     const result = run(`database: ${sentinel}\nstore: ${sentinel}\n`, value)
     assert.notEqual(result.status, 0)
     assert.doesNotMatch(result.stderr, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   }
+})
+
+test('fails closed for an internal HTTP origin without the dedicated token', () => {
+  const value = 'http://pic-preview.internal:5176'
+  const result = run(`database: ${sentinel}\nstore: ${sentinel}\n`, value)
+  assert.notEqual(result.status, 0)
+  assert.doesNotMatch(result.stderr, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
 })
 
 test('fails closed unless the sentinel occurs exactly in both URL fields', () => {
