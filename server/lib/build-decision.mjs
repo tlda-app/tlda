@@ -142,4 +142,3 @@ export function isSvgBuildStale(name) {
 
   return statSync(sourceStamp).mtimeMs > builtSourceVersion
 }
-
