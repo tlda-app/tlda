@@ -66,7 +66,7 @@ import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-s
 import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
-  getMachineId, saveMachineId, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
+  getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
   getOutboxInflightDeadlineMs, getOutboxFlushByteBudget,
   getFleetServerUrl, getServerUrl, getActiveEnvName,
 } from '../shared/config.mjs'
@@ -109,6 +109,7 @@ import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
 import { createAgentRouteResolver } from '../daemon/agent-route.mjs'
 import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
+import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
@@ -432,6 +433,10 @@ function bufferActivity(agentId, evts) {
   const activeBinding = permissionLedger.listProcessBindings().find(row =>
     row.id === agentId && row.daemonKey === activeDaemonKey)
   if (activeBinding?.tmuxSession) alivenessCache.set(activeBinding.tmuxSession, true)
+  const toolActivity = [...stampedEvents].reverse().find(event =>
+    event?.tool && !String(event.tool).startsWith('_'))
+  if (activeBinding && toolActivity) agentStatus.noteToolActivity(agentId, toolActivity.tool)
+  if (activeBinding) agentStatus.armAgent(agentId)
   sendMsg({
     type: 'activity-health',
     agent_id: agentId,
@@ -969,12 +974,31 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
 let gooseSupervisor
 const alivenessCache = new Map()
 
+const agentStatus = createAgentStatus({
+  tmuxArgs: TMUX_ARGS,
+  sendMsg,
+  log,
+  getAgents: () => permissionLedger.listProcessBindings()
+    .filter(row => row.daemonKey === `${MACHINE_ID}:${ACTIVE_ENV}`)
+    .map(row => ({
+      id: row.id,
+      daemonKey: row.daemonKey,
+      friendly_name: row.friendlyName,
+      tmux_session: row.tmuxSession,
+      runtimeKind: row.sessionKind,
+      metadata: { kind: row.sessionKind, model: row.model },
+    })),
+  harnessForAgent: harnessRuntime.harnessForAgent,
+  isConnected: () => _serverReady && _rws?.connected,
+  statusScanMs: getStatusScanMs(),
+})
+
 const promptPlan = createPromptPlan({
   tmuxArgs: TMUX_ARGS,
   log,
   sendMsg,
   getAgents: () => agents,
-  isArmed: () => false,
+  isArmed: agentStatus.isArmed,
   hasActiveTerminalWatch: tmuxSession => terminalRpc?.hasActiveWatch(tmuxSession),
   autoAcceptPrompt: (tmuxSession, reason, acceptKey) => terminalRpc.autoAcceptPrompt(tmuxSession, reason, acceptKey),
 })
@@ -995,9 +1019,9 @@ terminalRpc = createTerminalRpc({
   terminalInputAllowed: TERMINAL_INPUT_ALLOWED,
   decideTerminalWatchExit,
   resolveAgentRoute,
-  onArmAgent: () => {},
-  onArmBySession: () => {},
-  onSessionInventoryChanged: async () => {},
+  onArmAgent: agentStatus.armAgent,
+  onArmBySession: agentStatus.armBySession,
+  onSessionInventoryChanged: reason => agentStatus.scanStatus(reason),
   onPlanModeSeen: promptPlan.scheduleCheckForPlanModePrompt,
   onPlanModeGone: promptPlan.clearPlanMode,
   hasPlanMode: promptPlan.hasPlanMode,
@@ -2297,4 +2321,5 @@ log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
 // Bots are independent, launchd-owned services (bots.yaml) — the daemon no
 // longer starts a bot-supervisor.
+agentStatus.start()
 connect()
