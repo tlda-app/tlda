@@ -70,6 +70,26 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   return { sessionId, jsonlPath, model, ...(diagnose && !model ? { failureStage: 'model' } : {}) }
 }
 
+export async function resolveLiveSessionIdentityUntil({
+  deadlineMs,
+  intervalMs = 100,
+  isProcessAlive = async () => true,
+  now = Date.now,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  resolve = resolveLiveSessionIdentity,
+  ...resolveOptions
+} = {}) {
+  const deadline = now() + Math.max(0, Number(deadlineMs) || 0)
+  while (await isProcessAlive()) {
+    const live = await resolve(resolveOptions)
+    if (live?.sessionId) return live
+    const remaining = deadline - now()
+    if (remaining <= 0) return null
+    await sleep(Math.min(Math.max(1, Number(intervalMs) || 100), remaining))
+  }
+  return null
+}
+
 export async function resolveOwnedCodexTranscript({
   runtimePids = [],
   agent,

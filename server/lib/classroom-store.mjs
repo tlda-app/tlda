@@ -369,8 +369,12 @@ export class ClassroomStore {
     return { ...row, feedback: marks }
   }
 
-  status(courseId) {
-    const students = this.listStudents(courseId)
+  // `studentId` narrows the same query to one person rather than being a second
+  // one. Everything below — cells, states, counts — is then computed by the code
+  // that computes it for the whole class, so a student's view of their own
+  // status cannot drift from what the instructor is looking at.
+  status(courseId, { studentId = null } = {}) {
+    const students = this.listStudents(courseId).filter(student => studentId === null || student.id === studentId)
     const assignments = this.listAssignments(courseId)
     const lookup = this.db.prepare(`SELECT assignment_id AS assignmentId,student_id AS studentId,content_ref AS contentRef,
       submitted_at AS submittedAt,grading_status AS gradingStatus FROM submissions

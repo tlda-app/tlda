@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
+import { resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -178,27 +179,37 @@ models: {}
 writeFileSync(join(applyConfigDir, 'server.yaml'), '')
 writeFileSync(join(applyBinDir, 'launchctl'), `#!/bin/sh
 if [ "$1" = "managername" ]; then echo Aqua; exit 0; fi
-if [ "$1" = "print" ]; then exit 113; fi
+loaded="$TLDA_CONFIG_DIR/loaded.definition"
+if [ "$1" = "print" ]; then test -f "$loaded" && cat "$loaded"; exit $?; fi
+if [ "$1" = "bootout" ]; then rm -f "$loaded"; exit 0; fi
 if [ "$1" = "bootstrap" ]; then
-  case "$3" in
-    *capcheck*) exit 0 ;;
-    *)
-      counter="$TLDA_CONFIG_DIR/config-apply-attempts"
-      n=0
-      if [ -f "$counter" ]; then n=$(cat "$counter"); fi
-      n=$((n + 1))
-      echo "$n" > "$counter"
-      if [ "$n" -eq 1 ]; then echo "transient bootstrap refusal" >&2; exit 7; fi
-      exit 0
-      ;;
-  esac
+  {
+    echo "arguments = {"
+    /usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$3"
+    /usr/libexec/PlistBuddy -c "Print :ProgramArguments:1" "$3"
+    /usr/libexec/PlistBuddy -c "Print :ProgramArguments:2" "$3"
+    echo "}"
+    printf "working directory = "
+    /usr/libexec/PlistBuddy -c "Print :WorkingDirectory" "$3"
+    echo "environment = {"
+    printf "PATH => "
+    /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PATH" "$3"
+    printf "TLDA_ENV => "
+    /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:TLDA_ENV" "$3"
+    printf "NODE_OPTIONS => "
+    /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:NODE_OPTIONS" "$3"
+    echo "}"
+  } > "$loaded"
+  exit 0
 fi
+if [ "$1" = "kickstart" ]; then test -f "$loaded"; exit $?; fi
 exit 0
 `, { mode: 0o755 })
+const applyPlist = join(applyFixture, 'Library', 'LaunchAgents', 'com.tlda.fleet-daemon.stable.plist')
 try {
-  const startedAt = Date.now()
-  const apply = spawnSync(process.execPath, [join(root, 'cli', 'tlda.mjs'), 'config', 'apply', '--env', 'stable'], {
-    cwd: root,
+  const applyCliRoot = process.env.TLDA_CONFIG_APPLY_CLI_ROOT || root
+  const runApply = () => spawnSync(process.execPath, [join(applyCliRoot, 'cli', 'tlda.mjs'), 'config', 'apply', '--only', 'stable', '--env', 'stable'], {
+    cwd: applyCliRoot,
     encoding: 'utf8',
     timeout: 15_000,
     env: {
@@ -211,13 +222,41 @@ try {
       PATH: `${applyBinDir}:${process.env.PATH}`,
     },
   })
+  const initialApply = runApply()
+  assert.equal(initialApply.status, 0, initialApply.stderr)
+  assert.match(initialApply.stdout, /Added com\.tlda\.fleet-daemon\.stable/)
+  const canonicalPlist = readFileSync(applyPlist, 'utf8')
+  const daemonScript = join(applyCliRoot, 'bin', 'fleet-daemon.mjs')
+  const expectedScript = resolveMainDaemonScript(daemonScript) || daemonScript
+  const expectedRoot = dirname(dirname(expectedScript))
+  writeFileSync(join(applyConfigDir, 'loaded.definition'), `arguments = {
+/bin/zsh
+-fc
+exec /opt/homebrew/bin/node --import tsx "${expectedScript}"
+}
+working directory = ${expectedRoot}
+environment = {
+PATH => /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+TLDA_ENV => stable
+NODE_OPTIONS => --require=/Users/skip/worktrees/land-tonight/shared/node-dns-alias.cjs
+}
+`)
+  const startedAt = Date.now()
+  const apply = runApply()
   const elapsed = Date.now() - startedAt
   assert.equal(apply.status, 0, apply.stderr)
-  assert.ok(elapsed < 2000, `config apply should report pending without retrying (${elapsed}ms)`)
-  assert.match(apply.stdout, /Pending com\.tlda\.fleet-daemon\.stable/)
-  assert.match(apply.stdout, /Nothing was unloaded/)
+  assert.ok(elapsed < 2000, `config apply should replace a loaded job without retrying (${elapsed}ms)`)
+  assert.match(apply.stdout, /Updated com\.tlda\.fleet-daemon\.stable/)
+  assert.doesNotMatch(apply.stdout, /Pending/)
   assert.match(apply.stdout, /tlda config apply complete/)
-  assert.equal(readFileSync(join(applyConfigDir, 'config-apply-attempts'), 'utf8').trim(), '1')
+  const plist = readFileSync(applyPlist, 'utf8')
+  assert.equal(plist, canonicalPlist)
+  assert.match(plist, new RegExp(expectedScript.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(plist, new RegExp(dirname(dirname(expectedScript)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  const loadedDefinition = readFileSync(join(applyConfigDir, 'loaded.definition'), 'utf8')
+  assert.match(loadedDefinition, new RegExp(expectedScript.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(loadedDefinition, new RegExp(dirname(dirname(expectedScript)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(loadedDefinition, new RegExp(join(dirname(dirname(expectedScript)), 'shared', 'node-dns-alias.cjs').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   console.log('cli config completion boundary: ok')
 } finally {
   rmSync(applyFixture, { recursive: true, force: true })

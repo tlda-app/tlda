@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, Component, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
-import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, createHtmlDocumentFromPageInfo, loadHtmlDocument, loadSlidesDocument, type HtmlPageEntry } from './svgDocumentLoader'
+import type { HtmlPageEntry } from './svgDocumentLoader'
+import type { SvgDocument } from './loaders/types'
+import { clientOpenKind, fetchDocumentManifest, loadDocumentByFormat } from './loaders/documentFormatLoader'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
 import { attachAppRecordingEditor, openAppRecordingSession } from './recording/recorder'
@@ -21,7 +23,6 @@ import { ProblemMarking } from './classroom/ProblemMarking'
 import { StudentWork } from './classroom/StudentWork'
 import { MarkingLifecycle } from './classroom/MarkingLifecycle'
 import { STORE_HTTP } from './activeConfig'
-import { viewFormat } from '../shared/document-formats.mjs'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
@@ -115,7 +116,7 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd' | 'pdf'
   // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
   renderedFormat?: 'html' | 'slides'
   members?: string[]
@@ -127,7 +128,7 @@ interface DocConfig {
   pageInfo?: HtmlPageEntry[]
 }
 
-type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
+type SvgDoc = SvgDocument
 
 interface FleetConfigResponse {
   telemetryUrl?: unknown
@@ -318,7 +319,7 @@ function DocumentApp() {
     if (gen !== loadGeneration) return  // superseded
 
     // Book format: needs full manifest to resolve member docs
-    if (config?.format === 'book' && config.members) {
+    if (config && clientOpenKind(config) === 'book' && config.members) {
       let manifest: Record<string, DocConfig>
       try {
         manifest = await fetchManifest()
@@ -405,40 +406,19 @@ function DocumentApp() {
         ? config.basePath
         : `${import.meta.env.BASE_URL || '/'}${config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath}`
 
-      let document
-      // A .qmd is the one project whose pages are not the format that built
-      // them: quarto renders it to a scrolling document or to a reveal deck.
-      // viewFormat() reads which the build produced.
-      const shownAs = viewFormat(config)
-      if (shownAs === 'html' || shownAs === 'markdown') {
-        document = config.pageInfo
-          ? createHtmlDocumentFromPageInfo(config.name, fullBasePath, config.pageInfo)
-          : await loadHtmlDocument(config.name, fullBasePath)
-      } else if (shownAs === 'slides') {
-        document = await loadSlidesDocument(config.name, fullBasePath)
-      } else if (shownAs === 'png') {
-        const makeUrl = (n: number) => `${fullBasePath}page-${n}.png`
-        // Probe beyond manifest hint to discover extra pages (handles stale page counts)
-        let pageCount = config.pages
-        while (true) {
-          if (signal.aborted) return
-          const resp = await fetch(makeUrl(pageCount + 1), { method: 'HEAD', signal })
-          if (!resp.ok || !resp.headers.get('content-type')?.includes('image/png')) break
-          pageCount++
-        }
-        const urls = Array.from({ length: pageCount }, (_, i) => makeUrl(i + 1))
-        document = await loadImageDocument(config.name, urls, fullBasePath)
-      } else {
-        // SVG: create layout immediately, pages fetched async after editor mounts.
-        // targets[] always present from API; map to TargetInfo for the layout.
-        const targets = config.targets?.map(t => ({
-          name: t.texBase,
-          title: t.texBase.replace(/_/g, ' '),
-          pages: t.pages,
-          basePath: fullBasePath,
-        }))
-        document = createSvgDocumentLayout(projectName, fullBasePath, targets)
-      }
+      const manifest = await fetchDocumentManifest(fullBasePath, signal)
+      const targets = config.targets?.map(t => ({
+        name: t.texBase,
+        title: t.texBase.replace(/_/g, ' '),
+        pages: t.pages,
+        basePath: fullBasePath,
+      }))
+      let document = await loadDocumentByFormat({
+        name: projectName,
+        basePath: fullBasePath,
+        manifest,
+        targets,
+      })
 
       if (gen !== loadGeneration) return  // superseded during fetch
       // The manifest's display name, which is a written title for some documents
@@ -991,7 +971,14 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     () => fleetChatFilterForAgent(selectedAgent),
     [selectedAgent?.exactName],
   )
-  const chromeChatFilter = selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
+  const [chromeChatOverride, setChromeChatOverride] = useState<{
+    agentName: string | null
+    filter: FleetChatFilter
+  } | null>(null)
+  const selectedAgentName = selectedAgent?.exactName ?? null
+  const chromeChatFilter = chromeChatOverride?.agentName === selectedAgentName
+    ? chromeChatOverride.filter
+    : selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
   useEffect(() => {
     const controller = new AbortController()
     const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
@@ -1234,7 +1221,12 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       {/* The real chat, in an index editor. It brings its own header, filter
           pane, composer and voice control — the hand-rolled versions that used
           to be here are gone with it. See src/fleet/StandaloneChatPanel.tsx. */}
-      <StandaloneChatPanel className="index-top-chat" filter={chromeChatFilter} panelKey="index" />
+      <StandaloneChatPanel
+        className="index-top-chat"
+        filter={chromeChatFilter}
+        onFilterCommit={filter => setChromeChatOverride({ agentName: selectedAgentName, filter })}
+        panelKey="index"
+      />
 
       <div className="project-index-search-row">
         {/* No autoFocus. Focus follows a deliberate action everywhere else in

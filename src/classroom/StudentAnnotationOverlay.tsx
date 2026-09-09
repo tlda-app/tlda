@@ -127,6 +127,34 @@ export function StudentAnnotationOverlay({
     })
   }, [bookEditor, overlayEditor])
 
+  // Give the book back the gestures this layer swallowed.
+  //
+  // The comment above says the book owns panning, and it does -- but while this
+  // layer is the write target the CSS flips it to `pointer-events: auto` over
+  // `inset: 0`, so every pointer in the viewport lands here and the book never
+  // sees the pinch at all. Its own camera then loses the change to the mirror
+  // above, which writes the book's camera back over it. The result is a surface
+  // that draws but cannot zoom, pan or take a second finger, while every piece
+  // of it is individually correct -- which is why it survived.
+  //
+  // tldraw already turned the gesture into a camera on this editor, so the fix
+  // is to carry that to the book rather than to re-derive pinch arithmetic here.
+  // Only the write target does it: it is the only layer taking pointer input, so
+  // it is the only one with a gesture to forward, and the book stays the single
+  // owner every other layer mirrors from.
+  //
+  // The two mirrors do not chase each other: each compares before it writes and
+  // returns when the cameras already agree, so the pair settles after one pass.
+  useEffect(() => {
+    if (!bookEditor || !overlayEditor || !isWriteTarget) return
+    return mirror('carry overlay camera back to book', () => overlayEditor.getCamera(), () => {
+      const camera = overlayEditor.getCamera()
+      const current = bookEditor.getCamera()
+      if (current.x === camera.x && current.y === camera.y && current.z === camera.z) return
+      bookEditor.setCamera(camera, { immediate: true })
+    })
+  }, [bookEditor, overlayEditor, isWriteTarget])
+
   // Follow the book's tool selection, whatever it is.
   //
   // Skip: "so like in photoshop or whatever, you select any number of layers to

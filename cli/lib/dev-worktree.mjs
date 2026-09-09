@@ -43,6 +43,7 @@ import { hasTls, resolveConfig, loadServerConfig, CONFIG_DIR } from '../../share
 import { daemonLifecycleSocketPath } from '../../shared/daemon-socket-path.mjs'
 import { resolveRepoRoot, findFreePort } from './dev-vite.mjs'
 import { spawnDetachedServer } from './server-start.mjs'
+import { STARTUP_TRACE_FLAG } from '../../shared/startup-trace.mjs'
 import { findTailscaleIPv4 } from './share-url.mjs'
 import { acquireLease, releaseLease, listLeases } from './resource-leases.mjs'
 
@@ -328,25 +329,284 @@ function viewerUrl(base, project) {
   return project ? `${base}/?project=${encodeURIComponent(project)}` : `${base}/`
 }
 
-async function health(base) {
+const HEALTH_PROBE_MS = 1500
+
+// One probe, bounded by the budget its caller still has. A probe that opens its
+// own fresh window is how N serial probes outrun the deadline they were meant
+// to sit inside, so `budgetMs` is not optional in the wait below — the standalone
+// default is only for a one-shot `status` check that has no deadline.
+export async function health(base, budgetMs = HEALTH_PROBE_MS) {
+  const timeout = Math.max(1, Math.floor(budgetMs))
   try {
-    const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(1500) })
-    return res.ok
-  } catch {
-    return false
+    const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(timeout) })
+    return { ok: res.ok, status: res.status, error: null, budgetMs: timeout }
+  } catch (error) {
+    return { ok: false, status: null, error: error.message, budgetMs: timeout }
   }
 }
 
-async function waitForSandboxDaemon(pid, socketPath, logPath) {
-  for (let i = 0; i < 60; i++) {
-    if (!alive(pid)) {
-      const detail = existsSync(logPath) ? ` — see ${logPath}` : ''
-      throw new Error(`sandbox daemon exited during startup${detail}`)
+// A child that dies before it logs a line leaves `alive(pid)` saying only
+// "gone". Node knows more: `error` for a child that never started, and
+// `exit(code, signal)` for one that started and died. Those facts arrive once,
+// so record them from spawn time and read them in the wait.
+//
+// `died` makes them raceable as well as readable. A waiter that only reads the
+// fields learns of a death at its next convenient moment — which, if it is
+// sitting inside a probe that owns the rest of the deadline, is after the
+// deadline, and the death then gets misreported as a timeout. Waiting ON the
+// death is what makes it arrive when it happens.
+export function watchSpawnedChild(child) {
+  const facts = { spawnError: null, exit: null, died: null }
+  facts.died = new Promise(resolve => {
+    child.once('error', error => { facts.spawnError = error; resolve() })
+    child.once('exit', (code, signal) => { facts.exit = { code, signal }; resolve() })
+  })
+  return facts
+}
+
+// Facts for a child that does not exist yet (or never will). `died` never
+// settles, so racing against it is a no-op rather than a special case.
+export function noChildFacts() {
+  return { spawnError: null, exit: null, died: new Promise(() => {}) }
+}
+
+function startupLogEvidence(logPath) {
+  if (!existsSync(logPath)) return { path: logPath, exists: false, size: 0, tail: '' }
+  const size = statSync(logPath).size
+  const tail = readFileSync(logPath, 'utf8').trimEnd().split('\n').slice(-10).join('\n')
+  return { path: logPath, exists: true, size, tail }
+}
+
+function describeStartupLog(log) {
+  if (!log.exists) return `no log written at ${log.path}`
+  if (!log.size) return `empty log at ${log.path} (0 bytes)`
+  return `${log.path} (${log.size} bytes), last lines:\n${log.tail}`
+}
+
+function startupFailure(message, diagnosis) {
+  return Object.assign(new Error(message), { diagnosis })
+}
+
+export async function waitForSandboxDaemon(facts, socketPath, logPath, { attempts = 60, intervalMs = 250 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    const log = startupLogEvidence(logPath)
+    if (facts.spawnError) {
+      throw startupFailure(
+        `sandbox daemon failed to spawn: ${facts.spawnError.message} — ${describeStartupLog(log)}`,
+        { outcome: 'spawn-error', error: facts.spawnError.message, code: facts.spawnError.code ?? null, signal: null, log },
+      )
     }
-    if (existsSync(socketPath)) return
-    await new Promise(r => setTimeout(r, 250))
+    if (facts.exit) {
+      const { code, signal } = facts.exit
+      throw startupFailure(
+        `sandbox daemon exited before creating lifecycle socket ${socketPath} (code ${code}, signal ${signal}) — ${describeStartupLog(log)}`,
+        { outcome: 'exit-before-lifecycle', code, signal, log },
+      )
+    }
+    if (existsSync(socketPath)) return { outcome: 'socket-ready', socketPath, log }
+    await new Promise(r => setTimeout(r, intervalMs))
   }
-  throw new Error(`sandbox daemon did not create lifecycle socket ${socketPath} within 15s — see ${logPath}`)
+  const log = startupLogEvidence(logPath)
+  throw startupFailure(
+    `sandbox daemon did not create lifecycle socket ${socketPath} within ${Math.round(attempts * intervalMs / 1000)}s — ${describeStartupLog(log)}`,
+    { outcome: 'no-lifecycle-socket', code: null, signal: null, log },
+  )
+}
+
+// ---- preview server readiness ----
+
+/**
+ * Which server entry this preview launches, and whether it traces its startup.
+ *
+ * Only `--sandbox` goes through the bootstrap: a sandbox startup is the one we
+ * have failed to diagnose, and it is the one nobody is reading over. Every
+ * other preview keeps the direct entry and an unset flag, so its process, its
+ * output, and its readiness are byte-for-byte what they were.
+ */
+export function previewServerEntry(worktreeDir, sandbox) {
+  return sandbox
+    ? { serverScript: join(worktreeDir, 'server', 'sandbox-boot.mjs'), traceEnv: { [STARTUP_TRACE_FLAG]: '1' } }
+    : { serverScript: join(worktreeDir, 'server', 'unified-server.mjs'), traceEnv: {} }
+}
+
+const SERVER_READY_MS = 30_000
+const SERVER_POLL_MS = 500
+
+const monotonic = () => performance.now()
+const napper = ms => new Promise(r => setTimeout(r, ms))
+
+/**
+ * Wait for exactly the server we just spawned to answer `/api/health`.
+ *
+ * Two things the old poll could not do. It counted attempts rather than time,
+ * and every attempt opened a fresh 1.5s fetch budget, so a wedged listener that
+ * accepts the connection and never answers stretched a "30s" wait into minutes —
+ * the loop's own probes paid for the overrun. And it only asked `alive(pid)`,
+ * which says "gone" for a child that never started and for one that exited 1 and
+ * for one the OOM killer took, without distinguishing them.
+ *
+ * So: one absolute deadline, taken once, and every probe bounded by whatever is
+ * left of it; plus the child's own `error`/`exit(code, signal)` facts, RACED
+ * against the probe and against the interval sleep rather than merely read
+ * between them. Reading between them is not enough: a probe is entitled to the
+ * whole remaining deadline, so a child that dies inside one would not be noticed
+ * until the deadline had passed, and would then be reported as a timeout —
+ * naming the wrong cause for a death the parent already knew about.
+ * Success exists only when health is observed before that deadline.
+ *
+ * The probe is required to settle within the budget it is handed; `health()`
+ * enforces that with an `AbortSignal` timeout. Nothing here can rescue a probe
+ * that ignores its own budget and never settles.
+ */
+export async function waitForSandboxServer(facts, base, logPath, {
+  timeoutMs = SERVER_READY_MS,
+  intervalMs = SERVER_POLL_MS,
+  now = monotonic,
+  probe = health,
+  sleep = napper,
+} = {}) {
+  const started = now()
+  const deadline = started + timeoutMs
+  const elapsedMs = () => Math.round(now() - started)
+  let lastHealth = null
+
+  // Whatever we are waiting on, we are also waiting on the child dying.
+  const died = facts.died ?? new Promise(() => {})
+  const DEAD = Symbol('child-died')
+  const orDeath = pending => Promise.race([pending, died.then(() => DEAD)])
+
+  // A death sends us back to the top of the loop, where the recorded facts turn
+  // it into the failure that names it. Once. `died` stays resolved forever, so
+  // if the top does NOT throw — no facts recorded, or a future edit that drops a
+  // branch — a second lap would find the same dead child and go round again, and
+  // a wait that spins on a corpse is worse than either answer. The second death
+  // therefore stops the loop and the deadline failure is reported instead.
+  let deathSeen = false
+  const afterDeath = () => {
+    if (deathSeen) return 'stop'
+    deathSeen = true
+    return facts.spawnError || facts.exit ? 'again' : 'stop'
+  }
+
+  const fail = (message, diagnosis) => startupFailure(
+    message,
+    { code: null, signal: null, error: null, ...diagnosis, elapsedMs: elapsedMs(), lastHealth, log: startupLogEvidence(logPath) },
+  )
+
+  for (;;) {
+    if (facts.spawnError) {
+      const log = startupLogEvidence(logPath)
+      throw fail(
+        `preview server failed to spawn: ${facts.spawnError.message} — ${describeStartupLog(log)}`,
+        { outcome: 'spawn-error', error: facts.spawnError.message, code: facts.spawnError.code ?? null },
+      )
+    }
+    if (facts.exit) {
+      const { code, signal } = facts.exit
+      const log = startupLogEvidence(logPath)
+      throw fail(
+        `preview server exited during startup (code ${code}, signal ${signal}) — ${describeStartupLog(log)}`,
+        { outcome: 'exit-before-health', code, signal },
+      )
+    }
+
+    const remaining = deadline - now()
+    if (remaining <= 0) break
+    const probed = await orDeath(probe(base, remaining))
+    // The child died mid-probe. Go back to the top, where the facts it left
+    // behind name which death it was; whatever the probe eventually says about
+    // a process that no longer exists is not evidence about this startup.
+    if (probed === DEAD) {
+      if (afterDeath() === 'stop') break
+      continue
+    }
+    lastHealth = probed
+    // `ok` is not enough on its own: a probe that returns at or past the
+    // deadline is a late answer, and a late answer is a failed startup.
+    if (lastHealth.ok && now() < deadline) {
+      return { outcome: 'healthy', base, elapsedMs: elapsedMs(), lastHealth, log: startupLogEvidence(logPath) }
+    }
+
+    const idle = Math.min(intervalMs, deadline - now())
+    if (idle <= 0) break
+    const rested = await orDeath(sleep(idle))
+    if (rested === DEAD) {
+      if (afterDeath() === 'stop') break
+      continue
+    }
+  }
+
+  const log = startupLogEvidence(logPath)
+  throw fail(
+    `preview server did not answer ${base}/api/health within ${Math.round(timeoutMs / 1000)}s — ${describeStartupLog(log)}`,
+    { outcome: 'health-deadline' },
+  )
+}
+
+/**
+ * Give up on a started preview server: kill exactly the pid we spawned, prove it
+ * is gone, and remove the state that pid owns.
+ *
+ * The pid is the one `spawn` handed back, never one read out of a pidfile and
+ * never one found by sweeping the port — either of those can name a stranger
+ * that inherited the number or the socket, and this function's whole job is to
+ * be unable to touch anything but our own child.
+ *
+ * State is removed only after death is VERIFIED. A server that survives SIGTERM
+ * and SIGKILL keeps its pidfile and its preview config, and comes back as
+ * `still-alive`: those files are the only record that the process on that port
+ * is ours, so deleting them while it runs manufactures exactly the unowned,
+ * unmanifested server this repair exists to prevent. Losing the paperwork is
+ * worse than the leak, because it is what makes the leak invisible.
+ */
+export async function discardStartedServer(pid, {
+  configDir = null,
+  pidPath = null,
+  graceMs = 2000,
+  pollMs = 50,
+  now = monotonic,
+  sleep = napper,
+  isAlive = alive,
+  signalTo = (p, sig) => process.kill(p, sig),
+  removePath = p => rmSync(p, { recursive: true, force: true }),
+} = {}) {
+  const removed = []
+  const remove = () => {
+    for (const p of [configDir, pidPath]) {
+      if (!p) continue
+      removePath(p)
+      removed.push(p)
+    }
+  }
+
+  if (!Number.isInteger(pid) || pid <= 0) {
+    remove()
+    return { pid: pid ?? null, signalled: false, escalated: false, gone: true, reason: 'never-spawned', removed, retained: [] }
+  }
+  if (!isAlive(pid)) {
+    remove()
+    return { pid, signalled: false, escalated: false, gone: true, reason: 'already-exited', removed, retained: [] }
+  }
+
+  const waitGone = async budgetMs => {
+    const until = now() + budgetMs
+    while (isAlive(pid) && now() < until) await sleep(pollMs)
+    return !isAlive(pid)
+  }
+
+  try { signalTo(pid, 'SIGTERM') } catch { /* it raced us and exited */ }
+  let escalated = false
+  let gone = await waitGone(graceMs)
+  if (!gone) {
+    escalated = true
+    try { signalTo(pid, 'SIGKILL') } catch { /* it exited between the grace poll and this signal */ }
+    gone = await waitGone(graceMs)
+  }
+  if (!gone) {
+    return { pid, signalled: true, escalated, gone: false, reason: 'still-alive', removed, retained: [configDir, pidPath].filter(Boolean) }
+  }
+  remove()
+  return { pid, signalled: true, escalated, gone: true, reason: 'terminated', removed, retained: [] }
 }
 
 // ---- verbs ----
@@ -462,13 +722,17 @@ export async function cmdServeWorktree(args) {
   // hand-roll a parallel spawn (a hand-rolled `node … &` is exactly what dies
   // when the launching agent hibernates). reclaimPort:false — our port came from
   // findFreePort, so we must never SIGKILL whatever might be on it.
+  let serverFacts = noChildFacts()
+  const serverEntry = previewServerEntry(worktreeDir, flags.has('sandbox'))
   const pid = spawnDetachedServer({
-    serverScript: join(worktreeDir, 'server', 'unified-server.mjs'),
+    serverScript: serverEntry.serverScript,
     port,
     logFile: logFile(branch),
     reclaimPort: false,
     pidFile: pidFile(branch),
+    onSpawn: child => { serverFacts = watchSpawnedChild(child) },
     env: {
+      ...serverEntry.traceEnv,
       HOST: '0.0.0.0',
       TLDA_ENV: configName(branch),
       TLDA_CONFIG_DIR: previewConfigDir(branch),
@@ -490,17 +754,29 @@ export async function cmdServeWorktree(args) {
   })
 
   console.log(`preview server starting (pid ${pid}) on ${base} …`)
-  let up = false
-  for (let i = 0; i < 60 && !up; i++) {
-    await new Promise(r => setTimeout(r, 500))
-    up = await health(base)
-    if (!up && !alive(pid)) {
-      console.error(`server exited during startup — see ${logFile(branch)}`)
-      removePreviewConfig(branch)
-      process.exit(1)
+  try {
+    const ready = await waitForSandboxServer(serverFacts, base, logFile(branch))
+    console.log(`preview server answered health in ${ready.elapsedMs}ms`)
+  } catch (error) {
+    // The startup we abandon is ours to clean up. A recorded exit is proof the
+    // child is gone even when the pid is still a zombie awaiting reap, so it
+    // answers ahead of the liveness probe.
+    const discarded = await discardStartedServer(pid, {
+      configDir: previewConfigDir(branch),
+      pidPath: pidFile(branch),
+      isAlive: p => (serverFacts.exit ? false : alive(p)),
+    })
+    console.error(error.message)
+    if (!discarded.gone) {
+      console.error(
+        `pid ${discarded.pid} SURVIVED SIGTERM AND SIGKILL and may still be on ${base}. Its pidfile ` +
+        `${pidFile(branch)} and config ${previewConfigDir(branch)} are DELIBERATELY LEFT IN PLACE — ` +
+        'they are what marks that process as this preview\'s. Inspect it, then: tlda-dev serve stop',
+      )
     }
+    console.error(JSON.stringify({ ...error.diagnosis, pid, base, discarded }, null, 2))
+    process.exit(1)
   }
-  if (!up) { console.error(`server didn't answer on ${base} within 30s — see ${logFile(branch)}`); process.exit(1) }
 
   // No --project: seed a scratch document so the preview opens on something.
   //
@@ -575,11 +851,12 @@ export async function cmdServeWorktree(args) {
         TMUX_PANE: undefined,
       },
     })
+    const dfacts = watchSpawnedChild(dchild)
     dchild.unref()
     daemonPid = dchild.pid
     writeFileSync(daemonPidFile(branch), String(daemonPid))
     try {
-      await waitForSandboxDaemon(daemonPid, daemonSocket, daemonLogFile(branch))
+      await waitForSandboxDaemon(dfacts, daemonSocket, daemonLogFile(branch))
     } catch (error) {
       try { process.kill(daemonPid) } catch { /* already exited */ }
       try { process.kill(pid) } catch { /* already exited */ }
@@ -683,7 +960,7 @@ async function statusPreview(branch, json, flags = new Set()) {
   }
   const pid = readPid(branch)
   const m = readManifest(branch)
-  const up = pid && m ? await health(m.base) : false
+  const up = pid && m ? (await health(m.base)).ok : false
   const state = { branch, status: up ? 'up' : pid ? 'starting-or-wedged' : 'down', ...(m || {}), pid }
   if (json) { console.log(JSON.stringify(state, null, 2)); return }
   if (up) {

@@ -66,7 +66,7 @@ import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
 import { FleetChatTool } from './tools/FleetChatTool'
 import { FleetAgentsTool } from './tools/FleetAgentsTool'
-import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
+import { hasSourceMapping } from '../shared/document-formats.mjs'
 import { fetchDocumentSvgPages } from './svgPageFetchPolicy'
 import { FleetSearchTool } from './tools/FleetSearchTool'
 import { FleetInboxTool } from './tools/FleetInboxTool'
@@ -90,10 +90,7 @@ import { FleetToolGhost } from './overlays/FleetToolGhost'
 import { FleetNudgeGuides } from './overlays/FleetNudgeGuides'
 import { ChromeConditions } from './chrome/ChromeConditions'
 import { RecognizeButton } from './overlays/RecognizeButton'
-import { RecordingsButton } from './overlays/RecordingsButton'
-import { RecordingViewer } from './overlays/RecordingViewer'
 import { isClassroomSurface } from './classroom/classroomSurface'
-import { useBook } from './BookContext'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
 import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
@@ -103,6 +100,7 @@ import { setCurrentDocumentInfo, pageSpacing, type SvgDocument } from './svgDocu
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
+import { ClassroomDocViewPlayback } from './overlays/ClassroomDocViewPlayback'
 
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
@@ -484,8 +482,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
 
   // --- Hooks ---
   const projectName = document.name
-  const book = useBook()
-  const recordingProjectName = book?.bookName ?? projectName
 
   const isPresentation = document.format === 'slides'
   const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
@@ -777,12 +773,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         <SemanticHighlightPill />
         {!IS_CLASSROOM && <AgentAttentionCanvas />}
         <RecognizeButton />
-        {/* The way in to the recording viewer. It plays back into a corner PiP
-            over the live document, and the viewer itself is mounted below —
-            this list is the only thing that ever opened it, and a "UI clutter"
-            commit (71c56104a) took it out of the chrome in August, which left
-            the whole playback path unreachable rather than merely tidier. */}
-        {IS_CLASSROOM && <RecordingsButton />}
         <BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud />
         {!IS_CLASSROOM && <VersionStampSlot />}
         {!IS_CLASSROOM && <FleetToolGhost />}
@@ -1194,6 +1184,9 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
       {!IS_CLASSROOM && editorRef.current && (
         <FleetHUD mainEditor={editorRef.current} />
       )}
+      {IS_CLASSROOM && editorRef.current && (
+        <ClassroomDocViewPlayback mainEditor={editorRef.current} />
+      )}
       </div>
       {editorRef.current && (
         <div className="managed-surface-overlay-owner">
@@ -1301,7 +1294,17 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           // Load source map (labels index) for ref resolution.
           // For multi-target docs, pass targets so per-target source-maps are merged
           // with global page offsets — the bare alias only covers the primary target.
-          if (!HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')) {
+          // The same question as the annotation anchor asks, and for the same
+          // reason: a source map is a LaTeX build artifact, so ask whether this
+          // document has source mapping rather than listing the formats that do
+          // not. The old test was a negative against HTML_PAGE_FORMATS plus an
+          // inline ['png','slides'] literal repeated at four sites — the drift
+          // that shared/document-formats.mjs was written to end, still spelled
+          // out by hand here.
+          //
+          // A PDF reaches this line with pages and a targets array, so under the
+          // old test it would fetch a labels index that no build ever wrote.
+          if (hasSourceMapping(document)) {
             sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
           }
 
@@ -1641,7 +1644,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </ProjectContext.Provider>
-    <RecordingViewer projectName={recordingProjectName} shapeUtils={shapeUtils} tools={tools} licenseKey={LICENSE_KEY} />
     </>
   )
 }

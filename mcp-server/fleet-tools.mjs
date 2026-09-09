@@ -79,6 +79,7 @@ import { formatLoginMarker } from '../agent-runtime/daemon-jsonl-hot-path.mjs';
 import { resolveMintFacts } from '../daemon/mint-store.mjs';
 import { matchesLocalParentThread, parentTranscriptContainsToolUse } from './lib/native-parent-thread.mjs';
 import { normalizeThreadFilterExpression } from './lib/thread-filter-normalize.mjs';
+import { regionTransferDiff, transferRegion } from './lib/region-transfer.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -555,7 +556,12 @@ function sendOneShotWS(envName, type, params = {}, opts = {}) {
       if (settled) return;
       settled = true;
       try { ws.close(); } catch { /* best-effort cleanup; timeout is already reported */ }
-      reject(new Error(`fleet WS request timed out after ${deadlineMs}ms (env=${envName}, type=${type})`));
+      // Same read, same caller, same remedy -- this branch is only taken because
+      // the tool named an env. A caller's deadline message must not depend on
+      // which of the two sockets carried its query.
+      reject(typeof opts.makeDeadlineError === 'function'
+        ? opts.makeDeadlineError({ type, deadlineMs })
+        : new Error(`fleet WS request timed out after ${deadlineMs}ms (env=${envName}, type=${type})`));
     }, deadlineMs);
     function finish(fn, value) {
       if (settled) return;
@@ -1506,6 +1512,24 @@ export function getFleetTools() {
   const spawnPermissionText = spawnPermissionDescriptions();
   const tools = [
     // ---- Registration & Identity ----
+    {
+      name: 'region_transfer',
+      description: 'Atomically replace one exact string found inside a bounded target line range with bytes from a Markdown staging-file line range. The exact string must occur once in that range. Line ranges are 1-based and inclusive; the final selected line ending is outside each range. The call has no inline replacement text.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          source_file: { type: 'string', description: 'Markdown staging file, absolute or relative to the agent working directory.' },
+          source_start_line: { type: 'integer', minimum: 1, description: 'First source line (inclusive).' },
+          source_end_line: { type: 'integer', minimum: 1, description: 'Last source line (inclusive).' },
+          target_file: { type: 'string', description: 'Target file, absolute or relative to the agent working directory.' },
+          target_start_line: { type: 'integer', minimum: 1, description: 'First line of the bounded target search range (inclusive).' },
+          target_end_line: { type: 'integer', minimum: 1, description: 'Last line of the bounded target search range (inclusive).' },
+          expected: { type: 'string', description: 'Exact UTF-8 string to replace; it must occur exactly once inside the target search range.' },
+        },
+        required: ['source_file', 'source_start_line', 'source_end_line', 'target_file', 'target_start_line', 'target_end_line', 'expected'],
+        additionalProperties: false,
+      },
+    },
     {
       name: 'login',
       description: 'Log this agent process into an existing server-created shell. Spawned agents call this at session start.',
@@ -2615,6 +2639,29 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
   }
   try {
   // ==== Registration & Identity ====
+
+  if (name === 'region_transfer') {
+    try {
+      const result = transferRegion({
+        sourceFile: args?.source_file,
+        sourceStartLine: args?.source_start_line,
+        sourceEndLine: args?.source_end_line,
+        targetFile: args?.target_file,
+        targetStartLine: args?.target_start_line,
+        targetEndLine: args?.target_end_line,
+        expected: args?.expected,
+      }, { cwd: getAgentCwd() || process.env.PWD || process.cwd() });
+      const diff = regionTransferDiff({
+        targetPath: result.targetPath,
+        targetStartLine: result.targetLine,
+        oldString: result.oldString,
+        newString: result.newString,
+      });
+      return { content: [{ type: 'text', text: `Transferred ${result.sourceBytes} bytes from ${result.sourcePath} into ${result.targetPath}; replaced ${result.replacedBytes} bytes.\n\n\`\`\`diff\n${diff}\n\`\`\`` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `region_transfer: ${error.message}` }], isError: true };
+    }
+  }
 
   // ---- login ----
   // Identity in this block is SPECIFIED. Read scratch/daemon-mint-sift.md
@@ -4628,6 +4675,19 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       };
     };
 
+    // What a thread read can actually do about its own deadline. The generic
+    // transport sentence names the socket and the number, so it reads as a
+    // network fault; the thing that expires here is almost always the query --
+    // a bounded thread (since AND until both set) raises the row limit to
+    // 10,000, and an unbounded one takes `page_size`. Skip hit this at
+    // 45,000ms and asked for the message, 2026-09-01 23:14:01.
+    const threadReadDeadlineError = ({ type, deadlineMs }) => new Error(
+      `the thread read (${type}) did not come back within ${deadlineMs}ms. `
+      + `This is the query being larger than the deadline, not the server being down. `
+      + `Ask for less of it: lower page_size (currently ${pageSize}), or narrow the window with since/until. `
+      + `A thread with BOTH since and until set is bounded and reads up to 10,000 rows in one go, which is the shape that most often expires.`,
+    );
+
     const fetchEventsForAgent = async (agentId) => {
       // Fetch one extra row so we can detect "there's more" without a COUNT.
       const params = {
@@ -4643,7 +4703,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       if (resolvedUntil) params.before = resolvedUntil;
       if (args.types?.length === 1) params.eventType = args.types[0];
       else if (args.types?.length > 1) params.eventTypes = args.types;
-      const data = await mcpFleetTransport.ephemeral('fleet-search', params);
+      const data = await mcpFleetTransport.ephemeral('fleet-search', params, { makeDeadlineError: threadReadDeadlineError });
       if (!data) return;
       for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
         filtered.push(toThreadMessage(e));
@@ -4667,7 +4727,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       if (resolvedUntil) params.before = resolvedUntil;
       if (args.types?.length === 1) params.eventType = args.types[0];
       else if (args.types?.length > 1) params.eventTypes = args.types;
-      const data = await mcpFleetTransport.ephemeral('fleet-search', params);
+      const data = await mcpFleetTransport.ephemeral('fleet-search', params, { makeDeadlineError: threadReadDeadlineError });
       if (!data) return;
       threadUnresolvedNames = data.unresolvedNames || [];
       for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
@@ -5445,7 +5505,7 @@ let _channelRWS = null;  // ResilientWS instance
 
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
-const FLEET_TOOL_READ_WAIT_MS = 45_000;
+const FLEET_TOOL_READ_WAIT_MS = Number(process.env.TLDA_FLEET_READ_DEADLINE_MS || 45_000);
 
 // Recipient resolution is a READ that happens before anything is enqueued, so a
 // deadline here costs a retry and cannot lose a message -- unlike a deadline on
@@ -5490,6 +5550,10 @@ function _sendWSOnce(type, params = {}, opts = {}) {
     type,
     idleTimeoutMs,
     deadlineMs,
+    // A caller that knows what its read costs can say so. Without this the
+    // deadline reports only the transport and the number, which is true of
+    // every expired read and actionable for none of them.
+    makeDeadlineError: opts.makeDeadlineError,
     send: () => _channelRWS.send({
       type,
       ...params,
@@ -5694,6 +5758,7 @@ let mcpFleetTransport = createFleetOperationTransport({
     sendFleetRequestAttempt(operation, payload, {
       deadlineMs: Number.isFinite(options.deadlineMs) ? options.deadlineMs : FLEET_TOOL_READ_WAIT_MS,
       idleTimeoutMs: Number.isFinite(options.idleTimeoutMs) ? options.idleTimeoutMs : null,
+      makeDeadlineError: options.makeDeadlineError,
     }),
   sendDurable: sendDurableFleet,
   resolveSender: () => activeAgentId(),

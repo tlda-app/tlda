@@ -3,6 +3,7 @@ import { SvgDocumentEditor } from '../SvgDocument'
 import { createHtmlDocumentFromPageInfo } from '../svgDocumentLoader'
 import type { SvgDocument } from '../loaders/types'
 import { classroomApi, type Assignment, type Submission } from './api'
+import { submissionLabel } from './markingLabels'
 import './ClassroomWorkspace.css'
 
 // What a student sees of their own work.
@@ -141,7 +142,7 @@ export function StudentWork() {
     <aside className="markingLifecycle" aria-label={publicStudentId ? 'Public student submission' : 'Your submission'}>
       {publicStudentId && <span>Public submission: {publicStudentId}</span>}
       <span>Submitted {new Date(submission.submittedAt).toLocaleString()}</span>
-      <span className="statusChip">{submission.gradingStatus}</span>
+      <span className="statusChip">{submissionLabel(submission.gradingStatus)}</span>
       {assignment?.solutionsLocked && <span>solutions unlock when you submit</span>}
       {returned.length > 0 && <span>{returned.length} comment{returned.length === 1 ? '' : 's'}</span>}
       {error && <span className="classroomError">{error}</span>}

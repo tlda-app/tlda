@@ -382,3 +382,144 @@ So none of this is in any commit, `git log` will never show it, and a search of
 this tree for the fix will find only this paragraph. Editing it changes the
 release path for the next push with no review and no rollback but a backup —
 treat it accordingly.
+
+## Which boxes have a guarded remote
+
+As of 2026-09-03 there are five, under `~/work/deploy/`: `testing`
+(`fly.live.toml`), `stable`, `pic`, and — added that day — `pic-dev` and
+`pic-preview`. Each is a bare repository whose `hooks/pre-receive` is a
+six-line wrapper that exports `DEPLOY_REPO_NAME`, `DEPLOY_FLY_CONFIG`,
+`DEPLOY_HEALTH_URL` and `DEPLOY_ROOT`, then `exec`s the shared
+`hooks/pre-receive-common.sh`. Adding a box is that file and nothing else.
+
+**`DEPLOY_HEALTH_URL` must be probed before it is written down.**
+`verify_serving` fails closed on a URL that does not answer, so a wrong one
+does not degrade the deploy, it blocks every deploy to that box. Check
+`curl -fsS "$URL/api/build-info"` returns JSON first.
+
+### Two ways a new deploy remote is born broken
+
+Both were hit creating `pic-dev` and `pic-preview`, and neither announces
+itself — the first looks like a hang, the second looks like success.
+
+**An empty bare repository makes the first push transfer the entire history**,
+and the hook does not run until the pack has arrived. Three attempts timed out
+at two and three minutes with no output. Seed it instead:
+
+```sh
+git clone --bare --local ~/work/tlda ~/work/deploy/<box>   # hardlinked, instant
+```
+
+**With no refs at all, `git push` has nothing to negotiate against and repacks
+all ~11,000 commits on every push.** That is why each repository keeps a
+`refs/deploy/base` pointing at a recent `main` commit. It is a negotiation base
+and nothing else reads it. **Do not tidy it away** — deleting it reintroduces
+the multi-minute push.
+
+**`refs/heads/main` must be absent until the first real deploy.** Seed the
+objects, then delete every ref the clone brought over:
+
+```sh
+git --git-dir=<repo> for-each-ref --format='delete %(refname)' \
+  | git --git-dir=<repo> update-ref --stdin
+git --git-dir=<repo> update-ref refs/deploy/base <a recent main sha>
+```
+
+If `refs/heads/main` is left at the current tip, the first `git push … main`
+reports **`Everything up-to-date`**, the pre-receive hook never runs, and
+nothing is built or deployed. **That is a deploy remote that silently does
+nothing** — the exact failure this whole path exists to remove, wearing the
+costume of a successful push.
+
+### A push prints nothing for its first several minutes
+
+`check_ref` runs `node --check` over every server `.mjs`, the server-import
+check and the conflict-marker scans **before** the deploy lock is taken — and
+`deploy-logs/` is not written until after it. So there is a stretch at the
+start of every push with **no log file to tail and no output on the push**.
+
+The hook's own comment claimed *"about a minute on a warm checkout. Measured at
+62s."* **Measured 2026-09-03 on `pic-preview` at load average ~20 on 10 cores:
+about nine minutes.** Both are real — the box was busier for the second — which
+is why any figure here has to carry the load it was taken at.
+
+**This is worth knowing before you push, not after.** Nine silent minutes reads
+as a hang at exactly the point where the hook is doing its most valuable work,
+and a person who concludes that either kills a good deploy or goes around it.
+Going around it is what this whole path exists to prevent.
+
+(The comment in `pre-receive-common.sh` has been corrected, but that file is
+outside git — see below — so this is the copy that survives.)
+
+**Verifying a new remote costs no build.** Push a non-`main` ref: `check_ref`
+rejects it before `npm ci`, which proves the hook is wired, executable and
+reached.
+
+```
+$ git push ~/work/deploy/pic-preview <sha>:refs/heads/wiring-probe
+remote: push rejected: only refs/heads/main is deployable, got refs/heads/wiring-probe
+```
+
+## A bare `fly deploy` from a fresh checkout fails under two different names
+
+`Dockerfile.live` copies two things **the guarded path is the only producer of**:
+
+| line | copies | written by |
+|---|---|---|
+| `261` | `server/build-info.json` | the hook's stamp, or `live-deploy-preflight.mjs` |
+| `319` | `dist/` | `npm run build` (`tsc -b && vite build`) |
+
+Both are gitignored, so **a fresh worktree has neither**, and the image build
+cannot start. Measured 2026-09-03 with `fly deploy --build-only` from a clean
+detached worktree at `4490e53ac`: **exit 1**, with *both* COPY steps failing —
+
+```
+#26 [22/39] COPY server/build-info.json ./server/build-info.json
+#26 ERROR: ... "/server/build-info.json": not found
+#39 [35/39] COPY dist/ ./dist/
+#39 ERROR: ... "/dist": not found
+```
+
+**The single top-level `Error:` line named `/dist`.** On an earlier occasion
+the same fault, on the same Dockerfile, surfaced as
+`"/server/build-info.json": not found`.
+
+**BuildKit is a DAG, not a script.** It schedules both COPY steps in parallel
+and reports whichever resolves last, so **the error wording is not stable
+across runs** even though the fault is identical. Two consequences, and the
+second is the expensive one:
+
+- **Someone who hits this twice will reasonably believe they have two
+  different problems**, and will go looking for a missing `dist` on one day and
+  a missing stamp on the next.
+- **Neither wording names the cause.** The true statement is *nothing built the
+  products this image consumes*, and no error says it. What both actually mean
+  is **you are deploying from outside the guarded path.**
+
+**Do not "fix" this by generating the stamp unconditionally.** Until
+`fly.toml` was deleted, this loud failure was the only thing standing between a
+bare `fly deploy` and silently shipping a stale client — the `dist/` in the
+context would simply have been whatever was last built there, which is how a
+client 35 commits behind reached a live box. **The trap is the last thing
+standing between a bare `fly deploy` and shipping a stale client, and it should
+stay until something else refuses first. With `fly.toml` deleted, something
+else now does.**
+
+## A guarded remote does not stop anyone going around it
+
+On 2026-09-03 `tlda-pic` — the student-facing box, which **had** a working
+guarded remote — was deployed by hand instead: `server/build-info.json` was
+written by hand to get past the Docker build failing on that gitignored file,
+then `fly deploy --process-groups app` was run directly. The box served a build
+whose stamp no build step produced.
+
+It was identifiable only because the hand-written stamp carried **six**
+fractional-second digits (`datetime.isoformat()`) where the hook's generator
+emits **three** (`new Date().toISOString()`), and because `pic/deploy-logs` had
+nothing since `2bee45d53` that morning.
+
+**So the reason to bypass is a build error, and the bypass is always available
+when a config sits in the root.** Deleting `fly.toml` removed the unflagged
+version of it. It did not remove the motive, and no mechanism in this document
+does. If you are hand-writing a build artifact to get a deploy through, that is
+the signal to fix the build, not the deploy.

@@ -50,7 +50,10 @@ function boundsOf(shape: ShapeRecord | undefined) {
   return { x: shape.x, y: shape.y, w, h }
 }
 
-export function createIndexEditor(initialShapes: ShapeRecord[] = []) {
+export function createIndexEditor(
+  initialShapes: ShapeRecord[] = [],
+  onShapeUpdate?: (shape: ShapeRecord, update: { id: TLShapeId | string; props?: Record<string, unknown>; [key: string]: unknown }) => void,
+) {
   const shapes = atom<Map<string, ShapeRecord>>(
     'index-editor-shapes',
     new Map(initialShapes.map(shape => [String(shape.id), shape])),
@@ -75,14 +78,16 @@ export function createIndexEditor(initialShapes: ShapeRecord[] = []) {
       const next = snapshot()
       const current = next.get(String(update.id))
       if (!current) return editor
-      next.set(String(update.id), {
+      const updated = {
         ...current,
         ...update,
         // Props merge rather than replace: every caller in the chat passes the
         // one prop it is changing, the way updateShape behaves on the canvas.
         props: { ...current.props, ...(update.props ?? {}) },
-      } as ShapeRecord)
+      } as ShapeRecord
+      next.set(String(update.id), updated)
       write(next)
+      onShapeUpdate?.(updated, update)
       return editor
     },
     deleteShapes: (ids: (TLShapeId | string)[]) => {

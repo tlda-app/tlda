@@ -13,7 +13,8 @@ function createLedger() {
   return {
     rows,
     get(id) {
-      return rows.get(id) || null
+      const row = rows.get(id)
+      return row && !row.dead ? row : null
     },
     grantFor(agent) {
       assert.equal(agent.id, 'localhost')
@@ -32,15 +33,16 @@ function createLedger() {
       rows.set(id, { id, ...row })
       return rows.get(id)
     },
-    async delete(id) {
-      rows.delete(id)
+    async markDead(id) {
+      const row = rows.get(id)
+      if (row) rows.set(id, { ...row, dead: 1 })
     },
     async close() {
     },
   }
 }
 
-async function testThrownBindingRunsFullFreshCleanupAndRemovesSeededGrant() {
+async function testThrownBindingRunsFullFreshCleanupAndReleasesSeededGrant() {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-doctor-yolo-seat-binding-'))
   const localAgentLedgerPath = join(dir, 'local-agents.db')
   const localAgentLedger = createLocalAgentLedger(localAgentLedgerPath)
@@ -55,8 +57,12 @@ async function testThrownBindingRunsFullFreshCleanupAndRemovesSeededGrant() {
     localAgentId: launched.localAgentId,
     serverAgentId: launched.fleetId,
     friendlyName: 'doctor-yolo-test',
+    sessionId: 'doctor-yolo-session',
+    harness: 'codex',
+    model: 'gpt-5',
     tmuxName: launched.tmuxSession,
     cwd: '/tmp/tlda-doctor-yolo-test',
+    permissionGrant: 'ops',
   })
   localAgentLedger.close()
   const effects = {
@@ -97,13 +103,26 @@ async function testThrownBindingRunsFullFreshCleanupAndRemovesSeededGrant() {
   assert.equal(effects.runtimeTerminated, true, 'thrown bind/readback failure must terminate the launched runtime')
   const readbackLedger = createLocalAgentLedger(localAgentLedgerPath)
   try {
-    assert.equal(readbackLedger.get(launched.localAgentId), null, 'thrown bind/readback failure must remove the local ledger row')
+    assert.equal(readbackLedger.get(launched.localAgentId), null, 'thrown bind/readback failure must release the active local ledger row')
+    assert.equal(readbackLedger.db.prepare('SELECT dead FROM local_agents WHERE local_agent_id = ?').get(launched.localAgentId)?.dead, 1,
+      'thrown bind/readback failure must retain the local ledger row marked dead')
+    assert.deepEqual(readbackLedger.db.prepare('SELECT session_id, harness, model FROM local_agent_conversations WHERE local_agent_id = ?').get(launched.localAgentId), {
+      session_id: 'doctor-yolo-session',
+      harness: 'codex',
+      model: 'gpt-5',
+    }, 'thrown bind/readback failure must retain the conversation')
+    assert.deepEqual(readbackLedger.db.prepare('SELECT tmux_name, cwd, permission_grant FROM local_agent_process_recipes WHERE local_agent_id = ?').get(launched.localAgentId), {
+      tmux_name: launched.tmuxSession,
+      cwd: '/tmp/tlda-doctor-yolo-test',
+      permission_grant: '"ops"',
+    }, 'thrown bind/readback failure must retain the process recipe')
   } finally {
     readbackLedger.close()
     rmSync(dir, { recursive: true, force: true })
   }
   assert.equal(effects.serverMarkedDead, true, 'thrown bind/readback failure must mark the server row dead')
-  assert.equal(ledger.get(launched.fleetId), null, 'doctor-yolo seeded grant must be removed after failed binding')
+  assert.equal(ledger.get(launched.fleetId), null, 'doctor-yolo seeded grant must be released after failed binding')
+  assert.equal(ledger.rows.get(launched.fleetId)?.dead, 1, 'doctor-yolo seeded grant must be retained and marked dead')
   assert.deepEqual(apiCalls.map(call => `${call.method} ${call.pathname}`), ['POST /api/agents/fleet%3Adoctor-yolo-test/mark-dead'])
 }
 
@@ -138,7 +157,7 @@ async function testExistingGrantIsPreservedOnFailedBinding() {
   assert.equal(ledger.get(fleetId)?.source, 'pre-existing-test-grant', 'pre-existing grants must not be deleted')
 }
 
-await testThrownBindingRunsFullFreshCleanupAndRemovesSeededGrant()
+await testThrownBindingRunsFullFreshCleanupAndReleasesSeededGrant()
 await testExistingGrantIsPreservedOnFailedBinding()
 
 console.log('doctor yolo seat binding behavioral regression tests passed')

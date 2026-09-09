@@ -21,5 +21,5 @@ export function isClassroomSurface(): boolean {
 }
 
 export function shouldResolveDocumentLayerIdentity(params: URLSearchParams): boolean {
-  return !params.get('markingCourse')
+  return Boolean(params.get('course') && !params.get('markingCourse'))
 }

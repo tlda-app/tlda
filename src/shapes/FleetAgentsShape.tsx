@@ -46,6 +46,7 @@ import {
   projectFleetAgentDirectoryFolding,
   toFleetAgentDirectoryRow,
 } from './FleetAgentDirectoryRow'
+import { fleetAgentListed } from './FleetAgentDirectoryModel'
 
 
 const DEFAULT_W = 340
@@ -636,7 +637,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     const liveIds = new Set<string>()
     const list: any[] = []
     for (const a of agents) {
-      if (a.dead) continue
+      if (!fleetAgentListed(a)) continue
       const ts = a.last_active ? new Date(a.last_active).getTime() : 0
       // The band IS the displayed time bucket — same value the row shows.
       const band = formatFleetAgentRelativeTime(ts)

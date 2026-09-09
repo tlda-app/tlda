@@ -5,10 +5,8 @@ Template `_quarto-tlda.yml` for rendering Quarto projects to tlda.
 ## Setup
 
 1. Copy `_quarto-tlda.yml` into your Quarto project root (alongside `_quarto.yml`)
-2. Install required extensions:
-   ```bash
-   quarto add davidahirshberg/quarto-inline-svg
-   ```
+2. Copy the bundled `inline-svg/` extension into the project's `_extensions/`
+   directory.
 3. Edit the config: set your book title, chapters, and any project-specific settings
 4. Render: `quarto render --profile tlda`
 5. Push to tlda: `tlda create my-project --format html --dir _book-tlda`

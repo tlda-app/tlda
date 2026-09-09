@@ -250,7 +250,7 @@ lexical property as labels, applied to names:
 - **Agent search** (`:4743`) — a `UNION ALL` branch over `name_history` so
   searching an agent's former name still finds it.
 
-Plus `bin/feelings-export.mjs:58` (`nameAt`), and the migration/merge scripts.
+The migration and merge scripts also read this history.
 
 **There was one dead reader, now deleted.** `nameHistory(fleetId)` and its
 prepared statement had no caller anywhere — only an entry in the exposed-methods

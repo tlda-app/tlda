@@ -1,11 +1,11 @@
-# fly.test-overleaf.toml — THROWAWAY test box for the Overleaf-import proof.
-# Separate Fly app (tlda-overleaf-test), NOT the live `tldraw-sync-skip`.
+# fly.test-overleaf.toml — throwaway test box for a document-import proof.
+# Separate Fly app (`your-tlda-import-test`), not the live application.
 # Unlike fly.live.toml this one:
 #   - serves the SPA itself (public http_service) instead of tailnet-only
 #   - is token-gated (TLDA_TOKEN_RW/READ secrets), not TLDA_NO_AUTH
 #   - auto-stops when idle (scale-to-zero compute; only the small volume bills)
 # Deploy:  fly deploy -c fly.test-overleaf.toml
-app = "tlda-overleaf-test"
+app = "your-tlda-import-test"
 primary_region = "sjc"
 
 [build]

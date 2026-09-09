@@ -36,9 +36,7 @@ import {
   checkpointProjectPartWritebackOffloop,
   indexedProjectLifecycleStatuses,
 } from '../lib/project-store.mjs'
-import { admitProposal, deleteProjectAndBuildSubmissions } from '../lib/build-dispatch.mjs'
-import { listProposalRefs } from '../lib/git-proposals.mjs'
-import { createProjectRebuildHandler } from '../lib/project-rebuild.mjs'
+import { deleteProjectAndBuildSubmissions } from '../lib/build-dispatch.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
@@ -942,18 +940,6 @@ router.get('/:name/source-head', requireRead, async (req, res) => {
     res.json({ revision: await git.head(req.params.name) })
   } catch (error) {
     res.status(404).json({ error: error.message })
-  }
-})
-
-// Re-run the build for the revision the project already holds. The reasoning,
-// and why no other route can do this, is in project-rebuild.mjs.
-const rebuildProject = createProjectRebuildHandler({ readProject, sourceLifecycleStore, listProposalRefs, admitProposal })
-router.post('/:name/rebuild', requireRw, async (req, res) => {
-  try {
-    const { status, body } = await rebuildProject(req.params.name)
-    res.status(status).json(body)
-  } catch (error) {
-    res.status(500).json({ error: error.message })
   }
 })
 

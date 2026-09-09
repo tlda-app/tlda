@@ -17,8 +17,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
+import ts from 'typescript'
 
-const BOTS_ROOT = process.env.TLDA_BOTS_ROOT || '/Users/skip/work/tlda-bots'
+const BOTS_ROOT = process.env.TLDA_BOTS_ROOT || join(homedir(), 'work', 'tlda-bots')
 
 if (!existsSync(BOTS_ROOT)) {
   console.log(`bot package surface: skipped (no ${BOTS_ROOT})`)
@@ -35,16 +37,16 @@ function walk(dir, out = []) {
   return out
 }
 
-// Both `import { a } from '@tlda/bot'` and a multi-line brace block.
-const IMPORT_RE = /import\s*\{([^}]*)\}\s*from\s*['"]@tlda\/bot['"]/gs
-
 const needed = new Map()
 for (const file of walk(BOTS_ROOT)) {
   const src = readFileSync(file, 'utf8')
-  for (const match of src.matchAll(IMPORT_RE)) {
-    for (const raw of match[1].split(',')) {
-      const symbol = raw.trim().split(/\s+as\s+/)[0].trim()
-      if (!symbol) continue
+  const sourceFile = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS)
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || statement.moduleSpecifier.text !== '@tlda/bot') continue
+    const bindings = statement.importClause?.namedBindings
+    if (!bindings || !ts.isNamedImports(bindings)) continue
+    for (const element of bindings.elements) {
+      const symbol = element.propertyName?.text || element.name.text
       if (!needed.has(symbol)) needed.set(symbol, [])
       needed.get(symbol).push(file.slice(BOTS_ROOT.length + 1))
     }

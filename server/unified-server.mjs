@@ -18,6 +18,13 @@
  *   PROJECTS_DIR — project storage (default: server/projects/)
  */
 
+// First statement of the module body — and it must stay first. Everything above
+// is static import evaluation, which produces no output at all, so under
+// TLDA_STARTUP_TRACE this marker is the line that separates "still importing"
+// from "importing finished". Below the refusal it would never print for a
+// process that dies on the guard, which is one of the cases worth seeing.
+markStartupPhase('server-body', 'mark')
+
 if (!process.argv.includes('--i-am-tlda-cli')) {
   console.error('Use `tlda server start` to run the server. Do not run unified-server.mjs directly.')
   process.exit(1)
@@ -47,9 +54,11 @@ import { createHash, randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, getRwToken, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
+import { createFleetFrameStallTracker, resolveStallMs } from './lib/fleet-frame-stalls.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
-import { viewFormat } from '../shared/document-formats.mjs'
+import { viewFormat, hasSourceMapping } from '../shared/document-formats.mjs'
+import { resolveContainedPath } from './lib/path-containment.mjs'
 import { resolveLocalImage } from '../shared/local-image.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
@@ -76,6 +85,7 @@ import { createGitHttpHandler } from './lib/git-http.mjs'
 import { parseHistorySeedRef } from '../shared/history-seed-ref.mjs'
 import { selfBaseUrl } from '../shared/self-base-url.mjs'
 import { listProposalRefs, parseDaemonProposalRef } from './lib/git-proposals.mjs'
+import { createSourceProposalAdmissionConnectionDispatcher, createSourceProposalAdmissionHandler } from './lib/source-proposal-admission.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { classroomPrincipal, createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
 import { ClassroomStore } from './lib/classroom-store.mjs'
@@ -136,6 +146,7 @@ import {
 } from '../shared/inbox-reference-materialization.mjs'
 import { formatMaterializationFailureNotification } from './lib/materialization-notifications.mjs'
 import { createBackendLogger } from './lib/observability/logger.mjs'
+import { markStartupPhase, traceStartupPhase, traceStartupPhaseSync } from '../shared/startup-trace.mjs'
 import {
   createControlPlaneTraceStore,
   createTraceId,
@@ -300,7 +311,7 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 const classroomStore = new ClassroomStore()
 
 // Initialize stores
-await initProjectStore(PROJECTS_DIR)
+await traceStartupPhase('init-project-store', () => initProjectStore(PROJECTS_DIR))
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
 initBuildDispatcher()
 
@@ -311,7 +322,15 @@ const fleetStore = new FleetStoreClient(process.env.TLDA_FLEET_DB, {
   taskDoc: true,
   taskDocOptions: { projectsDir: PROJECTS_DIR },
 })
-await fleetStore.ready()
+await traceStartupPhase('fleet-store-ready', () => fleetStore.ready())
+const existingTldaIdentity = await fleetStore.getAgent('fleet:tlda')
+await fleetStore.upsertAgent({
+  id: 'fleet:tlda',
+  friendly_name: 'tlda',
+  registered_at: existingTldaIdentity?.registered_at || new Date().toISOString(),
+  dead: false,
+  human: false,
+})
 if (process.env.TLDA_TEST_THROW_ON_FULL_ROSTER === '1') {
   for (const method of ['getAliveAgents', 'getAliveAgentsPage']) {
     const original = fleetStore[method]?.bind(fleetStore)
@@ -341,6 +360,15 @@ scheduleStartupTaskDocFlush()
 const SESSION_BACKFILL_STARTUP_DELAY_MS = Number(process.env.TLDA_SESSION_BACKFILL_STARTUP_DELAY_MS || 60_000)
 
 const HOT_OP_WARN_MS = Number(process.env.TLDA_HOT_OP_WARN_MS || 50)
+const sourceProposalAdmissionHandler = createSourceProposalAdmissionHandler({
+  parseDaemonProposalRef,
+  sourceLifecycleStore,
+  listProposalRefs,
+  admitProposal,
+  updateProject,
+  recordServerPerfEvent,
+  slowThresholdMs: HOT_OP_WARN_MS,
+})
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 })
 eventLoopDelay.enable()
 let lastEventLoopLag = { maxMs: 0, meanMs: 0, at: Date.now() }
@@ -1763,13 +1791,48 @@ async function surfaceFleetWsError(ws, msg, err) {
   }
 }
 
+// Nothing anywhere recorded that a fleet WS frame ARRIVED, and that is the exact
+// gap in the first-load identity hang: the client sends `agents-page`, waits 45s,
+// and times out, with no server-side record either way. So the two remaining
+// shapes are indistinguishable —
+//
+//   frame recorded, never answered  -> it arrived and the handler stalled
+//   never recorded                  -> it never reached the router, and the
+//                                      question is connection acceptance
+//
+// Measured 2026-09-03 before building this: across the page-hang window
+// (06:54–07:29Z) the lag profiler dumped every ~70s with no gaps, all 252–428ms
+// and idle-dominated. The server took the frames, was not busy, and did not
+// answer — so the loop is excluded and this is what is left to ask.
+//
+// NOT logged per frame. stdout is the wrong sink anyway: `fly logs` holds ~57
+// seconds, which cannot answer a question asked after the fact. The hot path does
+// a Map set and delete for id-bearing frames only — no string building, no I/O —
+// and a low-frequency sweep appends only frames that are still unanswered. A
+// healthy server writes nothing at all.
+const FLEET_FRAME_STALL_MS = resolveStallMs()
+const FLEET_FRAME_STALL_LOG = join(CONFIG_DIR, 'fleet-frame-stalls.log')
+const fleetFrameStalls = createFleetFrameStallTracker({
+  stallMs: FLEET_FRAME_STALL_MS,
+  // Async on purpose: sync IO on this process's loop is the documented hazard here,
+  // and a diagnostic must never be the thing that stalls the server.
+  append: lines => fs.appendFile(FLEET_FRAME_STALL_LOG, lines, () => {}),
+})
+
+setInterval(() => fleetFrameStalls.sweep(), Math.max(5000, Math.floor(FLEET_FRAME_STALL_MS / 2))).unref()
+
 async function handleFleetWsFrame(ws, raw) {
   let msg = null
+  let frameKey = null
   try {
     msg = JSON.parse(raw.toString())
+    // Only frames that expect a reply can be "unanswered".
+    if (msg?.id) frameKey = fleetFrameStalls.note(ws, msg)
     await fleetOperationContext.run(msg.fleet_operation || null, () => handleFleetWsMessage(ws, msg))
   } catch (err) {
     await surfaceFleetWsError(ws, msg, err)
+  } finally {
+    fleetFrameStalls.settle(frameKey)
   }
 }
 
@@ -3318,10 +3381,10 @@ async function patchEventMetadata(eventId, updater, { broadcast = true } = {}) {
   return next
 }
 
-async function patchRecipientAttachmentState(eventId, recipientId, attachmentId, record) {
-  return patchEventMetadata(eventId, metadata => (
-    setRecipientAttachmentState(metadata, recipientId, attachmentId, record)
-  ))
+async function patchRecipientAttachmentState(eventId, recipientId, attachmentId, record, options) {
+  const result = await fleetStore.updateRecipientAttachment(eventId, recipientId, attachmentId, record, options)
+  if (result?.metadata) broadcastEvent('event-update', { id: eventId, metadata_patch: result.metadata })
+  return result
 }
 
 // The event id is only known after insert, so provenance is backfilled here.
@@ -3347,29 +3410,6 @@ function placeholderSeenByRecipient(metadata = {}, recipientId, attachmentId) {
   const recipient = metadata?.recipient_refs?.[recipientId]
   const seen = new Set((recipient?.placeholder_seen_attachment_ids || []).map(String))
   return seen.has(String(attachmentId))
-}
-
-function placeholderSupersededForRecipient(metadata = {}, recipientId, attachmentId) {
-  const recipient = metadata?.recipient_refs?.[recipientId]
-  const superseded = new Set((recipient?.placeholder_superseded_attachment_ids || []).map(String))
-  return superseded.has(String(attachmentId))
-}
-
-function markPlaceholderSuperseded(metadata = {}, recipientId, attachmentId, { now = new Date().toISOString() } = {}) {
-  const next = { ...(metadata || {}) }
-  const refs = next.recipient_refs && typeof next.recipient_refs === 'object' ? next.recipient_refs : {}
-  const currentRecipient = refs[recipientId] || {}
-  const superseded = new Set((currentRecipient.placeholder_superseded_attachment_ids || []).map(String))
-  superseded.add(String(attachmentId))
-  next.recipient_refs = {
-    ...refs,
-    [recipientId]: {
-      ...currentRecipient,
-      placeholder_superseded_at: now,
-      placeholder_superseded_attachment_ids: Array.from(superseded),
-    },
-  }
-  return next
 }
 
 async function insertMaterializationAmend({ eventId, metadata }) {
@@ -3399,11 +3439,9 @@ async function insertMaterializationAmend({ eventId, metadata }) {
   return amendId
 }
 
-async function replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata }) {
-  if (placeholderSupersededForRecipient(metadata, recipientId, attachment.id)) return
-  const finalMetadata = await patchEventMetadata(eventId, current => (
-    markPlaceholderSuperseded(current, recipientId, attachment.id)
-  ))
+async function replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata, supersededNow }) {
+  if (!supersededNow) return
+  const finalMetadata = metadata
   await insertMaterializationAmend({ eventId, metadata: finalMetadata || metadata })
   if (!placeholderSeenByRecipient(metadata, recipientId, attachment.id)) return
   const ref = finalMetadata?.recipient_refs?.[recipientId]?.attachments?.[String(attachment.id)]
@@ -3462,7 +3500,7 @@ function notifyRecipientMaterializationFailures({ eventId, recipientId, failures
 async function materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }) {
   const recipient = await fleetStore.getAgent?.(recipientId)
   if (!recipient || recipient.human) return
-  const fail = (error) => {
+  const fail = async (error) => {
     const record = {
       kind: 'attachment',
       state: 'failed',
@@ -3480,7 +3518,7 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       daemonMaterializationError: error,
       updated_at: new Date().toISOString(),
     }
-    patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
+    await patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
     return { attachment, record }
   }
   const current = await agentRouteOrError(recipient, { requireTerminal: false })
@@ -3517,8 +3555,8 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       sha256: result.sha256,
       materialized_at: new Date().toISOString(),
     }
-    const updatedMetadata = patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-    await replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata: updatedMetadata })
+    const updated = await patchRecipientAttachmentState(eventId, recipientId, attachment.id, record, { supersede: true })
+    await replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata: updated?.metadata, supersededNow: updated?.supersededNow })
     return null
   } catch (e) {
     return fail(e.message || String(e))
@@ -3528,10 +3566,13 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
 function queueRecipientMaterialization({ eventId, recipientId, sourceAgent, attachments }) {
   const materializable = (attachments || []).filter(isMaterializableAttachment)
   if (materializable.length === 0) return
-  setImmediate(() => {
-    Promise.all(materializable.map(attachment => (
-      materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment })
-        .catch(e => {
+  setImmediate(async () => {
+    const results = []
+    try {
+      for (const attachment of materializable) {
+        try {
+          results.push(await materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }))
+        } catch (e) {
           const record = {
             kind: 'attachment',
             state: 'failed',
@@ -3548,15 +3589,16 @@ function queueRecipientMaterialization({ eventId, recipientId, sourceAgent, atta
             error: e.message || String(e),
             updated_at: new Date().toISOString(),
           }
-          patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-          return { attachment, record }
-        })
-    ))).then(results => {
+          await patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
+          results.push({ attachment, record })
+        }
+      }
       const failures = results.filter(Boolean)
       notifyRecipientMaterializationFailures({ eventId, recipientId, failures })
-    }).catch(e => {
+    } catch (e) {
+      // This queue is detached from the request; report a metadata-store failure here because no caller remains to receive it.
       console.error(`[materialization] batch notification failed for message ${eventId}: ${e.message}`)
-    })
+    }
   })
 }
 
@@ -4885,6 +4927,32 @@ app.use('/docs', (req, res, next) => {
     // a project whose targets were missing served 404 for every real page while
     // claiming the page was out of range. That is two lies in one response: the
     // page exists, and the reason is not its number.
+    // A page that is already rendered is served, not rebuilt.
+    //
+    // Everything below this point is the LaTeX on-demand renderer: it asks
+    // shadow-repo to compile a DVI and rasterise the page, because for a LaTeX
+    // document the page does not exist until someone asks for it. A document
+    // whose renderer is `identity` has the opposite property — its pages were
+    // written once at build time and there is no source to re-render from, so
+    // routing it here produced a 404 for a file sitting in `output/`.
+    //
+    // Measured: `paper-page-1.svg` 404 while `paper-page-1-text.json` and
+    // `paper.pdf` from the SAME directory both served 200. The document built,
+    // reported four pages, published a correct manifest, and could not show a
+    // single one.
+    //
+    // `hasSourceMapping` is the same question the annotation anchor and the
+    // source-map loader ask — is this a LaTeX render — so the three agree by
+    // construction instead of each testing for a set of formats.
+    if (!hasSourceMapping(project)) {
+      const rendered = join(PROJECTS_DIR, name, 'output', `${texBase}-page-${pageNum}.svg`)
+      const contained = resolveContainedPath(join(PROJECTS_DIR, name, 'output'), `${texBase}-page-${pageNum}.svg`)
+      if (contained && existsSync(rendered)) {
+        res.set('Cache-Control', 'no-cache')
+        return res.sendFile(resolve(rendered), { dotfiles: 'allow' })
+      }
+    }
+
     const targets = Array.isArray(project?.targets) ? project.targets : []
     if (targets.length === 0) {
       return res.status(409).json({
@@ -5774,7 +5842,13 @@ server.on('upgrade', async (req, socket, head) => {
       })
       let daemonMessageChain = Promise.resolve()
       let sourceBindingsChain = Promise.resolve()
-      const sourceProposalChains = new Map()
+      const enqueueSourceProposal = createSourceProposalAdmissionConnectionDispatcher({
+        ws,
+        handleEnvelope: handleDaemonOutboxEnvelope,
+        handler: sourceProposalAdmissionHandler,
+        onHandlerError: e => console.error('[daemon-ws] handler error:', e?.message),
+        onDispatchError: e => console.error('[daemon-ws] dispatch error:', e?.message || e),
+      })
       ws.on('message', (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
@@ -5789,14 +5863,7 @@ server.on('upgrade', async (req, socket, head) => {
           return
         }
         if (msg.type === 'source-proposal-admit') {
-          const project = String(msg.project || '')
-          const previous = sourceProposalChains.get(project) || Promise.resolve()
-          const current = previous.then(dispatch)
-            .catch(e => console.error('[daemon-ws] dispatch error:', e?.message || e))
-          sourceProposalChains.set(project, current)
-          void current.finally(() => {
-            if (sourceProposalChains.get(project) === current) sourceProposalChains.delete(project)
-          })
+          enqueueSourceProposal(msg)
           return
         }
         daemonMessageChain = daemonMessageChain.then(dispatch)
@@ -8177,7 +8244,7 @@ async function dispatchFleetWsMessage(ws, msg) {
         }
       }
     }
-    const { eventId } = await completeTaskLifecycle({ fleetStore, agentId: agent, task })
+    const { eventId } = await completeTaskLifecycle({ fleetStore, agentId: agent, task, onCompleted: touchActivity })
     broadcastState()
     reply({ ok: true, task_id: task.id, event_id: eventId })
     return
@@ -8283,6 +8350,7 @@ async function dispatchFleetWsMessage(ws, msg) {
           close_reason: closeReason,
           closed_by: agent,
         },
+        onCompleted: touchActivity,
       })
       closeEventId = eventId || null
       controlPlaneTraces.append({
@@ -9466,7 +9534,7 @@ async function setSentinelSyncError(projectName, syncError) {
 // rather than per message.
 const _unknownDaemonMessageTypes = new Set()
 
-async function handleDaemonWsMessage(ws, msg) {
+async function handleDaemonWsMessage(ws, msg, context = {}) {
   const { type } = msg
 
   if (type === 'activity-delivery-metrics') {
@@ -9621,50 +9689,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'source-proposal-admit') {
-    const { project, ref, revision } = msg
-    try {
-      const parsed = parseDaemonProposalRef(ref, ws._daemonKey)
-      if (!parsed || parsed.revision !== revision) throw new Error(`invalid proposal ref for ${ws._daemonKey || 'unknown daemon'}`)
-      const lifecycle = await sourceLifecycleStore(project)
-      const git = await lifecycle.gitRepository()
-      const proposal = (await listProposalRefs(git.gitDir)).find(item => item.ref === ref && item.revision === revision)
-      if (!proposal) throw new Error(`${project}: proposal ref is not present`)
-      const hasCurrentLifecycle = lifecycle.listRevisionLifecycles(project)
-        .some(item => item.sourceRevision === revision)
-      const row = await admitProposal({ project, ...proposal }, { retryTerminal: msg.retry_terminal === true || !hasCurrentLifecycle })
-      // Stamp who caused this revision, so the build card can be addressed to
-      // them. `resolveEditedBy` reads exactly this pair and requires it inside a
-      // ten-minute window; nothing had written it since f6d0f9089 on 08-20, so it
-      // returned null for every project and no agent had received a build card
-      // since 08-21. The daemon resolves the name from its own edit records --
-      // see resolveProposalEditor in bin/fleet-daemon.mjs -- and this is where it
-      // lands.
-      //
-      // Best-effort on purpose: a failed stamp costs a name on a chat message,
-      // and must not fail an admission that already succeeded.
-      if (msg.editedBy) {
-        try {
-          await updateProject(project, { lastEditedBy: msg.editedBy, lastEditedByAt: Date.now() })
-        } catch (e) {
-          // Swallowed deliberately: the admission above already SUCCEEDED and the
-          // revision is durable. Rethrowing would turn a missing name on a chat
-          // message into a failed push the daemon then retries.
-          console.error(`[${project}] recording edit attribution failed: ${e.message}`)
-        }
-      }
-      if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: {
-        ok: true,
-        project,
-        revision,
-        submissionId: row.id,
-        state: row.state,
-        startedOnce: row.started_once === 1,
-        terminalReason: row.terminal_reason || null,
-        lifecyclePresent: hasCurrentLifecycle,
-      } }))
-    } catch (e) {
-      if (msg.id) ws.send(JSON.stringify({ id: msg.id, error: e.message }))
-    }
+    await sourceProposalAdmissionHandler(ws, msg, context)
     return
   }
 
@@ -10202,17 +10227,19 @@ process.on('unhandledRejection', (err) => {
 // resolve the active config once at startup. A missing config or field throws
 // here and the server refuses to start, with a clear message.
 {
-  const cfg = resolveConfig()
+  const cfg = traceStartupPhaseSync('resolve-config', () => resolveConfig())
   console.log(`[config] active="${cfg.name}" database=${cfg.database.http} store=${cfg.store.http} license=${cfg.licenseKey ? 'set' : 'none'}`)
 }
 
 // Before anything reads a parts manifest: parts written before the root moved out
 // of `source/` are still under it, where nothing looks. See migrate-project-parts.
-migrateAllProjectParts(PROJECTS_DIR)
+traceStartupPhaseSync('migrate-project-parts', () => migrateAllProjectParts(PROJECTS_DIR))
 
-await recoverBuildPublications()
+await traceStartupPhase('recover-build-publications', () => recoverBuildPublications())
 
+markStartupPhase('listen', 'start')
 server.listen(PORT, HOST, () => {
+  markStartupPhase('listen', 'callback')
   const proto = useTls ? 'https' : 'http'
   console.log(`Unified server running on ${proto}://${HOST}:${PORT}`)
   if (useTls) console.log(`  TLS: ${TLS_CERT}`)

@@ -19,6 +19,7 @@ import { join, basename, dirname, posix } from 'path'
 import { readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
 import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
 import { getBuildReporter } from './build-runner.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { stripVolatileMarkdownMarkersForRender } from '../../shared/markdown-volatile.mjs'
 import { baseMacros } from '../../shared/katex-base-macros.mjs'
@@ -842,7 +843,7 @@ ${taskDocAssets.script}
 
 // ---- Main build function ----
 
-export async function buildMarkdownDocument(name, addLog = console.log) {
+export async function buildMarkdownDocument(name, addLog = console.log, { view = null } = {}) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -903,7 +904,6 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   const buildReadyAt = Date.now()
   await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
   // The sentinel is written by recordBuildVersion, with the real commit hash.
-  reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
 
   // Re-aggregate any book that contains this doc as a member
   for (const proj of await listProjects()) {
@@ -913,4 +913,36 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   }
 
   addLog(`[markdown] ${name}: indexed ${pageInfo.length} column${pageInfo.length === 1 ? '' : 's'}`)
+
+  // Describe what was built, so this renderer can pass through the same
+  // completion boundary as every other one. `buildDocument()` refuses an
+  // adapter that returns no manifest, and until every adapter returns one the
+  // worker cannot stop dispatching formats itself.
+  //
+  // The pages come straight from `pageInfo`, which already carries file, width
+  // and height per column — the same entries written to `page-info.json` just
+  // above. No second source of truth and no new measurement: if the two ever
+  // disagreed, the viewer and the manifest would be describing different
+  // documents.
+  //
+  // ADDITIVE. This builder still completes its own build above. The cutover
+  // removes that tail; doing both in one commit is how the lifecycle behaviours
+  // around it get dropped unnoticed.
+  return {
+    manifest: createDocumentManifest(
+      project,
+      pageInfo,
+      {
+        sourceMapping: 'none',
+        view: view || { kind: 'html-pages', capabilities: { presentation: false, sourceMapping: false, searchableText: true } },
+      },
+    ),
+    // Book tables of contents are regenerated after a markdown build. That used
+    // to live in an exported wrapper around this function, which called
+    // `getBuildReporter().regenerateBookTocs(name)` after the builder returned
+    // -- so routing through the registry, which binds THIS function, silently
+    // stopped regenerating them. `finalizeDocumentBuild` already had the hook
+    // and nothing set the flag.
+    regenerateBookTocs: true,
+  }
 }

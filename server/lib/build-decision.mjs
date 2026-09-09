@@ -2,8 +2,8 @@
  * Build decision tree — one place that answers "should this trigger a build?"
  *
  * Every entry point (push, manual build, ensure) asks this module instead
- * of reimplementing the decision. The execution (calling runBuild, buildMarkdown,
- * etc.) stays with the caller.
+ * of reimplementing the decision. Execution stays with the caller, which since
+ * the cutover is `buildDocument()` for every format.
  */
 
 import { existsSync, readFileSync, statSync } from 'fs'
@@ -141,19 +141,4 @@ export function isSvgBuildStale(name) {
   if (!Number.isFinite(builtSourceVersion)) return true
 
   return statSync(sourceStamp).mtimeMs > builtSourceVersion
-}
-
-/**
- * Get the builder function name for a format.
- * @param {string} format
- * @returns {'runBuild' | 'buildMarkdown' | 'buildHtml' | 'buildSlides' | 'buildQmd'}
- */
-export function builderForFormat(format) {
-  const map = {
-    markdown: 'buildMarkdown',
-    html: 'buildHtml',
-    slides: 'buildSlides',
-    qmd: 'buildQmd',
-  }
-  return map[format] || 'runBuild'
 }

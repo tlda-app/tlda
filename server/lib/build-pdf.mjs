@@ -1,0 +1,205 @@
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFile as execFileCb } from 'node:child_process'
+import { promisify } from 'node:util'
+import { basename, extname, join } from 'node:path'
+import { readProject, sourceDir, outputDir, readClientSourceManifest } from './project-store.mjs'
+import { getBuildReporter } from './build-runner.mjs'
+import { createDocumentManifest } from './document-manifest.mjs'
+
+const execFile = promisify(execFileCb)
+
+function decodeXml(value) {
+  return value
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+}
+
+/**
+ * Give every page's SVG ids its own namespace.
+ *
+ * `pdftocairo -svg` emits one glyph definition per distinct glyph as
+ * `<g id="glyph-0-3">`, and draws text as `<use xlink:href="#glyph-0-3">`. It
+ * numbers from zero **per page**, so page 1 and page 2 both define `glyph-0-3`.
+ *
+ * Every page of a document is in ONE dom. A duplicate id is not an error in
+ * HTML; the reference simply resolves to the first match in document order, so
+ * page 2 draws page 1's outline wherever their glyph numbers collide.
+ *
+ * **Sharing an id is not by itself the fault, and the count of shared ids does
+ * not measure one.** Poppler numbers glyphs in encounter order, so two pages
+ * drawn from the same font program usually agree: the same id names the same
+ * outline and resolving to the wrong page's copy is invisible. Measured on a
+ * four-page single-font document — 232 shared id pairs across all pages, **zero**
+ * naming different geometry, and the document renders correctly with all of page
+ * 2's ids resolving to page 1's.
+ *
+ * The fault is cross-page reuse of an id for a DIFFERENT outline, which happens
+ * as soon as the pages do not share a font program. Measured on a two-page
+ * fixture with a different font per page: 43 shared ids, **39 of them naming
+ * different geometry**, and page 2's heading renders as `Page on i  Tms i i
+ * kmam` where it should read `Page two in Bookman`. That is the corruption this
+ * prevents.
+ *
+ * Fixed in the artifact rather than at every reader: the file is made
+ * self-consistent once, at build time, instead of each viewer rewriting ids on
+ * injection.
+ *
+ * Deliberately renames EVERY id, not only `glyph-`. Today poppler emits nothing
+ * else for these documents — no clip paths, no masks, no `url(#…)` — but a
+ * rename that covers only the ids we happened to see is the kind that breaks
+ * quietly on the first document that has one more.
+ */
+export function namespaceSvgIds(svg, prefix) {
+  return svg
+    .replace(/\bid="([^"]+)"/g, (_, id) => `id="${prefix}${id}"`)
+    .replace(/\b(xlink:href|href)="#([^"]+)"/g, (_, attr, id) => `${attr}="#${prefix}${id}"`)
+    .replace(/url\(#([^)]+)\)/g, (_, id) => `url(#${prefix}${id})`)
+}
+
+export function parsePdfInfo(text) {
+  const pages = Number(text.match(/^Pages:\s+(\d+)/m)?.[1])
+  const size = text.match(/^Page size:\s+([\d.]+) x ([\d.]+) pts/m)
+  if (!Number.isInteger(pages) || pages < 1) throw new Error('pdfinfo did not report a positive page count')
+  if (!size) throw new Error('pdfinfo did not report a page size')
+  return { pages, width: Number(size[1]), height: Number(size[2]) }
+}
+
+export function parsePdfTextGeometry(xml, pageNumber) {
+  const page = xml.match(/<page\b[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"[^>]*>([\s\S]*?)<\/page>/i)
+  if (!page) return { page: pageNumber, width: null, height: null, text: '', words: [] }
+  const words = []
+  for (const match of page[3].matchAll(/<word\b([^>]*)>([\s\S]*?)<\/word>/gi)) {
+    const attrs = Object.fromEntries([...match[1].matchAll(/([A-Za-z]+)="([^"]*)"/g)].map(item => [item[1], item[2]]))
+    const text = decodeXml(match[2].replace(/<[^>]+>/g, '')).trim()
+    if (!text) continue
+    words.push({
+      text,
+      x: Number(attrs.xMin),
+      y: Number(attrs.yMin),
+      width: Number(attrs.xMax) - Number(attrs.xMin),
+      height: Number(attrs.yMax) - Number(attrs.yMin),
+    })
+  }
+  return {
+    page: pageNumber,
+    width: Number(page[1]),
+    height: Number(page[2]),
+    text: words.map(word => word.text).join(' '),
+    words,
+  }
+}
+
+async function pageSize(pdfPath, pageNumber) {
+  const { stdout } = await execFile('pdfinfo', ['-f', String(pageNumber), '-l', String(pageNumber), pdfPath], { encoding: 'utf8' })
+  const match = stdout.match(new RegExp(`^Page\\s+${pageNumber}\\s+size:\\s+([\\d.]+) x ([\\d.]+) pts`, 'm'))
+    || stdout.match(/^Page size:\s+([\d.]+) x ([\d.]+) pts/m)
+  if (!match) throw new Error(`pdfinfo did not report dimensions for page ${pageNumber}`)
+  return { width: Number(match[1]), height: Number(match[2]) }
+}
+
+export async function extractPdfArtifacts({ pdfPath, outDir, target, project, outputPdf = basename(pdfPath) }) {
+  mkdirSync(outDir, { recursive: true })
+  const destinationPdf = join(outDir, outputPdf)
+  if (pdfPath !== destinationPdf) cpSync(pdfPath, destinationPdf)
+  const { stdout: infoText } = await execFile('pdfinfo', [pdfPath], { encoding: 'utf8' })
+  const info = parsePdfInfo(infoText)
+  const pages = []
+
+  for (let pageNumber = 1; pageNumber <= info.pages; pageNumber++) {
+    const size = pageNumber === 1 ? { width: info.width, height: info.height } : await pageSize(pdfPath, pageNumber)
+    const svgFile = `${target}-page-${pageNumber}.svg`
+    await execFile('pdftocairo', ['-svg', '-f', String(pageNumber), '-l', String(pageNumber), pdfPath, join(outDir, svgFile)], {
+      maxBuffer: 50 * 1024 * 1024,
+    })
+    // Namespace this page's ids before anything can load it beside another page.
+    const svgPath = join(outDir, svgFile)
+    writeFileSync(svgPath, namespaceSvgIds(readFileSync(svgPath, 'utf8'), `p${pageNumber}-`))
+    const { stdout: bboxXml } = await execFile('pdftotext', ['-f', String(pageNumber), '-l', String(pageNumber), '-bbox-layout', pdfPath, '-'], {
+      encoding: 'utf8',
+      maxBuffer: 50 * 1024 * 1024,
+    })
+    const geometry = parsePdfTextGeometry(bboxXml, pageNumber)
+    const geometryFile = `${target}-page-${pageNumber}-text.json`
+    writeFileSync(join(outDir, geometryFile), `${JSON.stringify(geometry)}\n`)
+    pages.push({ file: svgFile, width: size.width, height: size.height, textGeometry: geometryFile })
+  }
+
+  const manifest = createDocumentManifest({
+    ...project,
+  }, pages, { assets: [outputPdf], sourceMapping: 'none', view: {
+    kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: false, searchableText: true },
+  } })
+  return manifest
+}
+
+export async function buildPdfDocument(name, addLog = console.log) {
+  const project = await readProject(name)
+  const mainFile = String(project?.mainFile || '').replace(/\\/g, '/').replace(/^\.?\/+/, '')
+  if (!mainFile || extname(mainFile).toLowerCase() !== '.pdf') throw new Error('A PDF project requires a .pdf mainFile')
+
+  const srcDir = sourceDir(name)
+  const outDir = outputDir(name)
+  const pdfPath = join(srcDir, mainFile)
+  if (!existsSync(pdfPath)) throw new Error(`Main PDF "${mainFile}" not found in source`)
+  const target = basename(mainFile, extname(mainFile))
+  const manifest = await extractPdfArtifacts({
+    pdfPath, outDir, target,
+    project: { ...project, sourceFormat: 'pdf', renderer: 'identity', documentFormat: 'paged', mainFile },
+    outputPdf: basename(mainFile),
+  })
+  const pages = manifest.pages
+
+  // The manifest is PUBLISHED BY `buildDocument()`, not here. This builder used
+  // to write it itself, with a comment saying that call moves to the boundary
+  // when the boundary lands rather than being left behind as a second writer.
+  // The boundary has landed, so it moved.
+
+  const files = (await readClientSourceManifest(name)).filter(rel => existsSync(join(srcDir, rel))).sort()
+  writeFileSync(join(outDir, 'relevant-files.json'), `${JSON.stringify({ generated_at: new Date().toISOString(), files }, null, 2)}\n`)
+
+  // Report the pages and targets onto the project record, the way
+  // build-markdown does. Without this the build succeeds, the manifest is
+  // served correctly, and the VIEWER still cannot draw it: the client's SVG
+  // path builds its layout from `config.targets`, and
+  // `createSvgDocumentLayout` throws outright when there are none rather than
+  // inventing a name — "the page filename is keyed on the tex base, which is
+  // not derivable from the project name."
+  //
+  // Measured on the RC server before adding this: buildStatus `success`, a
+  // four-page manifest served with correct geometry, and `pages: 0`,
+  // `targets: null` on the project. A document that builds and cannot be
+  // opened.
+  //
+  // `targets` carries the same shape the LaTeX finalizer writes, because it
+  // feeds the same client code — the base name is what page filenames are
+  // keyed on, and for a PDF that is the PDF's own name.
+  //
+  // Belongs in `buildDocument()` with the manifest publish when that boundary
+  // is ported; both move together.
+  // Page SIZES deliberately do not go here. They live in the manifest, which
+  // already records width and height per page and is already served, so putting
+  // them on `targets` as well would be a second encoding of one fact — the
+  // thing this RC exists to remove.
+  //
+  // It was tried, and it broke the build: adding `pageSizes` to this array made
+  // every PDF build fail at `git rev-parse HEAD` in the shadow repo, while a
+  // markdown control on the same server kept succeeding. Bisected to this one
+  // field. I did not chase why the coupling exists, because the field should
+  // not have been here in the first place.
+  const targets = [{
+    texBase: target,
+    mainFile,
+    pages: pages.length,
+  }]
+  await getBuildReporter().updateProject(name, {
+    buildStatus: 'success',
+    pages: pages.length,
+    targets,
+    lastBuild: new Date().toISOString(),
+  })
+
+  addLog(`[pdf] ${name}: extracted ${pages.length} page${pages.length === 1 ? '' : 's'}`)
+  return { manifest, targets }
+}

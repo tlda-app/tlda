@@ -294,20 +294,22 @@ function formatRunnerArg(arg, policy, cmd, files = {}) {
   return String(arg).replace(/\{(\w+)\}/g, (_m, key) => vals[key] ?? '')
 }
 
-function ensureFenceEnv() {
+export function fenceLaunchEnv({ env = process.env, existsSync = fs.existsSync } = {}) {
   const xdgConfig = path.join(TLDA_FENCE_TMP_ROOT, 'xdg')
   fs.mkdirSync(path.join(xdgConfig, 'git'), { recursive: true })
   fs.closeSync(fs.openSync(path.join(TLDA_FENCE_TMP_ROOT, 'empty-gitconfig'), 'a'))
   fs.closeSync(fs.openSync(path.join(xdgConfig, 'git', 'ignore'), 'a'))
-  return {
+  const launchEnv = {
     TLDA_PERMISSION_GRANT: null,
     TLDA_PERMISSION_LEASE_FILE: null,
     TMPDIR: TLDA_FENCE_TMP_ROOT,
     GIT_CONFIG_GLOBAL: path.join(TLDA_FENCE_TMP_ROOT, 'empty-gitconfig'),
     GIT_CONFIG_NOSYSTEM: '1',
     XDG_CONFIG_HOME: xdgConfig,
-    xcrun_nocache: '1',
   }
+  const homebrewGit = '/opt/homebrew/bin/git'
+  if (existsSync(homebrewGit)) launchEnv.PATH = `/opt/homebrew/bin:${env.PATH || ''}`
+  return launchEnv
 }
 
 function fenceLogPath(policy) {
@@ -329,15 +331,10 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
   const runner = policy.runner || {}
   const command = runner.command
   if (!command) throw new Error('sandbox runner command is required')
-  const env = ensureFenceEnv()
+  const env = fenceLaunchEnv()
   env.TLDA_PERMISSION_GRANT = JSON.stringify(policy.permission_grant)
   const leaseFile = writeFenceLease(policy)
   env.TLDA_PERMISSION_LEASE_FILE = leaseFile
-  const xcodeGit = '/Applications/Xcode.app/Contents/Developer/usr/bin/git'
-  if (fs.existsSync(xcodeGit)) {
-    env.PATH = `/Applications/Xcode.app/Contents/Developer/usr/bin:${process.env.PATH || ''}`
-    env.DEVELOPER_DIR = '/Applications/Xcode.app/Contents/Developer'
-  }
   const prefix = Object.entries(env).map(([k, v]) => `${k}=${sq(v)}`).join(' ')
   const innerCmd = `${prefix} ${cmd}`
   let wrapped
@@ -356,7 +353,7 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
     if (!hasCmd) argv.push('--', runner.shell || 'zsh', '-lc', innerCmd)
     wrapped = argv.map(sq).join(' ')
   }
-  return `${prefix} ${wrapped}`
+  return `${prefix} /usr/bin/env -u xcrun_nocache ${wrapped}`
 }
 
 export function fenceAvailable(command = 'fence') {

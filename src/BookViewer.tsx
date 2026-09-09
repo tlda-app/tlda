@@ -8,8 +8,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Tldraw } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
+import { fetchDocumentManifest, loadDocumentByFormat, projectInfoUrl } from './loaders/documentFormatLoader'
 import { STORE_HTTP } from './activeConfig'
-import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
 import { LayersContext } from './classroom/layersContext'
@@ -18,7 +18,6 @@ import { findBookMemberIndex } from './bookMemberNavigation'
 import { ClassroomIdentityBadge } from './classroom/ClassroomIdentityBadge'
 import { isClassroomSurface } from './classroom/classroomSurface'
 import type { SvgDocument } from './loaders/types'
-import { HTML_PAGE_FORMATS, viewFormat } from '../shared/document-formats.mjs'
 import type { Editor } from 'tldraw'
 import { cacheProjectsForOffline } from './airplaneMode'
 import type { AirplaneState } from './BookContext'
@@ -50,6 +49,7 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
     clearDocumentStores()
 
     try {
+      const manifest = await fetchDocumentManifest(member.basePath)
       let doc: SvgDocument
       // Skip, 2026-08-27: "yes i want lecture decs to be like, added as like
       // accessories to the book", and "think of like classrooom as an overlay?
@@ -65,10 +65,8 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
       // Ordered before the HTML test on purpose: `qmd` is in HTML_PAGE_FORMATS,
       // and a qmd that rendered to a deck is exactly the case that has to reach
       // the slides loader rather than the scrolling one.
-      const shownAs = variant || viewFormat(member)
-      if (shownAs === 'slides') {
-        doc = await loadSlidesDocument(member.key, member.basePath)
-      } else if (HTML_PAGE_FORMATS.has(member.format || '')) {
+      const shownAs = variant || manifest.view.kind
+      if (shownAs === 'html-pages') {
         const compareDoc = new URLSearchParams(window.location.search).get('compareDoc')
         if (compareDoc) {
           const compareBasePath = `/docs/${encodeURIComponent(compareDoc)}/`
@@ -87,29 +85,24 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
             { ...studentPages[0], group: 'marked-exercise', url: member.basePath + studentPages[0].file },
             { ...solutionPages[0], group: 'marked-exercise', url: compareBasePath + solutionPages[0].file },
           ]
-          doc = createHtmlDocumentFromPageInfo(member.key, member.basePath, pair)
+          doc = await loadDocumentByFormat({ name: member.key, basePath: member.basePath, manifest, pages: pair })
         } else {
-          doc = await loadHtmlDocument(member.key, member.basePath)
+          doc = await loadDocumentByFormat({ name: member.key, basePath: member.basePath, manifest })
         }
       } else {
-        // SVG: create layout immediately, pages fetched async after editor mounts.
-        //
-        // The member's targets are fetched rather than invented. A page's
-        // filename is keyed on the TEX BASE, which a book member record does not
-        // carry — it has key, pages, basePath and format. This used to pass no
-        // targets at all and the layout filled the gap by naming the target after
-        // the project, which produces a URL that 404s for every project whose
-        // name is not its document's base name.
-        const info = await fetch(`${STORE_HTTP}/api/projects/${encodeURIComponent(member.key)}`)
+        const info = await fetch(projectInfoUrl(STORE_HTTP, member.key))
           .then(r => (r.ok ? r.json() : null))
           .catch(() => null)
         const targets = info?.targets?.map((t: { texBase: string; pages: number }) => ({
-          name: t.texBase,
-          title: t.texBase.replace(/_/g, ' '),
-          pages: t.pages,
-          basePath: member.basePath,
+          name: t.texBase, title: t.texBase.replace(/_/g, ' '), pages: t.pages, basePath: member.basePath,
         }))
-        doc = createSvgDocumentLayout(member.key, member.basePath, targets)
+        doc = await loadDocumentByFormat({
+          name: member.key,
+          basePath: member.basePath,
+          manifest,
+          targets,
+          viewKind: variant || undefined,
+        })
       }
       setDocument(doc)
     } catch (e) {

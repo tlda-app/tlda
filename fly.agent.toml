@@ -1,15 +1,14 @@
 # fly.agent.toml — AGENT box paired with the test render box.
-# Separate Fly app (tlda-overleaf-test-agent). Runs the fleet-daemon + codex
-# agents in tmux; connects OUTBOUND over WebSocket to the render box (TLDA_SERVER).
+# Separate Fly app (`your-tlda-import-agent`). Runs the fleet daemon and agents
+# in tmux; connects OUTBOUND over WebSocket to the render box (TLDA_SERVER).
 #
 # No [http_service]: this box serves nothing inbound, it dials out to the render
 # box. Because there's no inbound traffic to wake it, it does NOT auto-stop —
-# the daemon must stay connected. (Cost is one small always-on machine; Skip is
-# not optimizing idle cost on the agent side.)
+# the daemon must stay connected. The cost is one small always-on machine.
 #
-# One-time per box after first deploy:  fly ssh console -a tlda-overleaf-test-agent -C codex login
+# One-time per box after first deploy:  fly ssh console -a your-tlda-import-agent -C codex login
 # Deploy:  fly deploy -c fly.agent.toml
-app = "tlda-overleaf-test-agent"
+app = "your-tlda-import-agent"
 primary_region = "sjc"
 
 [build]
@@ -18,10 +17,10 @@ primary_region = "sjc"
 [env]
   NODE_ENV = "production"
   # The render box this daemon connects to (and spawned agents' MCP/API target).
-  TLDA_SERVER = "https://tlda-overleaf-test.fly.dev"
+  TLDA_SERVER = "https://your-tlda-import-test.fly.dev"
   # Distinct per friend so daemons don't evict each other's ownership on the
   # render box (spawns route by machine_id).
-  TLDA_MACHINE_ID = "agent-overleaf-test"
+  TLDA_MACHINE_ID = "agent-import-test"
 
 [[vm]]
   size = "shared-cpu-2x"

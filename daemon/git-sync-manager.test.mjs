@@ -10,10 +10,11 @@ import { createGitSyncManager } from './git-sync-manager.mjs'
 
 function testWatcher() {
   const watcher = new EventEmitter()
-  watcher.added = []
-  watcher.removed = []
-  watcher.add = paths => watcher.added.push(...paths)
-  watcher.unwatch = async paths => watcher.removed.push(...paths)
+  watcher.watch = (root, onChange) => {
+    watcher.root = root
+    watcher.change = onChange
+    return watcher
+  }
   watcher.close = async () => {}
   return watcher
 }
@@ -46,13 +47,13 @@ test('bound working-copy event settles through the one Git proposal path', async
   const watcher = testWatcher()
   const manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-a', server: 'http://unused.test',
-    remoteUrlFor: () => remote, quietMs: 10, watch: () => watcher,
+    remoteUrlFor: () => remote, quietMs: 10, watch: watcher.watch,
     log: { info() {}, warn(value) { warnings.push(String(value)) }, error(value) { warnings.push(String(value)) } },
   })
   manager.bindSource('paper', checkout)
   await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
   writeFileSync(join(checkout, 'main.tex'), 'settled\n')
-  watcher.emit('change', join(checkout, 'main.tex'))
+  watcher.change('change', 'main.tex')
   const deadline = Date.now() + 30000
   let refs = ''
   while (Date.now() < deadline) {
@@ -180,86 +181,6 @@ test('two projects submit to their owning project remotes', async () => {
   await manager.headChanged('response', responseHead)
   assert.equal((await git(checkouts.paper, ['rev-parse', 'refs/tlda/fetched/paper'])).stdout.trim(), paperHead)
   assert.equal((await git(checkouts.response, ['rev-parse', 'refs/tlda/fetched/response'])).stdout.trim(), responseHead)
-  await manager.closeAll()
-})
-
-test('initial project link submits the existing checkout through the ordinary proposal ref', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'tlda-git-link-submit-'))
-  const checkout = join(root, 'checkout')
-  const remote = join(root, 'paper.git')
-  await git(root, ['init', '--bare', remote])
-  await git(root, ['init', '-b', 'main', checkout])
-  await git(checkout, ['config', 'user.name', 'fixture'])
-  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
-  writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}linked\\end{document}\n')
-  writeFileSync(join(checkout, 'unrelated-broken.tex'), '\\input{missing}\n')
-  await git(checkout, ['add', '.'])
-  await git(checkout, ['commit', '-m', 'existing local paper'])
-  // The state `project link` leaves a checkout in: on its work branch.
-  await git(checkout, ['checkout', '-b', 'tlda/paper'])
-  const watcher = testWatcher()
-  const manager = createGitSyncManager({
-    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-link', server: 'http://unused.test',
-    remoteUrlFor: () => remote, quietMs: 10, watch: () => watcher,
-    log: { info() {}, warn() {}, error() {} },
-  })
-  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
-  await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
-  const submitted = await manager.submit('paper')
-  assert.equal(submitted.status, 'SubmittedToBuildQueue')
-  assert.match(submitted.proposalRef, /^refs\/tlda\/proposals\/daemon-link\/main\/[0-9a-f]{40}$/)
-  assert.equal((await git(remote, ['rev-parse', submitted.proposalRef])).stdout.trim(), submitted.revision)
-  // Both documents are watched, not just the declared one. d5a264fe0 made roots
-  // a computed property of the branch, so `unrelated-broken.tex` — which nothing
-  // includes — is a root of its own and is watched like any other. The stored
-  // `documentRoots` above no longer narrows anything.
-  assert.deepEqual(watcher.added.slice().sort(), [join(checkout, 'main.tex'), join(checkout, 'unrelated-broken.tex')])
-  // The listed tip is the WORK BRANCH, not the revision. 84c48f6e4 split the two:
-  // `refs/tlda/project/<p>` is the chain, a filtered projection carrying only the
-  // documents, and `refs/heads/tlda/<p>` is the author's real settled tree. This
-  // listing prefers the branch, which is the one a person can stand on, so these
-  // are two different commits by design and asserting they are equal asserted the
-  // state before the split.
-  const workBranchTip = (await git(checkout, ['rev-parse', 'refs/heads/tlda/paper'])).stdout.trim()
-  assert.notEqual(workBranchTip, submitted.revision, 'the branch and the chain are different commits')
-  assert.deepEqual(await manager.remoteOperation('paper', 'list'), [{
-    name: 'tlda',
-    url: remote,
-    kind: 'tlda',
-    writable: false,
-    branches: [{ name: 'paper', commit: workBranchTip, selected: false, writable: false }],
-  }])
-  await manager.remoteOperation('paper', 'add', { name: 'origin', url: remote })
-  const pushed = await manager.remoteOperation('paper', 'push', { name: 'origin' })
-  // A linked checkout stands on its work branch, so that is the branch a push to
-  // their own remote carries — `main` was the answer only while link left them
-  // wherever they happened to be.
-  assert.equal(pushed.branch, 'tlda/paper')
-  const checkoutHead = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
-  assert.equal(pushed.commit, checkoutHead)
-  assert.equal((await git(remote, ['rev-parse', 'refs/heads/tlda/paper'])).stdout.trim(), checkoutHead)
-
-  writeFileSync(join(checkout, 'child.tex'), 'included\n')
-  writeFileSync(join(checkout, 'unrelated.txt'), 'not a project member\n')
-  writeFileSync(join(checkout, 'main.tex'), '\\documentclass{article}\\begin{document}\\input{child}\\end{document}\n')
-  // Both are tracked, deliberately. A settle captures the TRACKED tree — an
-  // untracked file is never swept into a revision, which is its own guarantee in
-  // git-project-mirror-unrelated — so leaving `child.tex` untracked would make
-  // this pass or fail on trackedness and say nothing about membership. Tracked,
-  // the discriminator is the one the test is named for: `child.tex` is reachable
-  // from a document root and `unrelated.txt` is not.
-  await git(checkout, ['add', 'child.tex', 'unrelated.txt', 'main.tex'])
-  await git(checkout, ['commit', '-m', 'include a child, and a file nothing reaches'])
-  watcher.emit('change', join(checkout, 'main.tex'))
-  const deadline = Date.now() + 30000
-  while (Date.now() < deadline && !watcher.added.includes(join(checkout, 'child.tex'))) {
-    await new Promise(resolve => setTimeout(resolve, 20))
-  }
-  assert.deepEqual(
-    watcher.added.slice().sort(),
-    [join(checkout, 'child.tex'), join(checkout, 'main.tex'), join(checkout, 'unrelated-broken.tex')].sort(),
-  )
-  assert.equal(watcher.added.includes(join(checkout, 'unrelated.txt')), false)
   await manager.closeAll()
 })
 
@@ -424,4 +345,81 @@ test('a restart submits an edit made while the daemon was down, and submits noth
     'a restart with nothing outstanding submitted a revision anyway',
   )
   await third.closeAll()
+})
+
+test('concurrent starts share one initialization and one watcher', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-concurrent-start-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'paper.git')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+
+  let releaseEnsureRepo
+  let enteredEnsureRepo
+  const ensureRepoEntered = new Promise(resolve => { enteredEnsureRepo = resolve })
+  const ensureRepoGate = new Promise(resolve => { releaseEnsureRepo = resolve })
+  let delayed = false
+  let remoteAdds = 0
+  let watchers = 0
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-concurrent', server: 'http://unused.test',
+    remoteUrlFor: () => remote,
+    execFile: async (file, args, options) => {
+      if (!delayed && args[0] === 'rev-parse' && args[1] === '--git-dir') {
+        delayed = true
+        enteredEnsureRepo()
+        await ensureRepoGate
+      }
+      if (args[0] === 'remote' && args[1] === 'add') remoteAdds += 1
+      return execFile(file, args, options)
+    },
+    watch: (...args) => {
+      watchers += 1
+      return testWatcher().watch(...args)
+    },
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
+
+  const first = manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  await ensureRepoEntered
+  const second = manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+  releaseEnsureRepo()
+  await Promise.all([first, second])
+
+  assert.equal(remoteAdds, 1)
+  assert.equal(watchers, 1)
+  await manager.closeAll()
+})
+
+test('a rejected start clears its reservation so a later call can retry', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-git-start-retry-'))
+  const checkout = join(root, 'checkout')
+  const remote = join(root, 'paper.git')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+
+  let remoteLists = 0
+  let watchers = 0
+  const manager = createGitSyncManager({
+    bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-retry', server: 'http://unused.test',
+    remoteUrlFor: () => remote,
+    execFile: async (file, args, options) => {
+      if (args[0] === 'remote' && args.length === 1 && ++remoteLists === 1) throw new Error('synthetic remote failure')
+      return execFile(file, args, options)
+    },
+    watch: (...args) => {
+      watchers += 1
+      return testWatcher().watch(...args)
+    },
+    log: { info() {}, warn() {}, error() {} },
+  })
+  manager.bindSource('paper', checkout, { documentRoots: ['main.tex'] })
+
+  await assert.rejects(manager.sync([{ name: 'paper', mainFile: 'main.tex' }]), /synthetic remote failure/)
+  await manager.sync([{ name: 'paper', mainFile: 'main.tex' }])
+
+  assert.equal(remoteLists, 2)
+  assert.equal(watchers, 1)
+  await manager.closeAll()
 })

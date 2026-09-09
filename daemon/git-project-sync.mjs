@@ -91,6 +91,13 @@ export function createGitProjectSync({
   const sharedRef = `refs/tlda/source/${projectPart}`
   const fetchedRef = `refs/tlda/fetched/${projectPart}`
   let chain = Promise.resolve()
+  let configuredRoots = []
+  function setDocumentRoots(values = []) {
+    configuredRoots = [...new Set(values
+      .map(value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, ''))
+      .filter(Boolean))]
+  }
+  setDocumentRoots(documentRoots)
 
   async function git(args, options = {}) {
     if (runGit) return runGit(args, options)
@@ -209,32 +216,19 @@ export function createGitProjectSync({
       const paths = [...treeEntries.entries()]
         .filter(([, entry]) => entry.type !== 'tree')
         .map(([file]) => file)
-      // **The documents are computed from the tree being published, not read
-      // from a stored list.**
-      //
-      // Skip, 2026-08-26: *"document roots is just a computed property of the
-      // git branch"* / *"create the directed include graph. roots are roots"*.
-      //
-      // `configuredRoots` is the stored `documentRoots`, written once at link
-      // time and appended to by the chat click-adopt path. Nothing recomputes
-      // it, so it is a snapshot of the moment somebody linked the project — and
-      // it seeds the projection, which decides what a published revision
-      // CONTAINS. A stored list that has fallen behind the branch therefore
-      // publishes a revision missing documents that are sitting in the tree.
-      //
-      // It also used to hard-throw when a stored root had since left the tree,
-      // which fails the whole settle for every document because one entry in a
-      // list nobody maintains went stale.
-      //
-      // The graph answers from the tree instead: a document is a node nothing
-      // includes. That is strictly better than the old no-roots-configured
-      // fallback too, which took every `.tex`/`.md`/`.qmd` in the tree and so
-      // treated an `\input`-ed chapter as a document of its own.
-      const computed = await documentRootsIn(paths, async file => {
-        try { return await fs.promises.readFile(path.join(extracted, file), 'utf8') } catch { return null }
-      })
-      const computedRoots = computed.map(root => root.path)
+      // A project that declares roots publishes those roots and their build
+      // dependencies. Discovering every root in a course checkout on each save
+      // made a one-page project scan the entire course before it could submit.
+      // Projects without declared roots retain branch-derived discovery.
+      const computedRoots = configuredRoots.length
+        ? configuredRoots
+        : (await documentRootsIn(paths, async file => {
+            try { return await fs.promises.readFile(path.join(extracted, file), 'utf8') } catch { return null }
+          })).map(root => root.path)
       if (!computedRoots.length) throw new Error(`${project}: no document roots in settled tree`)
+      for (const root of computedRoots) {
+        if (!treeEntries.has(root)) throw new Error(`${project}: configured document root is absent: ${root}`)
+      }
       const qmdRoots = computedRoots.filter(file => /\.qmd$/i.test(file))
       // `talk.html` beside `talk.qmd` is that root's render output, not a document.
       // Nothing includes it, so the graph returns it as a root of its own, and an
@@ -376,11 +370,13 @@ export function createGitProjectSync({
       const index = path.join(archiveDir, 'index')
       const env = { ...process.env, GIT_INDEX_FILE: index }
       await git(['read-tree', '--empty'], { env })
+      const indexArgs = ['update-index', '--add']
       for (const member of [...members].sort()) {
         const entry = committedEntry(member)
         if (!entry) throw new Error(`${project}: immutable closure member is absent: ${member}`)
-        await git(['update-index', '--add', '--cacheinfo', `${entry.mode},${entry.sha},${member}`], { env })
+        indexArgs.push('--cacheinfo', `${entry.mode},${entry.sha},${member}`)
       }
+      await git(indexArgs, { env })
       const tree = (await git(['write-tree'], { env })).stdout.trim()
       // Fetched server history is never proposal ancestry. This chain used to
       // fall through to the fetched and applied refs, so on a FIRST sync — when
@@ -454,6 +450,14 @@ export function createGitProjectSync({
       // repository someone else owns; this branch only runs where the app is the
       // only writer.
       await git(['add', '-u'], { env })
+      // Attribution needs the paths in THIS edit, not every member of the
+      // project. The temporary index already contains exactly the settle Git is
+      // about to commit, so compare it with HEAD while it is available. Listing
+      // the completed commit afterwards walked the whole project on every save
+      // and recomputed information link/add had already fixed in the branch.
+      const members = head
+        ? (await git(['diff', '--cached', '--name-only', '-z', head], { env })).stdout.split('\0').filter(Boolean)
+        : (await git(['ls-files', '-z'], { env })).stdout.split('\0').filter(Boolean)
       const tree = (await git(['write-tree'], { env })).stdout.trim()
       // An empty answer is not a tree, and passing it on produces `git
       // commit-tree  -m ...` with the argument silently missing — which is what
@@ -465,11 +469,11 @@ export function createGitProjectSync({
       if (!/^[0-9a-f]{40}$/.test(tree)) {
         throw new Error(`${project}: write-tree produced no tree id (${JSON.stringify(tree)}) — the staged index was unreadable, so nothing was committed`)
       }
-      if (head && (await git(['rev-parse', `${head}^{tree}`])).stdout.trim() === tree) return head
+      if (head && (await git(['rev-parse', `${head}^{tree}`])).stdout.trim() === tree) return { commit: head, members }
       if (!head && tree === EMPTY_TREE) return null
       const args = ['commit-tree', tree, '-m', 'tlda settled edit cluster']
       if (head) args.push('-p', head)
-      return (await git(args)).stdout.trim()
+      return { commit: (await git(args)).stdout.trim(), members }
     } finally {
       await fs.promises.rm(tmpIndex, { force: true })
     }
@@ -480,16 +484,14 @@ export function createGitProjectSync({
     if (conflicts.length) return { ok: false, status: 'conflicted', conflicted: conflicts }
     // A merge the PERSON started is theirs to finish, and MERGE_HEAD is theirs too.
     if (await rev('MERGE_HEAD')) return { ok: false, status: 'merge-in-progress' }
-    const settled = await settledCommit()
-    if (!settled) return { ok: false, status: 'empty-checkout' }
-    const filtered = await filteredProjectCommit(settled)
-    // The chain gets the projection; the BRANCH gets the person's real tree.
-    // These were one ref, and the branch held the projection — a subset of the
-    // author's tracked files, which is why it could not be stood on. settle()
-    // has already established that HEAD is this branch, so moving it to a commit
-    // parented on HEAD is a fast-forward and the working tree goes CLEAN: the
-    // author's edits are now committed under them, which is the whole design.
-    await git(['update-ref', localRef, filtered.commit])
+    const settledState = await settledCommit()
+    if (!settledState) return { ok: false, status: 'empty-checkout' }
+    const { commit: settled, members } = settledState
+    // Link and document-add are where a checkout is filtered into its project
+    // branch. Once that branch is checked out, its settled commit already is the
+    // project revision; rebuilding another projection on every save only repeats
+    // work whose result is already embodied by the branch.
+    await git(['update-ref', localRef, settled])
     await git(['update-ref', workBranchRef, settled])
     // Bring the author's index up to the commit we just made under them.
     //
@@ -512,10 +514,7 @@ export function createGitProjectSync({
     // and may be sitting anywhere, and resetting an index against a branch the
     // tree is not on would be a corruption rather than a repair.
     if (await currentBranchRef() === workBranchRef) await git(['reset', '-q', '--mixed'])
-    if (filtered.dropped.length) {
-      log.warn?.(`${project}: not in the revision — tracked, but no document root reaches them: ${filtered.dropped.join(', ')}`)
-    }
-    return { ok: true, revision: filtered.commit, changed: filtered.changed, roots: filtered.roots, members: filtered.members, dropped: filtered.dropped }
+    return { ok: true, revision: settled, changed: true, roots: configuredRoots, members, dropped: [] }
   }
 
   // `members` rides along so the caller can say WHO edited. The daemon knows --
@@ -572,7 +571,22 @@ export function createGitProjectSync({
     }
   }
 
-  async function pushRevision(revision, { forceRebuild = false, members = null, combined = false } = {}) {
+  /**
+   * `exact` publishes one named commit or nothing.
+   *
+   * The recovery below exists for a person whose edit raced the server: their
+   * work must not be lost, so it is combined with the accepted head and the
+   * combination is published. That is right for an edit and wrong for a
+   * republication, where the whole point is that a SPECIFIC commit becomes the
+   * published one. Combining would publish a commit that nobody named and that
+   * did not exist a moment earlier -- authored, because `commit-tree` uses the
+   * repository's identity, as the person who owns the checkout.
+   *
+   * So `exact` returns the rejection and stops: no `headChanged`, no merge, no
+   * `commit-tree`, no recursion. The caller learns the named revision is not
+   * publishable and decides what to do, which is not this function's call.
+   */
+  async function pushRevision(revision, { forceRebuild = false, members = null, combined = false, exact = false } = {}) {
     const proposalRef = `refs/tlda/proposals/${daemonPart}/${branchPart}/${revision}`
     try {
       const result = await git(['push', '--porcelain', remote, `${revision}:${proposalRef}`])
@@ -583,6 +597,11 @@ export function createGitProjectSync({
       const output = `${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`
       const match = output.match(/WrongHead\s+([0-9a-f]{40})/i)
       if (!match) throw error
+
+      // Before anything else, because `exact` must leave no trace: parking the
+      // accepted head is a ref write, and a call that published nothing should
+      // not have moved a ref either.
+      if (exact) return { ok: false, status: 'WrongHead', head: match[1], revision, exact: true }
 
       // Park the accepted head first. This is unchanged: the person's checkout
       // is not moved onto it, it simply becomes reachable at fetchedRef.
@@ -822,11 +841,19 @@ export function createGitProjectSync({
    *                          has something here we must not overwrite, so the
    *                          refusal is reported verbatim rather than forced.
    */
-  async function standOnWorkBranch() {
+  async function standOnWorkBranch({ refilter = false } = {}) {
     const adopted = await adoptWorkBranch()
     if (!adopted?.ok) return { ok: false, status: adopted?.reason || 'adoption-failed', branch: workBranchRef }
     const head = await currentBranchRef()
-    if (head === workBranchRef) return { ok: true, status: 'already-on-it', branch: workBranchRef }
+    if (head === workBranchRef && !refilter) return { ok: true, status: 'already-on-it', branch: workBranchRef }
+    if (head === workBranchRef) {
+      const linkedSource = await settledCommit()
+      const filtered = await filteredProjectCommit(linkedSource.commit)
+      await git(['update-ref', localRef, filtered.commit])
+      await git(['update-ref', workBranchRef, filtered.commit])
+      await git(['reset', '-q', '--mixed'])
+      return { ok: true, status: 'refiltered', branch: workBranchRef }
+    }
     const shortBranch = `tlda/${projectPart}`
     const branchTip = await rev(workBranchRef)
     try {
@@ -868,7 +895,23 @@ export function createGitProjectSync({
         // answers null, and the branch is unborn exactly as before.
         if (!hasCommits) { try { await fetchHead() } catch { /* no shared head yet: the branch is unborn, as before */ } }
         const projectHead = hasCommits ? null : (await rev(fetchedRef)) || (await rev(revisionRef))
-        if (projectHead) await git(['checkout', '-b', shortBranch, projectHead])
+        if (hasCommits) {
+          // Linking is where the repository branch becomes this project: keep
+          // the declared document roots and their dependencies once, then stand
+          // on that already-filtered branch. Capture tracked edits made before
+          // link first; they are part of the source being linked. Saves advance
+          // the resulting branch directly.
+          const linkedSource = await settledCommit()
+          const filtered = await filteredProjectCommit(linkedSource.commit)
+          await git(['update-ref', workBranchRef, filtered.commit])
+          // Point HEAD at the already-created project branch without rewriting
+          // the working directory. Files outside the project become ordinary
+          // untracked checkout contents; link must not delete them merely to
+          // make the branch contain less.
+          await git(['symbolic-ref', 'HEAD', workBranchRef])
+          await git(['reset', '-q', '--mixed'])
+        }
+        else if (projectHead) await git(['checkout', '-b', shortBranch, projectHead])
         else await git(['checkout', '-b', shortBranch])
       }
       else if (branchTip === await rev(revisionRef)) await git(['checkout', '-B', shortBranch])
@@ -903,11 +946,12 @@ export function createGitProjectSync({
     // branch without rebuilding the string.
     get refs() { return { localRef, revisionRef, workBranchRef, sharedRef, fetchedRef } },
     editClusterSettled: () => serialized(settle),
-    standOnWorkBranch: () => serialized(standOnWorkBranch),
+    standOnWorkBranch: options => serialized(() => standOnWorkBranch(options)),
     submitCurrent: options => serialized(() => submitCurrent(options)),
     headChanged: revision => serialized(() => headChanged(revision)),
     recover: () => serialized(recover),
     members: () => serialized(members),
+    setDocumentRoots,
     fetchHead,
     pushRevision,
   }
