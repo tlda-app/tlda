@@ -2420,48 +2420,6 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const previousKeysRef = useRef<string[]>([])
   const [geometryVersion, setGeometryVersion] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
-  // A row's own content can grow after it's already positioned -- a search
-  // card's results arrive over the network well after the row was first
-  // measured at "loading..." height. Nothing else here re-measures rows on
-  // their own schedule (the effect below only runs when THIS component
-  // re-renders for an unrelated reason), so a growing card overflows the
-  // translateY slot it was given and overlaps the row below it instead of
-  // pushing it down. Observe every mounted row directly and re-trigger
-  // measurement the moment any of them actually changes size.
-  const rowResizeObserverRef = useRef<ResizeObserver | null>(null)
-  if (!rowResizeObserverRef.current && typeof ResizeObserver !== 'undefined') {
-    // A ResizeObserver delivers an observation the moment observe() is called,
-    // not only when a row resizes -- and the row ref below re-observes every
-    // mounted row on every render, because it is an inline callback whose
-    // identity changes each time, so React detaches and reattaches it. Bumping
-    // geometryVersion unconditionally therefore made each render schedule the
-    // next one: 294 observe() calls in 5s against geometry that did not change
-    // once across 120 samples at 20Hz. Ask whether a row actually moved, using
-    // the same measurement and the same 0.5px threshold as the layout effect
-    // below -- getBoundingClientRect rather than entry.contentRect, for the
-    // reason recorded there. The last height seen per row lives in this
-    // observer's own closure rather than in heightByKeyRef: the effect below
-    // owns that map and writes it on its own schedule, and reading a ref here
-    // would be a ref access during render.
-    const lastObservedHeight = new Map<string, number>()
-    rowResizeObserverRef.current = new ResizeObserver(entries => {
-      let moved = false
-      for (const entry of entries) {
-        const row = entry.target as HTMLElement
-        const key = row.dataset.chatItemKey
-        if (!key) continue
-        const nextHeight = row.getBoundingClientRect().height
-        if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue
-        const previousHeight = lastObservedHeight.get(key)
-        if (previousHeight !== undefined && Math.abs(nextHeight - previousHeight) <= 0.5) continue
-        lastObservedHeight.set(key, nextHeight)
-        moved = true
-      }
-      if (moved) setGeometryVersion(version => version + 1)
-    })
-  }
-  useEffect(() => () => rowResizeObserverRef.current?.disconnect(), [])
-
   const itemKeys = useMemo(() => items.map(item => String(item.key)), [items])
   const itemKeySignature = useMemo(() => itemKeys.join('\u0001'), [itemKeys])
 
@@ -2753,15 +2711,8 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
               <div
                 key={key}
                 ref={(el) => {
-                  const observer = rowResizeObserverRef.current
-                  const prev = rowElsRef.current.get(key)
-                  if (prev && prev !== el) observer?.unobserve(prev)
-                  if (el) {
-                    rowElsRef.current.set(key, el)
-                    observer?.observe(el)
-                  } else {
-                    rowElsRef.current.delete(key)
-                  }
+                  if (el) rowElsRef.current.set(key, el)
+                  else rowElsRef.current.delete(key)
                 }}
                 className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}
                 data-chat-item-key={key}
