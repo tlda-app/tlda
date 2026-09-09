@@ -65,7 +65,12 @@ export function isQuartoRenderOutput(path, mainFile = '') {
   const rel = normalizePath(path)
   const segments = rel.split('/')
   const dirs = segments.slice(0, -1)
-  if (dirs.some(d => d === '.quarto' || d === '_freeze' || d === '_site' || d === '_book' || d.startsWith('_book-'))) return true
+  // `_freeze` is deliberately NOT here. It is the one of these Quarto writes as
+  // INPUT to the next render: entries are keyed by a hash of the source, so a
+  // stale one is invalidated rather than reused, which is the argument above
+  // that `_cache` cannot make. Withholding it does not save a render, it forces
+  // one — the server re-executes every chunk from cold.
+  if (dirs.some(d => d === '.quarto' || d === '_site' || d === '_book' || d.startsWith('_book-'))) return true
   if (dirs.some(d => d.endsWith('_files') || d.endsWith('_cache'))) return true
   // The rendered sibling of the main file — `talk.qmd` renders to `talk.html`.
   if (!/\.qmd$/i.test(normalizePath(mainFile))) return false
