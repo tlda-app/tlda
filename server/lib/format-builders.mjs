@@ -121,7 +121,7 @@ export async function buildHtmlDocument(name, addLog = console.log) {
         mkdirSync(destPath, { recursive: true })
         copyRecursive(srcPath, destPath)
       } else {
-        cpSync(srcPath, destPath)
+        cpSync(srcPath, destPath, { dereference: true, recursive: true })
       }
     }
   }

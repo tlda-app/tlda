@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -63,7 +63,7 @@ test('format adapters cannot silently succeed without the common result', async 
 // .qmd. Asserting one shape would prove the constant, not the derivation --
 // which is exactly how `presentation: false` got hardcoded into the LaTeX
 // manifest and mislabelled every Beamer deck.
-async function buildHtmlProject(root, name, files) {
+async function buildHtmlProject(root, name, files, setup = null) {
   await initProjectStore(root)
   // createProject takes no axes -- it derives `format` from mainFile, and
   // documentAxes derives the three axes from that. Passing sourceFormat/renderer
@@ -72,6 +72,7 @@ async function buildHtmlProject(root, name, files) {
   const src = join(root, name, 'source')
   mkdirSync(src, { recursive: true })
   for (const [rel, body] of Object.entries(files)) writeFileSync(join(src, rel), body)
+  setup?.(src)
   setBuildReporter({
     updateProject: async () => {},
     broadcastSignal: () => {},
@@ -97,6 +98,25 @@ test('a plain HTML document reports no source mapping', async () => {
     assert.equal(manifest.pages.length, 1)
     assert.equal(manifest.pages[0].file, 'index.html')
     assert.ok(manifest.pages[0].width > 0 && manifest.pages[0].height > 0)
+  } finally {
+    setBuildReporter(null); await closeProjectStore(); rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('an HTML document dereferences admitted file and directory links into its output', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-html-links-'))
+  try {
+    await buildHtmlProject(root, 'notes', { 'index.html': PAGE('Notes') }, src => {
+      mkdirSync(join(src, 'shared-assets'))
+      writeFileSync(join(src, 'shared-assets', 'favicon.ico'), 'icon')
+      symlinkSync('shared-assets', join(src, 'assets'))
+      symlinkSync('shared-assets/favicon.ico', join(src, 'favicon.ico'))
+    })
+    const output = join(root, 'notes', 'output')
+    assert.equal(readFileSync(join(output, 'assets', 'favicon.ico'), 'utf8'), 'icon')
+    assert.equal(readFileSync(join(output, 'favicon.ico'), 'utf8'), 'icon')
+    assert.equal(lstatSync(join(output, 'assets')).isDirectory(), true)
+    assert.equal(lstatSync(join(output, 'favicon.ico')).isFile(), true)
   } finally {
     setBuildReporter(null); await closeProjectStore(); rmSync(root, { recursive: true, force: true })
   }
