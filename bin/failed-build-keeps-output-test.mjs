@@ -20,6 +20,7 @@ import {
   sourceLifecycleStore, updateProject,
 } from '../server/lib/project-store.mjs'
 import { PUBLISH_REPLACED_ITEMS, publishBuildDiagnostics, publishBuildInstance } from '../server/lib/build-dispatch.mjs'
+import { failedBuildRpcResult } from '../server/lib/build-queue.mjs'
 
 const NAME = 'disposable-book'
 const GOOD_HTML = '<html><head><title>Good</title></head><body><h1>THE LAST GOOD RENDER</h1></body></html>'
@@ -35,7 +36,7 @@ const QMD = '---\ntitle: Good\n---\n\nThe last good render.\n'
  * @param {string} options.edit — the one file the second revision changes. It is
  *   what `qmdRootsToRender` reads to decide how much of the project to render.
  */
-async function runBuild({ documentRoots, sourceRoots = ['index.qmd'], edit = 'index.qmd' }) {
+async function runBuild({ documentRoots, sourceRoots = ['index.qmd'], edit = 'index.qmd', publicationFailure = null }) {
   const root = mkdtempSync(join(tmpdir(), 'tlda-failed-build-output-'))
   await initProjectStore(root)
   createProject({ name: NAME, mainFile: 'index.qmd', format: 'qmd' })
@@ -73,6 +74,7 @@ async function runBuild({ documentRoots, sourceRoots = ['index.qmd'], edit = 'in
     let result = {}
     try {
       if (message.m === 'publishBuildInstance') {
+        if (publicationFailure) throw publicationFailure
         // Exactly what the real dispatcher does, and the `|| PUBLISH_REPLACED_ITEMS`
         // is load-bearing: IPC is JSON, so the worker's omitted set arrives as
         // `null` and never reaches the signature's default. Spreading the args
@@ -87,7 +89,7 @@ async function runBuild({ documentRoots, sourceRoots = ['index.qmd'], edit = 'in
       else if (message.m === 'updateProject') result = await updateProject(...message.a)
       child.send({ t: 'rpc-result', id: message.id, ok: true, result })
     } catch (e) {
-      child.send({ t: 'rpc-result', id: message.id, ok: false, error: e?.message || String(e) })
+      child.send(failedBuildRpcResult(message.id, e))
     }
   })
   child.send({ t: 'build', name: NAME, projectsDir: root, kind: 'build', sourceRevision: proposal, acceptSeq: 2 })
@@ -135,6 +137,16 @@ assert.deepEqual(failureReport?.args?.slice(0, 2), [NAME, '[qmd] document root n
 assert.ok(failed.buildLog, 'a failed build must leave a build.log in the live project')
 assert.match(failed.buildLog, /chapter-that-does-not-exist\.qmd/,
   'the log must name what actually failed, not merely exist')
+
+const publicationFailure = new Error('staging failed')
+publicationFailure.stack = 'Error: staging failed\n    at publishBuildInstance (build-dispatch.mjs:213:13)'
+const failedPublication = await runBuild({ documentRoots: ['index.qmd'], publicationFailure })
+assert.match(failedPublication.buildLog, /at publishBuildInstance \(build-dispatch\.mjs:213:13\)/,
+  'a parent RPC failure must preserve its causal file and line through the worker diagnostics path')
+assert.deepEqual(
+  failedPublication.seen.find((entry) => entry.method === 'reportBuildFailure')?.args?.slice(0, 2),
+  [NAME, 'staging failed'],
+  'the reader-facing failure must remain the existing message, not the diagnostic stack')
 
 // The counterfactual, same fixture, one declaration different: a build that CAN
 // render must still publish and replace the render. This half is what proves the
