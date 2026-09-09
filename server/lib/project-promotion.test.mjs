@@ -7,13 +7,13 @@ import { createSourceLifecycleStore } from './source-lifecycle.mjs'
 import { closeProjectStore, createProject, initProjectStore, serializeProjectStoreOperation } from './project-store.mjs'
 import { exportProjectPromotion, importProjectPromotion, promotionArtifactHash } from './project-promotion.mjs'
 
-async function fixture() {
+async function fixture(format = 'html') {
   const root = mkdtempSync(join(tmpdir(), 'tlda-promotion-'))
   const source = join(root, 'source', 'course')
   const destination = join(root, 'destination')
   mkdirSync(join(source, 'output'), { recursive: true })
   mkdirSync(destination, { recursive: true })
-  writeFileSync(join(source, 'project.json'), JSON.stringify({ name: 'course', title: 'Course', format: 'html', pages: 1, sourceDir: '/private/machine', room: 'no' }))
+  writeFileSync(join(source, 'project.json'), JSON.stringify({ name: 'course', title: 'Course', format, pages: 1, sourceDir: '/private/machine', room: 'no' }))
   writeFileSync(join(source, 'output', 'index.html'), '<h1>Course</h1>')
   writeFileSync(join(source, 'build.log'), 'built')
   const lifecycle = createSourceLifecycleStore({ root: join(source, '.source-lifecycle'), project: 'course' })
@@ -38,6 +38,16 @@ test('promotes the exact successful revision and rendering-only allowlist', asyn
     assert.equal(metadata.room, undefined)
     assert.equal(await (await createSourceLifecycleStore({ root: join(f.destination, 'course', '.source-lifecycle'), project: 'course' }).gitRepository()).head('course'), f.revision)
   } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('materializes accepted source only for QMD promotion', async () => {
+  for (const format of ['qmd', 'html']) {
+    const f = await fixture(format)
+    try {
+      await importProjectPromotion({ artifact: f.artifact, sourceEnvironment: 'preview', name: 'course', revision: f.revision, projectsRoot: f.destination, serialize: f.serialize })
+      assert.equal(existsSync(join(f.destination, 'course', 'source', 'index.qmd')), format === 'qmd')
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  }
 })
 
 test('refuses corrupt bytes without making a project visible', async () => {

@@ -32,6 +32,10 @@ function normalizePath(path) {
   return String(path || '').replace(/\\/g, '/').replace(/^\.\/+/, '')
 }
 
+function isLocalToolMetadata(path) {
+  return normalizePath(path) === '.mcp.json'
+}
+
 function extname(path) {
   const name = normalizePath(path).split('/').pop() || ''
   const dot = name.lastIndexOf('.')
@@ -151,6 +155,7 @@ export function sourceManifestContext(project = {}) {
 export function isSourceFilePath(path, context = {}) {
   const rel = normalizePath(path)
   if (!rel) return false
+  if (isLocalToolMetadata(rel)) return false
   const ctx = sourceManifestContext(context)
   // **Membership is decided before the junk test, not after it.**
   //
@@ -202,6 +207,7 @@ export function isSourceFilePath(path, context = {}) {
 export function isManagedSourcePath(path, context = {}) {
   const rel = normalizePath(path)
   if (!rel || rel.startsWith('/') || rel.split('/').some(part => part === '..' || part === '')) return false
+  if (isLocalToolMetadata(rel)) return false
   if (rel.split('/').some(part => IGNORED_SOURCE_DIRS.has(part))) return false
   const ctx = sourceManifestContext(context)
   const lower = rel.toLowerCase()
