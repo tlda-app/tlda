@@ -8,7 +8,7 @@ import { createRemoteGitBridge } from './remote-git-bridge.mjs'
 import { historySeedRef } from '../shared/history-seed-ref.mjs'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
 
-const execFile = promisify(execFileCb)
+const defaultExecFile = promisify(execFileCb)
 const watchSourceTree = (root, onChange) => fs.watch(root, { recursive: true, persistent: true }, onChange)
 
 export function createRuntimeSourceWatcher({ sourceDir, watchedMembers, note, watch = watchSourceTree }) {
@@ -26,9 +26,10 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile = defaultExecFile, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
+  const starts = new Map()
 
   function load() { try { return JSON.parse(fs.readFileSync(bindingsFile, 'utf8')) || {} } catch { return {} } }
   function save(value) {
@@ -109,8 +110,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     return { project, ref, revision }
   }
 
-  async function start(item) {
-    if (runtimes.has(item.project)) return runtimes.get(item.project)
+  async function initialize(item) {
     await ensureRepo(item)
     let runtime
     const sync = createGitProjectSync({
@@ -277,6 +277,18 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     await settleEditCluster()
     if (remoteBridge) await remoteBridge.poll()
     return runtime
+  }
+
+  function start(item) {
+    if (runtimes.has(item.project)) return Promise.resolve(runtimes.get(item.project))
+    if (starts.has(item.project)) return starts.get(item.project)
+    const starting = Promise.resolve().then(() => initialize(item))
+    starts.set(item.project, starting)
+    starting.then(
+      () => starts.delete(item.project),
+      () => starts.delete(item.project),
+    )
+    return starting
   }
 
   function bindSource(project, sourceDir, metadata = {}) {
