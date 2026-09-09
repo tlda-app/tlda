@@ -294,7 +294,11 @@ process.on('message', async (msg) => {
     } catch (recordError) {
       e.message = `${e?.message || String(e)}; build disposition persistence failed: ${recordError?.message || recordError}`
     }
-    process.send?.({ t: 'done', ok: false, error: e?.message || String(e) })
+    process.send?.({
+      t: 'done', ok: false,
+      error: e?.message || String(e),
+      errorStack: e?.remoteStack || e?.stack || null,
+    })
     setImmediate(() => process.exit(1))
   } finally {
     if (heartbeat) clearInterval(heartbeat)

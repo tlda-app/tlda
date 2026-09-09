@@ -155,7 +155,10 @@ export function createBuildQueue({
       // heartbeats do not depend on a renderer producing stdout.
       lastHeard = now()
       if (message?.t === 'heartbeat') return
-      if (message?.t === 'done' && message.ok === false) workerFailure = new Error(message.error || `build worker for ${job.name} failed`)
+      if (message?.t === 'done' && message.ok === false) {
+        workerFailure = new Error(message.error || `build worker for ${job.name} failed`)
+        workerFailure.remoteStack = message.errorStack || null
+      }
       relays = relays.then(async () => {
         if (message?.t === 'rpc') {
           try {
@@ -181,7 +184,7 @@ export function createBuildQueue({
           row,
           cancelled ? 'killed' : workerFailure ? 'failed' : 'complete',
           workerFailure
-            ? { error: workerFailure.message, exitCode: code }
+            ? { error: workerFailure.message, errorStack: workerFailure.remoteStack || workerFailure.stack, exitCode: code }
             : cancelled
               ? { reason: job.cancelReason || 'cancelled', exitCode: code }
               : { exitCode: code },
