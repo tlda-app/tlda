@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -84,6 +85,26 @@ async function checkedRun(label, command, args, options) {
   process.exit(result.code || 1)
 }
 
+// `--process-groups app` is what stops a deploy replacing the tailnet edge
+// machine alongside the app. This was gated on the literal "fly.live.toml";
+// fly.pic.toml then grew an edge group and nobody updated the condition, so
+// every pic deploy replaced the students' front door for no reason.
+//
+// Derived from the config rather than a filename, so the next box that grows an
+// edge group is covered without anyone remembering. Keyed on `edge` and NOT on
+// `app`: every config carries a top-level `app = "<name>"` naming the Fly app,
+// so an `app` test matches all of them.
+//
+// This mirrors deploy/_utils/pre-receive-common.sh, which was repaired for this
+// exact bug on 2026-09-03 while this call site was left behind.
+export function declaresEdgeProcess(configPath) {
+  try {
+    return /^[ \t]*edge[ \t]*=/m.test(readFileSync(configPath, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv)
   const preflight = runLiveDeployPreflight({ repoRoot: REPO_ROOT })
@@ -101,7 +122,9 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   const flyArgs = ['deploy', '-c', args.flyConfig]
-  if (args.flyConfig === 'fly.live.toml') flyArgs.push('--process-groups', 'app')
+  if (declaresEdgeProcess(resolve(REPO_ROOT, args.flyConfig))) {
+    flyArgs.push('--process-groups', 'app')
+  }
   await checkedRun(`fly ${flyArgs.join(' ')}`, 'fly', flyArgs, {
     cwd: REPO_ROOT,
     tailLines: args.tailLines,

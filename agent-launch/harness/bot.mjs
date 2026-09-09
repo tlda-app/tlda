@@ -79,6 +79,8 @@ export function buildCmd({
       parts.push(`${key}=${sq(value)}`)
     }
   }
+  parts.push(`PATH=${sq(`/opt/homebrew/bin:${env.PATH || ''}`)}`)
+  parts.push('/usr/bin/env', '-u', 'xcrun_nocache')
   parts.push(sq(process.execPath))
   parts.push(sq(script))
   const signalExit = botWaitChannel ? `; tmux wait-for -S ${sq(botWaitChannel)}` : ''

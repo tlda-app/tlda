@@ -210,7 +210,7 @@ export async function resolvAnchor(
 export function canvasToPdf(
   canvasX: number,
   canvasY: number,
-  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number, page?: number }>
+  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number, page?: number, pdfWidth?: number, pdfHeight?: number, viewBoxOffset?: number }>
 ): { page: number, x: number, y: number } | null {
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i]
@@ -225,10 +225,15 @@ export function canvasToPdf(
       // Scale from canvas pixels to synctex/PDF units
       // The viewBox starts at -72, so canvas origin maps to viewBox -72.
       // Subtract VIEWBOX_OFFSET to convert from viewBox coords to synctex coords.
-      const scaleX = bounds.width / PDF_WIDTH   // pixels per viewBox unit
-      const scaleY = bounds.height / PDF_HEIGHT
-      const pdfX = localX / scaleX - SYNCTEX_VIEWBOX_OFFSET
-      const pdfY = localY / scaleY - SYNCTEX_VIEWBOX_OFFSET
+      // The page's own size and offset when it has them; the US Letter
+      // constants and dvisvgm's 72pt shift otherwise, which is every LaTeX page.
+      const pageWidthPts = page.pdfWidth ?? PDF_WIDTH
+      const pageHeightPts = page.pdfHeight ?? PDF_HEIGHT
+      const offset = page.viewBoxOffset ?? SYNCTEX_VIEWBOX_OFFSET
+      const scaleX = bounds.width / pageWidthPts   // pixels per viewBox unit
+      const scaleY = bounds.height / pageHeightPts
+      const pdfX = localX / scaleX - offset
+      const pdfY = localY / scaleY - offset
 
       return { page: page.page ?? i + 1, x: pdfX, y: pdfY }
     }
@@ -243,7 +248,7 @@ export function pdfToCanvas(
   pdfPage: number,
   pdfX: number,
   pdfY: number,
-  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number }>
+  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number, pdfWidth?: number, pdfHeight?: number, viewBoxOffset?: number }>
 ): { x: number, y: number } | null {
   const pageIndex = pdfPage - 1
   if (pageIndex < 0 || pageIndex >= pages.length) return null
@@ -254,11 +259,16 @@ export function pdfToCanvas(
   // Scale from synctex coords to canvas pixels
   // Synctex coords start at TeX origin (72pt from page edge = viewBox 0,0).
   // Add SYNCTEX_VIEWBOX_OFFSET to shift from synctex space to viewBox space before scaling.
-  const scaleX = bounds.width / PDF_WIDTH
-  const scaleY = bounds.height / PDF_HEIGHT
+  // Same per-page values as canvasToPdf, so the two remain inverses. If only
+  // one of them read the page's size, a round trip would drift.
+  const pageWidthPts = page.pdfWidth ?? PDF_WIDTH
+  const pageHeightPts = page.pdfHeight ?? PDF_HEIGHT
+  const offset = page.viewBoxOffset ?? SYNCTEX_VIEWBOX_OFFSET
+  const scaleX = bounds.width / pageWidthPts
+  const scaleY = bounds.height / pageHeightPts
 
-  const canvasX = bounds.x + (pdfX + SYNCTEX_VIEWBOX_OFFSET) * scaleX
-  const canvasY = bounds.y + (pdfY + SYNCTEX_VIEWBOX_OFFSET) * scaleY
+  const canvasX = bounds.x + (pdfX + offset) * scaleX
+  const canvasY = bounds.y + (pdfY + offset) * scaleY
 
   return { x: canvasX, y: canvasY }
 }

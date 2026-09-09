@@ -28,6 +28,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
+import { assertOwnerCapableLaunchdManager, transitionLaunchdJob } from './lib/config-apply-transition.mjs'
 import { botServicePaths as declaredBotServicePaths, parseBotMintId, resolveBotScript } from '../shared/bot-declaration.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import { rotateBeforeOpen } from '../shared/rotating-log.mjs'
@@ -77,6 +78,8 @@ import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mj
 import { createGitRemotes } from '../shared/git-remotes.mjs'
 import { documentRootsToDeclare, formatForDocumentPath, normalizeDocumentRoots } from '../shared/document-roots.mjs'
 import { mergeAbort, mergeContinue, mergeReplay, mergeStatus } from '../server/lib/merge-replay.mjs'
+import { resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
+import { callLocalDaemonRpc } from '../shared/local-daemon-rpc.mjs'
 
 // --- Argument parsing ---
 
@@ -102,6 +105,7 @@ const TOP_LEVEL_COMMANDS = [
   ['env', 'show configured environments'],
   ['config', 'configure tlda'],
   ['system', 'show server, daemon, deploy stamp, and fleet runtime identity'],
+  ['build', 'rebuild a project from its published source revision'],
   ['doctor', 'health check'],
   ['logs', 'unified logs across all sources'],
   ['completions', 'output zsh completion script'],
@@ -223,7 +227,7 @@ const COMMAND_HELP = {
   share:   'tlda project share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific project\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
   status:  'tlda project status [name]\n\n  Show build status for a project.',
   errors:  'tlda project errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
-  build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
+  build:   'tlda build [name]\n\n  Rebuild the project from its published source revision.',
   delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
   server:  'tlda server [start|restart|stop|status|log|install|uninstall]\n\n  launchd supervises an installed server. Start and stop refuse rather than overriding that supervision; restart terminates the process and KeepAlive returns it. Config apply reconciles the service declaration.',
   bot:     'tlda bot [list|start|restart|stop|status|log|uninstall] [name]\n\n  One launchd bot manager keeps every declared bot running. Start and stop refuse; restart terminates the selected bot process and the manager returns it. Config apply reconciles the declaration.',
@@ -755,22 +759,23 @@ async function cmdCreate() {
   // this, `tlda project link x README.md` falls through to the LaTeX/svg
   // path, which uploads the ENTIRE directory — gigabytes if --dir is a code repo.
   // Explicit --format always wins; .tex/unknown keep the existing LaTeX default.
+  // Both of these asked the extension what a file is, and both answered from
+  // their own hand-written list while `formatForDocumentPath` — the map that
+  // already decides this everywhere else — sat imported at the top of the file.
+  //
+  // Three encodings of one fact, and they had drifted: neither list knew about
+  // `.pdf`, so linking a PDF produced a project correctly typed `pdf` whose own
+  // document root was recorded `svg`. A root recorded `svg` is a LaTeX render
+  // target — `latexDocumentRootPaths` selects exactly `format === 'svg'` — so
+  // the project and its only document disagreed about what it was.
+  //
+  // Using the shared map deletes both lists. `.tex` still resolves to `svg`,
+  // which is what the old code left it as by falling through.
   if (!format) {
-    const mainHint = mainArg
-    const ext = mainHint ? mainHint.toLowerCase().split('.').pop() : null
-    if (ext === 'md') format = 'markdown'
-    else if (ext === 'html' || ext === 'htm') format = 'html'
-    else if (ext === 'qmd') format = 'qmd'
-    if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainHint})`))
+    format = formatForDocumentPath(mainArg)
+    if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainArg})`))
   }
-  const inferDocumentRootFormat = path => {
-    if (format) return format
-    const ext = path.toLowerCase().split('.').pop()
-    if (ext === 'md' || ext === 'markdown') return 'markdown'
-    if (ext === 'html' || ext === 'htm') return 'html'
-    if (ext === 'qmd') return 'qmd'
-    return 'svg'
-  }
+  const inferDocumentRootFormat = path => format || formatForDocumentPath(path) || 'svg'
   const projectDocumentRoots = normalizeDocumentRoots(
     documentRoots.map(path => ({ path, format: inferDocumentRootFormat(path) })),
     { mainFile: mainArg, format: format || 'svg' },
@@ -1344,11 +1349,17 @@ const FLEET_DAEMON_SOCKET = daemonLifecycleSocketPath(CONFIG_DIR, DAEMON_WORLD_N
 const FLEET_DAEMON_LABEL = `com.tlda.fleet-daemon${DAEMON_WORLD_SUFFIX}`
 const FLEET_DAEMON_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${FLEET_DAEMON_LABEL}.plist`)
 const _cliDir = dirname(fileURLToPath(import.meta.url))
-const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/(?:\.claude\/worktrees|\.worktrees)\//)
-const FLEET_DAEMON_MAIN_ROOT = _cliWorktreeMatch ? _cliWorktreeMatch[1] : join(_cliDir, '..')
-const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
-  ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
-  : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
+const _cliDaemonScript = join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
+let _cliDaemonIdentity = { isWorktree: false, mainCheckoutPath: null }
+try {
+  const gitdir = readFileSync(join(_cliDir, '..', '.git'), 'utf8').trim()
+  const worktree = gitdir.match(/^gitdir: (.+)\/\.git\/worktrees\/[^/]+$/)
+  if (worktree) _cliDaemonIdentity = { isWorktree: true, mainCheckoutPath: worktree[1] }
+} catch {
+  // A packaged install has no .git file and already points at its own daemon.
+}
+const FLEET_DAEMON_SCRIPT = resolveMainDaemonScript(_cliDaemonScript, () => _cliDaemonIdentity) || _cliDaemonScript
+const FLEET_DAEMON_MAIN_ROOT = dirname(dirname(FLEET_DAEMON_SCRIPT))
 const FLEET_DAEMON_DNS_ALIAS_PRELOAD = join(FLEET_DAEMON_MAIN_ROOT, 'shared', 'node-dns-alias.cjs')
 
 function fleetDaemonSocketForConfig(configName) {
@@ -1448,9 +1459,9 @@ async function writeDaemonPlist({ plist = FLEET_DAEMON_PLIST, label = FLEET_DAEM
   return plist
 }
 
-async function runLaunchctl(args, { ignoreFailure = false } = {}) {
+async function runLaunchctl(args, { ignoreFailure = false, allowManagedRemoval = false } = {}) {
   const verb = args[0]
-  if (verb === 'bootout' || verb === 'unload' || verb === 'remove') {
+  if (!allowManagedRemoval && (verb === 'bootout' || verb === 'unload' || verb === 'remove')) {
     throw new Error(`Refusing launchctl ${verb}: unloading a managed job can strand it outside the owner login session.`)
   }
   const { execFileSync } = await import('child_process')
@@ -1765,6 +1776,7 @@ function isManagedLaunchdLabel(label) {
 
 async function existingManagedLaunchdJobs() {
   const dir = launchAgentsDir()
+  const desiredJobs = desiredLaunchdJobs()
   const onDisk = existsSync(dir) ? readdirSync(dir)
     .filter(file => file.endsWith('.plist')).map(file => {
       const label = file.slice(0, -'.plist'.length)
@@ -1773,20 +1785,71 @@ async function existingManagedLaunchdJobs() {
       return { label, plist, content: readFileSync(plist, 'utf8') }
     }).filter(Boolean) : []
   const byLabel = new Map(onDisk.map(job => [job.label, job]))
-  for (const desired of desiredLaunchdJobs()) {
+  for (const desired of desiredJobs) {
     if (!byLabel.has(desired.label)) byLabel.set(desired.label, { label: desired.label, plist: desired.plist, content: null })
   }
-  return [...byLabel.values()].map(job => ({ ...job, loaded: isLaunchdJobLoaded(job.label) }))
+  const desiredByLabel = new Map(desiredJobs.map(job => [job.label, job]))
+  return [...byLabel.values()].map(job => {
+    const loadedDefinition = readLoadedLaunchdJob(job.label)
+    const desired = desiredByLabel.get(job.label)
+    return {
+      ...job,
+      loaded: loadedDefinition !== null,
+      loadedDefinitionMatches: loadedDefinition === null || !desired
+        ? null
+        : launchdDefinitionMatches(desired.content, loadedDefinition),
+    }
+  })
+}
+
+function readLoadedLaunchdJob(label) {
+  try {
+    const invocation = launchctlCommand(['print', daemonLaunchdTarget(label)], { uid: process.getuid() })
+    return execFileSync(invocation.command, invocation.args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch {
+    return null
+  }
 }
 
 function isLaunchdJobLoaded(label) {
-  try {
-    const invocation = launchctlCommand(['print', daemonLaunchdTarget(label)], { uid: process.getuid() })
-    execFileSync(invocation.command, invocation.args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    return true
-  } catch {
-    return false
-  }
+  return readLoadedLaunchdJob(label) !== null
+}
+
+function decodePlistString(value) {
+  return String(value)
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&gt;', '>')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&amp;', '&')
+}
+
+function launchdDefinitionMatches(plist, printed) {
+  const argumentArray = plist.match(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1]
+  const expectedArguments = argumentArray
+    ? [...argumentArray.matchAll(/<string>([\s\S]*?)<\/string>/g)].map(match => decodePlistString(match[1]))
+    : null
+  const expectedWorkingDirectory = plist.match(/<key>WorkingDirectory<\/key>\s*<string>([\s\S]*?)<\/string>/)?.[1]
+  const environmentDict = plist.match(/<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/)?.[1]
+  const expectedEnvironment = environmentDict
+    ? new Map([...environmentDict.matchAll(/<key>([\s\S]*?)<\/key>\s*<string>([\s\S]*?)<\/string>/g)]
+      .map(match => [decodePlistString(match[1]), decodePlistString(match[2])]))
+    : null
+  const loadedArguments = printed.match(/(?:^|\n)\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1]
+    ?.split('\n').map(line => line.trim()).filter(Boolean)
+  const loadedWorkingDirectory = printed.match(/(?:^|\n)\s*working directory = (.+)/)?.[1]?.trim()
+  const loadedEnvironmentBlock = printed.match(/(?:^|\n)\s*environment = \{\n([\s\S]*?)\n\s*\}/)?.[1]
+  const loadedEnvironment = loadedEnvironmentBlock
+    ? new Map(loadedEnvironmentBlock.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+      const separator = line.indexOf(' => ')
+      return separator < 0 ? [line, null] : [line.slice(0, separator), line.slice(separator + 4)]
+    }))
+    : null
+  if (!expectedArguments || !expectedWorkingDirectory || !expectedEnvironment || !loadedArguments || !loadedWorkingDirectory || !loadedEnvironment) return null
+  return expectedArguments.length === loadedArguments.length &&
+    expectedArguments.every((argument, index) => argument === loadedArguments[index]) &&
+    decodePlistString(expectedWorkingDirectory) === loadedWorkingDirectory &&
+    [...expectedEnvironment].every(([key, value]) => loadedEnvironment.get(key) === value)
 }
 
 function writeLaunchdJob(job) {
@@ -1806,40 +1869,40 @@ function writeLaunchdJob(job) {
 }
 
 async function applyLaunchdOperation(job, operation) {
-  const target = daemonLaunchdTarget(job.label)
-  const pending = lines => ({ ok: true, pending: lines.join('\n') })
+  const bootoutIfLoaded = async targetJob => {
+    try {
+      await runLaunchctl(['bootout', daemonLaunchdTarget(targetJob.label)], { allowManagedRemoval: true })
+    } catch (e) {
+      const text = e?.message || String(e)
+      if (/No such process/i.test(text) || /Could not find service/i.test(text)) return
+      throw e
+    }
+  }
+  const bootstrapAndKickstart = async targetJob => {
+    await bootstrapLaunchdJob({
+      plist: targetJob.plist,
+      label: targetJob.label,
+      domain: daemonLaunchdDomain(),
+      runLaunchctl,
+    })
+  }
   try {
-    if (operation === 'add' || operation === 'update') {
-      const loaded = isLaunchdJobLoaded(job.label)
-      writeLaunchdJob(job)
-      if (loaded) return pending([
-        'plist written; the loaded job is still running its previous configuration.',
-        `      launchctl bootout ${target}`,
-        `      launchctl bootstrap ${daemonLaunchdDomain()} ${JSON.stringify(job.plist)}`,
-      ])
-      try {
-        await bootstrapLaunchdJob({ plist: job.plist, label: job.label, domain: daemonLaunchdDomain(), runLaunchctl })
-        return { ok: true }
-      } catch (error) {
-        return pending([
-          `plist written; loading it needs the owner login session (${error?.message || String(error)}).`,
-          `      launchctl bootstrap ${daemonLaunchdDomain()} ${JSON.stringify(job.plist)}`,
-        ])
-      }
-    }
-    if (operation === 'remove') {
-      if (isLaunchdJobLoaded(job.label)) return pending([
-        'plist kept; unloading the loaded job needs the owner login session.',
-        `      launchctl bootout ${target}`,
-        `      rm ${JSON.stringify(job.plist)}`,
-      ])
-      if (existsSync(job.plist)) unlinkSync(job.plist)
-      return { ok: true }
-    }
-    throw new Error(`unknown launchd apply operation: ${operation}`)
+    return await transitionLaunchdJob(job, operation, {
+      install: async targetJob => writeLaunchdJob(targetJob),
+      remove: async targetJob => {
+        if (existsSync(targetJob.plist)) unlinkSync(targetJob.plist)
+      },
+      bootout: bootoutIfLoaded,
+      bootstrap: bootstrapAndKickstart,
+    })
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }
   }
+}
+
+async function requireOwnerLaunchdConfigurationContext() {
+  const managerName = await runLaunchctl(['managername'])
+  assertOwnerCapableLaunchdManager(managerName)
 }
 
 function printApplyGroup(title, jobs) {
@@ -1894,27 +1957,25 @@ async function cmdConfigApply() {
     return
   }
 
-  const pending = []
+  try {
+    await requireOwnerLaunchdConfigurationContext()
+  } catch (error) {
+    console.error(red(error?.message || String(error)))
+    process.exit(1)
+  }
+
   const failures = []
   const runGroup = async (jobs, op, doneVerb) => {
     for (const job of jobs) {
       const result = await applyLaunchdOperation(job, op)
       if (!result.ok) failures.push({ job, op, error: result.error })
-      else if (result.pending) {
-        pending.push({ job, detail: result.pending })
-        console.log(yellow(`Pending ${job.label}`) + dim(` — ${op}`))
-      } else console.log(green(`${doneVerb} ${job.label}`))
+      else console.log(green(`${doneVerb} ${job.label}`))
     }
   }
   await runGroup(plan.add, 'add', 'Added')
   await runGroup(plan.update, 'update', 'Updated')
   await runGroup(plan.remove, 'remove', 'Removed')
 
-  if (pending.length) {
-    console.log(yellow(`${pending.length} job(s) need the owner login session to take effect:`))
-    for (const item of pending) console.log(`  ${item.job.label}: ${item.detail}`)
-    console.log(dim('  Nothing was unloaded; every running job remains running.'))
-  }
   if (failures.length) {
     for (const failure of failures) console.error(red(`${failure.op} ${failure.job.label}: ${failure.error}`))
     process.exit(1)
@@ -2963,6 +3024,14 @@ async function cmdStatus() {
   }
 }
 
+async function cmdBuild() {
+  const name = getPositional(0) || await inferProjectName()
+  if (!name) exitNotLinkedHere('tlda build <name>')
+  const result = await callLocalDaemonLifecycle('project-rebuild', { project: name })
+  printSubmittedRevision(result)
+  console.log(green(`Build triggered for "${name}".`))
+}
+
 async function cmdErrors() {
   const name = getPositional(0) || await inferProjectName()
   if (!name) exitNotLinkedHere('tlda project errors <name>')
@@ -3272,13 +3341,31 @@ async function cmdDelete() {
   const name = getPositional(0)
   if (!name) { console.error('Usage: tlda project delete <name>'); process.exit(1) }
 
+  const result = await deleteProjectAndLocalBinding(name)
+  console.log(result.deleted
+    ? green(`Project "${name}" deleted.`)
+    : dim(`Project "${name}" is already absent.`))
+}
+
+export async function deleteProjectAndLocalBinding(name, {
+  apiImpl = api,
+  lifecycleImpl = callLocalDaemonLifecycle,
+} = {}) {
+  let deleted = true
   try {
-    await api('DELETE', `/api/projects/${name}`)
-    console.log(green(`Project "${name}" deleted.`))
+    await apiImpl('DELETE', `/api/projects/${name}`)
   } catch (error) {
     if (Number(error?.status) !== 404) throw error
-    console.log(dim(`Project "${name}" is already absent.`))
+    deleted = false
   }
+  let binding
+  try {
+    binding = await lifecycleImpl('project-source-unlink', { project: name })
+  } catch (error) {
+    const serverState = deleted ? 'deleted on the server' : 'already absent from the server'
+    throw new Error(`Project "${name}" was ${serverState}, but the local source binding could not be removed (${error.message}). Re-run the same command once the daemon is up.`, { cause: error })
+  }
+  return { deleted, binding }
 }
 
 async function fetchAgentsByExactCwd(cwd, { apiImpl = api } = {}) {
@@ -3906,78 +3993,7 @@ export async function attachToAgent(name, {
 }
 
 async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = null, onEvent = null } = {}) {
-  const { createConnection } = await import('node:net')
-  return await new Promise((resolvePromise, reject) => {
-    const socket = createConnection(socketPath)
-    let buffer = ''
-    let settled = false
-    const fail = error => {
-      if (settled) return
-      settled = true
-      socket.destroy()
-      reject(error)
-    }
-    const timer = timeoutMs == null ? null : setTimeout(() => {
-      // Name the op and the bound. A classroom setup hit this on
-      // adopt-shadow-history-ref repeatedly while the daemon was up; the old
-      // text sent the reader after the daemon instead of after the stalled call.
-      fail(new Error(`local daemon ${op} timed out after ${timeoutMs}ms`))
-    }, timeoutMs)
-    socket.setEncoding('utf8')
-    socket.on('connect', () => {
-      socket.end(JSON.stringify({ op, params }))
-    })
-    const handlePayload = payload => {
-      if (payload.event) {
-        onEvent?.(payload.event, payload.data || {})
-        return
-      }
-      if (!payload.ok) throw new Error(payload.error || `local daemon ${op} failed`)
-      settled = true
-      if (timer) clearTimeout(timer)
-      resolvePromise(payload.result)
-    }
-    socket.on('data', chunk => {
-      buffer += chunk
-      for (;;) {
-        const nl = buffer.indexOf('\n')
-        if (nl === -1) break
-        const line = buffer.slice(0, nl).trim()
-        buffer = buffer.slice(nl + 1)
-        if (!line) continue
-        try {
-          handlePayload(JSON.parse(line))
-        } catch (e) {
-          fail(e)
-          break
-        }
-      }
-    })
-    socket.on('error', error => {
-      if (timer) clearTimeout(timer)
-      // Report the errno and the socket rather than diagnosing the daemon.
-      // ECONNREFUSED means nothing accepted this connection, which a saturated
-      // listener produces as readily as an absent one. ENOENT is the one case
-      // where the socket really is not there, and it now says exactly that.
-      const message = error.code === 'ENOENT'
-        ? `local daemon ${op} failed: no socket at ${socketPath} (ENOENT)`
-        : error.code === 'ECONNREFUSED'
-          ? `local daemon ${op} failed: connection refused at ${socketPath} (ECONNREFUSED)`
-          : `local daemon ${op} failed: ${error.message}`
-      fail(new Error(message))
-    })
-    socket.on('close', () => {
-      if (settled) return
-      if (timer) clearTimeout(timer)
-      try {
-        const line = buffer.trim()
-        if (!line) throw new Error(`local daemon ${op} ended without a result`)
-        handlePayload(JSON.parse(line))
-      } catch (e) {
-        fail(e)
-      }
-    })
-  })
+  return callLocalDaemonRpc(op, params, { socketPath, timeoutMs, onEvent })
 }
 
 function printMintLifecycleEvent(event, data = {}) {
@@ -4618,7 +4634,7 @@ export async function cleanupFailedFreshBinding(result, {
   if (result.localAgentId) {
     const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
     const localLedger = createLocalAgentLedger(localAgentLedgerPath || undefined)
-    try { localLedger.delete(result.localAgentId) } finally { localLedger.close() }
+    try { localLedger.markDead(result.localAgentId) } finally { localLedger.close() }
   }
   if (result.fleetId && api) await api('POST', `/api/agents/${encodeURIComponent(result.fleetId)}/mark-dead`)
   return { terminated: true }
@@ -6926,6 +6942,7 @@ async function main() {
     switch (command) {
       case 'server': await cmdServer(); break
       case 'system': await cmdSystem(); break
+      case 'build': await finishCliOperation('build', cmdBuild); break
       case 'classroom': await cmdClassroom(); break
       case 'scratch': await finishCliOperation('project scratch', cmdScratch); break
       case 'book':   await finishCliOperation('project book', cmdBook); break

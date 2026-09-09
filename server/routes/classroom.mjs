@@ -345,8 +345,14 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     })) })
   })
 
-  router.get('/courses/:courseId/status', instructor, async (req, res) => {
-    const status = store.status(req.params.courseId)
+  // One page, one asymmetry: the instructor gets the whole class, a student gets
+  // the same shape holding only their own row. The student id comes from the
+  // token and is never read from the path, so this cannot be aimed at anyone
+  // else — the narrowing is the principal, not a parameter.
+  router.get('/courses/:courseId/status', async (req, res) => {
+    const p = req.classroomPrincipal
+    if (p.role === 'student' && p.courseId !== req.params.courseId) return res.status(403).json({ error: 'Forbidden' })
+    const status = store.status(req.params.courseId, p.role === 'student' ? { studentId: p.studentId } : {})
     const builds = new Map()
     for (const row of status.rows) {
       for (const cell of row.assignments) {
@@ -355,7 +361,10 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
         Object.assign(cell, builds.get(cell.contentRef))
       }
     }
-    res.json(status)
+    // The page needs to know which side of the asymmetry it is rendering, and
+    // the endpoint already knows. Carrying it here saves the client asking a
+    // second question about a request it has already made.
+    res.json({ ...status, viewer: { role: p.role } })
   })
 
   // The safety net: everything students submitted, plus whatever has been said
@@ -468,7 +477,9 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     const p = req.classroomPrincipal
     if (p.role === 'student') return res.json({ role: 'student', studentId: p.studentId, courseId: p.courseId, displayName: p.displayName, preferredName: p.preferredName || p.displayName, pronouns: p.pronouns || null })
     const courseId = String(req.query?.course || '')
-    const course = courseId && store.getCourse(courseId)
+    if (!courseId) return res.status(400).json({ error: 'course is required' })
+    const course = store.getCourse(courseId)
+    if (!course) return res.status(404).json({ error: 'Course not found' })
     if (!course?.preferred_name) return res.status(409).json({ error: 'Course instructor preferred name is not configured' })
     res.json({ role: 'instructor', courseId, preferredName: course.preferred_name, pronouns: course.pronouns || null })
   })

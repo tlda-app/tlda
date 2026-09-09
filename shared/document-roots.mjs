@@ -2,7 +2,7 @@ import path from 'node:path'
 import { scanMarkdownDeps } from './markdown-deps.mjs'
 import { scanTexDeps } from './tex-deps.mjs'
 
-const DOCUMENT_FORMATS = new Set(['svg', 'png', 'html', 'diff', 'slides', 'markdown', 'qmd'])
+const DOCUMENT_FORMATS = new Set(['svg', 'png', 'html', 'diff', 'slides', 'markdown', 'qmd', 'pdf'])
 
 export function normalizeDocumentRoots(documentRoots, { mainFile = null, format = 'svg' } = {}) {
   const roots = Array.isArray(documentRoots) ? documentRoots : []
@@ -81,6 +81,18 @@ const DOCUMENT_EXTENSION_FORMATS = new Map([
   ['.qmd', 'qmd'],
   ['.html', 'html'],
   ['.htm', 'html'],
+  // A PDF is a document in its own right, and it is the one entry here whose
+  // document needs no toolchain to render -- poppler reads its pages, sizes and
+  // word geometry straight out of the file. That is what makes a paper readable
+  // on a machine with no TeX.
+  //
+  // It is NOT in SCANNABLE below: a PDF points at nothing, so it is always a
+  // root and never an edge. Note the asymmetry with the source rules -- a `.pdf`
+  // sitting beside a `.tex` is that paper's OUTPUT and must not become a
+  // document, which `shared/source-manifest.mjs` and `server/lib/shadow-repo.mjs`
+  // each decide by their own test. This map only says what a `.pdf` IS once
+  // something has already decided it is a document root.
+  ['.pdf', 'pdf'],
 ])
 
 /** Extensions whose contents can point at other files. */

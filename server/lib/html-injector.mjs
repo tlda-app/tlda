@@ -1178,6 +1178,40 @@ const SLIDES_BRIDGE_SCRIPT = `
       }
     }
 
+    // Bring in the images for the slides the reader can actually see.
+    //
+    // Quarto emits every figure as a lazy img with data-src, never an eager
+    // one with src -- measured on the built deck: 34 lazy, 0 eager. Reveal
+    // swaps data-src to src in its visibility sweep, and in scroll view that
+    // sweep decides what is near FROM SCROLL POSITION. The strip never scrolls
+    // (see the deck CSS above), so the sweep always answers with the same few
+    // slides and every other figure stays unloaded for the life of the deck.
+    // Skip: "the picture on the Friday's Lab slide is there. From then on, I
+    // don't see pictures."
+    //
+    // This is the third symptom of that one cause, after navigation and
+    // fragments. The next person will meet a fourth.
+    //
+    // The slidechanged event is NOT the missing half -- measured, it fires on
+    // every move, 14 for 14. The loader is simply never called, so call it.
+    //
+    // Neighbours, not just the target: the deck is one row and he presents
+    // zoomed out, so the camera shows more than the slide it is addressed to.
+    // The distance is reveal's own configured viewDistance rather than a
+    // literal -- and when reveal does not state one we load the target alone
+    // rather than inventing a number. Unloading is deliberately left to reveal.
+    function loadSlidesNear(pages, index) {
+      if (!Reveal.loadSlide || !pages || !pages.length) return;
+      var config = Reveal.getConfig ? Reveal.getConfig() : null;
+      var distance = config && typeof config.viewDistance === 'number' ? config.viewDistance : 0;
+      var first = Math.max(0, index - distance);
+      var last = Math.min(pages.length - 1, index + distance);
+      for (var li = first; li <= last; li++) {
+        var section = pages[li].querySelector('section');
+        if (section) Reveal.loadSlide(section);
+      }
+    }
+
     // Report initial fragment state
     setTimeout(reportSlideBackground, 50);
     setTimeout(reportFragmentState, 200);
@@ -1218,16 +1252,25 @@ const SLIDES_BRIDGE_SCRIPT = `
     // Listen for messages from parent (edge tap zones, dark mode)
     window.addEventListener('message', function(e) {
       if (!e.data || !e.data.type) return;
+      // Step the fragment directly rather than through next()/prev(). In the
+      // deck strip nothing scrolls, so reveal's scroll view treats next() as a
+      // navigation it cannot perform and the fragment never advances -- which
+      // left the deck stuck on a fragment slide once its address started
+      // moving. nextFragment()/prevFragment() act on the current slide's
+      // fragments without navigating, and availableFragments() above already
+      // guarantees there is one to step.
       if (e.data.type === 'tlda-fragment-next') {
         var avail = Reveal.availableFragments();
         if (avail && avail.next) {
-          Reveal.next();
+          if (Reveal.nextFragment) Reveal.nextFragment(); else Reveal.next();
+          setTimeout(reportFragmentState, 50);
         }
       }
       if (e.data.type === 'tlda-fragment-prev') {
         var avail = Reveal.availableFragments();
         if (avail && avail.prev) {
-          Reveal.prev();
+          if (Reveal.prevFragment) Reveal.prevFragment(); else Reveal.prev();
+          setTimeout(reportFragmentState, 50);
         }
       }
       if (e.data.type === 'tlda-fragment-goto') {
@@ -1236,7 +1279,34 @@ const SLIDES_BRIDGE_SCRIPT = `
         setTimeout(reportSlideHeight, 50);
       }
       if (e.data.type === 'tlda-slide-goto') {
-        Reveal.slide(e.data.indexh || 0, e.data.indexv || 0, 0);
+        var gotoH = e.data.indexh || 0;
+        var gotoV = e.data.indexv || 0;
+        // The deck strip does not scroll: the CSS above makes
+        // .reveal-viewport.reveal-scroll overflow:visible and absolutely
+        // positions every .scroll-page, because tlda flies a camera over the
+        // strip instead. Reveal's scroll view tracks its address from scroll
+        // position, so with nothing scrolling Reveal.slide() moves nothing and
+        // getCurrentSlide() stays on the first slide forever. That is what fed
+        // reportFragmentState a permanent 0/0 and made the navigator skip every
+        // fragment. setCurrentScrollPage sets the address without scrolling;
+        // once it is right, availableFragments() and next() drive fragments
+        // normally, so nothing else here has to change.
+        var movedByScrollPage = false;
+        if (Reveal.isScrollView && Reveal.isScrollView() && Reveal.setCurrentScrollPage) {
+          var gotoPages = document.querySelectorAll('.scroll-page');
+          for (var gi = 0; gi < gotoPages.length; gi++) {
+            var gotoSection = gotoPages[gi].querySelector('section');
+            if (!gotoSection) continue;
+            var gotoIdx = Reveal.getIndices(gotoSection);
+            if (gotoIdx && gotoIdx.h === gotoH && (gotoIdx.v || 0) === gotoV) {
+              Reveal.setCurrentScrollPage(gotoSection, gi, 0);
+              loadSlidesNear(gotoPages, gi);
+              movedByScrollPage = true;
+              break;
+            }
+          }
+        }
+        if (!movedByScrollPage) Reveal.slide(gotoH, gotoV, 0);
         setTimeout(reportFragmentState, 50);
         setTimeout(reportSlideHeight, 50);
       }

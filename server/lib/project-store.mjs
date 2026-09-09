@@ -24,6 +24,8 @@ import { resolveContainedPath } from './path-containment.mjs'
 import { createSourceLifecycleStore, projectRevisionStatus } from './source-lifecycle.mjs'
 import { ProjectLifecycleStatusIndex, UNKNOWN_PROJECT_LIFECYCLE_STATUS } from './project-lifecycle-status-index.mjs'
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
+import { formatForDocumentPath } from '../../shared/document-roots.mjs'
+import { documentAxes } from '../../shared/document-formats.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { scanTexDependencyClosure } from '../../shared/tex-deps.mjs'
 import { documentRootsIn, normalizeDocumentRoots } from '../../shared/document-roots.mjs'
@@ -86,7 +88,26 @@ export async function readProject(name) {
   const project = await projectFilesDb.readProject(name)
   if (!project) return project
   const { sourceDir: _sourceDir, ...sharedProject } = project
-  return sharedProject
+  // The three axes come out of the read path COMPUTED, not out of the record
+  // stored. Every reader gets them — including the project API response — and
+  // no project has to be migrated to acquire them.
+  //
+  // The alternative was to write them onto each project.json once. That is the
+  // shape the RC branch shipped, and it is why the RC has never been run
+  // against a store that already had anything in it: it paired stored axes with
+  // a startup assertion, so one project still carrying `format` stopped
+  // initProjectStore outright and the server did not start. A record carrying
+  // both shapes was rejected too, so the conversion could not even be staged
+  // across two passes.
+  //
+  // Deriving removes that whole class. There is no migration to run once,
+  // nothing to leave half-done, and re-running converges because nothing was
+  // written. It is Skip's rule one field over — document roots are a computed
+  // property of the branch, and so are these.
+  //
+  // `documentAxes` prefers axes already on the record, so an explicitly-declared
+  // project keeps its own answer and this only fills the gap.
+  return { ...sharedProject, ...documentAxes(sharedProject) }
 }
 
 // No default for mainFile. A caller that does not name one does not know one,
@@ -95,7 +116,31 @@ export async function readProject(name) {
 // both imagined-randomization projects got a mainFile that does not exist.
 // Undeclared is a state the build tolerates; declared-and-absent is an error.
 // Readers that need a LaTeX name still fall back to `main.tex` at read time.
-export function createProject({ name, title, mainFile, format = 'svg', members, documentRoots = null }) {
+/**
+ * A project's format is DERIVED from its main file when the caller does not say.
+ *
+ * It used to default to `svg` outright, and `svg` means "build this with LaTeX".
+ * So the fallback for "I was not told what this is" was "run pdflatex on it" —
+ * observed end to end, not inferred: a project whose main file was a `.pdf`
+ * arrived as `format: 'svg'` with its own root coerced to `svg` too, was handed
+ * to the LaTeX runner, and failed with `DVI file not created`, a message naming
+ * the symptom and never the cause.
+ *
+ * `formatForDocumentPath` is the same map that already decides a document
+ * ROOT's format, so this makes the project agree with its own documents instead
+ * of guessing separately. It is Skip's rule one field over — document roots are
+ * a computed property of the branch, and so is this.
+ *
+ * `svg` remains the last resort, for a project with no main file at all. An
+ * explicit `format` still wins over both: every current caller that cares passes
+ * one, and the ones that do not are LaTeX projects whose `.tex` derives to `svg`
+ * anyway, so no existing caller changes behaviour.
+ */
+function formatForNewProject(mainFile, format) {
+  return format || formatForDocumentPath(mainFile) || 'svg'
+}
+
+export function createProject({ name, title, mainFile, format = null, members, documentRoots = null }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -104,6 +149,7 @@ export function createProject({ name, title, mainFile, format = 'svg', members, 
   mkdirSync(join(dir, 'source'), { recursive: true })
   mkdirSync(join(dir, 'output'), { recursive: true })
 
+  format = formatForNewProject(mainFile, format)
   const isBook = format === 'book'
   const project = {
     name,

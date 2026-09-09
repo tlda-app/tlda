@@ -675,7 +675,7 @@ async function spawnFresh(params) {
         terminated = false
       }
     }
-    if (terminated) localAgentLedger.delete(localAgentId)
+    if (terminated) localAgentLedger.markDead(localAgentId)
     else err.detail = { ...(err.detail || {}), ownershipRetained: true, fleetId, tmuxSession }
     if (terminated && shellRegistered) {
       try {

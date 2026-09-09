@@ -25,12 +25,13 @@ RUN apt-get update && apt-get install -y \
       texlive-latex-recommended texlive-latex-extra texlive-science \
       texlive-fonts-recommended texlive-fonts-extra texlive-bibtex-extra \
       texlive-pictures texlive-plain-generic texlive-xetex \
-      lmodern dvisvgm biber latexmk latexdiff ghostscript ffmpeg git git-filter-repo ca-certificates \
+      lmodern dvisvgm biber latexmk latexdiff ghostscript ffmpeg poppler-utils git git-filter-repo ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # Fail the build early if any build-pipeline binary is missing or too old.
 # NOTE: the SVG pipeline uses `dvisvgm --font-format=woff2` — verify this dvisvgm
 # supports woff2 on first real build (Debian bookworm texlive should).
-RUN latexmk --version && dvisvgm --version && biber --version && latexdiff --version && gs --version && ffmpeg -version
+RUN latexmk --version && dvisvgm --version && biber --version && latexdiff --version && gs --version && ffmpeg -version \
+    && pdfinfo -v && pdftocairo -v && pdftotext -v
 
 # --- R + Quarto layer (heavy, cached — changes rarely) ---
 # .qmd is the ONE format tlda renders itself (server/lib/build-qmd.mjs). Every
@@ -183,24 +184,6 @@ RUN . /etc/os-release \
     && Rscript -e "install.packages(c('knitr','rmarkdown','ggplot2','purrr','tidyverse','htmltools','kableExtra','scales','maps','gt','grf','imager'), repos = 'https://packagemanager.posit.co/cran/__linux__/${VERSION_CODENAME}/latest', type = 'source')" \
     && Rscript -e 'pkgs <- c("knitr","rmarkdown","ggplot2","purrr","tidyverse","htmltools","kableExtra","scales","maps","gt","grf","imager"); missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]; if (length(missing)) stop("classroom R runtime incomplete, these namespaces will not load: ", paste(missing, collapse = ", ")); cat("classroom R runtime OK:", paste(pkgs, collapse = " "), "\n")'
 
-# The same `pkgType = "both"` that renv needs is what a student's pasted
-# install.packages() dies on, and it takes their whole submission down with it:
-# knitr halts, the render makes no pages, and the marking view waits forever on
-# a document that will never arrive. The guard file says why masking in the
-# global environment is the right blast radius. It is appended to the site
-# profile rather than shipped as a second profile so there is one file, read in
-# one order — and it goes here, after the runtime above, because the assertion
-# below is only worth anything once ggplot2 is actually installed.
-#
-# ASSERTED, like the runtime above: the first call must survive AND the package
-# must still load afterwards, so a guard that silently swallowed the library()
-# would fail the build rather than reach a student.
-COPY server/r/student-install-packages-guard.R /tmp/student-install-packages-guard.R
-RUN cat /tmp/student-install-packages-guard.R >> "$(R RHOME)/etc/Rprofile.site" \
-    && rm /tmp/student-install-packages-guard.R \
-    && Rscript -e 'install.packages("ggplot2"); library(ggplot2); cat("student install.packages() guard OK\n")' \
-    && Rscript -e 'install.packages(c("kableExtra","knitr","tidyverse")); cat("student install.packages() guard OK for a vector\n")'
-
 # Keep the restored packages on the persistent volume. Without this the renv
 # cache lives in the container filesystem and every machine replacement pays the
 # full restore again; with it, the first render on a new machine is the only slow
@@ -232,7 +215,7 @@ RUN python3 -m venv /opt/venv \
        "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
 # --- Tailscale (official Debian repo) ---
-# The Fly machine joins Skip's tailnet (see fly-entrypoint-live.sh, gated on
+# The Fly machine joins the operator's tailnet (see fly-entrypoint-live.sh, gated on
 # TS_AUTHKEY) so the server is reachable privately over the tailnet rather than the
 # open internet. Installs tailscaled (/usr/sbin) + tailscale (/usr/bin), both on
 # the root PATH. Separate layer so it caches across app-code redeploys.
@@ -244,12 +227,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && curl -fsSL "https://pkgs.tailscale.com/stable/debian/${VERSION_CODENAME}.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
     && curl -fsSL "https://pkgs.tailscale.com/stable/debian/${VERSION_CODENAME}.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list \
     && apt-get update && apt-get install -y --no-install-recommends tailscale \
-    && rm -rf /var/lib/apt/lists/*
-
-# --- rclone (feelings-export pushes chat JSONL + attachments to Skip's Google Drive) ---
-# Its own layer so it caches across app-code redeploys. The feelings-export job
-# (bin/feelings-export.mjs, scheduled by the entrypoint) shells out to `rclone copy`.
-RUN apt-get update && apt-get install -y --no-install-recommends rclone \
     && rm -rf /var/lib/apt/lists/*
 
 # --- runtime deps ---
@@ -306,12 +283,6 @@ COPY daemon/ ./daemon/
 COPY migrations/ ./migrations/
 COPY cli/lib/ ./cli/lib/
 
-# Feelings export: server-side job reads fleet.db chat -> JSONL + copies referenced
-# attachments -> rclone to Skip's Drive. The entrypoint runs it on an interval
-# (Skip-authorized PII export). Opens the DB readonly, so it's safe alongside the
-# server's writer.
-COPY bin/feelings-export.mjs ./bin/feelings-export.mjs
-
 # Build worker: the server dispatches LaTeX builds to `node bin/build-worker.mjs`
 # (server/lib/build-dispatch.mjs spawns it as a subprocess). Without this file in
 # the image, every build crashes with ERR_MODULE_NOT_FOUND and produces 0 pages.
@@ -328,7 +299,7 @@ COPY bin/git-proposal-hook.mjs ./bin/git-proposal-hook.mjs
 COPY bin/build-session-history-index.mjs ./bin/build-session-history-index.mjs
 
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
-# (server gated behind Tailscale, not the open internet), Skip's tldraw license
+# (server gated behind Tailscale, not the open internet), the deployment's tldraw license
 # allows self-hosting — so SPA + API + WS become ONE same-origin server, dropping
 # the GitHub Pages split and the whole cross-origin URL/auth gymnastics. The server
 # serves /app/dist (distDir = join(__dirname,'..','dist')) via express.static + an

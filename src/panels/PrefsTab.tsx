@@ -50,7 +50,7 @@ type PrefsSectionId = 'account' | 'appearance' | 'reading' | 'input' | 'panels' 
 const PREFS_SEARCH_TEXT: Record<PrefsSectionId, string> = {
   account: 'account user identity devices switch device name',
   appearance: 'appearance theme colour color scheme dark light system one fog lilac warm power mono blue text font size line height faint opacity chrome content',
-  reading: 'reading document toc hover region table of contents stingy doc viewer ribbon provenance note color voice notes',
+  reading: 'reading document toc hover region table of contents controls compact icons stingy doc viewer ribbon provenance note color voice notes',
   input: 'input touch target pointer thumb highlighter edge zone response curve editor vim',
   panels: 'panels fleet layout height rail column preferred minimum margin aspect snap strength nudge tool output fold bash write markdown diff thread card messages',
   voice: 'voice backend meter submit phrases ignored deepgram idle cutoff preroll endpointing',
@@ -308,6 +308,7 @@ function readAll() {
     foldDiff: getPref('fold-diff-lines'),
     semanticOperationPageSize: getPref('semantic-operation-page-size'),
     hlZone: getPref('hl-zone-enabled'),
+    tocControlsCompact: getPref('toc-controls-compact'),
     provenanceMode: getPref('provenance-display-mode'),
     selfCheckEnabled: getPref('todd-self-check-auto-enabled'),
     selfCheckCountdown: getPref('todd-self-check-countdown-sec'),
@@ -555,6 +556,10 @@ export function PrefsTab({ query = '' }: { query?: string }) {
         onToggle={toggleSection}
       >
         <PrefSubsection title="Document panel">
+          <label className="prefs-check">
+            <input type="checkbox" checked={prefs.tocControlsCompact} onChange={e => setPref('toc-controls-compact', e.target.checked)} />
+            <span>Compact ToC controls</span>
+          </label>
           <div className="prefs-zone-width-control">
             <span className="prefs-num-label">ToC hover region</span>
             <ZoneWidthThumbControl className="prefs-zone-width-slider" />

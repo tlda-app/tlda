@@ -61,7 +61,7 @@ variable names are gone — nothing reads them, and there is no alias.
 | `PORT`, `NODE_ENV`, `HOME`, `PATH`, `USER`, `TMUX`, `TMUX_PANE` | The platform sets these before the app runs. |
 | `TLDA_TOKEN`, `TLDA_TOKEN_RW`, `TLDA_TOKEN_READ` | Secrets (`fly secrets`). A token in an image layer is a token in the repository. |
 | `DEEPGRAM_API_KEY` | Secret, and it belongs to the *bridge* process on the voice box, not to this server. |
-| `TS_AUTHKEY`, `FEELINGS_RCLONE_CONF_B64`, `CODEX_AUTH_JSON` | Secrets consumed by the entrypoint before any app code runs. |
+| `TS_AUTHKEY`, `CODEX_AUTH_JSON` | Secrets consumed by the entrypoint before any app code runs. |
 | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `MYSCRIPT_APP_KEY`, `MYSCRIPT_HMAC_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `OVERLEAF_TOKEN`, `TLDA_FRIEND_GIT_TOKEN`, `TLDA_FRIEND_GIT_REMOTE`, `GRAFANA_ADMIN_PASSWORD` | Secrets. |
 
 ## 3. Not deployment configuration — out of scope, listed so nothing looks missed
@@ -121,7 +121,7 @@ configuration, which this task explicitly does not do.
 `CHROME_PATH` · `EDITOR_CMD` · `SKILLS_SRC` · `PLAYWRIGHT_CLI_BIN` ·
 `TLDA_DEV_DAEMON` · `TLDA_DEV_SERVER` · `TLDA_COMP_WORDS` · `MODEL` · `OPT` ·
 `TLDA_GIT_USER_NAME` · `TLDA_GIT_USER_EMAIL` · `TS_HOSTNAME` · `TS_FUNNEL` ·
-`FEELINGS_*` (5) · `TLDA_FRIEND_PROJECT` · `TLDA_FRIEND_GIT_URL` ·
+`TLDA_FRIEND_PROJECT` · `TLDA_FRIEND_GIT_URL` ·
 `TLDA_AGENT_CONFIG_TGZ_B64`
 
 **Build-time and client-side** — baked into the SPA bundle by Vite, not read by

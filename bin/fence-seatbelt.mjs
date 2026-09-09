@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const DEV_NULL = '/dev/null'
 const PS_EXEC_RULE = '(allow process-exec (literal "/bin/ps") (with no-sandbox))'
-const FLEET_DB_DENY = '/Users/skip/.config/tlda/fleet.db*'
+const FLEET_DB_DENY = path.join(os.homedir(), '.config', 'tlda', 'fleet.db*')
 
 function usage() {
   return 'usage: node bin/fence-seatbelt.mjs --settings <file.json> -- <command> [args...]'

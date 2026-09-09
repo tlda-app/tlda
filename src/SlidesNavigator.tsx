@@ -220,18 +220,6 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     })
   }, [document, goToSlide])
 
-  useEffect(() => {
-    const refitCurrentSlide = () => {
-      goToSlide(currentSlide, false)
-    }
-    window.addEventListener('resize', refitCurrentSlide)
-    window.visualViewport?.addEventListener('resize', refitCurrentSlide)
-    return () => {
-      window.removeEventListener('resize', refitCurrentSlide)
-      window.visualViewport?.removeEventListener('resize', refitCurrentSlide)
-    }
-  }, [currentSlide, goToSlide])
-
   const handleNext = useCallback(() => {
     const shapeId = slideBoxes(document)[currentSlide]?.shapeId
     if (!shapeId) return

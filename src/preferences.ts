@@ -116,6 +116,9 @@ const DEFAULTS = {
   // decision and both of Skip's rulings on it. This is the value a reader
   // actually gets, since getPref never reports a pref unset.
   'toc-hover-zone-width': 50 as number,
+  // The labelled TOC controls remain the discoverable default. Compact mode
+  // keeps the same controls and actions, but presents their glyphs in one row.
+  'toc-controls-compact': false as boolean,
   // Provenance/cascade surfacing mode. off = no surfacing (also hides the ribbon
   // hover tooltip). hover = ephemeral tooltip; panel = docked side panel; inline =
   // click-to-pin card. Default hover preserves today's behavior; off/panel/inline opt in.

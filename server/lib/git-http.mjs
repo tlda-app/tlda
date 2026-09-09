@@ -1,6 +1,18 @@
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { createGunzip, createInflate } from 'node:zlib'
 import { installProposalHooks, listProposalRefs } from './git-proposals.mjs'
+
+// git compresses the upload-pack request body and says so, but not the
+// receive-pack one. Piping the raw stream therefore fed gzip bytes to
+// `upload-pack`, which exits non-zero, and every fetch answered 500 while every
+// push worked — which is why this went unseen: the daemon only ever pushes.
+export function decodedRequestStream(req) {
+  const encoding = String(req?.headers?.['content-encoding'] || '').trim().toLowerCase()
+  if (encoding === 'gzip' || encoding === 'x-gzip') return req.pipe(createGunzip())
+  if (encoding === 'deflate') return req.pipe(createInflate())
+  return req
+}
 
 const hookScript = fileURLToPath(new URL('../../bin/git-proposal-hook.mjs', import.meta.url))
 
@@ -39,16 +51,32 @@ function runService({ service, gitDir, project, req = null, daemonId = null, adv
     })
     const stdout = []
     const stderr = []
+    let settled = false
+    const settle = value => { if (!settled) { settled = true; resolve(value) } }
     child.stdout.on('data', chunk => stdout.push(chunk))
     child.stderr.on('data', chunk => stderr.push(chunk))
-    child.on('error', reject)
-    child.on('close', code => resolve({
+    child.on('error', error => { if (!settled) { settled = true; reject(error) } })
+    child.on('close', code => settle({
       code,
       stdout: Buffer.concat(stdout),
       stderr: Buffer.concat(stderr).toString('utf8'),
     }))
-    if (req) req.pipe(child.stdin)
-    else child.stdin.end()
+    if (req) {
+      // A body that is not the encoding it claims makes the decoder emit
+      // `error`, and an unhandled `error` on a stream ends the process. The
+      // request is untrusted, so that would be a way to stop the server by
+      // sending eight bad bytes. Failures here take the same route a failed
+      // service takes: a non-zero code the caller answers with 500.
+      const input = decodedRequestStream(req)
+      const fail = error => {
+        child.kill()
+        settle({ code: 1, stdout: Buffer.alloc(0), stderr: `request body: ${error.message}` })
+      }
+      input.on('error', fail)
+      if (input !== req) req.on('error', fail)
+      child.stdin.on('error', fail)
+      input.pipe(child.stdin)
+    } else child.stdin.end()
   })
 }
 

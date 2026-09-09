@@ -49,6 +49,7 @@ export const PRETTY_PRINT_TOOLS = new Set([
   'mcp__tlda__propose_edit',
   'tlda__propose_edit',
   'propose_edit',
+  'region_transfer',
 ])
 
 export function toolBaseName(name) {

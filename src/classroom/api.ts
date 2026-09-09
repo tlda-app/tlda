@@ -7,7 +7,10 @@ export interface Assignment {
 export interface StatusCell { assignmentId: string; state: 'not-submitted' | GradingStatus; studentId?: string; contentRef?: string; submittedAt?: string; gradingStatus?: GradingStatus; buildStatus?: string; buildAt?: string | null }
 export type StudentLayerScope = 'student' | 'common'
 export interface StatusRow { id: string; displayName: string; universityLogin?: string; layerScope: StudentLayerScope; assignments: StatusCell[] }
-export interface CourseStatus { course: { id: string; title: string }; assignments: Assignment[]; rows: StatusRow[]; counts: Record<string, number> }
+// One shape for both sides of the asymmetry: an instructor's `rows` are the
+// whole class, a student's are their own single row. The server narrows it —
+// the page does not filter, and there is nothing here it could filter with.
+export interface CourseStatus { course: { id: string; title: string }; assignments: Assignment[]; rows: StatusRow[]; counts: Record<string, number>; viewer?: { role: 'instructor' | 'student' } }
 export interface FeedbackMark { id: string; title: string; text: string; attached: boolean; visibility: 'instructor-draft' | 'returned' }
 export interface ProblemAnswer { studentId: string; displayName: string; layerScope: StudentLayerScope; contentRef: string; gradingStatus: GradingStatus; anchor: string | null }
 export interface ProblemsView { assignment: Assignment; problems: { problemId: string; answers: ProblemAnswer[] }[] }

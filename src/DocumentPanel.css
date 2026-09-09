@@ -1691,6 +1691,21 @@ html[data-theme="dark"] .history-compare-btn.active {
   border-color: currentColor !important;
   border-radius: 5px;
   opacity: var(--ui-tone-rest) !important;
+  width: 100%;
+}
+
+.toc-bottom-controls--compact .toc-state-control {
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 2px !important;
+  border-color: transparent !important;
+  border-radius: 0;
+}
+
+.toc-bottom-controls--compact .toc-state-control-label {
+  display: none;
 }
 
 .toc-state-control--active {
@@ -2085,6 +2100,10 @@ body.touch-toc-mode:not(.phone-mode) .phone-toc-modal {
 
 .phone-toc-modal .toc-bottom-controls .toc-diff-hint {
   padding: 5px 0;
+}
+
+.phone-toc-modal .toc-bottom-controls--compact .toc-state-control {
+  padding: 2px !important;
 }
 
 .phone-toc-modal .toc-diff-hint:hover {

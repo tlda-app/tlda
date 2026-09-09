@@ -24,7 +24,8 @@
  *   tlda-dev pw status             session state + my tab + current URL
  *   tlda-dev pw sweep              park stale/error tabs in my assigned browser
  *   tlda-dev pw reap               close my assigned shared browser (the reaper)
- *   tlda-dev pw center <region>    center the camera on doc | chat | fleet
+ *   tlda-dev pw center <region>    bring doc | fleet | chat | agents | search |
+ *                                 inbox | docview into the pointer viewport
  *
  * Identity (which tab is "mine") comes from TLDA_PW_AS → AGENT_WIN → FLEET_ID →
  * $USER@local, sanitized into a marker stamped on the tab's URL (`pwtab=<key>`).
@@ -428,7 +429,8 @@ function runPlaywrightCli(args, { budgetName, ...opts } = {}) {
   const budget = budgetName || (isOpen ? 'TLDA_PW_OPEN_TIMEOUT_MS' : 'TLDA_PW_VERB_TIMEOUT_MS')
   // cwd PINNED to the canonical workspace so this command targets the ONE shared
   // daemon regardless of where the agent invoked tlda-dev pw from (see PW_CWD).
-  const result = spawnSync(playwrightCliBin(), args, {
+  const invocation = playwrightCliInvocation(playwrightCliBin(), args)
+  const result = spawnSync(invocation.command, invocation.args, {
     encoding: 'utf8', cwd: PW_CWD, killSignal: 'SIGKILL', ...opts, timeout,
   })
   const timedOut = result.error?.code === 'ETIMEDOUT' ||
@@ -448,6 +450,10 @@ function runPlaywrightCli(args, { budgetName, ...opts } = {}) {
   // spawnSync leaves `status` null on timeout, and callers do `.status ?? 0` —
   // which would report a killed verb as SUCCESS. Synthesize the failure.
   return { ...result, status: PW_EXIT_TIMEOUT, timedOut: true }
+}
+
+export function playwrightCliInvocation(bin, args) {
+  return { command: '/usr/bin/nice', args: ['-n', '5', bin, ...args] }
 }
 
 function pw(args, opts = {}) {
@@ -1080,11 +1086,149 @@ function forwardConsole(rest) {
 }
 
 // Camera-centering snippets, run as eval on the agent's tab.
-const CENTER_EVALS = {
-  doc: `() => { var ed=window.__tldraw_editor__; if(!ed) return 'no editor'; var ps=ed.getCurrentPageShapes().filter(function(s){return s.type==='svg-page'||s.type==='html-page'}); if(!ps.length) return 'no pages'; ps.sort(function(a,b){var ba=ed.getShapePageBounds(a.id),bb=ed.getShapePageBounds(b.id); return ba.y-bb.y||ba.x-bb.x}); var b=ed.getShapePageBounds(ps[0].id); var c=ed.getCamera(); ed.setCamera({x:-b.minX+32,y:-b.minY+32,z:c.z},{animation:{duration:0}}); return 'centered doc'; }`,
-  chat: `() => { var ed=window.__tldraw_editor__; if(!ed) return 'no editor'; var f=ed.getCurrentPageShapes().find(function(s){return s.type==='fleet-chat'}); if(!f) return 'no fleet-chat shape'; var b=ed.getShapePageBounds(f.id); var c=ed.getCamera(); ed.setCamera({x:-b.minX+32,y:-b.minY+32,z:c.z},{animation:{duration:0}}); return 'centered chat'; }`,
-  fleet: `() => { var ed=window.__tldraw_editor__; if(!ed) return 'no editor'; var f=ed.getCurrentPageShapes().find(function(s){return s.type==='fleet-chat'||s.type==='fleet-agents'||s.type==='fleet-search'||s.type==='fleet-docview'}); if(!f) return 'no fleet shapes'; var b=ed.getShapePageBounds(f.id); var c=ed.getCamera(); ed.setCamera({x:-b.minX+32,y:-b.minY+32,z:c.z},{animation:{duration:0}}); return 'centered fleet'; }`,
+//
+// A document page is drawn by the main canvas, so its page bounds and the main
+// camera are in the same equation and solving it puts the page where you asked.
+//
+// The suppression flag matters here for a reason that has nothing to do with
+// documents: ANY main-camera write the HUD sees as a deliberate pan makes it
+// persist a displaced anchor through saveAnchorOffsets, into the synced room.
+// `doc` is the most-used region, so it was the biggest producer of that debris
+// while the fleet regions were the ones being discussed. The anchor id is per
+// identity+device, so what it displaces is the HUD of the identity the pw tab
+// runs as, and what it leaves behind is debris in the room it was pointed at --
+// it does not move another participant's HUD.
+const CENTER_DOC_EVAL = `() => { var ed=window.__tldraw_editor__; if(!ed) return 'no editor'; var ps=ed.getCurrentPageShapes().filter(function(s){return s.type==='svg-page'||s.type==='html-page'}); if(!ps.length) return 'no pages'; ps.sort(function(a,b){var ba=ed.getShapePageBounds(a.id),bb=ed.getShapePageBounds(b.id); return ba.y-bb.y||ba.x-bb.x}); var b=ed.getShapePageBounds(ps[0].id); var c=ed.getCamera(); window.__tldaFleetHudSuppressCameraTrackingUntil = Date.now() + 4000; ed.setCamera({x:-b.minX+32,y:-b.minY+32,z:c.z},{animation:{duration:0}}); return 'centered doc'; }`
+
+/**
+ * A fleet panel is NOT drawn by the main canvas when the HUD is open, so the
+ * doc equation above is the wrong equation for it and quietly leaves the panel
+ * tens of thousands of pixels out.
+ *
+ * The HUD is document-fixed across the document's flow axis: its camera sits at
+ * `docNearScreen - marginGap - layoutFarEdge` (`src/overlays/fleet-hud-anchor.ts`),
+ * and `docNearScreen` moves with the main camera. So panning the main camera
+ * does move the HUD, 1:1 at z=1 — measured 2026-09-02 on a disposable room:
+ * camera x 200 -> 1200 moved the HUD shape layer 20200 -> 21200 and the search
+ * panel from x=-921 to x=79. Along the flow axis the HUD is screen-pinned and
+ * does not move at all, which is why solving both axes from page coordinates
+ * cannot work for these shapes in either orientation.
+ *
+ * Rather than reimplement that anchor here — it would work until the anchor rule
+ * changed and then land the camera somewhere plausible and wrong — measure the
+ * rendered element and pan by the residual. That is correct with the HUD open or
+ * closed, on a paper or a deck, and it reports the rect it actually achieved
+ * instead of the one it aimed at.
+ *
+ * Three agents read the old behaviour as "no fleet control can be driven by real
+ * pointer input in an automated session". The panel was reachable the whole time;
+ * the instrument was solving for the main canvas.
+ */
+function centerFleetEval(shapeTypes, label) {
+  return `async () => {
+  var ed = window.__tldraw_editor__
+  if (!ed) return 'no editor'
+  var want = ${JSON.stringify(shapeTypes)}
+  var me = typeof window.__tldaFleetIdentity === 'function' ? window.__tldaFleetIdentity().id : null
+  if (!me) return 'no fleet identity yet'
+
+  // Mine only. A shared room carries every owner's layout, a lane apart, and the
+  // old 'first fleet shape on the page' pick was usually somebody else's.
+  var mine = ed.getCurrentPageShapes().filter(function (s) {
+    return want.indexOf(s.type) !== -1 && s.props && s.props.userId === me
+  })
+  if (!mine.length) return 'no ${label} shape owned by ' + me
+
+  // With the HUD open a fleet shape is in the DOM TWICE: the main-canvas copy,
+  // which FleetHUD.css hides with visibility:hidden, and the HUD copy. They sit
+  // under different cameras, so taking the first match measures the wrong one.
+  // Filter on visibility — that is the same thing elementFromPoint honours, so
+  // this selects the copy a real pointer would actually hit.
+  var wanted = {}
+  for (var i = 0; i < mine.length; i++) wanted[mine[i].id] = true
+
+  function box() {
+    var l = Infinity, t = Infinity, r = -Infinity, b = -Infinity, seen = 0
+    var all = document.querySelectorAll('.fleet-shape')
+    for (var j = 0; j < all.length; j++) {
+      var el = all[j]
+      var host = el.closest('[data-shape-id]')
+      if (!host || !wanted[host.getAttribute('data-shape-id')]) continue
+      if (getComputedStyle(el).visibility === 'hidden') continue
+      var q = el.getBoundingClientRect()
+      if (!q.width && !q.height) continue
+      seen++
+      if (q.left < l) l = q.left
+      if (q.top < t) t = q.top
+      if (q.right > r) r = q.right
+      if (q.bottom > b) b = q.bottom
+    }
+    return seen ? { l: l, t: t, r: r, b: b, seen: seen } : null
+  }
+
+  var before = box()
+  if (!before) return 'no ${label} element rendered (shape exists but is not in the DOM)'
+
+  // Minimum move that brings it inside, per axis, and nothing when it already is.
+  // A panel wider than the viewport cannot fit; align its near edge and say so.
+  var pad = 24
+  var vw = window.innerWidth, vh = window.innerHeight
+  function shift(near, far, extent) {
+    if (far - near > extent - 2 * pad) return pad - near
+    if (near < pad) return pad - near
+    if (far > extent - pad) return extent - pad - far
+    return 0
+  }
+  var dx = shift(before.l, before.r, vw)
+  var dy = shift(before.t, before.b, vh)
+
+  if (dx || dy) {
+    // Tell the HUD this is navigation, not a deliberate pan: without it the HUD
+    // records the displaced anchor and persists it to Yjs for everyone in the room.
+    window.__tldaFleetHudSuppressCameraTrackingUntil = Date.now() + 4000
+    var c = ed.getCamera()
+    ed.setCamera({ x: c.x + dx / c.z, y: c.y + dy / c.z, z: c.z }, { animation: { duration: 0 } })
+    // setCamera writes the store; the panels move when React re-renders and the
+    // browser lays out. Measuring straight after it reads the OLD rect and
+    // reports onScreen:false for a camera that is already correct — which is a
+    // verification tool manufacturing its own false negative. Two frames: one
+    // for the render, one for the layout that follows it.
+    await new Promise(function (res) { requestAnimationFrame(function () { requestAnimationFrame(res) }) })
+  }
+
+  var after = box() || before
+  var onScreen = after.l >= 0 && after.t >= 0 && after.r <= vw && after.b <= vh
+  // Stated, not left to be inferred from rect.w > viewport.w. An onScreen:false
+  // that means "correctly aligned, too big to ever fit" is a different fact from
+  // one that means "did not move", and reading them as the same is exactly the
+  // false negative the frame-wait above exists to prevent.
+  var fitsViewport = (after.r - after.l) <= vw - 2 * pad && (after.b - after.t) <= vh - 2 * pad
+  return JSON.stringify({
+    region: '${label}',
+    owner: me,
+    panels: after.seen,
+    moved: { dx: Math.round(dx), dy: Math.round(dy) },
+    rect: { x: Math.round(after.l), y: Math.round(after.t), w: Math.round(after.r - after.l), h: Math.round(after.b - after.t) },
+    viewport: { w: vw, h: vh },
+    onScreen: onScreen,
+    fitsViewport: fitsViewport,
+  })
+}`
 }
+
+const FLEET_PANEL_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-inbox']
+
+const CENTER_EVALS = {
+  doc: CENTER_DOC_EVAL,
+  fleet: centerFleetEval(FLEET_PANEL_TYPES, 'fleet'),
+  chat: centerFleetEval(['fleet-chat'], 'chat'),
+  agents: centerFleetEval(['fleet-agents'], 'agents'),
+  search: centerFleetEval(['fleet-search'], 'search'),
+  inbox: centerFleetEval(['fleet-inbox'], 'inbox'),
+  docview: centerFleetEval(['fleet-docview'], 'docview'),
+}
+
+const CENTER_REGIONS = Object.keys(CENTER_EVALS).join(' | ')
 
 // ---- entry point ----
 
@@ -1104,7 +1248,8 @@ export async function cmdPw(args, repoRoot) {
         '  tlda-dev pw status            session state + my tab + URL',
         '  tlda-dev pw sweep             park stale/error tabs in my assigned browser',
         '  tlda-dev pw reap              close my assigned shared browser',
-        '  tlda-dev pw center <region>   center camera on: doc | chat | fleet',
+        '  tlda-dev pw center <region>   bring into the pointer viewport: doc | fleet',
+        '                            | chat | agents | search | inbox | docview',
         '  tlda-dev pw console [level]   print console messages; supports --lines N',
         '  tlda-dev pw <verb> [args]     forward a playwright-cli verb to MY tab',
         '                            (goto, click, snapshot, screenshot, eval, …)',
@@ -1315,7 +1460,7 @@ export async function cmdPw(args, repoRoot) {
     } else if (verb === 'center') {
       const region = (rest[0] || 'doc').toLowerCase()
       const ev = CENTER_EVALS[region]
-      if (!ev) { console.error(`center: unknown region "${region}" (use: doc | chat | fleet)`); code = 2 }
+      if (!ev) { console.error(`center: unknown region "${region}" (use: ${CENTER_REGIONS})`); code = 2 }
       else code = forward('eval', [ev])
     } else if (verb === 'setup') {
       try {

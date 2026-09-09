@@ -13,8 +13,10 @@ import { createGitSyncManager } from './git-sync-manager.mjs'
 
 function sourceWatcher() {
   const watcher = new EventEmitter()
-  watcher.add = () => {}
-  watcher.unwatch = async () => {}
+  watcher.watch = (_root, onChange) => {
+    watcher.change = onChange
+    return watcher
+  }
   watcher.close = async () => {}
   return watcher
 }
@@ -47,8 +49,8 @@ let failedPhase = null
 // would fire on a phase still legitimately waiting for a build.
 const PHASE_TIMEOUT_MS = 180_000
 
-function phase(name, body) {
-  test(name, { timeout: PHASE_TIMEOUT_MS }, async t => {
+function phase(name, body, timeout = PHASE_TIMEOUT_MS) {
+  test(name, { timeout }, async t => {
     if (failedPhase) {
       t.skip(`not run: "${failedPhase}" failed`)
       return
@@ -179,7 +181,7 @@ phase('daemon Git manager setup', async () => {
   manager = createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'), daemonId: 'daemon-git-visible', server: base,
     token: 'fixture-token',
-    watch: () => watcher, quietMs: 10, log: { info() {}, warn() {}, error() {} },
+    watch: watcher.watch, quietMs: 10, log: { info() {}, warn() {}, error() {} },
   })
   manager.bindSource(project, checkout)
   await manager.sync([{ name: project, mainFile: 'README.md' }])
@@ -229,8 +231,9 @@ phase('rendered page', async () => {
   assert.equal(pageResponse.status, 200)
   assert.match(await pageResponse.text(), /Rendered through the daemon Git remote/)
 
-  assert.equal((await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim(), authorRevision)
-  assert.notEqual(authorRevision, submission.revision, 'daemon proposal commit must not move the author working copy')
+  assert.equal((await git(checkout, ['symbolic-ref', '--short', 'HEAD'])).stdout.trim(), `tlda/${project}`)
+  assert.equal((await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim(), submission.revision)
+  assert.notEqual(authorRevision, submission.revision, 'link creates the filtered project branch once')
   // `refs/tlda/applied/<binding>` used to be the answer here. Nothing writes it
   // any more — git-project-sync says so where it declines to export the name,
   // "publishing the name invites a reader that would be reading a fossil". The
@@ -244,7 +247,7 @@ phase('rendered page', async () => {
 
 phase('local edit convergence', async () => {
   writeFileSync(join(checkout, 'README.md'), '# Git-visible paper\n\nVisible after a later local edit.\n')
-  watcher.emit('change', join(checkout, 'README.md'))
+  watcher.change('change', 'README.md')
   const editDeadline = Date.now() + 120_000
   while (Date.now() < editDeadline) {
     editedProject = await fetch(`${base}/api/projects/${project}`).then(response => response.json())
@@ -267,7 +270,7 @@ phase('local edit convergence', async () => {
 phase('local edit burst convergence', async () => {
   for (const content of ['burst one', 'burst two', 'burst settled']) {
     writeFileSync(join(checkout, 'README.md'), `# Git-visible paper\n\n${content}.\n`)
-    watcher.emit('change', join(checkout, 'README.md'))
+    watcher.change('change', 'README.md')
   }
   const burstDeadline = Date.now() + 120_000
   while (Date.now() < burstDeadline) {
@@ -325,6 +328,8 @@ phase('cross-daemon accepted head convergence', async () => {
   assert.match(await peerPageResponse.text(), /Accepted from the peer daemon/)
 })
 
+// This phase encloses two independent 120s build polls plus clone, link,
+// submission, external-remote edit, and fetch work.
 phase('remote-backed edit convergence', async () => {
   externalRemote = join(root, 'external.git')
   externalSeed = join(root, 'external-seed')
@@ -409,7 +414,7 @@ phase('remote-backed edit convergence', async () => {
   remotePageResponse = await fetch(`${base}/docs/${remoteProject}/index.html`)
   assert.equal(remotePageResponse.status, 200)
   assert.match(await remotePageResponse.text(), /Edit arriving from the external remote/)
-})
+}, 480_000)
 
 phase('divergent edit withholding and resolution', async () => {
   // The parked ref, not the applied fossil — see the note at the first use.

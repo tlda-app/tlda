@@ -2,11 +2,11 @@ import type { Editor, TLShapeId } from 'tldraw'
 import { htmlSourceLineAnchorAtCanvasY, htmlSourceLineCanvasPosition, type HtmlSourceLineAnchor } from './htmlSourceAnchors'
 import { getSourceAnchor, canvasToPdf, pdfToCanvas, resolvAnchor, type SourceAnchor } from './synctexAnchor'
 import { unanchoredSourceLocation, type SourceLocationReason } from './sourceLocation'
-import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
+import { hasSourceMapping } from '../shared/document-formats.mjs'
 
 export type AnchorDocument = {
   name: string
-  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd'
+  format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd' | 'pdf'
   pages: Parameters<typeof canvasToPdf>[2]
 }
 
@@ -82,7 +82,17 @@ export async function annotationSourceAnchorAtCanvasPoint(
   const htmlPage = htmlPageAtCanvasPoint(editor, x, y)
   if (htmlPage) return htmlSourceLineAnchorAtCanvasY(htmlPage.shape, htmlPage.bounds, y)
 
-  if (HTML_PAGE_FORMATS.has(document.format || '')) return null
+  // Ask whether this document HAS source mapping, rather than whether it is
+  // absent from the set of html-paged formats. Those were the same question
+  // only while a LaTeX render was the one thing that reached here.
+  //
+  // A PDF opened directly has pages, text and coordinates, and no synctex --
+  // there was no LaTeX run to emit any. Under the old test it is not in
+  // HTML_PAGE_FORMATS, so it fell through to the lookup below and every
+  // annotation on a PDF would have asked the server for a source line that
+  // cannot exist, then reported itself unanchored as `missing-synctex` -- which
+  // reads as a broken build rather than a document that never had one.
+  if (!hasSourceMapping(document)) return null
 
   const pdfPos = canvasToPdf(x, y, document.pages)
   if (!pdfPos) return null

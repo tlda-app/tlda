@@ -26,6 +26,7 @@ import { PSEUDO_LABELS, addressTerms, parseFilter, evalExpr, evalExprDirectional
 import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY } from '../../shared/subscriptions.mjs';
 import { allTermFtsQuery, anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 import { parseUnifiedFilter } from '../../shared/unified-filter-grammar.mjs';
+import { setRecipientAttachmentState } from '../../shared/inbox-reference-materialization.mjs';
 
 // isFleetRosterAgent only. fleetRosterCategory went with the count's move:
 // the store no longer categorises an agent, it is told which ids are alive and
@@ -5265,6 +5266,28 @@ export class FleetStore {
   // store one. Callers here have already derived the complete object.
   replaceEventMetadata(eventId, metadata) {
     this._replaceEventMetadata.run(JSON.stringify(metadata), eventId);
+  }
+
+  updateRecipientAttachment(eventId, recipientId, attachmentId, record, { supersede = false, now = new Date().toISOString() } = {}) {
+    return this.db.transaction(() => {
+      const event = this.getEventById(eventId);
+      if (!event) return null;
+      let metadata = setRecipientAttachmentState(event.metadata || {}, recipientId, attachmentId, record);
+      let supersededNow = false;
+      if (supersede) {
+        const recipient = metadata.recipient_refs[recipientId] || {};
+        const ids = new Set((recipient.placeholder_superseded_attachment_ids || []).map(String));
+        supersededNow = !ids.has(String(attachmentId));
+        ids.add(String(attachmentId));
+        metadata.recipient_refs[recipientId] = {
+          ...recipient,
+          placeholder_superseded_at: recipient.placeholder_superseded_at || now,
+          placeholder_superseded_attachment_ids: Array.from(ids),
+        };
+      }
+      this._replaceEventMetadata.run(JSON.stringify(metadata), eventId);
+      return { metadata, supersededNow };
+    })();
   }
 
   replaceEventTextAndMetadata(eventId, newText, metadata) {

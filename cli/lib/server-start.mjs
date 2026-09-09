@@ -30,7 +30,12 @@ import { resolveServerIsolation } from '../../shared/server-identity.mjs'
 //                 main port; FALSE for a dev server on an already-free port — we
 //                 must never kill an unrelated process squatting a random port)
 //   pidFile       if set, write the child pid here for status/stop
-export function spawnDetachedServer({ serverScript, port, logFile = null, env = {}, extraCaPath = null, reclaimPort = false, pidFile = null }) {
+//   onSpawn       called with the ChildProcess the moment it exists. A detached
+//                 child's `error` and `exit` events fire once and are gone; a
+//                 caller that wants to know WHICH death it got has to be
+//                 listening from spawn time, and this is the only moment that
+//                 exists. The pid alone cannot carry those facts back.
+export function spawnDetachedServer({ serverScript, port, logFile = null, env = {}, extraCaPath = null, reclaimPort = false, pidFile = null, onSpawn = null }) {
   if (!existsSync(serverScript)) throw new Error(`server script not found: ${serverScript}`)
   const childEnv = {
     ...process.env,
@@ -67,6 +72,7 @@ export function spawnDetachedServer({ serverScript, port, logFile = null, env = 
     stdio: ['ignore', logFd, logFd],
     env: childEnv,
   })
+  if (onSpawn) onSpawn(child)
   child.unref()
   if (pidFile) {
     if (!existsSync(dirname(pidFile))) mkdirSync(dirname(pidFile), { recursive: true })

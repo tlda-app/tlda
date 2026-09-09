@@ -10,7 +10,7 @@ export function isProjectSourceEvent(sourceDir, filePath) {
 
 export function createEditClusterDebouncer({
   sourceDir,
-  quietMs = 3000,
+  quietMs = 250,
   onSettled,
   clock = globalThis,
   accepts = filePath => isProjectSourceEvent(sourceDir, filePath),

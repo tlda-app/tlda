@@ -32,7 +32,6 @@ import { pathToFileURL } from 'node:url'
 const ENTRYPOINTS = [
   'server/unified-server.mjs',
   'bin/build-worker.mjs',
-  'bin/feelings-export.mjs',
 ]
 
 // The COPY lines in `Dockerfile.live`. A relative import that leaves these
@@ -45,7 +44,7 @@ const SHIPPED_PATHS = [
   'server/qualifications-default.json', 'server/build-info.json',
   'shared', 'scripts', 'config/deployments',
   'agent-launch', 'agent-runtime', 'daemon', 'migrations', 'cli/lib',
-  'bin/feelings-export.mjs', 'bin/build-worker.mjs', 'dist',
+  'bin/build-worker.mjs', 'dist',
 ]
 
 const BUILTINS = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`)])
