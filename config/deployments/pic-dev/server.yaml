@@ -8,7 +8,6 @@ appName: PIC
 # testing server configuration with a separate deployment identity.
 deepgramBridgeUrl: ws://tlda-voice.internal:8180
 deepgramDirectUrl: wss://tlda-voice.cormorant-matrix.ts.net
-tokenGating: true
 tokensFromEnvironmentOnly: true
 uploadDir: /app/server/persist/uploads
 notifications:
