@@ -5027,6 +5027,40 @@ app.use('/docs', (req, res, next) => {
     }
   }
 
+  // On-demand document PDF: <texBase>.pdf, for the Download PDF control.
+  //
+  // Same shape as the page renderer above — match, ensure, send — because it is
+  // the same situation: for a LaTeX document the PDF does not exist until
+  // someone asks for it. The tlda build produces a DVI, and a draft-mode one at
+  // that, so the export is its own compile (see the .pdf recipe in ensure.mjs).
+  //
+  // `hasSourceMapping` is the same "is this a LaTeX render" question asked at
+  // the page renderer above, and the client gates the button on it too. A
+  // `pdf`-format project — an uploaded PDF — answers no and falls through to
+  // the plain output/ read below, which serves the file it already has.
+  const livePdfMatch = filePath.match(/^([^/]+)\.pdf$/)
+  if (livePdfMatch) {
+    const texBase = livePdfMatch[1]
+    const project = await readProject(name)
+    if (hasSourceMapping(project)) {
+      const targets = Array.isArray(project?.targets) ? project.targets : []
+      if (targets.length > 0 && !targets.some(t => t?.texBase === texBase)) {
+        return res.status(404).json({
+          error: `${name} has no document "${texBase}". Its documents are: ${targets.map(t => t?.texBase).filter(Boolean).join(', ')}.`,
+        })
+      }
+      try {
+        const { ensure, currentCtx } = await import('./lib/ensure.mjs')
+        const built = await ensure(currentCtx(name, texBase), `${texBase}.pdf`)
+        res.set('Cache-Control', 'no-cache')
+        return res.sendFile(resolve(built), { dotfiles: 'allow' })
+      } catch (e) {
+        console.error(`[live] PDF export failed: ${name}/${texBase}: ${e.message}`)
+        return res.status(502).json({ error: 'PDF unavailable', detail: e.message })
+      }
+    }
+  }
+
   // Project-level metadata aliases — bare names (lookup.json, etc.) resolve to
   // the primary target's prefixed file. Shared with the MCP disk reader via
   // shared/doc-assets.mjs so the two resolution paths can't drift.

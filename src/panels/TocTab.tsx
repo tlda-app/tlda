@@ -26,7 +26,7 @@ import { FLEET_TOOL_DIMS, placeFleetShapeAtScreenPoint } from '../shapes/fleet-u
 import { getPref, setPref, subscribePref } from '../preferences'
 import { navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, type TocLevel, type TocEntry } from './helpers'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
-import { viewFormat } from '../../shared/document-formats.mjs'
+import { viewFormat, hasSourceMapping } from '../../shared/document-formats.mjs'
 import { classroomApi } from '../classroom/api'
 import { cacheProjectsForOffline, type OfflineProgress, type OfflineProject } from '../airplaneMode'
 import type { AirplaneState } from '../BookContext'
@@ -98,6 +98,8 @@ export function TocTab({ query = '' }: { query?: string }) {
   const [localAirplaneProgress, setLocalAirplaneProgress] = useState<OfflineProgress>({ complete: 0, total: 0 })
   const [localAirplaneError, setLocalAirplaneError] = useState('')
   const compactControls = useSyncExternalStore(subscribePref, () => getPref('toc-controls-compact'))
+  const [pdfBusy, setPdfBusy] = useState('')
+  const [pdfError, setPdfError] = useState('')
 
   // Hot session: most recently pushed book member (must be before any early returns)
   const book = useBook()
@@ -163,6 +165,58 @@ export function TocTab({ query = '' }: { query?: string }) {
         setLocalAirplaneState('error')
       })
   }, [book, airplaneState, offlineProjects])
+
+  // The documents on offer as a PDF, and there is one only when this is a LaTeX
+  // render: `hasSourceMapping` is the same predicate the server gates the
+  // compile on, so the control cannot appear for a document the server would
+  // refuse. A project's documents are its targets — the same place the offline
+  // cache and the page URLs read them from — so a project with none has nothing
+  // addressable to download, which is also why the page route refuses it.
+  //
+  // Not shown while reading a book: a book's chapters are its members, not
+  // targets of one LaTeX build, and this control is about the document in front
+  // of you.
+  const pdfDocuments = useMemo(() => {
+    if (book || !doc || !hasSourceMapping(doc)) return []
+    const targets = doc.targets ?? []
+    if (targets.length === 0) return []
+    return targets.map(target => ({
+      texBase: target.name,
+      // One document needs no disambiguating: it is the thing you are reading.
+      label: targets.length > 1 ? `PDF: ${target.title || target.name}` : 'Download PDF',
+    }))
+  }, [book, doc])
+
+  const downloadPdf = useCallback(async (projectName: string, texBase: string) => {
+    setPdfBusy(texBase)
+    setPdfError('')
+    try {
+      // Fetched rather than linked so that a failure is reported in the panel.
+      // A plain download link navigates on error and drops the reader on the
+      // server's JSON, and the compile can fail for the ordinary reason that
+      // the document does not compile.
+      const response = await fetch(`/docs/${encodeURIComponent(projectName)}/${encodeURIComponent(texBase)}.pdf`)
+      if (!response.ok) {
+        const detail = await response.json().then(body => body?.detail || body?.error).catch(() => null)
+        throw new Error(detail || `${response.status} ${response.statusText}`)
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = window.document.createElement('a')
+      link.href = url
+      link.download = `${texBase}.pdf`
+      window.document.body.appendChild(link)
+      link.click()
+      link.remove()
+      // Revoked on the next frame: Safari abandons the download if the object
+      // URL disappears in the same task as the click.
+      requestAnimationFrame(() => URL.revokeObjectURL(url))
+    } catch (error) {
+      setPdfError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setPdfBusy('')
+    }
+  }, [])
 
   // Which documents of this course are homework. Asked of the classroom store,
   // which is the only thing that knows: an assignment names the documents it is
@@ -643,6 +697,21 @@ export function TocTab({ query = '' }: { query?: string }) {
             {ctx.wholeDocumentDiffLoading ? 'Diffing…' : ctx.wholeDocumentDiffError ? 'Diff failed' : ctx.wholeDocumentDiffVisible ? 'Hide diff' : 'Show diff'}
           </button>
         )}
+        {pdfDocuments.map(document => (
+          <button
+            key={document.texBase}
+            className={`toc-diff-hint toc-state-control${pdfError ? ' toc-state-control--error' : ''}`}
+            type="button"
+            onClick={() => { void downloadPdf(doc!.projectName, document.texBase) }}
+            disabled={pdfBusy !== ''}
+            title={pdfError || `Download ${document.texBase}.pdf`}
+          >
+            <DownloadPdfIcon />
+            <span className="toc-state-control-label">
+              {pdfBusy === document.texBase ? 'Preparing PDF…' : pdfError ? 'PDF failed' : document.label}
+            </span>
+          </button>
+        ))}
         <button
           className={`toc-diff-hint toc-state-control${airplaneState === 'ready' ? ' toc-state-control--active' : ''}${airplaneState === 'error' ? ' toc-state-control--error' : ''}`}
           type="button"
@@ -853,6 +922,18 @@ function GlassesIcon() {
         <path d="M12 14h0" />
         <path d="M4.2 13.1 3 9.5" />
         <path d="m19.8 13.1 1.2-3.6" />
+      </svg>
+    </span>
+  )
+}
+
+function DownloadPdfIcon() {
+  return (
+    <span className="toc-live-glyph-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 3v11" />
+        <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
+        <path d="M4.5 19.5h15" />
       </svg>
     </span>
   )
