@@ -106,6 +106,7 @@ import { RecordingsButton } from './overlays/RecordingsButton'
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
 import { SyncErrorPill } from './pills/SyncErrorPill'
+import { RecorderErrorPill } from './pills/RecorderErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
 import { BookLayersSlot } from './classroom/BookLayersSlot'
 import { FollowingBadge } from './pills/FollowingBadge'
@@ -1175,6 +1176,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           />
         )}
         <SyncErrorPill />
+        <RecorderErrorPill />
         <BuildErrorPill />
         <BuildWarningPill warnings={pillWarnings}>
           <BuildProgressPill document={document} />
