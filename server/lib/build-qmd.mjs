@@ -360,6 +360,11 @@ export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
   return changed
 }
 
+export function clearQmdFreeze(outDir, root) {
+  const normalized = String(root).replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/\.qmd$/i, '')
+  rmSync(join(outDir, '_freeze', normalized), { recursive: true, force: true })
+}
+
 async function writeSourceScope(name, srcDir, outDir) {
   const files = (await readClientSourceManifest(name))
     .filter((rel) => existsSync(join(srcDir, rel)))
@@ -452,7 +457,14 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   // complete output tree. Shared inputs and uncertain changes render the whole
   // project because their dependency fan-out is not confined to one chapter.
   if (nativeTldaProject && incrementalRoots) {
-    for (const root of incrementalRoots) await renderInOutput(quarto, outDir, root, addLog, { project: name })
+    for (const root of incrementalRoots) {
+      // freeze:auto stores the rendered markdown as well as executed chunks.
+      // Reusing it after a direct source edit can complete successfully while
+      // publishing the old prose. This is the private build instance, so
+      // invalidate only the changed component's freeze before rendering it.
+      clearQmdFreeze(outDir, root)
+      await renderInOutput(quarto, outDir, root, addLog, { project: name })
+    }
   } else if (nativeTldaProject) {
     await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true, project: name })
   } else {
