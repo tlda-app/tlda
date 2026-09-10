@@ -26,7 +26,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile = defaultExecFile, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {}, onRemotePublishFailed = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile = defaultExecFile, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {}, onSyncRecovered = async () => {}, onRemotePublishFailed = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
   const runtimes = new Map()
   const starts = new Map()
@@ -164,6 +164,23 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
         reason: result.reason || `${item.project}: proposal not accepted: ${result.status || 'unknown'}`,
       })
     }
+    /**
+     * The other half of the refusal, and the reason it can be shown at all.
+     *
+     * A refusal that is only ever raised is an alarm nobody can turn off, so
+     * whatever surface shows it fills up with rows that stopped being true and
+     * gets muted -- the same end as the silence this replaces, reached the
+     * other way. The all-clear is therefore part of the report, not a separate
+     * feature: a settle that succeeded says so, once, to whoever was told.
+     *
+     * Only when something WAS refused. `reportedRefusal` is the record of that,
+     * and it is nulled by the caller straight after this runs, so a project
+     * that has been fine all along stays silent in both directions.
+     */
+    async function reportSyncRecovered() {
+      if (reportedRefusal === null) return
+      await onSyncRecovered({ project: item.project, sourceDir: item.sourceDir })
+    }
     async function refreshWatchedMembers() {
       const next = new Set((await sync.members()).map(file => path.join(item.sourceDir, file)))
       watchedMembers.clear()
@@ -218,6 +235,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
           if (fromEdit) await reportSyncRefusal(result)
         }
         if (result?.ok) {
+          await reportSyncRecovered()
           reportedRefusal = null
           await reportDroppedDocuments(result.dropped || [])
         }
