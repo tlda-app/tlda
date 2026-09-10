@@ -578,13 +578,39 @@ const sourceSync = createGitSyncManager({
   // shit. otherwise it doesn't." Nothing here pushes a branch the daemon does
   // not manage; the refusal stands, it just stops being silent.
   //
-  // Severity stays default, so this does NOT raise the per-document sync-error
-  // sentinel. The document is fine and the project is fine; a checkout is
-  // parked somewhere the daemon does not read. Raising the badge would be a
-  // product decision nobody asked for.
+  // `not-on-work-branch` ALSO raises the per-document sync-error sentinel, and
+  // that is a change from the first version of this callback, which said the
+  // badge "would be a product decision nobody asked for". Somebody asked.
+  //
+  // Skip, 2026-09-09: *"tmrw mornibg when i go to work on my class like it
+  // shoild be like sit down; work on pic-dev; all good?"* The chat this already
+  // sends goes to `SERVER_OWNER_ID`, which on a deployed box is the container's
+  // OS user and not a person — measured on pic-dev, where ten of ten daemon
+  // warnings were addressed to `fleet:root` and no `skip` identity exists at
+  // all. The sentinel is the surface that does not depend on who anybody is:
+  // whoever opens the project sees it.
+  //
+  // Narrow on purpose, to `not-on-work-branch` alone. That is the refusal that
+  // eats an edit in silence — the tree goes clean, nothing errors, and the
+  // project never receives a revision. `conflict-held` already tells its own
+  // story through the conflict pill, and a dropped document is not a person
+  // losing work. Widening this is a separate decision.
   onSyncRefused: ({ project, status, reason, head, workBranch }) => {
     log.warn(`${project}: ${reason}`)
-    sendMsg({ type: 'daemon-warning', project, warning: `sync-refused:${status}`, message: reason, head, workBranch })
+    sendMsg({
+      type: 'daemon-warning', project, warning: `sync-refused:${status}`, message: reason, head, workBranch,
+      ...(status === 'not-on-work-branch' ? { severity: 'critical' } : {}),
+    })
+  },
+  // And the all-clear, without which the badge above could only ever be raised.
+  //
+  // `daemon-sync-ok` is the server's existing clear — it drops the sentinel's
+  // sync error and forgets the warning's dedup entry — and it had NO producer
+  // anywhere in the tree before this. Raising a mark with nothing to lower it
+  // is how an indicator becomes wallpaper, so the two ship together or not at
+  // all. The manager sends this only when that project had been refused.
+  onSyncRecovered: ({ project }) => {
+    sendMsg({ type: 'daemon-sync-ok', project })
   },
   onRemotePublishFailed: ({ project, revision, error }) => {
     const message = `${project}: preview reflection of ${String(revision).slice(0, 12)} failed: ${error?.message || error}`
