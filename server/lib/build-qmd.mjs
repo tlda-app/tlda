@@ -332,6 +332,34 @@ function isNativeTldaProject(dir) {
   return false
 }
 
+function quartoBookRoots(dir) {
+  for (const name of ['_quarto.yml', '_quarto.yaml']) {
+    const path = join(dir, name)
+    if (!existsSync(path)) continue
+    const config = parseYaml(readFileSync(path, 'utf8'))
+    const roots = []
+    const visit = value => {
+      if (typeof value === 'string' && value.toLowerCase().endsWith('.qmd')) roots.push(value.replace(/\\/g, '/').replace(/^\.?\/+/, ''))
+      else if (Array.isArray(value)) value.forEach(visit)
+      else if (value && typeof value === 'object') {
+        if (value.part) visit(value.part)
+        if (value.chapters) visit(value.chapters)
+      }
+    }
+    visit(config?.book?.chapters)
+    return [...new Set(roots)]
+  }
+  return []
+}
+
+export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
+  if (!readTldaManifest(outDir)) return null
+  const bookRoots = new Set(quartoBookRoots(outDir))
+  const changed = [...new Set((changedFiles || []).map(file => String(file).replace(/\\/g, '/').replace(/^\.?\/+/, '')))]
+  if (changed.length === 0 || changed.some(file => !bookRoots.has(file))) return null
+  return changed
+}
+
 async function writeSourceScope(name, srcDir, outDir) {
   const files = (await readClientSourceManifest(name))
     .filter((rel) => existsSync(join(srcDir, rel)))
@@ -383,7 +411,7 @@ export function retainNativeTldaRender(outDir, manifestPath) {
   }
 }
 
-export async function buildQmdDocument(name, addLog = console.log) {
+export async function buildQmdDocument(name, addLog = console.log, { changedFiles = [] } = {}) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -418,24 +446,14 @@ export async function buildQmdDocument(name, addLog = console.log) {
 
   await restoreRenv(outDir, addLog)
   const nativeTldaProject = isNativeTldaProject(outDir)
-  // EVERY root, every build. Rendering only the roots a revision touched left
-  // the others with no HTML at all: the build instance's `output/` is created
-  // empty and never seeded from the live project, so there is no previous
-  // render here to carry forward, whatever the live project still holds.
-  //
-  // Publishing swaps `output/` WHOLESALE, so a partial tree is not a
-  // publishable one -- and the check below then failed the whole build on the
-  // roots that were never asked to render. That is what made an outage
-  // permanent instead of momentary: a project whose output was gone could not
-  // rebuild itself from its own source however many times it was pushed, and
-  // the only way out was a push touching a file outside every root's closure,
-  // which forced a full render by accident.
-  //
-  // LaTeX already builds all its targets each time. This makes qmd match it
-  // rather than diverge. A genuinely incremental render is a real design --
-  // it needs the previous output in the instance to build on -- and is not
-  // this accident, which was only ever cheaper by leaving the job unfinished.
-  if (nativeTldaProject) {
+  const incrementalRoots = nativeTldaProject ? qmdIncrementalRenderRoots(outDir, changedFiles) : null
+  // A direct edit to a declared book component re-renders that component over
+  // a private copy of the last complete output. Publication still swaps a
+  // complete output tree. Shared inputs and uncertain changes render the whole
+  // project because their dependency fan-out is not confined to one chapter.
+  if (nativeTldaProject && incrementalRoots) {
+    for (const root of incrementalRoots) await renderInOutput(quarto, outDir, root, addLog, { project: name })
+  } else if (nativeTldaProject) {
     await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true, project: name })
   } else {
     for (const root of mainFiles) await renderInOutput(quarto, outDir, root, addLog, { project: name })

@@ -187,6 +187,7 @@ process.on('message', async (msg) => {
       sourceRevision: msg.sourceRevision,
       lifecycle,
       seedProject: liveProject,
+      seedOutput: acceptedProject?.format === 'qmd',
       materializeLinks: acceptedProject?.format === 'qmd',
     })
     instanceRoot = instance.root

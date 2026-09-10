@@ -76,6 +76,29 @@ test('materializes tracked symbolic links as admitted regular files', async () =
   }
 })
 
+test('can seed prior rendered output without mixing it into source', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-instance-seed-output-test-'))
+  const live = join(root, 'live')
+  let instance
+  try {
+    mkdirSync(join(live, 'output'), { recursive: true })
+    writeFileSync(join(live, 'output', 'chapter.html'), 'prior render')
+    const lifecycle = {
+      async readRevision() { return { files: [{ path: 'chapter.qmd', mode: '100644' }] } },
+      async readRevisionFile() { return Buffer.from('# changed chapter') },
+    }
+    instance = await materializeBuildInstance({
+      name: 'course', sourceRevision: 'revision', lifecycle,
+      seedProject: live, seedOutput: true, temporaryRoot: root,
+    })
+    assert.equal(readFileSync(join(instance.output, 'chapter.html'), 'utf8'), 'prior render')
+    assert.equal(readFileSync(join(instance.source, 'chapter.qmd'), 'utf8'), '# changed chapter')
+  } finally {
+    if (instance) rmSync(instance.root, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('version snapshots keep a build instance relative symlink relative', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-shadow-relative-link-test-'))
   let instance
