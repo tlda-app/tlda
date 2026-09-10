@@ -1,10 +1,11 @@
 import { useMemo, useEffect, useState } from 'react'
-import { Tldraw, react, type Editor } from 'tldraw'
+import { Tldraw, react, useValue, type Editor } from 'tldraw'
 import { useSync } from '@tldraw/sync'
 import { STORE_WS, LICENSE_KEY } from '../activeConfig'
 import { appendToken } from '../authToken'
 import { createDocumentShapeUtils, INLINE_ASSETS, DOCUMENT_TOOLS } from '../SvgDocument'
 import { studentOverlayRoomId } from './studentOverlayRoom'
+import { markingLayerCaptures } from './markingCapture'
 import './StudentAnnotationOverlay.css'
 
 // A student's own annotation layer, over the book.
@@ -75,6 +76,7 @@ function mirror(name: string, observe: () => unknown, write: () => void): () => 
   return () => { stopped = true; stop() }
 }
 
+
 interface StudentAnnotationOverlayProps {
   /** The room the book itself is synced to — the layer the whole class shares. */
   bookRoomId: string
@@ -95,6 +97,36 @@ interface StudentAnnotationOverlayProps {
    * and an unconditional release would drop the live editor.
    */
   onEditorRelease?: (editor: Editor) => void
+  /**
+   * Which room this layer syncs, when it is not a student's own overlay.
+   *
+   * The marking surface composites an instructor's private `grading-draft`
+   * layer, which hangs off a submission rather than off a student. Same canvas,
+   * same capture and camera behavior, different room — so this overrides the
+   * name rather than duplicating the component. Absent, the room is
+   * `studentOverlayRoomId(bookRoomId, studentId)` exactly as before.
+   */
+  roomId?: string
+  /**
+   * The camera to follow, when the surface underneath is not `bookEditor`'s.
+   *
+   * Over the book, the book's editor owns the camera and this layer mirrors it.
+   * Over a grading pane the surface underneath is a viewport with its own
+   * camera over a shared store, so `bookEditor.getCamera()` is the wrong one and
+   * marks would land offset from the work they annotate. Absent, the mirror
+   * behaves exactly as before.
+   */
+  camera?: { x: number; y: number; z: number }
+  /**
+   * Where a gesture this layer swallowed should go, in explicit-camera mode.
+   *
+   * Over the book, the effect below carries the camera back into `bookEditor`,
+   * because the book owns it. Over a grading pane it must not: `bookEditor`
+   * there is the main document editor the panes are *derived from*, so writing
+   * the pane's camera into it moves both panes and feeds back. The receiver
+   * hands the camera to the pane's own viewport instead.
+   */
+  onCameraChange?: (camera: { x: number; y: number; z: number }) => void
 }
 
 export function StudentAnnotationOverlay({
@@ -105,8 +137,31 @@ export function StudentAnnotationOverlay({
   isWriteTarget,
   onEditorMount,
   onEditorRelease,
+  roomId: explicitRoomId,
+  camera: explicitCamera,
+  onCameraChange,
 }: StudentAnnotationOverlayProps) {
-  const roomId = studentOverlayRoomId(bookRoomId, studentId)
+  // Whether the camera is owned outside this component. A boolean, not the
+  // camera itself, so the effects below do not resubscribe on every pan.
+  const cameraIsExternal = explicitCamera !== undefined
+
+  // Capture only while drawing.
+  //
+  // Skip, asked whether the marking layer should take every pointer or only the
+  // marking ones: "yea" — capture while drawing, otherwise let pointer,
+  // selection and scroll reach the surface underneath. And on the risk of
+  // getting the boundary wrong: "if we sont like it we'll change it."
+  //
+  const currentToolId = useValue('overlay tool', () => bookEditor?.getCurrentToolId() ?? 'select', [bookEditor])
+  const capturing = cameraIsExternal
+    // Composited over a pane: the pane is a live surface with its own pan, zoom,
+    // text selection and page interaction, and swallowing those would leave it
+    // frozen under a layer that only wanted the pen.
+    ? isWriteTarget && markingLayerCaptures(currentToolId)
+    // Over the book, unchanged: the write target captures, and the effect that
+    // carries gestures back to the book is what keeps the book usable.
+    : isWriteTarget
+  const roomId = explicitRoomId ?? studentOverlayRoomId(bookRoomId, studentId)
   const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
   const shapeUtils = useMemo(() => createDocumentShapeUtils(), [])
   const tools = useMemo(() => DOCUMENT_TOOLS, [])
@@ -118,14 +173,28 @@ export function StudentAnnotationOverlay({
   // book owns it: panning is a view operation and belongs to the document, not
   // to whichever layer happens to be the write target.
   useEffect(() => {
-    if (!bookEditor || !overlayEditor) return
+    // An explicit camera means the surface underneath is not `bookEditor` — a
+    // grading pane owns its own. Mirroring the book's camera here as well would
+    // fight the effect below and leave the layer wherever the last writer put
+    // it, so the mirror stands down rather than both of them writing.
+    if (explicitCamera || !bookEditor || !overlayEditor) return
     return mirror('mirror book camera onto overlay', () => bookEditor.getCamera(), () => {
       const camera = bookEditor.getCamera()
       const current = overlayEditor.getCamera()
       if (current.x === camera.x && current.y === camera.y && current.z === camera.z) return
       overlayEditor.setCamera(camera, { immediate: true })
     })
-  }, [bookEditor, overlayEditor])
+  }, [bookEditor, overlayEditor, explicitCamera])
+
+  // Follow the surface's own camera, when one is handed in. Same comparison as
+  // the mirror above — write only on an actual change — because `setCamera` on
+  // every render is what makes a composited layer stutter.
+  useEffect(() => {
+    if (!explicitCamera || !overlayEditor) return
+    const current = overlayEditor.getCamera()
+    if (current.x === explicitCamera.x && current.y === explicitCamera.y && current.z === explicitCamera.z) return
+    overlayEditor.setCamera(explicitCamera, { immediate: true })
+  }, [overlayEditor, explicitCamera])
 
   // Give the book back the gestures this layer swallowed.
   //
@@ -146,14 +215,32 @@ export function StudentAnnotationOverlay({
   // The two mirrors do not chase each other: each compares before it writes and
   // returns when the cameras already agree, so the pair settles after one pass.
   useEffect(() => {
-    if (!bookEditor || !overlayEditor || !isWriteTarget) return
+    // Stands down when the camera is owned outside: `bookEditor` is then the
+    // editor the surface underneath is DERIVED from, not the surface itself, so
+    // writing to it would move every view built on it and feed back into this
+    // layer through the inbound effect. The gesture goes to `onCameraChange`
+    // instead — see the effect below.
+    if (cameraIsExternal || !bookEditor || !overlayEditor || !isWriteTarget) return
     return mirror('carry overlay camera back to book', () => overlayEditor.getCamera(), () => {
       const camera = overlayEditor.getCamera()
       const current = bookEditor.getCamera()
       if (current.x === camera.x && current.y === camera.y && current.z === camera.z) return
       bookEditor.setCamera(camera, { immediate: true })
     })
-  }, [bookEditor, overlayEditor, isWriteTarget])
+  }, [bookEditor, overlayEditor, isWriteTarget, cameraIsExternal])
+
+  // Explicit-camera mode: carry the gesture to whoever owns the camera.
+  //
+  // Same reasoning as the book case — tldraw has already turned the gesture
+  // into a camera on this editor, so it is carried rather than re-derived — only
+  // the destination differs. The receiver decides what that camera means; this
+  // layer never writes the main editor.
+  useEffect(() => {
+    if (!cameraIsExternal || !overlayEditor || !isWriteTarget || !onCameraChange) return
+    return mirror('carry overlay camera to the owning surface', () => overlayEditor.getCamera(), () => {
+      onCameraChange(overlayEditor.getCamera())
+    })
+  }, [cameraIsExternal, overlayEditor, isWriteTarget, onCameraChange])
 
   // Follow the book's tool selection, whatever it is.
   //
@@ -190,7 +277,8 @@ export function StudentAnnotationOverlay({
   return (
     <div
       className="studentAnnotationOverlay"
-      data-capturing={isWriteTarget ? 'true' : 'false'}
+      data-capturing={capturing ? 'true' : 'false'}
+      data-tool={currentToolId}
       data-visible={visible ? 'true' : 'false'}
     >
       <Tldraw
