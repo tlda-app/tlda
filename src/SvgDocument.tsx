@@ -139,7 +139,7 @@ import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
 import { useMarkedExerciseHtmlAlignment } from './classroom/useMarkedExerciseHtmlAlignment'
-import { installFramePairBridge, installReturnMarksBridge } from './classroom/marking'
+import { installFramePairBridge } from './classroom/marking'
 import { ClassroomConnectorOverlay } from './classroom/ClassroomConnectorOverlay'
 import { ClassroomGradingSurface, type ClassroomGradingSurfaceProps } from './classroom/ClassroomGradingSurface'
 
@@ -330,6 +330,16 @@ interface SvgDocumentEditorProps {
   /** Hide this room's annotations, leaving the document. The book's layer, switched off. */
   annotationsHidden?: boolean
   onEditorMount?: (editor: Editor | null) => void
+  /**
+   * This editor is going, named rather than implied.
+   *
+   * A holder has to be able to tell whether the editor it is holding is the one
+   * being released: a remount can run the old teardown after the replacement
+   * has registered, and clearing unconditionally on `onEditorMount(null)` drops
+   * the live editor. Optional, and `onEditorMount(null)` is unchanged, so
+   * existing consumers behave exactly as before.
+   */
+  onEditorRelease?: (editor: Editor) => void
 }
 
 
@@ -458,7 +468,7 @@ function EmergencyDumpRescue({ editor, documentName }: { editor: Editor; documen
   )
 }
 
-export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, annotationsHidden = false, onEditorMount }: SvgDocumentEditorProps) {
+export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, annotationsHidden = false, onEditorMount, onEditorRelease }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
 
@@ -552,22 +562,16 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   }, [document, editorMounted])
 
   useMarkedExerciseHtmlAlignment(editorRef, document, editorMounted)
-  // Returning marks needs the editor, and the control that triggers it lives
+  // Framing the pair needs the editor, and the control that triggers it lives
   // outside this component; the bridge is a window event, as elsewhere.
-  //
-  // Page 0 is the student's submission in the compare view — his solution is
-  // page 1. Marks are scoped to that block, so what he draws on his own
-  // solution stays the common layer rather than being handed to one student.
   useEffect(() => {
     const editor = editorRef.current
-    const submissionShapeId = document.pages[0]?.shapeId
-    if (!editorMounted || !editor || !submissionShapeId) return
-    const teardown = [installReturnMarksBridge(editor, submissionShapeId)]
+    if (!editorMounted || !editor) return
     // Both panes of the compare view, so framing can bring the pair back on
     // screen after a navigation has centred one of them.
     const pairShapeIds = document.pages.slice(0, 2).map(page => page.shapeId)
-    if (pairShapeIds.length === 2) teardown.push(installFramePairBridge(editor, pairShapeIds))
-    return () => teardown.forEach(off => off())
+    if (pairShapeIds.length !== 2) return
+    return installFramePairBridge(editor, pairShapeIds)
   }, [document, editorMounted])
 
 
@@ -1636,6 +1640,16 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           }
           return () => {
             onEditorMount?.(null)
+            // Which editor is going, for a holder that needs to tell whether the
+            // one it is holding is this one. A remount can run this teardown
+            // AFTER the replacement has already registered, so a holder that
+            // clears on the `null` above would erase the live editor — measured
+            // on the annotation overlay, which is why that component already
+            // reports its release this way.
+            //
+            // Additive: `onEditorMount?.(null)` still fires exactly as before,
+            // so every existing consumer is unaffected.
+            onEditorRelease?.(editor)
             cleanupProjectLayerModel()
             cleanupFleetPillReclaimer()
           }
