@@ -37,7 +37,7 @@ import {
 } from 'fs'
 import { join, basename, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
-import { availableParallelism } from 'os'
+import { availableParallelism, tmpdir } from 'os'
 
 import { projectDir, outputDir, sourceDir, readProject } from './project-store.mjs'
 
@@ -99,6 +99,9 @@ function decodeTarget(target) {
   if ((m = target.match(/^(.+)\.dvi$/))) {
     return { texBase: m[1], kind: 'dvi' }
   }
+  if ((m = target.match(/^(.+)\.pdf$/))) {
+    return { texBase: m[1], kind: 'pdf' }
+  }
   return null
 }
 
@@ -133,6 +136,19 @@ function isStale(ctx, target, deps) {
     const bp = buildStampPath(ctx.name)
     const buildMtime = existsSync(bp) ? statSync(bp).mtimeMs : 0
     if (existsSync(sp) && statSync(sp).mtimeMs > buildMtime) return true
+  }
+
+  // The exported PDF asks the same question of source.stamp, but against ITSELF
+  // rather than against build.stamp. It is a separate compile from the DVI (see
+  // the .pdf recipe) with no dep to carry staleness for it, so what makes it
+  // current is when it was last exported — not when the project last built.
+  //
+  // Against build.stamp instead, a document edited but not yet rebuilt would
+  // recompile its PDF on every single request, because the stamps stay in that
+  // order until a build finally lands.
+  if (!ctx.version && decoded?.kind === 'pdf') {
+    const sp = stampPath(ctx.name)
+    if (existsSync(sp) && statSync(sp).mtimeMs > tMtime) return true
   }
 
   // Historical versions: synctex.gz and lookup.json are produced atomically
@@ -251,6 +267,21 @@ const RECIPES = [
     },
     build: async (ctx, target) => {
       await buildLookup(ctx, target)
+    },
+  },
+
+  // ── <texBase>.pdf ─────────────────────────────────────────────────────────
+  // The document as a file the reader can keep. Deliberately NOT derived from
+  // <texBase>.dvi: that DVI is compiled with `draft` passed to graphics and
+  // graphicx, so every figure in it is a placeholder box which the SVG pipeline
+  // fills in afterwards. Converting it would export a paper with blank figures.
+  // So this is its own non-draft compile, and it takes no deps — asking for the
+  // PDF must not drag a DVI rebuild along with it.
+  {
+    match: /^.+\.pdf$/,
+    deps: () => [],
+    build: async (ctx, target) => {
+      await buildPdfExport(ctx, target)
     },
   },
 
@@ -455,6 +486,80 @@ async function buildLookup(ctx, target) {
   } finally {
     if (stubCreated) { try { rmSync(texStub) } catch {} }
     if (synctexLinked) { try { rmSync(synctexDest) } catch {} }
+  }
+}
+
+/**
+ * Compile the document to a PDF the reader can keep → ctx.outDir/<texBase>.pdf.
+ *
+ * This is a SECOND, independent compile, not a conversion of <texBase>.dvi. The
+ * DVI is built with `draft` passed to graphics and graphicx (build-runner's
+ * PRETEX, shadow-repo's SHADOW_PRETEX), so its figures are placeholder boxes
+ * that the SVG pipeline fills in afterwards — a PDF made from it would have a
+ * blank rectangle where every figure belongs. There is no cheaper correct
+ * route: a real PDF costs a real compile.
+ *
+ * `latexmk` rather than a bare `pdflatex` run, so the cross-references settle
+ * and bibtex/biber runs when the document cites anything.
+ *
+ * Nothing is written into the project's source: `-output-directory` sends every
+ * aux file to a scratch dir under tmpdir(), the same convention the live build
+ * uses per target, and only the finished PDF is copied into outDir. Writing
+ * build junk into a linked checkout would publish it back through source sync.
+ */
+async function buildPdfExport(ctx, target) {
+  const { texBase } = decodeTarget(target)
+
+  // Live only. A historical version would need its own checkout, and nothing
+  // asks for one — say so rather than silently exporting the current source
+  // under a version label.
+  if (ctx.version) {
+    throw new Error(`[ensure] ${texBase}.pdf is only built for the live version, not @${ctx.version}`)
+  }
+  if (!ctx.srcDir) throw new Error(`[ensure] ${ctx.name} has no source dir to compile a PDF from`)
+
+  const mainFile = await targetMainFile(ctx.name, texBase)
+  const texDir = join(ctx.srcDir, dirname(mainFile))
+  const buildDir = join(tmpdir(), `tlda-pdf-${ctx.name}-${texBase}-${process.pid}-${Date.now()}`)
+  mkdirSync(buildDir, { recursive: true })
+  mkdirSync(ctx.outDir, { recursive: true })
+
+  try {
+    let execErr = null
+    try {
+      await execAsync(
+        `latexmk -pdf -f -interaction=nonstopmode -output-directory="${buildDir}" "${texBase}.tex"`,
+        {
+          cwd: texDir,
+          timeout: 180000,
+          env: { ...process.env, TEXINPUTS: `${texDir}:${ctx.srcDir}:`, BIBINPUTS: `${texDir}:${ctx.srcDir}:` },
+        },
+      )
+    } catch (e) { execErr = e }
+
+    // `-f` keeps latexmk going through errors, so a nonzero exit does not mean
+    // no PDF. The artifact is the answer; the log is only how we explain its
+    // absence.
+    const pdfPath = join(buildDir, `${texBase}.pdf`)
+    if (!existsSync(pdfPath)) {
+      const logPath = join(buildDir, `${texBase}.log`)
+      const detail = existsSync(logPath)
+        ? readFileSync(logPath, 'utf8').split('\n').slice(-40).join('\n')
+        : (execErr?.message || 'latexmk produced no log and no PDF')
+      throw new Error(`PDF compile produced no PDF for ${ctx.name}/${texBase}:\n${detail}`)
+    }
+
+    // Rename into place so a reader never downloads a half-written file.
+    const dest = artifactPath(ctx, target)
+    const tmpDest = `${dest}.partial`
+    copyFileSync(pdfPath, tmpDest)
+    renameSync(tmpDest, dest)
+    console.log(`[ensure] ${texBase}.pdf ready for ${ctx.name}`)
+  } finally {
+    // Best-effort: the PDF is already copied out by here, so a scratch dir that
+    // will not delete must not turn a good export into a failed one. The worst
+    // case is one stale directory under tmpdir().
+    try { rmSync(buildDir, { recursive: true, force: true }) } catch { /* scratch dir, already harvested */ }
   }
 }
 
