@@ -14,13 +14,19 @@ import { releaseHeldEnd, resolveReturnEnds as resolveEnds } from '../src/classro
 // ahead of itself, and nothing the student should not see has been published.
 // These are the controls for that claim, and for the retry that clears it.
 
-function fakeStore(shapes = [], { refuseCreate = false } = {}) {
+function fakeStore(shapes = [], { refuseCreate = false, onCreate = null } = {}) {
   const byId = new Map(shapes.map(s => [s.id, s]))
+  let live = true
   return {
     getShape: id => byId.get(id),
-    createShapes: incoming => { if (refuseCreate) return; for (const s of incoming) byId.set(s.id, s) },
+    createShapes: incoming => { onCreate?.(); if (refuseCreate) return; for (const s of incoming) byId.set(s.id, s) },
     deleteShapes: ids => { for (const id of ids) byId.delete(id) },
     getCurrentPageId: () => 'page:main',
+    // Whether this store's editor is still the mounted one. A store whose editor
+    // has gone still answers every read from its last state, which is exactly
+    // how a move deleted from a layer nobody was syncing and called it a move.
+    isLive: () => live,
+    goAway: () => { live = false },
     ids: () => [...byId.keys()].sort(),
   }
 }
@@ -66,6 +72,62 @@ test('pressing Return twice does not duplicate', () => {
   const again = moveShapesToLayer(draft, submission, draft.ids(), sameFrame)
   assert.deepEqual(again, [])
   assert.deepEqual(submission.ids(), ['shape:m1'])
+})
+
+// --- the source that is gone by the time the delete lands ---
+//
+// Measured in a browser, 2026-09-10: the delete reaches the LIVE draft editor
+// and applies to its store, and the layer is then torn down before the deletion
+// has been pushed. `TLSyncClient.close()` cancels unsent changes rather than
+// flushing them, so the room never hears about it and the replacement layer
+// reads the mark straight back out. `returned 1` was reported throughout.
+//
+// Nothing here can make the room durable — that is the point of the repair
+// above this one, which stops the teardown. What this ordering CAN do is refuse
+// to call it a move. A local delete on a store whose editor has gone is not a
+// move, and reporting one is the lie that survived a verification.
+
+test('a source that goes away during the move refuses instead of reporting one', () => {
+  const draft = fakeStore([mark('shape:m1')])
+  // The forced replacement, deterministically: the destination's create is what
+  // tears the draft layer down, which is the real ordering — the create is a
+  // store change in the editor the panes are derived from.
+  const submission = fakeStore([], { onCreate: () => draft.goAway() })
+
+  assert.throws(
+    () => moveShapesToLayer(draft, submission, ['shape:m1'], sameFrame),
+    LayerMoveFailed,
+    'a move on a source that had gone reported success',
+  )
+  // The marks did reach the student — this is not the pre-create failure — so
+  // the instructor is told the layer was not cleared, not that nothing landed.
+  assert.deepEqual(submission.ids(), ['shape:m1'])
+})
+
+test('a destination that has gone loses nothing, because the delete never runs', () => {
+  // The worse end of the same question. A store whose editor has gone accepts
+  // every create and answers every read from its own memory, so the verify
+  // passes on a layer that carried the annotations nowhere — and deleting on
+  // that would remove the only copies that existed.
+  const draft = fakeStore([mark('shape:m1')])
+  const submission = fakeStore()
+  submission.goAway()
+
+  assert.throws(
+    () => moveShapesToLayer(draft, submission, ['shape:m1'], sameFrame),
+    LayerMoveFailed,
+    'the move published to a layer that had gone',
+  )
+  assert.deepEqual(draft.ids(), ['shape:m1'], 'the only copies of the marks were deleted')
+})
+
+test('control — the same move on a source that stays live still moves', () => {
+  // Without this the refusal above would pass on a rule that refuses every
+  // move, which "fixes" Return by making it never publish.
+  const draft = fakeStore([mark('shape:m1')])
+  const submission = fakeStore()
+  assert.deepEqual(moveShapesToLayer(draft, submission, ['shape:m1'], sameFrame), ['shape:m1'])
+  assert.deepEqual(draft.ids(), [])
 })
 
 // --- positive control: the instrument can tell success from failure ---
