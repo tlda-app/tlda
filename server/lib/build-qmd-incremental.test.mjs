@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { qmdIncrementalRenderRoots } from './build-qmd.mjs'
+import { clearQmdFreeze, qmdIncrementalRenderRoots } from './build-qmd.mjs'
 
 test('a direct book-component edit selects only that component', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-incremental-test-'))
@@ -15,6 +15,25 @@ test('a direct book-component edit selects only that component', () => {
     assert.deepEqual(qmdIncrementalRenderRoots(root, ['lectures/chapter-calibration-binary.qmd']), ['lectures/chapter-calibration-binary.qmd'])
     assert.equal(qmdIncrementalRenderRoots(root, ['shared-code.qmd']), null)
     assert.equal(qmdIncrementalRenderRoots(root, []), null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a component render invalidates only that component freeze', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-freeze-test-'))
+  try {
+    const changed = join(root, '_freeze', 'lectures', 'chapter-calibration-binary')
+    const retained = join(root, '_freeze', 'lectures', 'other')
+    mkdirSync(changed, { recursive: true })
+    mkdirSync(retained, { recursive: true })
+    writeFileSync(join(changed, 'execute-results.json'), 'stale')
+    writeFileSync(join(retained, 'execute-results.json'), 'current')
+
+    clearQmdFreeze(root, 'lectures/chapter-calibration-binary.qmd')
+
+    assert.equal(existsSync(changed), false)
+    assert.equal(existsSync(join(retained, 'execute-results.json')), true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
