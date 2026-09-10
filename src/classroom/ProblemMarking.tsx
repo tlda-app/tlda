@@ -66,22 +66,41 @@ export function ProblemMarking() {
 
   // Pair his solution with this student's answer. Same shape the compare view
   // already builds, so the two panes line up the way they do everywhere else.
+  //
+  // Keyed on the two document keys, NOT on the `view` and `answer` objects.
+  //
+  // Measured 2026-09-10, in the browser, on the Return that would not converge:
+  // `returnCurrent` replaces `view` to record the new grading status, which
+  // makes a new `answer`, which re-ran this effect, which built a NEW document
+  // object 543 ms after the marks were deleted from the draft layer. A new
+  // document recomputes `SvgDocument`'s `components` memo, whose
+  // `InFrontOfTheCanvas` is an inline arrow — a new component TYPE — so React
+  // unmounted that whole subtree rather than reconciling it. The draft layer
+  // went with it, and `TLSyncClient.close()` cancels unsent changes rather than
+  // flushing them, so the deletion died with the editor that made it and the
+  // replacement layer read the marks back out of the room.
+  //
+  // The document is a function of these two strings and nothing else. Neither
+  // changes when a return is recorded, so recording one no longer rebuilds the
+  // document — and choosing a different problem does not either, which is what
+  // the key on `SvgDocumentEditor` below already says the intent was.
+  const solutionsDocKey = view?.assignment.solutionsDocKey ?? null
+  const contentRef = answer?.contentRef ?? null
   useEffect(() => {
-    if (!view || !answer?.contentRef) { setDocument(null); return }
+    if (!contentRef) { setDocument(null); return }
     let cancelled = false
-    const solutionsDocKey = view.assignment.solutionsDocKey
     Promise.all([
-      firstPage(answer.contentRef),
+      firstPage(contentRef),
       solutionsDocKey ? firstPage(solutionsDocKey) : Promise.resolve(null),
     ]).then(([student, solution]) => {
       if (cancelled) return
       const pages = [{ ...student.page, group: 'marked-exercise', url: student.basePath + student.page.file }]
       if (solution) pages.push({ ...solution.page, group: 'marked-exercise', url: solution.basePath + solution.page.file })
-      setDocument(createHtmlDocumentFromPageInfo(answer.contentRef, student.basePath, pages))
+      setDocument(createHtmlDocumentFromPageInfo(contentRef, student.basePath, pages))
       setError('')
     }).catch(e => { if (!cancelled) { setError(e.message); setDocument(null) } })
     return () => { cancelled = true }
-  }, [view, answer])
+  }, [contentRef, solutionsDocKey])
 
   // Choosing a problem has to move the panes to it, or "problem by problem" is
   // only true of the student list: the document still opens at the top and he
@@ -222,8 +241,14 @@ export function ProblemMarking() {
       // is the marks that did not go, and the next action is to press Return
       // again rather than to redo the marking. Before that point, nothing
       // landed and the plain message is the true one.
+      //
+      // The suffix asserts only the half it knows. It used to add "but the
+      // marks are not published yet", which is false for the failure the
+      // confirm step now raises — there the copies DID reach the student and it
+      // is the private layer that was not cleared. Each thrown message already
+      // states what happened to the marks, so the suffix stops repeating it.
       setError(serverRecorded
-        ? `${(e as Error).message} — the return is recorded, but the marks are not published yet. Press Return marks again.`
+        ? `${(e as Error).message} — the return is recorded. Press Return marks again.`
         : (e as Error).message)
     } finally {
       setReturning(false)
