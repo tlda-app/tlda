@@ -80,7 +80,7 @@ import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
 import { RibbonLane } from './shapes/RibbonLane'
 import { ProvenancePanel } from './shapes/ProvenancePanel'
 import { ProvenanceInline } from './shapes/ProvenanceInline'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, dispatchSignalDirect, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
@@ -96,7 +96,7 @@ import { FormatToolbar } from './toolbar/FormatToolbar'
 import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
-import { setCurrentDocumentInfo, pageSpacing, type SvgDocument } from './svgDocumentLoader'
+import { setCurrentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
@@ -1571,20 +1571,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
                 if (cameraTimer) clearTimeout(cameraTimer)
                 cameraTimer = setTimeout(() => {
                   saveSession()
-                  // Report visible pages for watcher priority rebuild
-                  if (isSignalConnected() && document.pages.length > 0) {
-                    const vb = editor.getViewportScreenBounds()
-                    const cam = editor.getCamera()
-                    // Convert screen bounds to canvas coords
-                    const top = -cam.y + vb.y / cam.z
-                    const bottom = top + vb.h / cam.z
-                    const pageH = document.pages[0].height + pageSpacing
-                    const firstPage = Math.max(1, Math.floor(top / pageH) + 1)
-                    const lastPage = Math.min(document.pages.length, Math.floor(bottom / pageH) + 1)
-                    const pages: number[] = []
-                    for (let p = firstPage; p <= lastPage; p++) pages.push(p)
-                    writeSignal('signal:viewport', { pages })
-                  }
                 }, 500)
               })
 
