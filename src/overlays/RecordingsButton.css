@@ -1,0 +1,81 @@
+/* Bottom left, where Skip asked for it. Fixed rather than absolute: this sits
+   over the canvas and must not move when the camera does. */
+.recordings-button-wrap {
+  position: fixed;
+  left: 118px;
+  bottom: 16px;
+  z-index: var(--tlda-z-managed-surface);
+  pointer-events: all;
+}
+
+.recordings-button {
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.35;
+  transition: opacity 0.3s;
+}
+
+.recordings-button:hover,
+.recordings-button[aria-pressed='true'] {
+  opacity: 0.85;
+}
+
+/* The player itself. Fixed, so the document moves under it and it stays put —
+   "in front of canvas", not a shape that pans with the camera. Sits above the
+   button rather than over it. */
+.recordings-panel {
+  position: fixed;
+  left: 118px;
+  bottom: 58px;
+  width: min(480px, calc(100vw - 136px));
+  z-index: var(--tlda-z-managed-surface);
+  pointer-events: all;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-background, #fff);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.recordings-panel__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 6px 4px 12px;
+  background: rgba(0, 0, 0, 0.82);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+}
+
+.recordings-panel__close {
+  border: none;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.recordings-panel__close:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+@media (pointer: coarse) {
+  .recordings-button {
+    width: 36px;
+    height: 36px;
+    opacity: 0.55;
+  }
+}
