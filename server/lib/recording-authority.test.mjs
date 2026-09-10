@@ -259,6 +259,64 @@ test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit a
     assert.equal(published.body.proposedBy, agentId)
     assert.equal(published.body.ownerEditedBy, 'classroom:rw')
     assert.equal(published.body.committedBy, 'classroom:rw')
+
+    // The owner's own path, on a second lecture nobody has proposed. Skip has to
+    // be able to publish a lecture he just gave without an agent running an MCP
+    // call, and every step below is one an RW token can reach.
+    assert.equal((await httpRequest(port, 'POST', '/api/projects/wire-class/recording', {
+      token: rwToken,
+      json: { id: 'lecture-2', title: 'Lecture 2', created: now, duration_ms: 2_000, audioMime: 'audio/webm', events: [] },
+    })).status, 200)
+    assert.equal((await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-2/audio', {
+      token: rwToken, body: readFileSync(audioPath), contentType: 'audio/webm',
+    })).status, 200)
+
+    // Failing control. Without it a green run below would also be green if the
+    // gate had never existed, and this whole task started because it does:
+    // owner review refuses until an interval has been proposed.
+    const ungatedOwnerEdit = await httpRequest(port, 'PUT', '/api/projects/wire-class/recording/lecture-2/owner-interval', {
+      token: rwToken, json: { startMs: 300, endMs: 1_700 },
+    })
+    assert.equal(ungatedOwnerEdit.status, 409)
+    assert.match(ungatedOwnerEdit.body.error, /needs an agent proposal before owner review/)
+
+    // A read token is a student. It may not propose, exactly as it may not edit
+    // or publish.
+    assert.equal((await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-2/propose-interval', {
+      token: readToken, json: { startMs: 200, endMs: 1_800 },
+    })).status, 403)
+
+    const ownerProposed = await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-2/propose-interval', {
+      token: rwToken, json: { startMs: 200, endMs: 1_800 },
+    })
+    assert.equal(ownerProposed.status, 200)
+    assert.equal(ownerProposed.body.state, 'candidate-clip')
+    // The record still says who proposed, so an owner self-proposal and an agent
+    // proposal stay distinguishable without a second lifecycle state.
+    assert.equal(ownerProposed.body.proposedBy, 'classroom:rw')
+
+    // An out-of-range interval is still refused, by the same validation the
+    // agent path uses.
+    assert.equal((await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-2/propose-interval', {
+      token: rwToken, json: { startMs: 0, endMs: 9_999 },
+    })).status, 400)
+
+    assert.equal((await httpRequest(port, 'PUT', '/api/projects/wire-class/recording/lecture-2/owner-interval', {
+      token: rwToken, json: { startMs: 300, endMs: 1_700 },
+    })).status, 200)
+    const ownerPublished = await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-2/publish', {
+      token: rwToken,
+    })
+    assert.equal(ownerPublished.status, 200)
+    assert.equal(ownerPublished.body.state, 'published')
+    assert.equal(ownerPublished.body.proposedBy, 'classroom:rw')
+    assert.equal(ownerPublished.body.ownerEditedBy, 'classroom:rw')
+    assert.equal(ownerPublished.body.committedBy, 'classroom:rw')
+
+    // And the student can now read it, which is the point of publishing.
+    const studentList = await httpRequest(port, 'GET', '/api/projects/wire-class/recordings', { token: readToken })
+    assert.equal(studentList.status, 200)
+    assert.ok(studentList.body.recordings.some(recording => recording.id === 'lecture-2'))
   } finally {
     authenticated?.close()
     unauthenticated?.close()
