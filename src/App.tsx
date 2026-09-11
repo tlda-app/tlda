@@ -430,12 +430,38 @@ function DocumentApp() {
         pages: t.pages,
         basePath: fullBasePath,
       }))
-      let document = await loadDocumentByFormat({
-        name: projectName,
-        basePath: fullBasePath,
-        manifest,
-        targets,
-      })
+      const compareDoc = new URLSearchParams(window.location.search).get('compareDoc')
+      let document
+      if (compareDoc && manifest.view.kind === 'html-pages') {
+        const compareBasePath = `/docs/${encodeURIComponent(compareDoc)}/`
+        const [studentPages, solutionPages] = await Promise.all([
+          fetch(`${fullBasePath}page-info.json`).then(response => {
+            if (!response.ok) throw new Error(`${projectName} is not readable (${response.status})`)
+            return response.json()
+          }),
+          fetch(`${compareBasePath}page-info.json`).then(response => {
+            if (!response.ok) throw new Error(`Comparison document ${compareDoc} is not ready`)
+            return response.json()
+          }),
+        ])
+        if (!studentPages[0] || !solutionPages[0]) throw new Error('Marked exercise documents need a rendered HTML page')
+        document = await loadDocumentByFormat({
+          name: projectName,
+          basePath: fullBasePath,
+          manifest,
+          pages: [
+            { ...studentPages[0], group: 'marked-exercise', url: fullBasePath + studentPages[0].file },
+            { ...solutionPages[0], group: 'marked-exercise', url: compareBasePath + solutionPages[0].file },
+          ],
+        })
+      } else {
+        document = await loadDocumentByFormat({
+          name: projectName,
+          basePath: fullBasePath,
+          manifest,
+          targets,
+        })
+      }
 
       if (gen !== loadGeneration) return  // superseded during fetch
       // The manifest's display name, which is a written title for some documents
