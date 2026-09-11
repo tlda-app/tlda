@@ -40,6 +40,9 @@ function deckProject() {
     'lectures/chapter-normal-approximation-slides.qmd',
     'lectures/Lab1-slides.qmd',
     'lectures/Lecture2.qmd',
+    // Committed in the real project, and it matches the glob exactly as its
+    // original does.
+    'lectures/._Lab1-slides.qmd',
   ]) writeFileSync(join(root, file), '# doc\n')
   return root
 }
@@ -55,6 +58,12 @@ test('the deck set comes from the profile render list, globs expanded', () => {
     // A declared entry with no file on disk is not a deck. Inferring one from
     // the name is what would claim a document nobody built.
     assert.equal(qmdDeckRenderRoots(root).includes('lectures/never-written.qmd'), false)
+    // The AppleDouble stub is not a deck. Rendering one fails the whole build,
+    // and the glob matches it exactly as it matches the file it shadows.
+    assert.equal(qmdDeckRenderRoots(root).includes('lectures/._Lab1-slides.qmd'), false)
+    const skipped = []
+    qmdDeckRenderRoots(root, (line) => skipped.push(line))
+    assert.match(skipped.join('\n'), /skipping lectures\/\._Lab1-slides\.qmd/, 'a skipped deck must say so')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
