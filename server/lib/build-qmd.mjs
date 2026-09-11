@@ -480,6 +480,39 @@ export function publishDeckIntoBook(outDir, bookDir, deck) {
   return true
 }
 
+/**
+ * Render each deck, and let a deck that fails fail alone.
+ *
+ * Builds are doc-by-doc, so a doc's failure is that doc's failure. A chapter
+ * render still takes the build down with it — the chapter IS the document being
+ * published — but a broken deck must not stop its chapter's edit from reaching
+ * the reader: under project-per-chapter there was no deck in a chapter's build
+ * to block it, and the bar this replaces it against is that the one-project book
+ * be no less usable for developing a chapter.
+ *
+ * The failure is recorded with the `[build] ` marker, which is what puts it on
+ * `/api/projects/<name>/build/errors` rather than only in the log nobody reads.
+ * A stale deck that says so is the point; a stale deck that is silent is the
+ * failure this exists to avoid.
+ *
+ * Returns the decks that failed. They are not published, so what stays on the
+ * shelf is the last good render — never the half-written output of the render
+ * that just failed.
+ */
+export async function renderDeckSet(quarto, outDir, decks, addLog, { project = null } = {}) {
+  const failed = new Set()
+  for (const deck of decks) {
+    clearQmdFreeze(outDir, deck)
+    try {
+      await renderInOutput(quarto, outDir, deck, addLog, { project, profile: DECK_PROFILE })
+    } catch (e) {
+      failed.add(deck)
+      addLog(`[build] deck ${deck} failed to render; its last good render is still being served: ${e?.message || e}`)
+    }
+  }
+  return failed
+}
+
 async function writeSourceScope(name, srcDir, outDir) {
   const files = (await readClientSourceManifest(name))
     .filter((rel) => existsSync(join(srcDir, rel)))
@@ -608,10 +641,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   const decksToRender = incrementalRoots
     ? deckPairs.filter(({ chapter }) => chapter && incrementalRoots.includes(chapter))
     : deckPairs
-  for (const { deck } of decksToRender) {
-    clearQmdFreeze(outDir, deck)
-    await renderInOutput(quarto, outDir, deck, addLog, { project: name, profile: DECK_PROFILE })
-  }
+  const failedDecks = await renderDeckSet(quarto, outDir, decksToRender.map(({ deck }) => deck), addLog, { project: name })
 
   if (nativeTldaProject) {
     const renderedProject = readTldaManifest(outDir)
@@ -632,7 +662,10 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     // the output before rendering, so a `<deck>.html` committed beside its .qmd
     // would otherwise be copied over a good render — the same beside-the-source
     // publication that took a prose chapter, arriving by the other door.
-    for (const { deck } of decksToRender) publishDeckIntoBook(outDir, bookDir, deck)
+    for (const { deck } of decksToRender) {
+      if (failedDecks.has(deck)) continue
+      publishDeckIntoBook(outDir, bookDir, deck)
+    }
     const deckPages = []
     for (const { deck, chapter } of deckPairs) {
       const rendered = deck.replace(/\.qmd$/i, '.html')
