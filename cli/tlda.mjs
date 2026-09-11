@@ -3186,7 +3186,7 @@ async function cmdClassroomSetup() {
   const homeworkPath = requiredClassroomSetupFlag('homework')
   const projectPrefix = getFlag('project-prefix') || `${courseId}-${assignmentId}`
   const sourceDocKey = getFlag('source') || `${projectPrefix}-source`
-  const templateDocKey = getFlag('handout') || `${projectPrefix}-handout`
+  const handoutDocKey = getFlag('handout') || `${projectPrefix}-handout`
   const solutionsDocKey = getFlag('solutions') || `${projectPrefix}-solutions`
   const solutionsVersion = getFlag('solutions-version')
   const quartoBin = getFlag('quarto-bin') || 'quarto'
@@ -3226,7 +3226,7 @@ async function cmdClassroomSetup() {
   const bookDir = join(rendered.outDir, '_book')
   const projectRoot = join(rendered.outDir, '.classroom-projects')
   const sourceDir = join(projectRoot, sourceDocKey)
-  const handoutDir = join(projectRoot, templateDocKey)
+  const handoutDir = join(projectRoot, handoutDocKey)
   const solutionDir = join(projectRoot, solutionsDocKey)
   mkdirSync(sourceDir, { recursive: true })
   mkdirSync(handoutDir, { recursive: true })
@@ -3242,7 +3242,7 @@ async function cmdClassroomSetup() {
   // what a caller sees as a command that never finishes.
   await finishCliOperation('classroom setup', () => publishClassroomAssignment({
     rendered, courseId, courseTitle, instructorPreferredName, instructorPronouns, assignmentId, assignmentTitle, dueAt,
-    sourceDocKey, templateDocKey, solutionsDocKey, solutionsVersion,
+    sourceDocKey, handoutDocKey, solutionsDocKey, solutionsVersion,
     handoutFilter, solutionFilter, sourceDir, handoutDir, solutionDir, onProgress,
   }))
 }
@@ -3251,7 +3251,7 @@ async function cmdClassroomSetup() {
 // commit converge, and each link is the same call with the same bytes.
 async function publishClassroomAssignment({
   rendered, courseId, courseTitle, instructorPreferredName, instructorPronouns, assignmentId, assignmentTitle, dueAt,
-  sourceDocKey, templateDocKey, solutionsDocKey, solutionsVersion,
+  sourceDocKey, handoutDocKey, solutionsDocKey, solutionsVersion,
   handoutFilter, solutionFilter, sourceDir, handoutDir, solutionDir, onProgress,
 }) {
   onProgress({ message: `Linking project 1 of 3: ${sourceDocKey}` })
@@ -3263,9 +3263,9 @@ async function publishClassroomAssignment({
     sourceDir,
     documentRoots: [rendered.homeworkPath],
   })
-  onProgress({ message: `Linking project 2 of 3: ${templateDocKey}` })
+  onProgress({ message: `Linking project 2 of 3: ${handoutDocKey}` })
   await linkClassroomGitProject({
-    name: templateDocKey,
+    name: handoutDocKey,
     title: `${assignmentTitle} handout`,
     mainFile: rendered.handoutOutput,
     format: 'html',
@@ -3300,13 +3300,22 @@ async function publishClassroomAssignment({
     handoutFilter,
     solutionFilter,
   })
-  const frozen = await api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey })
+  // The frozen template is read as SOURCE TEXT, not served: classroomTemplateSource
+  // reads the project's mainFile and strayAnswers diffs the student's uploaded QMD
+  // against it line by line. The rendered handout project's mainFile is HTML, whose
+  // lines never match a QMD's, so freezing it makes the document's own narrative
+  // read as text the student typed under an unanswered box — a 422 refusing a
+  // correct hand-in. The master QMD carries every line the handout does, the
+  // generator changing only solution and starter blocks, so it is the text that
+  // comparison wants.
+  const frozen = await api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey: sourceDocKey })
 
   console.log(green('Classroom setup complete.'))
   console.log(`Course: ${course.title || courseTitle} (${course.id || courseId})`)
   console.log(`Assignment: ${assignment.title || assignmentTitle} (${assignment.id || assignmentId})`)
   console.log(`Due: ${assignment.dueAt || dueAt}`)
-  console.log(`Handout frozen: ${frozen.templateDocKey || templateDocKey}@${frozen.templateVersion || '(server version)'}`)
+  console.log(`Template frozen: ${frozen.templateDocKey || sourceDocKey}@${frozen.templateVersion || '(server version)'}`)
+  console.log(`Handout: ${handoutDocKey}`)
   console.log(`Source: ${assignment.sourceDocKey || sourceDocKey}`)
   console.log(`Generated from: ${rendered.homeworkPath}`)
   console.log(`Filters: handout=${assignment.handoutFilter || handoutFilter}; solution=${assignment.solutionFilter || solutionFilter}`)

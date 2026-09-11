@@ -149,7 +149,14 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     assert.match(result.stderr, /Generating handout source with bin\/make-handout\.py/)
     assert.match(result.stderr, /Linking project 1 of 3: hw1-source/)
     assert.match(result.stderr, /Linking project 3 of 3: hw1-solutions/)
-    assert.match(result.stdout, /Handout frozen: hw1-handout@handout-rev/)
+    // The frozen template is read as source text and diffed against the student's
+    // uploaded QMD, so it is the homework source rather than the rendered handout.
+    assert.match(result.stdout, /Template frozen: hw1-source@handout-rev/)
+    assert.match(result.stdout, /Handout: hw1-handout/)
+    // The generator writes its dependencies beside the handout, so the handout
+    // gets a directory of its own rather than sitting next to the master — where
+    // it would make the generator copy --solution-filter onto itself.
+    assert.match(result.stderr, /Rendering handout: homework\/handouts\/hw1\/hw1\.qmd/)
     assert.match(result.stdout, /Source: hw1-source/)
     assert.match(result.stdout, /Generated from: homework\/hw1\.qmd/)
     assert.match(result.stdout, /Filters: handout=bin\/make-handout\.py; solution=homework\/solution-callout\.lua/)
@@ -201,7 +208,7 @@ test('classroom setup posts course, assignment, and frozen handout through exist
       solutionsDocKey: 'hw1-solutions',
       solutionsVersion: 'solutions-rev',
     })
-    assert.deepEqual(fixture.requests[8].body, { templateDocKey: 'hw1-handout' })
+    assert.deepEqual(fixture.requests[8].body, { templateDocKey: 'hw1-source' })
   } finally {
     await daemon.close()
     fs.rmSync(configDir, { recursive: true, force: true })
