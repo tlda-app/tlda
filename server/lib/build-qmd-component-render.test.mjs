@@ -24,7 +24,13 @@ const RENDER_CONTROL_SKIP = process.env.TLDA_QUARTO_RENDER_TESTS === '1'
   ? (hasQuarto ? false : 'quarto not on PATH')
   : 'set TLDA_QUARTO_RENDER_TESTS=1 to run — a real Quarto render, minutes long; this control must pass before any build-path change ships'
 
-const publishedPage = (title) => `<!DOCTYPE html>\n<html><head><title>${title}</title></head><body><h1>${title}</h1></body></html>\n`
+const publishedPage = (title) => `<!DOCTYPE html>
+<html><head><title>${title}</title></head><body>
+<nav id="quarto-sidebar"><div class="sidebar-menu-container"><ul>
+<li class="sidebar-item"><div class="sidebar-item-container"><a class="sidebar-link" href="index.html"><span class="chapter-title">Introduction</span></a></div></li>
+<li class="sidebar-item"><div class="sidebar-item-container"><a class="sidebar-link" href="lectures/chapter-calibration-binary.html"><span class="chapter-title">Calibration</span></a></div></li>
+</ul></div></nav>
+<h1>${title}</h1></body></html>\n`
 
 /**
  * A component build renders ONE chapter over the last published book.

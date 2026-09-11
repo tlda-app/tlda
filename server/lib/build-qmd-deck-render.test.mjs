@@ -28,7 +28,13 @@ const CHAPTER_HTML = 'lectures/chapter-calibration-binary.html'
 const DECK = 'lectures/chapter-calibration-binary-slides.qmd'
 const DECK_HTML = 'lectures/chapter-calibration-binary-slides.html'
 
-const publishedPage = (title) => `<!DOCTYPE html>\n<html><head><title>${title}</title></head><body><h1>${title}</h1></body></html>\n`
+const publishedPage = (title) => `<!DOCTYPE html>
+<html><head><title>${title}</title></head><body>
+<nav id="quarto-sidebar"><div class="sidebar-menu-container"><ul>
+<li class="sidebar-item"><div class="sidebar-item-container"><a class="sidebar-link" href="index.html"><span class="chapter-title">Introduction</span></a></div></li>
+<li class="sidebar-item"><div class="sidebar-item-container"><a class="sidebar-link" href="lectures/chapter-calibration-binary.html"><span class="chapter-title">Calibration</span></a></div></li>
+</ul></div></nav>
+<h1>${title}</h1></body></html>\n`
 
 /**
  * A chapter and its deck are two renders of two files, and never each other.
