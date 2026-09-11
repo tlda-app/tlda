@@ -75,6 +75,7 @@ Object.defineProperty(globalThis, 'Blob', {
 // A fake IndexedDB whose chosen write HANGS — neither succeeding nor failing.
 const HANG_ON_PUT = 3
 let puts = 0
+let deletes = 0
 let releaseHungWrite: (() => void) | null = null
 const stored = new Map<string, any>()
 Object.defineProperty(globalThis, 'indexedDB', {
@@ -97,7 +98,7 @@ Object.defineProperty(globalThis, 'indexedDB', {
             return r
           },
           getAll() { const r: any = { result: [...stored.values()] }; setTimeout(() => r.onsuccess?.(), 0); return r },
-          delete(key: string) { stored.delete(key); const r: any = {}; setTimeout(() => r.onsuccess?.(), 0); return r },
+          delete(key: string) { deletes += 1; stored.delete(key); const r: any = {}; setTimeout(() => r.onsuccess?.(), 0); return r },
         }
         request.result = {
           transaction() {
@@ -115,12 +116,22 @@ Object.defineProperty(globalThis, 'indexedDB', {
 })
 
 const posted: Array<{ url: string; duration?: number }> = []
+let serverDuration = 0
+let serverHasAudio = false
 Object.defineProperty(globalThis, 'fetch', {
   configurable: true,
   value: async (url: string, init: any) => {
     let duration: number | undefined
     if (typeof init?.body === 'string') { try { duration = JSON.parse(init.body).duration_ms } catch { /* audio body */ } }
     posted.push({ url: String(url), duration })
+    if (/\/recording$/.test(String(url)) && duration != null) {
+      if (duration < serverDuration) return { ok: false, status: 409 }
+      serverDuration = duration
+    }
+    if (/\/audio$/.test(String(url))) {
+      if (serverHasAudio) return { ok: true, status: 200, existing: true }
+      serverHasAudio = true
+    }
     return { ok: true, status: 200 }
   },
 })
@@ -182,12 +193,13 @@ if (MODE !== 'healthy') {
   ok(stopTook >= 2000, `stop waited for the bound before proceeding (${stopTook}ms)`)
 }
 
-// 4. A checkpoint must not put the draft back after delivery: the server stores
-//    by id, so re-delivering a shorter checkpoint would overwrite the complete
-//    lecture with a partial one.
+// 4. A checkpoint may finish its already-running IndexedDB write after delivery,
+//    but retry must not replace the complete server copy with that stale draft.
 if (MODE === 'resurrect') {
   const deliveredCount = posted.length
   const putsBefore = puts
+  for (let i = 0; i < 20 && deletes === 0; i++) await wait(100)
+  ok(deletes > 0, 'control: final delivery attempted to clear the outbox before the stale write lands')
   releaseHungWrite!()                  // the write we gave up on finally lands
   await wait(200)
 
@@ -198,16 +210,23 @@ if (MODE === 'resurrect') {
     `no queued checkpoint wrote after delivery began (${puts - putsBefore} did)`)
   ok(posted.length === deliveredCount, 'nothing was re-POSTed after delivery')
 
-  // NOT guaranteed, and stated rather than hidden: the one write already in
-  // flight cannot be cancelled. If IndexedDB lands it after the timeout gave up
-  // on it, a stale shorter envelope is back under this key and a later
-  // retryPendingDrafts would re-POST it over the delivered lecture. Closing
-  // that needs a durable record of what has been delivered, or a server that
-  // refuses to replace a recording with a shorter one — neither belongs in a
-  // repair whose job is to stop the lecture being stranded.
   const resurrected = [...stored.values()].filter(v => v.meta)
-  console.log(`  residual: ${resurrected.length} stale draft(s) landed after the timeout` +
-    `${resurrected.length ? ` (duration_ms=${resurrected.map(v => v.meta.duration_ms).join(',')})` : ''} — known, see comment`)
+  ok(resurrected.length === 1, 'control: one stale draft really landed after final delivery')
+  ok(resurrected[0].meta.duration_ms < deliveredDuration, 'control: the resurrected draft is shorter than the delivered lecture')
+
+  const serverDurationBeforeRetry = serverDuration
+  const audioPostsBeforeRetry = posted.filter(p => /\/audio$/.test(p.url)).length
+  const { retryPendingDrafts } = await import('./draftOutbox')
+  await retryPendingDrafts({
+    async put(envelope) { stored.set(envelope.key, envelope) },
+    async list() { return [...stored.values()].filter(envelope => envelope?.meta) },
+    async delete(key) { stored.delete(key) },
+  })
+  ok(serverDuration === serverDurationBeforeRetry, 'the stale retry did not replace complete metadata')
+  ok(posted.filter(p => /\/audio$/.test(p.url)).length === audioPostsBeforeRetry,
+    'the rejected stale retry never attempted to replace complete audio')
+  ok([...stored.values()].filter(envelope => envelope?.meta).length === 0,
+    'the rejected stale draft was cleared from the outbox')
 }
 
 console.log(`checkpoint hang (${MODE}): PASS`)

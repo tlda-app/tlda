@@ -74,5 +74,18 @@ equal(raised.includes('undelivered'), true)
 // Control: the refused draft really was refused, so the pass above is not the
 // result of a sender that never failed.
 equal(attempted.some(url => url.includes('refused')), true)
+rows.delete('course:refused')
+
+// A checkpoint that lands after the complete lecture was delivered must not
+// follow a rejected metadata overwrite with a shorter audio overwrite.
+await persistDraftCheckpoint('course', 'stale', { ...meta, id: 'stale', duration_ms: 500 }, new Blob(['short']), store)
+const staleUrls: string[] = []
+await retryPendingDrafts(store, async (url) => {
+  staleUrls.push(url)
+  return { ok: false, status: 409 }
+})
+equal(staleUrls.length, 1)
+equal(staleUrls[0].endsWith('/recording'), true)
+equal(rows.has('course:stale'), false)
 
 console.log('durable draft outbox retry: PASS')

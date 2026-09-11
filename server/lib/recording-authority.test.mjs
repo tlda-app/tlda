@@ -92,7 +92,9 @@ function httpRequest(port, method, path, { token = null, json = undefined, body 
 test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit and publish', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-recording-authority-wire-'))
   const configDir = join(dir, 'config')
-  const projectsDir = join(dir, 'projects')
+  // Dev previews keep projects under ~/.config. The audio route must authorize
+  // the resolved filename, not reject the hidden parent directory as a dotfile.
+  const projectsDir = join(dir, '.config', 'projects')
   const dbPath = join(dir, 'fleet.db')
   const audioPath = join(dir, 'lecture.webm')
   const ffmpegPath = join(dir, 'ffmpeg-fixture.mjs')
@@ -170,11 +172,30 @@ test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit a
       token: rwToken,
       json: { id: 'lecture-1', title: 'Lecture 1', created: now, duration_ms: 2_000, audioMime: 'audio/webm', events: [] },
     })).status, 200)
+    const staleCheckpoint = await httpRequest(port, 'POST', '/api/projects/wire-class/recording', {
+      token: rwToken,
+      json: { id: 'lecture-1', title: 'Lecture 1', created: now, duration_ms: 1_000, audioMime: 'audio/webm', events: [] },
+    })
+    assert.equal(staleCheckpoint.status, 409)
+    assert.equal(staleCheckpoint.body.code, 'STALE_RECORDING_CHECKPOINT')
+    const retained = await httpRequest(port, 'GET', '/api/projects/wire-class/recording-draft/lecture-1', { token: rwToken })
+    assert.equal(retained.status, 200)
+    assert.equal(retained.body.duration_ms, 2_000)
     assert.equal((await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-1/audio', {
       token: rwToken,
       body: readFileSync(audioPath),
       contentType: 'audio/webm',
     })).status, 200)
+    const duplicateAudio = await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-1/audio', {
+      token: rwToken,
+      body: Buffer.from('stale-short-audio'),
+      contentType: 'audio/webm',
+    })
+    assert.equal(duplicateAudio.status, 200)
+    assert.equal(duplicateAudio.body.existing, true)
+    const retainedAudio = await httpRequest(port, 'GET', '/api/projects/wire-class/recording-draft/lecture-1/audio', { token: rwToken })
+    assert.equal(retainedAudio.status, 200)
+    assert.equal(retainedAudio.body, 'wire-proof-audio')
 
     unauthenticated = await openFleetWs(port)
     await assert.rejects(wsRequest(unauthenticated, 'unauth', 'lecture-recording-proposal', {
