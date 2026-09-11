@@ -24,7 +24,7 @@ import { createDocumentManifest } from './document-manifest.mjs'
 import { getBuildReporter, streamChildOutput } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
-import { readTldaManifest } from './tlda-manifest.mjs'
+import { findTldaManifests, readTldaManifest } from './tlda-manifest.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -500,6 +500,17 @@ export function publishDeckIntoBook(outDir, bookDir, deck) {
  * that just failed.
  */
 export async function renderDeckSet(quarto, outDir, decks, addLog, { project = null } = {}) {
+  // MEASURED, against the guess that replaced it: rendering the deck file that
+  // IS the profile's whole render list counts as rendering everything, so
+  // Quarto sets QUARTO_PROJECT_RENDER_ALL and the tlda extension's post-render
+  // writes a manifest — at the profile's output dir, which under
+  // `type: default` is the project root. The next `readTldaManifest` then finds
+  // two and fails the build with "Multiple tlda-manifest.json files found".
+  //
+  // The deck pass made it, so the deck pass clears it. Only manifests that were
+  // not there beforehand: a project whose own output dir is the root would
+  // otherwise have its real manifest deleted here.
+  const before = new Set(findTldaManifests(outDir))
   const failed = new Set()
   for (const deck of decks) {
     clearQmdFreeze(outDir, deck)
@@ -509,6 +520,11 @@ export async function renderDeckSet(quarto, outDir, decks, addLog, { project = n
       failed.add(deck)
       addLog(`[build] deck ${deck} failed to render; its last good render is still being served: ${e?.message || e}`)
     }
+  }
+  for (const path of findTldaManifests(outDir)) {
+    if (before.has(path)) continue
+    addLog(`[qmd] deck profile: discarding the manifest its render wrote at ${relative(outDir, path)}`)
+    rmSync(path, { force: true })
   }
   return failed
 }
