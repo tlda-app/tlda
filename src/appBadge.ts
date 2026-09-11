@@ -13,6 +13,25 @@ export function badgeCountFor(unreadEvents: number): number {
   return Number.isFinite(unreadEvents) && unreadEvents > 0 ? Math.floor(unreadEvents) : 0
 }
 
+export function coalesceAsyncRefresh(refresh: () => Promise<void>): () => Promise<void> {
+  let running: Promise<void> | null = null
+  let queued = false
+
+  return () => {
+    if (running) {
+      queued = true
+      return running
+    }
+    running = (async () => {
+      do {
+        queued = false
+        await refresh()
+      } while (queued)
+    })().finally(() => { running = null })
+    return running
+  }
+}
+
 export async function applyAppBadge(
   unreadEvents: number,
   nav: Partial<BadgingNavigator> | undefined = typeof navigator !== 'undefined' ? navigator : undefined,

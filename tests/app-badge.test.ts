@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { appBadgeSupported, applyAppBadge, badgeCountFor } from '../src/appBadge'
+import { appBadgeSupported, applyAppBadge, badgeCountFor, coalesceAsyncRefresh } from '../src/appBadge'
+// @ts-ignore — vanilla JS module
+import { createFilterSubscriptions } from '../server/lib/filter-subscriptions.mjs'
 
 function badgingNavigator() {
   const calls: Array<['set', number | undefined] | ['clear']> = []
@@ -39,4 +41,48 @@ test('invalid counts clear rather than reaching the platform', () => {
   assert.equal(badgeCountFor(Number.NaN), 0)
   assert.equal(badgeCountFor(-4), 0)
   assert.equal(badgeCountFor(2.7), 2)
+})
+
+test('a label-routed recipient reaches the existing live filter subscription', async () => {
+  const connection = {}
+  const subscriptions = createFilterSubscriptions({
+    getAgentsByIds: async () => [{
+      id: 'fleet:human',
+      friendly_name: 'human-name',
+      labels: ['reviewers'],
+    }],
+    loadMembershipSpans: async () => [],
+  })
+  subscriptions.subscribe(
+    connection,
+    'badge-refresh',
+    [[['to', 'human-name']]],
+    { humanId: 'fleet:human', humanName: 'human-name' },
+  )
+  const routedEvent = {
+    from_id: 'fleet:sender',
+    recipients: ['fleet:human'],
+    metadata: { original_route: 'reviewers' },
+  }
+  const matches = await subscriptions.match(routedEvent)
+  assert.deepEqual(matches.map(({ conn, subId }: any) => ({ conn, subId })), [
+    { conn: connection, subId: 'badge-refresh' },
+  ])
+})
+
+test('an arrival during a count read queues a second refresh', async () => {
+  let releaseFirst: (() => void) | null = null
+  const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve })
+  let reads = 0
+  const refresh = coalesceAsyncRefresh(async () => {
+    reads++
+    if (reads === 1) await firstBlocked
+  })
+
+  const first = refresh()
+  const duringFirst = refresh()
+  assert.equal(reads, 1)
+  releaseFirst!()
+  await Promise.all([first, duringFirst])
+  assert.equal(reads, 2)
 })
