@@ -91,6 +91,28 @@ export async function persistDraftCheckpoint(
   await store.put({ key: `${doc}:${id}`, doc, id, meta, audio, metadataAcknowledged: false })
 }
 
+/**
+ * Deliver every draft the outbox is still holding.
+ *
+ * One envelope's failure must not end the run. `deliver` throws on any non-ok
+ * response, so an undeliverable draft — an oversized one the server refuses, say
+ * — used to abort the loop and leave every envelope behind it unattempted, on
+ * that load and on every load after it. A single bad recording could keep good
+ * ones from ever reaching the server.
+ *
+ * Each draft is therefore tried on its own, and a failure is reported only after
+ * the rest have had their turn.
+ */
 export async function retryPendingDrafts(store: DraftOutboxStore = browserStore(), send: DraftSender = fetch) {
-  for (const envelope of await store.list()) await deliver(envelope, store, send)
+  const failures: unknown[] = []
+  for (const envelope of await store.list()) {
+    try {
+      await deliver(envelope, store, send)
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  if (failures.length) {
+    throw new Error(`${failures.length} draft(s) undelivered: ${failures.map(String).join('; ')}`)
+  }
 }
