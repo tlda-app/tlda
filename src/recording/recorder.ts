@@ -444,6 +444,14 @@ export function resumeRecording(): void {
   pausedAccum += performance.now() - pauseStart
   paused = false
   if (mediaRecorder.state === 'paused') mediaRecorder.resume()
+  // Pages can be turned while off the record, and the watch stays quiet through
+  // it, so come back on the record by stating which page we are on. Without
+  // this the first stroke after resuming lands in the outgoing page's segment
+  // and replays on the wrong homework.
+  if (activeEditor && activeEditor.getCurrentPageId() !== lastPageId) {
+    lastPageId = activeEditor.getCurrentPageId()
+    events.push({ t: now(), kind: 'base', snapshot: getSnapshot(activeEditor.store) })
+  }
   setState({ paused: false })
   log.info('recording', 'resumed')
 }

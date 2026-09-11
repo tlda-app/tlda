@@ -39,7 +39,10 @@ Object.defineProperty(globalThis, 'window', {
     },
   },
 })
-nav.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) }
+// A real MediaStream has getAudioTracks, and a real track has addEventListener —
+// the recorder uses both to notice the microphone going away.
+const micTrack = { kind: 'audio', stop() {}, addEventListener() {}, removeEventListener() {} }
+nav.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [micTrack], getAudioTracks: () => [micTrack] }) }
 Object.defineProperty(globalThis, 'MediaRecorder', {
   configurable: true,
   value: class {
@@ -140,6 +143,17 @@ await settle()
 const drawnOnC = course.annotate('c1')
 await settle()
 
+// Turning a page while OFF the record: the watch stays quiet through the pause,
+// so coming back on the record has to state which page we are on. Without that
+// the first stroke after resuming replays on the page we left.
+recorder.pauseRecording()
+course.turnTo(pageA)
+await settle()
+recorder.resumeRecording()
+await settle()
+const drawnAfterResume = course.annotate('a2')
+await settle()
+
 // A document switch must still emit exactly one base, not one plus a page base.
 const other = makeMultipageDocument('other-document')
 recorder.attachAppRecordingEditor(null)
@@ -158,8 +172,9 @@ const events = postedMeta.events as any[]
 const bases = events.filter(e => e.kind === 'base')
 const pageOf = (base: any) => String(base?.snapshot?.session?.currentPageId ?? '')
 
-// 1. One base for the opening page, one per turn, one for the document switch.
-ok(bases.length === 4, `four bases: open A, turn B, turn C, switch document (got ${bases.length})`)
+// 1. One base for the opening page, one per turn, one on resuming onto a
+//    different page, one for the document switch.
+ok(bases.length === 5, `five bases: open A, turn B, turn C, resume on A, switch document (got ${bases.length})`)
 ok(pageOf(bases[0]) === pageA, `the opening base is on page A (got ${pageOf(bases[0])})`)
 ok(pageOf(bases[1]) === pageB, `turning to B recorded a base on B (got ${pageOf(bases[1])})`)
 ok(pageOf(bases[2]) === pageC, `turning to C recorded a base on C (got ${pageOf(bases[2])})`)
@@ -181,9 +196,17 @@ for (const [tag, shapeId, expectedPage] of [
     `the annotation on page ${tag} belongs to page ${tag}'s segment`)
 }
 
+// 3b. The advocate's case: A -> pause -> turn to a different page -> resume ->
+//     draw. The first stroke after resuming must replay on the page we resumed
+//     onto, not the one we left.
+const resumed = events.find(e => e.kind === 'stroke' && e.put.some((r: any) => r.id === drawnAfterResume))
+ok(!!resumed, 'the stroke drawn after resuming is in the recording')
+ok(pageOf(playbackSegmentAt(events, resumed.t).base) === pageA,
+  `the first stroke after resuming replays on the page resumed onto (got ${pageOf(playbackSegmentAt(events, resumed.t).base)})`)
+
 // 4. The document switch did not collide with the page watch: one base, and the
 //    strokes after it are in its segment.
-const switchBase = bases[3]
+const switchBase = bases[4]
 const elsewhere = events.find(e => e.kind === 'stroke' && e.put.some((r: any) => r.id === drawnElsewhere))
 ok(!!elsewhere, 'the annotation on the second document is in the recording')
 ok(playbackSegmentAt(events, elsewhere.t).base === switchBase,
