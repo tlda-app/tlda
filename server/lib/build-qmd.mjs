@@ -23,7 +23,7 @@ import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, read
 import { createDocumentManifest } from './document-manifest.mjs'
 import { getBuildReporter, streamChildOutput } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
-import { extractHtmlToc } from './html-toc-extractor.mjs'
+import { extractHtmlToc, extractQuartoBookToc } from './html-toc-extractor.mjs'
 import { findTldaManifests, readTldaManifest } from './tlda-manifest.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -323,6 +323,30 @@ async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject =
 export function writeTocJson(outputDir, pageInfo) {
   const toc = extractHtmlToc(outputDir, pageInfo)
   writeFileSync(join(outputDir, 'toc.json'), JSON.stringify(toc, null, 2))
+  return toc
+}
+
+export function assembleQuartoBookToc(bookToc, chapterPages, deckPages) {
+  const deckByChapter = new Map()
+  for (let i = 0; i < deckPages.length; i++) {
+    const deck = deckPages[i]
+    const entries = deckByChapter.get(deck.group) || []
+    entries.push({ title: `${deck.title} — Slides`, level: 'section', page: chapterPages.length + i + 1 })
+    deckByChapter.set(deck.group, entries)
+  }
+  const toc = []
+  const attachedDecks = new Set()
+  for (const entry of bookToc) {
+    toc.push(entry)
+    const chapter = chapterPages[entry.page - 1]?.source?.file
+    const attached = deckByChapter.get(chapter) || []
+    toc.push(...attached)
+    for (const deck of attached) attachedDecks.add(deck.page)
+  }
+  for (let i = 0; i < deckPages.length; i++) {
+    const page = chapterPages.length + i + 1
+    if (!attachedDecks.has(page)) toc.push({ title: `${deckPages[i].title} — Slides`, level: 'chapter', page })
+  }
   return toc
 }
 
@@ -751,17 +775,21 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     // `toc.json` numbers entries by position and the panel turns that number
     // straight back into `pages[n - 1]`, so a reorder here sends the ToC to the
     // wrong document without looking broken.
-    const nativePageInfo = [
-      ...renderedProject.pageInfo.map((page) => ({ ...page, group: page.source.file })),
-      ...deckPages,
-    ]
     retainNativeTldaRender(outDir, renderedProject.path)
+    const bookToc = extractQuartoBookToc(outDir, renderedProject.pageInfo)
+    if (!bookToc) throw new Error('[toc] tlda book rendered without a Quarto sidebar')
+    const bookTitleByPage = new Map(bookToc.map(entry => [entry.page, entry.title]))
+    const nativePageInfo = [
+      ...renderedProject.pageInfo.map((page, i) => ({
+        ...page,
+        title: bookTitleByPage.get(i + 1) || page.title,
+        group: page.source.file,
+      })),
+      ...deckPages.map(page => ({ ...page, title: `${page.title} — Slides` })),
+    ]
     writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(nativePageInfo, null, 2))
-    // The ToC panel reads this file and says "No headings found" without it.
-    // The other branch writes it in the shared tail below, which this return
-    // skips. Chapters only: a deck's headings are its slide titles, and the
-    // panel is the book's contents, not a merge of both documents.
-    writeTocJson(outDir, renderedProject.pageInfo)
+    const toc = assembleQuartoBookToc(bookToc, renderedProject.pageInfo, deckPages)
+    writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
     await writeSourceScope(name, srcDir, outDir)
     await reporter.updateProject(name, {
       buildStatus: 'success',
