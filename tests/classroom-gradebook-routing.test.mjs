@@ -6,6 +6,7 @@ const gradebook = readFileSync(new URL('../src/classroom/GradebookWorkspace.tsx'
 const lifecycle = readFileSync(new URL('../src/classroom/MarkingLifecycle.tsx', import.meta.url), 'utf8')
 const comparison = readFileSync(new URL('../src/classroom/HomeworkComparisonWorkspace.tsx', import.meta.url), 'utf8')
 const toc = readFileSync(new URL('../src/panels/TocTab.tsx', import.meta.url), 'utf8')
+const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 
 test('gradebook submission links use the project route and the return link clears it', () => {
   assert.match(gradebook, /next\.set\('project', contentRef\)/)
@@ -20,6 +21,12 @@ test('gradebook exposes one assignment comparison containing the official soluti
   assert.match(comparison, /className="classroomComparisonSubmissions"/)
   assert.match(comparison, /data-student-id=/)
   assert.match(comparison, /Open marking canvas/)
+})
+
+test('a standalone grading link loads the student page and its comparison page', () => {
+  assert.match(app, /get\('compareDoc'\)/)
+  assert.match(app, /Promise\.all\(\[\s*fetch\(`\$\{fullBasePath\}page-info\.json`\)/)
+  assert.match(app, /group: 'marked-exercise', url: compareBasePath \+ solutionPages\[0\]\.file/)
 })
 
 test('gradebook files emailed work through the existing instructor upload and returns its student link', () => {
