@@ -25,6 +25,7 @@ import { getBuildReporter, streamChildOutput } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc, extractQuartoBookToc } from './html-toc-extractor.mjs'
 import { findTldaManifests, readTldaManifest } from './tlda-manifest.mjs'
+import { injectQuartoOutputProvenance } from './quarto-output-provenance.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -730,7 +731,10 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     }
     for (const page of renderedProject.pageInfo) {
       const path = join(outDir, page.file)
-      writeFileSync(path, stampFigureUrls(readFileSync(path, 'utf8')))
+      const sourceFile = page.source.file
+      const source = readFileSync(join(outDir, sourceFile), 'utf8')
+      const withProvenance = injectQuartoOutputProvenance(readFileSync(path, 'utf8'), source, sourceFile)
+      writeFileSync(path, stampFigureUrls(withProvenance))
     }
     // Every deck the profile declares that HAS a render — the ones built just
     // now, and the ones the seeded output already carried. Deriving the set
@@ -751,7 +755,11 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
       const rendered = deck.replace(/\.qmd$/i, '.html')
       const path = join(bookDir, rendered)
       if (!existsSync(path)) continue
-      const html = stampFigureUrls(readFileSync(path, 'utf8'))
+      const html = stampFigureUrls(injectQuartoOutputProvenance(
+        readFileSync(path, 'utf8'),
+        readFileSync(join(outDir, deck), 'utf8'),
+        deck,
+      ))
       writeFileSync(path, html)
       const info = deckPageInfo(html, prefix ? `${prefix}/${rendered}` : rendered)
       if (info.slides.length === 0) {
@@ -824,7 +832,11 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     const hasAlternates = declaredOutputFiles.length > 1
     for (const outputFile of outputFiles) {
       const renderedPath = join(outDir, outputFile)
-      const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
+      const rendered = stampFigureUrls(injectQuartoOutputProvenance(
+        readFileSync(renderedPath, 'utf8'),
+        readFileSync(join(outDir, root), 'utf8'),
+        root,
+      ))
       writeFileSync(renderedPath, rendered)
 
       const isDeck = isRevealDeck(rendered)
