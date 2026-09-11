@@ -17,7 +17,7 @@ async function serverFixture({ resolveSubmissionBuild = async contentRef => ({ b
   store.submit({ assignmentId: 'hw1', studentId: 'ada', contentRef: 'hw1-ada' })
   store.addFeedback({ id: 'draft', assignmentId: 'hw1', studentId: 'ada', title: 'Draft', text: 'Private.' })
   const app = express(); app.use(express.json())
-  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: req => req.headers.authorization === 'Bearer read-access', resolveManifestAccess: req => req.query.token === 'read-access', resolveSubmissionBuild, resolveTemplateVersion(docKey) {
+  app.use('/api/classroom', createClassroomRouter({ store, resolveRegistrationAccess: req => req.headers.authorization === 'Bearer read-access', resolveManifestAccess: req => req.query.token === 'read-access', resolveLinkAccessToken: () => 'read-access', resolveSubmissionBuild, resolveTemplateVersion(docKey) {
     if (docKey !== 'hw1-handout') throw new Error('template document not found')
     return 'build-abc'
   }, resolvePrincipal(req, classroomStore) {
@@ -260,6 +260,93 @@ test('device transfer rejects instructor, anonymous, wrong-course and expired at
     })
     assert.equal(response.status, 410)
     assert.equal(f.store.studentForToken('expired-code'), null)
+  } finally { f.close() }
+})
+
+test('an instructor repair link puts a locked-out student back into their own account', async () => {
+  const f = await serverFixture()
+  try {
+    const minted = await f.request('/courses/qtm285/students/ada/repair-link', 'instructor', { method: 'POST', body: JSON.stringify({ project: 'course-book' }) })
+    assert.equal(minted.status, 201)
+    const link = await minted.json()
+    assert.equal(link.student.id, 'ada')
+
+    const repairUrl = new URL(link.repairUrl)
+    assert.equal(repairUrl.searchParams.get('workspace'), 'classroom-transfer')
+    assert.equal(repairUrl.searchParams.get('course'), 'qtm285')
+    // Without a project the app never calls loadDocument and shows the manifest
+    // picker, so a repaired student would land at a list of documents rather
+    // than in their class. The Continue link is built from this URL, so the
+    // project has to be on it here.
+    assert.equal(repairUrl.searchParams.get('project'), 'course-book')
+    // The instructor holds RW and this URL is going into an email. It carries the
+    // class read token, which is the credential every student already has.
+    assert.equal(repairUrl.searchParams.get('token'), 'read-access')
+    assert.doesNotMatch(link.repairUrl, /ada-secret|rw-access/)
+    assert.equal(repairUrl.searchParams.has('classroomToken'), false)
+    // The gradebook the instructor minted it from is not where the student lands.
+    assert.equal(repairUrl.pathname, '/')
+    assert.equal(repairUrl.searchParams.has('markingStudent'), false)
+
+    const transferCode = repairUrl.searchParams.get('transfer')
+    const redeemed = await f.request('/courses/qtm285/device-transfer/redeem', '', {
+      method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
+    })
+    assert.equal(redeemed.status, 200)
+    const { student, enrollmentToken } = await redeemed.json()
+    // Repaired, not re-enrolled: the same row, so the same submissions and marks.
+    assert.equal(student.id, 'ada')
+    assert.equal(f.store.listStudents('qtm285').filter(row => row.id === 'ada').length, 1)
+    assert.equal(f.store.studentForToken(enrollmentToken).id, 'ada')
+    const mine = await f.request('/assignments/hw1/mine', '', { headers: { 'x-tlda-student-token': enrollmentToken } })
+    assert.equal(mine.status, 200)
+    assert.equal((await mine.json()).contentRef, 'hw1-ada', 'the work they had already handed in')
+
+    // Their existing device keeps working: a repair adds a credential, it does not
+    // take the student's other one away.
+    assert.equal(f.store.studentForToken('ada-secret').id, 'ada')
+
+    const replayed = await f.request('/courses/qtm285/device-transfer/redeem', '', {
+      method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
+    })
+    assert.equal(replayed.status, 409, 'the repair link replayed')
+  } finally { f.close() }
+})
+
+test('a repair link cannot be minted by a student, for another course, or for nobody', async () => {
+  const f = await serverFixture()
+  try {
+    f.store.upsertCourse({ id: 'other', title: 'Other course' })
+    // The student who most wants one is exactly the one who cannot ask: this is
+    // instructor-only, and a student cannot aim it at a classmate either.
+    assert.equal((await f.request('/courses/qtm285/students/ada/repair-link', 'ada', { method: 'POST' })).status, 403)
+    assert.equal((await f.request('/courses/qtm285/students/grace/repair-link', 'ada', { method: 'POST' })).status, 403)
+    assert.equal((await f.request('/courses/qtm285/students/ada/repair-link', '', { method: 'POST' })).status, 401)
+    // Naming the wrong course does not reach a student who is not in it.
+    assert.equal((await f.request('/courses/other/students/ada/repair-link', 'instructor', { method: 'POST' })).status, 404)
+    assert.equal((await f.request('/courses/qtm285/students/nobody/repair-link', 'instructor', { method: 'POST' })).status, 404)
+    // A link cannot name a landing place that could never have been a project.
+    assert.equal((await f.request('/courses/qtm285/students/ada/repair-link', 'instructor', {
+      method: 'POST', body: JSON.stringify({ project: '../../etc/passwd' }),
+    })).status, 400)
+  } finally { f.close() }
+})
+
+test('a repair link redeemed against the wrong course is refused', async () => {
+  const f = await serverFixture()
+  try {
+    f.store.upsertCourse({ id: 'other', title: 'Other course' })
+    const link = await (await f.request('/courses/qtm285/students/grace/repair-link', 'instructor', { method: 'POST' })).json()
+    const transferCode = new URL(link.repairUrl).searchParams.get('transfer')
+    const wrongCourse = await f.request('/courses/other/device-transfer/redeem', '', {
+      method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
+    })
+    assert.equal(wrongCourse.status, 404)
+    const rightCourse = await f.request('/courses/qtm285/device-transfer/redeem', '', {
+      method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
+    })
+    assert.equal(rightCourse.status, 200, 'the wrong-course attempt consumed the code')
+    assert.equal((await rightCourse.json()).student.id, 'grace')
   } finally { f.close() }
 })
 

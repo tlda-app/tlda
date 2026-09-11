@@ -51,3 +51,7 @@
 .classroomDeviceTransferResult img { width: 150px; height: 150px; background: white; }
 .classroomDeviceTransferResult a { overflow-wrap: anywhere; color: inherit; }
 .classroomDeviceTransferRedeem .classroomContinueLink { width: fit-content; padding: 8px 12px; border: 1px solid #aaa59a; border-radius: 6px; background: #f7f6f2; color: inherit; }
+.classroomRepairLink { display: grid; gap: 5px; justify-items: start; }
+.classroomRepairLink button { min-height: 30px; padding: 4px 9px; border: 1px solid #aaa59a; border-radius: 6px; background: #f7f6f2; color: inherit; font: inherit; }
+.classroomRepairLink input { width: min(320px, 100%); padding: 5px 7px; border: 1px solid #aaa59a; border-radius: 6px; font: inherit; font-size: 11px; }
+.classroomRepairLink small { color: #6c685f; }

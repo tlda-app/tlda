@@ -1,7 +1,59 @@
-import { useEffect, useState } from 'react'
-import { classroomApi, type CourseStatus } from './api'
+import { useEffect, useRef, useState } from 'react'
+import { classroomApi, type CourseStatus, type RepairLink } from './api'
 import { cellLabel, countLabel } from './markingLabels'
 import './ClassroomWorkspace.css'
+
+/**
+ * The repair link for one student, on the roster row that names them.
+ *
+ * A student who cannot get back in cannot ask for this — the request that issues
+ * one needs the enrolment token they have lost. So it is minted here, where the
+ * instructor is already looking at the person it is for, and it comes back as
+ * text to put in an email rather than as a page to navigate to.
+ *
+ * Minted per click rather than shown for every row at once: each one is a live
+ * single-use credential, and a table that hands out thirty of them on load has
+ * issued twenty-nine nobody asked for.
+ */
+function RepairLinkCell({ courseId, studentId, project }: { courseId: string; studentId: string; project?: string }) {
+  const [link, setLink] = useState<RepairLink | null>(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const field = useRef<HTMLInputElement>(null)
+
+  // `navigator.clipboard` does not exist on an insecure origin, and this server
+  // serves plain HTTP on a direct tailnet address. Selecting the text first means
+  // the button leaves the link ready for ⌘C wherever the write is unavailable,
+  // instead of throwing out of an onClick and doing nothing visible.
+  const copy = () => {
+    field.current?.select()
+    navigator.clipboard?.writeText(link!.repairUrl).catch(() => {})
+  }
+
+  const mint = async () => {
+    if (busy) return
+    try {
+      setBusy(true)
+      setError('')
+      setLink(await classroomApi.createRepairLink(courseId, studentId, project))
+    } catch (nextError) {
+      setError((nextError as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (link) return <td className="classroomRepairLink">
+    <input ref={field} readOnly value={link.repairUrl} onFocus={event => event.currentTarget.select()} aria-label={`Repair link for ${studentId}`} />
+    <button type="button" onClick={copy}>Copy</button>
+    <small>Single use; expires {new Date(link.expiresAt).toLocaleDateString()}</small>
+  </td>
+
+  return <td className="classroomRepairLink">
+    <button type="button" onClick={mint} disabled={busy}>{busy ? 'Making…' : 'Repair link'}</button>
+    {error && <small className="classroomError">{error}</small>}
+  </td>
+}
 
 // One page, one asymmetry. The instructor sees the whole class; a student sees
 // their own row. The narrowing happens on the server — this renders whatever
@@ -70,6 +122,12 @@ export function GradebookWorkspace() {
     </main>
   }
 
+  // Where a repair link should land its student: the same project the class link
+  // sends everyone to. `tlda classroom setup` prints the registration link as
+  // `project=<sourceDocKey>`, and that key is the only record of it the page can
+  // reach — a course row does not name a project. Absent one, a repair link
+  // simply carries no project and behaves as it did before.
+  const classProject = data.assignments.find(assignment => assignment.sourceDocKey)?.sourceDocKey
   const assignments = new Map(data.assignments.map(assignment => [assignment.id, assignment]))
   const submissions = data.rows.flatMap(student => student.assignments
     .filter(cell => cell.contentRef)
@@ -94,8 +152,8 @@ export function GradebookWorkspace() {
       </tr>)}</tbody>
     </table>
     <h2>Roster</h2>
-    <table className="classroomTable"><thead><tr><th>Student</th>{data.assignments.map(a => <th key={a.id}>{a.title}<br/><small>Due {new Date(a.dueAt).toLocaleString()}</small></th>)}</tr></thead>
-      <tbody>{data.rows.map(row => <tr key={row.id}><th>{row.displayName}{row.universityLogin && <><br/><small>{row.universityLogin}</small></>}</th>{row.assignments.map(cell => <td key={cell.assignmentId} className={`state-${cell.state}`}>{cell.state === 'not-submitted' || !cell.contentRef ? cellLabel('not-submitted') : <a href={open(cell.assignmentId,row.id,cell.contentRef)}>{cellLabel(cell.state)}<br/><small>{cell.submittedAt && new Date(cell.submittedAt).toLocaleString()}</small></a>}</td>)}</tr>)}</tbody>
+    <table className="classroomTable"><thead><tr><th>Student</th>{data.assignments.map(a => <th key={a.id}>{a.title}<br/><small>Due {new Date(a.dueAt).toLocaleString()}</small></th>)}<th>Access<br/><small>Send when they cannot get in</small></th></tr></thead>
+      <tbody>{data.rows.map(row => <tr key={row.id}><th>{row.displayName}{row.universityLogin && <><br/><small>{row.universityLogin}</small></>}</th>{row.assignments.map(cell => <td key={cell.assignmentId} className={`state-${cell.state}`}>{cell.state === 'not-submitted' || !cell.contentRef ? cellLabel('not-submitted') : <a href={open(cell.assignmentId,row.id,cell.contentRef)}>{cellLabel(cell.state)}<br/><small>{cell.submittedAt && new Date(cell.submittedAt).toLocaleString()}</small></a>}</td>)}<RepairLinkCell courseId={courseId} studentId={row.id} project={classProject} /></tr>)}</tbody>
     </table>
   </main>
 }

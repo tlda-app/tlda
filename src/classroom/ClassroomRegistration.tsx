@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { classroomApi, type RegisteredStudent } from './api'
-import { classroomCourseId, readClassroomToken, rememberClassroomToken } from './classroomToken'
+import { classroomCourseId, positronConnectUrl, readClassroomToken, rememberClassroomToken } from './classroomToken'
 import './ClassroomWorkspace.css'
 
 /** The class itself: the registration workspace dropped, the token carried. */
@@ -9,13 +9,6 @@ function classUrl(project: string, enrollmentToken: string): string {
   next.searchParams.delete('workspace')
   next.searchParams.set('project', project)
   next.searchParams.set('classroomToken', enrollmentToken)
-  return next.toString()
-}
-
-function positronUrl(enrollmentToken: string): string {
-  const next = new URL('positron://tlda-labs.tlda-classroom/classroom-token')
-  next.searchParams.set('server', window.location.origin)
-  next.searchParams.set('token', enrollmentToken)
   return next.toString()
 }
 
@@ -79,7 +72,7 @@ export function ClassroomRegistration() {
     </form> : <section className="classroomTokenResult">
       <h2>Registration complete</h2>
       <p>This browser will remember you. The class link takes you straight in from now on.</p>
-      <a className="classroomContinueLink" href={positronUrl(registration.enrollmentToken)}>Connect Positron</a>
+      <a className="classroomContinueLink" href={positronConnectUrl(registration.enrollmentToken)}>Connect Positron</a>
       {continueUrl && <a className="classroomContinueLink" href={continueUrl}>Continue to class</a>}
     </section>}
   </main>

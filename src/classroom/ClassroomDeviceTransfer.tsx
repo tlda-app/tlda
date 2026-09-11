@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { classroomApi, type DeviceTransfer, type RegisteredStudent } from './api'
-import { rememberClassroomToken } from './classroomToken'
+import { positronConnectUrl, rememberClassroomToken } from './classroomToken'
 import './ClassroomWorkspace.css'
 
 export function ClassroomDeviceTransferSettings() {
@@ -91,12 +91,19 @@ export function ClassroomDeviceTransferRedeem() {
     {registration && <section className="classroomTokenResult">
       <h2>Class added</h2>
       <p>This device now opens the same classroom work as your other device.</p>
+      {/*
+        The other half of being set up, and the half that used to be reachable
+        only from the registration screen. A student who is here because Positron
+        asked them for a token has no way to answer that question and no way back
+        to the page that would have answered it for them; this is that page.
+      */}
+      <a className="classroomContinueLink" href={positronConnectUrl(registration.enrollmentToken)}>Connect Positron</a>
       <a className="classroomContinueLink" href={continueUrl}>Continue to class</a>
     </section>}
     {error && <section className="classroomTokenResult">
       <h2>Could not add this class</h2>
       <p className="classroomError">{error}</p>
-      <p>Create a new link from Account on a device where the class already works.</p>
+      <p>Create a new link from Account on a device where the class already works, or ask your instructor for another link.</p>
     </section>}
   </main>
 }

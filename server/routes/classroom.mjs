@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { ClassroomStore } from '../lib/classroom-store.mjs'
-import { extractToken, validateToken } from '../lib/auth.mjs'
+import { configuredReadToken, extractToken, validateToken } from '../lib/auth.mjs'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
@@ -15,6 +15,11 @@ const require = createRequire(import.meta.url)
 const QRCode = require('qrcode-terminal/vendor/QRCode')
 const QRErrorCorrectLevel = require('qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel')
 const DEVICE_TRANSFER_TTL_MS = 10 * 60 * 1000
+// A repair link is read out of an email rather than off the screen of the device
+// that made it, so it has to survive the gap between the instructor sending it and
+// the student getting to it. Still single-use, and still a credential for one
+// student, which is what bounds it — the expiry is not the thing keeping it safe.
+const REPAIR_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 function xmlText(value) {
   return String(value).replace(/[&<>"']/g, character => ({
@@ -67,11 +72,25 @@ export function classroomTransferQrSvg(value) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><path fill="#fff" d="M0 0h${size}v${size}H0z"/><path fill="#000" d="${modules.join('')}"/></svg>`
 }
 
-function deviceTransferUrl(req, courseId, transferCode) {
+/**
+ * The URL a transfer code is redeemed at.
+ *
+ * `returnPath`, `project` and `accessToken` are arguments rather than things read
+ * off the request, because the two callers differ on all three. A student adding
+ * a device is making a link for themselves: their page is where they want to
+ * land, it already names the project, and the credential they hold is the class
+ * read token. An instructor is making a link for somebody else: the gradebook
+ * they are standing on is not the student's destination, it names no project, and
+ * the token they hold is RW.
+ *
+ * `project` matters because without it the app never calls `loadDocument` and
+ * shows the manifest picker instead — a repaired student would arrive at a list
+ * of documents rather than in their class.
+ */
+function deviceTransferUrl(req, courseId, transferCode, { returnPath = '', project = null, accessToken = null } = {}) {
   const protocol = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim()
   const origin = `${protocol}://${req.get('host')}`
-  const returnPath = String(req.body?.returnPath || '')
-  const requested = returnPath.startsWith('/') ? new URL(returnPath, origin) : null
+  const requested = String(returnPath || '').startsWith('/') ? new URL(returnPath, origin) : null
   const url = requested?.origin === origin ? requested : new URL('/', origin)
   url.searchParams.delete('classroomToken')
   url.searchParams.delete('name')
@@ -80,7 +99,7 @@ function deviceTransferUrl(req, courseId, transferCode) {
   url.searchParams.set('workspace', 'classroom-transfer')
   url.searchParams.set('course', courseId)
   url.searchParams.set('transfer', transferCode)
-  const accessToken = extractToken(req)
+  if (project) url.searchParams.set('project', project)
   if (accessToken) url.searchParams.set('token', accessToken)
   return url.toString()
 }
@@ -235,7 +254,7 @@ async function submissionBuild(contentRef) {
   return { buildStatus: lifecycle.status, buildAt: project.lastBuildSuccess || project.lastBuild || null }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null, resolveSubmissionBuild = submissionBuild } = {}) {
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveLinkAccessToken = configuredReadToken, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null, resolveSubmissionBuild = submissionBuild } = {}) {
   const router = Router()
   router.get('/courses/:courseId/manifest.webmanifest', (req, res) => {
     if (!resolveManifestAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
@@ -307,8 +326,52 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
       createdAt,
       expiresAt,
     })
-    const transferUrl = deviceTransferUrl(req, principal.courseId, transferCode)
+    const transferUrl = deviceTransferUrl(req, principal.courseId, transferCode, {
+      returnPath: req.body?.returnPath,
+      accessToken: extractToken(req),
+    })
     res.status(201).json({ transferUrl, qrSvg: classroomTransferQrSvg(transferUrl), expiresAt })
+  })
+
+  /**
+   * A repair link: the same device transfer, minted by the instructor.
+   *
+   * The enrolment token is stored hashed and printed once, at registration. A
+   * student who never connected Positron, or who is working from an address the
+   * class link has never reached, has no way back: the API that issues a transfer
+   * is the one that needs the token they are missing. Nobody can recite it to
+   * them — the instructor holds the hash too.
+   *
+   * So the instructor mints it instead, and the student's own row is what it is
+   * minted against. It resolves to the same student id, so their submissions,
+   * their marks and their layer are the ones they land in; nothing is created.
+   *
+   * It carries the class read token, never `extractToken(req)`: this URL is
+   * written into an email, and the caller authorised to make one holds RW.
+   *
+   * `project` is where the student lands once redeemed, and it has to be said
+   * because the instructor's page does not say it. Without one the app shows the
+   * manifest picker rather than opening the class. The caller supplies it — the
+   * store records no project for a course, and inventing a column to hold one
+   * would be a schema decision this repair does not need.
+   */
+  router.post('/courses/:courseId/students/:studentId/repair-link', instructor, (req, res) => {
+    const student = store.getStudent(req.params.studentId)
+    if (!student || student.courseId !== req.params.courseId || !student.active) {
+      return res.status(404).json({ error: 'Student not found in this course' })
+    }
+    const project = String(req.body?.project || '').trim()
+    // Same rule the project routes enforce on creation, so a repair link cannot
+    // name something that could never have been a project.
+    if (project && !/^[a-z0-9][a-z0-9-]*$/.test(project)) {
+      return res.status(400).json({ error: 'project is not a valid project name' })
+    }
+    const createdAt = new Date().toISOString()
+    const expiresAt = new Date(Date.parse(createdAt) + REPAIR_LINK_TTL_MS).toISOString()
+    const transferCode = crypto.randomBytes(32).toString('base64url')
+    store.createDeviceTransfer({ studentId: student.id, courseId: student.courseId, transferCode, createdAt, expiresAt })
+    const repairUrl = deviceTransferUrl(req, student.courseId, transferCode, { project: project || null, accessToken: resolveLinkAccessToken() })
+    res.status(201).json({ student, repairUrl, qrSvg: classroomTransferQrSvg(repairUrl), expiresAt })
   })
 
   router.post('/courses', instructor, (req, res) => {
