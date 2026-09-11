@@ -52,6 +52,9 @@ import {
   type FleetEvent,
 } from './fleet/fleet-data.ts'
 import { resolveFleetFilter } from '../shared/filter-semantics.mjs'
+import { applyAppBadge } from './appBadge'
+// @ts-ignore — vanilla JS module
+import { subscribeChat } from './fleet/chat-subscription.mjs'
 import {
   getPlaybackData,
   subscribePlayback,
@@ -1071,3 +1074,57 @@ export const removeOptimisticEvent = _removeOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
 export const fleetEphemeral = _fleetEphemeral
 export { receiveFilterEvents, resolveFilter }
+
+const BADGE_FILTER_WINDOW = 1
+let badgeInstalled = false
+
+export function installUnreadAppBadge(): void {
+  if (typeof window === 'undefined' || badgeInstalled) return
+  badgeInstalled = true
+
+  let pending: ReturnType<typeof setTimeout> | null = null
+  let inFlight = false
+  let disposeSubscription: (() => void) | null = null
+  let subscribedAs: string | null = null
+
+  const readAndApply = async () => {
+    const agent = getHumanId()
+    if (!agent || inFlight) return
+    inFlight = true
+    try {
+      const data = await _fleetEphemeral('unread-count', { agent })
+      await applyAppBadge(Number(data?.count) || 0)
+    } catch {
+      // A disconnected socket leaves the last known badge in place. Reconnect
+      // schedules the next read.
+    } finally {
+      inFlight = false
+    }
+  }
+
+  const schedule = () => {
+    if (pending) return
+    pending = setTimeout(() => { pending = null; void readAndApply() }, 400)
+  }
+
+  const aimSubscription = () => {
+    const me = getHumanName() || getHumanId() || ''
+    if (!me || me === subscribedAs) return
+    disposeSubscription?.()
+    subscribedAs = me
+    disposeSubscription = subscribeChat(
+      [[['to', me]]],
+      BADGE_FILTER_WINDOW,
+      () => { schedule() },
+      { humanId: getHumanId(), humanName: getHumanName(), correlationKey: 'badge:unread' },
+    )
+    schedule()
+  }
+
+  void ensureInit().then(() => {
+    subscribe('identity', null, () => { aimSubscription(); schedule() })
+    subscribe('connection', null, (ev: any) => { if (ev?.connected) schedule() })
+    aimSubscription()
+    schedule()
+  })
+}

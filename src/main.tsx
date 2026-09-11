@@ -14,6 +14,7 @@ import './index.css'
 import './frame-probe'  // perf-probe frame timing (inactive unless ?perf=1)
 import App from './App.tsx'
 import { installAppShellFreshnessProbe } from './appShellFreshness'
+import { installUnreadAppBadge } from './fleet-data-adapter'
 
 // High-res display compensation: macOS "More Space" gives huge CSS viewports
 // where CSS pixels are physically tiny (retina display + lots of CSS px = small UI).
@@ -68,6 +69,7 @@ import { installAppShellFreshnessProbe } from './appShellFreshness'
 }
 
 installAppShellFreshnessProbe()
+installUnreadAppBadge()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

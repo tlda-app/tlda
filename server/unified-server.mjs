@@ -8493,6 +8493,13 @@ async function dispatchFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'unread-count') {
+    const agentId = msg.agent
+    if (!agentId) { error('missing agent'); return }
+    reply({ agent: agentId, count: await fleetStore.getInboxDeliveryCount?.(agentId) ?? 0 })
+    return
+  }
+
   // The "oh fuck" view. Deliberately separate from `my-task`: that one is a
   // delivery and is acked, this is a question about the fleet and must not be.
   // Nothing here marks anything read.
