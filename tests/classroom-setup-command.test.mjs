@@ -187,8 +187,13 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     ])
     const handoutDir = daemon.calls[1].params.sourceDir
     const solutionDir = daemon.calls[2].params.sourceDir
+    const sourceDir = daemon.calls[0].params.sourceDir
     assert.match(fs.readFileSync(join(handoutDir, '.git/HEAD'), 'utf8'), /refs\/heads/)
     assert.match(fs.readFileSync(join(solutionDir, '.git/HEAD'), 'utf8'), /refs\/heads/)
+    // The generated fixture's _quarto.yml names this chapter. Omitting it lets
+    // the local variant renders pass while the linked source project fails.
+    assert.equal(fs.existsSync(join(sourceDir, 'homework/handouts/hw1/hw1.qmd')), true)
+    assert.equal(fs.existsSync(join(sourceDir, 'homework/handouts/hw1/hw1_cache')), false)
     const handoutHtml = fs.readFileSync(join(handoutDir, 'hw1-handout.html'), 'utf8')
     const solutionHtml = fs.readFileSync(join(solutionDir, 'hw1-solution.html'), 'utf8')
     assert.match(solutionHtml, /callout-solution/)

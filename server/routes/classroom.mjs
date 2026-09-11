@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { ClassroomStore } from '../lib/classroom-store.mjs'
-import { configuredReadToken, extractToken, validateToken } from '../lib/auth.mjs'
+import { configuredReadToken, extractToken, isTokenGatingEnabled, validateToken } from '../lib/auth.mjs'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
@@ -136,9 +136,14 @@ function studentToken(req) {
   return req.headers['x-tlda-student-token'] || req.query?.classroomToken || null
 }
 
-export function classroomPrincipal(req, store, level = validateToken(extractToken(req))) {
-  if (level === 'rw') return { role: 'instructor' }
+export function classroomPrincipal(req, store, level = validateToken(extractToken(req)), gatingEnabled = isTokenGatingEnabled()) {
   const student = store.studentForToken(studentToken(req))
+  // An ungated class box treats every ordinary request as rw. A real classroom
+  // credential must still identify its student there, or `/mine` can never be
+  // reached on pic-dev. On a gated box an actual rw credential remains the
+  // instructor even when the browser also remembers a student token.
+  if (student && !gatingEnabled) return { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName, preferredName: student.preferredName, pronouns: student.pronouns, layerScope: student.layerScope }
+  if (level === 'rw') return { role: 'instructor' }
   return student ? { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName, preferredName: student.preferredName, pronouns: student.pronouns, layerScope: student.layerScope } : null
 }
 
