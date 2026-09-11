@@ -122,6 +122,12 @@ let appSessionEditor: Editor | null = null
 let appSessionToken: string | null = null
 
 const CAMERA_SAMPLE_MS = 120
+/**
+ * How finely a stroke's growth is kept. Within one window the newest record for
+ * a shape replaces the older one, so a stroke replays in steps of this size
+ * instead of one step per pointer move. Its finished form is unaffected.
+ */
+const STROKE_SAMPLE_MS = 100
 
 /** Elapsed on-record ms — excludes any time spent off the record. */
 function now(): number {
@@ -279,6 +285,48 @@ export function attachAppRecordingEditor(editor: Editor | null): void {
   }
 }
 
+/**
+ * Append a stroke event, folding it into the previous one when it lands inside
+ * the same sample window.
+ *
+ * The draw tool rewrites the whole shape on every pointer move — a full record
+ * carrying the whole re-encoded path, ~60 times a second (tldraw's
+ * `Drawing.ts`, `editor.updateShapes` per move). Stored one event per move, a
+ * single stroke costs the sum of all its prefixes, so the event log grows
+ * quadratically in stroke length and a normal annotated lab ran past the
+ * server's body limit and became unuploadable.
+ *
+ * Replay only ever reads the LAST record for an id at or before t
+ * (`playbackEngine.reconstructAt`), so two records for one id inside a sample
+ * window are redundant: nothing can observe the one that is superseded. Folding
+ * them keeps the newer record, which is why the finished shape is unchanged —
+ * what thins out is the number of intermediate frames the stroke is drawn over,
+ * exactly as the camera has always been sampled rather than captured per frame.
+ *
+ * A removal, or a base event from a document switch, closes the window: those
+ * reorder what replay sees and must keep their own position in the log.
+ *
+ * The folded event REPLACES its predecessor rather than being edited in place:
+ * `recordingMeta` copies the events array shallowly, so a checkpoint already
+ * taken goes on holding the event as it stood when it was taken.
+ */
+function appendStroke(t: number, put: TLRecord[], remove: string[]): void {
+  const last = events[events.length - 1]
+  const canFold = !remove.length && last?.kind === 'stroke' && !last.remove.length
+    && t - last.t < STROKE_SAMPLE_MS
+  if (!canFold) {
+    events.push({ t, kind: 'stroke', put, remove })
+    return
+  }
+  const folded = [...last.put]
+  for (const record of put) {
+    const at = folded.findIndex((held) => held.id === record.id)
+    if (at === -1) folded.push(record)
+    else folded[at] = record
+  }
+  events[events.length - 1] = { ...last, put: folded }
+}
+
 function attachEditor(editor: Editor): void {
   if (unlistenStore) { unlistenStore(); unlistenStore = null }
   if (cameraInterval) { clearInterval(cameraInterval); cameraInterval = null }
@@ -307,7 +355,7 @@ function attachEditor(editor: Editor): void {
     }
 
     if (put.length || remove.length) {
-      events.push({ t: now(), kind: 'stroke', put, remove })
+      appendStroke(now(), put, remove)
     }
   }, { source: 'user', scope: 'document' })
 
