@@ -24,6 +24,7 @@
     "chokidar": "^5.0.0",
     "express": "^5.2.1",
     "fflate": "^0.8.3",
+    "jsdom": "^27.4.0",
     "katex": "^0.16.22",
     "livekit-client": "^2.20.0",
     "livekit-server-sdk": "^2.15.5",
