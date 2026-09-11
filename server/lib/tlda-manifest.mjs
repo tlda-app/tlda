@@ -45,7 +45,14 @@ export function pageInfoFromTldaManifest(manifest, { prefix = '' } = {}) {
   })
 }
 
-export function findTldaManifest(root) {
+/**
+ * Every manifest under `root`, in no particular order.
+ *
+ * Separate from `findTldaManifest` because a caller that RENDERS can create a
+ * second one and needs to know which manifests it made, rather than only
+ * learning afterwards that there is more than one.
+ */
+export function findTldaManifests(root) {
   const found = []
   function visit(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -55,6 +62,11 @@ export function findTldaManifest(root) {
     }
   }
   visit(root)
+  return found
+}
+
+export function findTldaManifest(root) {
+  const found = findTldaManifests(root)
   if (found.length > 1) {
     throw new Error(`Multiple tlda-manifest.json files found: ${found.map(path => relative(root, path)).join(', ')}`)
   }
