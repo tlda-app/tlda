@@ -366,12 +366,25 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     if (project && !/^[a-z0-9][a-z0-9-]*$/.test(project)) {
       return res.status(400).json({ error: 'project is not a valid project name' })
     }
+    const assignmentId = String(req.body?.assignmentId || '').trim()
+    let landingPath = ''
+    if (assignmentId) {
+      const assignment = store.getAssignment(assignmentId)
+      if (!assignment || assignment.courseId !== student.courseId) {
+        return res.status(400).json({ error: 'assignment is not in this course' })
+      }
+      if (!store.getSubmission(assignmentId, student.id)) {
+        return res.status(409).json({ error: 'The student has no submitted work for that assignment' })
+      }
+      landingPath = `/?workspace=classroom-work&assignment=${encodeURIComponent(assignmentId)}`
+    }
     const createdAt = new Date().toISOString()
     const expiresAt = new Date(Date.parse(createdAt) + REPAIR_LINK_TTL_MS).toISOString()
     const transferCode = crypto.randomBytes(32).toString('base64url')
     store.createDeviceTransfer({ studentId: student.id, courseId: student.courseId, transferCode, createdAt, expiresAt })
     const repairUrl = deviceTransferUrl(req, student.courseId, transferCode, { project: project || null, accessToken: resolveLinkAccessToken() })
-    res.status(201).json({ student, repairUrl, qrSvg: classroomTransferQrSvg(repairUrl), expiresAt })
+    const landedRepairUrl = landingPath ? (() => { const url = new URL(repairUrl); url.searchParams.set('landing', landingPath); return url.toString() })() : repairUrl
+    res.status(201).json({ student, repairUrl: landedRepairUrl, qrSvg: classroomTransferQrSvg(landedRepairUrl), expiresAt })
   })
 
   router.post('/courses', instructor, (req, res) => {

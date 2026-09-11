@@ -3,7 +3,7 @@ import { readClassroomToken } from './classroomToken'
 export type GradingStatus = 'ungraded' | 'graded' | 'returned'
 export interface Assignment {
   solutionsLocked?: boolean
- id: string; courseId: string; title: string; dueAt: string; solutionsDocKey?: string; solutionsVersion?: string; templateDocKey?: string; templateVersion?: string; sourceDocKey?: string }
+ id: string; courseId: string; title: string; dueAt: string; solutionsDocKey?: string; solutionsVersion?: string; templateDocKey?: string; templateVersion?: string; sourceDocKey?: string; bookPageFile?: string; submission?: Submission | null }
 export interface StatusCell { assignmentId: string; state: 'not-submitted' | GradingStatus; studentId?: string; contentRef?: string; submittedAt?: string; gradingStatus?: GradingStatus; buildStatus?: string; buildAt?: string | null }
 export type StudentLayerScope = 'student' | 'common'
 export interface StatusRow { id: string; displayName: string; universityLogin?: string; layerScope: StudentLayerScope; assignments: StatusCell[] }
@@ -60,8 +60,8 @@ export const classroomApi = {
   // It resolves to that student's existing row, so it repairs rather than enrols.
   // `project` is where redeeming it lands them; the page supplies it because the
   // instructor's URL does not carry one and without it the app opens the picker.
-  createRepairLink: (courseId: string, studentId: string, project?: string) => request<RepairLink>(`/courses/${encodeURIComponent(courseId)}/students/${encodeURIComponent(studentId)}/repair-link`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project }),
+  createRepairLink: (courseId: string, studentId: string, project?: string, assignmentId?: string) => request<RepairLink>(`/courses/${encodeURIComponent(courseId)}/students/${encodeURIComponent(studentId)}/repair-link`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project, assignmentId }),
   }),
   status: (courseId: string) => request<CourseStatus>(`/courses/${encodeURIComponent(courseId)}/status`),
   // The course's assignments, which both a student and an instructor may read.
@@ -74,6 +74,11 @@ export const classroomApi = {
   // takes no student id and cannot be aimed at anyone else.
   mySubmission: (assignmentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/mine`),
   uploadMine: (assignmentId: string, archive: File) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/mine/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/zip' },
+    body: archive,
+  }),
+  uploadForStudent: (assignmentId: string, studentId: string, archive: File) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/upload`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/zip' },
     body: archive,

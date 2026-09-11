@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { classroomApi, type CourseStatus, type RepairLink } from './api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { classroomApi, type Assignment, type CourseStatus, type RepairLink } from './api'
 import { cellLabel, countLabel } from './markingLabels'
 import './ClassroomWorkspace.css'
 
@@ -55,6 +55,57 @@ function RepairLinkCell({ courseId, studentId, project }: { courseId: string; st
   </td>
 }
 
+function SubmissionUploadCell({ courseId, studentId, assignments, onUploaded }: {
+  courseId: string
+  studentId: string
+  assignments: Assignment[]
+  onUploaded: () => void
+}) {
+  const [assignmentId, setAssignmentId] = useState(assignments[0]?.id || '')
+  const [link, setLink] = useState<RepairLink | null>(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const linkInput = useRef<HTMLInputElement>(null)
+
+  const upload = async (file?: File) => {
+    if (!file || busy || !assignmentId) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setError('Choose the homework ZIP.')
+      return
+    }
+    try {
+      setBusy(true)
+      setError('')
+      setLink(null)
+      await classroomApi.uploadForStudent(assignmentId, studentId, file)
+      setLink(await classroomApi.createRepairLink(courseId, studentId, undefined, assignmentId))
+      onUploaded()
+    } catch (nextError) {
+      setError((nextError as Error).message)
+    } finally {
+      setBusy(false)
+      if (fileInput.current) fileInput.current.value = ''
+    }
+  }
+
+  return <td className="classroomSubmissionUpload">
+    <select aria-label={`Assignment for ${studentId}`} value={assignmentId} onChange={event => setAssignmentId(event.target.value)} disabled={busy}>
+      {assignments.map(assignment => <option key={assignment.id} value={assignment.id}>{assignment.title}</option>)}
+    </select>
+    <button type="button" onClick={() => fileInput.current?.click()} disabled={busy || !assignmentId}>{busy ? 'Filing…' : 'File ZIP'}</button>
+    <input ref={fileInput} className="classroomFileInput" type="file" accept=".zip,application/zip" onChange={event => void upload(event.target.files?.[0])} />
+    {link && <>
+      <input ref={linkInput} readOnly value={link.repairUrl} onFocus={event => event.currentTarget.select()} aria-label={`Submitted homework link for ${studentId}`} />
+      <button type="button" onClick={() => {
+        linkInput.current?.select()
+        navigator.clipboard?.writeText(link.repairUrl).catch(() => {})
+      }}>Copy student link</button>
+    </>}
+    {error && <small className="classroomError">{error}</small>}
+  </td>
+}
+
 // One page, one asymmetry. The instructor sees the whole class; a student sees
 // their own row. The narrowing happens on the server — this renders whatever
 // `rows` comes back holding, and has no filter of its own, so the two views
@@ -65,7 +116,8 @@ export function GradebookWorkspace() {
   const courseId = params.get('course') || 'qtm285'
   const [data, setData] = useState<CourseStatus | null>(null)
   const [error, setError] = useState('')
-  useEffect(() => { classroomApi.status(courseId).then(setData).catch(e => setError(e.message)) }, [courseId])
+  const refresh = useCallback(() => { classroomApi.status(courseId).then(setData).catch(e => setError(e.message)) }, [courseId])
+  useEffect(refresh, [refresh])
   if (error) return <main className="classroomWorkspace"><p className="classroomError">{error}</p></main>
   if (!data) return <main className="classroomWorkspace">Loading submissions…</main>
 
@@ -152,8 +204,8 @@ export function GradebookWorkspace() {
       </tr>)}</tbody>
     </table>
     <h2>Roster</h2>
-    <table className="classroomTable"><thead><tr><th>Student</th>{data.assignments.map(a => <th key={a.id}>{a.title}<br/><small>Due {new Date(a.dueAt).toLocaleString()}</small></th>)}<th>Access<br/><small>Send when they cannot get in</small></th></tr></thead>
-      <tbody>{data.rows.map(row => <tr key={row.id}><th>{row.displayName}{row.universityLogin && <><br/><small>{row.universityLogin}</small></>}</th>{row.assignments.map(cell => <td key={cell.assignmentId} className={`state-${cell.state}`}>{cell.state === 'not-submitted' || !cell.contentRef ? cellLabel('not-submitted') : <a href={open(cell.assignmentId,row.id,cell.contentRef)}>{cellLabel(cell.state)}<br/><small>{cell.submittedAt && new Date(cell.submittedAt).toLocaleString()}</small></a>}</td>)}<RepairLinkCell courseId={courseId} studentId={row.id} project={classProject} /></tr>)}</tbody>
+    <table className="classroomTable"><thead><tr><th>Student</th>{data.assignments.map(a => <th key={a.id}>{a.title}<br/><small>Due {new Date(a.dueAt).toLocaleString()}</small></th>)}<th>File emailed work</th><th>Access<br/><small>Send when they cannot get in</small></th></tr></thead>
+      <tbody>{data.rows.map(row => <tr key={row.id}><th>{row.displayName}{row.universityLogin && <><br/><small>{row.universityLogin}</small></>}</th>{row.assignments.map(cell => <td key={cell.assignmentId} className={`state-${cell.state}`}>{cell.state === 'not-submitted' || !cell.contentRef ? cellLabel('not-submitted') : <a href={open(cell.assignmentId,row.id,cell.contentRef)}>{cellLabel(cell.state)}<br/><small>{cell.submittedAt && new Date(cell.submittedAt).toLocaleString()}</small></a>}</td>)}<SubmissionUploadCell courseId={courseId} studentId={row.id} assignments={data.assignments} onUploaded={refresh} /><RepairLinkCell courseId={courseId} studentId={row.id} project={classProject} /></tr>)}</tbody>
     </table>
   </main>
 }

@@ -77,13 +77,21 @@ export function ClassroomDeviceTransferRedeem() {
 
   const continueUrl = useMemo(() => {
     if (!registration) return ''
-    const next = new URL(window.location.href)
+    const landing = params.get('landing')
+    const candidate = landing?.startsWith('/') ? new URL(landing, window.location.origin) : null
+    const validLanding = candidate?.origin === window.location.origin
+      && candidate.pathname === '/'
+      && candidate.searchParams.get('workspace') === 'classroom-work'
+      && !!candidate.searchParams.get('assignment')
+    const next = validLanding && candidate ? candidate : new URL(window.location.href)
     next.searchParams.delete('workspace')
     next.searchParams.delete('transfer')
+    next.searchParams.delete('landing')
+    if (validLanding) next.searchParams.set('workspace', 'classroom-work')
     next.searchParams.set('course', courseId)
     next.searchParams.set('classroomToken', registration.enrollmentToken)
     return next.toString()
-  }, [courseId, registration])
+  }, [courseId, params, registration])
 
   return <main className="classroomWorkspace classroomRegistration classroomDeviceTransferRedeem">
     <header><div><h1>Add {courseId || 'this class'} to this device</h1></div></header>

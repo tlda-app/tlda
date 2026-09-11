@@ -313,6 +313,28 @@ test('an instructor repair link puts a locked-out student back into their own ac
   } finally { f.close() }
 })
 
+test('an emailed-homework repair link lands on that student\'s submitted assignment', async () => {
+  const f = await serverFixture()
+  try {
+    const response = await f.request('/courses/qtm285/students/ada/repair-link', 'instructor', {
+      method: 'POST', body: JSON.stringify({ assignmentId: 'hw1' }),
+    })
+    assert.equal(response.status, 201)
+    const url = new URL((await response.json()).repairUrl)
+    assert.equal(url.searchParams.get('project'), null)
+    assert.equal(url.searchParams.get('landing'), '/?workspace=classroom-work&assignment=hw1')
+
+    assert.equal((await f.request('/courses/qtm285/students/grace/repair-link', 'instructor', {
+      method: 'POST', body: JSON.stringify({ assignmentId: 'hw1' }),
+    })).status, 409, 'a link cannot claim to open work the student has not submitted')
+    f.store.upsertCourse({ id: 'other', title: 'Other course' })
+    f.store.upsertAssignment({ id: 'other-hw', courseId: 'other', title: 'Other homework', dueAt: '2026-09-01T20:00:00Z' })
+    assert.equal((await f.request('/courses/qtm285/students/ada/repair-link', 'instructor', {
+      method: 'POST', body: JSON.stringify({ assignmentId: 'other-hw' }),
+    })).status, 400, 'the landing assignment is course-scoped')
+  } finally { f.close() }
+})
+
 test('a repair link cannot be minted by a student, for another course, or for nobody', async () => {
   const f = await serverFixture()
   try {
