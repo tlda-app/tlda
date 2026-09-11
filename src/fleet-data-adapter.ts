@@ -52,7 +52,7 @@ import {
   type FleetEvent,
 } from './fleet/fleet-data.ts'
 import { resolveFleetFilter } from '../shared/filter-semantics.mjs'
-import { applyAppBadge } from './appBadge'
+import { applyAppBadge, coalesceAsyncRefresh } from './appBadge'
 // @ts-ignore — vanilla JS module
 import { subscribeChat } from './fleet/chat-subscription.mjs'
 import {
@@ -1083,24 +1083,20 @@ export function installUnreadAppBadge(): void {
   badgeInstalled = true
 
   let pending: ReturnType<typeof setTimeout> | null = null
-  let inFlight = false
   let disposeSubscription: (() => void) | null = null
   let subscribedAs: string | null = null
 
-  const readAndApply = async () => {
+  const readAndApply = coalesceAsyncRefresh(async () => {
     const agent = getHumanId()
-    if (!agent || inFlight) return
-    inFlight = true
+    if (!agent) return
     try {
       const data = await _fleetEphemeral('unread-count', { agent })
       await applyAppBadge(Number(data?.count) || 0)
     } catch {
       // A disconnected socket leaves the last known badge in place. Reconnect
       // schedules the next read.
-    } finally {
-      inFlight = false
     }
-  }
+  })
 
   const schedule = () => {
     if (pending) return
