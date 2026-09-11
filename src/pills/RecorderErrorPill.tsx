@@ -1,34 +1,105 @@
 /**
- * RecorderErrorPill — shows the lecture recorder's own failure message.
+ * RecorderErrorPill — tells the instructor whether the lecture is being recorded.
  *
  * Lecture capture starts by itself for a publisher (`App.tsx` →
- * `openAppRecordingSession`), so when the microphone is unavailable there is no
- * button that visibly failed. `startRecording` already records why in
- * `RecorderState.error`, but until this pill nothing in `src/` consumed
- * `subscribeRecorder` or `getRecorderState` -- the only readers in the whole
- * repository were three lines of `appSession.test.mts`. The failure was
- * therefore invisible, and because capture is automatic the result was a
- * lecture with canvas events and silence, discoverable only on playback.
+ * `openAppRecordingSession`), so nothing on screen ever says whether it worked.
+ * There are two distinct silences, and both end with a lab that was not captured:
  *
- * This renders the message that already exists. It starts no capture, holds no
- * state of its own, and changes no lifecycle: the recorder remains the only
- * writer, and this is a reader of it.
+ * 1. **Capture started and failed** — `startRecording` records why in
+ *    `RecorderState.error` (`recorder.ts:158`, "Microphone unavailable — …").
+ *    Until this pill nothing in `src/` read `subscribeRecorder`, so the message
+ *    existed and was rendered nowhere.
+ *
+ * 2. **Capture was never attempted** — `observe()` returns early when
+ *    `canPublishRecording()` is false, so no `getUserMedia`, no MediaRecorder,
+ *    no draft, and *no error either*, because `startRecording` never ran. This
+ *    is the one that bites on a gated course box, where the front door can hand
+ *    an arriving instructor a read token: the app looks completely normal and
+ *    captures nothing.
+ *
+ * So this reports the recorder's state rather than only its failures, and it
+ * says the affirmative case too — without "Recording" on screen, the absence of
+ * a warning is indistinguishable from a pill that failed to render, which is
+ * exactly the reassurance-without-evidence that loses a lecture.
+ *
+ * Instructor-only, and deliberately: a student is not supposed to be recording,
+ * so telling them they are not is noise. Role comes from the classroom identity
+ * the surface already resolves; off a classroom surface this renders nothing.
+ *
+ * It starts no capture and holds no recorder state: the recorder remains the
+ * only writer, and this is a reader of it.
  */
-import { useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { getRecorderState, subscribeRecorder } from '../recording/recorder'
+import { canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from '../authToken'
+import { classroomApi } from '../classroom/api'
+import { isClassroomSurface } from '../classroom/classroomSurface'
 import './RecorderErrorPill.css'
 
 export function RecorderErrorPill() {
   const state = useSyncExternalStore(subscribeRecorder, getRecorderState)
-  if (!state.error) return null
+  const canPublish = useSyncExternalStore(subscribeCanPresent, canPublishRecording)
+  const permissionKnown = useSyncExternalStore(subscribeCanPresent, isPresentPermissionKnown)
+  const [isInstructor, setIsInstructor] = useState(false)
 
-  // The text is shown rather than tucked behind a click, unlike its siblings: a
-  // silent lecture is not discoverable later, so the one moment it can be
-  // caught is while the person is still in the room.
-  return (
-    <div className="recorder-error-container">
-      <span className="recorder-error-badge" aria-hidden="true">&#9888;</span>
-      <span className="recorder-error-text" role="status">{state.error}</span>
-    </div>
-  )
+  useEffect(() => {
+    if (!isClassroomSurface()) return
+    let cancelled = false
+    classroomApi.me()
+      .then(identity => { if (!cancelled) setIsInstructor(identity?.role === 'instructor') })
+      .catch(() => { if (!cancelled) setIsInstructor(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  // A failure the recorder recorded outranks everything: it is the only case
+  // that carries its own reason, and it applies whoever is looking.
+  if (state.error) {
+    return (
+      <div className="recorder-error-container">
+        <span className="recorder-error-badge" aria-hidden="true">&#9888;</span>
+        <span className="recorder-error-text" role="status">{state.error}</span>
+      </div>
+    )
+  }
+
+  // Wait for the server's answer rather than reporting a permission state
+  // during the fetch — a pill that appears and then changes on every load is a
+  // pill nobody reads.
+  if (!permissionKnown) return null
+
+  // The warning needs to know it is talking to an instructor, because telling a
+  // student they are not recording is noise. That costs it reach: where a course
+  // box hands an arriving instructor a read token, `classroomApi.me()` answers
+  // `Unauthorized` rather than a role, so this stays silent for the very session
+  // it was written for. Measured on `pic`, not assumed. The affirmative below is
+  // what covers that case, which is why it does NOT depend on role.
+  if (!canPublish) {
+    if (!isInstructor) return null
+    return (
+      <div className="recorder-error-container">
+        <span className="recorder-error-badge" aria-hidden="true">&#9888;</span>
+        <span className="recorder-error-text" role="status">
+          Not recording — this session has no recording permission
+        </span>
+      </div>
+    )
+  }
+
+  // Anyone who may publish is by definition someone who records, so this needs
+  // no classroom round trip and cannot be silenced by one failing. That matters:
+  // this is the indicator whose ABSENCE tells an instructor the lab is not being
+  // captured, so it has to be the most robust thing here, not the least.
+  if (state.status === 'recording' || state.status === 'starting') {
+    const recording = state.status === 'recording'
+    return (
+      <div className="recorder-status-container">
+        <span className={'recorder-status-dot' + (recording ? '' : ' recorder-status-dot--pending')} aria-hidden="true" />
+        <span className="recorder-status-text" role="status">
+          {recording ? (state.paused ? 'Recording paused' : 'Recording') : 'Starting recording'}
+        </span>
+      </div>
+    )
+  }
+
+  return null
 }
