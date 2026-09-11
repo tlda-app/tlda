@@ -60,7 +60,7 @@ test('a native tlda project build emits toc.json with the rendered headings', { 
     // the only one that logs this line.
     assert.match(
       log.join('\n'),
-      /rendered tlda project with \d+ pages/,
+      /rendered tlda project with \d+ chapter\(s\) and \d+ deck\(s\)/,
       'fixture must have built through the native tlda-project branch',
     )
   } finally {
