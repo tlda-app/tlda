@@ -17,6 +17,7 @@ export interface ProblemsView { assignment: Assignment; problems: { problemId: s
 export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[] }
 export interface RegisteredStudent { student: { id: string; courseId: string; displayName: string; preferredName?: string; pronouns?: string | null; layerScope: StudentLayerScope }; enrollmentToken: string }
 export interface DeviceTransfer { transferUrl: string; qrSvg: string; expiresAt: string }
+export interface RepairLink { student: { id: string; displayName: string }; repairUrl: string; qrSvg: string; expiresAt: string }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const classroomToken = readClassroomToken()
@@ -54,6 +55,13 @@ export const classroomApi = {
   }),
   redeemDeviceTransfer: (courseId: string, transferCode: string) => request<RegisteredStudent>(`/courses/${encodeURIComponent(courseId)}/device-transfer/redeem`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transferCode }),
+  }),
+  // A link the instructor sends to a student who cannot get back in on their own.
+  // It resolves to that student's existing row, so it repairs rather than enrols.
+  // `project` is where redeeming it lands them; the page supplies it because the
+  // instructor's URL does not carry one and without it the app opens the picker.
+  createRepairLink: (courseId: string, studentId: string, project?: string) => request<RepairLink>(`/courses/${encodeURIComponent(courseId)}/students/${encodeURIComponent(studentId)}/repair-link`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project }),
   }),
   status: (courseId: string) => request<CourseStatus>(`/courses/${encodeURIComponent(courseId)}/status`),
   // The course's assignments, which both a student and an instructor may read.

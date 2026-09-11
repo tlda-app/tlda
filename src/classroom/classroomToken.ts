@@ -38,6 +38,21 @@ export function readClassroomToken(courseId = classroomCourseId()): string | nul
   }
 }
 
+/**
+ * The other place a student's enrolment token has to live: Positron's secret
+ * store, which the extension's `classroom-token` URI handler writes.
+ *
+ * It is here rather than on the registration screen because registration is no
+ * longer the only page that has a token in hand and a student who needs Positron
+ * connected. A repaired student has both and never saw that screen.
+ */
+export function positronConnectUrl(enrollmentToken: string): string {
+  const next = new URL('positron://tlda-labs.tlda-classroom/classroom-token')
+  next.searchParams.set('server', window.location.origin)
+  next.searchParams.set('token', enrollmentToken)
+  return next.toString()
+}
+
 export function rememberClassroomToken(courseId: string, token: string): void {
   try {
     window.localStorage.setItem(`${STORAGE_PREFIX}:${courseId}`, token)

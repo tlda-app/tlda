@@ -66,6 +66,17 @@ export function initAuth() {
 export function isTokenGatingEnabled() { return gatingEnabled }
 
 /**
+ * The class-wide read token this server validates, or null when gating is off or
+ * none is configured.
+ *
+ * For building a link that is handed to somebody else. `extractToken` answers a
+ * different question — the strongest credential *this caller* holds — and an
+ * instructor holds RW, which must never be written into a URL that leaves for a
+ * student.
+ */
+export function configuredReadToken() { return tokenRead }
+
+/**
  * The ordering on access levels: rw > read > none.
  *
  * This is not a new concept. `requireRw` has always treated a read token as
