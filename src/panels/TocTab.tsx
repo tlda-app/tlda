@@ -17,7 +17,7 @@ import {
   applyThemeClass,
 } from '../hooks/useFleetTheme'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
-import { getPlaceStackDepth, subscribePlaceStack, goBackPlace, goForwardPlace } from '../placeStack'
+import { getPlaceStackDepth, subscribePlaceStack, goBackPlace, goForwardPlace, recordPlaceDeparture } from '../placeStack'
 import {
   getLiveSession, subscribeLiveSession, toggleLiveSession, toggleMute, toggleCamera,
   probeLiveSessionConfig,
@@ -338,6 +338,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       window.postMessage({ type: 'tlda-navigate', targetFile, anchor: anchor || null, variant, shapeId: null }, '*')
       return
     }
+    recordPlaceDeparture(editor)
     if (anchor) {
       navigateToAnchor(editor, doc, pageNum, anchor)
     } else {
