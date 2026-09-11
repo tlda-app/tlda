@@ -6,6 +6,7 @@ import {
   trimTerminalSeedBlankRows,
 } from '../shared/terminal-seed.mjs'
 import { assertTerminalTextInputAllowed } from '../shared/terminal-input-policy.mjs'
+import { systemMessage } from '../shared/terminal-system-markers.mjs'
 import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
 const execFileP = promisify(execFile)
@@ -185,7 +186,7 @@ export function createTerminalRpc({
   async function notifyConnectionDisconnected({ agent_id } = {}) {
     return writeTextToTerminal({
       agent_id,
-      text: `The tlda connection seems disconnected. Consider running: tlda-dev restart-mcp ${agent_id}`,
+      text: systemMessage(`The tlda connection seems disconnected. Consider running: tlda-dev restart-mcp ${agent_id}`),
       enter: true,
       enter_delay_ms: 0,
       literal_text: true,

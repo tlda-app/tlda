@@ -158,7 +158,7 @@ test('the connection notice is submitted only at an empty harness prompt', async
       const setBuffer = calls.find(([, args]) => args[0] === 'set-buffer')
       assert.equal(result.ok, delivered)
       assert.equal(setBuffer?.[1].at(-1), delivered
-        ? 'The tlda connection seems disconnected. Consider running: tlda-dev restart-mcp fleet:test'
+        ? '💻 The tlda connection seems disconnected. Consider running: tlda-dev restart-mcp fleet:test'
         : undefined)
       assert.equal(calls.some(([, args]) => args.includes('Enter')), delivered)
       assert.equal(calls.some(([, args]) => args.includes('C-u')), false)
