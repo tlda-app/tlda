@@ -95,8 +95,11 @@ test('the enrolment token reaches the principal on the URL as well as the header
     assert.equal(classroomPrincipal(asHeader, store, 'read').studentId, OWNER)
     assert.equal(classroomPrincipal(asQuery, store, 'read').studentId, OWNER)
     assert.equal(classroomPrincipal({ headers: {}, query: {} }, store, 'read'), null)
-    // An rw token is the instructor whatever it carries beside it.
-    assert.deepEqual(classroomPrincipal(asQuery, store, 'rw'), { role: 'instructor' })
+    // On an ungated class box every ordinary request has rw capability, but a
+    // classroom token must still identify its student or `/mine` is impossible.
+    assert.equal(classroomPrincipal(asQuery, store, 'rw', false).studentId, OWNER)
+    // With gating enabled an actual rw credential remains the instructor.
+    assert.deepEqual(classroomPrincipal(asQuery, store, 'rw', true), { role: 'instructor' })
   })
 })
 

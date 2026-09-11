@@ -3232,7 +3232,13 @@ async function cmdClassroomSetup() {
   mkdirSync(handoutDir, { recursive: true })
   mkdirSync(solutionDir, { recursive: true })
 
-  copyClassroomFiles(rendered.outDir, sourceDir, relPath => rendered.copiedFiles.includes(relPath))
+  const handoutSourceDir = `${dirname(rendered.handoutSource)}/`
+  copyClassroomFiles(rendered.outDir, sourceDir, relPath => (
+    rendered.copiedFiles.includes(relPath)
+      || (relPath.startsWith(handoutSourceDir)
+        && !relPath.includes('_cache/')
+        && !relPath.includes('_files/'))
+  ))
   copyHtmlProjectFiles(bookDir, handoutDir, rendered.handoutOutput, rendered.solutionOutput)
   copyHtmlProjectFiles(bookDir, solutionDir, rendered.solutionOutput, rendered.handoutOutput)
 
@@ -3240,11 +3246,11 @@ async function cmdClassroomSetup() {
   // per variant and depends on nothing that a retry would change, so a daemon
   // timeout on the last link used to re-render the whole assignment — which is
   // what a caller sees as a command that never finishes.
-  await finishCliOperation('classroom setup', () => publishClassroomAssignment({
+  await publishClassroomAssignment({
     rendered, courseId, courseTitle, instructorPreferredName, instructorPronouns, assignmentId, assignmentTitle, dueAt,
     sourceDocKey, handoutDocKey, solutionsDocKey, solutionsVersion,
     handoutFilter, solutionFilter, sourceDir, handoutDir, solutionDir, onProgress,
-  }))
+  })
 }
 
 // Re-runnable: creating a project that exists is ignored, git init and an empty
@@ -3255,32 +3261,32 @@ async function publishClassroomAssignment({
   handoutFilter, solutionFilter, sourceDir, handoutDir, solutionDir, onProgress,
 }) {
   onProgress({ message: `Linking project 1 of 3: ${sourceDocKey}` })
-  await linkClassroomGitProject({
+  await finishCliOperation('classroom source link', () => linkClassroomGitProject({
     name: sourceDocKey,
     title: `${assignmentTitle} source`,
     mainFile: rendered.homeworkPath,
     format: 'qmd',
     sourceDir,
     documentRoots: [rendered.homeworkPath],
-  })
+  }))
   onProgress({ message: `Linking project 2 of 3: ${handoutDocKey}` })
-  await linkClassroomGitProject({
+  await finishCliOperation('classroom handout link', () => linkClassroomGitProject({
     name: handoutDocKey,
     title: `${assignmentTitle} handout`,
     mainFile: rendered.handoutOutput,
     format: 'html',
     sourceDir: handoutDir,
     documentRoots: [rendered.handoutOutput],
-  })
+  }))
   onProgress({ message: `Linking project 3 of 3: ${solutionsDocKey}` })
-  await linkClassroomGitProject({
+  await finishCliOperation('classroom solutions link', () => linkClassroomGitProject({
     name: solutionsDocKey,
     title: `${assignmentTitle} solutions`,
     mainFile: rendered.solutionOutput,
     format: 'html',
     sourceDir: solutionDir,
     documentRoots: [rendered.solutionOutput],
-  })
+  }))
 
   onProgress({ message: `Recording course, assignment, and frozen handout` })
   const course = await api('POST', '/api/classroom/courses', {
@@ -3308,7 +3314,11 @@ async function publishClassroomAssignment({
   // correct hand-in. The master QMD carries every line the handout does, the
   // generator changing only solution and starter blocks, so it is the text that
   // comparison wants.
-  const frozen = await api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey: sourceDocKey })
+  // A source build may still be running after all three daemon links have been
+  // accepted. Retry only this readiness-dependent request: retrying the whole
+  // publish operation creates a new source revision each time and restarts the
+  // very build this request is waiting for.
+  const frozen = await finishCliOperation('classroom template freeze', () => api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey: sourceDocKey }))
 
   console.log(green('Classroom setup complete.'))
   console.log(`Course: ${course.title || courseTitle} (${course.id || courseId})`)
