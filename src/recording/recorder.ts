@@ -202,6 +202,24 @@ export async function startRecording(editor: Editor | null, doc: string): Promis
       .catch((error) => log.error('recording', 'checkpoint-failed', { error: String(error) }))
   }
 
+  // If the microphone goes away mid-lecture — unplugged, permission revoked,
+  // the device taken by something else — the track ends and MediaRecorder goes
+  // quiet, but nothing here noticed: status stayed 'recording' for the rest of
+  // the lab and the lecturer had no reason to doubt it. Finalize instead, so
+  // what was captured is saved, and say so where the pill can show it.
+  //
+  // `track.stop()` does not fire 'ended', so stopping normally cannot come
+  // through here.
+  for (const track of stream.getAudioTracks()) {
+    track.addEventListener('ended', () => {
+      captureLost(token, 'Recording stopped — the microphone became unavailable')
+    })
+  }
+  mediaRecorder.onerror = (event) => {
+    const reason = (event as unknown as { error?: { message?: string } })?.error?.message
+    captureLost(token, `Recording stopped — ${reason ?? 'the recorder failed'}`)
+  }
+
   // Clock zero is set the instant audio capture begins, so events and audio
   // share an origin.
   t0 = performance.now()
@@ -219,6 +237,23 @@ export async function startRecording(editor: Editor | null, doc: string): Promis
   setState({ status: 'recording', startedAt: Date.now(), paused: false, doc, error: null })
   log.info('recording', 'started', { doc })
   return token
+}
+
+/**
+ * Capture has failed under us: finalize what exists and leave the reason on
+ * screen.
+ *
+ * Deliberately not a reconnect. Choosing another device, or resuming onto a mic
+ * that came back, is a product decision about whose audio ends up in the
+ * lecture; this only stops pretending to record. `stopRecording` clears `error`
+ * on its way to idle, so the reason is set after it settles rather than before.
+ */
+function captureLost(token: string, reason: string): void {
+  if (activeToken !== token || state.status !== 'recording') return
+  log.error('recording', 'capture-lost', { reason, doc: activeDoc })
+  void stopRecording(token)
+    .catch((error) => log.error('recording', 'capture-lost-save-failed', { error: String(error) }))
+    .then(() => setState({ error: reason }))
 }
 
 function recordingMeta(doc: string, id: string, audioMime: string, duration: number): RecordingMeta {
