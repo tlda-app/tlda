@@ -617,9 +617,13 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     // a component build's output tree complete.
     const bookDir = dirname(renderedProject.path)
     const prefix = relative(outDir, bookDir).replace(/\\/g, '/')
+    // Only what THIS pass rendered is moved in. The source tree is copied into
+    // the output before rendering, so a `<deck>.html` committed beside its .qmd
+    // would otherwise be copied over a good render — the same beside-the-source
+    // publication that took a prose chapter, arriving by the other door.
+    for (const { deck } of decksToRender) publishDeckIntoBook(outDir, bookDir, deck)
     const deckPages = []
     for (const { deck, chapter } of deckPairs) {
-      publishDeckIntoBook(outDir, bookDir, deck)
       const rendered = deck.replace(/\.qmd$/i, '.html')
       const path = join(bookDir, rendered)
       if (!existsSync(path)) continue
