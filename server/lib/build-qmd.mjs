@@ -358,15 +358,51 @@ function quartoBookRoots(dir) {
 
 export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
   if (!readTldaManifest(outDir)) return null
-  const bookRoots = new Set(quartoBookRoots(outDir))
+  const documentRoots = new Set([
+    ...quartoBookRoots(outDir),
+    ...qmdDeckRenderRoots(outDir),
+  ])
   const changed = [...new Set((changedFiles || []).map(file => String(file).replace(/\\/g, '/').replace(/^\.?\/+/, '')))]
-  if (changed.length === 0 || changed.some(file => !bookRoots.has(file))) return null
+  if (changed.length === 0 || changed.some(file => !documentRoots.has(file))) return null
   return changed
 }
 
 export function clearQmdFreeze(outDir, root) {
   const normalized = String(root).replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/\.qmd$/i, '')
   rmSync(join(outDir, '_freeze', normalized), { recursive: true, force: true })
+}
+
+/**
+ * Publish a component render that Quarto wrote beside its source.
+ *
+ * Some book formats write a single-file render directly into the book output;
+ * others write beside the source even though `quarto inspect` resolves the
+ * project as a book. The latter is publishable only when it is still a prose
+ * document. Refusing reveal output is the guard that prevents the incident in
+ * which directory metadata turned a chapter into a deck and that deck replaced
+ * the last good prose page.
+ */
+export function publishIncrementalQmdOutput(outDir, root) {
+  const rendered = qmdOutputFileForSource(root)
+  const sourceHtml = join(outDir, rendered)
+  if (!existsSync(sourceHtml)) return false
+  const html = readFileSync(sourceHtml, 'utf8')
+  if (isRevealDeck(html)) {
+    throw new Error(`[qmd] ${root}: component render produced a reveal deck instead of a book chapter`)
+  }
+  const manifest = readTldaManifest(outDir)
+  if (!manifest) throw new Error('[qmd] component render has no prior book manifest')
+  const bookHtml = join(dirname(manifest.path), rendered)
+  mkdirSync(dirname(bookHtml), { recursive: true })
+  cpSync(sourceHtml, bookHtml)
+
+  const sourceFiles = join(outDir, rendered.replace(/\.html$/i, '_files'))
+  if (existsSync(sourceFiles)) {
+    const bookFiles = join(dirname(manifest.path), rendered.replace(/\.html$/i, '_files'))
+    rmSync(bookFiles, { recursive: true, force: true })
+    cpSync(sourceFiles, bookFiles, { recursive: true })
+  }
+  return true
 }
 
 // Named by its file: Quarto activates `_quarto-slides.yml` with
@@ -616,12 +652,16 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   await restoreRenv(outDir, addLog)
   const nativeTldaProject = isNativeTldaProject(outDir)
   const incrementalRoots = nativeTldaProject ? qmdIncrementalRenderRoots(outDir, changedFiles) : null
+  const deckPairs = nativeTldaProject ? qmdDeckChapterPairs(outDir, addLog) : []
+  const deckRoots = new Set(deckPairs.map(({ deck }) => deck))
+  const chapterRoots = incrementalRoots?.filter((root) => !deckRoots.has(root)) || null
+  const incrementalDecks = incrementalRoots?.filter((root) => deckRoots.has(root)) || null
   // A direct edit to a declared book component re-renders that component over
   // a private copy of the last complete output. Publication still swaps a
   // complete output tree. Shared inputs and uncertain changes render the whole
   // project because their dependency fan-out is not confined to one chapter.
   if (nativeTldaProject && incrementalRoots) {
-    for (const root of incrementalRoots) {
+    for (const root of chapterRoots) {
       // freeze:auto stores the rendered markdown as well as executed chunks.
       // Reusing it after a direct source edit can complete successfully while
       // publishing the old prose. This is the private build instance, so
@@ -634,6 +674,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
       // check guarding it failed every component build on a render that had
       // already published the page.
       await renderInOutput(quarto, outDir, root, addLog, { project: name })
+      publishIncrementalQmdOutput(outDir, root)
     }
   } else if (nativeTldaProject) {
     await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true, project: name })
@@ -649,13 +690,12 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   // the book tree fails the build with "Multiple tlda-manifest.json files
   // found". Per file, the post-render exits and the book's manifest stands.
   //
-  // A component build renders only the decks belonging to the chapters it
-  // rebuilt; every other deck is already in the seeded output. A whole-project
-  // build renders all of them, for the same reason it renders every chapter:
-  // publication swaps the tree wholesale, so a partial tree is not publishable.
-  const deckPairs = nativeTldaProject ? qmdDeckChapterPairs(outDir, addLog) : []
+  // A component build renders only the document whose source changed. A deck
+  // is a separate document from its chapter; pairing controls placement, not
+  // rebuild scope. A whole-project build renders every declared deck because
+  // publication swaps the tree wholesale.
   const decksToRender = incrementalRoots
-    ? deckPairs.filter(({ chapter }) => chapter && incrementalRoots.includes(chapter))
+    ? deckPairs.filter(({ deck }) => incrementalDecks.includes(deck))
     : deckPairs
   const failedDecks = await renderDeckSet(quarto, outDir, decksToRender.map(({ deck }) => deck), addLog, { project: name })
 

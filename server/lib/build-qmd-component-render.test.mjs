@@ -43,11 +43,9 @@ const publishedPage = (title) => `<!DOCTYPE html>\n<html><head><title>${title}</
  * is seeded from the live project's output, and its bytes do not change what
  * Quarto does with the chapter under test. That keeps this to one render.
  */
-// The edited component is a nested lecture chapter under a directory whose
-// `_metadata.yml` declares revealjs, because that is the course shape this
-// path serves and the shape the defect was reported on. A top-level
-// `index.qmd` would exercise neither the nested output path nor the format
-// the beside-the-source render would have substituted.
+// The edited component is a nested lecture chapter, which exercises the
+// course's nested output path. Format-specific deck metadata belongs on the
+// deck sources; directory metadata would change the chapter's own format.
 const CHAPTER = 'lectures/chapter-calibration-binary.qmd'
 const CHAPTER_HTML = 'lectures/chapter-calibration-binary.html'
 
@@ -73,7 +71,6 @@ test('a direct chapter edit rebuilds that chapter into the book', { timeout: 900
       '',
     ].join('\n'))
     writeFileSync(join(src, 'index.qmd'), '# Introduction\n\nOpening text.\n')
-    writeFileSync(join(src, 'lectures', '_metadata.yml'), 'format: revealjs\n')
     writeFileSync(join(src, CHAPTER), '# Calibration\n\n## Binary outcomes\n\nChapter text, revised in place.\n')
 
     // The last published render, as the build instance receives it.
@@ -98,10 +95,7 @@ test('a direct chapter edit rebuilds that chapter into the book', { timeout: 900
     // The edit reached the book page the viewer serves, at its nested path.
     const chapter = readFileSync(join(out, '_book', CHAPTER_HTML), 'utf8')
     assert.match(chapter, /revised in place/, 'the edited chapter must be republished into _book')
-    // Format control. A beside-the-source render of this chapter is a DECK,
-    // because lectures/_metadata.yml declares revealjs; publishing one over
-    // the book page is how a deck replaced a prose chapter. A chapter rendered
-    // inside the book project carries no reveal markers.
+    // Format control: a chapter must remain prose.
     assert.doesNotMatch(chapter, /class="reveal"/, 'a book chapter must not be published as a deck')
     // The chapter nobody touched was neither re-rendered nor lost.
     assert.equal(existsSync(untouchedPath), true, 'an untouched chapter must survive a component build')

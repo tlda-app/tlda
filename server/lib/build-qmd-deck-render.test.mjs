@@ -40,10 +40,10 @@ const publishedPage = (title) => `<!DOCTYPE html>\n<html><head><title>${title}</
  * `slides` profile, where `project: type: default` makes a deck beside its own
  * source the correct answer.
  *
- * So this asserts both halves at once on one build: the same build that leaves
- * the chapter free of reveal markers must leave the deck full of them.
+ * This is a deck edit. The seeded chapter must remain byte-identical while the
+ * deck changes, renders under its profile, and joins the chapter's map.
  */
-test('a component build renders the chapter as prose and its deck as a deck', { timeout: 900_000, skip: RENDER_CONTROL_SKIP }, async () => {
+test('a deck edit renders only the deck and keeps its chapter unchanged', { timeout: 900_000, skip: RENDER_CONTROL_SKIP }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-deck-render-'))
   const project = 'deck-render-fixture'
   try {
@@ -79,9 +79,8 @@ test('a component build renders the chapter as prose and its deck as a deck', { 
       '    embed-resources: true',
       '',
     ].join('\n'))
-    writeFileSync(join(src, 'lectures', '_metadata.yml'), 'format: revealjs\n')
     writeFileSync(join(src, 'index.qmd'), '# Introduction\n\nOpening text.\n')
-    writeFileSync(join(src, CHAPTER), '# Calibration\n\n## Binary outcomes\n\nChapter text, revised in place.\n')
+    writeFileSync(join(src, CHAPTER), '# Calibration\n\n## Binary outcomes\n\nChapter source, not edited.\n')
     writeFileSync(join(src, DECK), '# Calibration\n\n## A slide\n\nDeck text, revised in place.\n')
 
     const out = outputDir(project)
@@ -97,14 +96,14 @@ test('a component build renders the chapter as prose and its deck as a deck', { 
       ],
     }, null, 2)}\n`)
 
-    await buildQmdDocument(project, () => {}, { changedFiles: [CHAPTER] })
+    const chapterBefore = readFileSync(join(out, '_book', CHAPTER_HTML), 'utf8')
+    await buildQmdDocument(project, () => {}, { changedFiles: [DECK] })
 
     const chapter = readFileSync(join(out, '_book', CHAPTER_HTML), 'utf8')
-    assert.match(chapter, /revised in place/, 'the edited chapter must be republished into _book')
-    assert.doesNotMatch(chapter, /class="reveal"/, 'a book chapter must not be published as a deck')
+    assert.equal(chapter, chapterBefore, 'editing a deck must not rebuild its chapter')
 
     const deck = readFileSync(join(out, '_book', DECK_HTML), 'utf8')
-    assert.match(deck, /revised in place/, "the chapter's deck must be rebuilt alongside it")
+    assert.match(deck, /revised in place/, 'the edited deck must be rebuilt')
     assert.match(deck, /class="reveal"/, 'a deck must still be published as a deck')
 
     const pageInfo = JSON.parse(readFileSync(join(out, 'page-info.json'), 'utf8'))
