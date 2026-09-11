@@ -270,9 +270,13 @@ function stampFigureUrls(html, stamp = Date.now()) {
 // `project` is carried only to label the output stream. It is separate from
 // `mainFile` on purpose: a project renders several roots, and a stream labelled
 // by the root would report the same build under changing names.
-async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject = false, project = null } = {}) {
+async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject = false, project = null, profile = null } = {}) {
   const target = wholeProject ? [] : [mainFile]
-  addLog(`[qmd] quarto render${wholeProject ? '' : ` ${mainFile}`}`)
+  // A Quarto profile is `_quarto-<profile>.yml` merged over `_quarto.yml`. The
+  // deck pass needs one because the decks are built as a plain project (`book:
+  // null`), which is a different project type from the book they belong to.
+  const profileArgs = profile ? ['--profile', profile] : []
+  addLog(`[qmd] quarto render${wholeProject ? '' : ` ${mainFile}`}${profile ? ` --profile ${profile}` : ''}`)
   let result
   try {
     // No `--to`. The document's own `format:` decides what it renders to, and
@@ -286,7 +290,7 @@ async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject =
     // is a slow build rather than a stalled one.
     const running = execFileAsync(
       quarto,
-      ['render', ...target],
+      ['render', ...target, ...profileArgs],
       { cwd: outDir, timeout: RENDER_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
     )
     const detachOutput = streamChildOutput(running.child, project || mainFile)
@@ -363,6 +367,106 @@ export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
 export function clearQmdFreeze(outDir, root) {
   const normalized = String(root).replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/\.qmd$/i, '')
   rmSync(join(outDir, '_freeze', normalized), { recursive: true, force: true })
+}
+
+// Named by its file: Quarto activates `_quarto-slides.yml` with
+// `--profile slides`, so the profile's name and the deck set's authority are
+// the same fact and cannot drift apart.
+const DECK_PROFILE = 'slides'
+
+function expandRenderEntry(dir, rel, addLog) {
+  if (!rel.includes('*')) return existsSync(join(dir, rel)) ? [rel] : []
+  const slash = rel.lastIndexOf('/')
+  const parent = slash === -1 ? '' : rel.slice(0, slash)
+  const pattern = rel.slice(slash + 1)
+  if (parent.includes('*')) {
+    // Said out loud rather than dropped: a deck the build silently declined to
+    // find is a deck that stops appearing with nothing naming the reason.
+    addLog(`[qmd] deck profile: ignoring ${rel} — a wildcard directory is not supported`)
+    return []
+  }
+  const parentDir = parent ? join(dir, parent) : dir
+  if (!existsSync(parentDir)) return []
+  const matcher = new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`)
+  return readdirSync(parentDir)
+    .filter((entry) => matcher.test(entry))
+    .sort()
+    .map((entry) => (parent ? `${parent}/${entry}` : entry))
+}
+
+/**
+ * The deck sources `--profile slides` is allowed to build.
+ *
+ * `_quarto-slides.yml` is a Quarto PROFILE, not a second project: it sets
+ * `project: type: default` and `book: null`, so a render under it writes
+ * `<deck>.html` beside the source instead of into the book tree, and its
+ * `project.render` list is the hand-maintained set of deck sources.
+ *
+ * That list is the authority. Nothing here infers a deck from a filename —
+ * three of this project's decks are named for their chapter and three are not,
+ * so a naming rule would both miss decks and claim files that are not decks.
+ */
+export function qmdDeckRenderRoots(dir, addLog = () => {}) {
+  for (const name of [`_quarto-${DECK_PROFILE}.yml`, `_quarto-${DECK_PROFILE}.yaml`]) {
+    const path = join(dir, name)
+    if (!existsSync(path)) continue
+    const config = parseYaml(readFileSync(path, 'utf8'))
+    const entries = Array.isArray(config?.project?.render) ? config.project.render : []
+    const roots = []
+    for (const entry of entries) {
+      const rel = String(entry).replace(/\\/g, '/').replace(/^\.?\/+/, '')
+      if (!rel) continue
+      if (rel.startsWith('!')) {
+        addLog(`[qmd] deck profile: ignoring exclusion ${rel}`)
+        continue
+      }
+      roots.push(...expandRenderEntry(dir, rel, addLog))
+    }
+    return [...new Set(roots)]
+  }
+  return []
+}
+
+/**
+ * Each deck with the chapter it belongs to, or null when it belongs to none.
+ *
+ * Pairing is stem match — `<chapter>-slides.qmd` belongs to `<chapter>.qmd` —
+ * and only when that chapter is a declared book chapter. A deck that matches
+ * nothing is not forced onto some chapter's map: it stands on its own, which
+ * is what makes this rule safe to apply without renaming anyone's files.
+ */
+export function qmdDeckChapterPairs(outDir, addLog = () => {}) {
+  const chapters = new Set(quartoBookRoots(outDir))
+  return qmdDeckRenderRoots(outDir, addLog).map((deck) => {
+    const chapter = deck.replace(/-slides\.qmd$/i, '.qmd')
+    return { deck, chapter: chapter !== deck && chapters.has(chapter) ? chapter : null }
+  })
+}
+
+/**
+ * Move a deck's render into the book tree, where publication can reach it.
+ *
+ * This is a copy from beside the source, which is exactly what the component
+ * chapter render must NOT do — and the difference is the whole point. A chapter
+ * renders as part of the book project and lands in the book tree already; a
+ * deck renders under `book: null`, so beside the source is genuinely where its
+ * HTML is. The book tree is also all that survives `retainNativeTldaRender`,
+ * so a deck left outside it is a deck that never reaches a reader.
+ */
+export function publishDeckIntoBook(outDir, bookDir, deck) {
+  const rendered = deck.replace(/\.qmd$/i, '.html')
+  const source = join(outDir, rendered)
+  if (!existsSync(source)) return false
+  const target = join(bookDir, rendered)
+  mkdirSync(dirname(target), { recursive: true })
+  cpSync(source, target)
+  const sourceFiles = join(outDir, rendered.replace(/\.html$/i, '_files'))
+  if (existsSync(sourceFiles)) {
+    const targetFiles = join(bookDir, rendered.replace(/\.html$/i, '_files'))
+    rmSync(targetFiles, { recursive: true, force: true })
+    cpSync(sourceFiles, targetFiles, { recursive: true })
+  }
+  return true
 }
 
 async function writeSourceScope(name, srcDir, outDir) {
@@ -477,6 +581,27 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     for (const root of mainFiles) await renderInOutput(quarto, outDir, root, addLog, { project: name })
   }
 
+  // The decks, under their own profile, one file at a time.
+  //
+  // One at a time on purpose: a whole-project render under the profile would
+  // set QUARTO_PROJECT_RENDER_ALL, which is what tells the tlda extension's
+  // post-render to write a manifest — and a second tlda-manifest.json outside
+  // the book tree fails the build with "Multiple tlda-manifest.json files
+  // found". Per file, the post-render exits and the book's manifest stands.
+  //
+  // A component build renders only the decks belonging to the chapters it
+  // rebuilt; every other deck is already in the seeded output. A whole-project
+  // build renders all of them, for the same reason it renders every chapter:
+  // publication swaps the tree wholesale, so a partial tree is not publishable.
+  const deckPairs = nativeTldaProject ? qmdDeckChapterPairs(outDir, addLog) : []
+  const decksToRender = incrementalRoots
+    ? deckPairs.filter(({ chapter }) => chapter && incrementalRoots.includes(chapter))
+    : deckPairs
+  for (const { deck } of decksToRender) {
+    clearQmdFreeze(outDir, deck)
+    await renderInOutput(quarto, outDir, deck, addLog, { project: name, profile: DECK_PROFILE })
+  }
+
   if (nativeTldaProject) {
     const renderedProject = readTldaManifest(outDir)
     if (!renderedProject) {
@@ -486,25 +611,66 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
       const path = join(outDir, page.file)
       writeFileSync(path, stampFigureUrls(readFileSync(path, 'utf8')))
     }
+    // Every deck the profile declares that HAS a render — the ones built just
+    // now, and the ones the seeded output already carried. Deriving the set
+    // from the profile rather than from what this build rendered is what keeps
+    // a component build's output tree complete.
+    const bookDir = dirname(renderedProject.path)
+    const prefix = relative(outDir, bookDir).replace(/\\/g, '/')
+    const deckPages = []
+    for (const { deck, chapter } of deckPairs) {
+      publishDeckIntoBook(outDir, bookDir, deck)
+      const rendered = deck.replace(/\.qmd$/i, '.html')
+      const path = join(bookDir, rendered)
+      if (!existsSync(path)) continue
+      const html = stampFigureUrls(readFileSync(path, 'utf8'))
+      writeFileSync(path, html)
+      const info = deckPageInfo(html, prefix ? `${prefix}/${rendered}` : rendered)
+      if (info.slides.length === 0) {
+        addLog(`[qmd] ${deck}: rendered without reveal slides, not published as a deck`)
+        continue
+      }
+      // `group` is the CHAPTER's root, which is what puts a deck on its
+      // chapter's map; `source.file` stays the deck's own root, because that is
+      // the file an edit to this document lands in. An unpaired deck groups
+      // under itself and stands alone.
+      deckPages.push({ ...qmdDeckPageInfo(deck, info, 'slides'), group: chapter || deck })
+    }
+    // `group` on the chapter too, not only on decks. It is the map layer's sole
+    // key, by agreement with that half: an entry with no `group` keeps its
+    // positional page, so keying on `source.file` instead would have re-keyed
+    // every markdown project, whose column builder emits `source.file` as well.
+    // A chapter groups under itself, which is the spec's model — one map per
+    // chapter — and is what a paired deck joins by naming the same root.
+    //
+    // Chapters stay contiguous and in manifest order, decks after all of them:
+    // `toc.json` numbers entries by position and the panel turns that number
+    // straight back into `pages[n - 1]`, so a reorder here sends the ToC to the
+    // wrong document without looking broken.
+    const nativePageInfo = [
+      ...renderedProject.pageInfo.map((page) => ({ ...page, group: page.source.file })),
+      ...deckPages,
+    ]
     retainNativeTldaRender(outDir, renderedProject.path)
-    writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(renderedProject.pageInfo, null, 2))
+    writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(nativePageInfo, null, 2))
     // The ToC panel reads this file and says "No headings found" without it.
     // The other branch writes it in the shared tail below, which this return
-    // skips.
+    // skips. Chapters only: a deck's headings are its slide titles, and the
+    // panel is the book's contents, not a merge of both documents.
     writeTocJson(outDir, renderedProject.pageInfo)
     await writeSourceScope(name, srcDir, outDir)
     await reporter.updateProject(name, {
       buildStatus: 'success',
-      pages: renderedProject.pageInfo.length,
+      pages: nativePageInfo.length,
       renderedFormat: 'html',
       lastBuild: new Date().toISOString(),
     })
-    addLog(`[qmd] ${name}: rendered tlda project with ${renderedProject.pageInfo.length} pages`)
+    addLog(`[qmd] ${name}: rendered tlda project with ${renderedProject.pageInfo.length} chapter(s) and ${deckPages.length} deck(s)`)
     // A tlda Quarto project is always the scrolling document, which is why the
     // patch above hardcodes renderedFormat 'html'. Both return paths describe
     // themselves or the cutover would work for one kind of qmd and not the
     // other — and this one returns early, so it is the one easy to miss.
-    return { manifest: qmdManifest(await readProject(name), renderedProject.pageInfo, 'html'), regenerateBookTocs: true }
+    return { manifest: qmdManifest(await readProject(name), nativePageInfo, 'html'), regenerateBookTocs: true }
   }
 
   const pageInfo = []
