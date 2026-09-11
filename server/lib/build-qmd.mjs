@@ -420,7 +420,18 @@ export function qmdDeckRenderRoots(dir, addLog = () => {}) {
         addLog(`[qmd] deck profile: ignoring exclusion ${rel}`)
         continue
       }
-      roots.push(...expandRenderEntry(dir, rel, addLog))
+      for (const root of expandRenderEntry(dir, rel, addLog)) {
+        // macOS drops an AppleDouble `._<name>` stub beside a file on a
+        // non-native filesystem, and this project has committed several: they
+        // match `lectures/*-slides.qmd` exactly as their originals do, are not
+        // even UTF-8, and rendering one fails the whole build. The repo's own
+        // handout script skips a leading dot for the same reason.
+        if (root.split('/').pop().startsWith('.')) {
+          addLog(`[qmd] deck profile: skipping ${root} — a dotfile is not a document`)
+          continue
+        }
+        roots.push(root)
+      }
     }
     return [...new Set(roots)]
   }
