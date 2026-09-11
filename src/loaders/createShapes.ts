@@ -155,6 +155,43 @@ export function createSvgShapes(editor: Editor, document: SvgDocument): boolean 
 }
 
 /**
+ * The TLDraw pages this document left behind, which nothing else deletes.
+ *
+ * A document's page ids used to be positional (`-ch-3`) and are now keyed by
+ * the chapter a doc belongs to (`-map-…`), so a chapter keeps its page when the
+ * book's chapter list is reordered. The stale-shape sweep empties the pages the
+ * old ids held; without this the document would keep a second, empty copy of
+ * its whole page list.
+ *
+ * Three things it must never do, which is why it is a function with its own
+ * tests rather than a filter inline:
+ *
+ * - take a page holding ANYTHING. An annotated page keeps its annotations and
+ *   stays, even though its document has moved off it;
+ * - take a page belonging to another document, or to the user;
+ * - take the default page as a general rule. A map-keyed document claims no
+ *   positional page, so `page:page` is genuinely left behind when a book
+ *   migrates — but for every other document it is the page they are working on.
+ */
+export function orphanedDocumentPageIds({ documentName, pageIds, livePageIds, isEmpty }: {
+  documentName: string
+  pageIds: string[]
+  livePageIds: Set<string>
+  isEmpty: (pageId: string) => boolean
+}): string[] {
+  const mapKeyed = [...livePageIds].some(id => id.startsWith(`page:${documentName}-map-`))
+  const prefixes = [`page:${documentName}-ch-`, `page:${documentName}-map-`]
+  const orphans = pageIds.filter(pageId =>
+    !livePageIds.has(pageId) &&
+    (prefixes.some(prefix => pageId.startsWith(prefix)) || (mapKeyed && pageId === 'page:page')) &&
+    isEmpty(pageId)
+  )
+  // tldraw requires a document to keep one page; deletePage refuses the last
+  // one, so never offer it the whole list.
+  return orphans.length < pageIds.length ? orphans : []
+}
+
+/**
  * Create HTML page shapes with multipage TLDraw layout.
  * Each chapter gets its own TLDraw page. Handles migration from
  * old single-page format (reparents annotations to correct pages).
@@ -291,6 +328,17 @@ export function createHtmlShapes(
         source,
       },
     })
+    changed = true
+  }
+
+  const orphanPages = orphanedDocumentPageIds({
+    documentName: document.name,
+    pageIds: editor.getPages().map(page => String(page.id)),
+    livePageIds: new Set([...pageIdMap.values()].map(String)),
+    isEmpty: pageId => editor.getPageShapeIds(pageId as TLPageId).size === 0,
+  })
+  if (orphanPages.length > 0) {
+    for (const pageId of orphanPages) editor.deletePage(pageId as TLPageId)
     changed = true
   }
 
