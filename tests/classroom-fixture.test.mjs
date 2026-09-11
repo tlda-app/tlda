@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import YAML from 'yaml'
-import { generateClassroomFixture, renderHomeworkVariants } from './helpers/classroom-fixture.mjs'
+import { generateClassroomFixture, renderHomeworkVariants, stageRenderedVariantAssets } from './helpers/classroom-fixture.mjs'
 
 // A course of its own, sharing no tooling with any other. Setup that only works
 // against one particular course passes nothing here.
@@ -18,6 +18,31 @@ const TOOLING = {
 function tempDir(stem) {
   return fs.mkdtempSync(path.join(os.tmpdir(), stem))
 }
+
+test('root-level classroom variants carry nested Quarto assets with isolated names', () => {
+  const root = tempDir('tlda-classroom-assets-')
+  const inputDir = path.join(root, 'homework')
+  const bookDir = path.join(root, '_book')
+  try {
+    fs.mkdirSync(path.join(inputDir, 'homework_files', 'figure-html'), { recursive: true })
+    fs.mkdirSync(path.join(bookDir, 'site_libs'), { recursive: true })
+    fs.writeFileSync(path.join(inputDir, 'homework_files', 'figure-html', 'plot.png'), 'plot')
+    const renderedPath = path.join(bookDir, 'hw1-solution.html')
+    fs.writeFileSync(renderedPath, '<link href="../site_libs/style.css"><img src="homework_files/figure-html/plot.png?v=1">')
+
+    stageRenderedVariantAssets({
+      fixtureDir: root,
+      inputFile: 'homework/homework.qmd',
+      renderedPath,
+      outputFile: 'hw1-solution.html',
+    })
+
+    assert.equal(fs.readFileSync(renderedPath, 'utf8'), '<link href="site_libs/style.css"><img src="hw1-solution_files/figure-html/plot.png?v=1">')
+    assert.equal(fs.readFileSync(path.join(bookDir, 'hw1-solution_files', 'figure-html', 'plot.png'), 'utf8'), 'plot')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('a classroom fixture is generated from any Quarto book with its own tooling', () => {
   const dir = tempDir('tlda-classroom-fixture-')

@@ -7,7 +7,7 @@
  * ad-hoc fallback chains here.
  */
 
-import { resolve, relative, basename, dirname, join, delimiter } from 'path'
+import { resolve, relative, basename, dirname, extname, join, delimiter } from 'path'
 import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync, rmSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname, tmpdir } from 'os'
@@ -3167,9 +3167,11 @@ async function linkClassroomGitProject({ name, title, mainFile, format, sourceDi
 }
 
 function copyHtmlProjectFiles(bookDir, destinationRoot, mainFile, otherHtmlFile) {
+  const otherAssets = `${otherHtmlFile.slice(0, -extname(otherHtmlFile).length)}_files/`
   return copyClassroomFiles(bookDir, destinationRoot, relPath => {
     if (relPath === mainFile) return true
     if (relPath === otherHtmlFile) return false
+    if (relPath.startsWith(otherAssets)) return false
     return !relPath.endsWith('.html')
   })
 }
