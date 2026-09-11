@@ -40,4 +40,39 @@ await retryPendingDrafts(store, async (url) => { retryUrls.push(url); return { o
 equal(retryUrls.length, 1)
 equal(retryUrls[0].endsWith('/audio'), true)
 equal(rows.size, 0)
+
+// One undeliverable draft must not take the rest of the outbox down with it.
+// A recording the server refuses outright — an oversized one, say — used to
+// abort the whole loop, so every draft behind it went unattempted on that load
+// and on every load afterwards.
+await persistDraftCheckpoint('course', 'refused', { ...meta, id: 'refused' }, new Blob(['big']), store)
+await persistDraftCheckpoint('course', 'ordinary', { ...meta, id: 'ordinary' }, new Blob(['small']), store)
+equal(rows.size, 2)
+
+const attempted: string[] = []
+let raised = ''
+try {
+  await retryPendingDrafts(store, async (url) => {
+    attempted.push(url)
+    // The refused draft fails at its very first request, before the queue
+    // would otherwise reach the draft sitting behind it.
+    if (url.includes('refused')) return { ok: false, status: 413 }
+    return { ok: true, status: 200 }
+  })
+} catch (error) {
+  raised = String(error)
+}
+
+// The good draft was delivered and cleared...
+equal(rows.has('course:ordinary'), false)
+equal(attempted.some(url => url.includes('ordinary')), true)
+// ...the refused one is kept for a later attempt rather than silently dropped...
+equal(rows.has('course:refused'), true)
+// ...and the failure is still reported rather than swallowed.
+equal(raised.includes('undelivered'), true)
+
+// Control: the refused draft really was refused, so the pass above is not the
+// result of a sender that never failed.
+equal(attempted.some(url => url.includes('refused')), true)
+
 console.log('durable draft outbox retry: PASS')
