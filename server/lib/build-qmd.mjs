@@ -365,22 +365,6 @@ export function clearQmdFreeze(outDir, root) {
   rmSync(join(outDir, '_freeze', normalized), { recursive: true, force: true })
 }
 
-export function publishIncrementalQmdOutput(outDir, root) {
-  const rendered = qmdOutputFileForSource(root)
-  const sourceHtml = join(outDir, rendered)
-  if (!existsSync(sourceHtml)) throw new Error(`[qmd] component render did not produce ${rendered}`)
-  const bookHtml = join(outDir, '_book', rendered)
-  mkdirSync(dirname(bookHtml), { recursive: true })
-  cpSync(sourceHtml, bookHtml)
-
-  const sourceFiles = join(outDir, rendered.replace(/\.html$/i, '_files'))
-  if (existsSync(sourceFiles)) {
-    const bookFiles = join(outDir, '_book', rendered.replace(/\.html$/i, '_files'))
-    rmSync(bookFiles, { recursive: true, force: true })
-    cpSync(sourceFiles, bookFiles, { recursive: true })
-  }
-}
-
 async function writeSourceScope(name, srcDir, outDir) {
   const files = (await readClientSourceManifest(name))
     .filter((rel) => existsSync(join(srcDir, rel)))
@@ -479,8 +463,13 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
       // publishing the old prose. This is the private build instance, so
       // invalidate only the changed component's freeze before rendering it.
       clearQmdFreeze(outDir, root)
+      // Quarto renders a book component AS PART OF ITS PROJECT: this writes
+      // `_book/<component>.html` over the seeded output and leaves nothing
+      // beside the .qmd. Nothing is copied afterwards -- a copy from beside the
+      // source is a copy of a file that a project render never writes, and the
+      // check guarding it failed every component build on a render that had
+      // already published the page.
       await renderInOutput(quarto, outDir, root, addLog, { project: name })
-      publishIncrementalQmdOutput(outDir, root)
     }
   } else if (nativeTldaProject) {
     await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true, project: name })
