@@ -560,6 +560,29 @@ export async function dropPillOnTarget(
   // editor and its translated point.
   const hitEditor = editor
   const targetPagePoint = pagePoint
+
+  // A live filter preview already identifies both the target chat and the
+  // exact filter to commit. Apply it before canvas hit-testing: standalone
+  // chats use the index editor, which deliberately has no WM document layer.
+  if (!content && filterDropPreview.shapeId) {
+    const previewEditor = editorOwningFleetShape(editor, createEditor, filterDropPreview.shapeId)
+    const targetChat = previewEditor.getShape(filterDropPreview.shapeId as TLShapeId) as unknown as FleetChatShapeRecord | undefined
+    const role = filterDropPreview.activePaneRole ||
+      inferFleetFilterDropRole(previewEditor === editor ? previewEditor.getShapePageBounds(filterDropPreview.shapeId as TLShapeId) : null, pagePoint)
+    const preview = filterPreviewForDropRole(filterDropPreview, role)
+    if (targetChat && targetChat.type === 'fleet-chat' && preview) {
+      const intent = filterDropPreview.intent
+      intent?.drop({
+        target: { shapeId: targetChat.id, type: 'fleet-chat' },
+        surface: 'fleet-chat-filter-overlay',
+      })
+      applyFilterPreviewWithIntent(previewEditor as unknown as FleetFilterIntentEditor, targetChat, preview, intent)
+      chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', { detail: { chatId: targetChat.id } }))
+      completeAgentDropGuide()
+      return
+    }
+  }
+
   // Find fleet-chat under the drop point manually — getShapeAtPoint skips locked shapes
   // Cast to any: custom fleet shape types aren't in tldraw's built-in type union
   // Both hit tests below go through the WM rather than comparing the drop point
@@ -590,34 +613,6 @@ export async function dropPillOnTarget(
     targetPagePoint,
     hitEditor.getCurrentPageShapes().filter(s => FLEET_TYPES.has(s.type as string)),
   ).length > 0
-
-  // A filter overlay is showing a LIVE preview (a pill is hovering it), so the
-  // drop commits that preview to the overlay's target chat — wherever the drop
-  // lands. On phone the reachable overlay lives on the INBOX (same lane as the
-  // agent pills), which is not a fleet-chat, so the hitShape path below never
-  // fires for it: the drop found no chat and no-op'd (preview showed, filter
-  // never committed). Applying by the preview's own shapeId fixes both the chat
-  // and inbox overlay drops. (Not for content pills — those go to the composer.)
-  if (!content && filterDropPreview.shapeId) {
-    const previewEditor = editorOwningFleetShape(editor, createEditor, filterDropPreview.shapeId)
-    // The base Editor generic only exposes built-in TLDraw shapes; this ID is
-    // guarded by the fleet-chat preview owner immediately below.
-    const targetChat = previewEditor.getShape(filterDropPreview.shapeId as TLShapeId) as unknown as FleetChatShapeRecord | undefined
-    const role = filterDropPreview.activePaneRole ||
-      inferFleetFilterDropRole(previewEditor === editor ? previewEditor.getShapePageBounds(filterDropPreview.shapeId as TLShapeId) : null, pagePoint)
-    const preview = filterPreviewForDropRole(filterDropPreview, role)
-    if (targetChat && targetChat.type === 'fleet-chat' && preview) {
-      const intent = filterDropPreview.intent
-      intent?.drop({
-        target: { shapeId: targetChat.id, type: 'fleet-chat' },
-        surface: 'fleet-chat-filter-overlay',
-      })
-      applyFilterPreviewWithIntent(previewEditor as unknown as FleetFilterIntentEditor, targetChat, preview, intent)
-      chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', { detail: { chatId: targetChat.id } }))
-      completeAgentDropGuide()
-      return
-    }
-  }
 
   if (hitShape && hitShape.type === 'fleet-chat') {
 
