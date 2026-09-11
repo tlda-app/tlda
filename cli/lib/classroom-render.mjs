@@ -147,10 +147,11 @@ export function generateClassroomFixture({
   const copiedFiles = new Set(['_quarto.yml', 'index.qmd'])
   fs.writeFileSync(path.join(outDir, 'index.qmd'), `---\ntitle: ${JSON.stringify(bookTitle)}\n---\n`)
 
+  const includes = includeClosure(sourceRoot, selectedHomework)
   for (const relativePath of [
     ...scheduleResources,
     ...tooling.map(([, value]) => value),
-    ...includeClosure(sourceRoot, selectedHomework),
+    ...includes,
   ]) {
     copyFile(sourceRoot, outDir, relativePath)
     copiedFiles.add(relativePath)
@@ -170,6 +171,7 @@ export function generateClassroomFixture({
     bookConfig: '_quarto.yml',
     scheduleResources,
     homeworkPath: selectedHomework,
+    includeClosure: includes,
     handoutGenerator,
     solutionFilter,
     supportFiles: [...supportFiles],
@@ -275,10 +277,32 @@ export async function renderHomeworkVariants({
     onOutput,
   })
 
-  const handoutSource = path.join(
-    path.dirname(fixture.homeworkPath),
-    `${path.basename(fixture.homeworkPath, path.extname(fixture.homeworkPath))}.handout.qmd`,
-  )
+  // The generator writes its own dependencies next to the handout it produces —
+  // the course's `class.scss` and `solution-callout.lua` among them. Writing the
+  // handout beside the master therefore makes the generator copy the file passed
+  // as --solution-filter onto itself, which is a SameFileError and the end of the
+  // run. It gets a directory of its own instead, the way the course's own
+  // build-handouts.py stages every handout it builds.
+  const masterDir = path.dirname(fixture.homeworkPath)
+  const masterName = path.basename(fixture.homeworkPath)
+  const handoutDir = path.join(masterDir, 'handouts', path.basename(masterName, path.extname(masterName)))
+  const handoutSource = path.join(handoutDir, masterName)
+  fs.mkdirSync(path.join(outDir, handoutDir), { recursive: true })
+
+  // The handout keeps whatever `{{< include >}}` directives the master had, and
+  // Quarto resolves those against the including file. They have to travel into
+  // the handout's directory at the path the include names it by.
+  for (const member of fixture.includeClosure) {
+    if (member === fixture.homeworkPath) continue
+    const relativeToMaster = path.relative(masterDir, member)
+    if (relativeToMaster.startsWith('..')) {
+      throw new Error(`${fixture.homeworkPath} includes ${member}, which is outside ${masterDir}/ and cannot travel with the handout`)
+    }
+    const destination = path.join(outDir, handoutDir, relativeToMaster)
+    fs.mkdirSync(path.dirname(destination), { recursive: true })
+    fs.copyFileSync(path.join(outDir, member), destination)
+  }
+
   onProgress({ step: 'handout-source', message: `Generating handout source with ${handoutGenerator}` })
   await runChild('python3', [fixture.handoutGenerator, fixture.homeworkPath, handoutSource], {
     cwd: outDir,

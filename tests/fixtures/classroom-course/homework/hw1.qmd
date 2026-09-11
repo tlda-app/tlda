@@ -12,6 +12,8 @@ Add the first ten positive integers.
 Fifty-five, by pairing the ends.
 :::
 
+Pairing the ends is worth remembering; it generalizes to any arithmetic series.
+
 ::: {#exr-mean .callout-exercise}
 State the mean of a fair die.
 :::
