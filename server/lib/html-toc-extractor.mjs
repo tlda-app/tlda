@@ -8,6 +8,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { JSDOM } from 'jsdom'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECTS_DIR = join(__dirname, '..', 'projects')
@@ -162,6 +163,71 @@ export function extractHtmlToc(outputDir, providedPageInfo = null) {
     toc.push(...headings)
   }
 
+  return toc
+}
+
+function cleanSidebarTitle(link) {
+  const chapterTitle = link.querySelector('.chapter-title')?.textContent
+  return (chapterTitle || link.textContent || '').replace(/\s+/g, ' ').trim()
+}
+
+function sidebarHref(link) {
+  return decodeURIComponent(String(link.getAttribute('href') || '')
+    .replace(/^\.\//, '')
+    .split(/[?#]/, 1)[0])
+}
+
+/**
+ * Read the book Quarto actually assembled rather than reconstructing a second
+ * book from page titles. The rendered sidebar is Quarto's realization of
+ * `book.chapters`: parts, chapter order, generated handout/solution pages, and
+ * the exact output href for every member.
+ */
+export function extractQuartoBookToc(outputDir, pageInfo) {
+  const pageByFile = new Map()
+  for (let i = 0; i < pageInfo.length; i++) {
+    pageByFile.set(String(pageInfo[i].file || '').replace(/^_book\//, ''), i + 1)
+  }
+
+  const bookPage = pageInfo.find(entry => String(entry.file || '').startsWith('_book/'))
+  if (!bookPage) return null
+  const html = readFileSync(join(outputDir, bookPage.file), 'utf8')
+  const document = new JSDOM(html).window.document
+  const root = document.querySelector('#quarto-sidebar .sidebar-menu-container > ul')
+  if (!root) return null
+
+  const toc = []
+  const seen = new Set()
+  const append = (link, level) => {
+    if (!link) return
+    const file = sidebarHref(link)
+    const page = pageByFile.get(file)
+    if (!file || !page || seen.has(file)) return
+    let title = cleanSidebarTitle(link)
+    if (/-solutions\.html$/i.test(file)) title = `${title} — Solutions`
+    toc.push({ title, level, page })
+    seen.add(file)
+  }
+
+  for (const item of root.children) {
+    if (!item.matches('li.sidebar-item')) continue
+    const container = item.querySelector(':scope > .sidebar-item-container')
+    const link = container?.querySelector(':scope > a.sidebar-link')
+    const section = item.querySelector(':scope > ul.sidebar-section')
+    if (section) {
+      append(link, 'part')
+      for (const child of section.children) {
+        append(child.querySelector(':scope > .sidebar-item-container > a.sidebar-link'), 'chapter')
+      }
+    } else {
+      append(link, 'chapter')
+    }
+  }
+
+  if (seen.size !== pageByFile.size) {
+    const missing = [...pageByFile.keys()].filter(file => !seen.has(file))
+    throw new Error(`[toc] Quarto sidebar omitted ${missing.join(', ')}`)
+  }
   return toc
 }
 

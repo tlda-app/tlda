@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { extractHtmlToc } from './html-toc-extractor.mjs'
+import { extractHtmlToc, extractQuartoBookToc } from './html-toc-extractor.mjs'
 
 const CHAPTER_HTML = '<html><body><section id="what-a-sample-is"><h2>What a sample is</h2></section></body></html>'
 
@@ -72,6 +72,52 @@ test('a structural entry that declares no file is not a missing page', () => {
       { title: 'Chapter 1: Sampling', level: 'chapter', page: 2 },
       { title: 'What a sample is', level: 'subsection', page: 2, anchor: 'what-a-sample-is' },
     ])
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true })
+  }
+})
+
+test('a Quarto book TOC is the rendered sidebar, including every page once', () => {
+  const outputDir = mkdtempSync(join(tmpdir(), 'tlda-quarto-book-toc-'))
+  try {
+    mkdirSync(join(outputDir, '_book', 'homework'), { recursive: true })
+    writeFileSync(join(outputDir, '_book', 'index.html'), `
+      <aside id="quarto-sidebar"><div class="sidebar-menu-container"><ul>
+        <li class="sidebar-item sidebar-item-section">
+          <div class="sidebar-item-container"><a class="sidebar-link" href="./index.html">Welcome</a></div>
+          <ul class="sidebar-section">
+            <li class="sidebar-item"><div class="sidebar-item-container"><a class="sidebar-link" href="./homework/one.html"><span class="chapter-number">1</span><span class="chapter-title">Homework 1</span></a></div></li>
+            <li class="sidebar-item"><div class="sidebar-item-container"><a class="sidebar-link" href="./homework/one-solutions.html"><span class="chapter-number">2</span><span class="chapter-title">Homework 1</span></a></div></li>
+          </ul>
+        </li>
+        <li class="sidebar-item"><div class="sidebar-item-container"><a class="sidebar-link" href="./references.html">References</a></div></li>
+      </ul></div></aside>`)
+    const pageInfo = [
+      { file: '_book/index.html' },
+      { file: '_book/homework/one.html' },
+      { file: '_book/homework/one-solutions.html' },
+      { file: '_book/references.html' },
+    ]
+    assert.deepEqual(extractQuartoBookToc(outputDir, pageInfo), [
+      { title: 'Welcome', level: 'part', page: 1 },
+      { title: 'Homework 1', level: 'chapter', page: 2 },
+      { title: 'Homework 1 — Solutions', level: 'chapter', page: 3 },
+      { title: 'References', level: 'chapter', page: 4 },
+    ])
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true })
+  }
+})
+
+test('a Quarto sidebar that omits a declared page fails the build', () => {
+  const outputDir = mkdtempSync(join(tmpdir(), 'tlda-quarto-book-toc-missing-'))
+  try {
+    mkdirSync(join(outputDir, '_book'), { recursive: true })
+    writeFileSync(join(outputDir, '_book', 'index.html'), '<aside id="quarto-sidebar"><div class="sidebar-menu-container"><ul><li class="sidebar-item"><div class="sidebar-item-container"><a class="sidebar-link" href="./index.html">Welcome</a></div></li></ul></div></aside>')
+    assert.throws(
+      () => extractQuartoBookToc(outputDir, [{ file: '_book/index.html' }, { file: '_book/missing.html' }]),
+      /Quarto sidebar omitted missing\.html/,
+    )
   } finally {
     rmSync(outputDir, { recursive: true, force: true })
   }
