@@ -81,7 +81,8 @@ const COURSE_ITEM_BADGE: Record<CourseItemType, string> = {
   deck: 'DECK',
 }
 
-const EMPTY_KEYS: ReadonlySet<string> = new Set<string>()
+type HomeworkEntry = { assignmentId: string; returned: boolean }
+const EMPTY_HOMEWORK: ReadonlyMap<string, HomeworkEntry> = new Map<string, HomeworkEntry>()
 
 export function TocTab({ query = '' }: { query?: string }) {
   const editor = useEditor()
@@ -218,11 +219,10 @@ export function TocTab({ query = '' }: { query?: string }) {
     }
   }, [])
 
-  // Which documents of this course are homework. Asked of the classroom store,
-  // which is the only thing that knows: an assignment names the documents it is
-  // made of, and a member that is one of them is homework. Nothing infers it
-  // from a name or a path.
-  const [assignmentDocKeys, setAssignmentDocKeys] = useState<ReadonlySet<string>>(EMPTY_KEYS)
+  // Which book pages are homework. Setup records the rendered page path on its
+  // assignment, so a flat Quarto book can join a TOC chapter to the student's
+  // own submission without inferring either from a project name.
+  const [homeworkByPage, setHomeworkByPage] = useState<ReadonlyMap<string, HomeworkEntry>>(EMPTY_HOMEWORK)
   useEffect(() => {
     if (!book) return
     const courseId = new URLSearchParams(window.location.search).get('course')
@@ -231,28 +231,26 @@ export function TocTab({ query = '' }: { query?: string }) {
     classroomApi.assignments(courseId)
       .then(({ assignments }) => {
         if (cancelled) return
-        const keys = new Set<string>()
+        const pages = new Map<string, HomeworkEntry>()
         for (const assignment of assignments) {
-          for (const key of [assignment.sourceDocKey, assignment.templateDocKey, assignment.solutionsDocKey]) {
-            if (key) keys.add(key)
-          }
+          if (assignment.bookPageFile) pages.set(assignment.bookPageFile, {
+            assignmentId: assignment.id,
+            returned: assignment.submission?.gradingStatus === 'returned',
+          })
         }
-        setAssignmentDocKeys(keys)
+        setHomeworkByPage(pages)
       })
       // 401 for a reader with no classroom credential, which is most readers.
       // The book stays a book; the rows simply carry no homework mark.
-      .catch(() => { if (!cancelled) setAssignmentDocKeys(EMPTY_KEYS) })
+      .catch(() => { if (!cancelled) setHomeworkByPage(EMPTY_HOMEWORK) })
     return () => { cancelled = true }
   }, [book?.bookName])
 
   const memberItemType = useMemo(() => {
     const types = new Map<string, CourseItemType>()
-    for (const member of book?.members ?? []) {
-      if (assignmentDocKeys.has(member.key)) types.set(member.key, 'homework')
-      else if (viewFormat(member) === 'slides') types.set(member.key, 'deck')
-    }
+    for (const member of book?.members ?? []) if (viewFormat(member) === 'slides') types.set(member.key, 'deck')
     return types
-  }, [book?.members, assignmentDocKeys])
+  }, [book?.members])
 
   useEffect(() => {
     // A book's table of contents is the BOOK's, at every chapter.
@@ -593,6 +591,7 @@ export function TocTab({ query = '' }: { query?: string }) {
     const isHot = h.level === 'chapter' && h.targetFile != null && h.targetFile === hotKey
     const isCurrent = h.level === 'chapter' && h.targetFile != null && h.targetFile === activeMemberKey
     const itemType = h.level === 'chapter' && h.targetFile ? memberItemType.get(h.targetFile) : undefined
+    const homework = h.level === 'chapter' && h.targetFile ? homeworkByPage.get(h.targetFile) : undefined
     return (
       <div key={i} className={`toc-item ${h.level}${isCurrent ? ' toc-item-current' : ''}`}>
         {hasChildren ? (
@@ -605,12 +604,17 @@ export function TocTab({ query = '' }: { query?: string }) {
         )}
         {renderCenterButton(h)}
         <span className="toc-title" onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
-        {itemType && (
+        {homework?.returned ? <a
+          className="toc-item-type toc-item-type--homework"
+          href={`?workspace=classroom-work&assignment=${encodeURIComponent(homework.assignmentId)}`}
+          title="Open your returned homework"
+          aria-label="Open your returned homework"
+        >{COURSE_ITEM_BADGE.homework}</a> : (homework || itemType) && (
           <span
-            className={`toc-item-type toc-item-type--${itemType}`}
-            title={COURSE_ITEM_LABEL[itemType]}
-            aria-label={COURSE_ITEM_LABEL[itemType]}
-          >{COURSE_ITEM_BADGE[itemType]}</span>
+            className={`toc-item-type toc-item-type--${homework ? 'homework' : itemType}`}
+            title={COURSE_ITEM_LABEL[homework ? 'homework' : itemType!]}
+            aria-label={COURSE_ITEM_LABEL[homework ? 'homework' : itemType!]}
+          >{COURSE_ITEM_BADGE[homework ? 'homework' : itemType!]}</span>
         )}
         {isHot && <span className="book-tab-hot-dot" title="Active session" />}
       </div>
