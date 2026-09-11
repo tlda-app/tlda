@@ -53,13 +53,13 @@ test('the book open decision is part of the same client boundary', () => {
   assert.equal(clientOpenKind({ format: 'qmd', documentFormat: 'html' }), 'document')
 })
 
-test('a foreign slide view keeps its declared group and excludes the paired chapter', () => {
+test('a foreign slide view keeps its declared group and the book view keeps every document', () => {
   const pages = [
     { ...page, file: 'chapter.html', variant: 'chapter' as const, group: 'lesson.qmd' },
     { ...page, file: 'deck.html', variant: 'slides' as const, group: 'lesson.qmd', slides: [] },
   ]
   assert.deepEqual(pagesForView(pages, 'slides').map(item => [item.file, item.group]), [['deck.html', 'lesson.qmd']])
-  assert.deepEqual(pagesForView(pages, 'html-pages').map(item => item.file), ['chapter.html'])
+  assert.deepEqual(pagesForView(pages, 'html-pages').map(item => item.file), ['chapter.html', 'deck.html'])
 })
 
 test('member project metadata uses the configured store origin', () => {
