@@ -14,6 +14,16 @@ const hasQuarto = (() => {
   try { execFileSync('sh', ['-c', 'command -v quarto'], { stdio: 'ignore' }); return true } catch { return false }
 })()
 
+// A real render takes minutes, and the suite kills a file at 120s
+// (`bin/run-test-suite.mjs`, DEFAULT_TIMEOUT_MS) — a chapter render measured
+// 56s on a quiet machine and 200s on a busy one. Run by default, this control
+// goes red on load, and a check that flakes red teaches people to ignore red.
+// So it is deliberate rather than automatic. It is still a gate: the release
+// runbook names it.
+const RENDER_CONTROL_SKIP = process.env.TLDA_QUARTO_RENDER_TESTS === '1'
+  ? (hasQuarto ? false : 'quarto not on PATH')
+  : 'set TLDA_QUARTO_RENDER_TESTS=1 to run — a real Quarto render, minutes long; this control must pass before any build-path change ships'
+
 const publishedPage = (title) => `<!DOCTYPE html>\n<html><head><title>${title}</title></head><body><h1>${title}</h1></body></html>\n`
 
 /**
@@ -41,7 +51,7 @@ const publishedPage = (title) => `<!DOCTYPE html>\n<html><head><title>${title}</
 const CHAPTER = 'lectures/chapter-calibration-binary.qmd'
 const CHAPTER_HTML = 'lectures/chapter-calibration-binary.html'
 
-test('a direct chapter edit rebuilds that chapter into the book', { timeout: 300_000, skip: hasQuarto ? false : 'quarto not on PATH' }, async () => {
+test('a direct chapter edit rebuilds that chapter into the book', { timeout: 900_000, skip: RENDER_CONTROL_SKIP }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-component-render-'))
   const project = 'component-render-fixture'
   try {

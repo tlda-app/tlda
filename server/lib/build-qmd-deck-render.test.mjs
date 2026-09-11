@@ -14,6 +14,15 @@ const hasQuarto = (() => {
   try { execFileSync('sh', ['-c', 'command -v quarto'], { stdio: 'ignore' }); return true } catch { return false }
 })()
 
+// Two real renders, minutes long, against a suite that kills a file at 120s
+// (`bin/run-test-suite.mjs`, DEFAULT_TIMEOUT_MS). Run by default this control
+// goes red on load rather than on a defect, and a check that flakes red teaches
+// people to ignore red. So it is deliberate rather than automatic, and the
+// release runbook names it.
+const RENDER_CONTROL_SKIP = process.env.TLDA_QUARTO_RENDER_TESTS === '1'
+  ? (hasQuarto ? false : 'quarto not on PATH')
+  : 'set TLDA_QUARTO_RENDER_TESTS=1 to run — a real Quarto render, minutes long; this control must pass before any build-path change ships'
+
 const CHAPTER = 'lectures/chapter-calibration-binary.qmd'
 const CHAPTER_HTML = 'lectures/chapter-calibration-binary.html'
 const DECK = 'lectures/chapter-calibration-binary-slides.qmd'
@@ -28,12 +37,13 @@ const publishedPage = (title) => `<!DOCTYPE html>\n<html><head><title>${title}</
  * though `lectures/_metadata.yml` declares revealjs — that metadata is why a
  * render taken outside the book produces a deck, and publishing one of those
  * over the chapter is how a prose page was lost. The deck renders under the
- * `slides` profile, where `book: null` makes a deck the correct answer.
+ * `slides` profile, where `project: type: default` makes a deck beside its own
+ * source the correct answer.
  *
  * So this asserts both halves at once on one build: the same build that leaves
  * the chapter free of reveal markers must leave the deck full of them.
  */
-test('a component build renders the chapter as prose and its deck as a deck', { timeout: 300_000, skip: hasQuarto ? false : 'quarto not on PATH' }, async () => {
+test('a component build renders the chapter as prose and its deck as a deck', { timeout: 900_000, skip: RENDER_CONTROL_SKIP }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-deck-render-'))
   const project = 'deck-render-fixture'
   try {
@@ -54,12 +64,16 @@ test('a component build renders the chapter as prose and its deck as a deck', { 
       `    - ${CHAPTER}`,
       '',
     ].join('\n'))
+    // No `book:` key. Quarto 1.9.38 rejects `book: null` outright — "Field
+    // book has value null, which must instead be an object" — and the project
+    // whose profile this mirrors carries that line, so its deck profile does
+    // not load at all on the installed Quarto. `project: type: default` is what
+    // makes a deck render beside its source; the book key is not needed for it.
     writeFileSync(join(src, '_quarto-slides.yml'), [
       'project:',
       '  type: default',
       '  render:',
       '    - lectures/*-slides.qmd',
-      'book: null',
       'format:',
       '  revealjs:',
       '    embed-resources: true',
