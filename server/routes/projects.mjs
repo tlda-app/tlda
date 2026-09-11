@@ -17,7 +17,7 @@ import express, { Router } from 'express'
 import { execFile } from 'child_process'
 import { createHash, randomUUID } from 'crypto'
 import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'fs/promises'
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync } from 'fs'
 import { join, basename, dirname, resolve } from 'path'
 import { promisify } from 'util'
 import { requireRead, requireRecordingPrivateRead, requireRw } from '../lib/auth.mjs'
@@ -1401,7 +1401,19 @@ router.post('/:name/recording', requireRw, (req, res) => {
   }
   const dir = recordingsDir(req.params.name)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, `${meta.id}.json`), JSON.stringify(meta))
+  const metaPath = join(dir, `${meta.id}.json`)
+  if (existsSync(metaPath)) {
+    try {
+      const existing = JSON.parse(readFileSync(metaPath, 'utf8'))
+      if (Number(existing.duration_ms) > Number(meta.duration_ms)) {
+        return res.status(409).json({
+          error: 'A newer recording checkpoint is already stored',
+          code: 'STALE_RECORDING_CHECKPOINT',
+        })
+      }
+    } catch { /* the recordings listing exposes corrupt metadata; do not hide it here */ }
+  }
+  writeFileSync(metaPath, JSON.stringify(meta))
   res.json({ ok: true, id: meta.id })
 })
 
@@ -1413,7 +1425,14 @@ router.post('/:name/recording/:id/audio', requireRw, express.raw({ type: () => t
   const metaPath = join(dir, `${req.params.id}.json`)
   if (!existsSync(metaPath)) return res.status(404).json({ error: 'Record metadata first' })
   if (!req.body || !req.body.length) return res.status(400).json({ error: 'Empty audio body' })
-  writeFileSync(join(dir, `${req.params.id}.audio`), req.body)
+  const audioPath = join(dir, `${req.params.id}.audio`)
+  // Delivery is idempotent by recording id. A checkpoint whose metadata was
+  // acknowledged before finalization can retry audio without another metadata
+  // request; never let that late, shorter blob replace the completed lecture.
+  if (existsSync(audioPath)) {
+    return res.json({ ok: true, id: req.params.id, bytes: statSync(audioPath).size, state: 'private-draft', existing: true })
+  }
+  writeFileSync(audioPath, req.body)
   res.json({ ok: true, id: req.params.id, bytes: req.body.length, state: 'private-draft' })
 })
 
@@ -1476,7 +1495,7 @@ export function sendRecordingAudio(res, audioPath, metaPath) {
     } catch { /* a corrupt meta file must not make the audio unplayable */ }
   }
   res.type(mime)
-  return res.sendFile(audioPath, { acceptRanges: true, dotfiles: 'deny' }, (error) => {
+  return res.sendFile(basename(audioPath), { root: dirname(audioPath), acceptRanges: true, dotfiles: 'deny' }, (error) => {
     if (!error || res.headersSent) return
     // Carry sendFile's OWN status. A first version of this returned 500 for
     // everything, which turned a client asking for a range past the end of the

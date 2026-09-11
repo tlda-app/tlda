@@ -87,6 +87,14 @@ async function deliver(envelope: DraftEnvelope, store: DraftOutboxStore, send: D
     const response = await send(`${base}/api/projects/${envelope.doc}/recording`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(envelope.meta),
     })
+    // A checkpoint that finished after final delivery can reappear in IndexedDB.
+    // The server rejects it when a longer recording with this id already exists;
+    // discard that stale envelope without posting its shorter audio over the
+    // complete lecture.
+    if (response.status === 409) {
+      await bookkeep('discard-stale', () => store.delete(envelope.key))
+      return
+    }
     if (!response.ok) throw new Error(`meta POST ${response.status}`)
     envelope = { ...envelope, metadataAcknowledged: true }
     await bookkeep('acknowledge', () => store.put(envelope))
