@@ -40,7 +40,10 @@ Object.defineProperty(globalThis, 'window', {
     },
   },
 })
-nav.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) }
+// A real MediaStream has getAudioTracks, and a real track has addEventListener —
+// the recorder uses both to notice the microphone going away.
+const micTrack = { kind: 'audio', stop() {}, addEventListener() {}, removeEventListener() {} }
+nav.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [micTrack], getAudioTracks: () => [micTrack] }) }
 Object.defineProperty(globalThis, 'MediaRecorder', {
   configurable: true,
   value: class {

@@ -8,12 +8,16 @@ function matches(actual: string, expected: RegExp) {
 
 async function run() {
   let mediaRequests = 0
-  const tracks = [{ stop() {} }]
+  // addEventListener as well as stop: the recorder watches the audio track for
+  // 'ended' to notice the microphone going away, and a real track has both.
+  const tracks = [{ kind: 'audio', stop() {}, addEventListener() {}, removeEventListener() {} }]
   let releaseMicrophone!: () => void
   const microphoneReady = new Promise<void>(resolve => { releaseMicrophone = resolve })
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
-    value: { userAgent: 'node', platform: 'node', mediaDevices: { getUserMedia: async () => { mediaRequests += 1; await microphoneReady; return { getTracks: () => tracks } } } },
+    // getAudioTracks as well as getTracks: the recorder watches the audio track
+    // for the microphone going away, and a real MediaStream has both.
+    value: { userAgent: 'node', platform: 'node', mediaDevices: { getUserMedia: async () => { mediaRequests += 1; await microphoneReady; return { getTracks: () => tracks, getAudioTracks: () => tracks } } } },
   })
 
   class FakeMediaRecorder {
