@@ -224,7 +224,36 @@ async function renderVariant({ fixtureDir, inputFile, fixture, filter = null, ou
   if (!fs.existsSync(renderedPath)) {
     throw new Error(`Quarto did not produce ${renderedPath}`)
   }
+  stageRenderedVariantAssets({ fixtureDir, inputFile, renderedPath, outputFile })
   return renderedPath
+}
+
+export function stageRenderedVariantAssets({ fixtureDir, inputFile, renderedPath, outputFile }) {
+  let html = readText(renderedPath)
+  const variantStem = path.basename(outputFile, path.extname(outputFile))
+  const sourceDir = path.join(fixtureDir, path.dirname(inputFile))
+  const bookDir = path.dirname(renderedPath)
+  const copied = new Map()
+
+  html = html.replace(/((?:src|href)=["'])([^"']+)(["'])/g, (match, before, reference, after) => {
+    if (reference.startsWith('../site_libs/')) {
+      return `${before}${reference.slice(3)}${after}`
+    }
+    const cleanReference = reference.split(/[?#]/, 1)[0]
+    const filesMatch = cleanReference.match(/^([^/]+_files)(\/.*)?$/)
+    if (!filesMatch) return match
+
+    const sourceAssets = path.join(sourceDir, filesMatch[1])
+    if (!fs.existsSync(sourceAssets)) return match
+    let destinationName = copied.get(filesMatch[1])
+    if (!destinationName) {
+      destinationName = `${variantStem}_files`
+      fs.cpSync(sourceAssets, path.join(bookDir, destinationName), { recursive: true })
+      copied.set(filesMatch[1], destinationName)
+    }
+    return `${before}${destinationName}${reference.slice(filesMatch[1].length)}${after}`
+  })
+  fs.writeFileSync(renderedPath, html)
 }
 
 /**
