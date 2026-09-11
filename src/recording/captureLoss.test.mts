@@ -14,7 +14,7 @@
  * MODE=ended    the audio track fires 'ended'
  * MODE=error    MediaRecorder fires onerror
  */
-const MODE = process.env.MODE ?? 'ended'
+const MODE = (globalThis as any).process?.env?.MODE ?? 'ended'
 
 const nav = { userAgent: 'node', platform: 'node', maxTouchPoints: 0 } as any
 const raf = (cb: (t: number) => void) => setTimeout(() => cb(Date.now()), 0) as unknown as number

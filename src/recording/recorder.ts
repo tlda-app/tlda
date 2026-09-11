@@ -24,7 +24,7 @@ import { getSnapshot } from 'tldraw'
 import type { Editor, TLRecord } from 'tldraw'
 import { log } from '../logger'
 import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
-import { persistAndDeliverDraft, persistDraftCheckpoint, retryPendingDrafts } from './draftOutbox'
+import { discardDraft, persistAndDeliverDraft, persistDraftCheckpoint, retryPendingDrafts } from './draftOutbox'
 
 export function isRecordable(rec: TLRecord | undefined): boolean {
   return !!rec && rec.typeName === 'shape' && !FLEET_SHAPE_TYPES.has(rec.type)
@@ -111,6 +111,8 @@ let activeDoc: string | null = null
 let activeToken: string | null = null
 let activeRecordingId: string | null = null
 let checkpointQueue: Promise<void> = Promise.resolve()
+/** Set once the lecture is being delivered: queued checkpoints stop writing. */
+let checkpointsClosed = false
 let lastCamera: { x: number; y: number; z: number } | null = null
 // Off-the-record bookkeeping: paused stretches are subtracted from the clock so
 // the recorded timeline (and the paused audio) contain only on-record time.
@@ -130,6 +132,12 @@ const CAMERA_SAMPLE_MS = 120
  * instead of one step per pointer move. Its finished form is unaffected.
  */
 const STROKE_SAMPLE_MS = 100
+/**
+ * How long the final upload waits for an outstanding checkpoint write before
+ * going ahead without it. Long enough that an ordinary slow write still settles
+ * first; short enough that a hung one cannot hold the lecture hostage.
+ */
+const CHECKPOINT_SETTLE_MS = 2000
 
 /** Elapsed on-record ms — excludes any time spent off the record. */
 function now(): number {
@@ -146,6 +154,7 @@ export async function startRecording(editor: Editor | null, doc: string): Promis
   activeToken = token
   activeRecordingId = `rec-${Date.now().toString(36)}`
   checkpointQueue = Promise.resolve()
+  checkpointsClosed = false
   activeDoc = doc
   activeEditor = editor
   setState({ status: 'starting', startedAt: null, paused: false, doc, error: null })
@@ -198,7 +207,13 @@ export async function startRecording(editor: Editor | null, doc: string): Promis
     if (!doc || !id) return
     const checkpointMeta = recordingMeta(doc, id, mediaRecorder?.mimeType || 'audio/webm', Math.max(1, now()))
     const checkpointAudio = new Blob([...audioChunks], { type: checkpointMeta.audioMime })
-    checkpointQueue = checkpointQueue.then(() => persistDraftCheckpoint(doc, id, checkpointMeta, checkpointAudio))
+    checkpointQueue = checkpointQueue
+      // Once the lecture is being delivered, a checkpoint still sitting in this
+      // queue must not run: it would write a SHORTER draft back under the same
+      // key after delivery removed it, and the retry path would then re-POST it
+      // over the finished recording — the server stores by id, so a stale
+      // checkpoint overwrites a complete lecture with a partial one.
+      .then(() => (checkpointsClosed ? undefined : persistDraftCheckpoint(doc, id, checkpointMeta, checkpointAudio)))
       .catch((error) => log.error('recording', 'checkpoint-failed', { error: String(error) }))
   }
 
@@ -506,6 +521,9 @@ export async function stopRecording(token: string): Promise<string | null> {
   }
   if (state.status !== 'recording' || !mediaRecorder) return null
   setState({ status: 'saving' })
+  // From here the draft belongs to delivery: no queued checkpoint may write it
+  // back underneath us.
+  checkpointsClosed = true
 
   // If stopped while off the record, settle the final paused stretch first so the
   // duration reflects only on-record time.
@@ -534,8 +552,30 @@ export async function stopRecording(token: string): Promise<string | null> {
   const meta = recordingMeta(doc, id, audioMime, duration)
 
   try {
-    await checkpointQueue
+    // Bounded, because a checkpoint can HANG rather than fail. `.catch()` on the
+    // queue handles a rejected write; an IndexedDB transaction that never
+    // settles — quota pressure, another tab, a slow disk — leaves this promise
+    // permanently unresolved, and waiting on it unconditionally stranded the
+    // whole lecture in 'saving' with nothing uploaded and nothing on screen.
+    //
+    // Waiting at all is about ordering: a checkpoint landing after delivery
+    // would put the draft back. `checkpointsClosed` now stops queued writes, so
+    // the remaining exposure is the single in-flight one, and the trade is
+    // deliberate — a possible duplicate delivery is recoverable, a lost lecture
+    // is not.
+    await Promise.race([
+      checkpointQueue,
+      new Promise<void>((resolve) => setTimeout(resolve, CHECKPOINT_SETTLE_MS)),
+    ])
     await uploadRecording(doc, id, meta, blob)
+    // Bounding the wait above means a checkpoint can still be in flight now. If
+    // it lands it puts an older, shorter envelope back under this key, and the
+    // retry path would re-POST it over the lecture we just delivered. So once it
+    // has settled — however long that takes, and never if it never does — clear
+    // the draft again.
+    void checkpointQueue
+      .then(() => discardDraft(doc, id))
+      .catch((error) => log.error('recording', 'draft-discard-failed', { error: String(error) }))
     log.info('recording', 'saved', { doc, id, events: events.length, duration_ms: meta.duration_ms })
 
   } catch (e: any) {
