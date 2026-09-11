@@ -57,8 +57,7 @@ export async function loadHtmlDocument(
   if (!Array.isArray(allPageInfos)) {
     throw new Error(`page-info.json for "${name}" is not a list of pages`)
   }
-  const pageInfos = allPageInfos.filter(info => info.variant !== 'slides')
-  return createHtmlDocumentFromPageInfo(name, basePath, pageInfos)
+  return createHtmlDocumentFromPageInfo(name, basePath, allPageInfos)
 }
 
 /**

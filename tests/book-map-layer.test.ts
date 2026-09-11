@@ -75,8 +75,8 @@ test('a paired deck does not renumber the chapters the ToC navigates by', () => 
   // two chapters.
   const pages = [
     chapter('one', 'one.qmd', { variant: 'chapter' }),
-    chapter('one-slides', 'one.qmd', { variant: 'slides' }),
     chapter('two', 'two.qmd', { variant: 'chapter' }),
+    chapter('one-slides', 'one.qmd', { variant: 'slides' }),
   ]
 
   assert.deepEqual(
@@ -85,15 +85,14 @@ test('a paired deck does not renumber the chapters the ToC navigates by', () => 
   )
 })
 
-test('a deck belonging to no chapter still opens only as a deck', () => {
+test('a deck belonging to no chapter gets its own map in the book', () => {
   const pages = [
     chapter('ch', 'ch.qmd', { variant: 'chapter' }),
     chapter('standalone-slides', 'standalone-slides.qmd', { variant: 'slides' }),
   ]
 
   const view = pagesForView(pages, 'html-pages')
-  assert.equal(view.length, 1)
-  assert.equal(view[0].file, 'ch.html')
+  assert.deepEqual(view.map(page => page.file), ['ch.html', 'standalone-slides.html'])
 })
 
 test('a document whose entries carry no group keeps its positional page ids', () => {
