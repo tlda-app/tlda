@@ -532,7 +532,12 @@ async function buildPdfExport(ctx, target) {
         {
           cwd: texDir,
           timeout: 180000,
-          env: { ...process.env, TEXINPUTS: `${texDir}:${ctx.srcDir}:`, BIBINPUTS: `${texDir}:${ctx.srcDir}:` },
+          env: {
+            ...process.env,
+            FLEET_ID: '',
+            TEXINPUTS: `${texDir}:${ctx.srcDir}:`,
+            BIBINPUTS: `${texDir}:${ctx.srcDir}:`,
+          },
         },
       )
     } catch (e) { execErr = e }
