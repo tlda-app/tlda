@@ -21,6 +21,7 @@ import { ClassroomDeviceTransferRedeem } from './classroom/ClassroomDeviceTransf
 import { useClassroomManifest } from './classroom/useClassroomManifest'
 import { ProblemMarking } from './classroom/ProblemMarking'
 import { StudentWork } from './classroom/StudentWork'
+import { HomeworkComparisonWorkspace } from './classroom/HomeworkComparisonWorkspace'
 import { MarkingLifecycle } from './classroom/MarkingLifecycle'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
@@ -53,7 +54,7 @@ function standaloneWorkspace() {
 }
 function isStandaloneWorkspaceRoute() {
   const workspace = standaloneWorkspace()
-  return workspace === 'classroom-gradebook' || workspace === 'classroom-problems' || workspace === 'classroom-work' || workspace === 'classroom-register' || workspace === 'classroom-transfer'
+  return workspace === 'classroom-gradebook' || workspace === 'classroom-problems' || workspace === 'classroom-work' || workspace === 'classroom-comparison' || workspace === 'classroom-register' || workspace === 'classroom-transfer'
 }
 // Fetch auth level (presenter permission) — fire and forget, UI updates reactively.
 // The standalone gradebook uses its classroom API request instead of viewer auth state.
@@ -1391,6 +1392,7 @@ function App() {
           : standaloneWorkspace() === 'classroom-transfer' ? <ClassroomDeviceTransferRedeem />
           : standaloneWorkspace() === 'classroom-problems' ? <ProblemMarking />
           : standaloneWorkspace() === 'classroom-work' ? <StudentWork />
+          : standaloneWorkspace() === 'classroom-comparison' ? <HomeworkComparisonWorkspace />
           : <GradebookWorkspace />}
       </ErrorBoundary>
     )

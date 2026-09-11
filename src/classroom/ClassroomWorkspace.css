@@ -30,6 +30,16 @@
 .classroomDropTarget strong { font-size: 18px; }
 .classroomDropTarget span { color: #6c685f; }
 .classroomFileInput { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.classroomComparisonLinks { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.classroomComparisonLinks a, .classroomComparisonWorkspace > header a, .classroomComparisonSubmissions article header a { color: inherit; text-underline-offset: 3px; }
+.classroomComparison { display: grid; grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr); gap: 18px; align-items: start; }
+.classroomComparisonSolution { position: sticky; top: 16px; }
+.classroomComparisonSolution, .classroomComparisonSubmissions article { min-width: 0; padding: 12px; border: 1px solid #e4e1d8; border-radius: 10px; background: white; }
+.classroomComparison iframe { display: block; width: 100%; height: calc(100vh - 150px); min-height: 560px; border: 0; background: white; }
+.classroomComparisonSubmissions { display: grid; gap: 18px; }
+.classroomComparisonSubmissions article > header { align-items: baseline; margin-bottom: 10px; }
+.classroomComparisonSubmissions article > header div { margin-right: auto; color: #6c685f; font-size: 12px; }
+@media (max-width: 820px) { .classroomComparison { grid-template-columns: 1fr; } .classroomComparisonSolution { position: static; } }
 .classroomRegistration { max-width: 720px; margin: 0 auto; }
 .classroomRegistration form, .classroomTokenResult { display: grid; gap: 14px; padding: 20px; background: white; }
 .classroomRegistration label { display: grid; gap: 5px; color: #6c685f; font-size: 12px; }
