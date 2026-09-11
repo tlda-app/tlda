@@ -77,6 +77,11 @@ export function GradebookWorkspace() {
   return <main className="classroomWorkspace">
     <header><div><h1>{data.course.title}</h1><div>Submissions and marking</div></div>{counts}</header>
     <h2>Submitted homework</h2>
+    <nav className="classroomComparisonLinks" aria-label="Homework comparisons">
+      {data.assignments.map(assignment => <a key={assignment.id} href={`?workspace=classroom-comparison&course=${encodeURIComponent(courseId)}&assignment=${encodeURIComponent(assignment.id)}`}>
+        Compare {assignment.title}
+      </a>)}
+    </nav>
     <table className="classroomTable classroomSubmissionTable">
       <thead><tr><th>Assignment</th><th>Student</th><th>Accepted</th><th>Status</th><th>Build</th><th>Work</th></tr></thead>
       <tbody>{submissions.map(({ student, cell, assignment }) => <tr key={`${cell.assignmentId}:${student.id}`}>
