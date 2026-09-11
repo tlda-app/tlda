@@ -959,9 +959,15 @@ export async function extractPipelineWarningsAsync(name) {
  * markers, so a `[build] ...` failure line matched nothing there either.
  *
  * `[build] ` is the failure marker rather than a heuristic: `withBuildLog`'s
- * catch and the worker's missing-main path are the only two writers of it, and
- * both write it because the build failed. Everything else in the file is a
- * builder's own progress log, prefixed with its format (`[qmd]`, `[markdown]`).
+ * catch, the worker's missing-main path, and the qmd builder's deck-render
+ * failure are its only writers, and each writes it because something failed.
+ * Everything else in the file is a builder's own progress log, prefixed with
+ * its format (`[qmd]`, `[markdown]`).
+ *
+ * The deck case is the one where the BUILD did not fail: a broken deck must not
+ * stop its chapter's edit from publishing, so the build succeeds while an entry
+ * here names the deck whose last good render is still being served. An error
+ * listed against a successful build is that, and is deliberate.
  */
 async function buildLogErrors(name) {
   const logText = await readTextOrNull(join(projectDir(name), 'build.log'))
