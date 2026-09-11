@@ -103,6 +103,8 @@ let events: RecordingEvent[] = []
 /** Ids of shapes BORN during this recording — lifted off the live doc on stop. */
 let t0 = 0
 let unlistenStore: (() => void) | null = null
+let unlistenPage: (() => void) | null = null
+let lastPageId: string | null = null
 let cameraInterval: ReturnType<typeof setInterval> | null = null
 let activeEditor: Editor | null = null
 let activeDoc: string | null = null
@@ -184,6 +186,7 @@ export async function startRecording(editor: Editor | null, doc: string): Promis
   paused = false
   pausedAccum = 0
   lastCamera = null
+  lastPageId = null
 
   const mime = pickAudioMime()
   mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
@@ -327,8 +330,38 @@ function appendStroke(t: number, put: TLRecord[], remove: string[]): void {
   events[events.length - 1] = { ...last, put: folded }
 }
 
+/**
+ * A base event for the page the reader just turned to.
+ *
+ * A multipage HTML document is one editor holding a TLDraw page per chapter
+ * (`loaders/createShapes.ts`), so turning to another homework changes
+ * `currentPageId` and nothing else — no remount, no new editor. That field
+ * lives on the `instance` record, which is SESSION scope, so the store listener
+ * that captures strokes (document scope) never sees it, and a camera event
+ * carries x/y/z but no page. Without this the student would hear the whole lab
+ * while looking at whichever page capture started on.
+ *
+ * It reuses the base event a document switch already emits rather than adding a
+ * kind: `playbackSegmentAt` takes the last base at or before t, and loading its
+ * snapshot restores `currentPageId` with it
+ * (`loadSessionStateSnapshotIntoStore` takes the page from the snapshot), so
+ * replay turns the page by the same route it changes document.
+ */
+function watchPageChanges(editor: Editor): void {
+  lastPageId = editor.getCurrentPageId()
+  unlistenPage = editor.store.listen(() => {
+    if (paused) return // off the record — the page we return on is picked up by the next change
+    if (activeEditor !== editor) return
+    const pageId = editor.getCurrentPageId()
+    if (pageId === lastPageId) return
+    lastPageId = pageId
+    events.push({ t: now(), kind: 'base', snapshot: getSnapshot(editor.store) })
+  }, { source: 'user', scope: 'session' })
+}
+
 function attachEditor(editor: Editor): void {
   if (unlistenStore) { unlistenStore(); unlistenStore = null }
+  if (unlistenPage) { unlistenPage(); unlistenPage = null }
   if (cameraInterval) { clearInterval(cameraInterval); cameraInterval = null }
   activeEditor = editor
 
@@ -373,16 +406,23 @@ function attachEditor(editor: Editor): void {
   const c0 = editor.getCamera()
   events.push({ t: now(), kind: 'camera', x: c0.x, y: c0.y, z: c0.z })
   lastCamera = { x: c0.x, y: c0.y, z: c0.z }
+
+  // 4. Page — turning to another chapter of a multipage document.
+  watchPageChanges(editor)
 }
 
 export function switchRecordingEditor(token: string, editor: Editor | null): boolean {
   if (activeToken !== token || state.status !== 'recording') return false
   if (!editor) {
     if (unlistenStore) { unlistenStore(); unlistenStore = null }
+    if (unlistenPage) { unlistenPage(); unlistenPage = null }
     if (cameraInterval) { clearInterval(cameraInterval); cameraInterval = null }
     activeEditor = null
     return true
   }
+  // The document switch's own base. attachEditor then re-arms the page watch
+  // against the incoming editor, so the next page turn inside it is captured
+  // and this base is not duplicated by one.
   events.push({ t: now(), kind: 'base', snapshot: getSnapshot(editor.store) })
   attachEditor(editor)
   return true
@@ -432,6 +472,7 @@ export async function stopRecording(token: string): Promise<string | null> {
 
   // Detach listeners first so nothing lands after the clock is closed.
   if (unlistenStore) { unlistenStore(); unlistenStore = null }
+  if (unlistenPage) { unlistenPage(); unlistenPage = null }
   if (cameraInterval) { clearInterval(cameraInterval); cameraInterval = null }
 
   const audioMime = mediaRecorder.mimeType || 'audio/webm'

@@ -91,7 +91,16 @@ function makeDoc(name: string) {
   // mounted editor that is this call's job; it is not on the public TLStore type.
   ;(store as unknown as { ensureStoreIsUsable(): void }).ensureStoreIsUsable()
   const pageId = store.query.records('page').get()[0].id
-  return { name, store, pageId, editor: { store, getCamera: () => ({ x: 0, y: 0, z: 1 }) } as any }
+  return {
+    name, store, pageId,
+    editor: {
+      store,
+      getCamera: () => ({ x: 0, y: 0, z: 1 }),
+      // The recorder watches this to record a page turn; a real Editor always
+      // has it, so a double without it tests a narrower editor than exists.
+      getCurrentPageId: () => pageId,
+    } as any,
+  }
 }
 
 /** One pointer move: rewrite the whole shape with the path re-encoded, as the draw tool does. */
