@@ -1,9 +1,23 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { after } from 'node:test'
 
-import { createHtmlDocumentFromPageInfo, type HtmlPageEntry } from '../src/loaders/htmlLoader'
+import type { HtmlPageEntry } from '../src/loaders/htmlLoader'
 import { pagesForView } from '../src/loaders/documentFormatRouting'
 import { orphanedDocumentPageIds } from '../src/loaders/createShapes'
+
+// tldraw opens an internal MessagePort when its runtime is imported. Capture
+// only the handles introduced by this test's dynamic import, then close them so
+// the Node test worker can finish naturally instead of timing out.
+const handlesBeforeTldraw = new Set(process._getActiveHandles())
+const { createHtmlDocumentFromPageInfo } = await import('../src/loaders/htmlLoader')
+const tldrawHandles = process._getActiveHandles().filter(handle => !handlesBeforeTldraw.has(handle))
+after(() => {
+  for (const handle of tldrawHandles) {
+    if (handle.constructor?.name === 'MessagePort' && 'close' in handle) {
+      ;(handle as { close: () => void }).close()
+    }
+  }
+})
 
 /**
  * project > map > doc. A map is one TLDraw page; a doc is a place on it. The
