@@ -883,7 +883,14 @@ async function spawnRespawn(params) {
         cwd,
         harness: requestedKind,
         model,
-        reason: composer.submitted ? 'kickoff-parked-resubmitted' : 'kickoff-parked-unsubmitted',
+        // Named separately because the next action differs: a resubmit needs
+        // nothing, an unsubmitted one is a bug in the recovery, and a dialog is
+        // a question only a person may answer.
+        reason: composer.submitted
+          ? 'kickoff-parked-resubmitted'
+          : composer.blockedByDialog
+            ? 'kickoff-parked-behind-dialog'
+            : 'kickoff-parked-unsubmitted',
       })
     }
     return {

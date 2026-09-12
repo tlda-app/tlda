@@ -132,6 +132,30 @@ export function stripGhostSpans(text = '') {
   return String(text).replace(GHOST_SPAN_RE, '').replace(ANSI_RE, '')
 }
 
+// A PANE-CONTENT MATCH AND A KEYSTROKE TARGET ARE DIFFERENT ADDRESSES.
+// `notify-does-not-wake`, 2026-09-12, and it is the whole rule: matching text
+// somewhere in a pane licenses nothing about what currently has focus. Enter
+// goes to the focused widget, so a composer match plus an Enter can confirm a
+// dialog that happens to be up.
+//
+// Measured on a probe carrying three queued kickoff prompts AND a dev-channels
+// dialog whose highlighted default was `1. I am using this for local
+// development`. A recovery keyed on the composer would have confirmed it.
+//
+// So: anything about to send a keystroke asks this first and refuses if it is
+// true. It is deliberately COARSE -- any dialog, recognised or not -- because
+// the alternative is enumerating dialogs, which is the treadmill that produced
+// a third unrecognised case within a day of there being two.
+//
+// **Run this on the raw pane, never on ghost-stripped text.** The dialog renders
+// in `38;5;246`, which is inside the greyscale ghost range above, so stripping
+// first would remove the very thing this looks for.
+const DIALOG_KEYPRESS_RE = /Enter to confirm|Esc to cancel|❯\s*\d\.\s|Press enter to continue/
+export function dialogAwaitingKeypress(pane = '', tailLines = 25) {
+  const tail = String(pane).split('\n').slice(-tailLines).join('\n')
+  return DIALOG_KEYPRESS_RE.test(tail.replace(ANSI_RE, ''))
+}
+
 export function composerState(harnessKind, pane = '', marker = '', { escapes = false } = {}) {
   const prompt = COMPOSER_PROMPT[harnessKind]
   const absent = { promptIndex: -1, containsMarker: false, busyAfter: false }

@@ -198,3 +198,62 @@ test('both ghost renderings are rejected, and a queued prompt is not', async () 
     assert.equal(sent.length > 0, expectParked, `${label}: keys sent only when it is real`)
   }
 })
+
+// A PANE-CONTENT MATCH AND A KEYSTROKE TARGET ARE DIFFERENT ADDRESSES.
+// Measured by `notify-does-not-wake` on a probe carrying three queued kickoff
+// prompts AND a dev-channels dialog. The classifier was right -- the span was on
+// the queued prompts -- and Enter would still have gone to the dialog, whose
+// highlighted default was "I am using this for local development".
+const DEV_CHANNELS_DIALOG = [
+  'WARNING: Loading development channels',
+  '  --dangerously-load-development-channels is for local channel development only.',
+  '  ❯ 1. I am using this for local development',
+  '    2. Exit',
+  '  Enter to confirm · Esc to cancel',
+].join('\n')
+
+test('a queued kickoff with a dialog up is reported, never answered', async () => {
+  // The DANGEROUS arrangement: the composer is the last `❯` line, so the
+  // classifier matches our kickoff and the old code would have sent Enter --
+  // straight into the dialog, because focus is not where the text is.
+  //
+  // (With the dialog rendered BELOW, its own `❯ 1.` selection marker becomes the
+  // last `❯` line and the match fails by accident. That accident is not a
+  // safeguard, which is why the guard exists and why this fixture is ordered
+  // this way.)
+  const queued = `${ESC}[1m❯${ESC}[0m ${ESC}[48;5;237m${KICKOFF}${ESC}[0m`
+  const sent = []
+  const tmuxExec = async (_s, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: `${DEV_CHANNELS_DIALOG}\n${queued}` }
+    sent.push(args.at(-1))
+    return { stdout: '' }
+  }
+
+  const result = await submitParkedKickoff('s', 'claude', KICKOFF, { tmuxExec, sleep: async () => {} })
+
+  assert.equal(result.parked, true, 'the kickoff really is waiting')
+  assert.equal(result.blockedByDialog, true, 'and it says why it did not act')
+  assert.equal(result.submitted, false)
+  assert.deepEqual(sent, [], 'NOTHING was pressed while a dialog we cannot read has focus')
+})
+
+test('the same queued kickoff without a dialog is submitted', async () => {
+  // Control for the test above: identical composer, dialog removed. Without this
+  // the guard could refuse everything and still look correct.
+  let composerText = KICKOFF
+  const sent = []
+  const tmuxExec = async (_s, command, ...args) => {
+    if (command === 'capture-pane') {
+      return { stdout: composerText ? `${ESC}[1m❯${ESC}[0m ${ESC}[48;5;237m${composerText}${ESC}[0m\n  claude` : `${ESC}[1m❯${ESC}[0m \n  claude` }
+    }
+    sent.push(args.at(-1))
+    if (args.at(-1) === 'Enter') composerText = ''
+    return { stdout: '' }
+  }
+
+  const result = await submitParkedKickoff('s', 'claude', KICKOFF, { tmuxExec, sleep: async () => {} })
+
+  assert.equal(result.parked, true)
+  assert.equal(result.submitted, true)
+  assert.deepEqual(sent, ['Enter'])
+})
