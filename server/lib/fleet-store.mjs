@@ -2897,7 +2897,12 @@ export class FleetStore {
     this.db.transaction(() => {
       const existingDefinition = this.getLabelDefinition(label);
       if (existingDefinition && !existingDefinition.singleton) {
-        throw new Error(`Label "${label}" is already defined as non-singleton.`);
+        if (!transfer) throw new Error(`Label "${label}" is already defined as non-singleton.`);
+        this.db.prepare(`
+          UPDATE label_definitions
+          SET singleton = 1, singleton_set_at = ?, singleton_set_by = ?
+          WHERE label = ? AND singleton = 0
+        `).run(now, actorId, label);
       }
       const holders = this._singletonLabelHolders(label, agentId);
       if (holders.length && !transfer) {
