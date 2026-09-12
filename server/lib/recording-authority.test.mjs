@@ -341,8 +341,11 @@ test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit a
   } finally {
     authenticated?.close()
     unauthenticated?.close()
-    child.kill('SIGKILL')
-    await new Promise(resolve => child.once('exit', resolve))
+    if (child.exitCode == null) {
+      const exited = new Promise(resolve => child.once('exit', resolve))
+      child.kill('SIGKILL')
+      await exited
+    }
     rmSync(dir, { recursive: true, force: true })
   }
 })
