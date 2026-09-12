@@ -42,8 +42,14 @@ export async function materializeBuildInstance({ name, sourceRevision, lifecycle
   mark = process.hrtime.bigint()
   let fileCount = 0
   let byteCount = 0
-  if (materializeLinks) await materializeAcceptedRevision({ revision, lifecycle, destination: source })
-  else {
+  if (materializeLinks) {
+    // qmd projects take this branch, so it is the one a chapter build uses —
+    // reporting no size here would leave the case that prompted the work as the
+    // one case the instrument says nothing about.
+    const written = await materializeAcceptedRevision({ revision, lifecycle, destination: source })
+    fileCount = written.files
+    byteCount = written.bytes
+  } else {
     for (const entry of revision.files || []) {
       const bytes = await lifecycle.readRevisionFile(sourceRevision, entry.path)
       if (!bytes) throw new Error(`submitted revision is missing ${entry.path}`)
