@@ -81,6 +81,12 @@ export class ClassroomStore {
     // would silently address a project that need not exist. Its three siblings
     // (source, solutions, template) are stored for the same reason.
     if (!assignmentColumns.has('handout_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN handout_doc_key TEXT')
+    // Which file in the frozen project is the template. classroomTemplateSource
+    // could only ever read the project's mainFile, and the handout project's is
+    // the rendered HTML -- so the only QMD it could reach was the master, which
+    // carries no answer blocks at all. Naming the file is what lets the template
+    // be the generated handout QMD, which is already committed in that project.
+    if (!assignmentColumns.has('template_file')) this.db.exec('ALTER TABLE assignments ADD COLUMN template_file TEXT')
     // The answer ids a submission actually contains. Problem-by-problem marking
     // pairs one exercise across every student, so the join key has to survive
     // upload rather than being re-derived by reparsing each archive.
@@ -182,11 +188,11 @@ export class ClassroomStore {
     return this.getAssignment(id)
   }
   getAssignment(id) { return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
-    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
+    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,template_file AS templateFile,
     source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
     book_page_file AS bookPageFile FROM assignments WHERE id=?`).get(id) || null }
   listAssignments(courseId) { return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
-    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
+    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,template_file AS templateFile,
     source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
     book_page_file AS bookPageFile FROM assignments WHERE course_id=? ORDER BY due_at`).all(courseId) }
   /**
@@ -206,7 +212,7 @@ export class ClassroomStore {
   assignmentsForSolutionBearingDoc(docKey) {
     if (!docKey) return []
     return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
-      solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
+      solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,template_file AS templateFile,
       source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
       book_page_file AS bookPageFile
       FROM assignments WHERE solutions_doc_key=? OR source_doc_key=? ORDER BY due_at`).all(docKey, docKey)
@@ -223,7 +229,7 @@ export class ClassroomStore {
   assignmentForBookPage(bookPageFile, courseId) {
     if (!bookPageFile || !courseId) return null
     return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
-      solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
+      solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,template_file AS templateFile,
       source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
       book_page_file AS bookPageFile
       FROM assignments WHERE book_page_file=? AND course_id=?`).get(bookPageFile, courseId) || null
@@ -300,7 +306,7 @@ export class ClassroomStore {
       && owner.layerScope === 'common'
   }
 
-  freezeTemplate(assignmentId, { templateDocKey, templateVersion }) {
+  freezeTemplate(assignmentId, { templateDocKey, templateVersion, templateFile = null }) {
     if (!templateDocKey || !templateVersion) throw new Error('templateDocKey and templateVersion are required')
     const assignment = this.getAssignment(assignmentId)
     if (!assignment) throw new Error('assignment not found')
@@ -308,8 +314,8 @@ export class ClassroomStore {
       if (assignment.templateDocKey === templateDocKey && assignment.templateVersion === templateVersion) return assignment
       throw new Error('assignment template is already frozen')
     }
-    this.db.prepare('UPDATE assignments SET template_doc_key=?,template_version=? WHERE id=?')
-      .run(templateDocKey, templateVersion, assignmentId)
+    this.db.prepare('UPDATE assignments SET template_doc_key=?,template_version=?,template_file=? WHERE id=?')
+      .run(templateDocKey, templateVersion, templateFile, assignmentId)
     return this.getAssignment(assignmentId)
   }
 
