@@ -421,6 +421,50 @@ have been reading code, his screen when you have been reading the wire.
 *because* the numbers conflicted. Nothing caught the shared 21 until somebody
 asked a question neither query could answer.
 
+### 14. A reading taken before the state settled
+
+**A terminal, a DOM, a rendered pane: the state changes when the code acts, and
+the picture of it catches up afterwards.** So a check that acts and then
+immediately reads is not measuring the state; it is racing the renderer to it.
+And the race is not symmetric: the thing that has not appeared yet is the
+*effect of the fix*, so the stale frame shows the world as it was before, which
+is the world with the bug in it. **An instrument that samples too early reports
+the wrong state, and it reports it in the direction of the bug you are hunting.**
+
+**Measured 2026-09-12**, on a harness written to answer whether a launch had
+left an agent's kickoff parked unsent in its `codex` composer. The harness
+captured the pane the instant the injector returned. The injector's *last act*,
+when it gives up, is a `C-u` to clear that composer — so the read and the clear
+were in flight together, and a composer that had been cleared correctly could
+still be holding the kickoff in the frame that was read. Every such reading
+scores as the defect.
+
+**How much it corrupted was never isolated**, because a code fix landed in the
+same window; what is certain is that the race was there by construction and that
+its error only ever runs one way. That asymmetry is the reason it deserves an
+entry: a noisy instrument wastes runs, while a *biased* one confirms whatever it
+was built to look for.
+
+**The check: settle, then read — and prove the settle is doing work.** Take the
+reading twice, once immediately and once after a delay, and compare. If they
+differ, the delay is load-bearing and the immediate reading was never evidence.
+
+**That check is not what happened here.** 900ms was *chosen*, and the false
+readings stopped; the renderer's actual latency was never measured, so the delay
+is known to be sufficient on this box at this load and not known to be
+sufficient anywhere else. The number is a property of the renderer rather than of
+the code under test, which is exactly why picking one is a weaker position than
+measuring it.
+
+**Do not reach for a retry loop instead.** Polling until the pane says what you
+expect is this shape with the bias made explicit — it terminates on the answer
+you wanted and times out on the other one.
+
+**Related, and a different entry:** the *rate* this harness measured also moved
+with load, because the failure window it was sampling is bounded by how fast the
+harness starts. That is shape 1 above, and the two compound — a bound measuring
+the machine, sampled by a reading that beats the renderer.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see
