@@ -655,8 +655,24 @@ body.tlda-pan-mode * {
     padding: 1rem;
   }
 
+  /* Skip, 2026-09-12, on the index chat from his phone: "maybe cojld be made
+     taller say like almost fullscreen on my phone but not so fillscreen you cant
+     see there is stuff below ir. 4/5?" — the 4/5 is his, and so is the reason for
+     the remaining fifth: the projects below have to stay visible, so you can see
+     the page continues. It was 236px here, which is SMALLER than the 260px it
+     gets on a desktop; that is what he meant by "a bit small".
+
+     He also put it next to the app's phone layout: "wed use the same shape but
+     higer" — that layout's chat is `viewport.h - 108` (80px of it reserved above
+     for TOC buttons, which the index does not have), so ~87% of the screen. 4/5
+     is a little under that and it is the number he gave.
+
+     dvh, not vh: on iOS `vh` measures the chrome-HIDDEN viewport, so 80vh
+     overflows while the address bar is showing and eats exactly the strip he
+     asked to keep. This is the only dvh in the tree — it is here because the
+     requirement is specifically about what remains visible. */
   .index-top-chat {
-    height: 236px;
+    height: 80dvh;
     margin-bottom: 14px;
   }
 
