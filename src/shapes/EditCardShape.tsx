@@ -24,12 +24,29 @@ import { BaseBoxShapeUtil, HTMLContainer, T, stopEventPropagation, useEditor } f
 import { useCallback, useState } from 'react'
 import { buildFleetAgentFilter } from '../../shared/filter-semantics.mjs'
 import { createFleetShape } from './fleet-utils'
+// @ts-ignore — vanilla JS module
+import { getHumanName, getHumanId } from '../fleet/fleet-data.mjs'
 import './EditCardShape.css'
 
-import { EDIT_CARD_H, EDIT_CARD_W } from './editCardMetrics'
+import { EDIT_CARD_H, EDIT_CARD_W } from '../../shared/edit-card-metrics.mjs'
 import type { BridgeEditor } from '../hooks/editBridgeLayout'
 
 export { EDIT_CARD_H, EDIT_CARD_W }
+
+/**
+ * Who to sign a note with when it is written in this browser.
+ *
+ * The friendly name, because a card is read by people and a fleet id is an
+ * address rather than a name. Falls back to the id only when there is no name
+ * yet, and to nothing at all rather than inventing an author.
+ */
+function localAnnotator(): string {
+  try {
+    return getHumanName() || getHumanId() || ''
+  } catch {
+    return ''
+  }
+}
 
 function parseJsonProp<T>(value: string | undefined, fallback: T): T {
   if (!value) return fallback
@@ -57,6 +74,10 @@ export class EditCardShapeUtil extends BaseBoxShapeUtil<any> {
     filesJson: T.string,
     editorsJson: T.string,
     note: T.string,
+    // Who wrote the note. Empty when there is no note. A person's judgment and
+    // an agent's guess must never be indistinguishable on the card -- that is
+    // the same rule as not fabricating an author for a build, one level up.
+    noteAuthor: T.string,
   }
 
   getDefaultProps() {
@@ -68,6 +89,7 @@ export class EditCardShapeUtil extends BaseBoxShapeUtil<any> {
       filesJson: '[]',
       editorsJson: '[]',
       note: '',
+      noteAuthor: '',
     }
   }
 
@@ -93,14 +115,21 @@ export class EditCardShapeUtil extends BaseBoxShapeUtil<any> {
 // types are a closed union that custom types are not members of.
 function EditCard({ shape }: { shape: any }) {
   const editor = useEditor()
-  const { w, h, hash, timestamp, note } = shape.props
+  const { w, h, hash, timestamp, note, noteAuthor } = shape.props
   const files = parseJsonProp<string[]>(shape.props.filesJson, [])
   const editors = parseJsonProp<BridgeEditor[]>(shape.props.editorsJson, [])
   const [draft, setDraft] = useState(note)
 
+  // Writing a note signs it. Clearing one unsigns it, so an empty card never
+  // carries a stale author.
   const commitNote = useCallback((value: string) => {
     if (value === shape.props.note) return
-    editor.updateShape({ id: shape.id, type: shape.type, props: { ...shape.props, note: value } })
+    const author = value.trim() ? (localAnnotator() || shape.props.noteAuthor || '') : ''
+    editor.updateShape({
+      id: shape.id,
+      type: shape.type,
+      props: { ...shape.props, note: value, noteAuthor: author },
+    })
   }, [editor, shape])
 
   // Previewing a build is scrubbing the compare column to it -- the same
@@ -160,6 +189,9 @@ function EditCard({ shape }: { shape: any }) {
           </div>
         </div>
 
+        {noteAuthor && (
+          <div className="edit-card-note-author" title="Who wrote this note">{noteAuthor}</div>
+        )}
         <textarea
           className="edit-card-note"
           value={draft}

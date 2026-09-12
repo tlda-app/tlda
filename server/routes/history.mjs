@@ -19,7 +19,8 @@ import { readProject, outputDir, projectDir, sourceDir as getSourceDir, validate
 import { listVersions, listVersionRange, versionAt, versionTimestamp, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { announcePageJson } from '../../shared/pagination-announce.mjs'
-import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
+import { broadcastSignal, putShape, upsertShape } from '../lib/sync-rooms.mjs'
+import { EDIT_CARD_H, EDIT_CARD_W } from '../../shared/edit-card-metrics.mjs'
 import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
 import { loadSynctex, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 
@@ -359,6 +360,75 @@ router.get('/shadow/bridge', requireRead, async (req, res) => {
     })
   } catch (e) {
     res.status(500).json({ error: `shadow bridge failed: ${e.message}` })
+  }
+})
+
+/**
+ * POST /shadow/bridge/annotate — write a note on one build of a bridge.
+ *
+ * The spec's §14: an agent reads an interval and annotates it -- groups edits,
+ * summarises a run, flags a likely mistake -- without touching the document.
+ * That is how the cheap organisational work in §1 is supposed to get done, and
+ * until this existed only a person clicking in a browser could record anything.
+ *
+ * It writes the same card a person writes on, found by the same id, so an
+ * agent's note and a reader's note are one object rather than two surfaces
+ * that have to be reconciled. Writing while the bridge is closed is normal:
+ * the card is created, and opening the bridge later finds it and keeps it.
+ *
+ * `author` is required and is not decoration. A card where an agent's guess
+ * and a person's judgement look identical is lying about the one thing it
+ * exists to say, which is the same rule as never inventing an author for a
+ * build.
+ */
+router.post('/shadow/bridge/annotate', requireRw, async (req, res) => {
+  const { name } = req.params
+  const hash = String(req.body?.hash || '')
+  const note = String(req.body?.note ?? '')
+  const author = String(req.body?.author || '').trim()
+
+  if (!/^[0-9a-f]{7,40}$/i.test(hash)) {
+    return res.status(400).json({ error: 'hash must be a Git commit hash' })
+  }
+  if (!author) return res.status(400).json({ error: 'author is required — an unsigned note is not one' })
+
+  const project = await readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  // The build has to exist, or the note is about nothing. Cheap, and it stops
+  // a typo becoming a card nobody can explain.
+  if (await versionTimestamp(name, hash) === null) {
+    return res.status(404).json({ error: `Unknown version: ${hash}` })
+  }
+
+  const hash7 = hash.slice(0, 7)
+  const shapeId = `shape:edit-card-${hash7}`
+  try {
+    await upsertShape(`doc-${name}`, shapeId, (current) => {
+      const base = current || {
+        id: shapeId,
+        typeName: 'shape',
+        type: 'edit-card',
+        x: 0,
+        y: 0,
+        rotation: 0,
+        index: 'a1',
+        parentId: 'page:page',
+        isLocked: false,
+        opacity: 1,
+        meta: {},
+        props: {
+          w: EDIT_CARD_W, h: EDIT_CARD_H, hash, timestamp: 0,
+          filesJson: '[]', editorsJson: '[]', note: '', noteAuthor: '',
+        },
+      }
+      // Only the note and its author. Everything else on the card is what the
+      // bridge read from history, and an annotator does not get to change it.
+      return { ...base, props: { ...base.props, note, noteAuthor: note.trim() ? author : '' } }
+    })
+    res.json({ ok: true, project: name, hash, shapeId, author })
+  } catch (e) {
+    res.status(500).json({ error: `annotate failed: ${e.message}` })
   }
 })
 
