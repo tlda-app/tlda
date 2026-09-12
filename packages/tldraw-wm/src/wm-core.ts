@@ -42,7 +42,13 @@ export interface LayerLayout {
 export interface ForkViewportAdapter {
 	screenToPage(point: Point, opts: { viewportId: string }): Point
 	pageToScreen(point: Point, opts: { viewportId: string }): Point
-	getCamera?(viewportId: string): Camera
+	/**
+	 * The viewport's camera, or null when nothing has registered it yet — a
+	 * layer can be defined before the panel that registers its viewport
+	 * renders. `camera()` falls back to the layer's own camera for null, which
+	 * is what the `??` there has always been for.
+	 */
+	getCamera?(viewportId: string): Camera | null
 	setCamera?(viewportId: string, camera: Camera): void
 }
 

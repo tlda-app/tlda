@@ -168,6 +168,34 @@ export function ProblemMarking() {
     // check below compares against this rather than against whatever the screen
     // shows by the time the server answers.
     const intendedRoomId = `doc-${answer.contentRef}`
+
+    // Refuse before recording anything if the marking surface is not there.
+    //
+    // This toolbar is a sibling of the canvas, not a child of it, so it
+    // survives the canvas failing -- measured on the grading surface, where a
+    // viewport crash left the selector, the student name and this button
+    // rendering normally over tldraw's error dialog. Returning from that state
+    // recorded `gradingStatus: returned` on work the instructor was never
+    // shown.
+    //
+    // The check below at `resolveReturnEnds` is a different question, asked
+    // deliberately late: whether the surface CHANGED while the server call was
+    // in flight. It fails closed for the marks but the record is already
+    // written by then, which is correct when a return was genuinely started
+    // and wrong when there was never a surface to start it from.
+    //
+    // So: never mounted is refused here and nothing is written; changed
+    // mid-flight is still handled there. Both, because they are not the same
+    // failure.
+    if (!resolveReturnEnds({
+      draft: draftEditorRef.current,
+      destination: submissionEditorRef.current,
+      intendedRoomId,
+    })) {
+      setError('The marking surface is not loaded, so there is nothing to return. Nothing was recorded.')
+      return
+    }
+
     try {
       setError('')
       setReturning(true)
