@@ -577,6 +577,23 @@ worked example: it asserts the catastrophic shape is rejected *and* the allowed
 shapes are not, because a rule that fires on correct code gets disabled and then
 catches nothing.
 
+**A control that fails in the same direction as the test is not a control.** It is
+the version of this that survives a counterfactual, because the counterfactual
+goes green too — so the check looks *more* trustworthy for having one. Measured
+2026-09-12, writing a KaTeX render check: it searched the rendered output for
+`\E` and reported all twelve operators broken **when every one rendered
+correctly.** KaTeX embeds the original TeX in an `<annotation>` element, so the
+search matched on success exactly as on failure — **it was reading the input back
+and calling it output.** The negative control, an undefined macro, "passed" for
+that same reason and proved nothing.
+
+**So ask which side of the transformation your assertion is reading.** Renderers,
+serialisers and formatters routinely carry the input along beside the output —
+an annotation, a `data-` attribute, a source map, an echoed field — and a
+substring search finds it there. Assert on something only a *successful* run
+produces: in that case a structural marker in the painted DOM, with the
+annotation stripped first.
+
 **And before building an instrument, ask what already measures this.** The guard
 in the table was deleted the same night, not because it was blind — that was
 fixable — but because `server/lib/lag-profiler.mjs` already samples the isolate
