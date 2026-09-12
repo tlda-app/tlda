@@ -63,6 +63,9 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // The one rule the notification path runs, and a server setting, so it lives
   // here rather than in a source constant or an environment variable.
   'notifications',
+  // Optional server-owned email notification transport. Contact bindings stay
+  // private here; roster and chat APIs expose only delivery state.
+  'email',
   // IANA zone name (e.g. "America/New_York") that human-readable times render
   // in. DISPLAY ONLY — stored timestamps stay UTC. Read by getDisplayTimeZone()
   // in shared/display-time.mjs. Absent = render in the host machine's own zone.
@@ -215,6 +218,46 @@ export function validateServerConfigTopLevel(root, label = 'server config') {
     const ackTimeout = config.notifications.ackTimeout
     if (ackTimeout !== undefined && !parseDurationMs(ackTimeout)) {
       throw new Error(`${label}: notifications.ackTimeout must be a duration WITH A UNIT (e.g. 2s, 250ms); got ${JSON.stringify(ackTimeout)}`)
+    }
+  }
+  if (config.email !== undefined) {
+    if (!isRecord(config.email)) throw new Error(`${label}: "email" must be an object`)
+    const allowed = ['account', 'replyDomain', 'replySecretEnv', 'transport', 'inbound', 'identities']
+    const extra = Object.keys(config.email).filter(key => !allowed.includes(key))
+    if (extra.length) throw new Error(`${label}: email supports only ${allowed.join(', ')}; unknown key(s): ${extra.join(', ')}`)
+    for (const key of ['account', 'replyDomain', 'replySecretEnv']) {
+      if (typeof config.email[key] !== 'string' || !config.email[key].trim()) {
+        throw new Error(`${label}: email.${key} must be a nonempty string`)
+      }
+    }
+    if (!isRecord(config.email.transport)) throw new Error(`${label}: email.transport must be an object`)
+    const transportAllowed = ['kind', 'host', 'port', 'secure', 'username', 'passwordEnv']
+    const transportExtra = Object.keys(config.email.transport).filter(key => !transportAllowed.includes(key))
+    if (transportExtra.length) throw new Error(`${label}: email.transport supports only ${transportAllowed.join(', ')}; unknown key(s): ${transportExtra.join(', ')}`)
+    if (config.email.transport.kind !== 'smtp') throw new Error(`${label}: email.transport.kind must be "smtp"`)
+    if (typeof config.email.transport.host !== 'string' || !config.email.transport.host.trim()) throw new Error(`${label}: email.transport.host must be a nonempty string`)
+    validatePositiveInteger(config.email.transport.port, 'email.transport.port', label)
+    if (config.email.transport.secure !== true) throw new Error(`${label}: email.transport.secure must be true`)
+    for (const key of ['username', 'passwordEnv']) {
+      if (typeof config.email.transport[key] !== 'string' || !config.email.transport[key].trim()) throw new Error(`${label}: email.transport.${key} must be a nonempty string`)
+    }
+    if (!isRecord(config.email.inbound)) throw new Error(`${label}: email.inbound must be an object`)
+    const inboundAllowed = ['kind', 'host', 'port', 'secure', 'username', 'passwordEnv', 'pollInterval']
+    const inboundExtra = Object.keys(config.email.inbound).filter(key => !inboundAllowed.includes(key))
+    if (inboundExtra.length) throw new Error(`${label}: email.inbound supports only ${inboundAllowed.join(', ')}; unknown key(s): ${inboundExtra.join(', ')}`)
+    if (config.email.inbound.kind !== 'imap') throw new Error(`${label}: email.inbound.kind must be "imap"`)
+    if (typeof config.email.inbound.host !== 'string' || !config.email.inbound.host.trim()) throw new Error(`${label}: email.inbound.host must be a nonempty string`)
+    validatePositiveInteger(config.email.inbound.port, 'email.inbound.port', label)
+    if (config.email.inbound.secure !== true) throw new Error(`${label}: email.inbound.secure must be true`)
+    for (const key of ['username', 'passwordEnv']) {
+      if (typeof config.email.inbound[key] !== 'string' || !config.email.inbound[key].trim()) throw new Error(`${label}: email.inbound.${key} must be a nonempty string`)
+    }
+    if (!parseDurationMs(config.email.inbound.pollInterval)) throw new Error(`${label}: email.inbound.pollInterval must be a duration with a unit`)
+    if (!isRecord(config.email.identities)) throw new Error(`${label}: email.identities must be a private identity-to-contact map`)
+    for (const [identity, contact] of Object.entries(config.email.identities)) {
+      if (!identity.startsWith('fleet:') || !isRecord(contact) || typeof contact.address !== 'string' || !contact.address.includes('@') || contact.verified !== true) {
+        throw new Error(`${label}: email identity ${JSON.stringify(identity)} must be { address, verified: true }`)
+      }
     }
   }
   // A malformed slot list is refused at load rather than at mint. An agent that

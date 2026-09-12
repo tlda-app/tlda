@@ -367,6 +367,33 @@ const STARTER_SERVER_YAML = `# tlda server settings. The file itself is required
 #   - query: to:my_labels
 #     policy: immediate
 
+# Optional per-server email notification transport. Addresses are private
+# server identity metadata: agents still address fleet identities, never raw
+# email addresses. Secrets remain in environment variables named here.
+# email:
+#   account: agents@example.com
+#   replyDomain: example.com
+#   replySecretEnv: TLDA_EMAIL_REPLY_SECRET
+#   transport:
+#     kind: smtp
+#     host: smtp.example.com
+#     port: 465
+#     secure: true
+#     username: agents@example.com
+#     passwordEnv: TLDA_EMAIL_PASSWORD
+#   inbound:
+#     kind: imap
+#     host: imap.example.com
+#     port: 993
+#     secure: true
+#     username: agents@example.com
+#     passwordEnv: TLDA_EMAIL_PASSWORD
+#     pollInterval: 30s
+#   identities:
+#     "fleet:example":
+#       address: person@example.net
+#       verified: true
+
 # How many document builds run at once, and build ordering across projects.
 # k >= 2 is a correctness bound rather than a throughput preference: at k = 1 the
 # only slot is the contested one, so somebody with finished work never gets to
