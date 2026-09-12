@@ -558,6 +558,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
 
   const {
     bridgeVisible, bridgeLoading, bridgeError, bridgeBuilds, bridgeColumnOffset, toggleEditBridge, handOffCleanup,
+    bridgeFromHash, bridgeToHash, bridgeUpperPinned, pinUpperToCompare,
   } = useEditBridge(
     editorRef,
     projectName,
@@ -870,7 +871,11 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     onToggleEditBridge: shadowActiveVersion ? toggleEditBridge : undefined,
     // Offered only with an interval on screen: an empty brief helps nobody.
     onHandOffCleanup: bridgeVisible && bridgeBuilds.length > 0 ? handOffCleanup : undefined,
-  }), [proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError, toggleWholeDocumentDiff, bridgeVisible, bridgeLoading, bridgeError, bridgeBuilds.length, toggleEditBridge, handOffCleanup])
+    bridgeFromHash,
+    bridgeToHash,
+    bridgeUpperPinned,
+    onPinBridgeUpper: bridgeVisible ? pinUpperToCompare : undefined,
+  }), [proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError, toggleWholeDocumentDiff, bridgeVisible, bridgeLoading, bridgeError, bridgeBuilds.length, toggleEditBridge, handOffCleanup, bridgeFromHash, bridgeToHash, bridgeUpperPinned, pinUpperToCompare])
 
   // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
   // shapes must remain visible to custom WM viewports; the HUD renders from the

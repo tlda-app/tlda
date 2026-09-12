@@ -7,10 +7,12 @@
  * the builds between the two endpoints into the space that opens up, one card
  * each. Collapsing puts the column back where the compare view had it.
  *
- * Endpoints are the two the compare view already has: the version in the
- * compare column, and the newest build (the one the live column renders).
- * Choosing an arbitrary pair is a larger question about the compare view
- * itself and is deliberately not answered here.
+ * The lower endpoint is the version in the compare column, chosen with the
+ * scrubber that was already there. The upper endpoint is the newest build
+ * unless the reader pins one, so by default the bridge tracks the document as
+ * it is now and grows while somebody works -- and the control says which of
+ * the two it is doing, because an interval that silently stops meaning what it
+ * meant is worse than one that only ever holds still.
  *
  * The cards are real shapes in the room rather than an overlay, because the
  * note on a card is the durable product of this feature -- a person's judgment
@@ -67,6 +69,24 @@ export function useEditBridge(
   const cardIdsRef = useRef<Set<TLShapeId>>(new Set())
 
   /**
+   * The upper endpoint, when the reader has pinned one.
+   *
+   * Null means the newest build, and the newest build moves: a writer at work
+   * produces more of them, so an unpinned bridge grows while they work. That
+   * is wanted -- watching an interval fill in as an agent edits is the case
+   * this feature exists for -- but it must not happen silently, which is why
+   * the control says `→ now` when it is live and names the build when it is
+   * not. The reader can always tell whether what they are looking at will
+   * still be the same thing in a minute.
+   *
+   * Only view state. Neither endpoint is a property of the history, and
+   * nothing here promotes a version to a base -- pinning is remembering what
+   * you are looking at, not marking the document.
+   */
+  const [pinnedUpperHash, setPinnedUpperHash] = useState<string | null>(null)
+  const upperHash = pinnedUpperHash ?? newestHash
+
+  /**
    * Take down the bridge's scaffolding, and ONLY the scaffolding.
    *
    * A card someone has written on is no longer scaffolding -- it is their
@@ -91,7 +111,7 @@ export function useEditBridge(
 
   // Fetch the interval whenever the endpoints or the mode change.
   useEffect(() => {
-    if (!visible || !compareHash || !newestHash || compareHash === newestHash) {
+    if (!visible || !compareHash || !upperHash || compareHash === upperHash) {
       // Functional updates that return the same value when there is nothing
       // to clear: no new state, so no cascading render, and no need to read
       // builds or error here -- which would put them in this effect's deps
@@ -103,14 +123,14 @@ export function useEditBridge(
     let cancelled = false
     setLoading(true)
     setError(null)
-    void fetchBridge(projectName, compareHash, newestHash).then(result => {
+    void fetchBridge(projectName, compareHash, upperHash).then(result => {
       if (cancelled) return
       setLoading(false)
       if ('error' in result) { setError(result.error); setBuilds([]); return }
       setBuilds(result.builds)
     })
     return () => { cancelled = true }
-  }, [visible, compareHash, newestHash, projectName])
+  }, [visible, compareHash, upperHash, projectName])
 
   // Put a card on the canvas for each build. Keyed on the build hash so a
   // re-fetch of the same interval updates the cards it already made instead of
@@ -162,6 +182,19 @@ export function useEditBridge(
   const toggle = useCallback(() => setVisible(v => !v), [])
 
   /**
+   * Pin the upper endpoint to the version now in the compare column, or let go
+   * of it again.
+   *
+   * Pinning uses what the reader is already looking at rather than opening a
+   * picker: the scrubber is how a version gets chosen in this view, so pinning
+   * is "stop here", and the second endpoint is chosen the same way the first
+   * one is.
+   */
+  const pinUpperToCompare = useCallback(() => {
+    setPinnedUpperHash(prev => (prev ? null : compareHash))
+  }, [compareHash])
+
+  /**
    * Hand the annotated interval to an agent.
    *
    * It opens a chat with the brief in the composer rather than spawning
@@ -173,19 +206,19 @@ export function useEditBridge(
    */
   const handOffCleanup = useCallback(async () => {
     const editor = editorRef.current
-    if (!editor || !compareHash || !newestHash || builds.length === 0) return
+    if (!editor || !compareHash || !upperHash || builds.length === 0) return
     const notes = new Map<string, string>()
     for (const build of builds) {
       const shape = editor.getShape(cardShapeId(build.hash)) as any
       if (shape?.props?.note) notes.set(build.hash, shape.props.note)
     }
-    const brief = buildCleanupBrief(compareHash, newestHash, builds, notes)
+    const brief = buildCleanupBrief(compareHash, upperHash, builds, notes)
     const vp = editor.getViewportPageBounds()
     const id = await createFleetShape(editor, 'fleet-chat', vp.x + vp.w * 0.55, vp.y + vp.h * 0.1, {})
     if (!id) return
     editor.bringToFront([id as any])
     chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: id, text: brief } }))
-  }, [editorRef, compareHash, newestHash, builds])
+  }, [editorRef, compareHash, upperHash, builds])
 
   return {
     bridgeVisible: visible,
@@ -196,5 +229,11 @@ export function useEditBridge(
     bridgeColumnOffset: visible ? bridgeGapWidth(builds.length) : 0,
     toggleEditBridge: toggle,
     handOffCleanup,
+    /** The interval being read, for a control that has to say so. */
+    bridgeFromHash: compareHash,
+    bridgeToHash: upperHash,
+    /** False means the upper end is the newest build and will move. */
+    bridgeUpperPinned: pinnedUpperHash !== null,
+    pinUpperToCompare,
   }
 }

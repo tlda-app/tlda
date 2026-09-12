@@ -718,6 +718,21 @@ export function TocTab({ query = '' }: { query?: string }) {
                   : 'Show edit bridge'}
           </button>
         )}
+        {/* Which interval is on screen, and whether its far end will move.
+            An unpinned bridge grows as builds arrive, which is wanted while
+            somebody is working and misleading if it is not said out loud. */}
+        {ctx?.onPinBridgeUpper && ctx.bridgeFromHash && (
+          <button
+            className={`toc-diff-hint history-compare-btn${ctx.bridgeUpperPinned ? ' active' : ''}`}
+            type="button"
+            onClick={ctx.onPinBridgeUpper}
+            title={ctx.bridgeUpperPinned
+              ? 'Unpin the far end — follow the newest build again'
+              : 'Pin the far end to the version in the compare column'}
+          >
+            {`${ctx.bridgeFromHash.slice(0, 7)} → ${ctx.bridgeUpperPinned ? (ctx.bridgeToHash || '').slice(0, 7) : 'now'}`}
+          </button>
+        )}
         {ctx?.onHandOffCleanup && (
           <button
             className="toc-diff-hint history-compare-btn"

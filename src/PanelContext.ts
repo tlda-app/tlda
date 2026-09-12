@@ -43,6 +43,10 @@ export interface PanelContextValue {
   bridgeBuildCount?: number
   onToggleEditBridge?: () => void
   onHandOffCleanup?: () => void
+  bridgeFromHash?: string | null
+  bridgeToHash?: string | null
+  bridgeUpperPinned?: boolean
+  onPinBridgeUpper?: () => void
 }
 
 export const ProjectContext = createContext<ProjectContextValue | null>(null)
