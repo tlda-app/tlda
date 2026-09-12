@@ -731,3 +731,55 @@ value — so a rename is a product decision about what people see and type, not 
 without deciding that is the **mapping** — whether `no-channel` on a live process should
 escalate past `ensure-process` — which is already recorded as open point 7 in
 [Notifications and liveness](notifications-and-liveness.md) §"What is not settled".
+
+---
+
+## `seen` — the roster's last-seen column
+
+**What it reads as:** when we last saw this agent alive.
+
+**What it means:** when the agent last called **`GET /api/my-task`**. That is the only live
+writer of an agent's `last_seen`. `updateHeartbeat` has three callers — the server's own owner
+row, that endpoint, and the `agent-activity` dispatcher case at
+`server/unified-server.mjs:9997` — and **nothing sends `agent-activity`.** Checked with a
+positive control on the same query: `activity-event`, the message that *is* sent, returns
+senders in `bin/fleet-daemon.mjs` and `daemon/delivery-policy.mjs`; `agent-activity` returns
+its own handler, a comment saying nobody sends it, and a TypeScript type.
+
+**So `seen` is the age of one poll, and it is blind to everything else an agent does.** An
+agent an hour deep in `Bash` is byte-identical to one that wedged an hour ago. **Nothing in the
+column distinguishes working from stalled, and the stalled case is what people read it for.**
+`daemon/heartbeat-is-not-activity.test.mjs` already pins the underlying rule; the name is what
+survived it.
+
+**The cost, 2026-09-12.** A chief read `build-process-owner-opus` as `awake · seen 70m · idle`
+and nearly went to unstick them. That agent's pane at that moment:
+
+```
+✻ Crunched for 31s · 3 shells still running
+```
+
+They had been working continuously, and were mid-release. In the chief's words: *"I have been
+reading that column all night as though it meant something."*
+
+**The field that does answer is `activity`, and it is correct.** It is a pane classification —
+`THINKING_SPINNER_RE` plus `esc to interrupt` over the last 40 lines — and the positive control
+is cheap to repeat: capture your own pane mid-tool-call and classify it. Done that day, it
+returned `thinking` on both markers. The same agent read `activity: thinking` at `seen 2164s`
+**while the chief was misreading `seen`** — the pair was already telling the truth.
+
+**So the rule is: triage on `activity`, never on `seen`.** `seen 70m` alone says nothing about
+liveness; `seen 70m · thinking` says *working, and has not called a fleet tool in 70 minutes*,
+which is an ordinary state for an agent doing local work.
+
+**One caveat that is a separate defect, not a reason to distrust `activity`:** it is `unknown`
+for **489 of 500** roster rows, and only 11 rows carry an `activity_at` at all, against 90 live
+`fleet-*` tmux sessions on that box. The classifier is not the problem — coverage is, and the
+sessions turned out to be mostly idle harnesses rather than invisible workers. Being placed
+separately as a daemon status-scan question (`createAgentStatus`, `listProcessBindings`): **an
+agent absent from that ledger has a live pane nobody ever reads.**
+
+**Not renamed.** `last_seen` is a stored column, an API field, and a rendered roster heading,
+so the rename is three surfaces and a migration. **The cheaper repair is to stop reading it as
+liveness**, which is what this entry is for — and, if anyone touches that column, to make the
+roster render `activity` where `seen` currently sits.
