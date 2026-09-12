@@ -1,6 +1,24 @@
 models:
   default: terra
   values:
+    muse:
+      id: muse-spark-1.3-contributor
+      harness:
+        kind: muse
+        required:
+          - --yolo
+        preferences: []
+        controls: true
+      group: muse
+      level: 1
+      description: Muse Spark 1.3 Contributor (native Meta account)
+      options:
+        effort:
+          default: high
+          values:
+            low: {}
+            medium: {}
+            high: {}
     opus:
       id: opus
       harness:
