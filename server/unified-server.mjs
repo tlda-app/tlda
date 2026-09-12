@@ -7631,7 +7631,7 @@ async function dispatchFleetWsMessage(ws, msg) {
         // while every mention of a name is positive. `from:a | !from:b` matches
         // rows naming neither, and narrowing to {a} drops them. Left as it is
         // because removing the narrowing turns a filter that matches little
-        // into a scan of the whole window on a 2.7 GB events table, and a
+        // into a scan of the whole window on the events table (13.09 GB on 2026-09-12), and a
         // negated agent term is rare where a slow read on Skip's box is not.
         // The compiled predicate above bounds everything else.
         const ids = [...await collectPrefilterIds(messageFilter)]

@@ -645,3 +645,26 @@ to do — a post-filter over the owner's stream would be wrong in the same way t
 test was. Use `search(query: "id:<event-id>")` or `thread(agent:)` with a bounded window and
 read for the task, and treat any `task_id` result as the owner's traffic until this entry is
 deleted.
+
+## `server/persist/fleet.db` — an empty file at the path everyone tries first
+
+The fleet store on the deployed box is **`/app/server/persist/tlda-config/fleet.db`**. The path
+one level up, `/app/server/persist/fleet.db`, also exists — **0 bytes, dated 2026-08-11** — and
+is the first place anyone looks.
+
+**Why it is worse than a misleading name.** It does not error. `ls` finds it, and a SQLite
+handle opens it happily, because an empty file is a valid empty database: queries return no
+rows rather than failing. So the instrument **answers**, which is the shape
+`docs/the-instrument-or-the-code.md` is about. Someone checking corpus size, row counts, or
+whether a table exists gets 0 and a clean exit, and nothing says they read the wrong file.
+
+Found 2026-09-12 while locating the real store to copy it for measurement — the size check
+returned `0` where 13.09 GB was expected, which is only obviously wrong because the expected
+figure was known. Asking that file "how many events are there" would have answered "none".
+
+**Also on that box:** there is no `sqlite3` CLI in the image, so anything of this kind goes
+through `node` with `NODE_PATH=/app/node_modules` — `require('better-sqlite3')` resolves upward
+from the script's own directory, so a script in `/tmp` fails with `MODULE_NOT_FOUND`.
+
+**Not fixed here** because deleting a file on the live volume is not a code change and wants its
+owner. If it is removed, delete this entry with it.
