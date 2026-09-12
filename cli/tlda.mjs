@@ -3296,6 +3296,7 @@ async function publishClassroomAssignment({
     solutionsDocKey,
     ...(solutionsVersion ? { solutionsVersion } : {}),
     sourceDocKey,
+    bookPageFile: rendered.homeworkPath.replace(/\.qmd$/i, '.html'),
     handoutFilter,
     solutionFilter,
   })

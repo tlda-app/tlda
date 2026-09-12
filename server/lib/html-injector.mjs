@@ -1606,7 +1606,124 @@ export function injectChapterTitle(html, chapterTitle, prev = null, next = null)
   return html.slice(0, bodyCloseAngle + 1) + titleCard + html.slice(bodyCloseAngle + 1, bodyCloseIdx) + footer + html.slice(bodyCloseIdx)
 }
 
-export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage = false, nav = {}) {
+/**
+ * The control that pulls a student's own answer in beside a solution.
+ *
+ * Skip: "The solutions are there folded. And if they wanna pull out their work
+ * in addition to the solution, that should be a little button on the fucking
+ * solution callout." So it lives on the callout, it adds their answer to what is
+ * already on the page, and it never navigates anywhere.
+ *
+ * A solution callout is rendered as the next sibling of the exercise it answers,
+ * and the exercise carries the stable `exr-…` id. That pairing is what makes
+ * "their work for THIS question" a fact about the document rather than a guess:
+ * their own submitted render is the same homework, so the same id names the same
+ * question in it.
+ */
+function ownWorkScript(ownWorkUrl) {
+  return `
+<style>
+.tlda-own-work-toggle { margin-left: 8px; border: 1px solid rgba(0,0,0,.18); border-radius: 5px; background: transparent; color: inherit; font: inherit; font-size: 12px; padding: 1px 7px; cursor: pointer; }
+.tlda-own-work-toggle:hover { background: rgba(0,0,0,.05); }
+.tlda-own-work { margin-top: 12px; padding-top: 10px; border-top: 1px dashed rgba(0,0,0,.2); }
+.tlda-own-work-label { margin-bottom: 6px; font-size: 12px; opacity: .65; }
+.tlda-own-work-error { font-size: 12px; color: #9a3c32; }
+</style>
+<script>
+(function () {
+  var OWN_WORK_URL = ${JSON.stringify(ownWorkUrl)};
+  var ownDocument = null;
+  function loadOwnDocument() {
+    if (ownDocument) return Promise.resolve(ownDocument);
+    return fetch(OWN_WORK_URL, { credentials: 'include' })
+      .then(function (response) {
+        if (!response.ok) throw new Error('unavailable');
+        return response.text();
+      })
+      .then(function (text) {
+        ownDocument = new DOMParser().parseFromString(text, 'text/html');
+        return ownDocument;
+      });
+  }
+  // The exercise this solution answers: the callout immediately before it.
+  function exerciseFor(solution) {
+    var previous = solution.previousElementSibling;
+    while (previous && !previous.classList.contains('callout-exercise')) {
+      previous = previous.previousElementSibling;
+    }
+    return previous && previous.id ? previous : null;
+  }
+  function attach(solution) {
+    var exercise = exerciseFor(solution);
+    if (!exercise) return;
+    var title = solution.querySelector('.callout-title-container');
+    if (!title) return;
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tlda-own-work-toggle';
+    button.textContent = 'My answer';
+    var shown = null;
+    button.addEventListener('click', function (event) {
+      // The header toggles the fold; this button is inside it and must not.
+      event.preventDefault();
+      event.stopPropagation();
+      if (shown) {
+        shown.remove();
+        shown = null;
+        button.textContent = 'My answer';
+        return;
+      }
+      button.disabled = true;
+      // Their work goes inside the solution body, so a folded callout would put
+      // it somewhere they cannot see. The point is to read the two together.
+      var collapsedBody = solution.querySelector('.callout-collapse:not(.show)');
+      if (collapsedBody) {
+        var header = solution.querySelector('.callout-header');
+        if (header) header.click();
+      }
+      loadOwnDocument().then(function (parsed) {
+        var mine = parsed.getElementById(exercise.id);
+        var body = solution.querySelector('.callout-body-container') || solution;
+        var block = document.createElement('div');
+        block.className = 'tlda-own-work';
+        var label = document.createElement('div');
+        label.className = 'tlda-own-work-label';
+        label.textContent = 'What you handed in';
+        block.appendChild(label);
+        if (mine) {
+          block.appendChild(mine.cloneNode(true));
+        } else {
+          var missing = document.createElement('div');
+          missing.className = 'tlda-own-work-error';
+          missing.textContent = 'Your submission has nothing for this question.';
+          block.appendChild(missing);
+        }
+        body.appendChild(block);
+        shown = block;
+        button.textContent = 'Hide my answer';
+        if (window.MathJax && window.MathJax.typesetPromise) window.MathJax.typesetPromise([block]);
+      }).catch(function () {
+        var failed = document.createElement('div');
+        failed.className = 'tlda-own-work tlda-own-work-error';
+        failed.textContent = 'Could not load your submitted work.';
+        (solution.querySelector('.callout-body-container') || solution).appendChild(failed);
+        shown = failed;
+        button.textContent = 'Hide my answer';
+      }).finally(function () { button.disabled = false; });
+    });
+    title.appendChild(button);
+  }
+  function attachAll() {
+    var solutions = document.querySelectorAll('.callout-solution');
+    for (var i = 0; i < solutions.length; i++) attach(solutions[i]);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attachAll);
+  else attachAll();
+})();
+</script>`
+}
+
+export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage = false, nav = {}, ownWorkUrl = '') {
   // Quarto's site_libs references are relative to the rendered HTML file and
   // already resolve against that file's /docs URL. Keep them relative so a
   // nested book chapter continues to load its sibling _book/site_libs tree.
@@ -1691,10 +1808,12 @@ export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage
     patched = patched.replace('</main>', navFooter + '</main>')
   }
 
+  const trailing = BRIDGE_SCRIPT + (ownWorkUrl ? ownWorkScript(ownWorkUrl) : '')
+
   const bodyCloseIdx = patched.lastIndexOf('</body>')
   if (bodyCloseIdx !== -1) {
-    return patched.slice(0, bodyCloseIdx) + BRIDGE_SCRIPT + patched.slice(bodyCloseIdx)
+    return patched.slice(0, bodyCloseIdx) + trailing + patched.slice(bodyCloseIdx)
   }
   // No </body> tag — just append
-  return patched + BRIDGE_SCRIPT
+  return patched + trailing
 }

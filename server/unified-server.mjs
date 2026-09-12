@@ -4712,6 +4712,39 @@ async function docPathExists(path) {
   }
 }
 
+/**
+ * Where this reader's own handed-in work lives, for the homework page they are
+ * reading — or '' when that is not a thing they may have.
+ *
+ * Empty for everyone except the student themselves, and only once the work has
+ * been returned to them: before that there is nothing of theirs to put beside a
+ * solution. An instructor reading the book gets nothing here either; marking is
+ * a different surface.
+ */
+async function ownWorkUrlFor(req, filePath) {
+  const principal = classroomPrincipal(req, classroomStore)
+  if (principal?.role !== 'student') return ''
+  const bookPageFile = filePath.startsWith('_book/') ? filePath.slice('_book/'.length) : filePath
+  const assignment = classroomStore.assignmentForBookPage(bookPageFile, principal.courseId)
+  if (!assignment) return ''
+  const submission = classroomStore.getSubmission(assignment.id, principal.studentId)
+  if (submission?.gradingStatus !== 'returned' || !submission.contentRef) return ''
+  // Their submission is its own rendered document; take its first page the same
+  // way their own work surface does, rather than assuming it is named like the
+  // chapter they are reading.
+  let page
+  try {
+    const pageInfoPath = join(PROJECTS_DIR, submission.contentRef, 'output', 'page-info.json')
+    page = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))[0]?.file
+  } catch { return '' }
+  if (!page) return ''
+  // A browser fetch inside the iframe carries no header, so the enrolment token
+  // rides the URL exactly as it does on the page this script was injected into.
+  const token = req.query?.classroomToken
+  const query = typeof token === 'string' && token ? `?classroomToken=${encodeURIComponent(token)}` : ''
+  return `/docs/${encodeURIComponent(submission.contentRef)}/${page}${query}`
+}
+
 async function runDocsAccessCheck(req, res, name) {
   req.params = { ...(req.params || {}), name }
   return await new Promise(resolve => {
@@ -5224,7 +5257,7 @@ app.use('/docs', (req, res, next) => {
                 }
               }
             } catch (e) { console.warn(`[server] TOC/chapter title parsing failed for ${name}: ${e.message}`) }
-            const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage, { prev: navPrev, next: navNext })
+            const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage, { prev: navPrev, next: navNext }, await ownWorkUrlFor(req, filePath))
             res.type('html').send(injected)
             return
           }

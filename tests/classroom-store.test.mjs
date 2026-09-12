@@ -11,7 +11,7 @@ function fixture() {
   store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
   store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret' })
   store.upsertStudent({ id: 'grace', courseId: 'qtm285', displayName: 'Grace', enrollmentToken: 'grace-secret' })
-  store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z', sourceDocKey: 'hw1-source', handoutFilter: 'homework/assignment-callout.lua', solutionFilter: 'homework/solution-callout.lua', solutionsDocKey: 'hw1-solutions', solutionsVersion: 'abc' })
+  store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z', sourceDocKey: 'hw1-source', bookPageFile: 'homework/hw1.html', handoutFilter: 'homework/assignment-callout.lua', solutionFilter: 'homework/solution-callout.lua', solutionsDocKey: 'hw1-solutions', solutionsVersion: 'abc' })
   return { store, close() { store.close(); fs.rmSync(dir, { recursive: true, force: true }) } }
 }
 
@@ -23,6 +23,15 @@ test('gradebook derives missing and ungraded states from roster and submissions'
     assert.deepEqual(status.counts, { missing: 1, ungraded: 1, graded: 0, returned: 0 })
     assert.equal(status.rows.find(r => r.id === 'ada').assignments[0].state, 'ungraded')
     assert.equal(status.rows.find(r => r.id === 'grace').assignments[0].state, 'not-submitted')
+  } finally { f.close() }
+})
+
+test('assignment keeps the book page that links a returned student to their work', () => {
+  const f = fixture()
+  try {
+    assert.equal(f.store.getAssignment('hw1').bookPageFile, 'homework/hw1.html')
+    f.store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z' })
+    assert.equal(f.store.getAssignment('hw1').bookPageFile, 'homework/hw1.html')
   } finally { f.close() }
 })
 
