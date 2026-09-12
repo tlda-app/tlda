@@ -45,16 +45,19 @@ test('concurrent same-project instances read immutable revisions and cannot shar
   }
 })
 
-test('materializes tracked symbolic links as links', async () => {
+test('materializes tracked symbolic links as admitted regular files', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-build-instance-symlink-test-'))
   let instance
   try {
     const lifecycle = {
       async readRevision() {
-        return { files: [{ path: '_quarto.yml', mode: '120000' }] }
+        return { id: 'revision', files: [
+          { path: '_quarto.yml', mode: '120000' },
+          { path: '_quarto_book.yml', mode: '100644' },
+        ] }
       },
-      async readRevisionFile() {
-        return Buffer.from('_quarto_book.yml')
+      async readRevisionFile(_revision, path) {
+        return Buffer.from(path === '_quarto.yml' ? '_quarto_book.yml' : 'project:\n  type: book\n')
       },
     }
     instance = await materializeBuildInstance({
@@ -62,10 +65,34 @@ test('materializes tracked symbolic links as links', async () => {
       sourceRevision: 'revision',
       lifecycle,
       temporaryRoot: root,
+      materializeLinks: true,
     })
     const link = join(instance.source, '_quarto.yml')
-    assert.equal(lstatSync(link).isSymbolicLink(), true)
-    assert.equal(readlinkSync(link), '_quarto_book.yml')
+    assert.equal(lstatSync(link).isSymbolicLink(), false)
+    assert.equal(readFileSync(link, 'utf8'), 'project:\n  type: book\n')
+  } finally {
+    if (instance) rmSync(instance.root, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('can seed prior rendered output without mixing it into source', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-instance-seed-output-test-'))
+  const live = join(root, 'live')
+  let instance
+  try {
+    mkdirSync(join(live, 'output'), { recursive: true })
+    writeFileSync(join(live, 'output', 'chapter.html'), 'prior render')
+    const lifecycle = {
+      async readRevision() { return { files: [{ path: 'chapter.qmd', mode: '100644' }] } },
+      async readRevisionFile() { return Buffer.from('# changed chapter') },
+    }
+    instance = await materializeBuildInstance({
+      name: 'course', sourceRevision: 'revision', lifecycle,
+      seedProject: live, seedOutput: true, temporaryRoot: root,
+    })
+    assert.equal(readFileSync(join(instance.output, 'chapter.html'), 'utf8'), 'prior render')
+    assert.equal(readFileSync(join(instance.source, 'chapter.qmd'), 'utf8'), '# changed chapter')
   } finally {
     if (instance) rmSync(instance.root, { recursive: true, force: true })
     rmSync(root, { recursive: true, force: true })
@@ -99,6 +126,41 @@ test('version snapshots keep a build instance relative symlink relative', async 
 
     assert.equal(result.status, 'committed')
     assert.equal(readlinkSync(join(shadowRepoDir(name), 'index.qmd')), 'lectures/lecture.qmd')
+  } finally {
+    setProjectPathOverride(name, null)
+    await closeProjectStore()
+    if (instance) rmSync(instance.root, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('version snapshots copy a scoped directory recursively', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-shadow-directory-test-'))
+  let instance
+  const name = 'course-directory'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'index.qmd', format: 'qmd' })
+    const lifecycle = await sourceLifecycleStore(name)
+    const git = await lifecycle.gitRepository()
+    const revision = await git.acceptRevision({
+      project: name,
+      files: [
+        { path: 'index.qmd', content: 'placeholder' },
+        { path: 'assets', content: 'materialized link placeholder' },
+      ],
+      message: 'directory snapshot',
+    })
+    instance = await materializeBuildInstance({ name, sourceRevision: revision, lifecycle, temporaryRoot: root })
+    unlinkSync(join(instance.source, 'assets'))
+    mkdirSync(join(instance.source, 'assets'), { recursive: true })
+    writeFileSync(join(instance.source, 'assets', 'figure.txt'), 'figure')
+    setProjectPathOverride(name, instance.project)
+
+    const result = await commitSnapshot(name, revision)
+
+    assert.equal(result.status, 'committed')
+    assert.equal(readFileSync(join(shadowRepoDir(name), 'assets', 'figure.txt'), 'utf8'), 'figure')
   } finally {
     setProjectPathOverride(name, null)
     await closeProjectStore()

@@ -28,6 +28,7 @@ function room({ shapes = [], rejectCreate = false, pageId = 'page:dest' } = {}) 
       for (const id of ids) byId.delete(id)
     },
     getCurrentPageId: () => pageId,
+    isLive: () => true,
   }
 }
 

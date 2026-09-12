@@ -1,75 +1,300 @@
-# Bot supervision
+# Bot Supervision Findings, 2026-08-10
 
-This document describes the durable rules for supervising fleet bots. The date
-in the filename is historical; the content below describes the current public
-operating model.
+This records the bot supervision state found during the launchd waiter rollout.
 
-## Bot identity
+> **Re-checked against the running machine 2026-08-10 ~22:30 EDT (app-chief4).**
+> The root cause below is wrong, and so are three of its supporting claims. They
+> are corrected inline where they appear, each marked **Correction 2026-08-10**.
+> Working notes and the full measurements: `scratch/app-chief4/stable-bots-2026-08-10.md`.
+>
+> **Short version: the id-derivation backport cannot fix any of these bots.** Each
+> plist reads the identity file and hands the id to `tlda agent wake` *before* the
+> bot process starts, so `loadOrCreateFleetId()` is downstream of a step that has
+> already failed. The real cause is the **mint ledger**: of seven bot mint rows in
+> `~/.config/tlda/daemon-mints.sqlite`, exactly one pins a `_stable` tmux session,
+> and it is todd's. Todd is the only bot ever minted twice, once per environment.
+> That is the whole difference between it and the four dead jobs.
 
-A bot is a persistent fleet participant, not a disposable agent process. Each
-configured bot/environment pair needs its own fleet identity, tmux session,
-pidfile, heartbeat, daemon route, and mint-ledger entry.
+## Confirmed live-process count
 
-Do not derive identities from the bot name alone when the same bot can run in
-more than one environment. A machine-wide mint ledger cannot safely map one
-fleet ID to two environment-specific sessions.
+At 2026-08-10 03:48 EDT, direct checks of each bot's own identity/pid files and
+the process table found 6 of 11 configured bot jobs with a live bot process.
+`tlda bot status`, launchd, and the roster were not sufficient evidence because
+they could report a stranded launchd waiter as healthy.
 
-Identity files are inputs to supervised startup. Creating or replacing one by
-hand is not sufficient unless the same identity has a matching fleet row and
-local mint-ledger mapping.
+The transferable rule is that bot liveness must be read from the bot process,
+not from the supervisor. The sharpest example in this survey was
+`chat-lint.stable`: `tlda bot status` reported `running + supervised` while the
+job had no identity file or pidfile and launchd was only supervising a stranded
+waiter.
 
-## What supervision proves
+Dead at that check:
 
-A running supervisor proves only that the supervisor process is alive. Bot
-liveness requires evidence from the bot runtime itself:
+- `chat-lint.stable`
+- `grammar.stable`
+- `nobody.stable`
+- `teacher.stable`
+- `todd.testing`
 
-- the configured tmux session contains the expected runtime process;
-- the pidfile names a live matching process;
-- the heartbeat is current;
-- the fleet identity and daemon route resolve to that runtime.
+## Dead stable jobs
 
-A launchd job waiting on a failed wake can appear supervised while no bot is
-running. Status surfaces should distinguish those states.
+- `chat-lint.stable`: missing `~/.config/tlda/chat-lint.stable.fleet-id` and
+  missing pidfile. The launch command cannot start because its first operation
+  reads the identity file.
+- `nobody.stable`: missing `~/.config/tlda/nobody.stable.fleet-id` and missing
+  pidfile. The launch command cannot start because its first operation reads the
+  identity file.
+- `grammar.stable`: has identity `fleet:grammar` and pidfile `45874`, but its
+  plist is the old direct tmux form and points at missing
+  `/Users/skip/work/tlda/bin/bots/grammar-bot.mjs`.
 
-## Wake behavior
+  **Correction 2026-08-10:** its plist is *not* the old form. It is the current
+  `tlda agent wake` form, identical in shape to `todd.stable`'s working one; it
+  was regenerated at some point. Its only fault is the id. Its own log says so:
+  `wake did not produce a live runtime for bot:testing:grammar: tmux session
+  fleet-bot-grammar_testing already has a live harness runtime` — `fleet:grammar`
+  has a single mint row and that row pins the *testing* session.
+- `teacher.stable`: has identity `fleet:d0722d34` and pidfile `801`, but that
+  process is not live. Its plist uses the current `tlda agent wake` form.
 
-Wake is non-destructive. It starts a missing runtime, but it does not silently
-replace an existing tmux session whose expected runtime is absent. That state is
-reported as a failure so an operator can inspect the session rather than losing
-its contents.
+These are repair items, not rollout steps. The four stable jobs do not share one
+cause.
 
-An `alreadyAlive` result is valid only when the expected runtime has been
-confirmed. The existence of a tmux session or shell process alone is not enough.
+## They mostly do share one cause: the fallback fleet id has no environment in it
 
-## launchd configuration
+Re-examined at 10:10 UTC against both servers' agent rows, which the account
+above did not consult. Three of the four descriptions are incomplete and one is
+wrong.
 
-Generated launchd jobs read the environment-specific identity, ask tlda to wake
-that identity, and supervise the resulting bot process. Configuration changes
-should be applied from a user login session whose launchd manager is `Aqua`;
-background agent sessions are intentionally refused by the configuration
-transition guard.
+A bot with no identity file and no `FLEET_ID` in its environment invents one:
 
-Apply the narrowest configured scope when changing one environment:
-
-```bash
-tlda config apply --only <environment>
+```js
+const BOT_KEY = (process.env.TLDA_BOT_REQUESTED_NAME || process.env.TLDA_BOT_NAME || 'lint').toLowerCase()
+const id = `fleet:${BOT_KEY}`      // tlda-bots/lint/lint-bot.mjs:71
 ```
 
-If launchd returns an input/output bootstrap error, inspect the generated job
-and current manager state before retrying. A retry is an operational recovery,
-not evidence that the first apply succeeded.
+`BOT_KEY` is the bot's name alone. **The environment is not in it**, although
+every path beside it is environment-scoped — `chat-lint.stable.fleet-id`,
+`chat-lint.testing.fleet-id`. So the same bot in two environments derives the
+same id, and the daemon's mint ledger is machine-wide and keyed by fleet id.
+Whichever environment minted first owns the mapping.
 
-## Recovery checklist
+The agent rows show it directly:
 
-1. Resolve the bot's configured fleet ID and environment.
-2. Confirm the fleet row, daemon route, and mint-ledger session agree.
-3. Inspect the tmux pane for the expected runtime rather than a shell-only
-   session.
-4. Check the pidfile against the live process and command.
-5. Check heartbeat freshness.
-6. Repair the mismatched identity or session mapping before restarting the
-   supervisor.
-7. Verify the bot process and heartbeat after recovery.
+| name | on `testing` | on `stable` |
+| --- | --- | --- |
+| `grammar` | `fleet:grammar` | `fleet:grammar` — same id, two servers |
+| `chat-lint` | `fleet:chat-lint` | no row |
+| `todd` | `fleet:f1e9c0be` | `fleet:c3d5e4ff` — distinct, and it works |
+| `nobody` | `fleet:848885b2` | no row |
+| `teacher` | `fleet:91e5a81b` | `fleet:bd3541fd` |
 
-Preserve the bot's existing fleet identity whenever possible so its thread,
-subscriptions, and task history remain continuous.
+The bots that work got random ids from a supplied `FLEET_ID`; the ones that
+collide fell through to the deterministic branch.
+
+**So `grammar.stable.fleet-id` is not "the testing bot's identity".** Stable has
+its own `grammar` row and its id genuinely is `fleet:grammar`. The file is
+correct for the server and unusable on the machine: waking it resolves through
+the local ledger to `bot:testing:grammar`, whose tmux session is live, and the
+wake is refused —
+
+```text
+Error: wake did not produce a live runtime for bot:testing:grammar:
+tmux session fleet-bot-grammar_testing already has a live harness runtime
+```
+
+**`teacher.stable` is also mis-described.** Its identity `fleet:d0722d34` is, on
+the stable server, the agent named **`seacher`** — the rotated name from a
+previous collision. Stable's actual `teacher` row is `fleet:bd3541fd`. The name
+`teacher` is held by that row, which is hibernating and therefore not dead, so a
+fresh mint rotates again and the bot goes inert exactly as `AGENTS.md` describes.
+The rotation is the design working; the wrong id in the file is not.
+
+**Writing identity files by hand does not fix this.** The bot rewrites the file
+from `fleet:${BOT_KEY}` whenever it bootstraps without one, so a hand-seeded id
+survives only until the next cold start — and for `chat-lint` it would revert to
+`fleet:chat-lint`, recreating grammar's collision exactly.
+
+**Correction 2026-08-10:** a hand-seeded file does survive. `loadOrCreateFleetId()`
+writes only when the file is *absent* (the ENOENT branch); a present, valid file is
+read and returned untouched. And under launchd the bot never bootstraps without one
+anyway — the plist wrapper `cat`s the file and will not launch the bot if it is
+missing, which is exactly why `chat-lint.stable` and `nobody.stable` log
+`Usage: tlda agent ...` and never start. Seeding is necessary but not sufficient:
+the id also needs a mint ledger row, which is the part no command creates.
+
+### The fix already exists in `todd`; it was never backported
+
+`todd/todd.mjs:93` is the same function with the last line changed:
+
+```js
+const id = `fleet:${randomUUID().slice(0, 8)}`   // todd/todd.mjs:108
+```
+
+Random, not name-derived, so two environments cannot collide. It also validates
+an existing file and throws on a malformed id instead of accepting it.
+
+**That is why `todd.stable` is the one stable bot alive.** Not configuration —
+its identity derivation was fixed and the others' were not. Verified using the
+name-derived form: `tlda-bots/lint/lint-bot.mjs:71` (this is `chat-lint`) and
+`tlda-bots/dev/dev-bot.mjs`. `grammar`, `nobody`, and `teacher` do not derive an
+id themselves and take whichever one they are handed.
+
+So the change is a backport of a pattern already running in production, not a new
+design.
+
+**Correction 2026-08-10: the backport fixes none of these bots, and todd is not
+alive because of it.** Every bot plist runs
+`fleet_id=$(cat '<job>.fleet-id'); ... tlda agent wake "$fleet_id"`, so launchd
+resolves the identity and the bot process only starts if that wake succeeds.
+`loadOrCreateFleetId()` — the function this backport changes — runs inside the bot,
+downstream of the failure. All four dead jobs die in the wrapper, before any bot
+code executes.
+
+Todd.stable is alive because its identity file holds an id that has a **mint ledger
+row pinning `fleet-bot-todd_stable`**. Of the seven `kind: 'bot'` rows in
+`daemon-mints.sqlite`, that is the only `_stable` one; every other bot has a single
+row pinned to `_testing`. Id-derivation code cannot create a ledger row, so no
+version of this backport could have worked.
+
+### The migration question, which is why nobody should run it yet
+
+**The backport on its own does not fix three bots. It changes how they fail.**
+Give `grammar` a fresh random id and the old `fleet:grammar` row still holds the
+name `grammar` on stable — a hibernating row occupies its name — so the new mint
+rotates to something else and goes inert, exactly as `teacher.stable` does today.
+Three name-collision failures become three name-rotation failures: the same dead
+bots, for a more confusing reason. **The old rows have to be disposed of in the
+same operation, which is why the sequence matters more than the diff.**
+
+Changing the derivation changes the identity a bot gets **on its next start**,
+and the six live testing bots are running under the current ids right now. Before
+anyone applies this, answer:
+
+- What happens to the existing `fleet:chat-lint` and `fleet:grammar` rows on each
+  server once no process claims them — orphaned, dismissed, or left hibernating
+  to hold their names? Note that a hibernating row still occupies its name, which
+  is what makes `teacher.stable` inert today.
+- What happens the next time a bot Skip is using restarts — does it come back as
+  the same agent, or arrive as a new one and lose its thread?
+- Does anything else key off the deterministic ids? `fleet:chat-lint` is guessable
+  by construction and may be referenced somewhere as a literal.
+
+None of that is answerable from this repository; the bots live in `tlda-bots`.
+
+## `tlda config apply` cannot be run by an agent, ever
+
+`assertOwnerCapableLaunchdManager` (`cli/lib/config-apply-transition.mjs:6`)
+requires `launchctl managername` to return **`Aqua`**. Every agent session on
+this machine reports **`Background`**, so the command prints its whole plan and
+then stops with:
+
+```text
+configuration is not applied
+```
+
+This is not flakiness and retrying does not help. `tlda config apply` runs from
+Skip's own terminal or not at all. Scope it when you hand it over — bare
+`config apply` is all-or-nothing across every managed job, so a stable-only
+repair is `tlda config apply --only stable`.
+
+## Launchd apply note
+
+During this rollout, `tlda config apply` sometimes failed with:
+
+```text
+Bootstrap failed: 5: Input/output error
+```
+
+The same command later succeeded for `nobody.testing` when run again from Skip's
+terminal, and five more jobs applied cleanly from that terminal without hitting
+the error. The source of the flakiness is unexplained; the working operational
+rule is to retry once rather than treating the first failure as evidence that
+the generated plist is bad.
+
+## Wake false success on shell-only sessions
+
+`todd.testing` exposed a second false-success path after the launchd waiter fix
+landed. Its launchd job moved to the new pane-pid waiter, but todd still did not
+write a fresh heartbeat. The blocking state was:
+
+- `fleet-bot-todd_testing` existed.
+- Its pane process was a bare `zsh`, not a bot runtime.
+- `~/.config/tlda/todd.testing.pid` pointed at a dead process.
+- `~/.config/tlda/todd.testing.heartbeat` was still stale.
+
+The wake path reported success because `spawnTmux()` treats an existing
+shell-only session as a non-destructive no-op:
+
+- `agent-launch/tmux.mjs:132`: `spawnTmux()` tries `tmux respawn-pane`; when
+  that fails and the tmux session exists, it returns `false`.
+- `agent-launch/index.mjs:910`: `spawnRespawn()` treats that as success:
+  `if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }`
+
+So `tlda agent wake fleet:f1e9c0be` printed `Woke ...` even though no todd bot
+process started.
+
+The control was `nobody.testing`: during the pilot, its tmux session was killed
+before wake. With no shell-only session blocking launch, the same wake command
+shape started the bot and produced a fresh heartbeat.
+
+Proposed fix shape, not applied here: a shell-only existing session should be a
+wake failure, not `alreadyAlive: true`. `alreadyAlive` should require a confirmed
+runtime process.
+
+## Wake failure after the liveness fix
+
+Commit `902cdd270` made that proposed shape current behavior. A wake that finds
+an existing tmux session with no live runtime now fails with an explicit
+"exists but has no live runtime; wake declined to replace it" error instead of
+returning `alreadyAlive: true`.
+
+For launchd-supervised bots, the consequence is a visible retry loop rather than
+a silent death: wake exits, launchd restarts the job, and the next launchd pass
+tries wake again. That is the intended non-destructive trade for this patch.
+
+The alternative is for wake to tear down the dead tmux session and replace it,
+which would self-heal instead of looping. That is a design change, not a repair:
+wake is deliberately non-destructive today.
+
+## One of the three migration questions is now answered: yes, something keys off the deterministic ids
+
+Checked 2026-08-10 by searching for the literals rather than reasoning about them.
+The question was *"Does anything else key off the deterministic ids? `fleet:chat-lint`
+is guessable by construction and may be referenced somewhere as a literal."*
+
+**It does, and the sharpest case is `fleet:teacher` in the server itself:**
+
+```js
+// server/unified-server.mjs — the drill-card path
+await fleetStore.share({
+  type: 'chat', from: 'fleet:teacher', to: agentId, text: chat,
+  metadata: { kind: 'drill-card', drill, gradient, pass },
+})
+```
+
+Every drill card is posted **from a hardcoded `fleet:teacher`**. Give `teacher` a
+random id and that sender stops corresponding to the bot — the cards keep being
+written, from an id nothing owns.
+
+Two more, both non-fatal but worth knowing:
+
+- `tlda-bots/todd/todd.mjs` and `tlda-bots/disposition/disposition.mjs` carry
+  `fleet:teacher` (and `fleet:todd`) in self-check/ignore sets. A rotated id
+  silently drops out of those sets, so a bot starts reacting to a bot.
+- `tlda-bots/grammar/grammar-bot.test.mjs` fixes `fleet:grammar` throughout, and
+  `test/bot-harness-env.test.mjs` uses `fleet:dev`. Tests only.
+
+**So the backport needs `fleet:teacher` given a real home before it runs**, not just
+the old rows disposed of. That is a fourth item on the migration, and it is in the
+server rather than in `tlda-bots`.
+
+**Correction 2026-08-10: this does not gate anything, and never did.**
+`fleet:teacher` already owns no agent row — `roster(filter: "fleet:teacher")`
+returns zero matches with *"resolves to fleet:teacher but has no live roster row"*.
+Stable's teacher is `fleet:bd3541fd` and testing's is `fleet:91e5a81b`; neither has
+ever been `fleet:teacher`. So every drill card is already posted from an id nothing
+owns, today, under current code and independent of any id change. It is a real
+pre-existing bug in `server/unified-server.mjs:3701` and deserves its own fix — but
+it is not a migration blocker, and treating it as one held up the bot repair for
+nothing.

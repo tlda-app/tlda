@@ -29,7 +29,7 @@ export function rewriteBareLocalPaths(html = '') {
     if (inCode > 0 || inAnchor > 0) return segment
     // The outer split keeps these passes off markup that arrived here, but this
     // pass also emits markup INTO the segment the later passes read. A generated
-    // title="/home/user/.config/example.md." is plain text to the relative-md
+    // title="/Users/skip/.claude/CLAUDE.md." is plain text to the relative-md
     // pass below, whose lookbehind excludes / " ' > and word characters but not
     // the dot of a dotfile directory — so it chipped a path inside the attribute
     // and split the tag open. Park generated markup behind a placeholder, the

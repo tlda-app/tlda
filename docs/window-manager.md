@@ -329,8 +329,16 @@ the others are bounded panels with their own cameras.
 
 ## Where the layout sits: the flow-axis rule
 
-The flow-axis rule is stated once, with no document type in it:
-**screen-fixed along the axis the pages flow, document-fixed across it.**
+Skip's rule, quoted in `src/shapes/document-flow-axis.ts:7` and again in
+`overlays/fleet-hud-anchor.ts:12` (the source comments carry his words but no
+timestamp):
+
+> the shapes on the HUD are in a fixed position relative to the fucking screen in
+> one direction and the slides in the other. Right? Like so it's not a hack. It's
+> just the fucking rule.
+
+Stated once, with no document type in it: **screen-fixed along the axis the pages
+flow, document-fixed across it.**
 
 - A paper flows **down**, so its layout holds a height on screen and rides
   sideways with the document, living in the side margin.
@@ -367,9 +375,11 @@ layout with two numbers:
 Every term is read off the layout's own current bounds rather than a stored
 number, so it can place a layout whose shapes are somewhere unexpected.
 
-There is deliberately **no screen clamp**. A clamp overrides the
-document-relative axis and can put panels on top of a slide. Reachability repair
-is handled separately.
+There is deliberately **no screen clamp**. One was added to keep the layout on
+screen and did the opposite of what it was for — overriding the slide-relative
+position is what put the panels *on* the slide. The comment at
+`fleet-hud-anchor.ts:56-78` records that, with Skip's report, and the cause
+(a layout 2.3× the size of the screen) was fixed elsewhere.
 
 ### The stored anchor
 
@@ -495,7 +505,7 @@ and hit-test exclusion — add a panel there and the rest follows.
 
 ### Gestures
 
-The touch vocabulary is recorded at `overlays/useFleetGestures.ts:1-24`:
+The touch vocabulary is Skip's, recorded at `overlays/useFleetGestures.ts:1-24`:
 one finger scrolls the content under it; two fingers on a shape move and resize
 it at once; two fingers spanning shapes move that cluster; three fingers pan the
 main canvas from anywhere, including over the panels.
@@ -533,8 +543,13 @@ at mount. It is a tldraw *user preference*, so it persists per browser profile
 and has to be written rather than merely left alone. Six fleet shapes still carry
 `canSnap = () => true`, which is inert while the preference is off.
 
-**Soft snap for fleet panels is on.** It is not tldraw's snap and does not use
-it. `nudgeFleetPanelTranslate`
+**Soft snap for fleet panels is on, and is a specified feature.** Skip,
+2026-08-12 13:22:18 EDT:
+
+> There is there we have, like, soft snap that was supposed to be implemented for
+> our shapes, bro.
+
+It is not tldraw's snap and does not use it. `nudgeFleetPanelTranslate`
 (`shapes/fleet-utils.ts:242`) runs on translate, finds the closest edge, centre,
 or equal-gap match against the other panels, and applies a *fraction* of the
 remaining distance — 0.35 (`fleet-utils.ts:80`) — so it is a pull, not a jump.
@@ -543,8 +558,11 @@ text size; `0` turns it off. The matched page line is published to
 `shapes/fleet-nudge-guides.ts` and drawn as a hairline by
 `overlays/FleetNudgeGuides.tsx` for as long as the pull is on.
 
-Do not conflate the disabled native snap with the fleet-panel soft snap; they
-are independent mechanisms.
+**Do not delete soft snap to make odd behaviour stop.** That instruction is here
+because the opposite was briefed to an agent on 2026-08-12 and corrected within
+three minutes: the standing "snapping is off everywhere" rule is about tldraw's
+native snap, and reading it as covering fleet panels would remove a feature Skip
+asked for.
 
 ### Layout mode
 
@@ -653,8 +671,9 @@ comment, and it was left for whoever owns it.
 `FleetHUD.css:140-157` disables pointer events on eight panel types when the wrap
 carries `.tool-passes-through`, so a drawing or erasing tool can operate over
 them. The only code that touches the class **removes** it unconditionally on
-every render (`FleetHUD.tsx:1178-1187`). Both halves of a reverted feature are
-still in the tree.
+every render (`FleetHUD.tsx:1178-1187`). The comment there records why: the
+tradeoff cost the ability to interact with chat without switching tools, and Skip
+judged it bad. Both halves of a reverted feature are still in the tree.
 
 **Resolved on `rc/wm-layers`** (`8fe717b31`). Nothing anywhere *adds* the class,
 so all eighteen selectors were unreachable and the effect took a class off an
@@ -710,6 +729,11 @@ which is a different relation from the one §2.4 means. It is constructed at
 `fleet-hud-layer.ts:158` and `fleet-docview-layer.ts:94` and read nowhere.
 
 ### Six places do not ask which layer they are on
+
+Skip, 2026-08-13, on where the whole class of coordinate-frame bug comes from:
+
+> Is it not true that we know what layer we're interacting with? And therefore
+> this isn't about chat or anything. **This is about being your fucking layer.**
 
 The mechanism to answer him already exists and predates this branch.
 `useVisibilityViewportId()` (`useIsInViewport.ts:23`) returns the viewport
@@ -774,8 +798,8 @@ symptom is not a crash but a silence: `wm-drop-resolve` with
 `kind: "chat-composer-item"`, `resolved: false`, `registeredHitCount: 0`, and a
 drop into a chat composer that never happens.
 
-**Resolved on `rc/wm-finish`** (`c3997c193`). The drag follows the pointer.
-The WM drop path now records the browser pointer's client
+**Resolved on `rc/wm-finish`** (`c3997c193`). Skip's ruling was that the drag
+follows the pointer. The WM drop path now records the browser pointer's client
 coordinates before any editor or viewport converts them, and MathNote uses that
 point instead of projecting the note centre through the main camera. On the
 served `balancing-act` paper, a note rendered inside a pinned Annotation Viewer
@@ -804,6 +828,121 @@ knowing before concluding from a green test that the path runs.
 Adding or removing a fleet shape leaves the others where they are; the reflow was
 removed because it made things worse, with a TODO to reimplement add-and-delete
 as identity (`FleetHUD.tsx:795-798`).
+
+### Open symptoms Skip has reported
+
+These are his words with timestamps, not diagnoses. Read forward from them before
+acting — one item on this list was answered 24 minutes after he raised it.
+
+**Flicker under a held finger. Open.** 2026-08-12 13:13:49 EDT, from an iPad:
+
+> when I have my thumb down, Sometimes … there was, like, sort of up down, like,
+> sort of visual flicker. … I guess something was, like, measuring its height.
+> Right? But that wasn't that's not to spec.
+
+And at 13:22:46 EDT, on why it matters more than its size suggests:
+
+> it just creates anxiety, right, to, like, observe flicker all the time
+
+Owned by `anchor-drift` as of 13:24:52 EDT, with telemetry reported as pointing
+at the height-measurement path. **This document does not name a cause** — the
+plausible candidates in here (bounds recomputation during a touch drag, the
+`ResizeObserver`s on panel content) have not been measured against his session,
+and a guess in this file would be read as a finding.
+
+**Soft snap felt wrong and showed nothing. Answered.** 2026-08-12 13:11:24 EDT:
+
+> No visual indication and, like, just weird feeling. I think something is in
+> there
+
+and at 13:19:58 EDT, on priority:
+
+> it's not super high priority, but it is an important feel issue, and I would
+> like it fixed.
+
+`210ff19ed` (13:35:52 EDT) is the response: the pull could never move a panel
+more than 3 screen pixels, which on a high-DPI tablet is not a perceptible
+distance, so strength became an `em` setting on the readability profile, and
+every match now draws a hairline guide at the line it is pulling toward.
+**Whether that satisfies him is not established** — he has not been asked since it
+landed, and a fix is not a confirmation.
+
+**Drag handles stick, then the tab dies. One mechanism fixed, no repro.** He
+picked an agent's label out of the agents panel, dropped it into the left of his
+layout, and resized:
+
+> the drag handles … they were just visible, and they couldn't go away … it
+> wasn't resizing as I moved my mouse
+
+then the render loop went and the tab with it (`React error #185`). The drop path
+is corroborated independently by telemetry — a burst of `wm-drop-resolve` with
+`kind: "fleet-pill"`, `resolved: false`, `registeredHitCount: 0`, about seventy
+seconds before the crash, which is the `detached`-versus-nothing-registered
+distinction `drop-targets.ts:33-54` exists to record. `5c7b99029` fixes **one**
+mechanism: the chat container's ref cleanup could call a drop target's `leave()`
+— which sets React state — from inside React's own ref-replace path.
+
+**That is a code-backed fix for a plausible cause, not a reproduction.** The
+crash has not been reproduced and is not known to be gone.
+
+**Expanded rows do not survive a remount. Not fixed.** He expanded a 13-message
+thread; the control flipped to collapse and the card did not stay open.
+
+The cause is a state-location choice, and it is verifiable by reading:
+`expandedRowsRef` and `collapsedRowsRef` are `useRef<Set<string>>(new Set())`
+inside `FleetChatInner` (`shapes/FleetChatShape.tsx:4247-4248`) — **component
+state, not shape props.** They were made refs deliberately, to survive
+`dangerouslySetInnerHTML` re-renders; that is render-survival, which is a
+different problem from state that outlives a mount. So expansion is lost to a
+HUD toggle or a cull, and before `a824072f3` two mounts meant two copies that
+could disagree. **Removing the second copy did not move the state.**
+
+**Chat scroll had two correction loops with different targets. Both fixes
+landed.** Measured: `scrollTop` set to 0 on all four `.fleet-chat-log` elements,
+after which each snapped back to a *different* bottom — the canvas copies to
+`44647` and `35348`, the HUD copies to `27432` and `25416`. That is not a race on
+one element; it is two loops disagreeing about where the bottom is, with HUD
+state deciding which one owned his reading position. `8543d9048` defers
+correction while a pointer is held and `85c06a69e` removes the second render.
+
+**Activity cards disappearing. Cause unknown, and the explanation attached to it
+belongs to a different symptom.**
+
+**Activity cards are not tldraw shapes**: they are HTML inside `FleetChatShape`,
+and no activity type is in the panel registry. So a shape cap cannot be the
+mechanism, whatever its number — that disposes of the shape-cap explanation on
+its own.
+
+**And the shape cap was never offered for this symptom.** It is Skip's, and he
+raised it about something else. On 2026-08-10 he was trying to drag an agent's
+label on `Bregman`, at 17:15:25 EDT:
+
+> I can't talk to the agents I wanna talk to because the only way to get a
+> fucking label is apparently in chat. Like, search fucking name isn't
+> draggable.
+
+then at 17:15:38 and 17:15:49:
+
+> The issue is actually that I have the maximal number of shapes.
+>
+> What why do I have so many fucking shapes on Bregman?
+
+and at 17:18:53, reading the app's own error: **"And it says four thousand."**
+The figure is his, off the screen, about a **label that would not drag** — an
+agent later carried it across to the vanishing cards, where it never applied.
+
+**The error itself is real but uncaptured.** At 17:18:44 he said *"Okay. I'll
+screenshot the error when I see it"*, and five seconds later *"Not seeing it
+right now."* No screenshot was produced, so the wording is recalled rather than
+recorded. `maxShapesPerPage` does not appear anywhere under `src/`, which means
+the cap is not ours — an error a user sees can come from the vendored editor. So
+**which component emits that message, and whether it still does, is open**, and
+it is a question about the drag path rather than about chat.
+
+For the cards themselves: existing telemetry counts *mounted DOM cards*, which
+Virtuoso may legitimately unmount, so it sits one layer too late to tell a vanish
+from ordinary virtualisation. An instrument was added in `7b0ae6236`. **Nothing
+is established.**
 
 ### Smaller mismatches
 
@@ -838,6 +977,13 @@ as identity (`FleetHUD.tsx:795-798`).
 
 ## What is not established here
 
+- **Whether the reported-symptoms list is complete.** It is what he said in one
+  bounded window of his own thread on 2026-08-12 (12:14–13:30 EDT), read in
+  order. He has said the WM "is kinda fucked right now", and that sentence is
+  broader than the two items above. The rest of what he means is not established
+  here.
+- **The cause of the flicker.** Named as open above, deliberately without a
+  mechanism.
 - **Whether the double render is fully gated.** `85c06a69e` covers the nine
   registry panel types through the shared gate. Whether any other component
   mirrored into the HUD viewport still mounts twice has not been measured.

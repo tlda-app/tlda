@@ -1,9 +1,14 @@
-# fly.talk.toml — a public presentation box for viewers outside the tailnet.
+# fly.talk.toml — the PUBLIC talk box. Serves one project, `talk-opening`, to a
+# presenter who is not on the tailnet.
 #
 # Deploy with:  npm run deploy:live -- --fly-config fly.talk.toml
 #
-# A funnel can expose the tailnet hostname publicly when the deployment needs it.
-app = "your-tlda-presentation"
+# Why a funnel rather than a public [http_service] on *.fly.dev: the tldraw
+# license key is bound to *.cormorant-matrix.ts.net. Off that domain the canvas
+# does not license, and the canvas IS the annotation layer Skip presents with.
+# So the box joins the tailnet for its hostname and `tailscale funnel` makes
+# that same hostname public.
+app = "tlda-talk"
 primary_region = "sjc"
 
 [build]
@@ -13,8 +18,11 @@ primary_region = "sjc"
   PORT = "5176"
   NODE_ENV = "production"
   TLDA_DEPLOYMENT = "talk"
-  # Its own tailnet node, separate from testing.
-  TS_HOSTNAME = "presentation"
+  # Its own tailnet node — NOT tlda-fly, which is `testing` and must not be
+  # disturbed. This name is also the public hostname, and Skip picked it: he is
+  # registering https://imagined-randomization.cormorant-matrix.ts.net and reads
+  # this string out loud, so it is the deliverable, not an internal label.
+  TS_HOSTNAME = "imagined-randomization"
   # Expose with `tailscale funnel` instead of `tailscale serve`. Unset on every
   # other deployment, which stay tailnet-only.
   TS_FUNNEL = "1"
@@ -27,7 +35,7 @@ primary_region = "sjc"
   memory = "2048"
 
 # Its own volume. Deliberately NOT `sync_data`: this box starts with an empty
-# store and gets only the presentation project copied in. No fleet database, no chat
+# store and gets only the talk project copied in. No fleet database, no chat
 # history, no other projects.
 [mounts]
   source = "talk_data"

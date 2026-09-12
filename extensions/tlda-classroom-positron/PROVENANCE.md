@@ -2,8 +2,8 @@
 
 **Until 0.2.4 this directory was not the extension students run.** It was version
 `0.1.0` under publisher `tlda`, a namespace that does not exist on OpenVSX. What
-students install is `tlda-labs.tlda-classroom`, published manually to OpenVSX.
-The two diverged for months, and a fix written here reached
+students install is `tlda-labs.tlda-classroom`, published by hand from Skip's
+OpenVSX account. The two diverged for months, and a fix written here reached
 nobody.
 
 `0.2.4` closes that: `src/` is the published `0.2.3` source plus the Submit
@@ -34,8 +34,8 @@ on 2026-08-31.
 
 ## Publishing
 
-There is no publish path in this repository — packaging is
-`npx @vscode/vsce package`, and publishing is done manually
+There is no publish path in this repository and no `ovsx` or `vsce` on the
+box — packaging is `npx @vscode/vsce package`, and publishing is done by hand
 with the OpenVSX token. **Bump `version` in `package.json` every time**: OpenVSX
 refuses a re-publish of an existing version, and a silent failure there is
 exactly how 0.1.0 came to sit here looking shipped.

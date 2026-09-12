@@ -428,9 +428,11 @@ export class PermissionLedger {
         terminal_capability TEXT,
         cwd TEXT,
         last_seen TEXT,
-        -- A launch that fails after preallocating an id marks its reservation
-        -- dead rather than deleting it. This is an explicit lifecycle action,
-        -- not death inferred from a failure.
+        -- Skip, 2026-08-19 05:39 EDT: "you kill a never inhabited shell. You
+        -- don't delete it." A launch that fails after preallocating an id kills
+        -- its own reservation -- an explicit kill, the flag set because somebody
+        -- asked for it, which is what AGENTS.md "DEATH IS A FLAG IN THE
+        -- DATABASE" requires. It is not death inferred from a failure.
         dead INTEGER NOT NULL DEFAULT 0,
         died_at TEXT
       );

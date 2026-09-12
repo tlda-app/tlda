@@ -64,7 +64,7 @@ function apiFileUrlToLocalPath(raw, serverBaseUrl = null) {
 }
 
 // Detect file paths in message text and replace with {{att:N}} placeholders.
-// Backtick-quoted spans and blocks are skipped because they are literal text.
+// Backtick-quoted spans/blocks are skipped (they are "quotes" per Skip's rule).
 // Returns { resolvedMessage, inlineAttachments } where inlineAttachments entries
 // have { type: 'file', id, path, name } — no url yet (call uploadAttachments next).
 export function detectAttachments(message, agentCwd, serverBaseUrl = null, options = {}) {
@@ -122,7 +122,7 @@ export function detectAttachments(message, agentCwd, serverBaseUrl = null, optio
     return `{{att:${id}}}`
   })
   // 3a-ter. Mask remaining http(s) URLs so the bare-path pass never reads a URL
-  // as a file. Without this, a host like `private-tailnet.example` matches the
+  // as a file. Without this, a host like `cormorant-matrix.ts.net` matches the
   // `.ts` extension (pathRe's `(?!\w)` allows the following `.`), mangling the
   // link into `https:{{att:N}}.net/...`. (api-file markdown images were already
   // consumed in 3a above; this only masks plain URLs.)

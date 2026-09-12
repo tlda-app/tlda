@@ -9,13 +9,12 @@ import { spawn } from 'child_process'
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { homedir } from 'os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 const PORT = Number(process.env.PORT || (5194 + (process.pid % 1000)))
 const DB = `/tmp/suggestions-test-${process.pid}.db`
-const TODD_SCRIPT = process.env.TLDA_TODD_SCRIPT || join(homedir(), 'work', 'tlda-bots', 'todd', 'todd.mjs')
+const TODD_SCRIPT = process.env.TLDA_TODD_SCRIPT || '/Users/skip/work/tlda-bots/todd/todd.mjs'
 const TODD_PID = `/tmp/suggestions-test-todd-${process.pid}.pid`
 const TODD_ID = `fleet:suggestions-test-todd-${process.pid}`
 const TODD_HOME = `/tmp/suggestions-test-home-${process.pid}`

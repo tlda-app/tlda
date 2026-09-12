@@ -21,8 +21,7 @@ export const SIGNAL_REPLAY_WINDOWS = {
   // confirmed durable per-build review state.
   'signal:diff-review': 86_400_000,
   'signal:diff-summaries': 86_400_000,
-  // Rebuild prioritization and presentation hints.
-  'signal:viewport': 300_000,
+  // Presentation hints.
   'signal:presenter': 600_000,
   'signal:slide-index': 600_000,
   'signal:slide-fragment': 600_000,

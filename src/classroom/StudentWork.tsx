@@ -4,6 +4,7 @@ import { createHtmlDocumentFromPageInfo } from '../svgDocumentLoader'
 import type { SvgDocument } from '../loaders/types'
 import { classroomApi, type Assignment, type Submission } from './api'
 import { submissionLabel } from './markingLabels'
+import { readClassroomToken } from './classroomToken'
 import './ClassroomWorkspace.css'
 
 // What a student sees of their own work.
@@ -18,9 +19,31 @@ import './ClassroomWorkspace.css'
 // student and renders what comes back; it does not receive drafts and filter
 // them, because a filter is a thing that can be got wrong once.
 
+/**
+ * Say who is asking, on a request for a document.
+ *
+ * A submitted assignment is readable by the student who handed it in and by an
+ * instructor, and the server decides that from the enrolment token —
+ * `studentToken()` accepts it as `?classroomToken=`. But the app's fetch wrapper
+ * (`authToken.ts`) attaches only the bearer read token, and the classroom header
+ * is set only by `classroomApi` for `/api/classroom/*`. So a plain `/docs/`
+ * request arrived as nobody, and a student asking for **their own** work got 403
+ * — measured on a fixture: read token alone 403, the same request plus this
+ * token 200.
+ *
+ * Scoped to this view's own requests on purpose. The global wrapper and every
+ * other `/docs/` caller are untouched; who may read a document is decided by the
+ * server, and this only stops throwing the answer away.
+ */
+function withStudentIdentity(url: string): string {
+  const classroomToken = readClassroomToken()
+  if (!classroomToken) return url
+  return `${url}${url.includes('?') ? '&' : '?'}classroomToken=${encodeURIComponent(classroomToken)}`
+}
+
 async function firstPage(docKey: string) {
   const basePath = `/docs/${encodeURIComponent(docKey)}/`
-  const response = await fetch(`${basePath}page-info.json`)
+  const response = await fetch(withStudentIdentity(`${basePath}page-info.json`))
   if (!response.ok) throw new Error('Your submission is still being prepared. Give it a moment and reload.')
   const pages = await response.json()
   if (!pages[0]) throw new Error('Your submission has no rendered page yet.')

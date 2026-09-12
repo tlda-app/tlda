@@ -17,15 +17,15 @@ let outbox = null
 let store = null
 
 try {
-  const daemonIdentity = { machineId: 'testbox', envName: 'default', daemonKey: 'testbox:default' }
+  const daemonIdentity = { machineId: 'mini', envName: 'default', daemonKey: 'mini:default' }
   const agent = {
     id: 'fleet:aaaa1111',
     friendly_name: 'activity-producer-test',
     human: false,
     dead: false,
-    machine_id: 'testbox',
+    machine_id: 'mini',
     env_name: 'default',
-    daemon_key: 'testbox:default',
+    daemon_key: 'mini:default',
     session_id: 'rollout-local-identity',
     session_ids: ['rollout-local-identity'],
     cwd: dir,

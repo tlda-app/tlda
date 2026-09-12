@@ -274,7 +274,6 @@ default for `.tex` files and repository paths.
 | LaTeX (`.tex`) | Builds the paper with `latexmk`, converts its pages to SVG, and retains SyncTeX source positions. | `tlda project link paper paper.tex` |
 | Markdown (`.md`) | Renders the authored Markdown and the local Markdown documents and assets it links to. | `tlda project link notes notes.md` |
 | Quarto (`.qmd`) | Sends the source directory to the server and runs Quarto there. An HTML document becomes a scrolling page; a RevealJS result becomes individual interactive slides. | `tlda project link report report.qmd` |
-| Native PDF (`.pdf`) | Preserves the PDF, extracts its pages for the canvas, and leaves source-line mapping unavailable because the PDF has no authored source positions. | `tlda project link handout handout.pdf` |
 | Rendered HTML | Copies a rendered HTML site or book and its assets without running its source renderer. Top-level HTML files become document pages unless the artifact supplies `page-info.json`. | `tlda project link book index.html --format html` |
 | Rendered RevealJS | Copies an already-rendered deck and its assets, then lays its interactive slides from left to right on the canvas. | `tlda project link talk index.html --format slides` |
 

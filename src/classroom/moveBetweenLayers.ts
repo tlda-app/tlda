@@ -31,6 +31,19 @@ export interface LayerStore {
   createShapes(shapes: Partial<TLShape>[]): void
   deleteShapes(ids: TLShapeId[]): void
   getCurrentPageId(): string
+  /**
+   * Whether this store's editor is still the mounted one.
+   *
+   * A store whose editor has gone still answers every read from its last state,
+   * so a delete against it looks exactly like a delete that worked. It is not
+   * one: the write is local, and `TLSyncClient.close()` **cancels** unsent
+   * changes rather than flushing them, so the room never hears about it.
+   *
+   * Required rather than optional, because the default it would otherwise have
+   * — assume live — is precisely the assumption that let a move that changed
+   * nothing report `returned 1`.
+   */
+  isLive(): boolean
 }
 
 export class LayerMoveFailed extends Error {}
@@ -122,7 +135,40 @@ export function moveShapesToLayer(
     )
   }
 
+  // The same question of the destination, and here it decides a LOSS rather
+  // than a stall. A store whose editor has gone accepts every create and
+  // answers every read from its own memory, so the verify above passes on a
+  // layer that carried the annotations nowhere — and the delete below would
+  // then remove the only surviving copies. Asked before the delete for exactly
+  // that reason.
+  if (!destination.isLive()) {
+    throw new LayerMoveFailed(
+      `the other layer was replaced before it took the annotations; nothing was removed`,
+    )
+  }
+
   source.deleteShapes(shapes.map(shape => shape.id))
+
+  // Confirm the removal, on a source that is still live.
+  //
+  //   create -> verify -> delete -> confirm
+  //
+  // The delete above is a local store write. Two things can make it a lie: a
+  // store that ignored it, and a store whose editor is already gone — the
+  // second reports the shapes as removed and takes the removal to the grave,
+  // because a closing sync client cancels what it has not sent. Both end with
+  // the marks published AND still on the private layer while this returns the
+  // ids as moved, which is the false success this ordering exists to prevent.
+  //
+  // It cannot promise the deletion reached the room; nothing here can. It
+  // refuses to CALL it a move when the end that made it was not live.
+  const remaining = shapes.filter(shape => source.getShape(shape.id))
+  if (remaining.length > 0 || !source.isLive()) {
+    throw new LayerMoveFailed(
+      `${shapes.length} annotations reached the other layer but are still on this one`,
+    )
+  }
+
   return shapes.map(shape => shape.id)
 }
 
@@ -213,5 +259,6 @@ export function layerStore(editor: Editor): LayerStore {
     createShapes: shapes => editor.createShapes(shapes as Parameters<Editor['createShapes']>[0]),
     deleteShapes: ids => editor.deleteShapes(ids),
     getCurrentPageId: () => editor.getCurrentPageId(),
+    isLive: () => !editor.isDisposed,
   }
 }

@@ -1,4 +1,5 @@
-# Daemon/environment authority for a frozen pre-publication course candidate.
+# Daemon/environment authority for the pic-preview deployment — the frozen
+# pre-publication candidate surface between pic-dev and the student-facing pic.
 # Installed to ~/.config/tlda/daemon.yaml by scripts/fly-entrypoint-live.sh.
 machineId: fly
 
@@ -7,20 +8,22 @@ machineId: fly
 # used to come from the TLDA_ENV environment variable, and now lives with the
 # environments it selects between.
 #
-# The candidate carries course content and class configuration, but its fleet,
-# chat and sync state are separate from the published environment:
+# This is its OWN environment, not pic's. The candidate carries pic's content
+# and class configuration, but its fleet, chat and sync state are separate:
 # validating a candidate must not write into the student box's rooms.
 environments:
   default: pic-preview
   values:
     pic-preview:
       # fleet, chat, registry, agents
-      database: https://course-preview.example.invalid
+      database: https://pic-preview.cormorant-matrix.ts.net
       # document assets and shape sync
-      store: https://course-preview.example.invalid
-      # Public examples are explicitly unlicensed. Put a licensed client value
-      # in private deployment configuration when needed.
-      licenseKey: ""
+      store: https://pic-preview.cormorant-matrix.ts.net
+      # tldraw license. A client-side value shipped to every browser in
+      # window.__TLDA_CONFIG__ — not a secret, so it belongs here and not in
+      # `fly secrets`. It is bound to *.cormorant-matrix.ts.net, which is why
+      # this box's tailnet name must stay inside that domain.
+      licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
 
 taskDoc:
   globalDir: /app/server/persist/fleet-task-doc

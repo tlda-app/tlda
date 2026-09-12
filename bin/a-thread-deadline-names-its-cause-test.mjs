@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// A thread() call can fail with
-// `WS request deadline exceeded after 45000ms (type=fleet-search)`.
+// Skip, 2026-09-01 23:14:01: "add an error message for that" -- after a thread()
+// call died with `WS request deadline exceeded after 45000ms (type=fleet-search)`.
 // That sentence names the transport and no remedy, so the one thing the caller
 // can act on -- the query was bigger than the deadline, ask for less of it --
 // is the thing it does not say.
@@ -90,13 +90,13 @@ try {
   assert.ok(loginSeen, 'the MCP channel never logged in; the test could not reach the wire')
 
   {
-    const result = await handleFleetTool('thread', { filter: 'me <> human-owner', page_size: 5000 })
+    const result = await handleFleetTool('thread', { filter: 'me <> skip', page_size: 5000 })
     const text = result?.content?.[0]?.text || ''
     assert.ok(searchesReceived.length, `the fleet-search read never reached the wire; the test proved nothing (got: ${text})`)
 
     assert.equal(result.isError, true, `a deadline must be an error, got: ${text}`)
 
-    // 1. The generic sentence is gone.
+    // 1. The generic sentence is gone. This is the string Skip was handed.
     assert.doesNotMatch(
       text,
       /WS request deadline exceeded/,
@@ -125,7 +125,7 @@ try {
   // carried the query to get a sentence it can act on.
   {
     const before = searchesReceived.length
-    const result = await handleFleetTool('thread', { filter: 'me <> human-owner', page_size: 5000, env: 'test' })
+    const result = await handleFleetTool('thread', { filter: 'me <> skip', page_size: 5000, env: 'test' })
     const text = result?.content?.[0]?.text || ''
     assert.ok(
       searchesReceived.length > before,

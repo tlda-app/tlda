@@ -233,10 +233,20 @@ operation fails. The server does not fall back to processing a local lookalike.
 
 ### A deployed sha says nothing about the code a daemon is running
 
-Each environment's daemon runs whatever `bin/fleet-daemon.mjs` its own service
-definition points at, and different environments may point at different
-checkouts. Read the active service definition rather than assuming the shared
-checkout is the code a daemon loaded.
+Each environment's daemon runs whatever `bin/fleet-daemon.mjs` its own LaunchAgent
+points at, and **they do not all point at the same checkout.** As of 2026-08-18:
+
+| LaunchAgent | checkout |
+|---|---|
+| `com.tlda.fleet-daemon.testing` | `/Users/skip/worktrees/daemon-testing` |
+| `com.tlda.fleet-daemon.stable` | `/Users/skip/work/tlda` |
+| `com.tlda.fleet-daemon.pic` | `/Users/skip/work/tlda` |
+
+Read the plist rather than this table — that is the authority, and this line has
+already been stale once. `testing` is the environment Skip uses, so the one most
+likely to be reasoned about is the one that is not in the shared checkout.
+Grepping `~/work/tlda` for the code a testing daemon is running answers a question
+about a different tree.
 
 So a daemon runs **whatever the working tree held when its process started**. It
 does not track `main`, it is not shipped by a deploy, and a commit's presence in
@@ -399,8 +409,8 @@ a refresh loses it, and so does closing the tab.
 
 `EmergencyDumpButton` in the table-of-contents panel is the exit — it reads
 `editor.store` locally and downloads a Markdown file with no network in the path.
-It provides a recoverable export when unsynchronized annotations are stranded in
-the browser.
+It exists because Skip spent fifteen minutes hand-copying stranded iPad notes on
+2026-08-12, screenshots being the only alternative he could find.
 
 **It is inside the canvas UI, so it is absent from the fatal-error screen**
 (`src/SvgDocument.tsx`, `storeWithStatus.status === 'error'`), which replaces the
@@ -452,11 +462,35 @@ history. The workspace follows the reader to the destination. Side-by-side
 columns are explicit comparison space; ordinary documents are not laid out as
 one horizontally pannable sheet.
 
-**The map is the canvas, zoomed out. It is not a separate component.** The
-Project tab carries an always-present picture-in-picture of the canvas at a
-zoomed-out level. Go zooms the main canvas out to it; a return arrow restores
-the prior view. There is no separate map document or parallel representation
-of the project.
+**The map is the canvas, zoomed out. It is not a component.** Skip has specified
+this repeatedly and it has been reimplemented as a custom widget each time, which
+is why it keeps being wrong. His words:
+
+> the fucking map is just the fucking entire canvas or zo[omed out] … That's the
+> fucking map. The inset is just a fucking picture in picture view of the canvas
+> at that fucking Zoom level,
+
+> Not complicated,
+
+> Not a custom component. Just that,
+
+And when he first specified it, 7/29 21:44 → `chief13`, verified against the
+event record:
+
+> Oh, also, obviously, we don't want a map button. In the project tab. Come on,
+> guy. I mean, you know me better than that. What we want is a picture in picture
+> viewer. Of the fucking map.
+
+> Like, right now, we have this sort of go return notion So I guess go on the
+> picture in picture viewer that is the map … zooms the fuck out. … And then gives
+> you an arrow to return.
+
+> I thought the map was just gonna be the canvas zoomed out.
+
+So: the Project tab carries an always-present picture-in-picture of the canvas at
+a zoomed-out level. Go zooms the main canvas out to it; a return arrow restores
+the prior view. There is no separate map document, no boxes with titles, and
+nothing to build that renders a project some other way.
 
 ## Fleet and agent tools
 
