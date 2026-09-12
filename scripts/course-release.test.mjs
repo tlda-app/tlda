@@ -290,3 +290,26 @@ test('index hashing ignores navigation links but follows embedded assets and inc
     rmSync(f.root, { recursive: true, force: true })
   }
 })
+
+test('an unchanged full-book assembly reports KEEP, not CHANGE', () => {
+  // `desired` is an array for a full-book assembly, and it used to be compared
+  // with !==, which is reference inequality. Two structurally identical arrays
+  // parsed from JSON are never ===, so the assembly reported changed with a
+  // byte-identical sourceHash and the whole book re-activated on every release.
+  const f = fixture()
+  const contract = readReleaseContract(f.contractPath)
+  const baseline = planCourseRelease(contract)
+  const previousPath = join(f.root, 'previous-book.json')
+  writeFileSync(previousPath, JSON.stringify({ artifacts: baseline.artifacts.map(artifact => ({
+    id: artifact.id, sourceHash: artifact.sourceHash, desired: artifact.desired,
+  })) }))
+  contract.previousManifest = previousPath
+
+  const book = planCourseRelease(contract).artifacts.find(artifact => artifact.id === 'book')
+  assert.equal(book.sourceHash, baseline.artifacts.find(a => a.id === 'book').sourceHash)
+  assert.equal(book.changed, false)
+
+  // and it still notices a genuine membership change
+  contract.artifacts.find(artifact => artifact.id === 'book').desired = ['chapter-one']
+  assert.equal(planCourseRelease(contract).artifacts.find(a => a.id === 'book').changed, true)
+})
