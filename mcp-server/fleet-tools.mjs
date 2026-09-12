@@ -1748,7 +1748,7 @@ export function getFleetTools() {
           until: { type: 'string', description: 'ISO timestamp, relative shorthand ("30s", "20m", "2h", "1d"), or the literal "now" — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
           types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, login, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
-          page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp. Ignored when both since and until are set (bounded calls return full range).' },
+          page_size: { type: 'number', description: 'Max messages per page (default 200; when both since and until are set, the default is the whole window). To get the next page, call again with `since` set to the last returned timestamp. Always honoured when you pass it — a bounded read will not flood you with the whole window if you asked for less.' },
           project: { type: 'string', description: 'Project name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
       },
@@ -4649,10 +4649,21 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       if (e.name !== 'TimeBoundError') throw e;
       return { content: [{ type: 'text', text: `Thread failed: ${e.message}` }], isError: true };
     }
-    // When both bounds are set the caller committed to a finite range, so grab
-    // the whole window in one shot; otherwise page in 200s.
+    // When both bounds are set the caller committed to a finite range, so the
+    // DEFAULT is to grab the whole window in one shot; otherwise page in 200s.
+    //
+    // A default is not a veto. This read `isBounded ? 10_000 : (args.page_size
+    // || 200)`, which threw away an explicitly supplied `page_size` on exactly
+    // the calls where the caller had most reason to give one: asking for 20
+    // messages inside a window returned up to ten thousand. That is the same
+    // defect as `search` refusing a bounded call with a small limit — a term
+    // the caller supplied not reaching the query — and here it lands as a
+    // flood rather than an error, which is worse for a reader who dictates.
+    //
+    // The window still defaults to whole, so nothing changes for a caller who
+    // does not ask; `page_size` is now honoured when it is written down.
     const isBounded = !!(resolvedSince && resolvedUntil);
-    const pageSize = isBounded ? 10_000 : (args.page_size || 200);
+    const pageSize = args.page_size || (isBounded ? 10_000 : 200);
 
     const parseEventMetadata = (metadata) => {
       if (!metadata) return {};
