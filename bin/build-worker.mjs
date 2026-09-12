@@ -203,7 +203,8 @@ process.on('message', async (msg) => {
         `[build-worker] ${msg.name}: instance ready in ${t.totalMs}ms `
         + `(seed-output ${t.seedOutputMs}ms, caches ${t.seedCachesMs}ms, `
         + `source ${t.writeSourceMs}ms`
-        + (t.materializedLinks ? ', links materialized' : `, ${t.sourceFiles} files / ${Math.round(t.sourceBytes / 1024)}KB`)
+        + `, ${t.sourceFiles} files / ${Math.round(t.sourceBytes / 1024)}KB`
+        + (t.materializedLinks ? ', links materialized' : '')
         + ')',
       )
     }

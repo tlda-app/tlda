@@ -13,8 +13,18 @@ function modeFor(entry) {
   return entry.mode === '100755' ? 0o755 : 0o644
 }
 
+// Returns what it wrote: { files, bytes }. Every byte passes through here
+// already, so the count is exact and free, and without it the caller's timing
+// reports milliseconds with nothing to divide them by. A phase that says "13
+// seconds" and not how much it moved cannot tell a slow copy from a big one,
+// and those want opposite fixes. This is the link-materializing path, which is
+// the one qmd projects take — so it is precisely the path a chapter build uses.
 export async function materializeAcceptedRevision({ revision, lifecycle, destination, omitted = new Set(['.mcp.json']) }) {
   const entries = new Map((revision?.files || []).map(entry => [admittedPath(entry.path), entry]))
+  // Not `files`/`bytes`: `bytes` is already the file buffer inside materialize(),
+  // and the shadow makes the counter assign to a const at runtime only.
+  let fileCount = 0
+  let byteCount = 0
 
   async function materialize(targetPath, outputPath, stack = []) {
     const target = admittedPath(targetPath)
@@ -36,6 +46,8 @@ export async function materializeAcceptedRevision({ revision, lifecycle, destina
       if (!bytes) throw new Error(`accepted revision is missing ${target}`)
       await mkdir(dirname(outputPath), { recursive: true })
       await writeFile(outputPath, bytes, { mode: modeFor(entry) })
+      fileCount += 1
+      byteCount += bytes.length
       return
     }
 
@@ -55,4 +67,6 @@ export async function materializeAcceptedRevision({ revision, lifecycle, destina
     if (parentLink) continue
     await materialize(path, `${destination}/${path}`)
   }
+
+  return { files: fileCount, bytes: byteCount }
 }

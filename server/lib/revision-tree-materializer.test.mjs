@@ -46,3 +46,25 @@ test('refuses escaping, external, unadmitted, cyclic, and special link targets',
     finally { rmSync(root, { recursive: true, force: true }) }
   }
 })
+
+// The counts are the denominator for the build-instance timing: milliseconds
+// with nothing to divide them by cannot separate a slow copy from a big one.
+// Asserted against a hand-counted fixture rather than against the function's
+// own arithmetic, so the check can fail for a wrong count. Every resolved link
+// counts as the FILE IT WRITES, because that is what the copy actually costs.
+test('reports the files and bytes it wrote, counting each resolved link once', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-revision-counts-'))
+  try {
+    const written = await materializeAcceptedRevision({
+      ...fixture([
+        ['bin/tool', '100755', '#!/bin/sh\n'],   // 10 bytes, written once
+        ['data/value.csv', '100644', 'x\n'],     //  2 bytes, written once
+        ['alias.csv', '120000', 'data/value.csv'], // resolves -> writes 2 bytes
+        ['alias-dir', '120000', 'data'],           // dir link -> writes 2 bytes
+        ['.mcp.json', '120000', '/outside/private'], // omitted, counts as nothing
+      ]),
+      destination: root,
+    })
+    assert.deepEqual(written, { files: 4, bytes: 16 })
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
