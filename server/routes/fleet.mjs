@@ -22,6 +22,7 @@ import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
 import { transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
 import { projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
+import { parsePermissionMode, permissionModeKeypresses } from '../../agent-runtime/status-classifier.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -1082,21 +1083,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const seat = await agentRouteOrHttpError(res, agent)
     if (!seat) return
 
-    const parseCCMode = (pane) => {
-      if (/plan mode on/i.test(pane)) return 'plan'
-      if (/accept edits on/i.test(pane)) return 'acceptEdits'
-      if (/auto.approve/i.test(pane) || /bypass/i.test(pane)) return 'auto'
-      return 'default'
-    }
-
     try {
       // Capture current mode
       const cap1 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, lines: 5 })
-      const currentMode = parseCCMode(cap1?.content || '')
+      const currentMode = parsePermissionMode(cap1?.pane)
 
       // Toggle: if in plan mode exit to default (1 BTab); otherwise enter plan mode.
       // Cycle: default → acceptEdits → plan → default
-      const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
+      const btabs = permissionModeKeypresses(currentMode)
 
       for (let i = 0; i < btabs; i++) {
         await sendDaemonEphemeral(seat.daemon_key, 'send-key', { agent_id: agent.id, key: 'BTab' })
@@ -1106,7 +1100,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       // Confirm final mode
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
       const cap2 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, lines: 5 })
-      const finalMode = parseCCMode(cap2?.content || '')
+      const finalMode = parsePermissionMode(cap2?.pane)
 
       // Store permission mode in agent metadata so UI can show persistent badge
       await fleetStore?.updateAgentMeta(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
