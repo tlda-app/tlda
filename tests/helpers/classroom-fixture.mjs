@@ -1,4 +1,5 @@
 export {
+  copyRenderedVariantProject,
   generateClassroomFixture,
   renderHomeworkVariants,
   stageRenderedVariantAssets,

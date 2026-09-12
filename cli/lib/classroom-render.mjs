@@ -182,6 +182,66 @@ export function generateClassroomFixture({
   return fixture
 }
 
+/** Quarto's book search index: one entry per rendered page, carrying its text. */
+const SEARCH_INDEX = 'search.json'
+
+/** Copy a tree, taking the files a predicate accepts; returns what was taken. */
+export function copyClassroomFiles(root, destinationRoot, includeFile) {
+  const paths = []
+  const collect = (prefix = '') => {
+    for (const entry of fs.readdirSync(path.join(root, prefix), { withFileTypes: true })) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        if (entry.name === '.git' || entry.name === '.quarto') continue
+        collect(relativePath)
+      } else if (includeFile(relativePath)) {
+        copyFile(root, destinationRoot, relativePath)
+        paths.push(relativePath)
+      }
+    }
+  }
+  collect()
+  return paths.sort()
+}
+
+/**
+ * One rendered variant as its own project: that variant's page, the assets
+ * every page shares, and nothing describing a page this project does not have.
+ *
+ * "Every other .html and its `_files/`" is not that exclusion. Quarto's book
+ * search index is `search.json`, which is neither, and it is built from every
+ * page the book rendered — so a project that deliberately omits the other
+ * variant's page shipped an index describing it anyway. **An artifact whose
+ * index describes a document the artifact does not carry is broken**, and it
+ * would be equally broken if the absent page were a bibliography.
+ *
+ * So the index is rewritten to this project's own pages rather than copied.
+ * Nothing here asks whether a page is a solution, and nothing is withheld:
+ * Skip, 2026-09-12, *"i do want them to have access to stuff that is available
+ * to them, i.e. solutions that have been handed back"*. Where a solutions
+ * project is published its index goes with it and stays searchable.
+ *
+ * Dropping the file instead would leave the search box on the published page
+ * fetching something that is not there.
+ */
+export function copyRenderedVariantProject(bookDir, destinationRoot, mainFile, otherHtmlFile) {
+  const otherAssets = `${otherHtmlFile.slice(0, -path.extname(otherHtmlFile).length)}_files/`
+  const copied = copyClassroomFiles(bookDir, destinationRoot, relativePath => {
+    if (relativePath === mainFile) return true
+    if (relativePath === otherHtmlFile) return false
+    if (relativePath.startsWith(otherAssets)) return false
+    return !relativePath.endsWith('.html')
+  })
+  const published = new Set(copied)
+  if (published.has(SEARCH_INDEX)) {
+    const indexPath = path.join(destinationRoot, SEARCH_INDEX)
+    const entries = JSON.parse(readText(indexPath))
+    const kept = entries.filter(entry => published.has(String(entry?.href ?? '').split('#')[0]))
+    fs.writeFileSync(indexPath, `${JSON.stringify(kept)}\n`)
+  }
+  return copied
+}
+
 function runChild(command, args, { cwd, env, onOutput }) {
   return new Promise((resolve, reject) => {
     const child = execFile(command, args, { cwd, env, maxBuffer: 20 * 1024 * 1024 }, (error, stdout, stderr) => {

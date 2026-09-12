@@ -5,7 +5,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import YAML from 'yaml'
-import { generateClassroomFixture, renderHomeworkVariants, stageRenderedVariantAssets } from './helpers/classroom-fixture.mjs'
+import {
+  copyRenderedVariantProject,
+  generateClassroomFixture,
+  renderHomeworkVariants,
+  stageRenderedVariantAssets,
+} from './helpers/classroom-fixture.mjs'
 
 // A course of its own, sharing no tooling with any other. Setup that only works
 // against one particular course passes nothing here.
@@ -131,6 +136,30 @@ test('handout and solution artifacts are rendered through the course transforms'
 
     // Silence for the length of a render is the failure this reports against.
     assert.deepEqual(steps, ['fixture', 'fixture', 'solution', 'handout-source', 'handout'])
+
+    // A variant project's search index indexes that project.
+    //
+    // It indexed the whole book. `search.json` is neither the other variant's
+    // page nor its `_files/`, so the rule keeping those out let through an
+    // index built from them — an artifact describing a document it does not
+    // contain, which would be equally wrong if the absent page were a
+    // bibliography. Checked over the tree rather than over the rendered page:
+    // what the project carries, against what its index names.
+    for (const [name, mainFile, otherFile] of [
+      ['handout', rendered.handoutOutput, rendered.solutionOutput],
+      ['solutions', rendered.solutionOutput, rendered.handoutOutput],
+    ]) {
+      const projectDir = path.join(dir, `.variant-${name}`)
+      const files = new Set(copyRenderedVariantProject(path.join(dir, '_book'), projectDir, mainFile, otherFile))
+      assert.ok(files.has(mainFile), `${name} project does not carry its own page`)
+      assert.equal(files.has(otherFile), false, `${name} project carries the other page`)
+      const index = JSON.parse(fs.readFileSync(path.join(projectDir, 'search.json'), 'utf8'))
+      assert.ok(index.length > 0, `${name} index is empty`)
+      for (const entry of index) {
+        const href = String(entry.href).split('#')[0]
+        assert.ok(files.has(href), `${name} index names a page it does not carry: ${href}`)
+      }
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
