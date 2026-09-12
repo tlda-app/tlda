@@ -110,3 +110,59 @@ test('a pane that cannot be read is not reported as a healthy agent', async () =
   assert.equal(result.parked, false)
   assert.match(result.error, /no server running/)
 })
+
+// A composer rendering text next to the prompt is either PENDING INPUT or a dim
+// ghost -- a restored unsent draft, or the harness's placeholder. `capture-pane
+// -p` strips the attributes that tell them apart, so these fixtures carry the
+// real bytes measured off a codex pane on 2026-09-12:
+//
+//   empty:  ESC[1m>ESC[0m ESC[2mAsk Codex to do anythingESC[0m
+//   typed:  ESC[1m>ESC[0m Call login() ...
+const ESC = '\x1b'
+const ghostPane = (text) => `${ESC}[1m›${ESC}[0m ${ESC}[2m${text}${ESC}[0m\n  gpt-6-astra default · /tmp`
+const livePane = (text) => `${ESC}[1m›${ESC}[0m ${text}\n  gpt-6-astra default · /tmp`
+
+test('a dim GHOST of the kickoff is not treated as a parked kickoff', async () => {
+  // The dangerous case: the composer shows our kickoff, but the buffer is empty.
+  // Pressing Enter there does nothing, and reporting `parked` would name a
+  // healthy agent as one that never started.
+  const sent = []
+  const tmuxExec = async (_s, command, ...args) => {
+    if (command === 'capture-pane') {
+      assert.ok(args.includes('-e'), 'it must ask for attributes, or it cannot tell ghost from input')
+      return { stdout: ghostPane(KICKOFF) }
+    }
+    sent.push(args.at(-1))
+    return { stdout: '' }
+  }
+
+  const result = await submitParkedKickoff('s', 'codex', KICKOFF, { tmuxExec, sleep: async () => {} })
+
+  assert.equal(result.observed, true)
+  assert.equal(result.parked, false, 'a ghost is not a parked kickoff')
+  assert.deepEqual(sent, [], 'and nothing is pressed at an empty buffer')
+})
+
+test('a real pending kickoff is still recognised through the attribute capture', async () => {
+  // The control for the test above: same capture path, same fixtures, live text.
+  let composerText = KICKOFF
+  const sent = []
+  const tmuxExec = async (_s, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: composerText ? livePane(composerText) : ghostPane('Ask Codex to do anything') }
+    sent.push(args.at(-1))
+    if (args.at(-1) === 'Enter') composerText = ''
+    return { stdout: '' }
+  }
+
+  const result = await submitParkedKickoff('s', 'codex', KICKOFF, { tmuxExec, sleep: async () => {} })
+
+  assert.equal(result.parked, true)
+  assert.equal(result.submitted, true)
+  assert.deepEqual(sent, ['Enter'])
+})
+
+test('the harness placeholder is never mistaken for our kickoff', async () => {
+  const fake = { tmuxExec: async (_s, command) => ({ stdout: command === 'capture-pane' ? ghostPane('Ask Codex to do anything') : '' }) }
+  const result = await submitParkedKickoff('s', 'codex', KICKOFF, { ...fake, sleep: async () => {} })
+  assert.equal(result.parked, false)
+})
