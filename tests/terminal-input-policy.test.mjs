@@ -175,6 +175,7 @@ test('kill-session succeeds when the terminal ledger row is already absent', asy
   assert.deepEqual(result, {
     ok: true,
     already_unavailable: true,
+    terminal_unresolved: true,
     reason: 'terminal already unavailable',
   })
   assert.deepEqual(calls, [])
