@@ -21,7 +21,7 @@ import { parse as parseYaml } from 'yaml'
 
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
 import { createDocumentManifest } from './document-manifest.mjs'
-import { getBuildReporter, streamChildOutput } from './build-runner.mjs'
+import { childFailureDetail, getBuildReporter, streamChildOutput } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
 import { findTldaManifests, readTldaManifest } from './tlda-manifest.mjs'
@@ -121,9 +121,9 @@ async function restoreRenv(outDir, addLog) {
     )
   } catch (e) {
     // Same reasoning as the render: renv names the package it could not get on
-    // stderr, and "Command failed" names nothing anyone can act on.
-    const detail = String(e.stderr || e.stdout || e.message || '').trim()
-    throw new Error(`renv::restore() failed in ${outDir}:\n${detail}`)
+    // stderr, and "Command failed" names nothing anyone can act on. What it
+    // printed is not always why it stopped, so say how it ended first.
+    throw new Error(`renv::restore() failed in ${outDir}: ${childFailureDetail(e)}`)
   }
   for (const stream of [result.stdout, result.stderr]) {
     for (const line of String(stream || '').split('\n')) {
@@ -301,11 +301,12 @@ async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject =
       detachOutput()
     }
   } catch (e) {
-    // Quarto reports the actual chunk/YAML error on stderr. The exec error
-    // message alone is "Command failed", which names nothing an author can act
-    // on, so the captured output is what gets raised.
-    const detail = String(e.stderr || e.stdout || e.message || '').trim()
-    throw new Error(`quarto render failed for ${mainFile}:\n${detail}`)
+    // Quarto reports a chunk or YAML error on stderr when it gets to report
+    // one at all. When it is KILLED it reports nothing, and raising its output
+    // then presents the last progress line as the cause — which is how a deck
+    // failed four times on 2026-09-12 naming no reason anyone could act on.
+    // How it ended leads; what it printed follows, labelled as output.
+    throw new Error(`quarto render failed for ${mainFile}: ${childFailureDetail(e)}`)
   }
   for (const stream of [result.stdout, result.stderr]) {
     for (const line of String(stream || '').split('\n')) {
