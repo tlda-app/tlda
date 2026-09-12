@@ -7,7 +7,7 @@ import express from 'express'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { zipSync } from 'fflate'
-import { strayAnswers, inspectSubmissionArchive, parseQmdReferences } from '../server/lib/classroom-submission.mjs'
+import { strayAnswers, inspectSubmissionArchive, parseQmdReferences, missingAnswers } from '../server/lib/classroom-submission.mjs'
 import { ClassroomStore } from '../server/lib/classroom-store.mjs'
 import { createClassroomRouter } from '../server/routes/classroom.mjs'
 
@@ -30,6 +30,39 @@ test('an untouched handout is never refused', () => {
   // block is his document continuing, not a misplaced answer.
   assert.deepEqual(strayAnswers(week0, week0), [])
   assert.deepEqual(strayAnswers(hw9, hw9), [])
+})
+
+// A deleted answer block used to pass validation and surface as a blank at
+// marking time — or, once a student can read their work beside the solution, as
+// "nothing for this question" long after they could fix it.
+const deleteAnswerBlock = (source, id) =>
+  source.replace(new RegExp(`:::\\s*\\{[^}]*#${id}[^}]*\\}[\\s\\S]*?\\n:::\\n`), '')
+
+test('a handout nobody has touched is missing nothing', () => {
+  assert.deepEqual(missingAnswers(hw9, parseQmdReferences(hw9).answerIds), [])
+  assert.deepEqual(missingAnswers(week0, parseQmdReferences(week0).answerIds), [])
+})
+
+test('an answer block the student deleted is caught and the exercise named', () => {
+  for (const [name, source] of [['hw9', hw9], ['week 0', week0]]) {
+    const id = parseQmdReferences(source).answerIds[0]
+    const without = deleteAnswerBlock(source, id)
+    // The control: the deletion has to actually remove it, or the test proves nothing.
+    assert.ok(!parseQmdReferences(without).answerIds.includes(id), `${name}: fixture edit removed ${id}`)
+    assert.deepEqual(missingAnswers(source, parseQmdReferences(without).answerIds), [id], `${name}: names the deleted block`)
+  }
+})
+
+test('the refusal reaches the student as a sentence naming the exercise', () => {
+  const id = parseQmdReferences(hw9).answerIds[0]
+  const without = deleteAnswerBlock(hw9, id)
+  const result = inspectSubmissionArchive(zipSync({ 'hw9.qmd': new Uint8Array(Buffer.from(without)) }), { template: hw9 })
+  assert.equal(result.ok, false)
+  assert.ok(result.errors.some(error => error.includes(id.replace(/^ans-/, ''))), result.errors.join(' | '))
+  // Same bytes with no template vouching for anything: it cannot claim a block
+  // is missing, so it must not.
+  const unvouched = inspectSubmissionArchive(zipSync({ 'hw9.qmd': new Uint8Array(Buffer.from(without)) }))
+  assert.ok(!unvouched.errors.some(error => error.includes('missing the answer')), unvouched.errors.join(' | '))
 })
 
 test('an answer typed under the box is caught and quoted back', () => {
