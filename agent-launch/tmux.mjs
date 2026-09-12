@@ -216,28 +216,38 @@ export function claudeStartupDialogAction(pane = '') {
   return null
 }
 
-async function dismissClaudeStartupDialog(session, action, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+async function dismissClaudeStartupDialog(session, action, {
+  tmuxSocket = process.env.TMUX_SOCKET || null,
+  tmuxExec = tmux,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
   if (action === 'devchannels' || action === 'allow-external-imports') {
-    await tmux(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), '1')
+    await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), '1')
   } else if (action === 'resume-full') {
-    await tmux(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), '2')
+    await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), '2')
   } else {
     return false
   }
-  await new Promise((resolve) => setTimeout(resolve, 500))
-  await tmux(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter')
+  await sleep(500)
+  await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter')
   return true
 }
 
-export async function dismissDevchannels(session, { timeoutMs = 60_000, tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+export async function dismissDevchannels(session, {
+  timeoutMs = 60_000,
+  tmuxSocket = process.env.TMUX_SOCKET || null,
+  tmuxExec = tmux,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  noDialogGraceMs = 8000,
+} = {}) {
   const deadline = Date.now() + timeoutMs
-  const noDialogOkAt = Date.now() + 8000
+  const noDialogOkAt = Date.now() + noDialogGraceMs
   while (Date.now() < deadline) {
     try {
-      const { stdout } = await tmux(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
+      const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
       const action = claudeStartupDialogAction(stdout)
       if (action) {
-        await dismissClaudeStartupDialog(session, action, { tmuxSocket })
+        await dismissClaudeStartupDialog(session, action, { tmuxSocket, tmuxExec, sleep })
         return true
       }
       const promptReady = stdout.split('\n').slice(-3).some((line) => line.includes('❯'))
@@ -245,7 +255,7 @@ export async function dismissDevchannels(session, { timeoutMs = 60_000, tmuxSock
     } catch {
       // Dialog polling tolerates transient tmux capture failures until timeout.
     }
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    await sleep(500)
   }
   return false
 }
@@ -270,10 +280,29 @@ export async function injectCodexPrompt(session, prompt, {
           .some((marker) => line.includes(marker))),
     }
   }
-  const modelReady = (pane = '') => {
+  // The status line says `model: loading` until the model is up. Read the LAST
+  // status line, never the whole pane: a resumed Codex pane carries the previous
+  // process's transcript, so a stale `model: loading` sits in scrollback under a
+  // live ready footer and a whole-pane test blocks forever on it.
+  //
+  // Asking whether the last status line says loading -- rather than whether it
+  // says ready -- is deliberate. `model: loading` is the only positive not-ready
+  // signal Codex emits; a loaded model's footer varies with effort and provider,
+  // so treating an absent ` default ·` as not-ready hangs on every model that
+  // never prints one.
+  const modelLoading = (pane = '') => {
     const status = pane.split('\n').findLast((line) =>
       line.includes('model: loading') || (line.includes(' default') && line.includes('·')))
-    return !!status && status.includes(' default') && status.includes('·')
+    return !!status && status.includes('model: loading')
+  }
+  // Nothing may abandon this function with the prompt sitting in the composer.
+  // A parked prompt is indistinguishable from a dead mint from the outside --
+  // the process is alive, the session exists, and no turn was ever produced --
+  // so an attempt that cannot finish leaves the composer as it found it, and the
+  // caller's launch failure is then the truth about the agent.
+  const abandonAfterPaste = async () => {
+    await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'C-u').catch(() => {})
+    return false
   }
   while (Date.now() < deadline) {
     try {
@@ -296,7 +325,13 @@ export async function injectCodexPrompt(session, prompt, {
       const promptReady = stdout.split('\n').some((line) => line.trimStart().startsWith('›'))
       const busy = ['Working', 'Transmuting', 'Thinking', 'esc to interrupt', 'ESC to interrupt'].some((marker) => stdout.includes(marker))
       const mcpStarting = stdout.includes('Starting MCP servers')
-      if (promptReady && !busy && !mcpStarting) {
+      // Wait for the model BEFORE pasting, not after. Waiting after the paste is
+      // what parked prompts in the composer: the wait shared one deadline with
+      // harness startup, MCP startup and the paste, so on a loaded box it was
+      // the wait that ran out of budget -- and it ran out holding a full
+      // composer that nothing ever submitted. Gating the paste on the same
+      // signal costs the same wait and cannot produce that state.
+      if (promptReady && !busy && !mcpStarting && !modelLoading(stdout)) {
         // Escape cancels Codex MCP startup even after the prompt first appears.
         // A directly observed ready prompt is cleared with C-u; Escape is never a startup action.
         await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'C-u')
@@ -306,15 +341,8 @@ export async function injectCodexPrompt(session, prompt, {
           await sleep(25)
         }
         await sleep(500)
-        let pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
+        const pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
         if (!composerState(pasted.stdout).containsMarker) continue
-        while (!modelReady(pasted.stdout) && pasted.stdout.includes('model: loading') && Date.now() < deadline) {
-          await sleep(500)
-          pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
-          if (!composerState(pasted.stdout).containsMarker) return false
-        }
-        if (!modelReady(pasted.stdout) && pasted.stdout.includes('model: loading')) return false
-        if (!composerState(pasted.stdout).containsMarker) return false
         await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'Enter')
         while (Date.now() < deadline) {
           await sleep(500)
@@ -327,8 +355,12 @@ export async function injectCodexPrompt(session, prompt, {
           const state = composerState(submitted.stdout)
           if (state.busyAfter) return true
           if (state.promptIndex >= 0 && !state.containsMarker) return true
+          // Still in the composer. Re-send Enter rather than waiting it out: a
+          // submitted prompt has already left the composer, so Enter on an empty
+          // one does nothing, which makes the retry safe to repeat.
+          await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'Enter').catch(() => {})
         }
-        return false
+        return await abandonAfterPaste()
       }
     } catch {
       // Prompt polling tolerates transient tmux capture failures until timeout.
@@ -338,12 +370,39 @@ export async function injectCodexPrompt(session, prompt, {
   return false
 }
 
-export async function injectClaudePrompt(session, prompt, { timeoutMs = 60_000, tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+export async function injectClaudePrompt(session, prompt, {
+  timeoutMs = 60_000,
+  tmuxSocket = process.env.TMUX_SOCKET || null,
+  tmuxExec = tmux,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  dialogGraceMs = null,
+} = {}) {
   const deadline = Date.now() + timeoutMs
-  await dismissDevchannels(session, { timeoutMs: Math.min(15_000, timeoutMs), tmuxSocket })
+  const promptMarker = prompt.slice(0, Math.min(prompt.length, 48))
+  // Same reading as the Codex composer, against Claude's `❯` prompt line: is
+  // our kickoff still sitting there unsent, and is the harness working below it.
+  const composerState = (pane = '') => {
+    const lines = pane.split('\n')
+    const promptIndex = lines.findLastIndex((line) => line.includes('❯'))
+    if (promptIndex < 0) return { promptIndex: -1, containsMarker: false, busyAfter: false }
+    return {
+      promptIndex,
+      containsMarker: lines[promptIndex].includes(promptMarker),
+      busyAfter: lines.slice(promptIndex + 1).some((line) =>
+        ['Thinking', 'Working', 'ESC to interrupt', 'esc to interrupt']
+          .some((marker) => line.includes(marker))),
+    }
+  }
+  await dismissDevchannels(session, {
+    timeoutMs: Math.min(15_000, timeoutMs),
+    tmuxSocket,
+    tmuxExec,
+    sleep,
+    ...(dialogGraceMs === null ? {} : { noDialogGraceMs: dialogGraceMs }),
+  })
   while (Date.now() < deadline) {
     try {
-      const { stdout } = await tmux(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
+      const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
       const action = claudeStartupDialogAction(stdout)
       if (action) {
         await dismissClaudeStartupDialog(session, action, { tmuxSocket })
@@ -352,24 +411,45 @@ export async function injectClaudePrompt(session, prompt, { timeoutMs = 60_000, 
       }
       const lower = stdout.toLowerCase()
       if (stdout.includes('Paste text') || lower.includes('paste mode')) {
-        await tmux(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter')
-        await new Promise((resolve) => setTimeout(resolve, 500))
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter')
+        await sleep(500)
         continue
       }
       const promptReady = stdout.split('\n').slice(-5).some((line) => line.includes('❯'))
       const busy = ['Thinking', 'Working', 'ESC to interrupt'].some((marker) => stdout.includes(marker))
       if (promptReady && !busy) {
-        await tmux(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'C-u')
-        await new Promise((resolve) => setTimeout(resolve, 200))
-        await tmux(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), prompt)
-        await new Promise((resolve) => setTimeout(resolve, 300))
-        await tmux(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter')
-        return true
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'C-u')
+        await sleep(200)
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), prompt)
+        await sleep(300)
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter')
+        // Confirm the submission instead of assuming it. This used to `return
+        // true` here, having looked at nothing after the keypress -- so a
+        // kickoff parked in Claude's composer reported as delivered and every
+        // caller believed it. Codex at least knew when it had failed.
+        while (Date.now() < deadline) {
+          await sleep(500)
+          let submitted
+          try {
+            submitted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
+          } catch {
+            continue
+          }
+          const state = composerState(submitted.stdout)
+          if (state.busyAfter) return true
+          if (state.promptIndex >= 0 && !state.containsMarker) return true
+          // A submitted prompt has already left the composer, so Enter on an
+          // empty one does nothing, which makes the retry safe to repeat.
+          await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter').catch(() => {})
+        }
+        // Never abandon a loaded composer: see injectCodexPrompt.
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'C-u').catch(() => {})
+        return false
       }
     } catch {
       // Prompt polling tolerates transient tmux capture failures until timeout.
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await sleep(1000)
   }
   return false
 }
