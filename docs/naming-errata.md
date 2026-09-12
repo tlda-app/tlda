@@ -608,3 +608,40 @@ report branch makes a throwaway page URL, the docview branch adopts the file as
 a document root and opens it live — and **the filename does not determine
 which one a person wants.** Collapsing them picks one, which is Skip's call.
 Delete this entry in the commit that settles it.
+
+## `thread(task_id:)` — returns the owning agent's stream, not the task's history
+
+**What the MCP schema says:** *"task_id reads one task's history."*
+
+**What it does:** returns the conversation stream of the agent who owns that task. The task id
+selects a subject; it does not scope the result to that task.
+
+**How to see it in one call pair.** Two different tasks owned by the same agent return
+**byte-identical** output:
+
+```
+thread(task_id: "fleet:a5d4-ms80jobb")   # owner: nobody
+thread(task_id: "fleet:8652-msb429rs")   # owner: nobody, a different task
+```
+
+Both came back as the same ten `[DELEGATE]` events addressed to `nobody`, for ten *different*
+tasks with ten different titles. Measured 2026-09-12. Two tasks with different owners behave
+the same way in the other direction — each returns its own owner's messages, including that
+agent's `[activity]` and login rows, which no task history contains.
+
+**Why it matters more than an inaccurate docstring.** This is an instrument people audit with,
+and its failure mode is the one `docs/the-instrument-or-the-code.md` is about: it **answers**.
+A caller asking "what happened on this task" gets a plausible, populated, correctly-formatted
+result that is about something else, and nothing in the output says so. Reading a parked row's
+history to decide whether it may be closed is exactly the use it cannot serve — which is how it
+was found, during the 2026-09-12 task-board cleanup, while checking whether ~40 rows parked on
+the `nobody` bot were debris. They were not; they carried explicit preservation instructions.
+Had the identical-output pair not been noticed, the same non-answer would have been read as
+forty tasks' histories.
+
+**Not fixed here** because the fix is a real query change in the search path, and
+`AGENTS.md` §"A search path translates the query and runs it" governs what that path is allowed
+to do — a post-filter over the owner's stream would be wrong in the same way the `A <> B` pair
+test was. Use `search(query: "id:<event-id>")` or `thread(agent:)` with a bounded window and
+read for the task, and treat any `task_id` result as the owner's traffic until this entry is
+deleted.
