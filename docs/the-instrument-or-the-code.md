@@ -628,6 +628,42 @@ any of this.**
   fires three times per landing is its own problem.** Recorded as a candidate,
   not a finding. A fast answer here would be the fifth layer.
 
+### 18. A declaration read as a description of what is running
+
+**A config file says what a process *should* have been given. Nothing in it
+reports what the process actually got**, and the two drifted here for twenty
+days without a single surface saying so.
+
+`~/.config/tlda/bots.yaml` gives `dev` an `env:` block, and the load-bearing
+entry is `TLDA_DEV_BOT_DISABLED_CHECKS` — seven checks held out, each with a
+written reason above it, three of them the probe checks Skip ordered removed on
+2026-08-23 for minting a live agent per sweep.
+
+**The running process had none of the five variables.** `ps -p <pid> -wwwE`
+showed `TLDA_BOT_NAME`, `TLDA_BOT_PIDFILE`, `TLDA_BOT_HEARTBEAT`, `TLDA_ENV` and
+the `FLEET_*` set, and nothing from the declaration. So all seven ran, and their
+combined failure summary — 43,873 characters — is what got the bot renamed inert
+as a runaway.
+
+**Every instrument in reach agreed the config was fine, because every one of them
+read the file rather than the process.** The declaration parsed. The resolver,
+called by hand, returned all five values correctly. `tlda bot status` reported
+the bot running. The bot's own heartbeat recorded which checks it ran, and
+nobody compared that list against the declaration.
+
+**What made it survivable is that the drop was at a call site neither end owned.**
+The stored `launch_recipe` for `bot:testing:dev` was created 2026-07-25 and still
+carried five of the six launch keys that `ca5d89397` later deleted from the
+design — every one except `botEnv`, which is the one that mattered.
+Because it supplied `botScript`, `agent-launch` took its explicit-caller branch
+and never consulted the declaration at all — so a *newer* commit's cleanup was
+undone by an *older* row, and both halves looked right in isolation.
+
+**The check: ask the process, not the file.** `ps -wwwE <pid>` against the `env:`
+block is two seconds and it is the only thing here that could have gone red. A
+declared setting is a claim about a launch that already happened, and the launch
+is the only witness.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see
