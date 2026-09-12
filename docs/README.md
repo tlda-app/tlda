@@ -14,6 +14,10 @@ the release archive.
 
 - [Document formats](document-formats.md) — LaTeX, Markdown, Quarto, and PDF inputs
 - [LiveKit](livekit.md) — voice/video setup
+- [What the promote endpoint does](promote-endpoint-what-it-does.md) — preconditions
+  and effects of `POST /api/projects/:name/promote`
+- [`serve --sandbox` and the project verbs](serve-sandbox-does-not-reach-the-project-verbs.md)
+  — the sandbox isolates the server; the `project` verbs do not follow it
 
 The schemas exposed by the running CLI and MCP server remain authoritative for
 exact command/tool arguments.
