@@ -20,11 +20,17 @@ import type { SvgDocument } from '../svgDocumentLoader'
 // @ts-ignore — vanilla JS module
 import { getDeviceId, getHumanId, isDeviceReady } from '../fleet/fleet-data.mjs'
 
+// @ts-ignore — vanilla JS module
+import { hasSourceMapping } from '../../shared/document-formats.mjs'
 import { usePageColumn } from './usePageColumn'
 import type { PageColumnOptions } from './usePageColumn'
 import { PAGE_GAP, PDF_HEIGHT, PDF_WIDTH, TARGET_WIDTH } from '../layoutConstants'
 
 const OLD_PAGE_GAP = 48
+// A shadow DVI that is compiling finishes in seconds; one that cannot compile
+// never does. Wait about a minute, then stop asking.
+const ALIGN_RETRY_MS = 5000
+const ALIGN_ATTEMPTS = 12
 const PAGE_HEIGHT = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
 const PAGE_STRIDE = PAGE_HEIGHT + PAGE_GAP
 // SyncTeX y=0 is at the TeX reference point, 72pt from the top of the page (same as viewBox offset)
@@ -161,16 +167,41 @@ export function useShadowOverlay(
   // 1. Find the source line nearest to the viewport center in the current doc's lookup.
   // 2. Find that same line in the shadow version's lookup.
   // 3. Set yOffset so the shadow line appears at the viewport center.
-  // If the shadow lookup isn't ready yet (DVI compile in progress), retries every 5s.
+  // If the shadow lookup isn't ready yet (DVI compile in progress), retries.
   // alignCounter lets callers force a re-alignment without changing the version.
+  //
+  // SyncTeX alignment is a LaTeX fact, so a document that is not built by
+  // LaTeX is not aligned and does not ask. Asking anyway is not harmless: the
+  // lookup route answers by running `latexmk`, so a Markdown document sent
+  // `note.md.tex` to the compiler every five seconds for as long as the
+  // comparison stayed open -- measured from outside as console errors climbing
+  // 117 to 129 in 78 seconds with nobody touching the page. Nothing visible
+  // failed, which is why it went unreported. `hasSourceMapping` is the same
+  // predicate the server gates the compile on, so the two cannot disagree
+  // about which documents have one.
   useEffect(() => {
     if (!committedVersion || !editorRef.current) { setShadowYOffset(0); return }
+    if (!hasSourceMapping({
+      format: document.format,
+      sourceFormat: document.source?.format,
+      renderer: document.source?.renderer,
+    })) {
+      // Identity-preserving: nothing to reset on the common re-run, so no new
+      // state and no cascading render.
+      setShadowYOffset(prev => (prev === 0 ? prev : 0))
+      return
+    }
     let cancelled = false
     const editor = editorRef.current
     const hash7 = committedVersion.hash.slice(0, 7)
     const shadowLookupUrl = `/api/projects/${projectName}/history/shadow/${hash7}/lookup`
 
     let retryTimer: ReturnType<typeof setTimeout> | null = null
+    // The retry is for a DVI still compiling, which finishes. A revision whose
+    // source cannot compile never will, and before this it re-asked until the
+    // view closed. Give up after a bounded wait and leave the columns
+    // unaligned, which is what they already are while it waits.
+    let attemptsLeft = ALIGN_ATTEMPTS
 
     const tryAlign = async () => {
       if (cancelled) return
@@ -230,9 +261,11 @@ export function useShadowOverlay(
 
       }
 
-      // Shadow lookup not ready — retry in 5s. Clear cache so we re-fetch.
+      // Shadow lookup not ready — retry, bounded. Clear cache so we re-fetch.
+      if (attemptsLeft <= 0) return
+      attemptsLeft -= 1
       _lookupCache.delete(shadowLookupUrl)
-      retryTimer = setTimeout(tryAlign, 5000)
+      retryTimer = setTimeout(tryAlign, ALIGN_RETRY_MS)
     }
 
     tryAlign()
@@ -240,7 +273,7 @@ export function useShadowOverlay(
       cancelled = true
       if (retryTimer) clearTimeout(retryTimer)
     }
-  }, [committedVersion?.hash, projectName, alignCounter])
+  }, [committedVersion?.hash, projectName, alignCounter, document.format, document.source?.format, document.source?.renderer])
 
   const columnOptions: PageColumnOptions | null = useMemo(() => {
     if (!committedVersion || !visible) return null
