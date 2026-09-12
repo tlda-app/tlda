@@ -156,6 +156,26 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
       filterParts.push(token)
       continue
     }
+    // A token one keystroke off a filter key is a dropped constraint, and the
+    // quietest kind: `sinse:2h build` searched for the literal text "sinse:2h"
+    // and answered "No results" with no indication that the time bound had been
+    // read as a word. The caller gets a confident, well-formed, wrong answer —
+    // and `from:X & build` is REFUSED for juxtaposition in the same breath, so
+    // the strictness was landing on the correct query and not the typo.
+    //
+    // Only near misses, and only unquoted: `https://…` and ordinary prose
+    // colons must still be searchable as text, and `"sinse:2h"` in quotes is an
+    // explicit statement that it is text.
+    if (!quotedAt.has(i)) {
+      const meant = nearestFilterKey(token)
+      if (meant) {
+        throw new Error(
+          `"${token}" is not a filter term — did you mean "${meant}:"? `
+          + `Filter keys are ${[...FILTER_KEYS].map(k => `${k}:`).join(', ')}. `
+          + `If you meant to search for that text, quote it: "${token}".`,
+        )
+      }
+    }
     queryParts.push(token)
   }
 
@@ -374,6 +394,50 @@ export function looksLikeMistypedFilterKey(token) {
   if (!match) return false
   const key = match[1].toLowerCase()
   return !FILTER_KEYS.has(key) && key !== 'fleet'
+}
+
+// Damerau rather than plain Levenshtein, because an adjacent transposition is
+// the commonest typo of all and plain Levenshtein scores it 2: `form:` for
+// `from:` would have slipped through and been searched as text, which is the
+// exact failure this is here to catch.
+function editDistanceWithin(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return false
+  const rows = [Array.from({ length: b.length + 1 }, (_, j) => j)]
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = a[i - 1] === b[j - 1]
+        ? rows[i - 1][j - 1]
+        : 1 + Math.min(rows[i - 1][j], row[j - 1], rows[i - 1][j - 1])
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        row[j] = Math.min(row[j], rows[i - 2][j - 2] + 1)
+      }
+    }
+    rows.push(row)
+  }
+  return rows[a.length][b.length] <= max
+}
+
+/**
+ * The filter key a token was probably reaching for, or null.
+ *
+ * Deliberately a NEAR-miss test rather than "not a known key". Any `word:` shape
+ * that is not a filter key would include `https://example.com` and every
+ * ordinary colon in prose, and refusing those would break searching for text
+ * that happens to contain one. So this only answers for something close enough
+ * to a real key to be a typo: one edit away, or a prefix of at least three
+ * characters (`proj:` for `project:`).
+ */
+export function nearestFilterKey(token) {
+  const match = /^([a-z][a-z0-9_]*):/i.exec(String(token || ''))
+  if (!match) return null
+  const key = match[1].toLowerCase()
+  if (FILTER_KEYS.has(key) || key === 'fleet') return null
+  for (const candidate of FILTER_KEYS) {
+    if (key.length >= 3 && candidate.startsWith(key)) return candidate
+    if (editDistanceWithin(key, candidate, 1)) return candidate
+  }
+  return null
 }
 
 function collectFilterValue(parts, index) {
