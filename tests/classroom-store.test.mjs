@@ -100,3 +100,56 @@ test('enrollment tokens resolve server-side and are stored only as hashes', () =
     assert.notEqual(raw.enrollment_token_hash, 'ada-secret')
   } finally { f.close() }
 })
+
+test('the source project is gated like solutions: a student is refused, an instructor is not', () => {
+  // The class link named `<assignment>-source`, whose mainFile is the master QMD
+  // with the worked solutions in it, and nothing stopped a student reading it:
+  // the gate matched only `solutions_doc_key`, so the OTHER document holding the
+  // answers answered {restricted: false, allowed: true} to anybody.
+  //
+  // Both directions are asserted. A rule that also refuses the instructor, or
+  // that refuses the handout students are supposed to open, gets switched off
+  // and then catches nothing.
+  const f = fixture()
+  try {
+    const student = { role: 'student', courseId: 'qtm285', studentId: 'ada' }
+    const instructor = { role: 'instructor' }
+
+    const refused = f.store.documentAccess('hw1-source', student)
+    assert.equal(refused.restricted, true)
+    assert.equal(refused.allowed, false)
+
+    const allowed = f.store.documentAccess('hw1-source', instructor)
+    assert.equal(allowed.restricted, true)
+    assert.equal(allowed.allowed, true)
+
+    // Anonymous is refused too — the leak was reachable without a principal.
+    assert.equal(f.store.documentAccess('hw1-source', null).allowed, false)
+
+    // And it does not over-fire: the handout is what students are sent to.
+    const handout = f.store.documentAccess('hw1-handout', student)
+    assert.equal(handout.restricted, false)
+    assert.equal(handout.allowed, true)
+
+    // Solutions are unchanged by the widening.
+    assert.equal(f.store.documentAccess('hw1-solutions', student).allowed, false)
+    assert.equal(f.store.documentAccess('hw1-solutions', instructor).allowed, true)
+  } finally { f.close() }
+})
+
+test('handing in opens the source the same way it opens the solutions', () => {
+  // The source is gated by the solutions rule rather than by a new one, so it
+  // inherits "open once you have handed something in". That is deliberate: the
+  // master holds the same worked answers the solutions render does, and gating
+  // it more strictly than the solutions themselves would be a different rule
+  // than the one Skip gave. Asserted so that changing it is a decision rather
+  // than a surprise.
+  const f = fixture()
+  try {
+    const student = { role: 'student', courseId: 'qtm285', studentId: 'ada' }
+    assert.equal(f.store.documentAccess('hw1-source', student).allowed, false)
+    f.store.submit({ assignmentId: 'hw1', studentId: 'ada', contentRef: 'hw1-ada' })
+    assert.equal(f.store.documentAccess('hw1-source', student).allowed, true)
+    assert.equal(f.store.documentAccess('hw1-solutions', student).allowed, true)
+  } finally { f.close() }
+})
