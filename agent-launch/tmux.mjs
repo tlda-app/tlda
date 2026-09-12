@@ -315,6 +315,12 @@ export async function submitParkedKickoff(session, harnessKind, prompt, {
   // development". Refuse, name it, and let the caller show the pane: a launcher
   // may not answer a question it cannot read, and that ruling has to bind the
   // code and not just the plan.
+  //
+  // RAW `pane`, deliberately -- not the ghost-stripped text `composer()` reads
+  // two lines up. The dev-channels dialog renders in `38;5;246`, which is inside
+  // the greyscale ghost range, so the stripped version has the dialog removed
+  // from it and this check would pass on the exact pane it exists to catch.
+  // These two lines read the same variable through opposite filters on purpose.
   if (dialogAwaitingKeypress(pane)) {
     return { observed: true, observedAt, pane, parked: true, submitted: false, blockedByDialog: true }
   }
