@@ -1377,7 +1377,19 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       <StandaloneChatPanel
         className="index-top-chat"
         filter={chromeChatFilter}
-        onFilterCommit={filter => setChromeChatOverride({ agentName: selectedAgentName, filter })}
+        // A filter the panel hands back that is the one we just handed IT is our
+        // own write coming home, not something the user edited — the panel writes
+        // `filter` into its shape on every change, and the shape's update calls
+        // this. Recording it as an override is how the initial filter got
+        // shadowed: at mount the filter is [] because the agent has not resolved
+        // yet, the echo recorded an override of [], and `agentName` matched, so
+        // the override branch won from then on and the resolved filter was never
+        // read. Measured on the deployed index: "No filter set", forever.
+        onFilterCommit={filter => setChromeChatOverride(current => (
+          JSON.stringify(filter) === JSON.stringify(chromeChatFilter)
+            ? current
+            : { agentName: selectedAgentName, filter }
+        ))}
         panelKey="index"
       />
 
