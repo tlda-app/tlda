@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { removeTempDir } from './test-support/remove-temp-dir.mjs'
 import { createServer } from 'node:net'
+import https from 'node:https'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -21,6 +22,21 @@ import { FleetStore } from './fleet-store.mjs'
 
 const ARRIVAL_CEILING_MS = 60_000
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+function getJson(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { rejectUnauthorized: false }, res => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', chunk => { body += chunk })
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) { reject(new Error(`HTTP ${res.statusCode}: ${body}`)); return }
+        try { resolve(JSON.parse(body)) } catch (e) { reject(e) }
+      })
+    })
+    req.once('error', reject)
+  })
+}
 
 async function unusedPort() {
   const server = createServer()
@@ -62,14 +78,14 @@ function request(ws, id, type, payload) {
 }
 
 // Every RPC the server sends this daemon, in order, with its op and params.
-async function openDaemon(port, rpcs) {
+async function openDaemon(port, rpcs, daemonReply = () => ({ ok: true })) {
   const ws = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet-daemon`, { rejectUnauthorized: false })
   await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
   ws.on('message', raw => {
     const message = JSON.parse(String(raw))
     if (message.type !== 'rpc') return
     rpcs.push({ op: message.op, params: message })
-    ws.send(JSON.stringify({ type: 'rpc-reply', id: message.id, result: { ok: true } }))
+    ws.send(JSON.stringify({ type: 'rpc-reply', id: message.id, result: daemonReply(message) || { ok: true } }))
   })
   const welcome = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('daemon welcome timed out')), 20_000)
@@ -98,7 +114,7 @@ async function waitForSymptom(rpcs) {
 }
 
 // `recipient` decides whether the agent has an MCP socket and what it does.
-async function withFleet({ withRecipientSocket = true, loginKind = 'claude', responder = () => {}, onRecipientFrame = () => {}, subscriptionQuery = 'to:me', notificationPolicy = 'immediate', extraSubscriptions = [] }, fn) {
+async function withFleet({ daemonReply, withRecipientSocket = true, loginKind = 'claude', responder = () => {}, onRecipientFrame = () => {}, subscriptionQuery = 'to:me', notificationPolicy = 'immediate', extraSubscriptions = [] }, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-notification-symptom-'))
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
@@ -128,7 +144,7 @@ async function withFleet({ withRecipientSocket = true, loginKind = 'claude', res
   let daemonWs, recipientWs, senderWs
   try {
     await waitForServer(child)
-    daemonWs = await openDaemon(port, rpcs)
+    daemonWs = await openDaemon(port, rpcs, daemonReply)
     if (withRecipientSocket) {
       recipientWs = await openFleetWs(port)
       // `kind` is what marks this socket as an MCP, and it is sent NESTED under
@@ -485,4 +501,64 @@ test('a login replayed onto a new socket is still a notification target', async 
     assert.equal(frame.data.recipient, 'fleet:recipient')
     second.close()
   })
+})
+
+// ─── What the daemon DID, recorded where the investigation happens ───────────
+//
+// `rpcNotificationSymptom` answers honestly — `acted`, `action`, `already_alive`
+// — and `reportNotificationSymptom` discarded the whole reply, so the server's
+// trace ended at `reported` and the outcome existed only in that machine's log.
+// On 2026-09-12 establishing that eight notifications to one agent had every one
+// of them no-op meant reading `fleet-daemon.testing.log` on the mini; with the
+// server on Fly and a daemon per machine, that log is not reliably reachable
+// from where the trace is read.
+//
+// These assert the distinction the reply carries and the trace threw away: a
+// remedy that ran and found the process already there, against one that started
+// it. Same symptom, same wire, opposite outcomes — which is the whole of what a
+// reader needs and could not get.
+async function remedyTraceFor(daemonReply) {
+  let status = null
+  await withFleet({ withRecipientSocket: false, daemonReply }, async (senderWs, rpcs, port) => {
+    const sent = await sendChat(senderWs, 2, 'remedy-trace')
+    assert.ok(await waitForSymptom(rpcs), `the daemon must receive the symptom. Ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`)
+    const deadline = Date.now() + ARRIVAL_CEILING_MS
+    while (Date.now() < deadline && !status) {
+      const traces = await getJson(`https://127.0.0.1:${port}/api/diagnostics/control-plane-traces?trace_id=${encodeURIComponent(sent.trace_id)}`)
+      const hit = (traces.trace?.events || []).find(t => t.operation === 'notification.symptom' && String(t.status || '').startsWith('remedy-'))
+      if (hit) { status = hit.status; break }
+      await sleep(50)
+    }
+  })
+  return status
+}
+
+test('the trace records a remedy that no-opped on an already-live process', async () => {
+  const status = await remedyTraceFor(message => message.op === 'notification-symptom'
+    ? { ok: true, acted: true, action: 'wake', already_alive: true }
+    : { ok: true })
+  assert.equal(status, 'remedy-no-op',
+    'a wake that found the process already there must be readable from the trace, not only from that machine\'s log')
+})
+
+// The control. Without it, a status that is always `remedy-no-op` — because the
+// reply is never read at all — passes the test above.
+test('CONTROL: the trace records a remedy that started a process', async () => {
+  const status = await remedyTraceFor(message => message.op === 'notification-symptom'
+    ? { ok: true, acted: true, action: 'wake', already_alive: false }
+    : { ok: true })
+  assert.equal(status, 'remedy-applied',
+    'a wake that started a process must read differently from one that did nothing')
+})
+
+// A durable operation that could not reach the daemon resolves to a queue
+// receipt with no `acted` field. Reading that absence as "the remedy did
+// nothing" would report a no-op that was never attempted — not-yet-delivered and
+// delivered-and-inapplicable are different facts.
+test('a queued report is not recorded as a remedy that did nothing', async () => {
+  const status = await remedyTraceFor(message => message.op === 'notification-symptom'
+    ? { ok: true, queued: true }
+    : { ok: true })
+  assert.equal(status, 'remedy-queued',
+    'an undelivered report must not read as a remedy that ran and found nothing to do')
 })

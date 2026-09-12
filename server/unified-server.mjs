@@ -6620,12 +6620,52 @@ async function reportNotificationSymptom(agent, mcpDelivery, traceId = null) {
     })
   }
   try {
-    await sendDaemonDurable(daemonKey, 'notification-symptom', {
+    const remedy = await sendDaemonDurable(daemonKey, 'notification-symptom', {
       agent_id: agent.id,
       symptom,
       observed_at: observedAt,
       detail: { channel: 'mcp', reason: mcpDelivery?.reason || null, deadline_ms: WAKE_MCP_ACK_DEADLINE_MS },
     }, wakeRpcOptions())
+    // What the daemon DID, recorded where the investigation happens.
+    //
+    // `rpcNotificationSymptom` answers honestly — `acted`, `action`, and
+    // `already_alive` — and this call discarded the whole reply, so the server's
+    // trace ended at `reported` and the outcome existed only in that machine's
+    // log. On 2026-09-12 establishing that eight notifications to one agent had
+    // every one of them no-op meant reading `fleet-daemon.testing.log` on the
+    // mini; with the server on Fly and a daemon per machine, that log is not
+    // reliably reachable from where the trace is read.
+    //
+    // Recording only. The server still selects no remedy and decides nothing
+    // from this — see §"What this design rules out", "No remedy selection by the
+    // server". It is the same fact the daemon already logged, written where the
+    // reader already is.
+    //
+    // `queued` is checked FIRST and kept separate, because a durable operation
+    // that could not reach the daemon resolves to a queue receipt with no
+    // `acted` field — and reading that absence as "the remedy did nothing" would
+    // report a no-op that was never attempted. Not-yet-delivered and
+    // delivered-and-inapplicable are different facts.
+    if (traceId) {
+      const queued = remedy?.queued === true
+      const status = queued ? 'remedy-queued'
+        : !remedy?.acted ? 'remedy-none'
+        : remedy?.already_alive ? 'remedy-no-op'
+        : 'remedy-applied'
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'notification.symptom',
+        status,
+        detail: {
+          agent: agent.id,
+          symptom,
+          daemon: daemonKey,
+          action: queued ? null : remedy?.action ?? null,
+          already_alive: queued ? null : remedy?.already_alive ?? null,
+        },
+      })
+    }
   } catch (e) {
     // Reporting is best-effort by construction. Every daemon action this could
     // provoke is idempotent, so a lost report costs a round of convergence and
