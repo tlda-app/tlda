@@ -180,7 +180,7 @@ export function GradebookWorkspace() {
   // This read `sourceDocKey`, matching the registration link, and that link was
   // wrong: the source project's mainFile is the master QMD, so both doors put a
   // student on the worked solutions. solutionDocumentAccess does not stop it —
-  // it only restricts a key assignmentsForSolutionsDoc matches, and a source key
+  // it only restricted a key assignmentsForSolutionBearingDoc matches, and a source key
   // is neither a solutions doc nor a submission.
   //
   // It is read rather than derived from the assignment id: `classroom setup`

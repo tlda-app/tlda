@@ -189,13 +189,27 @@ export class ClassroomStore {
     solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
     source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
     book_page_file AS bookPageFile FROM assignments WHERE course_id=? ORDER BY due_at`).all(courseId) }
-  assignmentsForSolutionsDoc(docKey) {
+  /**
+   * The assignments for which this document carries the worked answers.
+   *
+   * Two documents do: the solutions render, and the SOURCE — the master the
+   * whole set is generated from, whose solution blocks are exactly what the
+   * handout has blanked. Only the solutions render was matched here, so the
+   * master answered `{restricted: false, allowed: true}` to anybody, and the
+   * class link pointed straight at it. The gate was on one of the two documents
+   * that hold the answers.
+   *
+   * Named for what it asks rather than for one of its two answers: a source doc
+   * is not a solutions doc, and calling this `assignmentsForSolutionsDoc` while
+   * it matched both is how one word comes to mean two things.
+   */
+  assignmentsForSolutionBearingDoc(docKey) {
     if (!docKey) return []
     return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
       solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
       source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
       book_page_file AS bookPageFile
-      FROM assignments WHERE solutions_doc_key=? ORDER BY due_at`).all(docKey)
+      FROM assignments WHERE solutions_doc_key=? OR source_doc_key=? ORDER BY due_at`).all(docKey, docKey)
   }
 
   /**
@@ -216,7 +230,7 @@ export class ClassroomStore {
   }
 
   solutionDocumentAccess(docKey, principal) {
-    const assignments = this.assignmentsForSolutionsDoc(docKey)
+    const assignments = this.assignmentsForSolutionBearingDoc(docKey)
     if (assignments.length === 0) return { restricted: false, allowed: true, assignments }
     if (principal?.role === 'instructor') return { restricted: true, allowed: true, assignments }
     if (principal?.role !== 'student') return { restricted: true, allowed: false, assignments }
