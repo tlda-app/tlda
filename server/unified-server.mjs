@@ -4781,6 +4781,7 @@ app.use('/docs', async (req, res, next) => {
   if (parts.length < 3) return next() // need at least /name/site_libs/...
   const name = docsProjectName(parts[0])
   const filePath = parts.slice(1).join('/')
+  if (filePath.endsWith('/')) return next()
   // Skip auth for non-HTML sub-resources in html-format projects
   // (CSS, JS, fonts, figures — loaded by iframes that can't pass auth headers)
   if (!filePath.endsWith('.html')) {
@@ -4793,7 +4794,12 @@ app.use('/docs', async (req, res, next) => {
             if (error) return next(error)
             const gated = await runDocsAccessCheck(req, res, name)
             if (gated) return gated === 'sent' ? undefined : next(gated)
-            const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
+            let assetPath
+            try {
+              assetPath = resolveContainedPath(join(PROJECTS_DIR, name, 'output'), filePath)
+            } catch {
+              return res.status(404).json({ error: 'Not found' })
+            }
             if (await docPathExists(assetPath)) {
               res.set('Cache-Control', 'public, max-age=3600')
               return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
@@ -4801,7 +4807,12 @@ app.use('/docs', async (req, res, next) => {
             next()
           })
         }
-        const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
+        let assetPath
+        try {
+          assetPath = resolveContainedPath(join(PROJECTS_DIR, name, 'output'), filePath)
+        } catch {
+          return res.status(404).json({ error: 'Not found' })
+        }
         if (await docPathExists(assetPath)) {
           res.set('Cache-Control', 'public, max-age=3600')
           return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
@@ -5103,11 +5114,18 @@ app.use('/docs', (req, res, next) => {
   }
 
   // Try project output first
-  const projectPath = join(PROJECTS_DIR, name, 'output', filePath)
+  const outputRoot = join(PROJECTS_DIR, name, 'output')
+  const servedFilePath = filePath.endsWith('/') ? `${filePath}index.html` : filePath
+  let projectPath = null
+  try {
+    projectPath = resolveContainedPath(outputRoot, servedFilePath)
+  } catch {
+    return res.status(404).json({ error: 'Not found' })
+  }
   if (await docPathExists(projectPath)) {
     res.set('Cache-Control', 'no-cache')
     // For HTML files in html-format projects, inject the tlda bridge script
-    if (filePath.endsWith('.html')) {
+    if (servedFilePath.endsWith('.html')) {
       try {
         const project = await readProject(name)
         if (project) {
@@ -5167,7 +5185,7 @@ app.use('/docs', (req, res, next) => {
             try {
               const pageInfoPath = join(PROJECTS_DIR, name, 'output', 'page-info.json')
               const pageInfo = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))
-              const idx = pageInfo.findIndex(p => p.file === filePath)
+              const idx = pageInfo.findIndex(p => p.file === servedFilePath)
               isFirstPage = idx === 0
               // Compute prev/next chapter titles for navigation
               // Prev/next name the neighbouring CHAPTERS, so they carry the
