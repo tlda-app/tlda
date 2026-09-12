@@ -929,12 +929,31 @@ export class FleetStore {
     // and an UPDATE is not a DELETE. This is the same guard on the path that is
     // actually taken. Both stay -- the delete one because the table can still be
     // reached by hand, this one because it is the live route.
+    // Mandatory means an agent cannot opt itself out of traffic it is required
+    // to receive. It never meant the subscription outlives its owner, but the
+    // trigger could only see the row, so a dead agent's mandatory subscription
+    // was immortal -- and undeliverable, since the owner is gone. Measured on
+    // live, 2026-09-12: 12,292 of the 22,770 remaining live subscriptions were
+    // exactly that, over half, every one of them walked on every event.
+    //
+    // Skip, 2026-09-12: "mandatory subscriptions have to be endable at death.
+    // that constraint is also expressable yes?" It is, and it belongs here
+    // rather than in application code for the same reason the singleton-name
+    // index does -- a check beside the schema drifts from it, and the schema is
+    // the one that wins. It has to be a trigger rather than a CHECK on two
+    // counts: CHECK cannot hold a subquery, so it cannot see the owner's row at
+    // all, and it cannot see the old-to-new transition, which is the rule.
+    //
+    // This also repaired `markDead`, which ends an agent's subscriptions in one
+    // transaction: before this, the first mandatory row aborted the whole
+    // statement, so killing an agent that held one failed outright.
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS trg_subscriptions_mandatory_unendable
       BEFORE UPDATE OF ended_at ON subscriptions
       WHEN OLD.mandatory = 1 AND OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+        AND COALESCE((SELECT dead FROM agents WHERE id = OLD.owner), 0) = 0
       BEGIN
-        SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — subscription(operation: "policy", id, policy: "hold") instead');
+        SELECT RAISE(ABORT, 'mandatory subscription cannot be removed while its owner is alive — subscription(operation: "policy", id, policy: "hold") instead');
       END;
     `);
     this.db.exec(`
@@ -1484,23 +1503,31 @@ export class FleetStore {
     // label — and it is the next application that is rejected. The count is
     // logged rather than repaired, because which of them is on call is not a
     // question this migration can answer.
+    // `chief` joined on 2026-09-12 04:10 EDT, on the same reasoning and in the
+    // same breath as the documentation of the seat: "we should do the makeing
+    // chief and on-call both singleton (non-friendlyname) labels". A seat that
+    // two living agents can hold is not a seat.
     const _labelDefNow = new Date().toISOString();
-    this.db.prepare(`
+    const _declareSingleton = this.db.prepare(`
       INSERT INTO label_definitions (label, singleton, created_at, created_by, singleton_set_at, singleton_set_by)
-      VALUES ('on-call', 1, ?, 'migration', ?, 'migration')
+      VALUES (?, 1, ?, 'migration', ?, 'migration')
       ON CONFLICT(label) DO UPDATE SET
         singleton = 1,
         singleton_set_at = COALESCE(label_definitions.singleton_set_at, excluded.singleton_set_at),
         singleton_set_by = COALESCE(label_definitions.singleton_set_by, excluded.singleton_set_by)
       WHERE label_definitions.singleton = 0
-    `).run(_labelDefNow, _labelDefNow);
-    const _onCallHolders = this.db.prepare(`
+    `);
+    const _countHolders = this.db.prepare(`
       SELECT COUNT(*) AS n FROM agents
       WHERE dead = 0
-        AND EXISTS (SELECT 1 FROM json_each(COALESCE(agents.labels, '[]')) WHERE value = 'on-call')
-    `).get()?.n || 0;
-    if (_onCallHolders > 1) {
-      console.log(`[fleet-store] on-call is now a singleton label; ${_onCallHolders} living agents currently hold it. Existing holders are left alone; the next application is what will be rejected.`);
+        AND EXISTS (SELECT 1 FROM json_each(COALESCE(agents.labels, '[]')) WHERE value = ?)
+    `);
+    for (const _seat of ['on-call', 'chief']) {
+      _declareSingleton.run(_seat, _labelDefNow, _labelDefNow);
+      const _holders = _countHolders.get(_seat)?.n || 0;
+      if (_holders > 1) {
+        console.log(`[fleet-store] ${_seat} is now a singleton label; ${_holders} living agents currently hold it. Existing holders are left alone; the next application is what will be rejected.`);
+      }
     }
 
     // Retain the historical table for temporal queries, but remove its row
@@ -4323,6 +4350,10 @@ export class FleetStore {
   // own comments record it being tuned twice at ~1,300 agents and ~2,000 taps;
   // it was running at ten times that and the per-event cost only grows.
   markDead(id, at = new Date().toISOString()) {
+    // The order is load-bearing. `trg_subscriptions_mandatory_unendable` reads
+    // `agents.dead` for this owner, so the flag has to be set before the
+    // subscriptions are ended or the trigger aborts the whole transaction on
+    // the first mandatory row.
     this.db.transaction(() => {
       this._markAgentDead.run(id);
       this._endWiretapsByAgent.run(at, id);
