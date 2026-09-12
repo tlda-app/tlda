@@ -664,6 +664,62 @@ block is two seconds and it is the only thing here that could have gone red. A
 declared setting is a claim about a launch that already happened, and the launch
 is the only witness.
 
+### 19. A true status that describes the wrong event
+
+**`git status` reported two files staged with fifty-nine deletions, exactly
+undoing a commit that had just landed. Every line of it was accurate and nobody
+had touched anything.**
+
+`refs/heads/main` was fast-forwarded with `git update-ref refs/heads/main <new>
+<old>`. That is the careful form — the old-value argument makes a concurrent move
+fail rather than clobber. But it moves the **ref**, and another worktree had
+`main` checked out. Its HEAD follows the ref; its index and its files do not.
+The gap between them is the landed commit, and `git status` renders a gap as
+**staged modifications**.
+
+**So the instrument depicted an author.** Staged, not merely modified — someone
+ran `git add`. Two files, both in one subsystem. A coherent revert of a specific
+commit. There is no reading of that output that says *nothing happened*, and the
+chief of staff who found it drew the only available conclusion: another
+contributor has work in progress here, and it is not mine to disturb. **That
+judgement was right, and it would have left the state untouched all night.**
+
+**Three other agents were blocked behind it**, because `main` being checked out
+in that worktree is what refuses the fleet's pushes — which is how a
+cosmetic-looking discrepancy bought a night of blocked landings.
+
+**The check is to compare content against the commit's PARENT, by hash:**
+
+```
+git show <parent>:<path> | shasum        # against
+shasum < <path>
+```
+
+Byte-identical to the parent means the worktree is merely stale, the content is
+already on the branch, and `git checkout HEAD -- <paths>` loses nothing. Both
+files matched exactly. **A diff cannot answer this question**: a diff describes
+the same gap the status did, so it re-reports the appearance rather than testing
+it. A hash against a named commit asks where the bytes came from, which is the
+thing actually in doubt.
+
+**One more instrument failed here before the right one worked.** A `sed`/`sort`
+pipeline comparing the two diffs answered *"NOT an exact inverse — do not
+touch."* That was the pipeline being wrong, not a finding, and it pointed the
+same direction as the misleading status. **Two agreeing instruments were both
+reading the appearance**; only the hash comparison addressed the cause.
+
+**And cleaning the tree does not unblock the push.** `receive.denyCurrentBranch`
+unset refuses a push to a checked-out branch **whether or not the tree is
+clean**. The staleness and the refusal look like one problem and are two, and
+repairing the visible one would have produced a clean tree that still rejected
+every push — a fix that appears to work and changes nothing.
+
+**The general shape: an instrument that is accurate about state can still be
+describing a different event than the one you infer.** `git status` reports a
+difference; it does not report who made it or when, and the words it uses
+—"staged", "modified" — name actions. The event here was a ref moving under a
+directory, which has no vocabulary in that output at all.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see
