@@ -7,6 +7,7 @@ import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
 import { attachAppRecordingEditor, isAppRecordingOn, recordsByDefault, setAppRecording } from './recording/recorder'
 import { isClassroomSurface } from './classroom/classroomSurface'
+import { buildFailureReason, emptyDocumentNotice } from './documentBuildNotice'
 import { log } from './logger'
 import { SHAPE_RENDER_ERROR_EVENT, errorFromShapeRenderEvent } from './shape-error-surface'
 import { BookViewer } from './BookViewer'
@@ -135,7 +136,7 @@ interface FleetConfigResponse {
   telemetryUrl?: unknown
 }
 
-type ErrorType = 'not-found' | 'auth' | 'generic'
+type ErrorType = 'not-found' | 'auth' | 'build-failed' | 'generic'
 
 const HISTORY_INDEX_BATCH_SIZE = 500
 const HISTORY_CHANGELOG_BATCH_SIZE = 50
@@ -143,7 +144,10 @@ const HISTORY_CHANGELOG_BATCH_SIZE = 50
 
 type State =
   | { phase: 'loading'; message: string; roomId: string }
-  | { phase: 'error'; message: string; errorType?: ErrorType }
+  // `detail` is what the failure itself reported — a build log line, verbatim.
+  // It sits under the sentence rather than inside it so the sentence a reader
+  // acts on stays one sentence.
+  | { phase: 'error'; message: string; errorType?: ErrorType; detail?: string }
   | { phase: 'picker'; manifest: Record<string, DocConfig> }
   | { phase: 'svg'; document: SvgDoc; roomId: string }
   | { phase: 'book'; bookName: string; members: BookMember[] }
@@ -173,6 +177,23 @@ async function fetchDocConfig(projectName: string, includePageInfo = false): Pro
     throw e
   } finally {
     clearTimeout(timeout)
+  }
+}
+
+// Why the last build failed, in one line, for the screen that says it failed.
+//
+// Best effort on purpose: the sentence naming the failure is the part that
+// matters and it is already on screen before this resolves. A reader who
+// cannot reach this route still learns the build failed rather than watching a
+// spinner, which is the whole defect.
+async function fetchBuildFailureReason(projectName: string): Promise<string | null> {
+  try {
+    const resp = await fetch(`${ASSET_BASE}/api/projects/${projectName}/build/errors`)
+    if (!resp.ok) return null
+    const data = await resp.json()
+    return buildFailureReason(data.errors, data.logMissing)
+  } catch {
+    return null
   }
 }
 
@@ -382,7 +403,22 @@ function DocumentApp() {
         return
       }
       const label = config.name || projectName
-      setState({ phase: 'loading', message: config.buildStatus === 'building' ? `Building ${label}...` : `Waiting for ${label}...`, roomId })
+      // A build that failed is not a build to wait for. `emptyDocumentNotice`
+      // owns which of the two this is; the poll below only ever ends on pages
+      // appearing, so entering it on a settled failure is a wait with no end.
+      const showBuildFailure = async () => {
+        const { message } = emptyDocumentNotice(label, 'error')
+        setState({ phase: 'error', message, errorType: 'build-failed' })
+        const reason = await fetchBuildFailureReason(projectName)
+        if (!reason || gen !== loadGeneration) return
+        setState({ phase: 'error', message, errorType: 'build-failed', detail: reason })
+      }
+      const notice = emptyDocumentNotice(label, config.buildStatus)
+      if (notice.kind === 'build-failed') {
+        showBuildFailure()
+        return
+      }
+      setState({ phase: 'loading', message: notice.message, roomId })
       const waitForBuild = async () => {
         let readyConfig: DocConfig | undefined
         while (gen === loadGeneration) {
@@ -396,6 +432,14 @@ function DocumentApp() {
             if (c && c.pages > 0) {
               readyConfig = c
               break
+            }
+            // The build we are waiting on has failed since we started. Same
+            // reason as the entry gate above: nothing else will end this loop,
+            // so a reader who arrived during a build that then died would wait
+            // exactly as long as one who arrived after it.
+            if (c && emptyDocumentNotice(label, c.buildStatus).kind === 'build-failed') {
+              showBuildFailure()
+              return
             }
           } catch (e) {
             if (e instanceof Error && e.message.includes('Authentication')) {
@@ -534,9 +578,11 @@ function DocumentApp() {
             <h2 className="error-title">
               {state.errorType === 'not-found' ? 'Document not found'
                 : state.errorType === 'auth' ? 'Authentication required'
+                : state.errorType === 'build-failed' ? 'This document failed to build'
                 : 'Something went wrong'}
             </h2>
             <p className="error-message">{state.message}</p>
+            {state.detail && <pre className="error-detail">{state.detail}</pre>}
             <a className="error-home-link" href="/">← All documents</a>
           </div>
         </div>
