@@ -5361,7 +5361,14 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         const seen = a.last_seen_ago_s == null ? 'never' : a.last_seen_ago_s < 90 ? `${a.last_seen_ago_s}s` : a.last_seen_ago_s < 5400 ? `${Math.round(a.last_seen_ago_s / 60)}m` : `${Math.round(a.last_seen_ago_s / 3600)}h`;
         const act = a.activity ? `${a.activity}${a.tool ? `:${a.tool}` : ''}` : '';
         const health = formatActivityHealthStatus(a.activity_health, { idleText: act });
-        return { name: a.name, status: a.status, seen, inbox: a.inbox_status || '', delivery: a.delivery_channel || '', model: a.model || '', act: health || act };
+        // `pending` names the row the header has always counted separately: a
+        // mint whose `login()` never completed. It reads `hibernating` otherwise,
+        // which is the word for an agent that ran and stopped — the opposite of
+        // one that never started, and the reason a caller cannot tell a stuck
+        // mint from a sleeping worker. Falls through to `a.status` on an older
+        // server that does not send the field.
+        const status = a.pending ? 'pending' : a.status;
+        return { name: a.name, status, seen, inbox: a.inbox_status || '', delivery: a.delivery_channel || '', model: a.model || '', act: health || act };
       };
       const f = rows.map(fmt);
       const w = (k) => Math.max(k.length, ...f.map(r => String(r[k]).length));
