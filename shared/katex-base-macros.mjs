@@ -30,6 +30,12 @@ function pairedDelimiter(open, close) {
 export const baseMacros = {
   // physics: text spacers (\q… family)
   "\\qq": "\\quad\\text{#1}\\quad",
+  // physics spells this one both ways and the long form is the one the course
+  // actually writes -- 358 uses against \qq's handful. It was absent here, so a
+  // course moving to KaTeX would have lost all 358 SILENTLY: an undefined macro
+  // renders as literal text with a clean console. Same expansion as \qq; they
+  // are the same command in physics.
+  "\\qqtext": "\\quad\\text{#1}\\quad",
   "\\qwhere": "\\quad\\text{where}\\quad",
   "\\qfor": "\\quad\\text{for}\\quad",
   "\\qand": "\\quad\\text{and}\\quad",
