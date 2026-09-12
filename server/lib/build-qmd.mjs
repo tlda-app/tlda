@@ -23,7 +23,7 @@ import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, read
 import { createDocumentManifest } from './document-manifest.mjs'
 import { getBuildReporter, streamChildOutput } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
-import { extractHtmlToc, extractQuartoBookToc } from './html-toc-extractor.mjs'
+import { extractHtmlToc } from './html-toc-extractor.mjs'
 import { findTldaManifests, readTldaManifest } from './tlda-manifest.mjs'
 import { injectQuartoOutputProvenance } from './quarto-output-provenance.mjs'
 
@@ -381,6 +381,90 @@ function quartoBookRoots(dir) {
   return []
 }
 
+function normalizedBookSource(file) {
+  return String(file || '')
+    .replace(/\\/g, '/')
+    .replace(/^\.?\/+/, '')
+    .replace(/\.handout\.qmd$/i, '.qmd')
+}
+
+/**
+ * Quarto's tlda manifest derives a source name from the rendered HTML name.
+ * A document with `output-file:` therefore names a .qmd that does not exist.
+ * Recover the authored root by matching the rendered file to the output each
+ * root declares; the root is what provenance and source editing must address.
+ */
+export function resolveQuartoBookPageSources(dir, pageInfo) {
+  const sourceByOutput = new Map()
+  for (const source of quartoBookRoots(dir)) {
+    for (const output of qmdDeclaredOutputFilesForSource(dir, source)) {
+      sourceByOutput.set(output.replace(/^_book\//, ''), source)
+    }
+  }
+  return pageInfo.map(page => {
+    const manifestSource = String(page.source?.file || '').replace(/\\/g, '/').replace(/^\.?\/+/, '')
+    if (manifestSource && existsSync(join(dir, manifestSource))) return page
+    const rendered = String(page.file || '').replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/^_book\//, '')
+    const source = sourceByOutput.get(rendered)
+    return source ? { ...page, source: { ...page.source, file: source } } : page
+  })
+}
+
+/**
+ * Realize the book hierarchy declared in `_quarto.yml` against the pages that
+ * Quarto rendered. Page titles remain document metadata; part/chapter level and
+ * order come from the authored book structure, never from rendered navigation.
+ */
+export function quartoBookToc(dir, pageInfo) {
+  let config
+  for (const name of ['_quarto.yml', '_quarto.yaml']) {
+    const path = join(dir, name)
+    if (!existsSync(path)) continue
+    config = parseYaml(readFileSync(path, 'utf8'))
+    break
+  }
+  const chapters = config?.book?.chapters
+  if (!Array.isArray(chapters)) return null
+
+  const partSources = new Set()
+  const declaredSources = []
+  const visit = (value, level = 'chapter') => {
+    if (typeof value === 'string') {
+      if (!value.toLowerCase().endsWith('.qmd')) return
+      const source = normalizedBookSource(value)
+      if (!declaredSources.includes(source)) declaredSources.push(source)
+      if (level === 'part') partSources.add(source)
+      return
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, level)
+      return
+    }
+    if (!value || typeof value !== 'object') return
+    if (value.part) visit(value.part, 'part')
+    if (value.chapters) visit(value.chapters, 'chapter')
+  }
+  visit(chapters)
+
+  const renderedSources = pageInfo.map(page => normalizedBookSource(page.source?.file))
+  let previous = -1
+  for (const source of declaredSources) {
+    const position = renderedSources.indexOf(source)
+    if (position === -1) throw new Error(`[toc] _quarto.yml declares ${source}, but the render did not produce it`)
+    if (position <= previous) throw new Error(`[toc] rendered page order disagrees with _quarto.yml at ${source}`)
+    previous = position
+  }
+
+  return pageInfo.map((page, index) => {
+    const source = renderedSources[index]
+    return {
+      title: page.title || source || `Page ${index + 1}`,
+      level: partSources.has(source) ? 'part' : 'chapter',
+      page: index + 1,
+    }
+  })
+}
+
 export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
   if (!readTldaManifest(outDir)) return null
   const documentRoots = new Set([
@@ -729,7 +813,8 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     if (!renderedProject) {
       throw new Error('tlda Quarto project rendered without producing tlda-manifest.json')
     }
-    for (const page of renderedProject.pageInfo) {
+    const renderedPageInfo = resolveQuartoBookPageSources(outDir, renderedProject.pageInfo)
+    for (const page of renderedPageInfo) {
       const path = join(outDir, page.file)
       const sourceFile = page.source.file
       const source = readFileSync(join(outDir, sourceFile), 'utf8')
@@ -783,12 +868,12 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     // `toc.json` numbers entries by position and the panel turns that number
     // straight back into `pages[n - 1]`, so a reorder here sends the ToC to the
     // wrong document without looking broken.
+    const bookToc = quartoBookToc(outDir, renderedPageInfo)
+    if (!bookToc) throw new Error('[toc] tlda book rendered without book.chapters in _quarto.yml')
     retainNativeTldaRender(outDir, renderedProject.path)
-    const bookToc = extractQuartoBookToc(outDir, renderedProject.pageInfo)
-    if (!bookToc) throw new Error('[toc] tlda book rendered without a Quarto sidebar')
     const bookTitleByPage = new Map(bookToc.map(entry => [entry.page, entry.title]))
     const nativePageInfo = [
-      ...renderedProject.pageInfo.map((page, i) => ({
+      ...renderedPageInfo.map((page, i) => ({
         ...page,
         title: bookTitleByPage.get(i + 1) || page.title,
         group: page.source.file,
@@ -796,7 +881,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
       ...deckPages.map(page => ({ ...page, title: `${page.title} — Slides` })),
     ]
     writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(nativePageInfo, null, 2))
-    const toc = assembleQuartoBookToc(bookToc, renderedProject.pageInfo, deckPages)
+    const toc = assembleQuartoBookToc(bookToc, renderedPageInfo, deckPages)
     writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
     await writeSourceScope(name, srcDir, outDir)
     await reporter.updateProject(name, {
@@ -805,7 +890,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
       renderedFormat: 'html',
       lastBuild: new Date().toISOString(),
     })
-    addLog(`[qmd] ${name}: rendered tlda project with ${renderedProject.pageInfo.length} chapter(s) and ${deckPages.length} deck(s)`)
+    addLog(`[qmd] ${name}: rendered tlda project with ${renderedPageInfo.length} chapter(s) and ${deckPages.length} deck(s)`)
     // A tlda Quarto project is always the scrolling document, which is why the
     // patch above hardcodes renderedFormat 'html'. Both return paths describe
     // themselves or the cutover would work for one kind of qmd and not the
