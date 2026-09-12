@@ -74,6 +74,10 @@ export const baseMacros = {
   "\\vbu": "\\hat{#1}",
   "\\grad": "\\nabla",
   "\\curl": "\\nabla\\times",
+  // physics defines \cross and this port had omitted it, so it would have gone
+  // silently literal at the renderer switch. Found by the used-minus-defined
+  // gate rather than by anyone noticing a formula.
+  "\\cross": "\\times",
   "\\tr": "\\operatorname{Tr}",
   "\\Tr": "\\operatorname{Tr}",
   "\\rank": "\\operatorname{rank}",
