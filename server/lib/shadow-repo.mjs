@@ -674,22 +674,36 @@ export async function listVersionRange(name, from, to) {
     throw new Error('from and to must be Git commit hashes')
   }
 
-  // A record separator lets the file list stay a plain newline block per commit
-  // without a second call per commit -- a range of a few hundred builds would
-  // otherwise be a few hundred git invocations.
+  // One call for the whole range, with the patch as well as the file list.
+  // A build's PATCH is what says what it did, and the card is named for that;
+  // a per-build `git diff` would be one invocation per build and a range over
+  // a busy week is hundreds.
+  //
+  // Two separators, because the header and the body have to come apart
+  // reliably: \x1e starts a commit, \x1f ends its header line. A commit
+  // subject cannot contain either.
+  //
+  // `-U1` keeps one line of context. Zero context makes a pure insertion
+  // indistinguishable from a replacement at the hunk boundary; more context
+  // puts unchanged prose into the excerpt a person reads.
   const { stdout } = await execAsync(
-    `git log --reverse --name-only --format="%x1e%H %at %s" "${from}..${to}"`,
-    { cwd: repoDir, timeout: 20000 },
+    `git log --reverse --name-only -p -U1 --format="%x1e%H %at %s%x1f" "${from}..${to}"`,
+    { cwd: repoDir, timeout: 30000, maxBuffer: 64 * 1024 * 1024 },
   )
 
   return stdout.split('\x1e').filter(chunk => chunk.trim()).map(chunk => {
-    const [header, ...rest] = chunk.split('\n')
-    const [hash, unixTime, ...msgParts] = header.split(' ')
+    const [header, body = ''] = chunk.split('\x1f')
+    const [hash, unixTime, ...msgParts] = header.trim().split(' ')
+    // The name list comes first, then the patch. `diff --git` is the boundary,
+    // and a commit that changed nothing textual simply has no patch.
+    const diffAt = body.indexOf('diff --git')
+    const nameBlock = diffAt === -1 ? body : body.slice(0, diffAt)
     return {
       hash,
       timestamp: parseInt(unixTime, 10) * 1000,
       message: msgParts.join(' '),
-      files: rest.filter(line => line.trim()),
+      files: nameBlock.split('\n').map(line => line.trim()).filter(Boolean),
+      patch: diffAt === -1 ? '' : body.slice(diffAt),
     }
   }).filter(v => v.message !== 'init')
 }

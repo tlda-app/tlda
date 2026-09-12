@@ -155,6 +155,7 @@ export function useEditBridge(
         timestamp: build.timestamp,
         filesJson: JSON.stringify(build.files),
         editorsJson: JSON.stringify(build.editors),
+        changeJson: build.change ? JSON.stringify(build.change) : '',
       }
       // Cast to any throughout: custom shape types are not in tldraw's
       // built-in type union, the same reason usePageColumn casts 'svg-page'.

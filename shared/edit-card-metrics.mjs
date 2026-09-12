@@ -7,4 +7,7 @@
  * agent-made card would be a different size from every other one.
  */
 export const EDIT_CARD_W = 260
-export const EDIT_CARD_H = 190
+// Taller than it was: the card now carries what the edit did -- a headline and
+// a clipped before/after -- above the files and the note. At 190 the change had
+// nowhere to go, and the change is the point of the card.
+export const EDIT_CARD_H = 268

@@ -31,6 +31,30 @@ import './EditCardShape.css'
 import { EDIT_CARD_H, EDIT_CARD_W } from '../../shared/edit-card-metrics.mjs'
 import type { BridgeEditor } from '../hooks/editBridgeLayout'
 
+/** What the edit did, as the server summarised it. */
+interface EditCardChange {
+  kind: 'addition' | 'deletion' | 'replacement'
+  addedWords: number
+  removedWords: number
+  rewordedWords: number
+  hunkCount: number
+  excerpt: { file: string | null; before: string; after: string } | null
+}
+
+/**
+ * How an edit reads in one line.
+ *
+ * A replacement leads with how much of his writing was displaced, because that
+ * is the edit worth stopping on -- "a large pure addition is usually fine;
+ * replacing prose he already wrote is where the subtlety dies." An addition
+ * says so plainly so it can be skimmed past.
+ */
+function changeHeadline(change: EditCardChange): string {
+  if (change.kind === 'addition') return `added ${change.addedWords} words`
+  if (change.kind === 'deletion') return `deleted ${change.removedWords} words`
+  return `rewrote ~${change.rewordedWords} words  (+${change.addedWords} / −${change.removedWords})`
+}
+
 export { EDIT_CARD_H, EDIT_CARD_W }
 
 /**
@@ -73,6 +97,10 @@ export class EditCardShapeUtil extends BaseBoxShapeUtil<any> {
     timestamp: T.number,
     filesJson: T.string,
     editorsJson: T.string,
+    // What the edit did, from the server. The card is named for this and did
+    // not carry it: it named the file and the time, and his verdict was that
+    // zero edits were visible in the bridge.
+    changeJson: T.string,
     note: T.string,
     // Who wrote the note. Empty when there is no note. A person's judgment and
     // an agent's guess must never be indistinguishable on the card -- that is
@@ -88,6 +116,7 @@ export class EditCardShapeUtil extends BaseBoxShapeUtil<any> {
       timestamp: 0,
       filesJson: '[]',
       editorsJson: '[]',
+      changeJson: '',
       note: '',
       noteAuthor: '',
     }
@@ -118,6 +147,7 @@ function EditCard({ shape }: { shape: any }) {
   const { w, h, hash, timestamp, note, noteAuthor } = shape.props
   const files = parseJsonProp<string[]>(shape.props.filesJson, [])
   const editors = parseJsonProp<BridgeEditor[]>(shape.props.editorsJson, [])
+  const change = parseJsonProp<EditCardChange | null>(shape.props.changeJson, null)
   // The note goes into shape props as it is typed, with no local draft.
   //
   // A draft is a second copy of the note, and it is the copy everything else
@@ -175,6 +205,26 @@ function EditCard({ shape }: { shape: any }) {
         </div>
 
         <div className="edit-card-body" onPointerDown={stopEventPropagation}>
+          {/* What the edit did, first, because that is what the bridge is for.
+              The file is where it happened and comes after. */}
+          {change ? (
+            <div className={`edit-card-change edit-card-change--${change.kind}`}>
+              <div className="edit-card-change-headline">{changeHeadline(change)}</div>
+              {change.excerpt && (
+                <div className="edit-card-diff">
+                  {change.excerpt.before && (
+                    <div className="edit-card-was" title={change.excerpt.before}>{change.excerpt.before}</div>
+                  )}
+                  {change.excerpt.after && (
+                    <div className="edit-card-now" title={change.excerpt.after}>{change.excerpt.after}</div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="edit-card-quiet">no textual change</div>
+          )}
+
           <div className="edit-card-files">
             {files.length === 0
               ? <span className="edit-card-quiet">no files recorded</span>

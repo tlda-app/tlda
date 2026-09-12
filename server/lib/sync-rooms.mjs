@@ -90,6 +90,7 @@ const customShapeSchemas = {
       timestamp: T.number,
       filesJson: T.string,
       editorsJson: T.string,
+      changeJson: T.string,
       note: T.string,
       noteAuthor: T.string,
     },
