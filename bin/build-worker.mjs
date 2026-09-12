@@ -192,6 +192,21 @@ process.on('message', async (msg) => {
     })
     instanceRoot = instance.root
     instanceProject = instance.project
+    // Say what the silent half of the build just spent. Without this the gap
+    // between "revision accepted" and the first Quarto line is unexplained
+    // minutes, and a build doing invisible work is indistinguishable from one
+    // that has stalled. Printed even when fast, so the number is a baseline
+    // rather than an alarm.
+    if (instance.timings) {
+      const t = instance.timings
+      console.log(
+        `[build-worker] ${msg.name}: instance ready in ${t.totalMs}ms `
+        + `(seed-output ${t.seedOutputMs}ms, caches ${t.seedCachesMs}ms, `
+        + `source ${t.writeSourceMs}ms`
+        + (t.materializedLinks ? ', links materialized' : `, ${t.sourceFiles} files / ${Math.round(t.sourceBytes / 1024)}KB`)
+        + ')',
+      )
+    }
     setProjectPathOverride(msg.name, instanceProject)
     if (msg.kind === 'parts') {
       await buildProjectPartsView(msg.name)
