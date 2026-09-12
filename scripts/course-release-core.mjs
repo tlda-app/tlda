@@ -280,7 +280,14 @@ export function planCourseRelease(contractInput) {
     return {
       id: artifact.id,
       kind: artifact.kind,
-      changed: prior?.sourceHash !== hash || prior?.desired !== desired,
+      // `desired` is a string for an app and an ARRAY for a full-book assembly.
+      // Comparing it with !== is reference inequality, so two structurally
+      // identical arrays parsed from JSON never matched and every assembly
+      // reported CHANGE with nothing changed -- measured on a fixture whose
+      // sourceHash was byte-identical to the prior manifest. That defeats the
+      // per-chapter budget: the whole book re-activates on every release.
+      // pointerEqual already exists for exactly this and handles both shapes.
+      changed: prior?.sourceHash !== hash || !pointerEqual(prior?.desired ?? null, desired),
       sourceHash: hash,
       previousSourceHash: prior?.sourceHash || null,
       requirements,
