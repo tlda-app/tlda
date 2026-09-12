@@ -681,8 +681,31 @@ function rosterCountInputs() {
   return { liveEvidenceIds: runtimeStatusStore.aliveAgentIds(), humanHereIds: humanPresence.hereIds() }
 }
 
+// How long a freshly reserved shell is allowed to take to reach `login()`.
+// One constant, used by the spawn librarian's wedged-spawn detector and by
+// requestWake's still-starting test, so the two cannot drift into disagreeing
+// about when a mint has failed.
+const SPAWN_LOGIN_DEADLINE_MS = Number(process.env.TLDA_SPAWN_LOGIN_DEADLINE_MS || 60_000)
+
 function isReservedShellAgent(agent) {
   return !!agent?.metadata?.shell
+}
+
+// A reserved shell inside its login deadline is STILL STARTING: its process is
+// being made right now, and anything that reports it as unreachable races the
+// mint that is already running. Past the deadline it has FAILED to start, and it
+// is then simply an agent with no MCP socket -- which is `no-channel`, exactly
+// what a hibernating agent is, and the daemon's business rather than ours.
+//
+// `last_seen` is the right clock for this ONE question and for nothing else: the
+// reserve-shell handler writes it at the moment the shell is reserved, so its
+// age is the age of the reservation. See docs/naming-errata.md for why that
+// column answers nothing about liveness.
+function reservedShellStillStarting(agent) {
+  if (!isReservedShellAgent(agent)) return false
+  const reservedAtMs = timestampMs(agent.last_seen) || timestampMs(agent.registered_at)
+  if (reservedAtMs == null) return false
+  return Date.now() - reservedAtMs < SPAWN_LOGIN_DEADLINE_MS
 }
 
 function markAgentAlive(agentId, now = Date.now(), detail = {}) {
@@ -1913,7 +1936,7 @@ function openMcpSocketsForAgent(agentId) {
 
 
 const spawnLibrarian = new SpawnLibrarian({
-  loginDeadlineMs: Number(process.env.TLDA_SPAWN_LOGIN_DEADLINE_MS || 60_000),
+  loginDeadlineMs: SPAWN_LOGIN_DEADLINE_MS,
   wedgedWindowMs: Number(process.env.TLDA_WEDGED_JOIN_MS || 90_000),
   onWedged: async ({ agent_id, liveness }) => {
     const agent = await fleetStore?.getAgent?.(agent_id)
@@ -6696,16 +6719,39 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
       reason: 'reserved shell has not logged in yet',
       ts: new Date().toISOString(),
     })
-    if (traceId) {
-      controlPlaneTraces.append({
-        trace_id: traceId,
-        component: 'server',
-        operation: 'wake.request',
-        status: 'pending-shell',
-        detail: { agent: agentId },
-      })
+    // A shell inside its login deadline is STILL STARTING and is nobody's
+    // business: its process is being made right now, and reporting `no-channel`
+    // would race `ensure-process` against the mint that is already running.
+    //
+    // Past the deadline it is not starting, it has FAILED to start -- and it is
+    // then an agent with no MCP socket, which is exactly `no-channel` and
+    // exactly what a hibernating agent is. So it falls through to the same
+    // report every other channel-less agent gets, and the daemon chooses the
+    // remedy.
+    //
+    // WHAT THIS RETURN WAS DOING WRONG: selecting a remedy. The server's whole
+    // job on this path is to report a fact about its own socket and choose
+    // nothing -- docs/notifications-and-liveness.md, "No remedy selection by the
+    // server" -- and returning here chose "do nothing" for 1,675 rows. Measured
+    // 2026-09-12: 5 of 5 sampled pending shells were holding mail accepted and
+    // never announced, 18 messages, oldest eight days, three of them Skip's.
+    //
+    // `last_seen` is the right clock for this ONE question and not for liveness:
+    // the reserve-shell handler writes it at the moment the shell is reserved,
+    // so its age IS the age of the reservation. (See docs/naming-errata.md on
+    // why it answers nothing else.)
+    if (reservedShellStillStarting(agent)) {
+      if (traceId) {
+        controlPlaneTraces.append({
+          trace_id: traceId,
+          component: 'server',
+          operation: 'wake.request',
+          status: 'pending-shell',
+          detail: { agent: agentId },
+        })
+      }
+      return { ok: true, delivered: false, status: 'pending-shell', reason: 'reserved-shell' }
     }
-    return { ok: true, delivered: false, status: 'pending-shell', reason: 'reserved-shell' }
   }
   const mcpDelivery = await attemptMcpWakeNotification(agent, nudgeText, traceId, source)
   if (mcpDelivery.ok) {
@@ -8239,7 +8285,17 @@ async function dispatchFleetWsMessage(ws, msg) {
       const daemonRoute = await fleetStore.getAgentDaemonRoute?.(to)
       const deliveryBlockReason = (() => {
         if (!recipientAgent || recipientAgent.human || to === SERVER_OWNER_ID) return null
-        if (recipientAgent.metadata?.shell) return 'recipient is a pending shell'
+        // ONLY while it is still starting. Past its deadline a shell is an
+        // unreachable agent, and blocking here is what made 1,675 rows accept
+        // mail that was never announced -- measured 2026-09-12, 5 of 5 sampled
+        // holding it, oldest eight days, three of them Skip's.
+        //
+        // THIS is the gate that governs a chat send, not the matching branch in
+        // `requestWake`: a block nulls `deliveryDecision`, and the wake loop
+        // skips any recipient without one, so `requestWake` is never called for
+        // a shell at all. Found by the counterfactual -- the past-deadline test
+        // reported no RPC whatsoever while only the other branch was gated.
+        if (reservedShellStillStarting(recipientAgent)) return 'recipient is a pending shell'
         if (!hasOpenDirectChannel && !daemonRoute) return 'recipient has no daemon route'
         return null
       })()
