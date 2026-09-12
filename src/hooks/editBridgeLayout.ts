@@ -8,7 +8,7 @@
  * modules, which need a served page to load at all.
  */
 
-import { EDIT_CARD_H, EDIT_CARD_W } from '../shapes/editCardMetrics'
+import { EDIT_CARD_H, EDIT_CARD_W } from '../../shared/edit-card-metrics.mjs'
 
 const CARD_GAP_X = 40
 const CARD_GAP_Y = 24

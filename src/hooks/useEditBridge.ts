@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor, TLShapeId } from 'tldraw'
 import { createShapeId } from 'tldraw'
-import { EDIT_CARD_H, EDIT_CARD_W } from '../shapes/editCardMetrics'
+import { EDIT_CARD_H, EDIT_CARD_W } from '../../shared/edit-card-metrics.mjs'
 import { buildCleanupBrief, cardLayout, bridgeGapWidth, CARD_GAP_X, type BridgeBuild } from './editBridgeLayout'
 export { buildCleanupBrief, cardLayout, bridgeGapWidth } from './editBridgeLayout'
 export type { BridgeBuild, BridgeEditor } from './editBridgeLayout'
@@ -160,10 +160,15 @@ export function useEditBridge(
       // built-in type union, the same reason usePageColumn casts 'svg-page'.
       const existing = editor.getShape(id) as any
       if (existing) {
-        // The note is the person's, not ours. Carry it across untouched.
-        editor.updateShape({ id, type: 'edit-card' as any, x, y, props: { ...props, note: existing.props.note ?? '' } })
+        // The note is whoever wrote it's, not ours. Carry it and its author
+        // across untouched -- an agent may have written it while the bridge
+        // was closed, and re-reading the interval must not unsign it.
+        editor.updateShape({
+          id, type: 'edit-card' as any, x, y,
+          props: { ...props, note: existing.props.note ?? '', noteAuthor: existing.props.noteAuthor ?? '' },
+        })
       } else {
-        editor.createShape({ id, type: 'edit-card' as any, x, y, props: { ...props, note: '' } })
+        editor.createShape({ id, type: 'edit-card' as any, x, y, props: { ...props, note: '', noteAuthor: '' } })
       }
     })
 
@@ -210,7 +215,10 @@ export function useEditBridge(
     const notes = new Map<string, string>()
     for (const build of builds) {
       const shape = editor.getShape(cardShapeId(build.hash)) as any
-      if (shape?.props?.note) notes.set(build.hash, shape.props.note)
+      if (shape?.props?.note) {
+        const author = String(shape.props.noteAuthor || '').trim()
+        notes.set(build.hash, author ? `${shape.props.note} — ${author}` : shape.props.note)
+      }
     }
     const brief = buildCleanupBrief(compareHash, upperHash, builds, notes)
     const vp = editor.getViewportPageBounds()

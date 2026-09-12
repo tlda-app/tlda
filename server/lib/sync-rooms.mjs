@@ -91,6 +91,7 @@ const customShapeSchemas = {
       filesJson: T.string,
       editorsJson: T.string,
       note: T.string,
+      noteAuthor: T.string,
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.edit-card',
