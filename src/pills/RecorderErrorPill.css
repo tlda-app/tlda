@@ -1,18 +1,19 @@
 /* RecorderErrorPill — same red, same calm and the same disclosure as
    BuildErrorPill: a badge, with the message behind a tap.
 
-   The affirmative "Recording" state is deliberately NOT red: a warning and a
-   confirmation that look alike are worse than no indicator, because the glance
-   that matters happens at the start of a lab and never repeats. */
+   The affirmative is the standard record dot, and it IS red — Skip, 2026-09-12:
+   "recording is a like standard glyph yes?". The rule this replaces said the
+   affirmative must not be red, so that a confirmation could not be mistaken for
+   a warning at the one glance that matters. That distinction now lives in the
+   SHAPE — a warning triangle against a filled circle — which is the stronger
+   difference, and it leaves the record mark the colour everybody reads it as. */
 
 :root {
   --recorder-error-pill-color: #d9342b;
-  --recorder-live-pill-color: #2e9e5b;
 }
 
 html[data-theme="dark"] {
   --recorder-error-pill-color: #ff6b61;
-  --recorder-live-pill-color: #57c98a;
 }
 
 /* Bottom-right, with the app's own warnings — bottom-left is the document
@@ -107,38 +108,22 @@ html[data-theme="dark"] .recorder-error-message {
   color: #ccc;
 }
 
-.recorder-error-text {
-  font-size: 10px;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: var(--recorder-error-pill-color);
-  opacity: 0.85;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Affirmative state: the instructor can see at a glance that the lab is being
-   captured. Same corner and same weight as the warning it replaces — its
-   anchoring is shared with .recorder-error-container above. */
+/* Affirmative state: the recording glyph, and nothing else. It is the standard
+   mark, so it needs no words — 9px rather than the old 7px because it is now
+   carrying the whole state on its own. Its anchoring is shared with
+   .recorder-error-container above. */
 .recorder-status-dot {
-  width: 7px;
-  height: 7px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
-  background: var(--recorder-live-pill-color);
+  background: var(--recorder-error-pill-color);
   flex: none;
 }
 
+/* Asked for, not yet capturing — the platform can still be waiting for a
+   gesture. Hollow, so it cannot be mistaken at a glance for a lab going down. */
 .recorder-status-dot--pending {
-  background: var(--recorder-error-pill-color);
+  background: none;
+  box-shadow: inset 0 0 0 1.5px var(--recorder-error-pill-color);
   opacity: 0.55;
-}
-
-.recorder-status-text {
-  font-size: 10px;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: var(--recorder-live-pill-color);
-  opacity: 0.85;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
