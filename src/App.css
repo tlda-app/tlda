@@ -229,6 +229,25 @@ body.tlda-pan-mode * {
   max-width: 400px;
 }
 
+/* The build's own words, wrapped rather than clipped: a Quarto error names a
+   path, and a path cut off at the edge of the box is the part you needed. */
+.error-detail {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: #64748b;
+  background: #f1f5f9;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin: 0.25rem 0 0;
+  max-width: min(640px, 100%);
+  max-height: 12rem;
+  overflow: auto;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .error-home-link {
   margin-top: 1rem;
   font-size: 0.875rem;
