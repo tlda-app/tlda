@@ -3278,25 +3278,35 @@ async function publishClassroomAssignment({
     handoutFilter,
     solutionFilter,
   })
-  // The frozen template is read as SOURCE TEXT, not served: classroomTemplateSource
-  // reads the project's mainFile and strayAnswers diffs the student's uploaded QMD
-  // against it line by line. The rendered handout project's mainFile is HTML, whose
-  // lines never match a QMD's, so freezing it makes the document's own narrative
-  // read as text the student typed under an unanswered box — a 422 refusing a
-  // correct hand-in. The master QMD carries every line the handout does, the
-  // generator changing only solution and starter blocks, so it is the text that
-  // comparison wants.
+  // The frozen template is read as SOURCE TEXT, not served: strayAnswers diffs
+  // the student's uploaded QMD against it line by line, and missingAnswers reads
+  // the answer-block ids out of it. So it has to be a QMD, and specifically the
+  // one the student started from — the GENERATED HANDOUT QMD, which the
+  // generator wrote into the handout directory and `git add --all` committed
+  // with the rest of that project.
+  //
+  // It could not be named before: classroomTemplateSource read the project's
+  // mainFile and nothing else, and the handout project's mainFile is the
+  // rendered HTML, whose lines never match a QMD's. Freezing THAT made the
+  // document's own narrative read as text the student typed under an unanswered
+  // box — a 422 refusing a correct hand-in. Freezing the master instead avoided
+  // the 422 and cost the other half: the master has no answer blocks at all, so
+  // missingAnswers extracted zero ids from it and could not fire, silently,
+  // against a rule Skip stated — students should not be deleting answer blocks.
+  // Naming the file is what lets both checks have the document they need.
+  //
   // A source build may still be running after all three daemon links have been
   // accepted. Retry only this readiness-dependent request: retrying the whole
   // publish operation creates a new source revision each time and restarts the
   // very build this request is waiting for.
-  const frozen = await finishCliOperation('classroom template freeze', () => api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey: sourceDocKey }))
+  const templateFile = basename(rendered.homeworkPath)
+  const frozen = await finishCliOperation('classroom template freeze', () => api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey: handoutDocKey, templateFile }))
 
   console.log(green('Classroom setup complete.'))
   console.log(`Course: ${course.title || courseTitle} (${course.id || courseId})`)
   console.log(`Assignment: ${assignment.title || assignmentTitle} (${assignment.id || assignmentId})`)
   console.log(`Due: ${assignment.dueAt || dueAt}`)
-  console.log(`Template frozen: ${frozen.templateDocKey || sourceDocKey}@${frozen.templateVersion || '(server version)'}`)
+  console.log(`Template frozen: ${frozen.templateDocKey || handoutDocKey}/${frozen.templateFile || templateFile}@${frozen.templateVersion || '(server version)'}`)
   console.log(`Handout: ${handoutDocKey}`)
   console.log(`Source: ${assignment.sourceDocKey || sourceDocKey}`)
   console.log(`Generated from: ${rendered.homeworkPath}`)

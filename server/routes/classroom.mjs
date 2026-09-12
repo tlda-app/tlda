@@ -219,12 +219,17 @@ export async function classroomTemplateVersion(templateDocKey) {
  * that a version is a coordinate on a thing you already named. A checksum is
  * not that, whatever it is called. Fetch the change.
  */
-export async function classroomTemplateSource(templateDocKey, templateVersion) {
+export async function classroomTemplateSource(templateDocKey, templateVersion, templateFile = null) {
   const project = await readProject(templateDocKey)
-  if (!project?.mainFile) return null
+  // `templateFile` names the file to read; without one this falls back to the
+  // project's mainFile, which is what every assignment frozen before the column
+  // existed has. The handout project's mainFile is the rendered HTML, so the
+  // file has to be nameable for the template to be the handout QMD.
+  const file = templateFile || project?.mainFile
+  if (!file) return null
   const checkout = await checkoutSource(templateDocKey, templateVersion)
   try {
-    return await readFile(join(checkout, project.mainFile), 'utf8')
+    return await readFile(join(checkout, file), 'utf8')
   } finally {
     await rm(checkout, { recursive: true, force: true })
   }
@@ -243,7 +248,7 @@ async function frozenTemplateSource(store, assignmentId, resolveTemplateSource) 
   const assignment = store.getAssignment(assignmentId)
   if (!assignment?.templateDocKey || !assignment.templateVersion) return null
   try {
-    return await resolveTemplateSource(assignment.templateDocKey, assignment.templateVersion)
+    return await resolveTemplateSource(assignment.templateDocKey, assignment.templateVersion, assignment.templateFile)
   } catch (error) {
     // A template that cannot be read must not block a hand-in. The check is
     // skipped and the reason reaches the log rather than the student.
@@ -523,11 +528,11 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   })
 
   router.put('/assignments/:assignmentId/template', instructor, async (req, res) => {
-    const { templateDocKey } = req.body || {}
+    const { templateDocKey, templateFile = null } = req.body || {}
     if (!templateDocKey) return res.status(400).json({ error: 'templateDocKey is required' })
     try {
       const templateVersion = await resolveTemplateVersion(templateDocKey)
-      res.json(store.freezeTemplate(req.params.assignmentId, { templateDocKey, templateVersion }))
+      res.json(store.freezeTemplate(req.params.assignmentId, { templateDocKey, templateVersion, templateFile }))
     } catch (error) {
       const status = error.message.includes('not found') ? 404 : 409
       res.status(status).json({ error: error.message })

@@ -153,3 +153,34 @@ test('handing in opens the source the same way it opens the solutions', () => {
     assert.equal(f.store.documentAccess('hw1-solutions', student).allowed, true)
   } finally { f.close() }
 })
+
+test('the frozen template names a file, so it can be the handout QMD rather than the master', () => {
+  // classroomTemplateSource could only read the project's mainFile. The handout
+  // project's is the rendered HTML, so the only QMD reachable was the master --
+  // and the master carries no answer blocks, so missingAnswers extracted zero
+  // ids from it and could never fire. Naming the file reaches the generated
+  // handout QMD, which `git add --all` already committed in that project.
+  const f = fixture()
+  try {
+    f.store.freezeTemplate('hw1', {
+      templateDocKey: 'hw1-handout', templateVersion: 'v1', templateFile: 'hw1.qmd',
+    })
+    const a = f.store.getAssignment('hw1')
+    assert.equal(a.templateDocKey, 'hw1-handout')
+    assert.equal(a.templateFile, 'hw1.qmd')
+    assert.equal(a.templateVersion, 'v1')
+    assert.equal(f.store.listAssignments('qtm285')[0].templateFile, 'hw1.qmd')
+  } finally { f.close() }
+})
+
+test('an assignment frozen before the column reads its mainFile, as it always did', () => {
+  // Absent a file the reader falls back to the project's mainFile, which is what
+  // every assignment frozen before this column has. Not a fallback path invented
+  // here -- it is the only behaviour that ever existed, kept for rows that
+  // predate the field.
+  const f = fixture()
+  try {
+    f.store.freezeTemplate('hw1', { templateDocKey: 'hw1-source', templateVersion: 'v0' })
+    assert.equal(f.store.getAssignment('hw1').templateFile, null)
+  } finally { f.close() }
+})

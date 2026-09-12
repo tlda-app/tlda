@@ -60,7 +60,7 @@ function classroomServer() {
       } else if (req.method === 'POST' && req.url === '/api/classroom/courses/qtm285/assignments') {
         res.end(JSON.stringify({ id: body.id, title: body.title, dueAt: body.dueAt, sourceDocKey: body.sourceDocKey, bookPageFile: body.bookPageFile, handoutFilter: body.handoutFilter, solutionFilter: body.solutionFilter, solutionsDocKey: body.solutionsDocKey, solutionsVersion: body.solutionsVersion }))
       } else if (req.method === 'PUT' && req.url === '/api/classroom/assignments/hw1/template') {
-        res.end(JSON.stringify({ id: 'hw1', templateDocKey: body.templateDocKey, templateVersion: 'handout-rev' }))
+        res.end(JSON.stringify({ id: 'hw1', templateDocKey: body.templateDocKey, templateFile: body.templateFile, templateVersion: 'handout-rev' }))
       } else {
         res.statusCode = 404
         res.end(JSON.stringify({ error: `unexpected ${req.method} ${req.url}` }))
@@ -149,9 +149,12 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     assert.match(result.stderr, /Generating handout source with bin\/make-handout\.py/)
     assert.match(result.stderr, /Linking project 1 of 3: hw1-source/)
     assert.match(result.stderr, /Linking project 3 of 3: hw1-solutions/)
-    // The frozen template is read as source text and diffed against the student's
-    // uploaded QMD, so it is the homework source rather than the rendered handout.
-    assert.match(result.stdout, /Template frozen: hw1-source@handout-rev/)
+    // The frozen template is read as source text: strayAnswers diffs the
+    // student's upload against it and missingAnswers reads the answer-block ids
+    // out of it. So it names the generated handout QMD inside the handout
+    // project -- not the master, which carries no answer blocks and left
+    // missingAnswers unable to fire.
+    assert.match(result.stdout, /Template frozen: hw1-handout\/hw1\.qmd@handout-rev/)
     assert.match(result.stdout, /Handout: hw1-handout/)
     // The generator writes its dependencies beside the handout, so the handout
     // gets a directory of its own rather than sitting next to the master — where
@@ -215,13 +218,21 @@ test('classroom setup posts course, assignment, and frozen handout through exist
       title: 'Homework 1',
       dueAt: '2026-09-01T20:00:00Z',
       sourceDocKey: 'hw1-source',
+      // Recorded because it cannot be derived: --handout names the project
+      // anything, so `<prefix>-handout` is a default rather than a fact. The
+      // gradebook's repair link reads it to send a student to the handout
+      // instead of the master.
+      handoutDocKey: 'hw1-handout',
       bookPageFile: 'homework/hw1.html',
       handoutFilter: 'bin/make-handout.py',
       solutionFilter: 'homework/solution-callout.lua',
       solutionsDocKey: 'hw1-solutions',
       solutionsVersion: 'solutions-rev',
     })
-    assert.deepEqual(fixture.requests[8].body, { templateDocKey: 'hw1-source' })
+    // The freeze names a file as well as a project: the template is read as
+    // source text, so it must be the generated handout QMD -- the master carries
+    // no answer blocks, which left missingAnswers unable to fire at all.
+    assert.deepEqual(fixture.requests[8].body, { templateDocKey: 'hw1-handout', templateFile: 'hw1.qmd' })
   } finally {
     await daemon.close()
     fs.rmSync(configDir, { recursive: true, force: true })
