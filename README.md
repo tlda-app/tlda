@@ -6,8 +6,8 @@ agents working on it alongside you.
 > **Fair warning:** this codebase was built almost entirely by agents. tlda was
 > also used to coordinate that development work.
 >
-> The commit history is intact on purpose, including the parts where that went
-> badly. It has not been curated.
+> It was an interesting process and the commit history has been left unfiltered
+> as a record of how it went.
 
 ## A shared paper workspace
 
