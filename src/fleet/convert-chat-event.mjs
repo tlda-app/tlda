@@ -143,6 +143,16 @@ export function convertChatEvent(e) {
   if (e.metadata?.preambleRef) {
     msg.metadata = { ...(msg.metadata || {}), preambleRef: e.metadata.preambleRef }
   }
+  // A build card draws entirely from this payload — FleetChatShape's
+  // `metadata.type === 'build_result'` branch reads name, hash, summary,
+  // lintFindings, mirrorFailed, buildFailed and errors off it. This converter is
+  // an allowlist, and `type` was never on it, so that branch could not be reached
+  // by any event and had never run. Every build card fell through to the ordinary
+  // text branch and rendered as the `Build <hash> — <project>` chat line instead
+  // of a card. The whole payload is carried because the card reads all of it.
+  if (e.metadata?.type === 'build_result') {
+    msg.metadata = { ...(msg.metadata || {}), ...e.metadata }
+  }
   return msg
 }
 
