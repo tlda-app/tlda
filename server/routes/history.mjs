@@ -292,12 +292,24 @@ router.get('/shadow/bridge', requireRead, async (req, res) => {
     }
     const builds = await listVersionRange(name, from, to)
 
-    // One store read for the whole interval, bucketed below. Per-build reads
+    // One store read for the whole interval, attributed below. Per-build reads
     // would be one query per build, and a bridge over a busy week is hundreds.
+    //
+    // The window is the earliest and latest time in the range rather than its
+    // first and last entries, because commit order is topological and commit
+    // TIME need not agree with it -- a clock adjustment on the box, or a
+    // rebuilt history, is enough. Taking the ends on faith produced a window
+    // that started after it finished, which is not an error anywhere: the
+    // query is simply empty and every build truthfully reports no author.
+    // Silent, and indistinguishable from a project no agent has touched.
     const fleetStore = req.app.locals.fleetStore
-    const untilTime = builds.length ? builds[builds.length - 1].timestamp : fromTime
+    const times = [fromTime, ...builds.map(build => build.timestamp)]
     const activity = fleetStore
-      ? await fleetStore.listSourceEditActivity({ project: name, sinceMs: fromTime, untilMs: untilTime })
+      ? await fleetStore.listSourceEditActivity({
+        project: name,
+        sinceMs: Math.min(...times),
+        untilMs: Math.max(...times),
+      })
       : []
 
     // The attribution itself lives in edit-bridge-attribution.mjs and is

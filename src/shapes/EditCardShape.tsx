@@ -21,7 +21,7 @@
  * to find out who actually changed something.
  */
 import { BaseBoxShapeUtil, HTMLContainer, T, stopEventPropagation, useEditor } from 'tldraw'
-import { useCallback, useState } from 'react'
+import { useCallback } from 'react'
 import { buildFleetAgentFilter } from '../../shared/filter-semantics.mjs'
 import { createFleetShape } from './fleet-utils'
 // @ts-ignore — vanilla JS module
@@ -118,10 +118,18 @@ function EditCard({ shape }: { shape: any }) {
   const { w, h, hash, timestamp, note, noteAuthor } = shape.props
   const files = parseJsonProp<string[]>(shape.props.filesJson, [])
   const editors = parseJsonProp<BridgeEditor[]>(shape.props.editorsJson, [])
-  const [draft, setDraft] = useState(note)
-
-  // Writing a note signs it. Clearing one unsigns it, so an empty card never
-  // carries a stale author.
+  // The note goes into shape props as it is typed, with no local draft.
+  //
+  // A draft is a second copy of the note, and it is the copy everything else
+  // cannot see: the guard that decides whether a card is scaffolding or
+  // somebody's judgment reads props, so a note still being typed read as an
+  // empty card and was deleted when the bridge collapsed. Measured from
+  // outside -- three notes typed in sequence, the two that had been blurred
+  // survived and the one still in hand did not, by both teardown routes.
+  //
+  // Collapsing is the natural next action after annotating, so that window is
+  // exactly where the person is standing when they reach for it. One copy,
+  // written as you type, removes the window rather than narrowing it.
   const commitNote = useCallback((value: string) => {
     if (value === shape.props.note) return
     const author = value.trim() ? (localAnnotator() || shape.props.noteAuthor || '') : ''
@@ -194,11 +202,10 @@ function EditCard({ shape }: { shape: any }) {
         )}
         <textarea
           className="edit-card-note"
-          value={draft}
+          value={note}
           placeholder="keep · bad rewrite · good idea, bad implementation…"
           onPointerDown={stopEventPropagation}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => commitNote(draft)}
+          onChange={(e) => commitNote(e.target.value)}
         />
       </div>
     </HTMLContainer>
