@@ -66,11 +66,21 @@ function tailText(file) {
  * Classify every bot this environment should have a heartbeat for.
  *
  * `stopped` had a heartbeat and lost it — a bot that went down.
+ * `quieted` also lost its heartbeat, but on purpose: a rename is the sanctioned
+ *   way to stop a bot, so a bot whose canonical name no longer belongs to any
+ *   living agent is inert by design and is not a failure. See `AGENTS.md`
+ *   §"A renamed mint and an inert bot are both the design".
  * `deaf` is writing heartbeats without hearing a fleet event — alive, not working.
  * `unmonitored` is declared with no heartbeat instrument at all; it degrades the
  *   survey rather than alarming, because it means "cannot say", not "is down".
  * `undeclared` has a heartbeat file and no declaration — it was running, so
  *   nothing supervises it now.
+ *
+ * Splitting `quieted` out of `stopped` is the whole point: on the filesystem the
+ * two are the same observation — a declared bot whose heartbeat went stale — and
+ * without the ledger there is no way to tell a crash from someone deliberately
+ * switching a bot off. `isQuieted` is what supplies that, and the default keeps
+ * every caller that does not pass it on the old behaviour.
  */
 export function surveyBotHeartbeats({
   declaredBots = [],
@@ -78,6 +88,7 @@ export function surveyBotHeartbeats({
   envName,
   staleMs,
   exclude = [],
+  isQuieted = () => false,
   now = () => Date.now(),
   readDir = dir => fs.readdirSync(dir),
   statFile = file => fs.statSync(file),
@@ -94,6 +105,7 @@ export function surveyBotHeartbeats({
   const currentTime = now()
   const beating = []
   const stopped = []
+  const quieted = []
   const deaf = []
   const unmonitored = []
 
@@ -118,8 +130,11 @@ export function surveyBotHeartbeats({
       continue
     }
     const staleMsActual = currentTime - stat.mtimeMs
-    if (staleMsActual >= staleMs) stopped.push({ name, file, staleMin: Math.round(staleMsActual / 60_000) })
-    else beating.push(name)
+    if (staleMsActual >= staleMs) {
+      const entry = { name, file, staleMin: Math.round(staleMsActual / 60_000) }
+      if (isQuieted(name)) quieted.push(entry)
+      else stopped.push(entry)
+    } else beating.push(name)
   }
 
   const undeclared = undeclaredNames.map(name => {
@@ -133,5 +148,5 @@ export function surveyBotHeartbeats({
     return { name, file, staleMin }
   })
 
-  return { beating, stopped, deaf, unmonitored, undeclared }
+  return { beating, stopped, quieted, deaf, unmonitored, undeclared }
 }
