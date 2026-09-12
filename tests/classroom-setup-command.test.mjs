@@ -58,7 +58,7 @@ function classroomServer() {
       } else if (req.method === 'POST' && req.url === '/api/classroom/courses') {
         res.end(JSON.stringify({ id: body.id, title: body.title }))
       } else if (req.method === 'POST' && req.url === '/api/classroom/courses/qtm285/assignments') {
-        res.end(JSON.stringify({ id: body.id, title: body.title, dueAt: body.dueAt, sourceDocKey: body.sourceDocKey, handoutFilter: body.handoutFilter, solutionFilter: body.solutionFilter, solutionsDocKey: body.solutionsDocKey, solutionsVersion: body.solutionsVersion }))
+        res.end(JSON.stringify({ id: body.id, title: body.title, dueAt: body.dueAt, sourceDocKey: body.sourceDocKey, bookPageFile: body.bookPageFile, handoutFilter: body.handoutFilter, solutionFilter: body.solutionFilter, solutionsDocKey: body.solutionsDocKey, solutionsVersion: body.solutionsVersion }))
       } else if (req.method === 'PUT' && req.url === '/api/classroom/assignments/hw1/template') {
         res.end(JSON.stringify({ id: 'hw1', templateDocKey: body.templateDocKey, templateVersion: 'handout-rev' }))
       } else {
@@ -195,6 +195,7 @@ test('classroom setup posts course, assignment, and frozen handout through exist
       title: 'Homework 1',
       dueAt: '2026-09-01T20:00:00Z',
       sourceDocKey: 'hw1-source',
+      bookPageFile: 'homework/hw1.html',
       handoutFilter: 'bin/make-handout.py',
       solutionFilter: 'homework/solution-callout.lua',
       solutionsDocKey: 'hw1-solutions',
