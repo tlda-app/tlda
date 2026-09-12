@@ -172,3 +172,42 @@ The daemon is the bridge to files and sessions on its own machine. If a daemon
 route is unavailable, operations needing that machine fail with 503; the server
 must not process a same-named local path as a fallback. Exactly one daemon may
 watch a given environment on one machine.
+
+## The page cache is the search budget, and a large read spends all of it
+
+On a small host, **the database's hot pages living in RAM is what makes search usable**, and that
+cache is a shared resource with no reservation. Any large sequential read evicts it — a database
+copy, a whole-book render, a big log scan — and everything that was warm goes to disk afterwards.
+
+Measured on the deployed box, 2026-09-12:
+
+| | |
+|---|---|
+| machine RAM | 3.9 GB |
+| held by `unified-server` + the search child | **2.0 GB** (1364 MB + 595 MB RSS) |
+| page cache, consequently | **~2.0 GB, and it cannot grow** |
+| fleet store on disk | **13.1 GB** |
+
+**So at best about 15% of the store can be cached.** Search was usable only because the working
+set happened to fit. A `VACUUM INTO` producing a 12.7 GB copy wrote straight through that cache
+and flushed it; afterwards `/proc/pressure/io` showed `full avg10=42` — **every task on the box
+stalled on I/O over 40% of the time** — and the fleet's search and thread tools were unusable for
+roughly forty minutes. The copy itself took ten minutes; the consequence outlasted it by four
+times that and did not ease as load fell, because load is a CPU measure and this is not a CPU
+problem.
+
+**Before any large read on a host like this, check RAM, not only disk.** Free space says whether
+the operation can complete; free *memory* says what it will cost everyone else while it runs and
+after it finishes. Disk headroom was checked beforehand here and was fine; memory was not
+considered at all.
+
+**Diagnosing it:** a CPU-starved process sits in `R` burning cycles; an I/O-starved one sits in
+**`D`** with its CPU time barely advancing. `/proc/pressure/io` distinguishes them in one read,
+and `vmstat`'s `bi` column shows sustained block-in. **Load average will not** — it was falling
+while the failure stayed flat, which defeated two separate diagnoses before anyone measured
+memory.
+
+**The structural point outlives the incident:** the store is 3.3× the machine's RAM and 6.5× the
+cache it can ever have. That ratio only worsens as the corpus grows, so the eviction is a trigger
+rather than the cause — the next large read reproduces it with no `VACUUM` involved. Sizing the
+host, or keeping the store off it, is the actual fix; scheduling around it is not.
