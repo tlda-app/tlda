@@ -21,6 +21,7 @@ import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { announcePageJson } from '../../shared/pagination-announce.mjs'
 import { broadcastSignal, putShape, upsertShape } from '../lib/sync-rooms.mjs'
 import { EDIT_CARD_H, EDIT_CARD_W } from '../../shared/edit-card-metrics.mjs'
+import { attributeEditsToBuilds, editsFromActivity } from '../lib/edit-bridge-attribution.mjs'
 import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
 import { loadSynctex, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 
@@ -299,42 +300,10 @@ router.get('/shadow/bridge', requireRead, async (req, res) => {
       ? await fleetStore.listSourceEditActivity({ project: name, sinceMs: fromTime, untilMs: untilTime })
       : []
 
-    // An edit belongs to the first build that happened at or after it AND
-    // changed the same file. Time alone would credit an edit to a build that
-    // did not contain it; the file test is what makes this a claim about this
-    // build rather than about this minute.
-    //
-    // An edit that no build has claimed yet stays pending rather than being
-    // consumed by the build it failed to match. A file edited at 10:00 and
-    // first built at 10:20 has two builds in between that did not touch it,
-    // and dropping it at the first of those would lose the only author the
-    // system has.
-    const pending = []
-    let cursor = 0
-    const withEditors = builds.map(build => {
-      while (cursor < activity.length && new Date(activity[cursor].timestamp).getTime() <= build.timestamp) {
-        const row = activity[cursor]
-        cursor += 1
-        let metadata = row.metadata
-        if (typeof metadata === 'string') {
-          try { metadata = JSON.parse(metadata) } catch { metadata = null }
-        }
-        const file = metadata?.sourceFile
-        if (file) pending.push({ agentId: row.from, taskId: row.task_id || null, file })
-      }
-
-      const changed = new Set(build.files)
-      const editors = new Map()
-      for (let i = pending.length - 1; i >= 0; i -= 1) {
-        if (!changed.has(pending[i].file)) continue
-        const { agentId, taskId, file } = pending.splice(i, 1)[0]
-        const key = `${agentId}:${taskId || ''}`
-        const existing = editors.get(key)
-        if (existing) existing.files.add(file)
-        else editors.set(key, { agentId, taskId, files: new Set([file]) })
-      }
-      return { ...build, editors: [...editors.values()] }
-    })
+    // The attribution itself lives in edit-bridge-attribution.mjs and is
+    // pinned by tests there. It is the only step of this route that decides
+    // rather than reads, so it is the only part that can be confidently wrong.
+    const withEditors = attributeEditsToBuilds(builds, editsFromActivity(activity))
 
     // Cards name agents, never fleet ids -- a friendly name is the pointer and
     // the id is the address. Looked up by the ids actually present, which is a
@@ -351,10 +320,8 @@ router.get('/shadow/bridge', requireRead, async (req, res) => {
       builds: withEditors.map(build => ({
         ...build,
         editors: build.editors.map(editor => ({
-          agentId: editor.agentId,
+          ...editor,
           name: nameById.get(editor.agentId) || null,
-          taskId: editor.taskId,
-          files: [...editor.files],
         })),
       })),
     })
