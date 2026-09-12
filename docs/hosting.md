@@ -193,8 +193,21 @@ set happened to fit. A `VACUUM INTO` producing a 12.7 GB copy wrote straight thr
 and flushed it; afterwards `/proc/pressure/io` showed `full avg10=42` — **every task on the box
 stalled on I/O over 40% of the time** — and the fleet's search and thread tools were unusable for
 roughly forty minutes. The copy itself took ten minutes; the consequence outlasted it by four
-times that and did not ease as load fell, because load is a CPU measure and this is not a CPU
+times that, and did not track load at all, because load is a CPU measure and this is not a CPU
 problem.
+
+**It recovers on its own.** Once the working set had been read back, `/proc/pressure/io` fell to
+`avg10=0.00`, block-in to zero, and every query shape returned in 0.5–1.5s — including a text
+search that had been timing out at 30s. **So the cost is transient, not a new steady state**: a
+large sequential read buys roughly half an hour of unusable search and then it comes back.
+
+Two warnings about watching that recovery, both learned by getting it wrong:
+
+- **Rising block-in during recovery is the cache refilling, not thrashing.** It was read here as
+  evidence of *deterioration* and reported as "not recovering", fifteen minutes before it
+  recovered fully. The traffic is the repair.
+- **`avg300` lags and will still be climbing while `avg10` has already gone to zero.** Read the
+  short window to know where you are now, and the long one only to know where you have been.
 
 **Before any large read on a host like this, check RAM, not only disk.** Free space says whether
 the operation can complete; free *memory* says what it will cost everyone else while it runs and
