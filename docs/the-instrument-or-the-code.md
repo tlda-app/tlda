@@ -523,6 +523,53 @@ clear it and look. If both look the same, the instrument cannot answer the
 question however many times you run it — and running it again is what the
 withdrawals above have in common.
 
+### 16. A correct reading that licenses the wrong action
+
+**A pane-content match and a keystroke target are different addresses.**
+`notify-does-not-wake`, 2026-09-12, and the sentence is the whole shape. Most of
+this page is about a reading that misleads. This one is about a reading that is
+correct *and* correctly interpreted, where the failure is entirely in the step
+after it — a true answer to one question spent as though it answered another.
+
+**This is shape 2 with the subject one layer further out.** There, a true number
+was about the wrong *thing*. Here the reading is about the right thing, and the
+**action** it authorises reaches somewhere else.
+
+**Measured 2026-09-12.** A recovery for agents whose kickoff sits unsent read the
+composer, matched the kickoff, and sent `Enter`. The classifier was verified
+correct — the matched span really was the queued kickoff, checked before the
+report was raised. But **`Enter` goes to whatever has focus**, and the probe
+carrying those queued prompts also had a dev-channels dialog up, with
+`1. Yes, I trust this folder` as the highlighted default. The match was sound
+and the keystroke would have answered a trust prompt.
+
+**Nothing in the classification was wrong, which is what makes it hard to see.**
+A wrong reading eventually contradicts something. A right reading pointed at the
+wrong address contradicts nothing, and every check you run on the reading itself
+comes back green.
+
+**The tell: a check that produces a FACT is being used to authorise an ACT, and
+the two live at different addresses.** Content against focus. A row exists
+against a lock you hold. A file is present against a file you may write. A
+process is alive against a process that will answer. Each pair looks like one
+question and is two.
+
+**The check: name the address your evidence is about, and the address your action
+reaches. If they differ, you need a second observation scoped to the second
+address, taken immediately before acting** — not a better version of the first.
+Here that is a focus-scoped refusal: is anything awaiting a keypress, coarsely,
+any dialog recognised or not. Recognising them one by one is the enumerating
+failure this page's neighbours already record.
+
+**And the honest part of this entry: the rule was already known and written down
+by the person who broke it.** The same author had refused, hours earlier, to
+auto-answer dialogs a launcher cannot read — on the ground that the highlighted
+default might be exactly that trust prompt — and then wrote a content match with
+no focus check. **A ruling binds the plan and not the code unless something in
+the code enforces it.** It was caught before it ran only because the process that
+would have executed it had not been restarted, which is timing rather than
+design.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see
