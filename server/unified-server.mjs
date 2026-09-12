@@ -966,8 +966,17 @@ function timestampMs(value) {
   return Number.isFinite(ms) ? ms : null
 }
 
-function agentAwaySinceMs(agent) {
-  return timestampMs(agent?.last_seen)
+// When the agent went away, for the "you were away N" notice.
+//
+// The durable span FIRST, and `last_seen` only as a fallback. `last_seen` is
+// rewritten on the way back in, before the returning agent logs in, so by the
+// time this runs the absence it is supposed to measure has been erased --
+// measured 2026-09-12 on two agents, one told "1 minute" after eight and one
+// told nothing at all after six. `runtime_status_history` is not touched by the
+// wake, so the span still knows.
+function agentAwaySinceMs(agent, status = RUNTIME_STATUS.HIBERNATING) {
+  return timestampMs(fleetStore?.lastRuntimeStatusSince?.(agent?.id, status))
+    || timestampMs(agent?.last_seen)
     || timestampMs(agent?.registered_at)
 }
 
@@ -985,12 +994,20 @@ function formatAwayDuration(ms) {
   return 'less than a minute'
 }
 
-// Below this, an agent was not away — it reconnected. `last_seen` is advanced by
-// heartbeats while an agent runs, so a genuine hibernation leaves it stale by the
-// length of the hibernation, while an MCP restart leaves it seconds old. Without
-// this gate every reconnect would be met with "You were hibernating for less than
-// a minute", which is both false and the kind of noise that teaches agents to
-// stop reading their own login output.
+// Below this, an agent was not away — it reconnected. Without this gate every
+// reconnect would be met with "You were hibernating for less than a minute",
+// which is both false and the kind of noise that teaches agents to stop reading
+// their own login output.
+//
+// The previous note here said `last_seen` "is advanced by heartbeats while an
+// agent runs, so a genuine hibernation leaves it stale by the length of the
+// hibernation". BOTH HALVES WERE FALSE and the gate was reading that column.
+// `last_seen` has one live writer for an agent (`GET /api/my-task`); and a
+// hibernation does not leave it stale, because the way back in rewrites it
+// before login. So this gate was comparing against a timestamp minted during
+// the wake and suppressing the notice for genuinely long absences -- measured
+// 2026-09-12, a six-minute hibernation produced no notice at all. It now reads
+// the durable hibernating span, which the wake does not touch.
 //
 // It is the same threshold `formatAwayDuration` already uses to give up and say
 // "less than a minute" — deliberately, so the notice can never print that phrase
@@ -1006,7 +1023,7 @@ function agentReturnNoticeIfAway(agent) {
 }
 
 function agentReturnNotice(agent, status = 'hibernating', { reanimated = false } = {}) {
-  const sinceMs = agentAwaySinceMs(agent)
+  const sinceMs = agentAwaySinceMs(agent, status)
   const duration = sinceMs ? formatAwayDuration(Date.now() - sinceMs) : 'an unknown amount of time'
   return systemMessage(reanimated
     ? `You were killed ${duration} ago and reanimated. Your open tasks were retired when you were killed.`

@@ -1845,6 +1845,19 @@ export class FleetStore {
     // existing one, and not this change's to alter.)
     this._getLiveAgentRowByFriendlyName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0');
     this._getAgentDaemonRoute = this.db.prepare('SELECT agent_id, daemon_key FROM agent_daemon_routes WHERE agent_id = ?');
+    // When an agent most recently ENTERED a runtime status. Walks
+    // idx_runtime_status_history_fleet (fleet_id, from_ts).
+    //
+    // Not `to_ts IS NULL`: by the time a returning agent asks how long it was
+    // away, its hibernating span may already have been closed by the awake
+    // transition. The most recent span of that status is the right one open or
+    // shut.
+    this._lastRuntimeStatusSince = this.db.prepare(`
+      SELECT from_ts FROM runtime_status_history
+      WHERE fleet_id = ? AND status = ?
+      ORDER BY from_ts DESC, id DESC
+      LIMIT 1
+    `);
     this._setAgentDaemonRoute = this.db.prepare(`
       INSERT INTO agent_daemon_routes (agent_id, daemon_key) VALUES (?, ?)
       ON CONFLICT(agent_id) DO UPDATE SET daemon_key = excluded.daemon_key
@@ -2779,6 +2792,18 @@ export class FleetStore {
   }
 
   // ---- Agent state management ----
+
+  // When this agent most recently ENTERED `status`, as an ISO string, or null.
+  //
+  // Exists because `agents.last_seen` cannot answer "how long was it away".
+  // That column is rewritten on the way back in — before the returning agent
+  // logs in — so by the time anything asks, the absence it is supposed to
+  // measure has already been erased. The span history is not rewritten by the
+  // wake, which is what makes it the thing that still knows.
+  lastRuntimeStatusSince(agentId, status) {
+    if (!agentId || !status) return null;
+    return this._lastRuntimeStatusSince.get(String(agentId), String(status))?.from_ts || null;
+  }
 
   getAgentDaemonRoute(agentId) {
     return this._getAgentDaemonRoute.get(agentId) || null;
