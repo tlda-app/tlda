@@ -286,10 +286,15 @@ export async function submitParkedKickoff(session, harnessKind, prompt, {
 } = {}) {
   const target = composerTarget(harnessKind, session)
   const marker = kickoffMarker(prompt)
+  // `-e` keeps the attributes, and they are the only thing that distinguishes a
+  // parked kickoff from a DIM GHOST of one -- a restored unsent draft or a
+  // placeholder hint. Without it this function would press Enter at an empty
+  // buffer and then report a healthy agent as never started.
   const read = async () => {
-    const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', target, '-p')
+    const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', target, '-p', '-e')
     return String(stdout || '')
   }
+  const composer = (pane) => paneComposerState(harnessKind, pane, marker, { escapes: true })
   let pane
   try {
     pane = await read()
@@ -299,7 +304,7 @@ export async function submitParkedKickoff(session, harnessKind, prompt, {
     return { observed: false, observedAt: new Date().toISOString(), pane: null, parked: false, submitted: false, error: error?.message || String(error) }
   }
   const observedAt = new Date().toISOString()
-  const state = paneComposerState(harnessKind, pane, marker)
+  const state = composer(pane)
   if (!state.containsMarker || state.busyAfter) {
     return { observed: true, observedAt, pane, parked: false, submitted: false }
   }
@@ -313,7 +318,7 @@ export async function submitParkedKickoff(session, harnessKind, prompt, {
     } catch {
       continue
     }
-    const post = paneComposerState(harnessKind, after, marker)
+    const post = composer(after)
     if (post.busyAfter || (post.promptIndex >= 0 && !post.containsMarker)) {
       return { observed: true, observedAt, pane, parked: true, submitted: true, paneAfter: after }
     }

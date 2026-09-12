@@ -91,11 +91,38 @@ export function kickoffMarker(prompt = '') {
 // kickoff we sent. Asking whether OUR text is parked is deliberate: a composer
 // that merely looks non-empty may be holding a placeholder hint, or something a
 // person typed and has not sent, and neither is ours to submit.
-export function composerState(harnessKind, pane = '', marker = '') {
+// A composer rendering text next to the prompt looks identical whether that text
+// is PENDING INPUT or a dim ghost -- a saved unsent draft, or the harness's own
+// placeholder hint. `capture-pane -p` strips the attributes, so the one bit that
+// tells them apart is gone before anything can read it. Measured on a real codex
+// pane 2026-09-12:
+//
+//   empty:  ESC[1m›ESC[0m ESC[2mAsk Codex to do anythingESC[0m
+//   typed:  ESC[1m›ESC[0m Call login() with the tlda MCP server and check inbox
+//
+// So a ghost is a dim SGR-2 span and live input is not, and a caller that wants
+// the difference must capture with `-e` and pass `escapes: true`. Without that,
+// a dim ghost of a kickoff reads as a parked kickoff -- which would report a
+// healthy agent as never started, the exact class this file exists to get right.
+//
+// Found by `untracked-sessions`, who flagged it against this code rather than
+// asserting it, after their own `[queue-operation]` reading turned out to be a
+// ghost over an empty buffer.
+const DIM_SPAN_RE = /\x1b\[2m.*?(?:\x1b\[0m|$)/g
+const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g
+
+export function stripGhostSpans(text = '') {
+  return String(text).replace(DIM_SPAN_RE, '').replace(ANSI_RE, '')
+}
+
+export function composerState(harnessKind, pane = '', marker = '', { escapes = false } = {}) {
   const prompt = COMPOSER_PROMPT[harnessKind]
   const absent = { promptIndex: -1, containsMarker: false, busyAfter: false }
   if (!prompt) return absent
-  const lines = String(pane).split('\n')
+  const source = escapes
+    ? String(pane).split('\n').map(stripGhostSpans).join('\n')
+    : String(pane)
+  const lines = source.split('\n')
   const promptIndex = harnessKind === 'codex'
     ? lines.findLastIndex((line) => line.trimStart().startsWith(prompt))
     : lines.findLastIndex((line) => line.includes(prompt))
