@@ -1,4 +1,4 @@
-export type Kind = 'claude' | 'codex' | 'goose'
+export type Kind = 'claude' | 'codex' | 'goose' | 'muse'
 
 export interface HarnessOps {
   kind: Kind
@@ -22,6 +22,13 @@ function normalize(value: unknown): string {
 }
 
 export const HARNESS: Record<Kind, HarnessOps> = {
+  muse: {
+    kind: 'muse',
+    educationGate: true,
+    requiresClaudeSession: false,
+    filtersSkillSections: true,
+    skillsDir: '~/.agents/skills',
+  },
   claude: {
     kind: 'claude',
     educationGate: false,

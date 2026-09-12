@@ -54,6 +54,15 @@ function hasCodexAuth(authFile = path.join(os.homedir(), '.codex', 'auth.json'))
   return hasToken ? okResult({ authFile }) : failResult('not-authenticated', 'auth file has no recognizable Codex credential fields')
 }
 
+function hasMuseAuth(authFile) {
+  try {
+    const auth = JSON.parse(fs.readFileSync(authFile, 'utf8'))
+    return auth.providers?.meta?.storage ? okResult({ authFile }) : failResult('not-authenticated')
+  } catch (e) {
+    return failResult(e.code === 'ENOENT' ? 'not-authenticated' : 'auth-unreadable')
+  }
+}
+
 async function hasClaudeAuth(deps) {
   const r = await deps.run('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'])
   if (!r.ok) return failResult('not-authenticated', (r.stderr || r.stdout || r.error || '').trim() || null)
@@ -116,20 +125,30 @@ export async function probeSpawnAvailability({ cwd = null, env = process.env, no
   const runner = {
     run: deps.run || ((command, args, opts = {}) => run(command, args, { ...opts, env })),
   }
-  const [claudePath, codexPath, goosePath, cursorPath] = await Promise.all([
+  const [claudePath, codexPath, goosePath, cursorPath, musePath] = await Promise.all([
     commandPath('claude', runner),
     commandPath('codex', runner),
     commandPath('goose', runner),
     commandPath(CURSOR_AGENT_COMMAND, runner),
+    commandPath('muse', runner),
   ])
   const [claudeAuth, gooseAuth] = await Promise.all([
     claudePath ? hasClaudeAuth(runner) : Promise.resolve(failResult('binary-missing')),
     goosePath ? hasGooseAuth(runner) : Promise.resolve(failResult('binary-missing')),
   ])
   const codexAuth = codexPath ? hasCodexAuth(deps.codexAuthFile) : failResult('binary-missing')
+  const museConfigHome = listModels(config).models.find(model => model.kind === 'muse')?.harnessOptions?.env?.XDG_CONFIG_HOME || env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
+  const museAuth = musePath ? hasMuseAuth(deps.museAuthFile || path.join(museConfigHome, 'muse', 'auth.json')) : failResult('binary-missing')
   const cursor = await cursorStatus(cursorPath, runner)
   const cursorAvailable = !!(cursor.binary?.ok && cursor.authenticated?.ok)
   const harnesses = {
+    muse: {
+      kind: 'muse',
+      binary: musePath ? okResult({ path: musePath }) : failResult('binary-missing'),
+      authenticated: museAuth,
+      available: !!(musePath && museAuth.ok),
+      models: modelRows('muse', config),
+    },
     claude: {
       kind: 'claude',
       binary: claudePath ? okResult({ path: claudePath }) : failResult('binary-missing'),

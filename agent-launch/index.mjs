@@ -24,6 +24,7 @@ import {
 import * as claude from './harness/claude.mjs'
 import * as codex from './harness/codex.mjs'
 import * as goose from './harness/goose.mjs'
+import * as muse from './harness/muse.mjs'
 import * as bot from './harness/bot.mjs'
 import { randomUUID } from 'node:crypto'
 import { assertCodexKickoffDelivered } from './launch-result.mjs'
@@ -80,7 +81,7 @@ const BOT_MODEL_SPEC = {
   verified: true,
 }
 
-const ADAPTERS = { claude, codex, goose, bot }
+const ADAPTERS = { claude, codex, goose, muse, bot }
 
 function metadataOf(agent) {
   const meta = agent?.metadata || {}
@@ -242,6 +243,7 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
     sendKeys = true
   } else {
     cmd = adapter.buildCmd({
+      cwd,
       fleetId,
       localAgentId,
       tmuxSession,
