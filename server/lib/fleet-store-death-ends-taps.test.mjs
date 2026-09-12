@@ -59,3 +59,39 @@ test('killing an agent ends its wiretaps and its subscriptions', () => {
     cleanup()
   }
 })
+
+// Mandatory means an agent cannot opt itself out. It never meant the
+// subscription outlives its owner. Both halves are asserted here: taking the
+// second without the first would let any caller end a mandatory subscription by
+// writing `ended_at`, which is the thing the trigger exists to stop.
+test('a mandatory subscription ends at death and not before', () => {
+  const { store, cleanup } = freshStore()
+  try {
+    store.upsertAgent({ id: 'fleet:bound', friendly_name: 'bound' })
+    const id = store.addSubscription({
+      owner: 'fleet:bound', query: 'from:anyone',
+      notificationPolicy: 'now', createdBy: 'fleet:bound', adapter: 'test',
+      mandatory: true,
+    })
+    assert.equal(store.getSubscriptionsByOwner('fleet:bound').length, 1,
+      'the mandatory subscription starts live')
+
+    // Positive control for the guard itself: while the owner lives, ending it
+    // is refused. Without this the test below passes against a dropped trigger.
+    assert.throws(
+      () => store.endSubscription(typeof id === 'object' ? id?.subscription_id ?? id?.id : id),
+      /mandatory subscription cannot be removed while its owner is alive/,
+      'a living agent cannot end its own mandatory subscription',
+    )
+    assert.equal(store.getSubscriptionsByOwner('fleet:bound').length, 1,
+      'the refused end left the subscription live')
+
+    // And death ends it. Before the owner-alive condition this aborted the
+    // whole markDead transaction, so killing such an agent failed outright.
+    store.markDead('fleet:bound')
+    assert.equal(store.getSubscriptionsByOwner('fleet:bound').length, 0,
+      'death ends a mandatory subscription — a dead owner can never receive it')
+  } finally {
+    cleanup()
+  }
+})
