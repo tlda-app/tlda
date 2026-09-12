@@ -296,6 +296,7 @@ export async function launchMintProcess(params) {
   const api = (params._deps?.resolveApi || resolveApi)()
   const name = params.name || `agent-${Date.now().toString(36).slice(-4)}`
   const mintId = params.mintId || params.mint_id || newLocalAgentId()
+  const declaredLaunch = botLaunchFromDeclaration(mintId, { repoRoot: repoRoot() })
   const fleetId = params.fleetId || params.fleet_id || null
   const cwd = resolveSpawnCwd(params.cwd)
   const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
@@ -353,12 +354,15 @@ export async function launchMintProcess(params) {
     harnessOptions: launchPolicy.harnessOptions,
     config,
     env: spawnEnv(params),
-    botScript: params.botScript || params.bot_script || params.script || null,
-    botName: params.botName || params.bot_name || null,
-    botPidFile: params.botPidFile || params.bot_pid_file || null,
-    botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
-    botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
-    botEnv: params.botEnv || params.bot_env || null,
+    // Same rule as the wake path below: the caller wins field by field, and the
+    // declaration supplies what it did not say. A fresh mint that passes a script
+    // and no env used to reach the bot with neither.
+    botScript: params.botScript || params.bot_script || params.script || declaredLaunch?.botScript || null,
+    botName: params.botName || params.bot_name || declaredLaunch?.botName || null,
+    botPidFile: params.botPidFile || params.bot_pid_file || declaredLaunch?.botPidFile || null,
+    botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || declaredLaunch?.botHeartbeatFile || null,
+    botWaitChannel: params.botWaitChannel || params.bot_wait_channel || declaredLaunch?.botWaitChannel || null,
+    botEnv: params.botEnv || params.bot_env || declaredLaunch?.botEnv || null,
   })
   const launched = await (params._deps?.spawnTmux || spawnTmux)(
     tmuxSession,
@@ -958,20 +962,31 @@ async function spawnRespawn(params) {
   }
   const resumeId = adapter.resumeId?.(handle)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
-  // An explicit caller still wins — the bot manager passes these on a fresh
-  // mint, before any declaration lookup is needed. Otherwise a bot mint id
-  // resolves them from `bots.yaml`, and a non-bot resolves to null and passes
-  // nothing, exactly as before.
-  const botLaunch = (params.botScript || params.bot_script)
+  // An explicit caller wins field by field, not all at once. The bot manager
+  // passes these on a fresh mint, before any declaration lookup is needed — but a
+  // caller that supplies only some of them must not take the rest away with it.
+  //
+  // On 2026-09-12 something launched `dev` with `botScript` and no `botEnv`, so
+  // the declaration was never consulted and the process came up without the
+  // `TLDA_DEV_BOT_DISABLED_CHECKS` that `bots.yaml` gives it. All seven checks
+  // switched off there ran — three of them the probe checks Skip ordered removed
+  // on 2026-08-23 for minting a live agent per sweep — and the resulting 43,873
+  // character failure summary is what got the bot renamed inert.
+  //
+  // A non-bot mint id still resolves to null, so a non-bot passes nothing,
+  // exactly as before.
+  const declaredLaunch = botLaunchFromDeclaration(facts.mintId, { repoRoot: repoRoot() })
+  const explicitBotScript = params.botScript || params.bot_script
+  const botLaunch = (explicitBotScript || declaredLaunch)
     ? {
-      botScript: params.botScript || params.bot_script,
-      botName: params.botName || params.bot_name || null,
-      botPidFile: params.botPidFile || params.bot_pid_file || null,
-      botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
-      botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
-      botEnv: params.botEnv || params.bot_env || null,
+      botScript: explicitBotScript || declaredLaunch?.botScript || null,
+      botName: params.botName || params.bot_name || declaredLaunch?.botName || null,
+      botPidFile: params.botPidFile || params.bot_pid_file || declaredLaunch?.botPidFile || null,
+      botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || declaredLaunch?.botHeartbeatFile || null,
+      botWaitChannel: params.botWaitChannel || params.bot_wait_channel || declaredLaunch?.botWaitChannel || null,
+      botEnv: params.botEnv || params.bot_env || declaredLaunch?.botEnv || null,
     }
-    : botLaunchFromDeclaration(facts.mintId, { repoRoot: repoRoot() })
+    : null
   const launchPolicy = resolveLaunchPolicy({
     permissionGrant: params.permissionGrant || meta.permissionGrant,
     permissionSet: params.permissionSet || meta.permissionSet,
