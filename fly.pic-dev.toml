@@ -2,7 +2,7 @@
 # Same image and deployment configuration as testing; its own app, volume, and
 # tailnet name keep heavy class builds away from the testing serving box.
 # Deploy with: fly deploy -c fly.pic-dev.toml
-app = "your-tlda-course-dev"
+app = "tlda-pic-dev"
 primary_region = "sjc"
 
 [build]
