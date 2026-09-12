@@ -60,7 +60,13 @@ export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.no
       arg,
       input,
       usage,
-      prettyResult: input?._unknownCodexToolKind ? prettyResult : null,
+      // The harness sets prettyResult only for the tools whose result IS the
+      // card -- PRETTY_PRINT_TOOLS, plus unknown Codex natives. Re-deciding that
+      // here is a second copy of the same classification, and the copy was
+      // narrower: it kept the Codex case and dropped every other result on the
+      // floor. A region transfer card is the one that cannot survive it, because
+      // its diff is parsed out of the result and exists nowhere else.
+      prettyResult,
       origTool,
       status,
       duration,
