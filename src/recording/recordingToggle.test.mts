@@ -126,6 +126,16 @@ async function run() {
   equal(getRecorderState().status, 'recording', 'and capture is running')
   equal(liveTracks, 1, 'the device is held')
 
+  // 3b. Moving between documents does not restart or duplicate the capture.
+  //     This is what `appRecordingOwner` was written to guarantee and what its
+  //     test asserted; the owner is gone — one holder of the session handle,
+  //     not two — so the guarantee is asserted here instead of disappearing
+  //     with it.
+  setAppRecording(true, 'another-document', { userInitiated: true })
+  await settle()
+  equal(mediaRequests, 1, 'navigating did not ask for the microphone again')
+  equal(getRecorderState().status, 'recording', 'and the same capture is still running')
+
   // 4. Off — and the device actually comes back. `status` going idle is not the
   //    same fact as the microphone being released, which is why both are here.
   setAppRecording(false, null)
