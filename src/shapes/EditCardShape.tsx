@@ -26,15 +26,10 @@ import { buildFleetAgentFilter } from '../../shared/filter-semantics.mjs'
 import { createFleetShape } from './fleet-utils'
 import './EditCardShape.css'
 
-export const EDIT_CARD_W = 260
-export const EDIT_CARD_H = 190
+import { EDIT_CARD_H, EDIT_CARD_W } from './editCardMetrics'
+import type { BridgeEditor } from '../hooks/editBridgeLayout'
 
-export interface EditCardEditor {
-  agentId: string
-  name: string | null
-  taskId: string | null
-  files: string[]
-}
+export { EDIT_CARD_H, EDIT_CARD_W }
 
 function parseJsonProp<T>(value: string | undefined, fallback: T): T {
   if (!value) return fallback
@@ -100,7 +95,7 @@ function EditCard({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h, hash, timestamp, note } = shape.props
   const files = parseJsonProp<string[]>(shape.props.filesJson, [])
-  const editors = parseJsonProp<EditCardEditor[]>(shape.props.editorsJson, [])
+  const editors = parseJsonProp<BridgeEditor[]>(shape.props.editorsJson, [])
   const [draft, setDraft] = useState(note)
 
   const commitNote = useCallback((value: string) => {

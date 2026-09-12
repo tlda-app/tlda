@@ -278,11 +278,17 @@ router.get('/shadow/bridge', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
-    const [fromTime, builds] = await Promise.all([
-      versionTimestamp(name, from),
-      listVersionRange(name, from, to),
-    ])
+    // Both endpoints are resolved BEFORE the range is walked, and not
+    // concurrently with it. Run together, an unknown ref makes `git log`
+    // throw first and the caller gets a 500 quoting a git command line
+    // instead of being told which version does not exist -- measured on a
+    // running server, which is the only place the ordering shows.
+    const fromTime = await versionTimestamp(name, from)
     if (fromTime === null) return res.status(404).json({ error: `Unknown version: ${from}` })
+    if (await versionTimestamp(name, to) === null) {
+      return res.status(404).json({ error: `Unknown version: ${to}` })
+    }
+    const builds = await listVersionRange(name, from, to)
 
     // One store read for the whole interval, bucketed below. Per-build reads
     // would be one query per build, and a bridge over a busy week is hundreds.
