@@ -6215,6 +6215,16 @@ export class FleetStore {
     // unrepresentative corpus. Measure query-shape changes here on the real
     // store before landing them.
     //
+    // And note what that can and cannot mean here, because the obvious reading
+    // is unsatisfiable and an unsatisfiable rule gets dropped along with the
+    // real one. `testing` accepts only canonical `main`, so a change in this
+    // path CANNOT be measured on the box before it lands -- there is nowhere to
+    // deploy it to. So "measure before landing" here means: land only against
+    // real-store evidence THAT ALREADY EXISTS, such as the table above, or a
+    // shape previously measured on it. It does not mean measure the new thing
+    // first, which is impossible, and it does not mean a local benchmark will
+    // do, which is how this was got wrong the first time.
+    //
     // The per-id cost is still real and `project:tlda` (435 agents carry that
     // label) is still bad. A fix has to keep each branch index-ordered while
     // avoiding N round trips; this is not that fix.
