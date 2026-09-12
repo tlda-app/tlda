@@ -1498,6 +1498,47 @@ function windowTail(output, n = 40) {
   return output.split('\n').slice(-n).join('\n');
 }
 
+// One encoding of "read that agent's pane". `terminal` and `lifecycle` both need
+// it; a second copy would be a second thing to keep in step with the daemon
+// route.
+async function capturePaneText(agent, lines = 200) {
+  try {
+    const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/capture-pane`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent, lines }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && typeof data.pane === 'string') return { ok: true, text: data.pane };
+    return { ok: false, error: `server capture-pane failed: ${data.error || data.message || `HTTP ${res.status}`}` };
+  } catch (e) {
+    return { ok: false, error: `server capture-pane failed: ${e.message}` };
+  }
+}
+
+// What a lifecycle action saw, in the shape Skip asked for: the evidence inline,
+// when it was observed with the statement that it may have moved since, and the
+// literal thing to say to look again.
+//
+// An error that names only what did not work sends the reader away to invent a
+// remedy -- and the symptom names here are worse than useless, because "the mint
+// failed", "the agent will not wake" and "hibernating with unknown activity" are
+// three names for one cause and none of them points at it. A kickoff sitting
+// unsent at the composer is obvious the moment anyone sees it. So show it.
+function observedTerminalReport(label, pane, observedAt, lines = 20) {
+  const when = observedAt || new Date().toISOString();
+  return [
+    `I, tlda, looked at ${label}'s terminal at ${when} and it looked like this:`,
+    '',
+    '```',
+    windowTail(pane, lines),
+    '```',
+    '',
+    `That is what the terminal held at ${when}. It could have changed since.`,
+    `To look again, say: terminal(agent: "${label}")`,
+  ].join('\n');
+}
+
 // ---- Server reference (set by initFleet) ----
 let server = null;
 
@@ -3774,23 +3815,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     let idle = false;
     let targetLabel = '';
 
-    try {
-      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/capture-pane`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: agentEntry.id || args.agent, lines: 200 }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && typeof data.pane === 'string') {
-        result = { ok: true, text: data.pane };
-        targetLabel = `server:${activeFleetServerUrl()}/api/capture-pane`;
-      } else {
-        const detail = data.error || data.message || `HTTP ${res.status}`;
-        result = { ok: false, error: `server capture-pane failed: ${detail}` };
-      }
-    } catch (e) {
-      result = { ok: false, error: `server capture-pane failed: ${e.message}` };
-    }
+    result = await capturePaneText(agentEntry.id || args.agent, 200);
+    if (result.ok) targetLabel = `server:${activeFleetServerUrl()}/api/capture-pane`;
 
     if (!result?.ok) {
       return { content: [{ type: 'text', text: `Cannot read terminal for ${agentEntry.friendly_name || agentEntry.id}: ${result?.error || 'daemon capture route unavailable'}. Agent was not marked dead by terminal.` }], isError: true };
@@ -4187,9 +4213,38 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       }[args.action];
       const payload = args.action === 'wake' ? { agent: args.agent, fresh: false } : { agent: args.agent };
       const data = await mcpFleetTransport.durable(transportType, payload);
-      if (data.error) return { content: [{ type: 'text', text: `Lifecycle ${args.action} failed: ${data.error}` }], isError: true };
       const label = data.agent || data.agent_id || args.agent;
-      return { content: [{ type: 'text', text: `${args.action} ${label}.` }] };
+      if (data.error) {
+        // A wake that did not work is where the parked-kickoff failure surfaces,
+        // so this is exactly where the reader must be shown the terminal rather
+        // than handed a symptom name and left to go looking.
+        const failedPane = await capturePaneText(args.agent, 60);
+        return {
+          content: [{
+            type: 'text',
+            text: failedPane.ok
+              ? `Lifecycle ${args.action} failed: ${data.error}\n\n${observedTerminalReport(label, failedPane.text)}`
+              : `Lifecycle ${args.action} failed: ${data.error}\nI could not read ${label}'s terminal to show you why: ${failedPane.error}`,
+          }],
+          isError: true,
+        };
+      }
+      // `wake` used to answer `wake <name>.` whatever it found -- including an
+      // agent with a live process that had never produced a turn, which is the
+      // report that stopped people looking. Show the terminal.
+      if (args.action !== 'wake') {
+        return { content: [{ type: 'text', text: `${args.action} ${label}.` }] };
+      }
+      const pane = await capturePaneText(args.agent, 60);
+      if (!pane.ok) {
+        return { content: [{ type: 'text', text: `wake ${label}.\nI could not read their terminal to show you the state: ${pane.error}` }] };
+      }
+      return {
+        content: [{
+          type: 'text',
+          text: `wake ${label}.\n\n${observedTerminalReport(label, pane.text)}`,
+        }],
+      };
     } catch (e) {
       return { content: [{ type: 'text', text: `Lifecycle ${args.action} failed: ${e.message}` }], isError: true };
     }
