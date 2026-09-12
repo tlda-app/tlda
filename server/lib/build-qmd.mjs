@@ -13,7 +13,7 @@
  * new rendering path inside an existing one.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, rmSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, rmSync, lstatSync } from 'fs'
 import { dirname, join, relative } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -107,6 +107,55 @@ async function resolveRscript() {
  * the author's interactive one is untouched. outDir is stable per project, so
  * that library is filled once and warm on every later build.
  */
+/**
+ * Files and bytes under a tree, for reporting what a copy actually moved.
+ *
+ * A duration on its own cannot separate a slow copy from a big one, and those
+ * want opposite fixes -- one is the copy mechanism, the other is how much is
+ * being copied at all.
+ *
+ * **It reports its own cost, and that is not decoration.** This walk stats every
+ * entry, so it is real work added beside the thing it measures. Reporting the
+ * duration makes that visible instead of quietly inflating the phase it is
+ * describing -- an instrument that adds unmeasured cost to its subject is the
+ * failure the copy timing exists to fix. If the walk ever becomes a meaningful
+ * fraction of the copy, the log says so and it can be dropped.
+ *
+ * A symlink counts as one file and contributes no bytes. Note what the guard
+ * does and does not do: the walk uses `lstatSync`, which never follows a link,
+ * so the target's bytes were never at risk. What skipping adds is that the
+ * LINK'S OWN size -- the byte length of its target path -- is not added to a
+ * total meant to describe file contents. Verified by removing the guard: the
+ * 3003-byte fixture reports 3008, the five characters of `a.txt`.
+ */
+export function measureTree(root) {
+  const started = process.hrtime.bigint()
+  let files = 0
+  let bytes = 0
+  const stack = [root]
+  while (stack.length) {
+    const dir = stack.pop()
+    let entries
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) { stack.push(full); continue }
+      files += 1
+      if (entry.isSymbolicLink()) continue
+      try { bytes += lstatSync(full).size } catch { /* vanished mid-walk; the count is a report, not a ledger */ }
+    }
+  }
+  return { files, bytes, walkMs: Math.round(Number(process.hrtime.bigint() - started) / 1e6) }
+}
+
+/** The log form. Separate from the measurement so the measurement stays exact:
+ *  rounding to MB in the returned value would leave a 3KB tree reading 0.0MB and
+ *  nothing able to check the count. */
+export function describeTreeSize(root) {
+  const { files, bytes, walkMs } = measureTree(root)
+  return `${files} files / ${(bytes / (1024 * 1024)).toFixed(1)}MB, measured in ${walkMs}ms`
+}
+
 async function restoreRenv(outDir, addLog) {
   if (!existsSync(join(outDir, 'renv.lock'))) return
 
@@ -766,7 +815,21 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   // The whole tree, for the reason `buildSlidesDocument` copies it: a .qmd depends on
   // sibling data files, figures, _quarto.yml, and any _extensions/ it uses, and
   // a render that cannot see them fails in a way that reads as bad source.
+  //
+  // Timed and logged because this copy is INSIDE the phase that reports nothing.
+  // Measured 2026-09-12: ~48s elapsed between a revision being accepted and
+  // quarto starting, with no line written. `materializeBuildInstance` reports
+  // its own phases now, and without this one the breakdown would show three
+  // small numbers and leave the bulk of that gap unaccounted for -- which reads
+  // as "the copy is cheap" rather than "the copy was measured somewhere else".
+  //
+  // It copies the WHOLE SOURCE TREE, so it scales with the size of the project
+  // and not with the size of the edit. That is the property under question, so
+  // the log reports what was moved as well as how long it took.
+  const copyStart = process.hrtime.bigint()
   cpSync(srcDir, outDir, { recursive: true })
+  const copyMs = Math.round(Number(process.hrtime.bigint() - copyStart) / 1e6)
+  addLog(`[qmd] copied source tree to the output directory in ${copyMs}ms (${describeTreeSize(srcDir)})`)
 
   await restoreRenv(outDir, addLog)
   const nativeTldaProject = isNativeTldaProject(outDir)
