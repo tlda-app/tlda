@@ -5,8 +5,8 @@ import type { SvgDocument } from './loaders/types'
 import { clientOpenKind, fetchDocumentManifest, loadDocumentByFormat } from './loaders/documentFormatLoader'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
-import { attachAppRecordingEditor, openAppRecordingSession } from './recording/recorder'
-import { createAppRecordingOwner } from './recording/appRecordingOwner'
+import { attachAppRecordingEditor, isAppRecordingOn, recordsByDefault, setAppRecording } from './recording/recorder'
+import { isClassroomSurface } from './classroom/classroomSurface'
 import { log } from './logger'
 import { SHAPE_RENDER_ERROR_EVENT, errorFromShapeRenderEvent } from './shape-error-surface'
 import { BookViewer } from './BookViewer'
@@ -222,19 +222,35 @@ function DocumentApp() {
   const isDark = useFleetTheme()
   const recordingPermission = useSyncExternalStore(subscribeCanPresent, canPublishRecording)
   const presenterPermissionKnown = useSyncExternalStore(subscribeCanPresent, isPresentPermissionKnown)
-  const recordingOwner = useRef(createAppRecordingOwner(openAppRecordingSession))
   const captureDoc = state?.phase === 'book'
     ? state.bookName
     : state?.phase === 'svg'
       ? state.document.name
       : new URLSearchParams(window.location.search).get('project')
 
+  // The recording toggle's INITIAL value, and the only place context decides
+  // anything about recording. A classroom instructor comes up on — Skip relies
+  // on the class being captured without his having to remember — and everywhere
+  // else comes up off, so nothing reaches for the microphone until someone asks
+  // through the audio menu's `toggle recording`.
+  //
+  // `startedOnce` is what keeps this an INITIAL value rather than a policy: once
+  // the toggle exists it is the person's, and navigating between documents must
+  // not turn recording back on under someone who turned it off.
+  const startedOnce = useRef(false)
   useEffect(() => {
-    recordingOwner.current.observe(captureDoc, presenterPermissionKnown && recordingPermission)
+    if (startedOnce.current || !captureDoc) return
+    if (!recordsByDefault({
+      classroom: isClassroomSurface(),
+      permissionKnown: presenterPermissionKnown,
+      canPublish: recordingPermission,
+    })) return
+    startedOnce.current = true
+    setAppRecording(true, captureDoc)
   }, [captureDoc, recordingPermission, presenterPermissionKnown])
 
   useEffect(() => () => {
-    recordingOwner.current.exit()
+    if (isAppRecordingOn()) setAppRecording(false, null)
   }, [])
 
   // The browser's back button does not drive this app — see AGENTS.md

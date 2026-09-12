@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import { setStopRecordingCallback, setFinishPlacementCallback } from './tools/VoiceNoteTool'
 import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap } from './voice.mjs'
 import { createPortal } from 'react-dom'
@@ -6,6 +6,7 @@ import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tl
 import { toolNameHud } from './overlays/ToolNameHud'
 import type { Editor, TLShapeId } from 'tldraw'
 import { ProjectContext } from './PanelContext'
+import { getRecorderState, isAppRecordingOn, setAppRecording, subscribeRecorder } from './recording/recorder'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab } from './panels/TocTab'
@@ -986,15 +987,14 @@ function useVoiceNoteController() {
   return { recording, isPlacing, triggerFromElement }
 }
 
-type VoiceButtonMode = 'dictate-selection' | 'voice-note'
+type VoiceButtonMode = 'dictate-selection' | 'voice-note' | 'toggle-recording'
 
 const VOICE_BUTTON_MODE_KEY = 'tlda-phone-voice-button-mode'
 
 function readVoiceButtonMode(): VoiceButtonMode {
   try {
-    return localStorage.getItem(VOICE_BUTTON_MODE_KEY) === 'dictate-selection'
-      ? 'dictate-selection'
-      : 'voice-note'
+    const stored = localStorage.getItem(VOICE_BUTTON_MODE_KEY)
+    return stored === 'dictate-selection' || stored === 'toggle-recording' ? stored : 'voice-note'
   } catch {
     return 'voice-note'
   }
@@ -1002,6 +1002,8 @@ function readVoiceButtonMode(): VoiceButtonMode {
 
 function VoiceNoteButtonInner() {
   const { recording, isPlacing, triggerFromElement } = useVoiceNoteController()
+  const doc = useContext(ProjectContext)
+  const lectureRecording = useSyncExternalStore(subscribeRecorder, () => getRecorderState().requested)
   const voiceConditionSeverity = useChromeConditionSeverity('voice')
   const btnRef = useRef<HTMLButtonElement>(null)
   const suppressClickRef = useRef(false)
@@ -1043,7 +1045,26 @@ function VoiceNoteButtonInner() {
         </svg>
       ),
     },
-  ], [triggerFromElement])
+    {
+      // The whole of the opt-in. Skip: "just like we already have the like
+      // audio shit menu: voice note, toggle dictation. add toggle recording?"
+      // Outside a classroom nothing reaches for the microphone until this is
+      // pressed, and pressing it is the asking.
+      id: 'toggle-recording',
+      label: lectureRecording ? 'stop recording' : 'toggle recording',
+      color: '#d9342b',
+      action: () => setAppRecording(!isAppRecordingOn(), doc?.projectName ?? null, { userInitiated: true }),
+      // The face says which way the next press goes: filled while recording,
+      // an empty ring while not. Same mark either way, so it reads as one
+      // control in two states rather than two controls.
+      render: () => (
+        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3">
+          <circle cx="9" cy="9" r="6.5" />
+          {lectureRecording && <circle cx="9" cy="9" r="3.2" fill="currentColor" stroke="none" />}
+        </svg>
+      ),
+    },
+  ], [triggerFromElement, doc?.projectName, lectureRecording])
 
   // A second instance of the highlighter's slider behaviour, with voice slots.
   // Skip: "make the voice notes slider a second instance of that same
@@ -1119,7 +1140,9 @@ function VoiceNoteButtonInner() {
     if (slot) {
       const label = slot.id === 'dictate-selection'
         ? (isRecording() ? 'Toggle transcription off' : 'Toggle transcription on')
-        : slot.label
+        : slot.id === 'toggle-recording'
+          ? (isAppRecordingOn() ? 'Stop recording' : 'Start recording')
+          : slot.label
       toolNameHud.show(label, slot.color)
     }
   }, [dragging, voiceSlots])
@@ -1171,9 +1194,11 @@ function VoiceNoteButtonInner() {
         onPointerCancel={handlePointerCancel}
         onTouchStart={stopEventPropagation}
         onTouchEnd={stopEventPropagation}
-        title={_isTouchDevice
-          ? (selectedMode === 'dictate-selection' ? 'Toggle transcription' : 'New voice note')
-          : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
+        title={selectedMode === 'toggle-recording'
+          ? (lectureRecording ? 'Stop recording' : 'Start recording')
+          : _isTouchDevice
+            ? (selectedMode === 'dictate-selection' ? 'Toggle transcription' : 'New voice note')
+            : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
       >
         {voiceSlots[selectedSlot]?.render()}
       </button>

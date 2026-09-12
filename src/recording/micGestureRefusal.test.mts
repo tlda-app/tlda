@@ -103,15 +103,17 @@ async function run() {
     await settle()
   }
 
-  const { openAppRecordingSession, getRecorderState } = await import('./recorder')
+  const { setAppRecording, getRecorderState } = await import('./recorder')
 
-  // 1. The app asks on its own and the platform refuses. Nothing to report:
-  //    this says only that we asked at the wrong moment.
-  openAppRecordingSession('gesture-refusal-fixture')
+  // 1. The toggle is on — a classroom instructor's default — and the platform
+  //    refuses the load-time request. Nothing to report: this says only that we
+  //    asked at the wrong moment.
+  setAppRecording(true, 'gesture-refusal-fixture')
   await settle()
   equal(mediaRequests, 1, 'the mic was requested on load')
   equal(getRecorderState().error, null, 'a non-gesture refusal reports no fault')
   equal(getRecorderState().status, 'idle', 'and leaves the recorder idle')
+  equal(getRecorderState().requested, true, 'the toggle stays on — it is the mic that has not arrived')
 
   // 2. The next gesture is taken, and with permission actually available the
   //    lecture records. The silence above is a deferral, not an abandonment.
@@ -120,6 +122,7 @@ async function run() {
   equal(mediaRequests, 2, 'the next gesture re-asked')
   equal(getRecorderState().status, 'recording', 'capture starts inside the gesture')
   equal(getRecorderState().error, null, 'and still reports no fault')
+  equal(getRecorderState().requested, true, 'the toggle is on and now so is the microphone')
 
   console.log('non-gesture refusal: silent, and retried on the next tap: PASS')
 
@@ -136,7 +139,7 @@ async function run() {
   const known = await import(`./recorder?denial=known-${Date.now()}`)
   micAnswer = 'refuse'
   permissionAnswer = 'denied'
-  known.openAppRecordingSession('known-denial-fixture')
+  known.setAppRecording(true, 'known-denial-fixture')
   await settle()
   warns(known.getRecorderState().error, 'permission known denied')
   equal(known.getRecorderState().status, 'idle', 'and the recorder is idle')
@@ -147,7 +150,7 @@ async function run() {
   const safari = await import(`./recorder?denial=safari-${Date.now()}`)
   permissionAnswer = 'throw'
   mediaRequests = 0
-  safari.openAppRecordingSession('safari-denial-fixture')
+  safari.setAppRecording(true, 'safari-denial-fixture')
   await settle()
   equal(safari.getRecorderState().error, null, 'the load-time ask is still silent')
   await tap()
@@ -155,6 +158,25 @@ async function run() {
   warns(safari.getRecorderState().error, 'refused inside a gesture')
   equal(safari.getRecorderState().status, 'idle', 'and the recorder is idle')
   console.log('denial inside a gesture, no Permissions API: still warns: PASS')
+
+  // 4. Turning the toggle off while a retry is armed. This is the leak that
+  //    would be invisible: the person stops recording, taps something a moment
+  //    later, and the app takes the microphone it was told not to have.
+  const off = await import(`./recorder?off=${Date.now()}`)
+  micAnswer = 'refuse'
+  permissionAnswer = 'prompt'
+  mediaRequests = 0
+  off.setAppRecording(true, 'toggled-off-fixture')
+  await settle()
+  equal(mediaRequests, 1, 'the refused request armed a retry')
+  off.setAppRecording(false, null)
+  micAnswer = 'grant'
+  await tap()
+  equal(mediaRequests, 1, 'a tap after turning it off did NOT acquire the microphone')
+  equal(off.getRecorderState().requested, false, 'and the toggle stays off')
+  equal(off.getRecorderState().status, 'idle', 'with nothing capturing')
+
+  console.log('toggled off while a retry was armed: stays off: PASS')
 }
 
 await run()

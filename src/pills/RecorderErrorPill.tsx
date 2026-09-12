@@ -64,32 +64,35 @@ export function RecorderErrorPill() {
     return () => { cancelled = true }
   }, [])
 
-  // A failure the recorder recorded outranks everything: it is the only case
-  // that carries its own reason, and it applies whoever is looking.
   // Badge only, message on tap — the same disclosure BuildErrorPill uses, for
-  // the same reason: the reason text is a sentence, and a sentence parked in a
+  // the same reason: the reason is a sentence, and a sentence parked in a
   // corner is a banner. A button (not a span with a handler) so a touch reaches
   // it; `onPointerDown` stops the canvas taking the tap first.
-  if (state.error) {
-    return (
-      <div className="recorder-error-container" ref={containerRef}>
-        <button
-          type="button"
-          className="recorder-error-badge"
-          onClick={() => setShowMessage(s => !s)}
-          onPointerDown={e => e.stopPropagation()}
-          aria-expanded={showMessage}
-          aria-label="Recording problem"
-          title={state.error}
-        >&#9888;</button>
-        {showMessage && (
-          <div className="recorder-error-message" role="status" onPointerDown={e => e.stopPropagation()}>
-            {state.error}
-          </div>
-        )}
-      </div>
-    )
-  }
+  //
+  // Both failures render through this, because Skip ruled they are the same
+  // kind of thing: "no recording perms is an error".
+  const errorBadge = (message: string, label: string) => (
+    <div className="recorder-error-container" ref={containerRef}>
+      <button
+        type="button"
+        className="recorder-error-badge"
+        onClick={() => setShowMessage(s => !s)}
+        onPointerDown={e => e.stopPropagation()}
+        aria-expanded={showMessage}
+        aria-label={label}
+        title={message}
+      >&#9888;</button>
+      {showMessage && (
+        <div className="recorder-error-message" role="status" onPointerDown={e => e.stopPropagation()}>
+          {message}
+        </div>
+      )}
+    </div>
+  )
+
+  // A failure the recorder recorded outranks everything: it is the only case
+  // that carries its own reason, and it applies whoever is looking.
+  if (state.error) return errorBadge(state.error, 'Recording problem')
 
   // Wait for the server's answer rather than reporting a permission state
   // during the fetch — a pill that appears and then changes on every load is a
@@ -104,31 +107,30 @@ export function RecorderErrorPill() {
   // what covers that case, which is why it does NOT depend on role.
   if (!canPublish) {
     if (!isInstructor) return null
-    return (
-      <div className="recorder-error-container">
-        <span className="recorder-error-badge" aria-hidden="true">&#9888;</span>
-        <span className="recorder-error-text" role="status">
-          Not recording — this session has no recording permission
-        </span>
-      </div>
-    )
+    return errorBadge('Not recording — this session has no recording permission', 'Not recording')
   }
 
-  // Anyone who may publish is by definition someone who records, so this needs
-  // no classroom round trip and cannot be silenced by one failing. That matters:
-  // this is the indicator whose ABSENCE tells an instructor the lab is not being
-  // captured, so it has to be the most robust thing here, not the least.
-  if (state.status === 'recording' || state.status === 'starting') {
-    const recording = state.status === 'recording'
-    return (
-      <div className="recorder-status-container">
-        <span className={'recorder-status-dot' + (recording ? '' : ' recorder-status-dot--pending')} aria-hidden="true" />
-        <span className="recorder-status-text" role="status">
-          {recording ? (state.paused ? 'Recording paused' : 'Recording') : 'Starting recording'}
-        </span>
-      </div>
-    )
-  }
+  // The affirmative: the filled dot and nothing else. Skip: "recording is a
+  // like standard glyph yes?" — it is not a warning and must not read as one,
+  // and the dot is the one mark everybody already knows.
+  //
+  // It follows the microphone, NOT the toggle. Requested-but-not-yet-capturing
+  // is a real state — the platform can be waiting for a gesture — and a solid
+  // dot there would tell an instructor a lecture is being recorded that is not.
+  // That case is the dimmed dot, which is the one thing that must never be
+  // wrong in either direction.
+  if (!state.requested && state.status !== 'recording' && state.status !== 'starting') return null
 
-  return null
+  const capturing = state.status === 'recording' && !state.paused
+  const label = capturing ? 'Recording' : state.paused ? 'Recording paused' : 'Starting recording'
+  return (
+    <div className="recorder-status-container">
+      <span
+        className={'recorder-status-dot' + (capturing ? '' : ' recorder-status-dot--pending')}
+        role="status"
+        aria-label={label}
+        title={label}
+      />
+    </div>
+  )
 }

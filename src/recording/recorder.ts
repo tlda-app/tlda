@@ -75,9 +75,19 @@ export interface RecorderState {
   paused: boolean
   doc: string | null
   error: string | null
+  /**
+   * The toggle: whether anyone has asked for this session to be recorded. One
+   * piece of state for "recording is on", which is what keeps the control, the
+   * indicator and the microphone from disagreeing — `status` is what the
+   * machine managed to do about it, and the two are deliberately not the same
+   * fact. Requested with nothing captured yet is a real state (the platform
+   * wants a gesture first), and the indicator says so rather than showing a
+   * lecture being recorded that is not.
+   */
+  requested: boolean
 }
 
-let state: RecorderState = { status: 'idle', startedAt: null, paused: false, doc: null, error: null }
+let state: RecorderState = { status: 'idle', startedAt: null, paused: false, doc: null, error: null, requested: false }
 const listeners = new Set<StateListener>()
 
 function setState(patch: Partial<RecorderState>) {
@@ -340,12 +350,21 @@ function recordingMeta(doc: string, id: string, audioMime: string, duration: num
 }
 
 /**
- * The app-owned capture starts on load, which on iOS is outside any user
- * gesture, so the platform refuses it (see `refusedForWantOfGesture`). Rather
- * than abandon capture — which would make the absence of a warning mean
- * nothing — take the next gesture on the page and ask again inside it. One
- * listener, removed as soon as it fires, and the retry is marked user-initiated
- * so a genuine denial reports itself there.
+ * A capture that is already ON and was refused for want of a gesture asks again
+ * inside the next one.
+ *
+ * This never decides to record. It only arms while `requested` is true, which
+ * is to say after a classroom instructor's default-on toggle or after someone
+ * pressed it — and pressing it is itself a gesture, so outside classroom this
+ * does not arm at all. A tap on the canvas is not consent to capture; it is the
+ * platform's price for a capture already consented to, and turning the toggle
+ * off disarms it (`setAppRecording`).
+ *
+ * Without it, default-on recording does not work on an iPad: iOS refuses the
+ * load-time request, and an instructor who relies on the class being captured
+ * because he forgets to start it would have nothing recorded and no gesture
+ * path back. One listener, removed as soon as it fires, and the retry is marked
+ * user-initiated so a genuine denial reports itself there.
  */
 let micNeedsGesture = false
 let gestureRetry: (() => void) | null = null
@@ -366,6 +385,12 @@ function armGestureRetry() {
   window.addEventListener('pointerdown', retry, true)
 }
 
+function disarmGestureRetry() {
+  if (!gestureRetry) return
+  window.removeEventListener('pointerdown', gestureRetry, true)
+  gestureRetry = null
+}
+
 async function startConfiguredAppSession(generation: number, { userInitiated = false } = {}) {
   if (!appSessionDoc || appSessionToken || state.status !== 'idle') return
   const token = await startRecording(appSessionEditor, appSessionDoc, { userInitiated })
@@ -381,22 +406,82 @@ async function startConfiguredAppSession(generation: number, { userInitiated = f
   if (activeEditor !== appSessionEditor) switchRecordingEditor(token, appSessionEditor)
 }
 
-function requestConfiguredAppSession(generation: number) {
-  void startConfiguredAppSession(generation).catch((error) => {
+function requestConfiguredAppSession(generation: number, { userInitiated = false } = {}) {
+  void startConfiguredAppSession(generation, { userInitiated }).catch((error) => {
     log.error('recording', 'automatic-start-failed', { doc: appSessionDoc, error: String(error) })
   })
 }
 
-/** Own one raw capture envelope for the authenticated classroom app lifecycle. */
-export function openAppRecordingSession(doc: string): () => void {
+/**
+ * The recording toggle, and the only thing that starts or stops capture.
+ *
+ * Skip, 2026-09-12: *"you can keep the toggle — the question is just does it
+ * start on by default"*, and, on why classroom differs: instructors are
+ * recorded by default *"since i forget all the time"*. So context decides the
+ * INITIAL value and nothing else: classroom instructors come up on, everywhere
+ * else comes up off, and from then on capture follows this and no other path.
+ *
+ * One holder of the session handle, deliberately. Two — an owner object in the
+ * app and a control somewhere else — would each believe they knew whether
+ * recording was on, and the drift between them is invisible: capture running
+ * after the control says off, or a control that cannot stop what it started.
+ */
+let appSessionClose: (() => void) | null = null
+
+/**
+ * The toggle's initial value, and the only thing context decides.
+ *
+ * A classroom instructor is recorded by default. Everyone else, everywhere
+ * else, comes up off — including Skip on his own documents, which is where the
+ * app used to reach for his microphone on page load for no reason he had given.
+ *
+ * Instructor is read as classroom-surface plus publish permission rather than
+ * through `classroomApi.me()`: a student carries a read token, so the pair
+ * already separates them, and it answers synchronously at the moment the
+ * decision is made instead of a round trip later.
+ */
+export function recordsByDefault(
+  { classroom, permissionKnown, canPublish }:
+  { classroom: boolean; permissionKnown: boolean; canPublish: boolean },
+): boolean {
+  return classroom && permissionKnown && canPublish
+}
+
+export function isAppRecordingOn(): boolean {
+  return appSessionClose !== null
+}
+
+export function setAppRecording(on: boolean, doc: string | null, { userInitiated = false } = {}): void {
+  if (on) {
+    if (appSessionClose || !doc) return
+    setState({ requested: true, error: null })
+    appSessionClose = openAppRecordingSession(doc, { userInitiated })
+    return
+  }
+  // `finalize` inside the session is what disarms a pending gesture retry and
+  // clears `requested` — so this is one line rather than a second copy of that
+  // teardown, and the same teardown runs whether the toggle or `pagehide` ends
+  // the session.
+  appSessionClose?.()
+}
+
+/** Own one raw capture envelope for the app lifecycle. */
+export function openAppRecordingSession(doc: string, { userInitiated = false } = {}): () => void {
   const generation = ++appSessionGeneration
   appSessionDoc = doc
   void retryPendingDrafts().catch((error) => log.error('recording', 'draft-retry-failed', { error: String(error) }))
-  requestConfiguredAppSession(generation)
+  requestConfiguredAppSession(generation, { userInitiated })
   let finalized = false
   const finalize = () => {
     if (finalized) return
     finalized = true
+    // Whatever ends the session — this handle, or the page going away — the
+    // toggle stops reading as on. Left set, `pagehide` would finalize the
+    // capture and leave a control claiming to be recording.
+    appSessionClose = null
+    disarmGestureRetry()
+    micNeedsGesture = false
+    setState({ requested: false })
     if (generation !== appSessionGeneration) return
     appSessionGeneration += 1
     appSessionDoc = null

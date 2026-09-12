@@ -2,6 +2,10 @@
  * SyncErrorPill — quiet sibling of BuildErrorPill for mirror/source sync
  * failures. Reads `syncErrorJson` from the doc-version sentinel so the state
  * survives reconnects and stays separate from build errors.
+ *
+ * It stays mounted in the build pills row and anchors itself bottom-right, with
+ * the app's warnings: bottom-left is the document build-error surface, and sync
+ * is the app reporting on itself rather than on the document.
  */
 import { useState, useEffect, useRef, useContext } from 'react'
 import { useEditor } from 'tldraw'

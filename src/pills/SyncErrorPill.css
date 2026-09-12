@@ -1,11 +1,31 @@
 /* SyncErrorPill — quiet sibling of BuildErrorPill. */
 
+/* Bottom-right, with the app's own warnings. Bottom-left is the document
+   build-error surface; sync is the app reporting on itself. Same anchoring as
+   RecorderErrorPill, one slot above it (highlighter 16px → voice-note 49px →
+   fleet icon 82px → recorder 115px → sync 148px), and the same out-of-flow
+   trick FleetIconPill uses from this row. */
 .sync-error-container {
-  position: relative;
+  position: fixed;
+  bottom: 148px;
+  right: 16px;
+  z-index: var(--tlda-z-top-control);
   pointer-events: all;
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+body.phone-mode .sync-error-container {
+  bottom: calc(216px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
+}
+
+@media (pointer: coarse) and (min-width: 601px) {
+  .sync-error-container {
+    bottom: calc(148px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+    right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
+  }
 }
 
 .sync-error-badge {
@@ -16,6 +36,16 @@
   cursor: pointer;
   opacity: 0.6;
   transition: opacity 0.3s;
+  /* In the corner it is a touch target, not a line of text: the same 27px /
+     44px the neighbouring controls carry. */
+  min-height: 27px;
+  display: inline-flex;
+  align-items: center;
+  touch-action: manipulation;
+}
+
+body.phone-mode .sync-error-badge {
+  min-height: 44px;
 }
 
 .sync-error-badge:hover {
@@ -27,11 +57,12 @@
   opacity: 0.6;
 }
 
-/* Popup list */
+/* Popup list. Opens upward and inward — anchored left it would run off the
+   right edge of the screen from this corner. */
 .sync-error-list {
   position: absolute;
   bottom: calc(100% + 6px);
-  left: 0;
+  right: 0;
   width: max-content;
   max-width: min(600px, calc(100vw - 48px));
   max-height: 320px;
