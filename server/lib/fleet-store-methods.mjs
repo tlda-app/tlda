@@ -54,6 +54,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getAgentDisplayNames',
   'getLabelDefinition',
   'listSingletonLabels',
+  'listSourceEditActivity',
   'livingHoldersOfLabel',
   'setLabelSingleton',
   'getAgentNameMap',

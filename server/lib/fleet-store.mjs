@@ -1926,6 +1926,24 @@ export class FleetStore {
     this._getEventsForTask = this.db.prepare(`
       SELECT ${this._EVT} FROM events WHERE task_id = ? ORDER BY id ASC LIMIT ?
     `);
+    // Who edited which file of a project, and when. The edit bridge's
+    // provenance join: a build records no author anywhere -- the shadow commit
+    // says `Build at <time>` and the daemon's revision commit says `tlda
+    // project revision` -- so the only record of who made an edit is the
+    // activity event the daemon already stamps with the project and the
+    // project-relative file (bin/fleet-daemon.mjs, sourceFileForAbsolutePath).
+    //
+    // The whole predicate is SQL, including the two metadata reads, so the
+    // window and the project both bound the scan rather than being applied to
+    // a page that has already been cut.
+    this._listSourceEditActivity = this.db.prepare(`
+      SELECT ${this._EVT} FROM events
+      WHERE type = 'activity'
+        AND timestamp > ? AND timestamp <= ?
+        AND json_extract(metadata, '$.project') = ?
+        AND json_extract(metadata, '$.sourceFile') IS NOT NULL
+      ORDER BY timestamp ASC LIMIT ?
+    `);
     this._getUnreadForEvent = this.db.prepare('SELECT event_id, agent_id, read FROM recipients WHERE event_id = ? AND agent_id = ?');
     // Retract/retire clears the obligation by marking it read. It must not
     // delete the row: the row is the record that the message was addressed to
@@ -4920,6 +4938,28 @@ export class FleetStore {
 
   getEventsForTask(taskId, limit = 200) {
     return FleetStore.hydrateEvents(this._getEventsForTask.all(taskId, Math.min(Math.max(limit, 1), 500)));
+  }
+
+  /**
+   * Source-file edits recorded for one project in a time window, oldest first.
+   *
+   * `sinceMs` is exclusive and `untilMs` inclusive, matching the build range
+   * this is joined against: an edit at the instant of the earlier build belongs
+   * to that build, not to the interval after it.
+   *
+   * A row only appears here if the daemon could resolve the edited path to a
+   * bound project source file. An edit it could not resolve is absent, and an
+   * absent row means the build shows no author -- which is the honest answer,
+   * and the reason this does not guess from a bare file path.
+   */
+  listSourceEditActivity({ project, sinceMs, untilMs, limit = 500 }) {
+    if (!project || !Number.isFinite(sinceMs) || !Number.isFinite(untilMs)) return [];
+    return FleetStore.hydrateEvents(this._listSourceEditActivity.all(
+      new Date(sinceMs).toISOString(),
+      new Date(untilMs).toISOString(),
+      project,
+      Math.min(Math.max(limit, 1), 2000),
+    ));
   }
 
   retractTask(taskOrId, { recipientExposed = false, retractedBy = null } = {}) {

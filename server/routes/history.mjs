@@ -16,7 +16,7 @@ const execAsync = promisify(execCb)
 const execFileAsync = promisify(execFileCb)
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import { readProject, outputDir, projectDir, sourceDir as getSourceDir, validateSourceFilePath } from '../lib/project-store.mjs'
-import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
+import { listVersions, listVersionRange, versionAt, versionTimestamp, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { announcePageJson } from '../../shared/pagination-announce.mjs'
 import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
@@ -242,6 +242,117 @@ router.get('/shadow/diff', requireRead, async (req, res) => {
     res.json({ diff: stdout, ref1, ref2 })
   } catch (e) {
     res.status(500).json({ error: `shadow diff failed: ${e.message}` })
+  }
+})
+
+/**
+ * GET /shadow/bridge?from=<hash>&to=<hash> — the builds between two versions,
+ * oldest first, each with the files it changed and who changed them.
+ *
+ * This is the edit bridge's one read. It answers a question `/shadow` cannot:
+ * that route walks back from the tip by a count and has no cursor, by a
+ * decision written into it, so it can say what the recent builds are and never
+ * what happened between two chosen ones.
+ *
+ * Provenance is joined here rather than shipped as a second resource because
+ * the join is a server fact: neither repository records an author. A shadow
+ * commit says `Build at <time>`; the daemon's revision commit says `tlda
+ * project revision`; the git author is whoever's identity the machine holds.
+ * The only record of who edited a file is the activity event the daemon
+ * stamps with the project and the project-relative path.
+ *
+ * A build with no matching activity returns an empty `editors` array and is a
+ * perfectly ordinary build -- edits predating the event store, edits made by a
+ * person outside a bound checkout, and edits whose path the daemon could not
+ * resolve all land there. It is not an error and it must not be presented as
+ * one. Nothing here infers an author it was not told.
+ */
+router.get('/shadow/bridge', requireRead, async (req, res) => {
+  const { name } = req.params
+  const from = String(req.query.from || '')
+  const to = String(req.query.to || '')
+
+  if (!from || !to) return res.status(400).json({ error: 'from and to are required' })
+
+  const project = await readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  try {
+    const [fromTime, builds] = await Promise.all([
+      versionTimestamp(name, from),
+      listVersionRange(name, from, to),
+    ])
+    if (fromTime === null) return res.status(404).json({ error: `Unknown version: ${from}` })
+
+    // One store read for the whole interval, bucketed below. Per-build reads
+    // would be one query per build, and a bridge over a busy week is hundreds.
+    const fleetStore = req.app.locals.fleetStore
+    const untilTime = builds.length ? builds[builds.length - 1].timestamp : fromTime
+    const activity = fleetStore
+      ? await fleetStore.listSourceEditActivity({ project: name, sinceMs: fromTime, untilMs: untilTime })
+      : []
+
+    // An edit belongs to the first build that happened at or after it AND
+    // changed the same file. Time alone would credit an edit to a build that
+    // did not contain it; the file test is what makes this a claim about this
+    // build rather than about this minute.
+    //
+    // An edit that no build has claimed yet stays pending rather than being
+    // consumed by the build it failed to match. A file edited at 10:00 and
+    // first built at 10:20 has two builds in between that did not touch it,
+    // and dropping it at the first of those would lose the only author the
+    // system has.
+    const pending = []
+    let cursor = 0
+    const withEditors = builds.map(build => {
+      while (cursor < activity.length && new Date(activity[cursor].timestamp).getTime() <= build.timestamp) {
+        const row = activity[cursor]
+        cursor += 1
+        let metadata = row.metadata
+        if (typeof metadata === 'string') {
+          try { metadata = JSON.parse(metadata) } catch { metadata = null }
+        }
+        const file = metadata?.sourceFile
+        if (file) pending.push({ agentId: row.from, taskId: row.task_id || null, file })
+      }
+
+      const changed = new Set(build.files)
+      const editors = new Map()
+      for (let i = pending.length - 1; i >= 0; i -= 1) {
+        if (!changed.has(pending[i].file)) continue
+        const { agentId, taskId, file } = pending.splice(i, 1)[0]
+        const key = `${agentId}:${taskId || ''}`
+        const existing = editors.get(key)
+        if (existing) existing.files.add(file)
+        else editors.set(key, { agentId, taskId, files: new Set([file]) })
+      }
+      return { ...build, editors: [...editors.values()] }
+    })
+
+    // Cards name agents, never fleet ids -- a friendly name is the pointer and
+    // the id is the address. Looked up by the ids actually present, which is a
+    // handful, rather than by reading the whole roster.
+    const editorIds = [...new Set(withEditors.flatMap(b => b.editors.map(e => e.agentId)).filter(Boolean))]
+    const agents = editorIds.length && fleetStore ? await fleetStore.getAgentsByIds(editorIds) : []
+    const nameById = new Map(agents.map(agent => [agent.id, agent.friendly_name || null]))
+
+    res.json({
+      project: name,
+      from,
+      to,
+      fromTimestamp: fromTime,
+      builds: withEditors.map(build => ({
+        ...build,
+        editors: build.editors.map(editor => ({
+          agentId: editor.agentId,
+          name: nameById.get(editor.agentId) || null,
+          taskId: editor.taskId,
+          files: [...editor.files],
+        })),
+      })),
+    })
+  } catch (e) {
+    res.status(500).json({ error: `shadow bridge failed: ${e.message}` })
   }
 })
 
