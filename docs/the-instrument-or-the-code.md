@@ -465,6 +465,64 @@ with load, because the failure window it was sampling is bounded by how fast the
 harness starts. That is shape 1 above, and the two compound — a bound measuring
 the machine, sampled by a reading that beats the renderer.
 
+### 15. An instrument that discards the one bit that answers the question
+
+**The reading is complete, correct, and stripped of the only thing that would
+have distinguished the two states you were choosing between.** This is not a
+measurement that lies about its subject; it is a measurement that has been
+lossily re-encoded on the way to you, and the loss is invisible because what
+arrives looks exactly like a full answer.
+
+**Measured 2026-09-12**, over about ninety minutes. Text was sitting next to the
+prompt in a couple of dozen agents' composers — the counts quoted during the
+night were themselves in dispute, which is part of the story. The question was
+whether it was **pending input nobody had submitted** or a **dim ghost over an
+empty buffer**, and those have opposite consequences: the first means
+instructions are being dropped invisibly, the second means nothing is wrong.
+
+`tmux capture-pane -p` **strips the attributes.** Dim is an attribute. So the two
+states arrive as the same bytes, and each account built on that reading was an
+account of a coin whose faces had been sanded off:
+
+| what was concluded from the stripped capture | fate |
+|---|---|
+| nineteen agents are holding undelivered instructions | withdrawn |
+| it is placeholder text, nothing is stuck | withdrawn |
+| it is the last submitted input echoed back | withdrawn |
+
+**A fourth account that night — that a notification path was failing to land its
+`Enter` — is deliberately NOT in that table.** It was withdrawn too, but on the
+ground that the path is unreachable from the harness in question, which is a
+code-reading error rather than an instrument one. Counting it here would have
+made this shape look responsible for more than it is.
+
+**`capture-pane -p -e` keeps them, and then it is one grep.** Three states, not
+two, which is the part that made the original count a sum rather than a quantity:
+
+```
+ESC[2m …            dimmed foreground   -> ghost, buffer EMPTY
+ESC[38;5;246m …     grey foreground     -> ghost, buffer EMPTY
+ESC[48;5;237m …     highlighted block   -> a genuinely QUEUED, unconsumed prompt
+```
+
+**The tell is that you are choosing between two states and your instrument has a
+lossy stage in it.** Not a broken stage — a *lossy* one, which is why nothing
+errors and nothing looks empty. Ask what the transport drops: attributes, colour,
+timing, ordering, duplicates, whitespace. Then ask whether the bit that separates
+your two candidates is in that list.
+
+**And the cost is paid by whoever reads the conclusion, not by whoever ran the
+check.** Three explanations went out to a fleet, each consistent with the
+evidence available, each produced in minutes. The evidence was not wrong. It was
+incomplete in exactly the dimension the question turned on, and nothing about it
+said so.
+
+**The check: before believing a two-way discrimination, reproduce both sides
+deliberately and confirm your reading separates them.** Type the text and look;
+clear it and look. If both look the same, the instrument cannot answer the
+question however many times you run it — and running it again is what the
+withdrawals above have in common.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see
