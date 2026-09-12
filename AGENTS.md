@@ -126,6 +126,23 @@ Silence is not proof of zero matches when the command itself may have failed.
 Before claiming completion, re-run the relevant checks against the final diff
 and inspect the surface that proves the requested behavior.
 
+## Failure messages
+
+A failure message reports what the system already knows. At the moment something
+fails, the process holds the relevant state; the message should carry that state
+rather than direct the reader elsewhere. The reader who needs the message is by
+definition the one who does not know where to look.
+
+Put the evidence inline, and say what produced it and when it was observed, since
+an observation can go stale between the failure and the reading. Where looking
+again is genuinely useful, give the exact invocation rather than the name of a
+tool.
+
+An imperative in a failure message — check this, run that, see the log — is the
+system declining to report something it already has. Naming a symptom of a cause
+the system could have observed directly is the same defect. Reporting success for
+an action that did not occur is its strongest form.
+
 ## Source and synchronization
 
 A tlda project's synchronized source is the transitive dependency closure of
@@ -194,6 +211,16 @@ not by itself prove which revision the running application serves. Verify
 
 A deployment updates the server image, not every long-running daemon. Restart
 and verify affected daemons when a change spans both halves.
+
+No unattended job may initiate a deploy. A job that waits on a condition and then
+pushes is a deployer, whatever it is called — a parked background task, a retry
+loop, a lock-waiter, a timer, a cron entry. Two properties make this unsafe
+regardless of how little the job costs to run. It fires at the worst available
+moment by construction, because it starts when the previous deploy ends, which is
+both the moment nobody is watching and the moment the target has just been freed.
+And it deploys the past: it pushes what its working tree held when it was armed,
+not what is current when it fires. Killing the client does not recall a push that
+has already been made; the server-side hook continues without it.
 
 Never hand another user an identity-bearing URL. A `name=` query parameter
 sets and persists the opener's identity; it is suitable for isolated test
