@@ -19,12 +19,17 @@
  * through its own daemon.yaml, exactly as `pic` resolves `pic-preview`.
  * Nothing on either side is stubbed.
  *
- * The last story is a DELIBERATE RED that passes by failing: promoting a
- * second revision of a project the destination already has is refused.
- * `importProjectPromotionStream` opens with an `existsSync` guard and has no
- * update path, so promotion can create a project and can never republish one.
- * That story asserts the refusal rather than hiding it — when the importer
- * learns to republish, this story is the one that changes.
+ * The stories run in the order a class actually moves: the destination has
+ * nothing, week one arrives, week two replaces it without deleting week one or
+ * anything else the destination was holding, a repeat changes nothing, and
+ * finally the same publish is driven through the real `tlda project promote`
+ * as a subprocess — because the task was that publishing had no INTERFACE, so
+ * the endpoint working proves the endpoint and not the thing a person types.
+ *
+ * Two things in this box's agent shells would make this run lie, and both are
+ * cleared below: TLDA_ENV, which the environment resolver prefers over the
+ * config file's own `default`, and NODE_TLS_REJECT_UNAUTHORIZED=0, which would
+ * let every TLS story pass with verification switched off.
  *
  * Run: node bin/promotion-crosses-the-wire-test.mjs
  */
@@ -43,6 +48,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 // which is what makes the go-red counterfactual possible without editing the
 // real test.
 const SELF = fileURLToPath(import.meta.url)
+const CLI = resolve(HERE, '../cli/tlda.mjs')
 
 // The shared secret both boxes carry as `fly secrets set
 // TLDA_PROMOTION_EXPORT_TOKEN`. The source refuses the export without it and
@@ -107,13 +113,19 @@ async function buildPromotableProject(projectRoot, { body, page }) {
  * directory is refused for that reason instead, which is a different story and
  * never reaches the guard this test is about.
  */
-async function advancePromotableProject(projectRoot, previous, { body, page }) {
+async function advancePromotableProject(projectRoot, previous, { body, page, acceptSeq }) {
   const { createSourceLifecycleStore } = await import('../server/lib/source-lifecycle.mjs')
   const lifecycle = createSourceLifecycleStore({ root: join(projectRoot, '.source-lifecycle'), project: PROJECT })
   const git = await lifecycle.gitRepository()
   const revision = await git.acceptRevision({ project: PROJECT, files: [{ path: 'index.qmd', content: body }] })
   await git.advanceHead(PROJECT, revision, previous)
-  lifecycle.recordRevisionAdmission(PROJECT, revision, 2)
+  // `acceptSeq` MUST increase. It is what `projectRevisionStatus` orders by,
+  // so two revisions sharing one makes "the accepted revision" ambiguous: the
+  // export then bundles a ref pointing at one revision while the status names
+  // the other, and the destination refuses with `promotion bundle head
+  // mismatch`. That is a fixture fault reported as an importer fault, and it
+  // cost a debugging round — it was hardcoded to 2 for every advance.
+  lifecycle.recordRevisionAdmission(PROJECT, revision, acceptSeq)
   lifecycle.recordRevisionPhase(PROJECT, revision, 'build', 'built', { ok: true })
   writeFileSync(join(projectRoot, 'output', 'index.html'), page)
   return revision
@@ -259,6 +271,30 @@ if (process.argv[2] === '--destination') {
     })
     const destOrigin = `http://127.0.0.1:${destPort}`
 
+    // Asynchronously, and that is load-bearing: `spawnSync` would block the
+    // event loop that has to serve the source's export request, so every run
+    // deadlocks and the output reads as the route hanging.
+    function runCli(argv, timeoutMs = 45000) {
+      return new Promise(resolve => {
+        const child = spawn(process.execPath, [CLI, ...argv], {
+          cwd: root,
+          env: { ...process.env, TLDA_CONFIG_DIR: destConfig, TLDA_ENV: DEST_ENV, NODE_EXTRA_CA_CERTS: CA_ROOT },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let stdout = ''
+        let stderr = ''
+        // `finishCliOperation` retries a retryable failure FOREVER with
+        // backoff, logging each attempt to stderr. Without a kill here the
+        // whole run hangs and the reason is invisible, because stderr is only
+        // read on exit — which is exactly what happened the first time, and it
+        // reads as the test hanging rather than as the CLI failing.
+        const timer = setTimeout(() => { child.kill('SIGKILL') }, timeoutMs)
+        child.stdout.on('data', d => { stdout += d })
+        child.stderr.on('data', d => { stderr += d })
+        child.on('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }) })
+      })
+    }
+
     async function promote(body) {
       const response = await fetch(`${destOrigin}/api/projects/${PROJECT}/promote`, {
         method: 'POST',
@@ -321,32 +357,131 @@ if (process.argv[2] === '--destination') {
       readdirSync(destProjects).join(',') === PROJECT,
       readdirSync(destProjects).join(', '))
 
-    // ---------------------------------------------------------------------
-    // The deliberate red. This story passes by asserting a refusal, and the
-    // refusal is the defect: a second revision cannot be published.
-    // ---------------------------------------------------------------------
-    console.log('\nAND HERE IS WHERE PUBLISHING STOPS: a second revision cannot be promoted')
+    console.log('\nweek two reaches the students who already have week one')
     const second = await advancePromotableProject(join(sourceProjects, PROJECT), revision, {
-      body: '# A Throwaway Course, week two\n', page: '<h1>Week two</h1>\n',
+      body: '# A Throwaway Course, week two\n', page: '<h1>Week two</h1>\n', acceptSeq: 2,
     })
     ok('the source accepted a second revision of the same project', second !== revision, `${second} vs ${revision}`)
-    const exportable = await fetch(`${sourceOrigin}/api/projects/${PROJECT}/promotion-export/${second}`, {
-      headers: { authorization: `Bearer ${EXPORT_TOKEN}` },
-    })
-    ok('and the source will happily export it — the source side is fine',
-      exportable.ok, String(exportable.status))
-    await exportable.body?.cancel().catch(() => {})
+
+    // State the destination holds that a promotion stream does NOT carry. The
+    // ruling is that a republish may not drop these: it would be a delete, and
+    // delete-by-omission is not a lesser kind. `build-cache` stands for the
+    // large case and `latex.log` for the small one; `a-file-nobody-named` is
+    // there because the carry-forward is written as "every entry not staged"
+    // rather than as a list of known names, and a list is what silently drops
+    // the entry it forgot.
+    writeFileSync(join(destProjects, PROJECT, 'latex.log'), 'the destination\'s own build log\n')
+    mkdirSync(join(destProjects, PROJECT, 'build-cache'), { recursive: true })
+    writeFileSync(join(destProjects, PROJECT, 'build-cache', 'expensive.aux'), 'costly to regenerate\n')
+    writeFileSync(join(destProjects, PROJECT, 'a-file-nobody-named'), 'not on anyone\'s list\n')
+
     const republish = await promote({ sourceEnvironment: SOURCE_ENV, revision: second })
-    ok('the destination refuses it',
-      republish.status === 409, `${republish.status} ${JSON.stringify(republish.body)}`)
-    ok('and says the project already exists — not that the revision is wrong',
-      /already exists/.test(republish.body?.error || ''), JSON.stringify(republish.body))
-    const stillServed = join(destProjects, PROJECT, 'output', 'index.html')
-    ok('the students still have week one',
-      existsSync(stillServed) && readFileSync(stillServed, 'utf8') === '<h1>A Throwaway Course</h1>\n',
-      existsSync(stillServed) ? readFileSync(stillServed, 'utf8') : '(no render on the destination)')
-    console.log('       ^ the refusal above is the reason publishing has no interface:')
-    console.log('         a caller for this endpoint works once per project and 409s forever after.')
+    ok('the destination reports it promoted', republish.status === 201, `${republish.status} ${JSON.stringify(republish.body)}`)
+    const served = join(destProjects, PROJECT, 'output', 'index.html')
+    ok('the students are served week two',
+      existsSync(served) && readFileSync(served, 'utf8') === '<h1>Week two</h1>\n',
+      existsSync(served) ? readFileSync(served, 'utf8') : '(no render on the destination)')
+    ok('the source ref advanced to the second revision',
+      execFileSync('git', [`--git-dir=${destGitDir}`, 'rev-parse', `refs/tlda/source/${PROJECT}^{commit}`], { encoding: 'utf8' }).trim() === second)
+
+    console.log('\nthe republish carried forward what it does not carry')
+    for (const [item, contents] of [
+      ['latex.log', 'the destination\'s own build log\n'],
+      ['build-cache/expensive.aux', 'costly to regenerate\n'],
+      ['a-file-nobody-named', 'not on anyone\'s list\n'],
+    ]) {
+      const path = join(destProjects, PROJECT, ...item.split('/'))
+      ok(`${item} survived the republish`,
+        existsSync(path) && readFileSync(path, 'utf8') === contents,
+        existsSync(path) ? JSON.stringify(readFileSync(path, 'utf8')) : '(gone)')
+    }
+
+    console.log('\nand week one was not deleted to make room for it')
+    // The whole point of the ruling this implements: a republish is not
+    // allowed to be a delete, including by omission.
+    ok('week one\'s commit is still reachable on the destination',
+      execFileSync('git', [`--git-dir=${destGitDir}`, 'cat-file', '-t', revision], { encoding: 'utf8' }).trim() === 'commit')
+    const journal = JSON.parse(readFileSync(join(destProjects, PROJECT, '.source-lifecycle', 'operations.json'), 'utf8'))
+    ok('both revisions are in the destination\'s journal',
+      !!journal.revisionLifecycle?.[revision] && !!journal.revisionLifecycle?.[second],
+      Object.keys(journal.revisionLifecycle || {}).join(', '))
+
+    console.log('\nthe destination recorded what it published, when, and from where')
+    // Before this, nobody could ask when a project was last published. The
+    // `when` is `updatedAt`, which `recordRevisionPhase` stamps anyway.
+    const record = journal.revisionLifecycle?.[second]?.promotion
+    ok('the promoted revision carries a promotion phase', record?.state === 'promoted', JSON.stringify(record))
+    ok('naming the environment it came from', record?.result?.from === SOURCE_ENV, JSON.stringify(record?.result))
+    ok('and when', !!record?.updatedAt && !Number.isNaN(Date.parse(record.updatedAt)), String(record?.updatedAt))
+    ok('the revision it replaced kept its own record, unstamped by this publish',
+      !journal.revisionLifecycle?.[revision]?.promotion ||
+        journal.revisionLifecycle[revision].promotion.updatedAt !== record.updatedAt,
+      JSON.stringify(journal.revisionLifecycle?.[revision]?.promotion))
+
+    console.log('\nno transaction or aside directory is left behind')
+    ok('the destination projects root still holds only the project',
+      readdirSync(destProjects).join(',') === PROJECT,
+      readdirSync(destProjects).join(', '))
+    ok('and the project holds no aside marker',
+      !readdirSync(join(destProjects, PROJECT)).some(entry => entry.includes('aside')),
+      readdirSync(join(destProjects, PROJECT)).join(', '))
+
+    console.log('\npromoting the same revision again changes nothing and says so')
+    const again = await promote({ sourceEnvironment: SOURCE_ENV, revision: second })
+    ok('the destination reports it was already promoted',
+      again.status === 200 && again.body.alreadyPromoted === true,
+      `${again.status} ${JSON.stringify(again.body)}`)
+    ok('the render is untouched',
+      readFileSync(served, 'utf8') === '<h1>Week two</h1>\n')
+
+    // -----------------------------------------------------------------------
+    // The interface itself. Everything above drives the endpoint with `fetch`,
+    // which proves the endpoint and not the thing a person would type. The
+    // whole task was that publishing HAS no interface, so the verb is the
+    // deliverable and it gets exercised as a subprocess against the running
+    // destination — real CLI, real HTTP to the destination, real TLS from the
+    // destination to the source.
+    // -----------------------------------------------------------------------
+    console.log('\nthe CLI publishes a third revision, resolving the revision itself')
+    // The destination's config now names the real destination, so `api()`
+    // resolves it the way it would on a real box.
+    writeDaemonYaml(destConfig, {
+      active: DEST_ENV,
+      values: { [DEST_ENV]: destOrigin, [SOURCE_ENV]: sourceOrigin },
+    })
+    const third = await advancePromotableProject(join(sourceProjects, PROJECT), second, {
+      body: '# A Throwaway Course, week three\n', page: '<h1>Week three</h1>\n', acceptSeq: 3,
+    })
+    const run = await runCli(['project', 'promote', PROJECT, '--from', SOURCE_ENV])
+    // `exit 0` alone is not success here: an unregistered subcommand prints the
+    // `tlda project` help and exits 0, which is exactly what happened the first
+    // time this ran — the verb was in the dispatcher's switch and not in
+    // PROJECT_COMMANDS, so it fell through to help and reported success.
+    ok('the CLI succeeds and did not just print help',
+      run.status === 0 && !/work on a project/.test(run.stdout),
+      `exit ${run.status}\n${run.stdout}\n${run.stderr}`)
+    ok('it resolved the accepted revision without being told',
+      run.stdout.includes(`Resolved ${SOURCE_ENV} accepted revision: ${third.slice(0, 7)}`), run.stdout)
+    ok('it says what it published and where',
+      new RegExp(`Published ${PROJECT}@${third.slice(0, 7)} to ${DEST_ENV}`).test(run.stdout), run.stdout)
+    ok('and the students are served week three',
+      readFileSync(served, 'utf8') === '<h1>Week three</h1>\n', readFileSync(served, 'utf8'))
+
+    console.log('\nand running the CLI again reports no change rather than republishing')
+    const rerun = await runCli(['project', 'promote', PROJECT, '--from', SOURCE_ENV])
+    ok('the CLI succeeds', rerun.status === 0, `exit ${rerun.status}\n${rerun.stdout}\n${rerun.stderr}`)
+    ok('and says nothing changed',
+      /already has/.test(rerun.stdout) && /Nothing changed/.test(rerun.stdout), rerun.stdout)
+
+    console.log('\nthe CLI refuses what the endpoint would refuse, before asking')
+    const symbolicCli = await runCli(['project', 'promote', PROJECT, '--from', SOURCE_ENV, '--revision', 'HEAD'])
+    ok('a symbolic revision is refused by the CLI', symbolicCli.status !== 0, `exit ${symbolicCli.status}`)
+    ok('and it says why, in terms of what students get',
+      /full 40-character sha/.test(symbolicCli.stderr) && /walked through/.test(symbolicCli.stderr), symbolicCli.stderr)
+    const sameEnv = await runCli(['project', 'promote', PROJECT, '--from', DEST_ENV])
+    ok('promoting an environment to itself is refused', sameEnv.status !== 0, `exit ${sameEnv.status}`)
+    ok('and names the destination rather than a sha',
+      /both "pic"/.test(sameEnv.stderr), sameEnv.stderr)
 
     console.log(failures ? `\n${failures} failure(s)\n` : '\nall stories hold\n')
   } finally {

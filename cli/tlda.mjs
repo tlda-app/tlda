@@ -89,7 +89,7 @@ import { callLocalDaemonRpc } from '../shared/local-daemon-rpc.mjs'
 // unchanged. (server/agent self-dispatch and aren't spliced; `doctor` and `logs`
 // are their own top-level commands.)
 const PROJECT_SUBS = new Set([
-  'open', 'push', 'list', 'ls', 'status', 'errors',
+  'open', 'push', 'promote', 'list', 'ls', 'status', 'errors',
   'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'unlink', 'add', 'merge', 'remote',
   'repo-doctor', 'init-shadow',
 ])
@@ -118,6 +118,7 @@ const PROJECT_COMMANDS = [
   ['unlink', 'Detach a local checkout from a project'],
   ['open', 'Open the viewer'],
   ['push', 'Push source, rebuild'],
+  ['promote', 'Publish a project from another environment to this one'],
   ['status', 'Build status'],
   ['errors', 'LaTeX errors/warnings'],
   ['list', 'List projects'],
@@ -221,6 +222,7 @@ const COMMAND_HELP = {
   merge:   'tlda project merge [project] [--into <branch>] [--repo <path>] [--ff-only] [--from <repo>]\ntlda project merge --continue | --abort | --status [--repo <path>]\n\n  Land the version history tlda accumulated for a project on a real branch —\n  your own repository, or a linked remote such as Overleaf.\n\n  The app\'s copy shares no commit identity with your repository, so this is a\n  replay rather than a merge: every change is re-applied as its own commit,\n  keeping its author, date and message. Commits already present are recognised\n  by content, so running it twice lands nothing the second time.\n\n  --ff-only  Play the whole sequence or move nothing. This is the mode the\n             server runs unattended; it never resolves a conflict.\n  (default)  Play patches until one needs a decision, then stop with that\n             conflict in a scratch working tree for you to resolve.\n\n  --into     Branch to land on (default: the checked-out branch).\n  --repo     Repository to land in (default: the current directory).\n  --from     Replay from a repository already on this box instead of fetching.',
   remote:  'tlda project remote add <remote> <url> [--project <name>]\ntlda project remote delete <remote> [--project <name>]\ntlda project remote pull|push|checkout <remote> [branch] [--project <name>]\n\n  Manage remotes on the existing Git repository linked to the project. The project is inferred from the current checkout unless --project is supplied.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
+  promote: 'tlda project promote <name> --from <source-environment> [--revision <sha>]\n\n  Publish a project from another environment to THIS one. The destination is\n  the active environment — set it with TLDA_ENV or environments.default.\n\n  The server does the transfer: it resolves --from through the destination\'s\n  own config and fetches the built artifact itself, so nothing is uploaded and\n  the source\'s credentials are never needed here.\n\n  --revision  Exact 40-character sha. Promotion is deliberately exact, so that\n              what students get is what somebody walked through. Omitted, the\n              source\'s accepted revision is resolved and printed.\n\n  A project already on the destination is republished in place: the promoted\n  render replaces the old one and everything else the project holds is carried\n  forward. Promoting a revision the destination already has changes nothing.',
   watch:   'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Alias for `tlda daemon start/restart/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
   open:    'tlda project open [name]\n\n  Open the viewer in the default browser (RW token = presenter permission).',
@@ -519,6 +521,90 @@ function findMainTex(dir) {
 }
 
 // --- Commands ---
+
+/**
+ * Publish a project from one environment to another.
+ *
+ * The DESTINATION is the active environment, like every other verb here, and
+ * `--from` names the source. That is not a shortcut: the server does the same
+ * thing — `POST /api/projects/:name/promote` resolves the source environment
+ * through the DESTINATION's own config and fetches the artifact itself, so the
+ * caller never carries the bytes and never needs the source's credentials.
+ *
+ * `--revision` is exact by design. What reaches students has to be the thing
+ * somebody walked through, so the endpoint refuses a symbolic ref. Nobody
+ * should have to paste a sha, though, so this resolves the source's accepted
+ * revision when it can reach the source and prints what it resolved.
+ */
+async function cmdPromote() {
+  const name = getPositional(0)
+  const from = getFlag('from')
+  if (!name || !from) {
+    console.error('Usage: tlda project promote <name> --from <source-environment> [--revision <sha>]')
+    console.error('')
+    console.error('Publishes to the ACTIVE environment. Set the destination with TLDA_ENV or environments.default.')
+    console.error(`Environments here: ${listEnvironments().map(e => e.active ? bold(e.name) : e.name).join(', ')}`)
+    process.exit(1)
+  }
+  const to = getActiveEnvName()
+  if (from === to) {
+    console.error(red(`Source and destination are both "${from}".`))
+    console.error('Promotion moves a project BETWEEN environments; set the destination with TLDA_ENV.')
+    process.exit(1)
+  }
+
+  let revision = getFlag('revision')
+  if (!revision) {
+    // The source's URL comes from THIS machine's config, which may not declare
+    // it even though the destination's does — the destination is the only box
+    // that has to know its promotion source. So a missing entry is not an
+    // error, it just means the sha has to be supplied.
+    let sourceServer = null
+    try {
+      sourceServer = getServerUrl(from)
+    } catch {
+      console.error(red(`This machine's config does not declare an environment named "${from}".`))
+      console.error(`Pass ${bold('--revision <sha>')} to promote without resolving it here, or add ${from} to daemon.yaml.`)
+      process.exit(1)
+    }
+    let source
+    try {
+      source = await apiAt(sourceServer, 'GET', `/api/projects/${name}`, null, { token: getReadToken() })
+    } catch (error) {
+      if (retryableCliOperationError(error)) throw error
+      console.error(red(`Could not read "${name}" from ${from} (${sourceServer}): ${error.message}`))
+      console.error(`Pass ${bold('--revision <sha>')} to promote without resolving it here.`)
+      process.exit(1)
+    }
+    revision = source.sourceRevision
+    if (!revision) {
+      console.error(red(`"${name}" on ${from} has no accepted revision to promote.`))
+      process.exit(1)
+    }
+    // The endpoint refuses a non-terminal revision anyway. Saying so here
+    // names the reason instead of letting it come back as a 409 from the
+    // destination, which reads like the destination is at fault.
+    if (source.buildStatus && source.buildStatus !== 'success') {
+      console.error(red(`"${name}@${revision.slice(0, 7)}" on ${from} is ${source.buildStatus}, not success.`))
+      console.error('Promotion carries a built artifact. Wait for the build, or name a revision that succeeded.')
+      process.exit(1)
+    }
+    console.log(`Resolved ${bold(from)} accepted revision: ${revision.slice(0, 7)}`)
+  }
+  if (!/^[0-9a-f]{40}$/i.test(revision)) {
+    console.error(red('A revision must be a full 40-character sha.'))
+    console.error('Promotion is deliberately exact: what students get has to be what someone walked through.')
+    process.exit(1)
+  }
+
+  console.log(`Promoting ${bold(name)}@${revision.slice(0, 7)} from ${bold(from)} to ${bold(to)}...`)
+  const result = await api('POST', `/api/projects/${name}/promote`, { sourceEnvironment: from, revision })
+  if (result.alreadyPromoted) {
+    console.log(green(`${to} already has ${name}@${revision.slice(0, 7)}. Nothing changed.`))
+    return
+  }
+  console.log(green(`Published ${name}@${revision.slice(0, 7)} to ${to}.`))
+}
 
 async function cmdBook() {
   const name = getPositional(0)
@@ -6962,6 +7048,7 @@ async function main() {
       case 'scratch': await finishCliOperation('project scratch', cmdScratch); break
       case 'book':   await finishCliOperation('project book', cmdBook); break
       case 'push':   await finishCliOperation('project push', cmdPush); break
+      case 'promote': await finishCliOperation('project promote', cmdPromote); break
       case 'link':   await finishCliOperation('project link', cmdLink); break
       case 'unlink': await finishCliOperation('project unlink', cmdUnlink); break
       // NOT wrapped in finishCliOperation, and that is deliberate for both.

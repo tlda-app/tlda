@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, mkdirSync, truncateSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync, mkdirSync, truncateSync } from 'node:fs'
 import { constants as bufferConstants } from 'node:buffer'
 import { Readable, Writable } from 'node:stream'
 import { tmpdir } from 'node:os'
@@ -67,6 +67,203 @@ test('stream promotion activates exact output without aggregate JSON', async () 
     const result = await importStream(f, bytes)
     assert.equal(result.promoted, true)
     assert.equal(readFileSync(join(f.destination, 'course', 'output', 'index.html'), 'utf8'), '<h1>Course</h1>')
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+/**
+ * Advance the fixture's SOURCE project to a second accepted, built revision,
+ * so a promotion of it lands on a destination that already has the project.
+ */
+async function advance(f, page, { acceptSeq = 8, previous = f.revision, body = '# Course, again' } = {}) {
+  const git = await f.lifecycle.gitRepository()
+  const revision = await git.acceptRevision({ project: 'course', files: [{ path: 'index.qmd', content: body }] })
+  await git.advanceHead('course', revision, previous)
+  f.lifecycle.recordRevisionAdmission('course', revision, acceptSeq)
+  f.lifecycle.recordRevisionPhase('course', revision, 'build', 'built', { ok: true })
+  writeFileSync(join(f.source, 'output', 'index.html'), page)
+  const chunks = []
+  const destination = new Writable({ write(chunk, _encoding, callback) { chunks.push(Buffer.from(chunk)); callback() } })
+  await writeProjectPromotionStream({ name: 'course', revision, sourceEnvironment: 'preview', projectRoot: f.source, lifecycleStore: f.lifecycle, serialize: f.serialize, destination })
+  return { revision, bytes: Buffer.concat(chunks) }
+}
+
+test('a second revision republishes over the project already there', async () => {
+  const f = await fixture()
+  try {
+    await importStream(f, await promotionStream(f))
+    const next = await advance(f, '<h1>Course, again</h1>')
+    const result = await importStream(f, next.bytes, { revision: next.revision })
+    assert.equal(result.promoted, true)
+    assert.equal(readFileSync(join(f.destination, 'course', 'output', 'index.html'), 'utf8'), '<h1>Course, again</h1>')
+    // Nothing deleted: the replaced revision is still reachable and still in
+    // the journal, because the journal is merged rather than overwritten.
+    const operations = JSON.parse(readFileSync(join(f.destination, 'course', '.source-lifecycle', 'operations.json'), 'utf8'))
+    assert.ok(operations.revisionLifecycle[f.revision], 'the replaced revision kept its journal row')
+    assert.ok(operations.revisionLifecycle[next.revision], 'the promoted revision has one')
+    assert.equal(readdirSync(f.destination).join(','), 'course', 'no transaction or aside directory survives')
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('a project can be republished twice, not just once', async () => {
+  const f = await fixture()
+  try {
+    await importStream(f, await promotionStream(f))
+    const second = await advance(f, '<h1>Week two</h1>', { acceptSeq: 8 })
+    await importStream(f, second.bytes, { revision: second.revision })
+    // The second republish is the one that broke. Promoting once over a
+    // freshly created project and promoting over a project that was ITSELF
+    // promoted are different states, and the first says nothing about the
+    // second — the destination's git repo is built differently each time.
+    const third = await advance(f, '<h1>Week three</h1>', { acceptSeq: 9, previous: second.revision, body: '# Course, a third time' })
+    const result = await importStream(f, third.bytes, { revision: third.revision })
+    assert.equal(result.promoted, true)
+    assert.equal(readFileSync(join(f.destination, 'course', 'output', 'index.html'), 'utf8'), '<h1>Week three</h1>')
+    const operations = JSON.parse(readFileSync(join(f.destination, 'course', '.source-lifecycle', 'operations.json'), 'utf8'))
+    for (const revision of [f.revision, second.revision, third.revision]) {
+      assert.ok(operations.revisionLifecycle[revision], `revision ${revision.slice(0, 7)} kept its journal row`)
+    }
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('a republish carries forward what the stream does not carry', async () => {
+  const f = await fixture()
+  try {
+    await importStream(f, await promotionStream(f))
+    // Destination-only state. `build-cache` and `latex.log` are the named
+    // cases; the third is there because carry-forward is written as "every
+    // entry not staged" rather than as a list, and a list is what silently
+    // drops the entry it forgot. Skip's ruling: dropping these is a delete,
+    // and delete-by-omission is not a lesser kind.
+    mkdirSync(join(f.destination, 'course', 'build-cache'), { recursive: true })
+    writeFileSync(join(f.destination, 'course', 'build-cache', 'expensive.aux'), 'costly')
+    writeFileSync(join(f.destination, 'course', 'latex.log'), 'the destination build log')
+    writeFileSync(join(f.destination, 'course', 'a-file-nobody-named'), 'not on a list')
+    const next = await advance(f, '<h1>Course, again</h1>')
+    await importStream(f, next.bytes, { revision: next.revision })
+    assert.equal(readFileSync(join(f.destination, 'course', 'build-cache', 'expensive.aux'), 'utf8'), 'costly')
+    assert.equal(readFileSync(join(f.destination, 'course', 'latex.log'), 'utf8'), 'the destination build log')
+    assert.equal(readFileSync(join(f.destination, 'course', 'a-file-nobody-named'), 'utf8'), 'not on a list')
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('a republish does not touch checkout, bindings, classroom, rooms, or submissions', async () => {
+  const f = await fixture()
+  try {
+    await importStream(f, await promotionStream(f))
+    // The one hard rule for the class box is that a release cannot delete
+    // submitted files. The create path has this test; the republish path is a
+    // NEW write over a project that is already there, so it needs its own —
+    // asserting it of the create path says nothing about this one.
+    //
+    // The SIBLING case is the one that occurs. A submission is its own
+    // project, not a directory inside one: `submission-<assignment>-<course>:
+    // <login>`, built at server/routes/classroom.mjs and parsed in
+    // classroom-store.mjs. So submitted work sits at
+    // `projects/submission-week0-…:someone`, beside the course project, and is
+    // outside the swap by construction — the swap only ever names
+    // `projects/<name>`. That is a property of the naming, not of
+    // carry-forward, and it is the assertion that matters.
+    //
+    // The inside-the-project case is a shape submissions never take. It is
+    // here because carry-forward is what protects anything else a project
+    // directory accumulates, and that does need proving.
+    const siblings = ['canonical-checkout', 'source-bindings.json', 'classroom.sqlite', 'rooms.sqlite', 'submission-student']
+    for (const name of siblings) writeFileSync(join(f.destination, name), `preserve:${name}`)
+    const inside = ['submissions', 'classroom-state']
+    for (const name of inside) {
+      mkdirSync(join(f.destination, 'course', name), { recursive: true })
+      writeFileSync(join(f.destination, 'course', name, 'student-one.txt'), `preserve:${name}`)
+    }
+
+    const next = await advance(f, '<h1>Course, again</h1>')
+    await importStream(f, next.bytes, { revision: next.revision })
+
+    for (const name of siblings) assert.equal(readFileSync(join(f.destination, name), 'utf8'), `preserve:${name}`)
+    for (const name of inside) {
+      assert.equal(readFileSync(join(f.destination, 'course', name, 'student-one.txt'), 'utf8'), `preserve:${name}`)
+    }
+    assert.equal(readFileSync(join(f.destination, 'course', 'output', 'index.html'), 'utf8'), '<h1>Course, again</h1>')
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('an identical stream republish is idempotent and changes nothing', async () => {
+  const f = await fixture()
+  try {
+    await importStream(f, await promotionStream(f))
+    const again = await importStream(f, await promotionStream(f))
+    assert.equal(again.alreadyPromoted, true)
+    assert.equal(again.promoted, false)
+    assert.equal(readFileSync(join(f.destination, 'course', 'output', 'index.html'), 'utf8'), '<h1>Course</h1>')
+    assert.equal(readdirSync(f.destination).join(','), 'course')
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('a live render with the right revision and the wrong bytes is not an identical retry', async () => {
+  const f = await fixture()
+  try {
+    await importStream(f, await promotionStream(f))
+    // What an interrupted earlier swap leaves: the right revision, the wrong
+    // render. Reporting THIS as already promoted is the failure that would
+    // strand a destination on half-published content forever.
+    writeFileSync(join(f.destination, 'course', 'output', 'index.html'), 'something else')
+    const again = await importStream(f, await promotionStream(f))
+    assert.equal(again.promoted, true)
+    assert.equal(readFileSync(join(f.destination, 'course', 'output', 'index.html'), 'utf8'), '<h1>Course</h1>')
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('a live render with an extra file is not an identical retry', async () => {
+  const f = await fixture()
+  try {
+    await importStream(f, await promotionStream(f))
+    // The digest loop only checks the files the stream SENT, so an extra one
+    // is invisible to it. Without the count this returns alreadyPromoted and
+    // the stale file is served forever.
+    writeFileSync(join(f.destination, 'course', 'output', 'week-one.html'), 'left over')
+    const again = await importStream(f, await promotionStream(f))
+    assert.equal(again.promoted, true)
+    assert.equal(existsSync(join(f.destination, 'course', 'output', 'week-one.html')), false)
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('a promotion interrupted between the two renames is restored by re-running it', async () => {
+  const f = await fixture()
+  try {
+    await importStream(f, await promotionStream(f))
+    // Exactly the state a crash in the swap window leaves: the project moved
+    // aside, carrying its marker, and nothing at its own name. This is the
+    // recovery — re-running the operation converges — rather than a startup
+    // pass, because the window is two adjacent renames and not a 936 MB copy.
+    const aside = join(f.destination, '.promotion-aside-course')
+    renameSync(join(f.destination, 'course'), aside)
+    writeFileSync(join(aside, '.promoted-aside.json'), JSON.stringify({ version: 1, project: 'course', revision: f.revision }))
+    assert.equal(existsSync(join(f.destination, 'course')), false, 'precondition: the project is absent')
+
+    const next = await advance(f, '<h1>Course, again</h1>')
+    const result = await importStream(f, next.bytes, { revision: next.revision })
+    assert.equal(result.promoted, true)
+    assert.equal(readFileSync(join(f.destination, 'course', 'output', 'index.html'), 'utf8'), '<h1>Course, again</h1>')
+    // The restored copy's history survived the swap that followed it, which is
+    // the whole point of restoring rather than starting from nothing.
+    const operations = JSON.parse(readFileSync(join(f.destination, 'course', '.source-lifecycle', 'operations.json'), 'utf8'))
+    assert.ok(operations.revisionLifecycle[f.revision], 'the restored revision kept its journal row')
+    assert.equal(existsSync(aside), false, 'the aside directory is cleaned up')
+    assert.equal(existsSync(join(f.destination, 'course', '.promoted-aside.json')), false, 'and its marker is not published')
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('an aside directory naming a different project is left alone', async () => {
+  const f = await fixture()
+  try {
+    // Only a marker that names THIS project authorises putting a directory
+    // back under its name. Otherwise a stray directory becomes a project.
+    const aside = join(f.destination, '.promotion-aside-course')
+    mkdirSync(aside, { recursive: true })
+    writeFileSync(join(aside, '.promoted-aside.json'), JSON.stringify({ version: 1, project: 'something-else', revision: f.revision }))
+    const result = await importStream(f, await promotionStream(f))
+    assert.equal(result.promoted, true)
+    assert.equal(readFileSync(join(f.destination, 'course', 'output', 'index.html'), 'utf8'), '<h1>Course</h1>')
+    assert.ok(existsSync(join(aside, '.promoted-aside.json')), 'the unrelated aside is untouched')
   } finally { rmSync(f.root, { recursive: true, force: true }) }
 })
 

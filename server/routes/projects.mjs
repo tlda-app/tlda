@@ -481,6 +481,24 @@ router.post('/:name/promote', requireRw, async (req, res) => {
         indexPromotedProject(req.params.name, lifecycle)
       },
     })
+    // The record of what was published, when, and from where — which nothing
+    // wrote before, so nobody could ask when a project was last published.
+    //
+    // `recordRevisionPhase` stamps `updatedAt`, so the WHEN costs nothing, and
+    // the importer merges the journal rather than replacing it, so the record
+    // accumulates across promotions instead of being overwritten by the next
+    // one. Written only when something actually moved: an idempotent re-run
+    // published nothing, and stamping it would make the record answer "when did
+    // we last check" while reading as "when did we last publish".
+    //
+    // Deliberately NOT the unreleased indicator's input. That compares against
+    // the live published surface, because a record can say published while the
+    // surface says otherwise, and closing that gap is the point of the
+    // indicator. This is for auditability.
+    if (result.promoted) {
+      const lifecycle = await sourceLifecycleStore(req.params.name)
+      lifecycle.recordRevisionPhase(req.params.name, revision, 'promotion', 'promoted', { from: sourceEnvironment })
+    }
     emitGlobalEvent('project-changed', { name: req.params.name })
     res.status(result.promoted ? 201 : 200).json(result)
   } catch (error) {
