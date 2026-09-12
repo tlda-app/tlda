@@ -166,3 +166,35 @@ test('the harness placeholder is never mistaken for our kickoff', async () => {
   const result = await submitParkedKickoff('s', 'codex', KICKOFF, { ...fake, sleep: async () => {} })
   assert.equal(result.parked, false)
 })
+
+// TWO dim renderings near the prompt, meaning opposite things. Measured by
+// `notify-does-not-wake` and confirmed against a live claude pane, which renders
+// its own prompt as ESC[38;5;246m — grey, not SGR 2. Conflating them is what made
+// an earlier "19 agents are stuck" count a sum of two different states.
+test('both ghost renderings are rejected, and a queued prompt is not', async () => {
+  const K = KICKOFF
+  const cases = [
+    ['SGR 2 dim, the codex ghost', `${ESC}[1m❯${ESC}[0m ${ESC}[2m${K}${ESC}[0m`, false],
+    ['grey 246, the claude ghost', `${ESC}[38;5;246m❯ ${ESC}[38;5;246m${K}${ESC}[39m`, false],
+    ['grey 240, same ramp', `${ESC}[1m❯${ESC}[0m ${ESC}[38;5;240m${K}${ESC}[39m`, false],
+    // A highlighted BLOCK is a genuinely queued, unconsumed prompt -- real work
+    // waiting, and for this function exactly the state worth acting on.
+    ['highlight block 237, a queued prompt', `${ESC}[1m❯${ESC}[0m ${ESC}[48;5;237m${K}${ESC}[0m`, true],
+    ['plain real input', `${ESC}[1m❯${ESC}[0m ${K}`, true],
+    // The control that keeps the greyscale range honest: if this stripped all
+    // 38;5; spans, coloured real input would read as a ghost.
+    ['coloured real input', `${ESC}[1m❯${ESC}[0m ${ESC}[38;5;51m${K}${ESC}[39m`, true],
+  ]
+
+  for (const [label, pane, expectParked] of cases) {
+    const sent = []
+    const tmuxExec = async (_s, command, ...args) => {
+      if (command === 'capture-pane') return { stdout: `${pane}\n  claude` }
+      sent.push(args.at(-1))
+      return { stdout: '' }
+    }
+    const result = await submitParkedKickoff('s', 'claude', K, { tmuxExec, sleep: async () => {}, confirmMs: 10 })
+    assert.equal(result.parked, expectParked, label)
+    assert.equal(sent.length > 0, expectParked, `${label}: keys sent only when it is real`)
+  }
+})

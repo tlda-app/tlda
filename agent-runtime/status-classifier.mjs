@@ -108,11 +108,28 @@ export function kickoffMarker(prompt = '') {
 // Found by `untracked-sessions`, who flagged it against this code rather than
 // asserting it, after their own `[queue-operation]` reading turned out to be a
 // ghost over an empty buffer.
-const DIM_SPAN_RE = /\x1b\[2m.*?(?:\x1b\[0m|$)/g
+// THERE ARE TWO DIM RENDERINGS NEAR THE PROMPT AND THEY MEAN OPPOSITE THINGS.
+// Measured, by `notify-does-not-wake` and confirmed against a live claude pane:
+//
+//   ESC[2m …            dimmed foreground  -> ghost, buffer EMPTY
+//   ESC[38;5;246m …     grey foreground    -> ghost, buffer EMPTY
+//   ESC[48;5;237m …     highlighted BLOCK  -> a genuinely QUEUED, unconsumed prompt
+//
+// So a foreground dim is a placeholder and a background highlight is real work
+// waiting. Conflating them is what made an earlier "19 agents are stuck" count a
+// sum of two different states. **Background spans are deliberately left alone**:
+// a queued unconsumed prompt is real pending input, and for the parked-kickoff
+// case it is exactly the state worth acting on.
+//
+// The grey is matched by the xterm-256 GREYSCALE RAMP (232-255) rather than by
+// the one index that was observed, so this is a range from the colour spec and
+// not an enumeration of what somebody happened to see. Terminators differ too:
+// a dim span closes with ESC[0m, a foreground colour with ESC[39m.
+const GHOST_SPAN_RE = /\x1b\[(?:2|38;5;(?:23[2-9]|24\d|25[0-5]))m.*?(?:\x1b\[(?:0|39)m|$)/g
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g
 
 export function stripGhostSpans(text = '') {
-  return String(text).replace(DIM_SPAN_RE, '').replace(ANSI_RE, '')
+  return String(text).replace(GHOST_SPAN_RE, '').replace(ANSI_RE, '')
 }
 
 export function composerState(harnessKind, pane = '', marker = '', { escapes = false } = {}) {
