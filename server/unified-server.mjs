@@ -3354,6 +3354,13 @@ onGlobalEvent(async (event) => {
     // practice, so build cards were never created at all.
     const subs = new Set(await tldaFeedback.subscribers(docName))
     if (editedBy) subs.add(editedBy)
+    // A build card is the record of what an agent did to a document the owner
+    // wrote, so it is addressed to him as well as to the agent. His earlier
+    // ruling was the opposite — he did not want to be an addressee — and he
+    // reversed it on 2026-09-12: "I am fine being an addressee." Addressing him
+    // is what puts the card in front of him whatever pane he has open, rather
+    // than only in a chat that happens to be filtered on that one agent.
+    subs.add(SERVER_OWNER_ID)
 
     for (const agentId of subs) {
       await fleetStore.chat('fleet:tlda', agentId, text, metadata)
