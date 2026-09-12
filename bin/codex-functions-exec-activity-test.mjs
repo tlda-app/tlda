@@ -351,10 +351,9 @@ function renderedActivity(record) {
   assert.equal(normalized.metadata.status, 'completed')
   assert.deepEqual(normalized.metadata.duration, { secs: 0, nanos: 222752542 })
   assert.equal(normalized.metadata.correlationId, 'exec-214495b5')
-  // Was `false`: the ingest kept a result only for unknown Codex natives and
-  // dropped every established pretty-print card's on the floor. The harness has
-  // already decided which tools carry a result; the server now passes it on.
-  assert.equal(normalized.metadata.prettyResult, 'INBOX RESULT')
+  // A thread card re-reads the messages from the store at render time, so its
+  // result stays out of the payload. Only RESULT_BEARING_CARDS cross.
+  assert.equal(Object.hasOwn(normalized.metadata, 'prettyResult'), false)
   assert.equal(shouldStoreDaemonActivity(activity[0]), true)
   assert.equal(shouldStoreDaemonActivity({ tool: '_prettyResult' }), false)
 }
