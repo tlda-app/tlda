@@ -209,30 +209,46 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 /* Phone: no button panels. You can't move, resize, or delete a panel in the fixed
    phone layout, so the close/layout/traffic buttons are meaningless — hide the
    whole group everywhere. The ONLY real option in this context is the chat's
-   filter, so the chat keeps just that button, enlarged to a real thumb target. */
+   filter, so the chat keeps just that button, enlarged to a real thumb target.
+
+   A standalone chat panel gets the same treatment at every width, and for the
+   same reason rather than a new one: it is page chrome sized by a ResizeObserver
+   on its own container, so `×` deletes the page's only chat with no way to get it
+   back and `⊞` resize/move has nothing to act on. Skip, 2026-09-12, from the
+   index on his phone: "has the 3 button panel i asked to have changed to a
+   straight up tilter button like on mobile in the app" — so this is that control,
+   reached by adding a selector rather than by writing a second one. The index
+   never sets `body.phone-mode`; that class is added only by the document view
+   (`DocumentPanel.tsx`), which the index does not render. */
 body.phone-mode .fleet-btn-group {
   display: none;
 }
-body.phone-mode .fleet-chat-shape .fleet-btn-group {
+body.phone-mode .fleet-chat-shape .fleet-btn-group,
+.standalone-chat-panel .fleet-chat-shape .fleet-btn-group {
   display: flex;
   opacity: var(--ui-tone-full);
   visibility: visible;
   pointer-events: auto;
   transition: none;
 }
-body.phone-mode .fleet-chat-shape .fleet-btn-group > :not(.fleet-filter-btn) {
+body.phone-mode .fleet-chat-shape .fleet-btn-group > :not(.fleet-filter-btn),
+.standalone-chat-panel .fleet-chat-shape .fleet-btn-group > :not(.fleet-filter-btn) {
   display: none;
 }
-body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn {
+body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn,
+.standalone-chat-panel .fleet-chat-shape .fleet-btn-group .fleet-filter-btn {
   width: 40px;
   height: 40px;
 }
-body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn svg {
+body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn svg,
+.standalone-chat-panel .fleet-chat-shape .fleet-btn-group .fleet-filter-btn svg {
   width: 20px;
   height: 20px;
 }
 body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn:active,
-body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .fleet-filter-btn {
+body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .fleet-filter-btn,
+.standalone-chat-panel .fleet-chat-shape .fleet-btn-group .fleet-filter-btn:active,
+.standalone-chat-panel .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .fleet-filter-btn {
   opacity: 1;
 }
 
