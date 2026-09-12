@@ -6190,26 +6190,36 @@ export class FleetStore {
       recvOrder = 'r.timestamp DESC, r.event_id DESC';
     }
     const tailSql = tail.length ? ' AND ' + tail.join(' AND ') : '';
-    // `agent` is one id or a set of them. A set used to be served by calling this
-    // method once per id and merging in JS, which made the cost linear in the
-    // number of ids the filter resolved to: measured on the live testing server
-    // 2026-09-12, same query and limit throughout, 1 id 351ms · 20 ids 543ms ·
-    // 60 ids 3.8s · 150 ids 10.2s · 435 ids 37.5s, past the 30s request bound.
-    // That is what `project:tlda` costs, because 435 agents carry that label, and
-    // it is the same defect as the 2026-09-06 incident where bare `tlda` expanded
-    // to 2,099 identities.
+    // `agent` is ONE id. A set is served by calling this method once per id and
+    // merging in JS, at the call site in searchAll. That looks like a fan-out
+    // defect and is not — DO NOT rewrite it as `IN (...)`. It has now been tried
+    // twice and measured on the live testing server both times:
     //
-    // One statement instead, the way `_queryPairEventsForSearch` already does the
-    // set case. The answer is unchanged: the global top-n of (sent ∪ received) is
-    // within (top-n of sent) ∪ (top-n of received) whether the branches are
-    // scoped to one id or to a set, which is the same argument queryChatHistory
-    // relies on. Exactly one id keeps `= ?` rather than `IN (?)` so the measured
-    // single-agent plan above is untouched.
+    //   ids          1        2        3        20       60      150      435
+    //   per-id     351ms     --       --      543ms     3.8s    10.2s    37.5s
+    //   IN (...)   335ms   1897ms  timeout  timeout  timeout  timeout  timeout
+    //
+    // The cliff sits exactly where `IN` takes over — one id keeps `= ?` and is
+    // unchanged — so it is the shape, not the corpus.
+    //
+    // Why: `from_id = ?` walks idx_events_from, which is (from_id, timestamp
+    // DESC), in the order ORDER BY already wants, and stops at LIMIT, reading
+    // ~limit rows. `from_id IN (...)` cannot walk one range; to produce a global
+    // timestamp order across many ranges SQLite materialises the matching rows
+    // and sorts them, and on a 2.7GB table where a busy id has 100k+ events that
+    // is a large fraction of every filtered agent's history. N small ordered
+    // walks beat one big sort.
+    //
+    // A local corpus will NOT show this: 174k events over 435 agents sorts
+    // cheaply and reported 1262ms -> 336ms, which is a true measurement of an
+    // unrepresentative corpus. Measure query-shape changes here on the real
+    // store before landing them.
+    //
+    // The per-id cost is still real and `project:tlda` (435 agents carry that
+    // label) is still bad. A fix has to keep each branch index-ordered while
+    // avoiding N round trips; this is not that fix.
     const agentIds = [...new Set(Array.isArray(agent) ? agent : [agent])];
-    const agentPred = (col) => (agentIds.length === 1
-      ? `${col} = ?`
-      : `${col} IN (${agentIds.map(() => '?').join(',')})`);
-    const sentBranch = `SELECT * FROM (SELECT ${cols} FROM events WHERE ${agentPred('from_id')}${tailSql} ORDER BY ${order} LIMIT ?)`;
+    const sentBranch = `SELECT * FROM (SELECT ${cols} FROM events WHERE from_id = ?${tailSql} ORDER BY ${order} LIMIT ?)`;
     // `events.id IN (SELECT event_id FROM recipients WHERE agent_id = ?)` had no
     // bound on the subquery, so SQLite materialized EVERY id the agent had ever
     // received (110,759 for fleet:skip), probed `events` by rowid once per id
@@ -6224,10 +6234,10 @@ export class FleetStore {
     // event timestamp is doing in that table, per queryChatHistory's note.
     const receivedBranch = `SELECT * FROM (SELECT ${cols} FROM events
       JOIN recipients r ON r.event_id = events.id
-      WHERE ${agentPred('r.agent_id')}${tailSql}
+      WHERE r.agent_id = ?${tailSql}
       ORDER BY ${recvOrder} LIMIT ?)`;
     const sql = `SELECT * FROM (${sentBranch} UNION ${receivedBranch}) ORDER BY ${order} LIMIT ?`;
-    const params = [...agentIds, ...tailParams, limit, ...agentIds, ...tailParams, limit, limit];
+    const params = [agentIds[0], ...tailParams, limit, agentIds[0], ...tailParams, limit, limit];
     const rows = this.db.prepare(sql).all(...params);
     if (beforeId) rows.reverse();
     return FleetStore.hydrateEvents(rows);
@@ -6565,18 +6575,19 @@ export class FleetStore {
             untilTs: before,
             limit,
           })
-          // The whole agent set in one statement. Per-id calls merged in JS made
-          // this linear in the number of ids the filter resolved to; see the note
-          // in _queryAgentEventsForSearch for the measured cost.
-          : this._queryAgentEventsForSearch({
-            agent: agentIds,
+          // One ordered, indexed read per agent, merged here. Deliberate — see
+          // the measurements in _queryAgentEventsForSearch before collapsing it
+          // into a single `IN (...)` query; that has been tried twice and timed
+          // out at three ids both times.
+          : agentIds.flatMap(agentId => this._queryAgentEventsForSearch({
+            agent: agentId,
             types: eventTypes,
             excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,
             sinceTs: since,
             untilTs: before,
             limit,
             filterSql: messageFilterSql?.events('events') || null,
-          });
+          }));
         eventRows = rows.map(r => ({
           source: 'fleet',
           id: r.id,
