@@ -151,13 +151,41 @@ not. Never exercised by any test or any run:
 - `indexPromotedProject` via `onActivated`
 - HTTP transport, the content-type check, and the 300s timeout
 
-## 5. Second instance of the same disease
+## 5. `scripts/course-release.mjs` — I called this a second instance and I was wrong
 
-`scripts/course-release.mjs` — the mechanism `docs/environments.md` names as how
-content promotes without a rebuild — also has **no caller** and **no contract
-file**: no `course-release.json` exists anywhere in the tree, and the only
-mentions of the script outside its own files and its doc are two comments and a
-`.github/workflows/release.yml` exclude line.
+**Retracted 2026-09-12.** What this section said: that `course-release.mjs` also
+has no caller and no contract file, so "there are two documented publishing
+mechanisms and neither has ever been invoked."
 
-So there are two documented publishing mechanisms and neither has ever been
-invoked.
+**The second half was false and the first half was misleading.**
+
+**The contract exists.** `~/work/teaching/qtm285-1/course-release.json` — 5,375
+bytes, mtime 2026-09-12 06:38, top-level keys `version`, `sourceRevision`,
+`appSha`, `releaseRoot`, `previousManifest`, `artifacts`, which are exactly the
+keys `docs/course-release.md` documents. `class-build-pm` caught this; I then
+confirmed it on disk myself rather than relaying it.
+
+**It does not live in this repository by design** — it names one course's
+artifacts, so it belongs to that course's repo, which is what
+`docs/course-release.md` says: *"The contract belongs in the course
+repository."* My grep was of the tlda tree, and **a grep of the wrong tree
+returns a true zero about a file sitting on disk.**
+
+**And "no caller" is true but not a defect.** `docs/course-release.md`
+documents it as a command a person runs — `plan`, then `stage`, then `deploy`.
+It is a runbook verb, so having no programmatic caller is what that design
+looks like rather than evidence of dead wiring. This is the opposite of the
+promote endpoint, which had no caller of *any* kind and no runbook naming it.
+
+**This is the same error as the one in §2**, where I reported a deployed secret
+as "set nowhere" after grepping a repository for something that lives in `fly
+secrets`. Two in one session, same shape: **the scope of the search was wrong,
+and a zero from the wrong scope is indistinguishable from a zero from the right
+one.** Establish where the thing would live before believing it is absent.
+
+**What is actually established about that path:** mechanism present, contract
+present and current, and no record of it being run against `pic`. That points
+the published-site gap at *nobody invoked it*, not at an unfinished mechanism.
+Whether it has ever run anywhere would show as a populated `releaseRoot`;
+`class-build-pm` owns that path and has not claimed either way, and I have not
+looked, because it is theirs.
