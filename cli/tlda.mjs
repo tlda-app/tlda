@@ -17,7 +17,7 @@ import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, readForUpload, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
 import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
-import { renderHomeworkVariants } from './lib/classroom-render.mjs'
+import { copyClassroomFiles, copyRenderedVariantProject, renderHomeworkVariants } from './lib/classroom-render.mjs'
 import {
   loadCliConfig, saveCliConfig, loadServerConfig, initConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
@@ -3117,27 +3117,6 @@ async function createOrUpdateClassroomProject({ name, title, mainFile, format })
   }
 }
 
-function copyClassroomFiles(root, destinationRoot, includeFile) {
-  const paths = []
-  function collect(prefix = '') {
-    for (const entry of readdirSync(join(root, prefix), { withFileTypes: true })) {
-      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
-      const fullPath = join(root, relPath)
-      if (entry.isDirectory()) {
-        if (entry.name === '.git' || entry.name === '.quarto') continue
-        collect(relPath)
-      } else if (includeFile(relPath)) {
-        const target = join(destinationRoot, relPath)
-        mkdirSync(dirname(target), { recursive: true })
-        copyFileSync(fullPath, target)
-        paths.push(relPath)
-      }
-    }
-  }
-  collect()
-  return paths.sort()
-}
-
 function commitClassroomProjectSource(sourceDir, message) {
   execFileSync('git', ['init'], { cwd: sourceDir, stdio: 'pipe' })
   execFileSync('git', ['add', '--all'], { cwd: sourceDir, stdio: 'pipe' })
@@ -3164,16 +3143,6 @@ async function linkClassroomGitProject({ name, title, mainFile, format, sourceDi
     projectMetadata,
     documentRoots,
   }, { timeoutMs: 300000 })
-}
-
-function copyHtmlProjectFiles(bookDir, destinationRoot, mainFile, otherHtmlFile) {
-  const otherAssets = `${otherHtmlFile.slice(0, -extname(otherHtmlFile).length)}_files/`
-  return copyClassroomFiles(bookDir, destinationRoot, relPath => {
-    if (relPath === mainFile) return true
-    if (relPath === otherHtmlFile) return false
-    if (relPath.startsWith(otherAssets)) return false
-    return !relPath.endsWith('.html')
-  })
 }
 
 async function cmdClassroomSetup() {
@@ -3241,8 +3210,8 @@ async function cmdClassroomSetup() {
         && !relPath.includes('_cache/')
         && !relPath.includes('_files/'))
   ))
-  copyHtmlProjectFiles(bookDir, handoutDir, rendered.handoutOutput, rendered.solutionOutput)
-  copyHtmlProjectFiles(bookDir, solutionDir, rendered.solutionOutput, rendered.handoutOutput)
+  copyRenderedVariantProject(bookDir, handoutDir, rendered.handoutOutput, rendered.solutionOutput)
+  copyRenderedVariantProject(bookDir, solutionDir, rendered.solutionOutput, rendered.handoutOutput)
 
   // Only the server and daemon calls are retried. Rendering is minutes of Quarto
   // per variant and depends on nothing that a retry would change, so a daemon
