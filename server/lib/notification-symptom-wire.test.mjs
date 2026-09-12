@@ -114,13 +114,19 @@ async function waitForSymptom(rpcs) {
 }
 
 // `recipient` decides whether the agent has an MCP socket and what it does.
-async function withFleet({ daemonReply, withRecipientSocket = true, loginKind = 'claude', responder = () => {}, onRecipientFrame = () => {}, subscriptionQuery = 'to:me', notificationPolicy = 'immediate', extraSubscriptions = [] }, fn) {
+async function withFleet({ daemonReply, recipientShell = null, withRecipientSocket = true, loginKind = 'claude', responder = () => {}, onRecipientFrame = () => {}, subscriptionQuery = 'to:me', notificationPolicy = 'immediate', extraSubscriptions = [] }, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-notification-symptom-'))
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
   const now = new Date().toISOString()
   await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
-  await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
+  await store.upsertAgent({
+    id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now,
+    // `recipientShell` makes this a reserved shell whose reservation is
+    // `agedMs` old -- the state 1,675 rows on the live box are in.
+    last_seen: recipientShell ? new Date(Date.now() - recipientShell.agedMs).toISOString() : now,
+    ...(recipientShell ? { metadata: { shell: true } } : {}),
+  })
   await store.upsertAgent({ id: 'fleet:target', friendly_name: 'target', labels: [], registered_at: now, last_seen: now })
   await store.ensureSubscription({ owner: 'fleet:recipient', query: subscriptionQuery, notificationPolicy })
   await store.ensureSubscription({ owner: 'fleet:target', query: 'to:me', notificationPolicy: 'immediate' })
@@ -561,4 +567,43 @@ test('a queued report is not recorded as a remedy that did nothing', async () =>
     : { ok: true })
   assert.equal(status, 'remedy-queued',
     'an undelivered report must not read as a remedy that ran and found nothing to do')
+})
+
+// ─── A pending shell past its login deadline is an unreachable agent ─────────
+//
+// `requestWake` used to return at the `isReservedShellAgent` branch before any
+// notification was attempted, so no symptom ever reached the daemon and nothing
+// could make a process. Measured on the live box 2026-09-12: 1,674 rows in that
+// state, 5 of 5 sampled holding mail that was accepted and never announced --
+// 18 messages, oldest eight days.
+//
+// The pair below is the whole change. Both directions matter: a fix that
+// announces for every shell would race `ensure-process` against every mint
+// currently starting on the box.
+test('a shell PAST its login deadline now reaches its daemon as no-channel', async () => {
+  await withFleet({
+    withRecipientSocket: false,
+    recipientShell: { agedMs: 10 * 60_000 },
+  }, async (senderWs, rpcs) => {
+    await sendChat(senderWs, 2, 'stale-shell')
+    const hit = await waitForSymptom(rpcs)
+    assert.ok(hit, `a failed mint must be reported like any other channel-less agent. Ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`)
+    assert.equal(hit.params.symptom, 'no-channel')
+    assert.equal(hit.params.agent_id, 'fleet:recipient')
+  })
+})
+
+// The control, and it is the one that stops this being dangerous. A shell inside
+// its deadline has a process being made for it RIGHT NOW.
+test('CONTROL: a shell INSIDE its login deadline still reports nothing', async () => {
+  await withFleet({
+    withRecipientSocket: false,
+    recipientShell: { agedMs: 2_000 },
+  }, async (senderWs, rpcs) => {
+    await sendChat(senderWs, 2, 'fresh-shell')
+    await sleep(3_000)
+    const hit = rpcs.find(r => r.op === 'notification-symptom')
+    assert.equal(hit, undefined,
+      `a mint still starting must not be reported, or every spawn races ensure-process. Ops seen: ${JSON.stringify(rpcs.map(r => r.op))}`)
+  })
 })
