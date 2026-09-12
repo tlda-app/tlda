@@ -15,6 +15,22 @@ function rowForAgent(agent, now = Date.now()) {
     human: !!agent.human,
     labels: Array.isArray(agent.labels) ? agent.labels : [],
     status: agent.dead ? 'dead' : runtimeStatusName(agent),
+    // A reserved shell — a mint whose `login()` never completed — projects as
+    // `hibernating`, because the projection's shell branch returns that status
+    // and carries the distinction in `reason: 'reserved-shell-unclaimed'`
+    // instead. So the row said `hibernating` about an agent that has never run,
+    // while the totals line beside it counted the same agent under `pending`.
+    //
+    // That gap is not cosmetic: a message to one of these returns at the
+    // `isReservedShellAgent` branch of `requestWake` BEFORE any notification is
+    // attempted and before any symptom reaches a daemon, so it wakes nothing and
+    // reports nothing. Measured 2026-09-12: 1,674 of them, and a caller reading
+    // the roster had no way to tell one from an agent that is merely asleep.
+    //
+    // Carried as its own field rather than derived on the client from `reason`,
+    // which is free-form provenance. AGENTS.md §"Our client/server lines can
+    // move": what the server sends is the thing to change.
+    pending: !!agent.metadata?.shell,
     last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
     model: agent.metadata?.model || null,
     inbox_status: agent.metadata?.inboxStatus || null,
