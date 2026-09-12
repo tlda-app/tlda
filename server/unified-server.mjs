@@ -102,6 +102,7 @@ import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter, RESOLVED_UPLOAD_DIR } from './routes/fleet.mjs'
 import { copyAttachmentsToUploadDir } from './lib/chat-attachment-store.mjs'
+import { applyEmailPolicyDelivery, createEmailNotificationTransport, createSmtpTransport, startImapReceiver } from './lib/email-notification-transport.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { createAgentRuntimeStatusStore, RUNTIME_KIND, RUNTIME_STATUS } from './lib/agent-runtime-status.mjs'
 import { createHumanPresenceTracker } from './lib/human-presence.mjs'
@@ -939,6 +940,7 @@ async function sweepStuckSourceSync() {
 setInterval(() => { void sweepStuckSourceSync() }, SOURCE_SYNC_SWEEP_MS).unref?.()
 
 const _subscriptionBatchWakes = new Map()
+const INTERNAL_ATTACHMENTS_STORED = Symbol('internal-email-attachments-stored')
 
 function wakeHarnessKind(agent) {
   return agent?.metadata?.kind || agent?.metadata?.harness || agent?.kind || agent?.harness || null
@@ -3800,6 +3802,60 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 //                       deployed. Absent means the browser uses the same-origin
 //                       proxy, which is the route that ships today.
 const serverRuntimeConfig = loadServerConfig()
+const emailRuntimeConfig = (() => {
+  const configured = serverRuntimeConfig.email
+  if (!configured) return null
+  const replySecret = process.env[configured.replySecretEnv]
+  const password = process.env[configured.transport.passwordEnv]
+  const inboundPassword = process.env[configured.inbound.passwordEnv]
+  if (!replySecret || !password || !inboundPassword) {
+    throw new Error(`server.yaml email is configured but one or more named secret environment variables are absent`)
+  }
+  return {
+    ...configured,
+    attachmentRoot: RESOLVED_UPLOAD_DIR,
+    replySecret,
+    transport: { ...configured.transport, password },
+    inbound: { ...configured.inbound, password: inboundPassword, pollIntervalMs: parseDurationMs(configured.inbound.pollInterval) },
+  }
+})()
+const emailNotifications = emailRuntimeConfig ? createEmailNotificationTransport(emailRuntimeConfig, {
+  transport: createSmtpTransport(emailRuntimeConfig.transport),
+  getEvent: (id) => fleetStore.getEventById(id),
+  getAgent: (id) => fleetStore.getAgent(id),
+  patchDeliveryState: async (eventId, recipientId, state) => patchEventMetadata(eventId, metadata => ({
+    ...metadata,
+    email_delivery: {
+      ...(metadata.email_delivery || {}),
+      [recipientId]: state,
+    },
+  })),
+  insertInboundChat: async ({ from, to, text, attachments, metadata }) => {
+    const storedAttachments = (attachments || []).map((attachment, index) => {
+      const content = Buffer.from(String(attachment.contentBase64 || ''), 'base64')
+      const safeName = basename(String(attachment.name || `attachment-${index + 1}`)).replace(/[^a-zA-Z0-9._-]/g, '_')
+      mkdirSync(RESOLVED_UPLOAD_DIR, { recursive: true })
+      const storedPath = join(RESOLVED_UPLOAD_DIR, `${Date.now()}-${randomUUID()}-${safeName}`)
+      writeFileSync(storedPath, content)
+      return {
+        path: storedPath,
+        name: safeName,
+        mimeType: attachment.mimeType || 'application/octet-stream',
+        size: content.length,
+        sha256: createHash('sha256').update(content).digest('hex'),
+      }
+    })
+    const result = await dispatchInternalChat({
+      from, to, message: text, metadata,
+      ...(storedAttachments?.length ? { attachments: storedAttachments } : {}),
+      [INTERNAL_ATTACHMENTS_STORED]: true,
+    })
+    return { id: result.event_ids?.[0] }
+  },
+}) : null
+if (emailNotifications) {
+  startImapReceiver(emailRuntimeConfig.inbound, message => emailNotifications.receive({ ...message, authenticated: true }))
+}
 const DEEPGRAM_SDK_BRIDGE_URL = serverRuntimeConfig.deepgramBridgeUrl
 const BROWSER_VOICE_BRIDGE_URL = serverRuntimeConfig.deepgramDirectUrl || ''
 // Raw PCM is 16,000 samples/sec * 2 bytes = 32,000 B/s. 64 MiB holds about
@@ -7962,7 +8018,7 @@ async function dispatchFleetWsMessage(ws, msg) {
     // the SAME dir /api/upload uses (RESOLVED_UPLOAD_DIR honors TLDA_UPLOAD_DIR).
     // Previously this wrote to an ephemeral container path that Fly wiped on every
     // redeploy, 404-ing the materialized attachment URLs afterward.
-    const processedAttachments = copyAttachmentsToUploadDir(attachments, RESOLVED_UPLOAD_DIR)
+    const processedAttachments = msg[INTERNAL_ATTACHMENTS_STORED] ? attachments : copyAttachmentsToUploadDir(attachments, RESOLVED_UPLOAD_DIR)
     const senderAgent = await fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
     // Stamp the human sender's physical machine onto the message context so any
@@ -8198,6 +8254,7 @@ async function dispatchFleetWsMessage(ws, msg) {
           priority: basePriority,
         })
       }
+      applyEmailPolicyDelivery({ service: emailNotifications, decision: r.deliveryDecision, eventId, recipientId: r.to, senderId: from })
     }
     // Observer subscriptions deliberately schedule NO wake. They keep messages
     // discoverable in inbox and history; only a message addressed to an agent
@@ -8493,6 +8550,16 @@ async function dispatchFleetWsMessage(ws, msg) {
     return
   }
 
+  // The unread count on its own, for the app-icon badge.
+  //
+  // Deliberately not `my-task`: that one also pulls a page of deliveries and
+  // the agent's task rows, and its HTTP twin stamps a heartbeat on the agent it
+  // is asked about — neither is something a badge refresh should do, and the
+  // badge refreshes on every arrival and every read. This is the same canonical
+  // number `my-task` reports as `counts.messages`, read from the same place:
+  // unread rows in `recipients`. There is no PWA-specific count.
+  //
+  // Nothing here marks anything read.
   if (type === 'unread-count') {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
@@ -9326,6 +9393,19 @@ async function dispatchFleetWsMessage(ws, msg) {
 
   // Unknown message type — don't error, just ignore (forward compatibility)
   if (id) reply({ ok: false, error: `unknown type: ${type}` })
+}
+
+async function dispatchInternalChat(payload) {
+  const id = `internal-email-${randomUUID()}`
+  let frame = null
+  const ws = {
+    readyState: 1,
+    send(raw) { frame = JSON.parse(String(raw)) },
+  }
+  await dispatchFleetWsMessage(ws, { id, type: 'chat', ...payload })
+  if (!frame || frame.id !== id) throw new Error('internal chat dispatcher did not return a result')
+  if (frame.error) throw new Error(frame.error?.message || String(frame.error))
+  return frame.result
 }
 
 // ---------- Skill qualification checking (server-side) ----------
