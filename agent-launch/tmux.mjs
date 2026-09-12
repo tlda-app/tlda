@@ -343,17 +343,32 @@ export async function injectCodexPrompt(session, prompt, {
   // signal Codex emits; a loaded model's footer varies with effort and provider,
   // so treating an absent ` default ·` as not-ready hangs on every model that
   // never prints one.
+  // Padding is part of this. Codex's STARTUP SPLASH aligns its fields --
+  // `model:     loading`, beside `directory: loading` -- while the bottom status
+  // line writes the compact `model: loading`. A literal match on the compact
+  // form sees nothing during the splash, and "no status line at all" then reads
+  // as ready, so the paste went in while the model was genuinely still loading.
+  // Measured: 1 run in 6 at a 3s deadline, with the splash still on screen.
+  const MODEL_LOADING_RE = /model:\s+loading/
   const modelLoading = (pane = '') => {
     const status = pane.split('\n').findLast((line) =>
-      line.includes('model: loading') || (line.includes(' default') && line.includes('·')))
-    return !!status && status.includes('model: loading')
+      MODEL_LOADING_RE.test(line) || (line.includes(' default') && line.includes('·')))
+    return !!status && MODEL_LOADING_RE.test(status)
   }
   // Nothing may abandon this function with the prompt sitting in the composer.
   // A parked prompt is indistinguishable from a dead mint from the outside --
   // the process is alive, the session exists, and no turn was ever produced --
   // so an attempt that cannot finish leaves the composer as it found it, and the
   // caller's launch failure is then the truth about the agent.
+  //
+  // The keystrokes are in the composer from the moment they are sent, whether or
+  // not a capture has rendered them yet -- so this is tracked on having pasted,
+  // never on having SEEN the paste. Measured: gating it on the capture left 1 run
+  // in 3 parked at a 3s deadline, because the retry path below abandons a paste
+  // the capture had not caught up with.
+  let pasted = false
   const abandonAfterPaste = async () => {
+    if (!pasted) return false
     await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'C-u').catch(() => {})
     return false
   }
@@ -389,13 +404,16 @@ export async function injectCodexPrompt(session, prompt, {
         // A directly observed ready prompt is cleared with C-u; Escape is never a startup action.
         await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'C-u')
         await sleep(200)
+        pasted = true
         for (let offset = 0; offset < prompt.length; offset += 800) {
           await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), '-l', prompt.slice(offset, offset + 800))
           await sleep(25)
         }
         await sleep(500)
-        const pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
-        if (!composerState(pasted.stdout).containsMarker) continue
+        const shown = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p').catch(() => ({ stdout: '' }))
+        // Not visible yet. Retrying is safe -- the next attempt opens with C-u --
+        // but the text is already in there, so the exit below has to clear it.
+        if (!composerState(shown.stdout).containsMarker) continue
         await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxWindowTarget(session), 'Enter')
         while (Date.now() < deadline) {
           await sleep(500)
@@ -420,7 +438,9 @@ export async function injectCodexPrompt(session, prompt, {
     }
     await sleep(1000)
   }
-  return false
+  // Out of budget. If anything was ever pasted it is still in the composer, and
+  // this is the last chance to take it back out.
+  return await abandonAfterPaste()
 }
 
 export async function injectClaudePrompt(session, prompt, {
