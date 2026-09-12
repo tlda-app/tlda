@@ -1,0 +1,102 @@
+/* One build in the edit bridge. Sized and weighted to read as a note beside
+   the document, not as a panel competing with it. */
+
+.edit-card {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.18));
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+}
+
+.edit-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+}
+
+.edit-card-hash {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text, inherit);
+  text-decoration: underline dotted;
+}
+
+.edit-card-time {
+  margin-left: auto;
+  opacity: 0.55;
+}
+
+.edit-card-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px;
+}
+
+.edit-card-file {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.8;
+}
+
+.edit-card-editors {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dotted var(--border, rgba(0, 0, 0, 0.12));
+}
+
+.edit-card-editor {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.edit-card-editor-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-card-link {
+  margin-left: auto;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  opacity: 0.6;
+  color: var(--text, inherit);
+}
+
+.edit-card-link:hover {
+  opacity: 1;
+}
+
+/* Absent provenance is stated, never dressed up as something else. */
+.edit-card-quiet {
+  opacity: 0.45;
+  font-style: italic;
+}
+
+.edit-card-note {
+  border: none;
+  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  resize: none;
+  height: 54px;
+  padding: 4px 6px;
+  font: inherit;
+  background: transparent;
+  color: var(--text, inherit);
+  outline: none;
+}

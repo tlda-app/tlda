@@ -65,6 +65,19 @@ function buildLabelMap(lines: Record<string, LookupEntry>): Map<string, LookupEn
   return map
 }
 
+/**
+ * Where the compare column sits, given the current document's pages.
+ *
+ * Exported because the edit bridge lays its cards out from the same edge and
+ * must not carry a second copy of this arithmetic: the two would drift and the
+ * cards would sit through the column.
+ */
+export function compareColumnX(pages: SvgDocument['pages']): number {
+  if (pages.length === 0) return 0
+  const firstPage = pages[0]
+  return firstPage.bounds.x + firstPage.bounds.width + OLD_PAGE_GAP
+}
+
 export function useShadowOverlay(
   editorRef: React.MutableRefObject<Editor | null>,
   document: SvgDocument,
@@ -72,6 +85,12 @@ export function useShadowOverlay(
   _shapeIdSetRef: React.MutableRefObject<Set<TLShapeId>>,
   _shapeIdsArrayRef: React.MutableRefObject<TLShapeId[]>,
   _updateCameraBoundsRef: React.MutableRefObject<((bounds: any) => void) | null>,
+  /**
+   * Extra distance the compare column moves out. The edit bridge widens the
+   * gap between the two documents and fills it; at 0 the column is exactly
+   * where the ordinary side-by-side compare puts it.
+   */
+  columnXOffset = 0,
 ) {
   const [timeBounds, setTimeBounds] = useState<ShadowTimeBounds | null>(null)
   // activeVersion: null = showing current (no shadow column)
@@ -122,11 +141,10 @@ export function useShadowOverlay(
     return () => clearTimeout(timer)
   }, [])
 
-  const columnX = useMemo(() => {
-    if (document.pages.length === 0) return 0
-    const firstPage = document.pages[0]
-    return firstPage.bounds.x + firstPage.bounds.width + OLD_PAGE_GAP
-  }, [document.pages])
+  const columnX = useMemo(
+    () => compareColumnX(document.pages) + columnXOffset,
+    [document.pages, columnXOffset],
+  )
 
   // Fetch real page count when committed version changes
   useEffect(() => {

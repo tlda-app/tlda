@@ -37,6 +37,12 @@ export interface PanelContextValue {
   wholeDocumentDiffLoading?: boolean
   wholeDocumentDiffError?: string | null
   onToggleWholeDocumentDiff?: () => void
+  bridgeVisible?: boolean
+  bridgeLoading?: boolean
+  bridgeError?: string | null
+  bridgeBuildCount?: number
+  onToggleEditBridge?: () => void
+  onHandOffCleanup?: () => void
 }
 
 export const ProjectContext = createContext<ProjectContextValue | null>(null)
