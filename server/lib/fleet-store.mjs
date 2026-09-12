@@ -4461,6 +4461,10 @@ export class FleetStore {
 
   // Current named roster. Stack position is returned as data; names remain
   // opaque atoms and are never interpreted by the store.
+  // TODO(delete): dead path. Nothing calls this. Delete it, its manifest entry,
+  // and its shape in fleet-store-client.mjs. It loads every active stack row for
+  // a lineage and maps each through two whole-record transforms; live on
+  // 2026-09-12 there were 4,210 active stack rows.
   getLineageRoster(lineageId) {
     return this.db.prepare(
       `SELECT agents.*, lineages.friendly_name AS lineage_name, stack.stack_index
@@ -5196,6 +5200,12 @@ export class FleetStore {
   // Resolve wiretap matches: given a sender and recipient, return agent IDs that should be CC'd
   // Filter is a string expression with directional `to:`/`from:` prefixes:
   // "to:skip & from:math" fires on a message TO skip FROM math.
+  // TODO(delete): dead path. Nothing calls this. The server resolves delivery
+  // through resolveSubscriptionDeliveries, in both chat paths. Delete this
+  // method, the wiretaps table, its prepared statements, addWiretap/getWiretaps/
+  // getWiretapsByAgent/endWiretap/endWiretapsByAgent, and their manifest entries.
+  // Keep `wiretap_cc` and isWiretapTarget: that is the delivery concept, driven
+  // by subscriptions, and is unrelated to this table.
   resolveWiretaps(senderId, recipientId, eventType) {
     if (!this._resolvableWiretapCache) {
       this._resolvableWiretapCache = this._getResolvableWiretaps.all().map(r => this._hydrateWiretap(r));
@@ -5255,6 +5265,23 @@ export class FleetStore {
   // answered "does this recipient carry X" rather than "was this addressed to X",
   // so a broadcast to `awake` fired an awake agent's personal-mail subscription
   // exactly as hard as its group one.
+  // TODO(scale): this is linear in every live subscription, on the main thread,
+  // for every event — and `_bustSubscriptionTapCache()` nulls the cache on every
+  // markDead, label change and subscription edit, so it also REBUILDS all of them
+  // from SQLite, copying eleven fields per row.
+  //
+  // Where it deteriorates, measured on live 2026-09-12: 130,380 live
+  // subscriptions against 61,302 agents and 3,726,254 events. The comments in
+  // resolveWiretaps below record the same shape being tuned at ~1,300 agents and
+  // again at ~2,000 taps. Sustained event-loop lag of 23–26ms with 250ms peaks,
+  // and requests timing out at 15s, were measured at this size.
+  //
+  // The fix is to stop scanning. A filter is directional — `to:X & from:Y` — so
+  // index taps by the atoms they can match, agent id or label, and look up only
+  // the candidates for this sender and recipient. Their label sets are already
+  // fetched by indexed single-row reads. That makes the per-event cost
+  // proportional to the taps that actually reference these two agents rather
+  // than to every subscription that exists.
   resolveSubscriptionDeliveries(senderId, recipientId, eventType, addressAst = null) {
     const recipientIds = Array.isArray(recipientId) ? recipientId : [recipientId].filter(Boolean);
     const directRecipients = new Set(recipientIds);
