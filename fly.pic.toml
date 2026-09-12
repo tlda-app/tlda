@@ -3,7 +3,7 @@
 # tailnet name, so course content and student identity live in their own
 # environment rather than in testing.
 # Deploy with:  fly deploy -c fly.pic.toml
-app = "tlda-pic"
+app = "your-tlda-course"
 primary_region = "sjc"
 
 [build]
