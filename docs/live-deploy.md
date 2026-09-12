@@ -6,7 +6,33 @@ Deploying is a push to the deployment repository:
 git push /Users/you/work/deploy/testing HEAD:refs/heads/main
 ```
 
-If a push needs to abort, wait for it to finish; killing the client does not stop the server-side deploy.
+**There is no way to abort a push from the client.** Killing `git push` does not
+stop the deploy — it **orphans** it: `git-receive-pack` and its
+`pre-receive-common.sh` children are re-parented to `ppid 1` and keep building,
+unwatched, and still land at the end.
+
+This line used to read *"killing the client does not stop the server-side
+deploy"*. True, and true for the wrong reason — two readers took it to mean *so
+let it run*, which describes a deploy proceeding under supervision. What happens
+is one proceeding under none. Measured 2026-09-12: a killed client left a live
+hook tree running five more minutes, and for part of that two hook trees were
+compiling against the same repository at once.
+
+To stop a deploy, kill the **receive-pack tree**, not the client:
+
+```bash
+pgrep -f "git-receive-pack /path/to/deploy/<env>"   # then its pre-receive children
+```
+
+**Check parentage before killing anything.** `ppid 1` on a `git-receive-pack` is
+an orphan; a live parent chain is a deploy someone is watching. And `npm ci` with
+a `vite build` beneath it is **one** pipeline — vite is npm's `prepare` script,
+not a second deploy. On a machine running several agents' builds, two `vite`
+processes is the normal state, and killing the wrong one destroys unrelated work.
+
+**Each attempt writes its own log**, named by sha, under
+`<deploy-repo>/deploy-logs/`. That is the authoritative record of what a deploy
+did and why it stopped. Read it before inferring anything from `ps`.
 
 `/Users/you/work/deploy/testing` deploys `fly.live.toml`, the Fly app
 `tldraw-sync-skip` at `https://tlda-fly.example-tailnet.ts.net`.
