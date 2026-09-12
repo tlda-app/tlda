@@ -1682,7 +1682,11 @@ function ownWorkScript(ownWorkUrl) {
         if (header) header.click();
       }
       loadOwnDocument().then(function (parsed) {
-        var mine = parsed.getElementById(exercise.id);
+        // Their ANSWER, not their copy of the question. The handout a student
+        // edits puts the answer in its own block beside the exercise, named
+        // \`ans-\` plus the exercise id — measured in the real Week 1 handout,
+        // where \`#exr-die-histogram\` is followed by \`#ans-exr-die-histogram\`.
+        var mine = parsed.getElementById('ans-' + exercise.id);
         var body = solution.querySelector('.callout-body-container') || solution;
         var block = document.createElement('div');
         block.className = 'tlda-own-work';
