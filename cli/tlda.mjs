@@ -3273,6 +3273,7 @@ async function publishClassroomAssignment({
     solutionsDocKey,
     ...(solutionsVersion ? { solutionsVersion } : {}),
     sourceDocKey,
+    handoutDocKey,
     bookPageFile: rendered.homeworkPath.replace(/\.qmd$/i, '.html'),
     handoutFilter,
     solutionFilter,

@@ -410,12 +410,12 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   })
 
   router.post('/courses/:courseId/assignments', instructor, (req, res) => {
-    const { id, title, dueAt, solutionsDocKey, solutionsVersion, sourceDocKey, handoutFilter, solutionFilter, bookPageFile } = req.body || {}
+    const { id, title, dueAt, solutionsDocKey, solutionsVersion, sourceDocKey, handoutDocKey, handoutFilter, solutionFilter, bookPageFile } = req.body || {}
     if (!id || !title || !dueAt) return res.status(400).json({ error: 'id, title, and dueAt are required' })
     if (bookPageFile && (String(bookPageFile).startsWith('/') || String(bookPageFile).split('/').includes('..') || !String(bookPageFile).endsWith('.html'))) {
       return res.status(400).json({ error: 'bookPageFile must be a relative HTML path' })
     }
-    res.status(201).json(store.upsertAssignment({ id, courseId: req.params.courseId, title, dueAt, solutionsDocKey, solutionsVersion, sourceDocKey, handoutFilter, solutionFilter, bookPageFile }))
+    res.status(201).json(store.upsertAssignment({ id, courseId: req.params.courseId, title, dueAt, solutionsDocKey, solutionsVersion, sourceDocKey, handoutDocKey, handoutFilter, solutionFilter, bookPageFile }))
   })
 
   router.get('/courses/:courseId/assignments', (req, res) => {

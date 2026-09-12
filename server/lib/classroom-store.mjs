@@ -74,6 +74,13 @@ export class ClassroomStore {
     if (!assignmentColumns.has('handout_filter')) this.db.exec('ALTER TABLE assignments ADD COLUMN handout_filter TEXT')
     if (!assignmentColumns.has('solution_filter')) this.db.exec('ALTER TABLE assignments ADD COLUMN solution_filter TEXT')
     if (!assignmentColumns.has('book_page_file')) this.db.exec('ALTER TABLE assignments ADD COLUMN book_page_file TEXT')
+    // The project a student is sent to. Recorded rather than derived: setup takes
+    // --handout, --source and --project-prefix as independent documented flags, so
+    // `<prefix>-handout` is a default and not a structural fact — `--handout Y`
+    // makes the name unrecoverable from anything else the row holds. Deriving it
+    // would silently address a project that need not exist. Its three siblings
+    // (source, solutions, template) are stored for the same reason.
+    if (!assignmentColumns.has('handout_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN handout_doc_key TEXT')
     // The answer ids a submission actually contains. Problem-by-problem marking
     // pairs one exercise across every student, so the join key has to survive
     // upload rather than being re-derived by reparsing each archive.
@@ -162,30 +169,31 @@ export class ClassroomStore {
     })()
   }
 
-  upsertAssignment({ id, courseId, title, dueAt, solutionsDocKey = null, solutionsVersion = null, templateDocKey = null, templateVersion = null, sourceDocKey = null, handoutFilter = null, solutionFilter = null, bookPageFile = null }) {
-    this.db.prepare(`INSERT INTO assignments(id,course_id,title,due_at,solutions_doc_key,solutions_version,template_doc_key,template_version,source_doc_key,handout_filter,solution_filter,book_page_file)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET course_id=excluded.course_id,title=excluded.title,due_at=excluded.due_at,
+  upsertAssignment({ id, courseId, title, dueAt, solutionsDocKey = null, solutionsVersion = null, templateDocKey = null, templateVersion = null, sourceDocKey = null, handoutDocKey = null, handoutFilter = null, solutionFilter = null, bookPageFile = null }) {
+    this.db.prepare(`INSERT INTO assignments(id,course_id,title,due_at,solutions_doc_key,solutions_version,template_doc_key,template_version,source_doc_key,handout_doc_key,handout_filter,solution_filter,book_page_file)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET course_id=excluded.course_id,title=excluded.title,due_at=excluded.due_at,
       solutions_doc_key=excluded.solutions_doc_key,solutions_version=excluded.solutions_version,
       template_doc_key=COALESCE(assignments.template_doc_key,excluded.template_doc_key),
       template_version=COALESCE(assignments.template_version,excluded.template_version),
-      source_doc_key=excluded.source_doc_key,handout_filter=excluded.handout_filter,solution_filter=excluded.solution_filter,
+      source_doc_key=excluded.source_doc_key,handout_doc_key=excluded.handout_doc_key,
+      handout_filter=excluded.handout_filter,solution_filter=excluded.solution_filter,
       book_page_file=COALESCE(excluded.book_page_file,assignments.book_page_file)`)
-      .run(id, courseId, title, dueAt, solutionsDocKey, solutionsVersion, templateDocKey, templateVersion, sourceDocKey, handoutFilter, solutionFilter, bookPageFile)
+      .run(id, courseId, title, dueAt, solutionsDocKey, solutionsVersion, templateDocKey, templateVersion, sourceDocKey, handoutDocKey, handoutFilter, solutionFilter, bookPageFile)
     return this.getAssignment(id)
   }
   getAssignment(id) { return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
     solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
-    source_doc_key AS sourceDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
+    source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
     book_page_file AS bookPageFile FROM assignments WHERE id=?`).get(id) || null }
   listAssignments(courseId) { return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
     solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
-    source_doc_key AS sourceDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
+    source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
     book_page_file AS bookPageFile FROM assignments WHERE course_id=? ORDER BY due_at`).all(courseId) }
   assignmentsForSolutionsDoc(docKey) {
     if (!docKey) return []
     return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
       solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
-      source_doc_key AS sourceDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
+      source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
       book_page_file AS bookPageFile
       FROM assignments WHERE solutions_doc_key=? ORDER BY due_at`).all(docKey)
   }
@@ -202,7 +210,7 @@ export class ClassroomStore {
     if (!bookPageFile || !courseId) return null
     return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
       solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion,
-      source_doc_key AS sourceDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
+      source_doc_key AS sourceDocKey,handout_doc_key AS handoutDocKey,handout_filter AS handoutFilter,solution_filter AS solutionFilter,
       book_page_file AS bookPageFile
       FROM assignments WHERE book_page_file=? AND course_id=?`).get(bookPageFile, courseId) || null
   }

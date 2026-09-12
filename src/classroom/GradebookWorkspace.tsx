@@ -175,11 +175,21 @@ export function GradebookWorkspace() {
   }
 
   // Where a repair link should land its student: the same project the class link
-  // sends everyone to. `tlda classroom setup` prints the registration link as
-  // `project=<sourceDocKey>`, and that key is the only record of it the page can
-  // reach — a course row does not name a project. Absent one, a repair link
-  // simply carries no project and behaves as it did before.
-  const classProject = data.assignments.find(assignment => assignment.sourceDocKey)?.sourceDocKey
+  // sends everyone to, which is the HANDOUT.
+  //
+  // This read `sourceDocKey`, matching the registration link, and that link was
+  // wrong: the source project's mainFile is the master QMD, so both doors put a
+  // student on the worked solutions. solutionDocumentAccess does not stop it —
+  // it only restricts a key assignmentsForSolutionsDoc matches, and a source key
+  // is neither a solutions doc nor a submission.
+  //
+  // It is read rather than derived from the assignment id: `classroom setup`
+  // takes --handout, --source and --project-prefix as independent flags, so
+  // `<prefix>-handout` is its default and not a fact about the row.
+  // Assignments recorded before the key existed carry no project, and a repair
+  // link without one behaves as it did before — the same absent case this always
+  // had, rather than a guess at a project that need not exist.
+  const classProject = data.assignments.find(assignment => assignment.handoutDocKey)?.handoutDocKey
   const assignments = new Map(data.assignments.map(assignment => [assignment.id, assignment]))
   const submissions = data.rows.flatMap(student => student.assignments
     .filter(cell => cell.contentRef)

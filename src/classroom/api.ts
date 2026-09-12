@@ -3,7 +3,7 @@ import { readClassroomToken } from './classroomToken'
 export type GradingStatus = 'ungraded' | 'graded' | 'returned'
 export interface Assignment {
   solutionsLocked?: boolean
- id: string; courseId: string; title: string; dueAt: string; solutionsDocKey?: string; solutionsVersion?: string; templateDocKey?: string; templateVersion?: string; sourceDocKey?: string; bookPageFile?: string; submission?: Submission | null }
+ id: string; courseId: string; title: string; dueAt: string; solutionsDocKey?: string; solutionsVersion?: string; templateDocKey?: string; templateVersion?: string; sourceDocKey?: string; handoutDocKey?: string; bookPageFile?: string; submission?: Submission | null }
 export interface StatusCell { assignmentId: string; state: 'not-submitted' | GradingStatus; studentId?: string; contentRef?: string; submittedAt?: string; gradingStatus?: GradingStatus; buildStatus?: string; buildAt?: string | null }
 export type StudentLayerScope = 'student' | 'common'
 export interface StatusRow { id: string; displayName: string; universityLogin?: string; layerScope: StudentLayerScope; assignments: StatusCell[] }
