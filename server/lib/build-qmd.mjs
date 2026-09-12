@@ -736,14 +736,23 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   const mainFile = mainFiles[0]
 
   // Throw, don't return. A normal return is how a builder says it BUILT, and
-  // the worker reads it that way: it publishes the instance, whose `output/` is
-  // created empty by materializeBuildInstance and never seeded from the live
-  // one. So a build that rendered nothing swapped an empty directory over the
-  // last good render and took the whole document down. The existence guard in
-  // publishBuildInstance cannot catch it — the directory IS there, it is just
-  // empty, which is the state nobody thought to distinguish.
+  // the worker reads it that way: it publishes the instance. What that
+  // publishes depends on the format, and neither case is acceptable.
   //
-  // The worker's catch is the path that already does the right thing here:
+  // Where the instance's `output/` is created empty, a build that rendered
+  // nothing swaps an empty directory over the last good render and takes the
+  // whole document down. The existence guard in publishBuildInstance cannot
+  // catch it — the directory IS there, it is just empty, which is the state
+  // nobody thought to distinguish.
+  //
+  // qmd is NOT that case, and this comment used to say it was. The worker
+  // passes `seedOutput` for qmd (bin/build-worker.mjs), so this instance's
+  // `output/` already holds the previous render. A silent return here
+  // republishes that render as though this revision had produced it: the
+  // document stays up and quietly stops matching its source, which is harder
+  // to notice than a blank page and no less wrong.
+  //
+  // The worker's catch is the path that already does the right thing for both:
   // diagnostics out, nothing published, `build_failed` recorded.
   for (const root of mainFiles) {
     if (!existsSync(join(srcDir, root))) {
