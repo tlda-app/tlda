@@ -4,7 +4,7 @@ import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
 import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
-import { composerState as paneComposerState, kickoffMarker } from '../agent-runtime/status-classifier.mjs'
+import { composerState as paneComposerState, dialogAwaitingKeypress, kickoffMarker } from '../agent-runtime/status-classifier.mjs'
 
 const execFileP = promisify(execFile)
 const AGENT_NICE_INCREMENT = 5
@@ -307,6 +307,16 @@ export async function submitParkedKickoff(session, harnessKind, prompt, {
   const state = composer(pane)
   if (!state.containsMarker || state.busyAfter) {
     return { observed: true, observedAt, pane, parked: false, submitted: false }
+  }
+  // Our kickoff is there. That still does not say the composer has FOCUS.
+  // Enter goes to the focused widget, so if a dialog is up this keystroke
+  // answers the dialog -- measured on a probe with three queued kickoffs and a
+  // dev-channels prompt whose highlighted default was "I am using this for local
+  // development". Refuse, name it, and let the caller show the pane: a launcher
+  // may not answer a question it cannot read, and that ruling has to bind the
+  // code and not just the plan.
+  if (dialogAwaitingKeypress(pane)) {
+    return { observed: true, observedAt, pane, parked: true, submitted: false, blockedByDialog: true }
   }
   await tmuxExec(tmuxSocket, 'send-keys', '-t', target, 'Enter').catch(() => {})
   const deadline = Date.now() + confirmMs
