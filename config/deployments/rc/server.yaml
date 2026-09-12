@@ -2,11 +2,11 @@
 # by scripts/fly-entrypoint-live.sh. These were fly.*.toml [env] variables until
 # an unset one presented as a missing feature instead of an error.
 
-# How THIS SERVER reaches the one Deepgram bridge, on the tlda-voice box, over
+# How this server reaches the shared Deepgram bridge over
 # Fly's private 6PN. REQUIRED — there is no second bridge and no fallback.
 # One box serves every site (see fly.voice.toml), so this address is the same
 # everywhere.
-deepgramBridgeUrl: ws://tlda-voice.internal:8180
+deepgramBridgeUrl: ws://your-tlda-voice.internal:8180
 
 # The server is gated at the NETWORK layer by Tailscale — only tailnet devices
 # can reach it — so it runs open inside the tailnet. The tailnet IS the boundary.
@@ -29,18 +29,7 @@ uploadDir: /app/server/persist/uploads
 # a notice -- deliverChannelNotice (<=1000ms) then acknowledgeWakeChannelNotice
 # (<=1000ms), one after the other.
 #
-# THIS RAN AT 2s FOR MONTHS AND 2s COULD NEVER WORK. It is exactly the two
-# client budgets summed, while the server's clock also has to cover the trip out
-# and the ack back -- so a delivery that fully succeeded could not acknowledge in
-# time, and the overrun was recorded as `mcp-ack-timeout`, the same string a
-# wedged process produces. A healthy agent was indistinguishable from a dead one.
-# 5s clears the serial budget with room for both network legs.
-#
-# RAISING IT IS NOT A FREE WIN. The largest single source of these timeouts
-# measured on this fleet was one bot holding a socket with no acknowledge path in
-# its code at all -- 88% of them. A longer deadline does not turn those into
-# successes, it makes each take longer to reach the same outcome. The fix for
-# that population is the bot. See docs/notifications-and-liveness.md "Errata".
+# 5s clears the two client budgets with room for both network legs.
 #
 # The unit is part of the value (the `batch(15s)` precedent, same parser). A
 # bare `5` is an error, not a default in some unit you have to guess.

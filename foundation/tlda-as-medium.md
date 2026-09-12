@@ -1,141 +1,93 @@
-# tlda as the Medium
+# tlda as a collaboration medium
 
-What tlda is, technically. The shared substrate Skip and agents work in.
+tlda is a canvas-based document review system in which people and agents share
+documents, annotations, conversations, project history, and source-editing
+surfaces.
 
-This is descriptive — for reference. Authoritative configuration / commands / API live in `CLAUDE.md` and the codebase.
-
----
-
-## At one glance
-
-A canvas-based document review and collaboration system. Two parties (Skip + agents) work in the same space, on the same documents, with the same conversations.
-
-```
-Skip (human, voice/touch)                 Agents (programmatic, MCP)
-       │                                          │
-       ▼                                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│  tlda canvas (browser, served from localhost:5176)         │
-│                                                             │
-│  Document viewer  ←→  Fleet chat  ←→  Agent panel  ←→ ... │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-       │                                          │
-       ▼                                          ▼
-   (mouse, voice,                          (MCP tools,
-    iPad, hover)                            tmux panes,
-                                            shell)
+```text
+human collaborators                 agents
+        |                              |
+        v                              v
+  browser canvas <---- tlda ----> MCP and daemon tools
+        |                              |
+        +---- shared project state ----+
 ```
 
-Both surfaces talk to the same backend. Both see the same state in their own way.
+## Documents
 
-## The pieces
+tlda renders versioned LaTeX, Markdown, Quarto, HTML, and PDF documents. The
+viewer places pages on a tldraw canvas and keeps source-aware annotations
+anchored across rebuilds where the source format permits.
 
-### Documents
+Highlights, notes, arrows, drawings, and other canvas objects are synchronized
+as tldraw shapes. Document history and source locations let collaborators refer
+to the same passage even as the rendered artifact changes.
 
-LaTeX papers, markdown notes, PDFs, HTML — anything that can be rendered. Each project is a directory; tlda's daemon watches for changes and triggers a build, which produces SVGs (for LaTeX), HTML (for markdown), or just serves the file.
+## Fleet collaboration
 
-The viewer renders documents page-by-page on the canvas, anchored in source lines. Annotations (highlights, sticky notes, arrows, pens) are stored as TLDraw shapes with source-line anchors that survive document rebuilds.
+Fleet chat lives beside the document rather than in a separate application.
+Messages support Markdown, math, code, task and lifecycle cards, tool results,
+and document-region attachments.
 
-### Fleet chat
+Each agent has a durable identity, thread, task inbox, and machine route. Human
+and agent participants see the same stored conversation through interfaces
+suited to their interaction mode.
 
-Each agent has a chat presence. Messages appear as chat-line shapes on the canvas in `FleetChatShape` instances. Skip filters his chat-shape view (typically one-on-one with the agent he's currently talking to).
+## Main components
 
-Chat messages support markdown, KaTeX math, code blocks, lifecycle cards (delegate / done / bounced), tool-result cards (search results, thread reads, screenshots), and content chips (drag-to-share document regions).
+| component | responsibility |
+| --- | --- |
+| browser client | Canvas, document viewer, chat, source editor, settings, and media controls. |
+| server | SPA and asset serving, APIs, fleet state, WebSockets, Yjs rooms, builds, and project history. |
+| daemon | Machine-local source watching, build coordination, agent lifecycle, and terminal operations. |
+| MCP server | Agent-facing fleet and document tools. |
+| project store | Versioned sources, rendered outputs, uploads, and synchronized document state. |
 
-### Agents
+The server runs the SPA, APIs, fleet WebSocket, and synchronization surfaces in
+one Node process. The daemon connects local files and processes to that server;
+it is not a second application server.
 
-Each agent is a Claude Code instance running in a tmux pane. Identified by a fleet ID (`fleet:abc12345`) and a friendly name (`help-m7`). Spawned via `fleet-spawn` (tmux-based) or via `mcp__tlda__spawn` (MCP wrapper).
+## How changes move
 
-Agents communicate via the fleet daemon, which writes/reads from the tlda server. Skip sees agents as participants in chat, not as backend mechanisms — they have names, they have presences, they have draggable handles.
+- A browser edit updates shared Yjs state, persists through the server, and is
+  broadcast to other clients.
+- An agent message enters through MCP, is stored by the fleet server, and is
+  rendered in subscribed chat views.
+- A source change reaches the daemon, triggers the configured build path, and
+  produces a reload signal after new output is ready.
+- Agent activity is normalized into fleet events that can be rendered beside
+  the conversation.
 
-### The daemon
+## Design properties
 
-A long-running process (`bin/fleet-daemon.mjs`) that watches:
-- Source directories of every project
-- Claude Code session JSONLs on this machine
-- WebSocket connection to the tlda server
+- Canvas elements use tldraw shapes, properties, selection, and synchronization.
+- Important interaction paths work with pointer and touch input; keyboard
+  shortcuts are optional accelerators.
+- Current interfaces replace deprecated ones rather than accumulating
+  compatibility shims without a present requirement.
+- Document, chat, and activity events retain enough project/version context to
+  be interpreted later.
+- User-visible claims are verified in the real browser application; internal
+  state and tests are supporting diagnostics.
 
-It pushes events upstream — source changes (triggering rebuilds), activity events (so Skip sees agent tool calls in chat), terminal-user chat (when humans type in tmux). It receives events downstream — RPCs to interrupt agents, send keystrokes, capture panes.
+## LaTeX build path
 
-### The server
+For a LaTeX project, the standard pipeline is:
 
-`server/unified-server.mjs` — single Node process serving the SPA, the API, the Yjs sync rooms, and the document assets. Runs on port 5176 by default. Started via `tlda server start`.
+1. `latexmk` builds DVI output;
+2. `dvisvgm` creates per-page SVGs;
+3. SyncTeX data provides source anchors;
+4. cross-reference analysis produces navigation metadata.
 
-### MCP
+Rendered output is stored per project. Other document formats use their native
+or format-specific build paths; see [Document formats](../docs/document-formats.md).
 
-Two MCP servers:
-- **fleet** (`mcp-server/fleet.mjs`) — tools for chatting, delegating, reading threads, managing agents, recording playbacks. The "social" surface for agents.
-- **tlda** (`mcp-server/tlda-mcp.mjs`) — tools for document operations (annotations, screenshots, pushing files, builds). The "document work" surface for agents.
+## Shared result
 
-## Configuration
+The persistent canvas, synchronized document state, version-aware conversation,
+and source references form one working medium. A participant can point to a
+document region, discuss it, edit its source, and recover the resulting history
+without translating between separate collaboration systems.
 
-- `~/.config/tlda/server.yaml` — server URL and build configuration
-- `~/.config/tlda/daemon.yaml` — machine, model, and permission configuration
-- `~/.config/tlda/bots.yaml` — managed bot configuration
-- `~/.config/tlda/cli.yaml` — ordinary CLI preferences
-- `~/work/tlda/CLAUDE.md` — project-specific agent instructions
-- `~/.claude/CLAUDE.md` — global agent instructions
-- `~/.claude/projects/<slug>/memory/` — per-project auto-memory (now symlinked to `~/work/dot-claude-memory/<slug>/`)
-
-## Where to look for what
-
-- **Document loading / SVG rendering** — `src/svgDocumentLoader.ts`, `src/SvgDocument.tsx`
-- **Chat shape (the heart of fleet chat)** — `src/shapes/FleetChatShape.tsx`
-- **Chat rendering (HTML structure of messages)** — `src/fleet/chat-render.mjs`, `src/fleet/activity-render.mjs`
-- **HUD overlay / fleet positioning** — `src/overlays/FleetHUD.tsx`
-- **MCP tool implementations** — `mcp-server/fleet.mjs`, `mcp-server/index.mjs` (tlda)
-- **Server endpoints** — `server/unified-server.mjs`, `server/routes/*.mjs`
-- **Daemon** — `bin/fleet-daemon.mjs`
-- **Spawn / agent lifecycle** — `bin/fleet-spawn.py`
-
-## How the surfaces talk
-
-When Skip drags a chip → JS handler in `FleetChatShape.tsx` → emit a tldraw shape change → Yjs sync → server stores → broadcast to other clients (including agents via the chat rendering pipeline).
-
-When an agent calls `chat()` → MCP tool in `mcp-server/fleet.mjs` → POST to the server → server emits via WebSocket → `FleetChatShape.tsx` renders the message in Skip's view.
-
-When the daemon detects a document source change → POST to server → trigger build → SVGs regenerated → server emits `signal:reload` → viewer reloads.
-
-When an agent runs a tool that's in `PRETTY_PRINT_TOOLS` (`get_thread`, `search_logs`, `screenshot`) → daemon parses the result → emits a `_prettyResult` activity event with rendered HTML → `chat-render.mjs` renders it as a card.
-
-## Major design choices (and why)
-
-- **Single port, single process** — tlda's server, Yjs sync, and SPA all on the same Node process at 5176. Removed the old separate-fleet-app architecture because cross-process state was a constant source of bugs and Skip's mental model didn't include "two apps."
-
-- **Fleet chat in the document margin** — not a separate app. Skip needs to see the chat right next to the document so the transition between talking and looking is shallow. Originally fleet was its own thing; this caused him to talk about the doc, then open the doc, and discover the agent did something he didn't expect. Felt like being lied to. Merging fleet into tlda removed that.
-
-- **Memory in its own repo** — `~/work/dot-claude-memory/` is a separate git repo, symlinked into `dot-claude/memory` and into each project's `.claude/projects/<slug>/memory/`. Was previously gitignored under `.claude/projects/`; refactored 2026-05-09 so memory is versioned (cleanup work was unsafe on un-versioned files).
-
-- **TLDraw-native UI for canvas elements** — anything on the canvas uses TLDraw's shape system, props, event model. Don't layer a different UI framework on top; that breaks selection / editing / sync. Shape state lives in props, not in coordinated meta fields.
-
-- **No backward compatibility** — when interfaces change, just change them. No compat shims, no migration layers. Callers adapt. Code stays clean.
-
-- **Voice/touch first, not keyboard first** — keybindings exist (`r` for proof reader, `m` for math note, `n`/`p` for diff navigation) but they're not the primary access path. Anything important works without keyboard. Skip's iPad reviews have no keyboard at all; iPad workflows must work end-to-end with touch alone.
-
-## The build pipeline (LaTeX projects, briefly)
-
-`tlda watch start` runs the fleet-daemon. Daemon watches each project's source dir for changes. On change, POST to server. Server runs the build:
-
-1. `latexmk` → DVI
-2. `dvisvgm` → per-page SVG
-3. `synctex` parsing → source-line anchors
-4. Proof-pairing analysis → cross-reference data
-
-Output goes to `server/projects/<name>/output/`. Multi-target builds use flat `<texBase>-page-N.svg` naming; staleness tracked via `build.stamp`. xr / xr-hyper auto-detected from `\externaldocument{}` declarations in `.aux` files.
-
-## What the medium gives both parties
-
-Both Skip and the agents have:
-- A persistent shared canvas (state survives reloads)
-- Real-time sync (Yjs)
-- Document version-tagged conversation
-- Cross-references between chat, document regions, and agent state
-- Replayable history (chat + edits + agent activity)
-- The ability to point at things ("this region," "this label," "this agent")
-
-This is the *medium* — the substrate that makes the mirror principle technically possible. Without persistent shared state, real-time sync, and cross-reference machinery, Skip and the agents could not actually see what the other is doing. The technology is the mirror's enabling layer.
-
----
-
-*See also: `mirror-principle.md`, `agent-experience.md`, `skip-experience.md`. Authoritative configuration and current commands: `~/work/tlda/CLAUDE.md`.*
+See also [Current architecture](../docs/current-main-architecture.md) and
+[The fleet agent experience](agent-experience.md).

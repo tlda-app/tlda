@@ -13,7 +13,7 @@ const adapters = [
     kind: 'svg-pages', capabilities: { presentation: false, sourceMapping: true, searchableText: false },
   }, build: (context) => runBuild(context.name, context), relevantFiles: true },
   { id: 'markdown', renderer: 'markdown', build: (context) => buildMarkdownDocument(context.name, context.log, { view: context.view }) },
-  { id: 'quarto', renderer: 'quarto', build: (context) => buildQmdDocument(context.name, context.log, { changedFiles: context.changedFiles }) },
+  { id: 'quarto', renderer: 'quarto', build: (context) => buildQmdDocument(context.name, context.log) },
   { id: 'native-pdf', renderer: 'identity', sourceFormat: 'pdf', build: (context) => buildPdfDocument(context.name, context.log) },
   { id: 'identity-slides', renderer: 'identity', documentFormat: 'slides', build: (context) => buildSlidesDocument(context.name, context.log) },
   { id: 'identity-html', renderer: 'identity', documentFormat: 'html', build: (context) => buildHtmlDocument(context.name, context.log) },

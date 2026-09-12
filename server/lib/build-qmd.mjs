@@ -13,8 +13,8 @@
  * new rendering path inside an existing one.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, rmSync } from 'fs'
-import { dirname, join, relative } from 'path'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
+import { dirname, join } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
@@ -332,55 +332,6 @@ function isNativeTldaProject(dir) {
   return false
 }
 
-function quartoBookRoots(dir) {
-  for (const name of ['_quarto.yml', '_quarto.yaml']) {
-    const path = join(dir, name)
-    if (!existsSync(path)) continue
-    const config = parseYaml(readFileSync(path, 'utf8'))
-    const roots = []
-    const visit = value => {
-      if (typeof value === 'string' && value.toLowerCase().endsWith('.qmd')) roots.push(value.replace(/\\/g, '/').replace(/^\.?\/+/, ''))
-      else if (Array.isArray(value)) value.forEach(visit)
-      else if (value && typeof value === 'object') {
-        if (value.part) visit(value.part)
-        if (value.chapters) visit(value.chapters)
-      }
-    }
-    visit(config?.book?.chapters)
-    return [...new Set(roots)]
-  }
-  return []
-}
-
-export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
-  if (!readTldaManifest(outDir)) return null
-  const bookRoots = new Set(quartoBookRoots(outDir))
-  const changed = [...new Set((changedFiles || []).map(file => String(file).replace(/\\/g, '/').replace(/^\.?\/+/, '')))]
-  if (changed.length === 0 || changed.some(file => !bookRoots.has(file))) return null
-  return changed
-}
-
-export function clearQmdFreeze(outDir, root) {
-  const normalized = String(root).replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/\.qmd$/i, '')
-  rmSync(join(outDir, '_freeze', normalized), { recursive: true, force: true })
-}
-
-export function publishIncrementalQmdOutput(outDir, root) {
-  const rendered = qmdOutputFileForSource(root)
-  const sourceHtml = join(outDir, rendered)
-  if (!existsSync(sourceHtml)) throw new Error(`[qmd] component render did not produce ${rendered}`)
-  const bookHtml = join(outDir, '_book', rendered)
-  mkdirSync(dirname(bookHtml), { recursive: true })
-  cpSync(sourceHtml, bookHtml)
-
-  const sourceFiles = join(outDir, rendered.replace(/\.html$/i, '_files'))
-  if (existsSync(sourceFiles)) {
-    const bookFiles = join(outDir, '_book', rendered.replace(/\.html$/i, '_files'))
-    rmSync(bookFiles, { recursive: true, force: true })
-    cpSync(sourceFiles, bookFiles, { recursive: true })
-  }
-}
-
 async function writeSourceScope(name, srcDir, outDir) {
   const files = (await readClientSourceManifest(name))
     .filter((rel) => existsSync(join(srcDir, rel)))
@@ -420,19 +371,7 @@ function qmdManifest(project, pageInfo, renderedFormat) {
   })
 }
 
-export function retainNativeTldaRender(outDir, manifestPath) {
-  const relativeManifest = relative(outDir, manifestPath).replace(/\\/g, '/')
-  const renderedRoot = relativeManifest.split('/')[0]
-  if (!renderedRoot || renderedRoot === '..' || !relativeManifest.includes('/') || relativeManifest.startsWith('../')) {
-    throw new Error('tlda manifest is outside the build output')
-  }
-  for (const entry of readdirSync(outDir)) {
-    if (entry === renderedRoot) continue
-    rmSync(join(outDir, entry), { recursive: true, force: true })
-  }
-}
-
-export async function buildQmdDocument(name, addLog = console.log, { changedFiles = [] } = {}) {
+export async function buildQmdDocument(name, addLog = console.log) {
   const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
@@ -467,22 +406,24 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
 
   await restoreRenv(outDir, addLog)
   const nativeTldaProject = isNativeTldaProject(outDir)
-  const incrementalRoots = nativeTldaProject ? qmdIncrementalRenderRoots(outDir, changedFiles) : null
-  // A direct edit to a declared book component re-renders that component over
-  // a private copy of the last complete output. Publication still swaps a
-  // complete output tree. Shared inputs and uncertain changes render the whole
-  // project because their dependency fan-out is not confined to one chapter.
-  if (nativeTldaProject && incrementalRoots) {
-    for (const root of incrementalRoots) {
-      // freeze:auto stores the rendered markdown as well as executed chunks.
-      // Reusing it after a direct source edit can complete successfully while
-      // publishing the old prose. This is the private build instance, so
-      // invalidate only the changed component's freeze before rendering it.
-      clearQmdFreeze(outDir, root)
-      await renderInOutput(quarto, outDir, root, addLog, { project: name })
-      publishIncrementalQmdOutput(outDir, root)
-    }
-  } else if (nativeTldaProject) {
+  // EVERY root, every build. Rendering only the roots a revision touched left
+  // the others with no HTML at all: the build instance's `output/` is created
+  // empty and never seeded from the live project, so there is no previous
+  // render here to carry forward, whatever the live project still holds.
+  //
+  // Publishing swaps `output/` WHOLESALE, so a partial tree is not a
+  // publishable one -- and the check below then failed the whole build on the
+  // roots that were never asked to render. That is what made an outage
+  // permanent instead of momentary: a project whose output was gone could not
+  // rebuild itself from its own source however many times it was pushed, and
+  // the only way out was a push touching a file outside every root's closure,
+  // which forced a full render by accident.
+  //
+  // LaTeX already builds all its targets each time. This makes qmd match it
+  // rather than diverge. A genuinely incremental render is a real design --
+  // it needs the previous output in the instance to build on -- and is not
+  // this accident, which was only ever cheaper by leaving the job unfinished.
+  if (nativeTldaProject) {
     await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true, project: name })
   } else {
     for (const root of mainFiles) await renderInOutput(quarto, outDir, root, addLog, { project: name })
@@ -497,7 +438,6 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
       const path = join(outDir, page.file)
       writeFileSync(path, stampFigureUrls(readFileSync(path, 'utf8')))
     }
-    retainNativeTldaRender(outDir, renderedProject.path)
     writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(renderedProject.pageInfo, null, 2))
     // The ToC panel reads this file and says "No headings found" without it.
     // The other branch writes it in the shared tail below, which this return

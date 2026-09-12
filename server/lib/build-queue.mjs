@@ -1,13 +1,5 @@
 import { BuildQueueStore } from './build-queue-store.mjs'
 
-export function failedBuildRpcResult(id, error) {
-  return {
-    t: 'rpc-result', id, ok: false,
-    error: error?.message || String(error),
-    errorStack: error?.stack || null,
-  }
-}
-
 export function createBuildQueue({
   transport,
   getProjectsDir,
@@ -155,17 +147,14 @@ export function createBuildQueue({
       // heartbeats do not depend on a renderer producing stdout.
       lastHeard = now()
       if (message?.t === 'heartbeat') return
-      if (message?.t === 'done' && message.ok === false) {
-        workerFailure = new Error(message.error || `build worker for ${job.name} failed`)
-        workerFailure.remoteStack = message.errorStack || null
-      }
+      if (message?.t === 'done' && message.ok === false) workerFailure = new Error(message.error || `build worker for ${job.name} failed`)
       relays = relays.then(async () => {
         if (message?.t === 'rpc') {
           try {
             const result = await relayMessage?.(job.name, message, job)
             channel?.send?.({ t: 'rpc-result', id: message.id, ok: true, result })
           } catch (error) {
-            channel?.send?.(failedBuildRpcResult(message.id, error))
+            channel?.send?.({ t: 'rpc-result', id: message.id, ok: false, error: error?.message || String(error) })
           }
           return
         }
@@ -184,7 +173,7 @@ export function createBuildQueue({
           row,
           cancelled ? 'killed' : workerFailure ? 'failed' : 'complete',
           workerFailure
-            ? { error: workerFailure.message, errorStack: workerFailure.remoteStack || workerFailure.stack, exitCode: code }
+            ? { error: workerFailure.message, exitCode: code }
             : cancelled
               ? { reason: job.cancelReason || 'cancelled', exitCode: code }
               : { exitCode: code },

@@ -120,16 +120,6 @@ const ALLOWED = {
   // shipped both ends of a severed wire more than once while every unit test
   // stayed green.
 
-  'scratch/fly-topology-room-save.mjs': {
-    count: 1,
-    category: 'tooling',
-    reason: 'Reads a source room\'s `blocked` flag from its own sync frame, which is the ONLY place that '
-      + 'flag is exposed -- there is no HTTP route for it. The rig proves a room can save through a '
-      + 'symlinked projects path, and a save that returns 202 while the room is still blocked would leave '
-      + 'every later edit stuck at flushRoom\'s early return, so the socket read is the check, not a '
-      + 'convenience.',
-  },
-
   'bin/a-link-does-not-lower-access-test.mjs': {
     count: 1,
     category: 'tooling',

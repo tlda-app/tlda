@@ -66,8 +66,7 @@ const FENCE_AGENT_WRITE_ROOTS = [
   '~/.npm/_npx',
   '~/.zcompdump*',
 ]
-// Skip's fleet policy is broad write with narrow denies: fleet event 811370
-// says agents write everything except chat. Chat is SQLite, so the filesystem
+// Fleet policy is broad write with narrow denies. Chat is SQLite, so the filesystem
 // fence denies the DB and sidecar files directly while normal chat still goes
 // through the server.
 const FENCE_BROAD_WRITE_ROOTS = ['/']
@@ -321,11 +320,10 @@ function fenceLogPath(policy) {
 }
 
 export function wrapSandboxCmd(cmd, policy, opts = {}) {
-  // Fence stripped out (Skip's call, 2026-07-02): the sandbox wrapper
-  // over-restricted every spawned agent — no `ps`, no `~/.fly`, no git
-  // worktrees — and repeatedly blocked agents from doing real work, including
-  // fixing the fence itself. Launch daemon-spawned agent commands UNWRAPPED by
-  // default. SpawnDirect can opt into the real wrapper as the isolated testbed.
+  // The sandbox wrapper over-restricted spawned agents — no `ps`, no `~/.fly`,
+  // no git worktrees — and blocked ordinary work. Launch daemon-spawned agent
+  // commands unwrapped by default. SpawnDirect can opt into the real wrapper as
+  // the isolated testbed.
   if (!opts.enforce) return cmd
   if (!policy) return cmd
   const runner = policy.runner || {}

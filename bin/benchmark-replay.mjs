@@ -1,14 +1,7 @@
 #!/usr/bin/env node
 // Benchmark replay — turn "this period in this project" into a rerunnable benchmark.
 //
-// Skip, 2026-09-02 17:23–17:24 EDT:
-//   "play exactly the same chat + calls through the app on the same timeline and watch the doc"
-//   "think of that as like a benchmark"
-//   "latency at speed magnification is a like, plot that acts as a benchmark"
-//   "we'll accumulate benchmark sessions as we go; let's make it like, scripted/trivial
-//    to say 'this period in this project is a benchmark'"
-//
-// So the unit is (project, start, end) → a named benchmark, replayable at a speed
+// The unit is (project, start, end) → a named benchmark, replayable at a speed
 // multiplier, producing latency-vs-speed points. Not a one-off gate script.
 //
 // WHAT IT DELIBERATELY DOES NOT DO: it does not copy document or chat CONTENT into
@@ -51,7 +44,7 @@ function die(msg) {
 // Each returns a plain number or null. null means "not measured", never 0 —
 // a zero that means "no instrument" is the failure this repo keeps paying for.
 
-/** dvisvgm fan-out: how many render workers exist right now. Skip: "how are there 6 dvisvgm workers". */
+/** dvisvgm fan-out: how many render workers exist right now. */
 function dvisvgmWorkers() {
   try {
     const out = execFileSync('/bin/ps', ['ax', '-o', 'command'], { encoding: 'utf8' })
@@ -102,7 +95,7 @@ function projectState(base, project, token) {
 /**
  * What the BROWSER is actually showing — not what the server believes is built.
  *
- * Skip's surface is the rendered document, so curve 1 has to end at the pixels.
+ * The measured surface is the rendered document, so curve 1 ends at the pixels.
  * This reads the rendered revision/content marker out of the pooled browser tab
  * that `replay --browser` keeps pointed at the project.
  *
@@ -153,8 +146,7 @@ function sample(base, project, token, label, opts = {}) {
 // re-read at replay time. Content stays in the store.
 
 async function extractFromStore(from, to) {
-  // Skip: "make it like, scripted/trivial to say 'this period in this project is a
-  // benchmark'" — so capture does its own extraction. Adding a session must never
+  // Capture does its own extraction. Adding a session must never
   // mean hand-authoring a trace.
   //
   // Reads through FleetSearchClient, which forks a worker against a db PATH — so
@@ -233,7 +225,7 @@ async function replay() {
   const into = arg('into')
   const speed = Number(arg('speed', '1'))
   const dry = has('dry-run')
-  const base = arg('base', 'https://tlda-pic-dev.cormorant-matrix.ts.net')
+  const base = arg('base', 'https://tlda.example.invalid')
   const token = process.env.TLDA_TOKEN || die('replay needs TLDA_TOKEN in the environment')
 
   const trace = JSON.parse(readFileSync(tracePath, 'utf8'))
@@ -291,7 +283,7 @@ async function replay() {
 
     // Curve 1 ends at the BROWSER, not the server. An accepted revision that the
     // tab has not painted is exactly the "document is out of sync a cycle" state
-    // Skip was working through, so server freshness cannot stand in for it.
+    // that this measures, so server freshness cannot stand in for it.
     // pendingSince is set when the source revision moves and cleared when the
     // rendered content actually changes; the gap between them is the latency.
     let editToVisibleMs = null
@@ -319,7 +311,7 @@ async function replay() {
   samples.push(sample(base, into, token, 'after', { browser: useBrowser }))
   if (notifyDriver) await notifyDriver.close()
 
-  // Skip, on what the curves are: "two primary curves, kept separate" —
+  // The two primary curves stay separate:
   //   (1) edit → browser-visible render latency
   //   (2) chat send → target agent notification arrival latency
   // and load/dvisvgm as an EXPLANATORY COVARIATE, never blended into a latency

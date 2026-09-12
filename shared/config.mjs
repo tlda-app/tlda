@@ -521,7 +521,7 @@ export function getMachineId() {
  * `capture-pane` (what each agent is doing), so it is the cadence of the whole
  * liveness picture.
  *
- * Skip, 2026-07-25, setting it himself:
+ * The configured cadence is intentionally short:
  *
  *   "We use list-sessions for who's running and capture-pane for what an agent
  *    is doing, and we do that at every two or three second polling interval.
@@ -597,7 +597,7 @@ export function getSourceChangeSettleDeadlineMs() {
 // RECEIVED and never answered stays in it. On 2026-08-18 seven rejected
 // bregman source-changes did exactly that and pinned the head of the queue
 // for 22 minutes: 1,496 messages backed up behind them, 387 of them the
-// activity events Skip was watching, which reached his screen up to seven
+// activity events being monitored, which reached the UI up to seven
 // minutes late.
 //
 // This is a backstop, not a retry policy. It does not decide whether a
@@ -620,7 +620,7 @@ export function getOutboxInflightDeadlineMs() {
 
 // How many bytes of payload one durable flush may read, parse and hand to the
 // socket before yielding. This bounds the daemon's *relay* latency against its
-// *queue* depth -- the two jobs Skip named as being in tension -- so that no
+// *queue* depth -- the two jobs that are in tension -- so that no
 // backlog, and no single large message, can hold the event loop long enough to
 // stop the daemon answering.
 //
@@ -674,7 +674,7 @@ const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
  * does not manage them. Shape:
  *
  *   bots:
- *     todd: { script: /Users/skip/work/tlda-bots/todd/todd.mjs }
+ *     todd: { script: /Users/you/work/tlda-bots/todd/todd.mjs }
  *   environments:
  *     testing: [todd]
  *

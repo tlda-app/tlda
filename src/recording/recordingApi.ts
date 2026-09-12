@@ -47,22 +47,6 @@ export function recordingAudioUrl(doc: string, id: string, privateDraft = false)
   return `${getServerHttpBase()}/api/projects/${doc}/${path}/audio`
 }
 
-/**
- * Propose the class interval as the owner.
- *
- * The agent path for this is a fleet-websocket message that only an
- * authenticated fleet agent may send, so without this the owner's own review
- * step refused until somebody else ran an MCP call. Same server function, owner
- * as the actor.
- */
-export async function proposeClassInterval(doc: string, id: string, startMs: number, endMs: number) {
-  const resp = await fetch(`${getServerHttpBase()}/api/projects/${doc}/recording/${id}/propose-interval`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ startMs, endMs }),
-  })
-  if (!resp.ok) throw new Error((await resp.json()).error || `Interval proposal failed (${resp.status})`)
-  return resp.json()
-}
-
 export async function editOwnerClassInterval(doc: string, id: string, startMs: number, endMs: number) {
   const resp = await fetch(`${getServerHttpBase()}/api/projects/${doc}/recording/${id}/owner-interval`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ startMs, endMs }),

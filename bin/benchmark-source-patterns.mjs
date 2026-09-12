@@ -287,7 +287,7 @@ async function runPattern() {
   const pattern = arg('pattern') || die('run needs --pattern spaced|multi-file|during-build')
   const drive = arg('drive') || die('run needs --drive DIR')
   const project = arg('project') || die('run needs --project DISPOSABLE')
-  const base = arg('base', 'https://tlda-fly.cormorant-matrix.ts.net')
+  const base = arg('base', 'https://tlda.example.invalid')
   const token = process.env.TLDA_TOKEN || die('run needs TLDA_TOKEN')
   const load = Number(arg('load', '1'))
   const breakBuild = process.argv.includes('--break-build')

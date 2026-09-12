@@ -54,13 +54,9 @@ export function createEditClusterDebouncer({
   }
 
   async function serializeMirror(apply, differsFromMirror) {
-    if (timer) clock.clearTimeout(timer)
-    timer = null
-    const settleOpenCluster = open
-    open = false
+    await closeNow()
     mirrorDepth += 1
     try {
-      if (settleOpenCluster) await onSettled({ project: sourceDir })
       return await apply()
     } finally {
       mirrorDepth -= 1

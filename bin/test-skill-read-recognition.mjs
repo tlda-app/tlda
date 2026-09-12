@@ -105,7 +105,7 @@ async function main() {
 
   // --- Path 6: a non-skill read must NOT credit (no false positives) ---
   const a3 = 'fleet:parity-negative-probe'
-  await check(a3, { tool: 'Read', file: `/Users/skip/work/tlda/server/unified-server.mjs` })
+  await check(a3, { tool: 'Read', file: `/home/user/work/tlda/server/unified-server.mjs` })
   T('6. reading a non-skill file does NOT clear the gate', owes(await check(a3, { tool: 'mcp__tlda__report' })))
 
   console.log(failed ? '\nSOME CHECKS FAILED' : '\nALL SKILL-READ-RECOGNITION CHECKS PASSED')

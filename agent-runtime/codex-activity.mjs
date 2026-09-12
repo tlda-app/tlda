@@ -32,8 +32,7 @@ import { extractFunctionsExecCalls, isMcpToolName, mcpEndEvent } from './functio
 import { editOperation, textChange } from './edit-operation.mjs'
 
 // Native Codex tool name → Claude vocabulary, so a Codex agent's activity
-// stream reads identically to a Claude agent's (Skip's call, 2026-06-15:
-// "use the Claude vocabulary, it's so much easier to understand").
+// stream uses the same established labels as a Claude agent's activity.
 // VERIFIED against real rollouts: exec_command, update_plan. The rest are
 // Codex's documented native tools, mapped best-effort; any name NOT in this
 // map falls through to its literal Codex name (so an unmapped/renamed tool

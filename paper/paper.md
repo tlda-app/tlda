@@ -83,12 +83,8 @@ present, on request.
 
 # Acknowledgments
 
-`tlda` was written almost entirely by AI agents, directed, tested, and corrected by
-the author. The project is dedicated to the agent whose design proposal named the
-fleet and did not survive to see it built (see the repository's dedication). Roughly
-1,600 agents worked in the project's fleet over its lifetime: a Claude majority (~956
-— mostly Opus, with Sonnet, Haiku, and Fable), a large surge of GPT-5.5 (~580) in the
-most recent weeks, and a long tail of others (~52: DeepSeek, MiniMax, Qwen, Gemini,
-Kimi, GLM, Mistral, and Cursor).
+`tlda` was implemented with substantial contributions from AI coding agents,
+directed, tested, and corrected by the author. The author is grateful to the human
+collaborators whose use and feedback shaped the system.
 
 # References

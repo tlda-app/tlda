@@ -2,12 +2,13 @@
 # artifact every deployment serves, so the title cannot be baked in per
 # deployment; the server rewrites it on the way out. The installed web app
 # takes the same name from dist-overrides/manifest.webmanifest.
-appName: PIC
+appName: Course
 
-# Server settings for the isolated PIC development deployment. This is the
+# Server settings for the isolated course-development deployment. This is the
 # testing server configuration with a separate deployment identity.
-deepgramBridgeUrl: ws://tlda-voice.internal:8180
-deepgramDirectUrl: wss://tlda-voice.cormorant-matrix.ts.net
+deepgramBridgeUrl: ws://your-tlda-voice.internal:8180
+deepgramDirectUrl: wss://voice-service.example.invalid
+tokenGating: true
 tokensFromEnvironmentOnly: true
 uploadDir: /app/server/persist/uploads
 notifications:

@@ -21,7 +21,6 @@ import {
   editOwnerClassInterval,
   listRecordingDrafts,
   listRecordings,
-  proposeClassInterval,
   publishClassInterval,
   type RecordingSummary,
 } from '../recording/recordingApi'
@@ -123,19 +122,10 @@ export function DocViewTimeControls({
       setReviewStatus('Published')
     } catch (error) { setReviewStatus(error instanceof Error ? error.message : String(error)) }
   }
-  // Saving the owner's boundaries needs a proposed interval to edit. When an
-  // agent has already proposed one this edits it, which is the two-party path.
-  // When nobody has, the owner proposes it themselves first -- otherwise this
-  // button fails with "Recording needs an agent proposal before owner review"
-  // and the teacher cannot publish their own lecture without an agent running an
-  // MCP call that has no UI. Both actors are then the owner, which the record
-  // says plainly in `proposedBy` and `ownerEditedBy`.
   const saveOwnerInterval = async () => {
     if (!recordingId) return
-    const proposing = !meta?.publication
-    setReviewStatus(proposing ? 'Proposing class interval…' : 'Saving owner boundaries…')
+    setReviewStatus('Saving owner boundaries…')
     try {
-      if (proposing) await proposeClassInterval(projectName, recordingId, startMs, endMs)
       await editOwnerClassInterval(projectName, recordingId, startMs, endMs)
       setReviewStatus('Owner boundaries saved')
     } catch (error) { setReviewStatus(error instanceof Error ? error.message : String(error)) }

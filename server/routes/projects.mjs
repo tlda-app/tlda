@@ -40,8 +40,7 @@ import {
   serializeProjectStoreOperation,
 } from '../lib/project-store.mjs'
 import { deleteProjectAndBuildSubmissions, serializedPublication } from '../lib/build-dispatch.mjs'
-import { importProjectPromotionStream, validatePromotionName, writeProjectPromotionStream } from '../lib/project-promotion.mjs'
-import { promotionExportHeaders, requirePromotionExport, validatePromotionSourceOrigin } from '../lib/promotion-source.mjs'
+import { exportProjectPromotion, importProjectPromotion, validatePromotionName } from '../lib/project-promotion.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
@@ -52,12 +51,12 @@ import { compareHighlightFeedbackBySource, highlightFeedbackFromShape } from '..
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
 import { markdownColumnFileForSource, markdownProjectRootColumn, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
-import { clipRecordingData, readRecordingPublication, writeCandidateClip, writeOwnerInterval, writePublishedRecording } from '../lib/recording-publication.mjs'
+import { clipRecordingData, readRecordingPublication, writeOwnerInterval, writePublishedRecording } from '../lib/recording-publication.mjs'
 import { materializeRecordingAudioClip } from '../lib/recording-audio-clip.mjs'
 import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
-import { getActiveEnvName, getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
+import { getActiveEnvName, getFleetServerUrl, getRwToken, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
 import { gitBlobId } from '../../shared/git-blob-id.mjs'
 import { writeSentinel } from '../lib/sentinel.mjs'
@@ -429,25 +428,23 @@ router.post('/', requireRw, async (req, res) => {
 // A promotion source is read by another configured tlda environment, never by
 // a client-provided archive. Publication serialization makes metadata,
 // lifecycle identity, and output one coherent snapshot.
-router.get('/:name/promotion-export/:revision', requirePromotionExport, async (req, res) => {
+router.get('/:name/promotion-export/:revision', requireRw, async (req, res) => {
   try {
     validatePromotionName(req.params.name)
     const project = await readProject(req.params.name)
     if (!project) return res.status(404).json({ error: 'Project not found' })
     const lifecycle = await sourceLifecycleStore(req.params.name, { existingProject: project })
-    res.status(200).type('application/vnd.tlda.promotion-v2')
-    await writeProjectPromotionStream({
+    const artifact = await exportProjectPromotion({
       name: req.params.name,
       revision: req.params.revision,
       sourceEnvironment: getActiveEnvName(),
       projectRoot: liveProjectDir(req.params.name),
       lifecycleStore: lifecycle,
       serialize: serializedPublication,
-      destination: res,
     })
+    res.json(artifact)
   } catch (error) {
-    if (res.headersSent) res.destroy(error)
-    else res.status(409).json({ error: error.message })
+    res.status(409).json({ error: error.message })
   }
 })
 
@@ -458,19 +455,17 @@ router.post('/:name/promote', requireRw, async (req, res) => {
     validatePromotionName(req.params.name)
     const sourceEnvironment = String(req.body?.sourceEnvironment || '')
     const revision = String(req.body?.revision || '')
-    const sourceOrigin = validatePromotionSourceOrigin(getServerUrl(sourceEnvironment))
-    const sourceUrl = new URL(`/api/projects/${encodeURIComponent(req.params.name)}/promotion-export/${encodeURIComponent(revision)}`, sourceOrigin)
+    const sourceUrl = new URL(`/api/projects/${encodeURIComponent(req.params.name)}/promotion-export/${encodeURIComponent(revision)}`, getServerUrl(sourceEnvironment))
+    const token = getRwToken()
+    if (!token) throw new Error('server-to-server project promotion requires a configured write token')
     const response = await fetch(sourceUrl, {
-      headers: promotionExportHeaders(),
+      headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(300000),
     })
-    if (!response.ok) {
-      const refusal = await response.json().catch(() => ({}))
-      throw new Error(`trusted source ${sourceEnvironment} refused promotion: ${refusal?.error || response.status}`)
-    }
-    if (!response.body || response.headers.get('content-type') !== 'application/vnd.tlda.promotion-v2') throw new Error('trusted source returned an invalid promotion stream')
-    const result = await importProjectPromotionStream({
-      stream: response.body,
+    const artifact = await response.json()
+    if (!response.ok) throw new Error(`trusted source ${sourceEnvironment} refused promotion: ${artifact?.error || response.status}`)
+    const result = await importProjectPromotion({
+      artifact,
       sourceEnvironment,
       name: req.params.name,
       revision,
@@ -1495,35 +1490,6 @@ router.get('/:name/recording-draft/:id/audio', requireRecordingPrivateRead, (req
   const metaPath = join(dir, `${req.params.id}.json`)
   if (!existsSync(audioPath) || !existsSync(metaPath)) return res.status(404).json({ error: 'Audio not found' })
   return sendRecordingAudio(res, audioPath, metaPath)
-})
-
-// POST /:name/recording/:id/propose-interval — the owner proposes the class
-// interval themselves.
-//
-// The proposal used to be reachable only over the fleet websocket, whose handler
-// refuses anything that is not an authenticated fleet agent
-// (`lecture-recording-proposal` in unified-server.mjs). That made publication a
-// three-step path across two parties, and the owner's first step -- Save my
-// boundaries -- failed with "Recording needs an agent proposal before owner
-// review" until an agent had run an MCP call that has no UI anywhere. A teacher
-// with a recorded lecture could not publish it to a student alone.
-//
-// This is the same `writeCandidateClip` the agent path calls, with the owner as
-// the actor rather than a fleet id. It does not relax who may publish: the route
-// is `requireRw` exactly like owner-interval and publish, and `proposedBy` still
-// records which actor proposed, so an owner self-proposal and an agent proposal
-// stay distinguishable in the record. No new lifecycle state, because nothing
-// consumes a distinction beyond that actor.
-router.post('/:name/recording/:id/propose-interval', requireRw, (req, res) => {
-  const dir = recordingsDir(req.params.name)
-  const metaPath = join(dir, `${req.params.id}.json`)
-  if (!existsSync(metaPath)) return res.status(404).json({ error: 'Recording not found' })
-  try {
-    res.json(writeCandidateClip(dir, JSON.parse(readFileSync(metaPath, 'utf8')), req.body, 'classroom:rw'))
-  } catch (error) {
-    if (error instanceof TypeError || error instanceof RangeError) return res.status(400).json({ error: error.message })
-    return res.status(409).json({ error: error.message })
-  }
 })
 
 router.put('/:name/recording/:id/owner-interval', requireRw, (req, res) => {

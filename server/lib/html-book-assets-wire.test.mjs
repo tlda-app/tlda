@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
-import { request } from 'node:https'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -38,27 +37,16 @@ async function stopServer(child) {
   await new Promise(resolve => child.once('exit', resolve))
 }
 
-async function rawStatus(port, path) {
-  return await new Promise((resolve, reject) => {
-    const req = request({ hostname: '127.0.0.1', port, path, rejectUnauthorized: false }, res => {
-      res.resume()
-      res.once('end', () => resolve(res.statusCode))
-    })
-    req.once('error', reject)
-    req.end()
-  })
-}
-
-test('a nested HTML book serves its directory index and referenced relative assets', { timeout: 180_000 }, async () => {
+test('a nested HTML book serves every referenced relative site_libs asset', { timeout: 180_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-html-book-assets-'))
   const projects = join(root, 'projects')
-  const project = join(projects, 'qtm285-course')
+  const project = join(projects, 'book')
   const chapterDir = join(project, 'output', '_book', 'homework')
   const assetsDir = join(project, 'output', '_book', 'site_libs', 'runtime')
   mkdirSync(chapterDir, { recursive: true })
   mkdirSync(assetsDir, { recursive: true })
   mkdirSync(join(project, 'source'), { recursive: true })
-  writeFileSync(join(project, 'project.json'), JSON.stringify({ name: 'qtm285-course', title: 'Book', format: 'html' }))
+  writeFileSync(join(project, 'project.json'), JSON.stringify({ name: 'book', title: 'Book', format: 'html' }))
   writeFileSync(join(project, 'output', 'page-info.json'), JSON.stringify([
     { file: '_book/homework/setup.html', width: 800, height: 1000, title: 'Setup' },
   ]))
@@ -68,7 +56,6 @@ test('a nested HTML book serves its directory index and referenced relative asse
     </head><body>Setup</body></html>`)
   writeFileSync(join(assetsDir, 'app.css'), 'body { color: black; }')
   writeFileSync(join(assetsDir, 'app.js'), 'window.bookRuntime = true')
-  writeFileSync(join(project, 'output', '_book', 'index.html'), '<!doctype html><title>Directory index</title>')
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
@@ -86,12 +73,7 @@ test('a nested HTML book serves its directory index and referenced relative asse
   })
   try {
     await waitForServer(child)
-    const bookUrl = `https://127.0.0.1:${port}/docs/qtm285-course/_book/`
-    const book = await fetch(bookUrl)
-    assert.equal(book.status, 200)
-    assert.match(await book.text(), /Directory index/)
-
-    const pageUrl = `https://127.0.0.1:${port}/docs/qtm285-course/_book/homework/setup.html`
+    const pageUrl = `https://127.0.0.1:${port}/docs/book/_book/homework/setup.html`
     const page = await fetch(pageUrl, { dispatcher: undefined })
     assert.equal(page.status, 200)
     const html = await page.text()
@@ -103,14 +85,6 @@ test('a nested HTML book serves its directory index and referenced relative asse
       const response = await fetch(new URL(reference, pageUrl))
       assert.equal(response.status, 200, `${reference} must resolve from its nested chapter`)
     }
-
-    const missing = await fetch(`https://127.0.0.1:${port}/docs/qtm285-course/missing/`)
-    assert.equal(missing.status, 404)
-
-    assert.equal(
-      await rawStatus(port, '/docs/qtm285-course/_book/../../project.json'),
-      404,
-    )
   } finally {
     await stopServer(child)
     removeTempDir(root)

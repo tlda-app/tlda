@@ -537,7 +537,7 @@ function recordDaemonSourceBindings(daemonKey, reported) {
       reportedAt,
       ...(binding.kind === 'git' ? { kind: 'git' } : {}),
       ...(binding.kind === 'git' && typeof binding.remote === 'string' ? { remote: binding.remote } : {}),
-      ...(binding.kind === 'git' && ['fast-forward', 'auto-merge', 'tlda-project'].includes(binding.mirrorMode) ? { mirrorMode: binding.mirrorMode } : {}),
+      ...(binding.kind === 'git' && ['fast-forward', 'auto-merge'].includes(binding.mirrorMode) ? { mirrorMode: binding.mirrorMode } : {}),
     }
   }
   writeSourceBindingRegistry(registry)
@@ -4781,7 +4781,6 @@ app.use('/docs', async (req, res, next) => {
   if (parts.length < 3) return next() // need at least /name/site_libs/...
   const name = docsProjectName(parts[0])
   const filePath = parts.slice(1).join('/')
-  if (filePath.endsWith('/')) return next()
   // Skip auth for non-HTML sub-resources in html-format projects
   // (CSS, JS, fonts, figures — loaded by iframes that can't pass auth headers)
   if (!filePath.endsWith('.html')) {
@@ -4794,12 +4793,7 @@ app.use('/docs', async (req, res, next) => {
             if (error) return next(error)
             const gated = await runDocsAccessCheck(req, res, name)
             if (gated) return gated === 'sent' ? undefined : next(gated)
-            let assetPath
-            try {
-              assetPath = resolveContainedPath(join(PROJECTS_DIR, name, 'output'), filePath)
-            } catch {
-              return res.status(404).json({ error: 'Not found' })
-            }
+            const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
             if (await docPathExists(assetPath)) {
               res.set('Cache-Control', 'public, max-age=3600')
               return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
@@ -4807,12 +4801,7 @@ app.use('/docs', async (req, res, next) => {
             next()
           })
         }
-        let assetPath
-        try {
-          assetPath = resolveContainedPath(join(PROJECTS_DIR, name, 'output'), filePath)
-        } catch {
-          return res.status(404).json({ error: 'Not found' })
-        }
+        const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
         if (await docPathExists(assetPath)) {
           res.set('Cache-Control', 'public, max-age=3600')
           return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
@@ -5114,18 +5103,11 @@ app.use('/docs', (req, res, next) => {
   }
 
   // Try project output first
-  const outputRoot = join(PROJECTS_DIR, name, 'output')
-  const servedFilePath = filePath.endsWith('/') ? `${filePath}index.html` : filePath
-  let projectPath = null
-  try {
-    projectPath = resolveContainedPath(outputRoot, servedFilePath)
-  } catch {
-    return res.status(404).json({ error: 'Not found' })
-  }
+  const projectPath = join(PROJECTS_DIR, name, 'output', filePath)
   if (await docPathExists(projectPath)) {
     res.set('Cache-Control', 'no-cache')
     // For HTML files in html-format projects, inject the tlda bridge script
-    if (servedFilePath.endsWith('.html')) {
+    if (filePath.endsWith('.html')) {
       try {
         const project = await readProject(name)
         if (project) {
@@ -5185,7 +5167,7 @@ app.use('/docs', (req, res, next) => {
             try {
               const pageInfoPath = join(PROJECTS_DIR, name, 'output', 'page-info.json')
               const pageInfo = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))
-              const idx = pageInfo.findIndex(p => p.file === servedFilePath)
+              const idx = pageInfo.findIndex(p => p.file === filePath)
               isFirstPage = idx === 0
               // Compute prev/next chapter titles for navigation
               // Prev/next name the neighbouring CHAPTERS, so they carry the
@@ -8575,16 +8557,8 @@ async function dispatchFleetWsMessage(ws, msg) {
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (newName) {
-      // The same gate POST /api/rename already uses. This path used to ask
-      // only nameTakenByOther, which compares names against names — so a rename
-      // could take a name equal to another living agent's LABEL, which is the
-      // fan-out this gate exists to stop, and it could take a reserved routing
-      // word or an unaddressable string besides. Found by the singleton-label
-      // wire test: `siren` held as a singleton label by one agent was still
-      // available as a friendly name to another over this socket.
-      const collisions = await fleetStore.checkNameAvailable([newName], { excludeId: agent.id, asFriendlyName: true }) || []
-      if (newName === SERVER_OWNER_NAME) collisions.push({ name: newName, kind: 'server_owner' })
-      if (collisions.length) { error(`Name "${newName}" unavailable: ${formatNameCollisions(collisions)}`); return }
+      const conflict = await fleetStore.nameTakenByOther(newName, agent.id)
+      if (conflict || newName === SERVER_OWNER_NAME) { error(`Name "${newName}" already in use`); return }
     }
     try {
       await fleetStore.renameAgentFriendlyName(agent.id, newName, { actorId: agent.id, reason: 'ws-rename' })
@@ -8665,7 +8639,7 @@ async function dispatchFleetWsMessage(ws, msg) {
 
   // ---- label ----
   if (type === 'label') {
-    const { agent: agentQuery, operation, labels, singleton } = msg
+    const { agent: agentQuery, operation, labels } = msg
     const validValue = operation === 'replace'
       ? Array.isArray(labels)
       : (operation === 'add' || operation === 'remove')
@@ -8676,10 +8650,7 @@ async function dispatchFleetWsMessage(ws, msg) {
     }
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, {
-      actorId: msg.caller || agent.id,
-      singleton: singleton == null ? null : !!singleton,
-    })
+    const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, { actorId: msg.caller || agent.id })
     broadcastState()
     reply({ ok: true, ...result })
     return
@@ -9753,28 +9724,6 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     return
   }
 
-  if (type === 'agent-status') {
-    if (!fleetStore) return
-    const agentId = msg.agent_id || msg.agentId
-    const activity = msg.activity || msg.state
-    if (!agentId || !['thinking', 'compacting', 'idle', 'unknown'].includes(activity)) return
-    const activityAtMs = Date.parse(msg.ts) || Date.now()
-    if (activity !== 'unknown') {
-      markAgentAlive(agentId, activityAtMs, {
-        source: 'daemon-read-pane',
-        reason: `pane status ${activity}`,
-        atMs: activityAtMs,
-      })
-    }
-    runtimeStatusStore.updateActivity(agentId, activity, {
-      tool: msg.tool || null,
-      atMs: activityAtMs,
-    })
-    broadcastEvent('agent-status', { agent: agentId, status: 'awake', activity, tool: msg.tool || null, ts: msg.ts || new Date(activityAtMs).toISOString() })
-    if (activity === 'thinking' || activity === 'compacting') touchActivity(agentId)
-    return
-  }
-
   if (type === 'activity-event') {
     if (!fleetStore) return
     const serverReceivedAtMs = Date.now()
@@ -9792,14 +9741,12 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       reason: 'activity extracted from harness stream',
       atMs: activityAtMs,
     })
-    const currentActivity = runtimeStatusStore.evidenceFor(agent_id)?.activity
-    if (tool && !String(tool).startsWith('_') && (currentActivity === 'thinking' || currentActivity === 'compacting')) {
-      runtimeStatusStore.updateActivity(agent_id, currentActivity, {
-        tool,
-        atMs: runtimeStatusStore.evidenceFor(agent_id)?.activity_at_ms || activityAtMs,
-      })
-      broadcastEvent('agent-status', { agent: agent_id, status: 'awake', activity: currentActivity, tool, ts: msg.ts || new Date(activityAtMs).toISOString() })
-    }
+    const activityName = tool && !String(tool).startsWith('_') ? 'thinking' : 'unknown'
+    runtimeStatusStore.updateActivity(agent_id, activityName, {
+      tool: tool && !String(tool).startsWith('_') ? tool : null,
+      atMs: activityAtMs,
+    })
+    broadcastEvent('agent-status', { agent: agent_id, status: 'awake', activity: activityName, tool: tool || null, ts: msg.ts || new Date(activityAtMs).toISOString() })
     touchActivity(agent_id)
     if (sourceEditActivity && (msg.status === 'completed' || msg.status === 'error')) return
     if (!shouldStoreDaemonActivity(msg)) return

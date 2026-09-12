@@ -1,9 +1,7 @@
 // A message id is handed out everywhere and, until this landed, accepted
 // nowhere on the read surface. `inbox()` prints `id:2923649`, `chat()` returns
-// one, `approval_id` and `amend_id` both take one -- and no read tool would
-// turn one back into the message it names. Skip, 2026-08-17: "apparently you
-// can't ook uo chat messages given id ... if that's what we give you ... you
-// hvae to be able to fucking look them up."
+// one, `approval_id` and `amend_id` both take one -- so a read tool must turn
+// that identifier back into the message it names.
 //
 // This exercises the WIRE, which is the only part that can be missing. The MCP
 // `thread(message_id:)` branch sends the ephemeral operation `event-by-id`; the

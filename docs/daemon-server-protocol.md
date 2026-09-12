@@ -1,163 +1,82 @@
-# The daemon–server durable message protocol
+# Daemon–server message delivery
 
-Skip, 2026-08-18 15:42 EDT, marking this **high priority**:
+The daemon and server exchange machine-local facts, activity, terminal data,
+and RPCs over a fleet-daemon WebSocket. Delivery policy follows the semantics of
+each message type rather than treating all traffic as equally durable.
 
-> it seems like we don't have protocols for these interactions
->
-> the result being surprising shit happens that one end is not prepared to deal with
->
-> somoene needs to write this shit down
+## Delivery classes
 
-This document is that. **It records the protocol as it actually is, and names every state
-where one end can do something the other end has no defined answer for.** Where a state is
-unspecified it says so rather than inventing a rule — an invented protocol written down is
-worse than an admitted gap, because the next person builds on it.
+| class | behavior | examples |
+| --- | --- | --- |
+| durable FIFO | Persist in SQLite until the receiver acknowledges or permanently rejects the row. | activity events, agent routes and context, task events, warnings, terminal chat, RPC replies |
+| ephemeral FIFO | Buffer briefly while disconnected, with a bounded queue. | terminal output |
+| latest wins | Retain only the newest value for each message/agent key. | terminal size, activity health |
+| direct | Attempt delivery on the current socket without persistence. | daemon hello, correlated requests governed by their caller's timeout |
 
-## Why this exists, in one concrete failure
+RPC replies are durable because work can finish after the request socket closes.
+Heartbeat-style state is latest-wins because a newer value supersedes an older
+one. Activity records remain durable because losing one removes evidence.
 
-On 2026-08-18 a single unspecified state took the whole fleet down for a day, and every
-surface reported health throughout.
+The authoritative type mapping is in `daemon/delivery-policy.mjs`.
 
-A `source-change` row was delivered to the server. The server processed it and sent an ack.
-**The daemon refused its own ack** — `daemon/delivery-runtime.mjs:77` returns `false` before
-`outbox.ack(outboxId)` when a gate on the row fails — and **recorded nothing**. The row
-stayed pending with `last_error = (none)`.
+## Durable daemon-to-server path
 
-Ten hours later it was still there: **281 attempts, created 09:36:54Z, no error anywhere in
-the system.** It sat at the head of a FIFO delivery window of 100, alongside 61 others in
-the same state, so 62% of every flush cycle re-offered rows that could never be acked.
+1. The daemon writes the message and stable outbox ID to its SQLite outbox.
+2. A flush claims pending rows in outbox order, subject to inflight and byte
+   budgets.
+3. The server processes the envelope and records the outbox ID as processed.
+4. The server acknowledges the ID; the daemon removes the row.
 
-Behind them, **60,970 rows starved**: 10,479 `agent-route`, 10,872 `activity-event`, 1,061
-`rpc-reply`. The visible consequences were that agents could not be minted (`rpc-reply`
-never returns, so a seat reservation never completes), agents could not be woken
-(`agent-route` never publishes), and Skip's activity cards stopped appearing. Two rows —
-`terminal-chat` and `agent-compacting` — had **0 attempts**: queued and never offered at
-all.
+If a connection closes before acknowledgement, the daemon offers the same row
+again. The server's processed-ID ledger makes that replay idempotent and returns
+the acknowledgement without repeating the handler.
 
-**No end of this was lying. Every end was doing what it was told.** The gap is that
-"recipient refuses an ack" is not a state the protocol has an answer for.
+The runtime limits inflight work per lane and releases unanswered inflight slots
+after a configured deadline. A byte budget prevents large payloads from making
+each flush monopolize the daemon event loop. The first pending row may exceed
+the budget so an oversized message is still deliverable.
 
-## The participants and the transport
+## Errors and dead letters
 
-- **The daemon** owns machine-local state and a durable outbox
-  (`~/.config/tlda/daemon-outbox.<env>.sqlite`). It is the sender for its own facts and the
-  replier for server RPCs.
-- **The server** receives daemon facts, reports failures back, and issues RPCs. It does not
-  own daemon state and must not model it — see
-  [Current architecture](current-main-architecture.md).
-- **The transport** is one websocket per daemon at `/ws/fleet-daemon`. Messages on a single
-  connection are processed through **one serialized promise chain, declared per connection**
-  in `server/unified-server.mjs` inside the upgrade handler. A new connection gets a fresh
-  chain; a hung handler stalls only that connection.
+The server returns a structured error when a handler rejects a durable row.
+Transient transport errors leave the row pending for retry. A permanent receiver
+rejection moves it to the dead-letter state with its payload and reason intact.
 
-## The vocabulary is mail, and the words are not interchangeable
+Dead-lettered rows remain inspectable and do not occupy the pending delivery
+window. The default daemon outbox attempt ceiling is five for errors eligible
+for dead-lettering; transient socket failures do not consume that terminal
+budget.
 
-From `AGENTS.md`, and it is load-bearing here:
+## Server-to-daemon path
 
-- **accepted** — the server has taken the message. Real, must be reliable, **not delivery**.
-- **delivered** — the recipient was notified through the path that actually surfaces it.
-- **read** — the recipient fetched it. Never proves delivery.
+The server has its own durable outbox for commands that must reach a particular
+daemon. Enqueueing and socket delivery are separate: the caller may continue
+after the row is stored, while the server flushes it when the daemon connection
+can accept more data.
 
-A row sitting in the outbox is **not yet accepted**. A row the server has stored is
-**accepted**. Neither is delivered.
+Flushes are serialized per daemon key. The server marks a row inflight before
+sending, records receiver errors, and retries non-terminal failures. Disconnect
+cleanup releases inflight claims so pending rows can be offered on the next
+connection.
 
-## The happy path
+## Ordering
 
-1. Daemon enqueues a row in the outbox with a type and payload.
-2. Daemon offers up to 100 oldest pending rows per flush cycle
-   (`daemon/delivery-runtime.mjs`), each occupying a delivery slot.
-3. Server receives, dispatches by type, and on success acks by outbox id
-   (`handleDaemonOutboxEnvelope`, `server/lib/daemon-ws-control-plane.mjs`); on a throw it
-   sends an error instead.
-4. Daemon receives the ack and clears the row.
+Durable rows use the outbox's declared order. Ordering is local to an outbox; it
+does not create a global order across daemons or unrelated transports.
 
-## The states that are unspecified, and what happens today
+## Claims exposed to callers
 
-Each of these is a real reachable state. **"Today" is observed behaviour, not a
-specification.** None of them is a decision anyone has recorded making.
+- **queued** means the sender persisted an outbound row.
+- **accepted** means the receiving server stored or processed it.
+- **delivered** requires acknowledgement through the recipient-facing channel.
+- **read** means the recipient fetched the corresponding inbox state.
 
-### 1. The recipient refuses an ack
+No earlier state implies a later one.
 
-**Today:** `handleAck` returns `false` before clearing the row and records no error. The row
-stays pending forever, retried indefinitely, `last_error` empty. This is the failure above.
+## Verification
 
-**Unspecified:** whether a refusal may be silent; whether it must record a reason; whether a
-row that has been refused N times is still eligible for a delivery slot; whether refusal is
-even a legitimate move for a receiver that has already been acked by its peer.
-
-### 2. A row can never satisfy its own gate
-
-**Today:** the gate at `bin/fleet-daemon.mjs:1360` requires `retry_enqueued === 1`. Rows
-exist with `retry_enqueued = 0` and no path that will ever set it, so the gate is
-permanently false and the row is permanently unackable.
-
-**Unspecified:** whether a gate that cannot pass is a bug in the row or a bug in the gate;
-what a row does when its precondition is unreachable; whether anything is responsible for
-noticing.
-
-### 3. Head-of-line blocking with no bound
-
-**Today:** the delivery window is the 100 oldest pending rows. Unackable rows are always the
-oldest, so they hold their slots permanently and newer rows of every other type starve. There
-is no per-row attempt cap, no dead-letter, no priority, and no fairness across types.
-
-**Unspecified:** whether one type may starve another; whether an attempt count has a
-ceiling; where a row goes when it exceeds one. **Note the counterexample already in the
-tree:** an earlier fix bounded `inflight` so no single message could pin the queue. That
-bound does not cover this case, because these rows are not in flight — they are refused after
-a completed round trip.
-
-### 4. Attempts without errors
-
-**Today:** `attempts` climbs and `last_error` stays `(none)`, because the failure is a
-refusal rather than an exception. Every operator instrument reads healthy.
-
-**Unspecified:** whether `attempts > 0` with no error is a legal state at all. It is the
-state that made this invisible for ten hours.
-
-### 5. A hung handler on a shared chain
-
-**Today:** the per-connection chain has a `.catch`, so a *rejected* handler logs and the
-chain continues. A handler that **never settles** stops every later message on that
-connection with no error anywhere.
-
-**Unspecified:** whether handlers must be time-bounded; whether the chain should have a
-watchdog. *(This was investigated as a cause of the 2026-08-18 outage and ruled out — the
-server's event loop was measured healthy at 20 ms mean lag and it was acking normally. It
-remains an unspecified state.)*
-
-### 6. Success is reported by things that cannot know it
-
-**Today:** `tlda agent mint` prints `Route published` when the daemon has *enqueued* the
-route, not when the server has stored it. `chat()` to an agent with no route answers
-`Accepted … [available]`. `delegate(mint:)` returns an `agent_id` for a process that was
-never launched. `git`-style exit codes are lost through pipes, so a mint that printed
-`ABANDONED` exits 0.
-
-**Unspecified:** which word each surface is entitled to use, and at which point in the
-protocol it becomes entitled to it. **This is the rule that would have prevented most of the
-day**: no surface may report *delivered* on the strength of *accepted*, and none may report
-either on the strength of *enqueued*.
-
-## What must be decided rather than discovered
-
-These are open and they are Skip's or an owner's to settle, not an implementer's to infer:
-
-1. **Is a silent refusal ever legal?** If not, the refusal path records a reason and the row
-   becomes visible immediately.
-2. **What is the attempt ceiling, and where does a row go past it?** A dead-letter that
-   preserves the payload is the only version compatible with *never delete his data*. These
-   rows carried the full text of `bregman-lower-bound.tex`.
-3. **May one message type starve another?** If not, the delivery window needs fairness
-   across types rather than pure oldest-first.
-4. **Which surfaces may say delivered?** See the mail vocabulary above.
-
-## Standing rules that already apply here
-
-- **Prove the wire, not the two ends.** Calling the sender's function and the receiver's
-  function from one process proves both functions and nothing about the connection, and the
-  connection is the only part that can be missing.
-- **A severed wire reports health.** An unrecognised type returns normally, so the message is
-  marked processed and positively acknowledged to a sender with no other signal.
-- **The server reports daemon facts; it does not own daemon state.**
-- **Never delete his data to clear a queue.** The rows are the work.
+The delivery tests exercise policy classification, reconnect replay,
+processed-ID deduplication, inflight deadlines, byte budgets, lane bounds,
+dead-letter handling, error classification, and per-daemon server-outbox
+serialization. Wire-level tests are required where the behavior depends on the
+actual WebSocket boundary.

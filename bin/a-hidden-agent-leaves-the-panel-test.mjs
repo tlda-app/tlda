@@ -1,10 +1,6 @@
 #!/usr/bin/env node
-// Skip, 2026-09-01 23:21:45, verbatim:
-//
-//   we need to add an agent metadata field 'hidden' which hides agents from the
-//   agent panel. use it for probes so they don't clutter the panel
-//
-// The whole of the sentence is "hides from the AGENT PANEL". It is a display
+// The `hidden` metadata field hides probe agents from the agent panel so they
+// do not clutter the display. It is a display
 // property and nothing else: a hidden agent is still addressable, still gets
 // mail, still answers to its name, still appears in roster() and in history.
 // The failure this test exists to catch is `hidden` quietly becoming a filter
@@ -40,8 +36,8 @@ test('an ordinary agent is still listed', () => {
 })
 
 test('hidden is not inherited from anything else on the row', () => {
-  // A label named `dev-probe` must not hide anyone by itself. Skip asked for a
-  // metadata field; a name or label pattern standing in for it is a different
+  // A label named `dev-probe` must not hide anyone by itself. The contract uses
+  // a metadata field; a name or label pattern standing in for it is a different
   // rule that will eventually catch something that is not a probe.
   assert.equal(fleetAgentListed(probe({ metadata: {}, labels: ['dev-probe'] })), true)
   assert.equal(fleetAgentListed({ id: 'fleet:dev-probe-abc', friendly_name: 'dev-probe-abc' }), true)

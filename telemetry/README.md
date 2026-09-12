@@ -13,7 +13,7 @@ Configure the server that serves the project index with its public dashboard URL
 
 ```yaml
 # ~/.config/tlda/server.yaml
-telemetryUrl: https://davids-mac-mini.cormorant-matrix.ts.net:3031/d/tlda-live-agent-activity/live-agent-activity
+telemetryUrl: https://telemetry.example.invalid/d/tlda-live-agent-activity/live-agent-activity
 ```
 
 Omit `telemetryUrl` on installations without this dashboard; the index then shows

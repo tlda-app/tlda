@@ -4,11 +4,6 @@
 // so shouldBuildOnPush returns `outside-tree` for every push forever — and the
 // file is only rewritten by a successful build, so it cannot recover.
 //
-// balancing-act was wedged this way 2026-07-21 → 2026-08-11: its
-// relevant-files.json mtime and lastBuild were the same minute. The Aug 4 build
-// of balancing-act-jose, same directory, same daemon, is the counterfactual —
-// its file was relative-path and it built normally.
-//
 // Case 1 is the regression: it FAILS on the pre-fix tree.
 
 import assert from 'node:assert'
@@ -40,8 +35,8 @@ function check(label, actual, expected) {
 
 // 1. Legacy absolute-path scope. The wedge. Must build.
 withScope('legacy-absolute', [
-  '/Users/skip/work/balancing-act/main.tex',
-  '/Users/skip/work/balancing-act/figure/geometry-handpicked-crossing.bb',
+  '/home/user/work/sample-paper/main.tex',
+  '/home/user/work/sample-paper/figure/geometry-handpicked-crossing.bb',
 ])
 check('absolute-path scope still builds on main.tex',
   shouldBuildOnPush(project, 'legacy-absolute', push).build, true)
@@ -57,12 +52,12 @@ withScope('irrelevant-rel', ['main.tex'])
 check('unrelated file does not build (relative)',
   shouldBuildOnPush(project, 'irrelevant-rel', { changedFiles: ['scratch/notes.tex'], anyChanged: true }).build, false)
 
-withScope('irrelevant-abs', ['/Users/skip/work/balancing-act/main.tex'])
+withScope('irrelevant-abs', ['/home/user/work/sample-paper/main.tex'])
 check('unrelated file does not build (absolute)',
   shouldBuildOnPush(project, 'irrelevant-abs', { changedFiles: ['scratch/notes.tex'], anyChanged: true }).build, false)
 
 // 4. A suffix must not match a DIFFERENT file that merely ends the same way.
-withScope('suffix-trap', ['/Users/skip/work/other-paper/appendix/main.tex'])
+withScope('suffix-trap', ['/home/user/work/other-paper/appendix/main.tex'])
 check('bare basename does not match a deeper unrelated path',
   shouldBuildOnPush(project, 'suffix-trap', { changedFiles: ['sections/main.tex'], anyChanged: true }).build, false)
 

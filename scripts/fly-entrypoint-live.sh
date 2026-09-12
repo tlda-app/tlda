@@ -64,7 +64,22 @@ done
 echo "[entrypoint] installing committed config for deployment '$TLDA_DEPLOYMENT'"
 cp "$DEPLOYMENT_DIR/server.yaml" /root/.config/tlda/server.yaml
 cp "$DEPLOYMENT_DIR/daemon.yaml" /root/.config/tlda/daemon.yaml
-node /app/scripts/install-private-environment-url.mjs /root/.config/tlda/daemon.yaml
+
+# A tldraw production license is a secret and must not be baked into the image.
+# Friend deployments put this sentinel in their committed daemon config; replace
+# it only in the installed, volume-backed copy before the server reads it.
+if grep -q '__TLDRAW_LICENSE_KEY__' /root/.config/tlda/daemon.yaml; then
+  if [ -z "${TLDRAW_LICENSE_KEY:-}" ]; then
+    echo "[entrypoint] FATAL: deployment requires TLDRAW_LICENSE_KEY" >&2
+    exit 1
+  fi
+  node -e '
+    const fs = require("fs")
+    const file = "/root/.config/tlda/daemon.yaml"
+    const source = fs.readFileSync(file, "utf8")
+    fs.writeFileSync(file, source.replace("__TLDRAW_LICENSE_KEY__", process.env.TLDRAW_LICENSE_KEY))
+  '
+fi
 
 # Static files this deployment serves in place of the ones in dist/ — the icon
 # set and the web manifest, so the class sites carry their own mark rather than

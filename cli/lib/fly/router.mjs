@@ -10,7 +10,6 @@ import qrcode from 'qrcode-terminal'
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const FLY_BUILD_DIR = join(REPO_ROOT, '.tlda-fly')
 const AGENT_CONFIG_BUILD_PATH = join(FLY_BUILD_DIR, 'agent-config.tgz')
-const TLDA_CLI = join(REPO_ROOT, 'cli', 'tlda.mjs')
 const FLY_VOLUME_NAME_MAX = 30
 
 const VALUE_FLAGS = new Set([
@@ -83,13 +82,20 @@ function commandLine(cmd, args, env = {}) {
 }
 
 function docLinkDisplayLine(plan) {
-  return commandLine('tlda', [
-    'project', 'link', plan.project, plan.overleafUrl,
-    '--main', plan.mainFile,
+  return commandLine('fly', [
+    'ssh', 'console', '-a', plan.agentApp, '-C',
+    remoteProjectLinkShell(plan),
+  ])
+}
+
+function remoteProjectLinkShell(plan) {
+  const checkout = `/root/work/${plan.project}`
+  const link = commandLine('tlda', [
+    'project', 'link', plan.project, plan.mainFile,
     '--server', plan.renderUrl,
-  ], { TLDA_TOKEN: '<rw-token>' })
-    + ` --token ${plan.overleafTokenDisplay}`
-    + ` --title ${shellQuote(plan.title)} --poll ${shellQuote(plan.poll)}`
+    '--title', plan.title,
+  ])
+  return `/bin/sh -lc ${shellQuote(`i=0; until test -S /root/.config/tlda/fleet-daemon.sock || [ $i -ge 30 ]; do i=$((i+1)); sleep 1; done; test -S /root/.config/tlda/fleet-daemon.sock; cd ${shellQuote(checkout)}; ${link}`)}`
 }
 
 function authedGitUrl(gitUrl, token) {
@@ -241,7 +247,7 @@ environments:
     testing:
       database: ${plan.renderUrl}
       store: ${plan.renderUrl}
-      licenseKey: ""
+      licenseKey: "__TLDRAW_LICENSE_KEY__"
 
 taskDoc:
   globalDir: /app/server/persist/fleet-task-doc
@@ -301,6 +307,7 @@ primary_region = "${plan.region}"
   TLDA_MACHINE_ID = "${plan.machineId}"
   TLDA_FRIEND_PROJECT = "${plan.project}"
   TLDA_FRIEND_GIT_URL = "${plan.overleafUrl}"
+  TLDA_FRIEND_POLL_SECONDS = "${plan.poll}"
 
 [[vm]]
   size = "shared-cpu-2x"
@@ -437,9 +444,9 @@ function printFriendPlan(plan, { execute, renderConfig, agentConfig, bundle }) {
     ['fly', ['deploy', REPO_ROOT, '-c', renderConfig, '--remote-only']],
     ['fly', ['apps', 'create', plan.agentApp]],
     ['fly', ['volumes', 'create', plan.agentVolume, '-a', plan.agentApp, '-r', plan.region, '-s', '1']],
-    ['fly', ['secrets', 'set', `CODEX_AUTH_JSON=$(cat ${plan.codexAuthJson})`, `TLDA_FRIEND_GIT_REMOTE=${plan.agentGitRemote}`, '-a', plan.agentApp], {}, `fly secrets set CODEX_AUTH_JSON="$(cat ${shellQuote(plan.codexAuthJson)})" TLDA_FRIEND_GIT_REMOTE=<git-remote-with-token> -a ${shellQuote(plan.agentApp)}`],
+    ['fly', ['secrets', 'set', `CODEX_AUTH_JSON=$(cat ${plan.codexAuthJson})`, `TLDA_FRIEND_GIT_REMOTE=${plan.agentGitRemote}`, `TLDA_TOKEN=${plan.rwToken}`, '-a', plan.agentApp], {}, `fly secrets set CODEX_AUTH_JSON="$(cat ${shellQuote(plan.codexAuthJson)})" TLDA_FRIEND_GIT_REMOTE=<git-remote-with-token> TLDA_TOKEN=<rw-token> -a ${shellQuote(plan.agentApp)}`],
     ['fly', ['deploy', REPO_ROOT, '-c', agentConfig, '--remote-only']],
-    ['tlda', ['project', 'link', plan.project, plan.overleafUrl, '--main', plan.mainFile, '--server', plan.renderUrl, '--token', plan.overleafToken, '--title', plan.title, '--poll', plan.poll], { TLDA_TOKEN: plan.rwToken }, docLinkDisplayLine(plan)],
+    ['fly', ['ssh', 'console', '-a', plan.agentApp, '-C', remoteProjectLinkShell(plan)]],
   ]
   for (const [cmd, args, env, display] of commands) console.log(`  ${display || commandLine(cmd, args, env)}`)
   console.log(``)
@@ -495,9 +502,9 @@ Examples:
   run('fly', ['deploy', REPO_ROOT, '-c', renderConfig, '--remote-only'], { execute })
   ensureFlyApp(plan.agentApp, { execute })
   ensureFlyVolume(plan.agentApp, plan.agentVolume, plan.region, { execute })
-  run('fly', ['secrets', 'set', `CODEX_AUTH_JSON=${readFileSync(plan.codexAuthJson, 'utf8')}`, `TLDA_FRIEND_GIT_REMOTE=${plan.agentGitRemote}`, '-a', plan.agentApp], {
+  run('fly', ['secrets', 'set', `CODEX_AUTH_JSON=${readFileSync(plan.codexAuthJson, 'utf8')}`, `TLDA_FRIEND_GIT_REMOTE=${plan.agentGitRemote}`, `TLDA_TOKEN=${plan.rwToken}`, '-a', plan.agentApp], {
     execute,
-    displayLine: `fly secrets set CODEX_AUTH_JSON="$(cat ${shellQuote(plan.codexAuthJson)})" TLDA_FRIEND_GIT_REMOTE=<git-remote-with-token> -a ${shellQuote(plan.agentApp)}`,
+    displayLine: `fly secrets set CODEX_AUTH_JSON="$(cat ${shellQuote(plan.codexAuthJson)})" TLDA_FRIEND_GIT_REMOTE=<git-remote-with-token> TLDA_TOKEN=<rw-token> -a ${shellQuote(plan.agentApp)}`,
   })
   prepareAgentBuildAssets(plan)
   unsetFlySecretIfPresent(plan.agentApp, 'TLDA_AGENT_CONFIG_TGZ_B64', { execute })
@@ -506,9 +513,8 @@ Examples:
   } finally {
     cleanAgentBuildAssets()
   }
-  run(process.execPath, [TLDA_CLI, 'project', 'link', plan.project, plan.overleafUrl, '--main', plan.mainFile, '--server', plan.renderUrl, '--token', plan.overleafToken, '--title', plan.title, '--poll', plan.poll], {
+  run('fly', ['ssh', 'console', '-a', plan.agentApp, '-C', remoteProjectLinkShell(plan)], {
     execute,
-    env: { TLDA_TOKEN: plan.rwToken },
     displayLine: docLinkDisplayLine(plan),
   })
 }

@@ -1,21 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, mkdirSync, truncateSync } from 'node:fs'
-import { constants as bufferConstants } from 'node:buffer'
-import { Readable, Writable } from 'node:stream'
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createSourceLifecycleStore } from './source-lifecycle.mjs'
 import { closeProjectStore, createProject, initProjectStore, serializeProjectStoreOperation } from './project-store.mjs'
-import { exportProjectPromotion, importProjectPromotion, importProjectPromotionStream, promotionArtifactHash, writeProjectPromotionStream } from './project-promotion.mjs'
+import { exportProjectPromotion, importProjectPromotion, promotionArtifactHash } from './project-promotion.mjs'
 
-async function fixture(format = 'html') {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'tlda-promotion-'))
   const source = join(root, 'source', 'course')
   const destination = join(root, 'destination')
   mkdirSync(join(source, 'output'), { recursive: true })
   mkdirSync(destination, { recursive: true })
-  writeFileSync(join(source, 'project.json'), JSON.stringify({ name: 'course', title: 'Course', format, pages: 1, sourceDir: '/private/machine', room: 'no' }))
+  writeFileSync(join(source, 'project.json'), JSON.stringify({ name: 'course', title: 'Course', format: 'html', pages: 1, sourceDir: '/private/machine', room: 'no' }))
   writeFileSync(join(source, 'output', 'index.html'), '<h1>Course</h1>')
   writeFileSync(join(source, 'build.log'), 'built')
   const lifecycle = createSourceLifecycleStore({ root: join(source, '.source-lifecycle'), project: 'course' })
@@ -29,135 +27,6 @@ async function fixture(format = 'html') {
   return { root, source, destination, lifecycle, revision, artifact, serialize }
 }
 
-async function promotionStream(f) {
-  const chunks = []
-  const destination = new Writable({ write(chunk, _encoding, callback) { chunks.push(Buffer.from(chunk)); callback() } })
-  await writeProjectPromotionStream({ name: 'course', revision: f.revision, sourceEnvironment: 'preview', projectRoot: f.source, lifecycleStore: f.lifecycle, serialize: f.serialize, destination })
-  return Buffer.concat(chunks)
-}
-
-function asWebStream(bytes) {
-  return Readable.toWeb(Readable.from(bytes))
-}
-
-function headerBounds(bytes) {
-  const magicLength = Buffer.byteLength('TLDA-PROMOTION-2\n')
-  const length = bytes.readUInt32BE(magicLength)
-  return { start: magicLength + 4, end: magicLength + 4 + length }
-}
-
-function replaceHeader(bytes, change) {
-  const { start, end } = headerBounds(bytes)
-  const header = JSON.parse(bytes.subarray(start, end))
-  change(header)
-  const encoded = Buffer.from(JSON.stringify(header))
-  const length = Buffer.alloc(4)
-  length.writeUInt32BE(encoded.length)
-  return Buffer.concat([bytes.subarray(0, start - 4), length, encoded, bytes.subarray(end)])
-}
-
-async function importStream(f, bytes, overrides = {}) {
-  return importProjectPromotionStream({ stream: asWebStream(bytes), sourceEnvironment: 'preview', name: 'course', revision: f.revision, projectsRoot: f.destination, serialize: f.serialize, ...overrides })
-}
-
-test('stream promotion activates exact output without aggregate JSON', async () => {
-  const f = await fixture()
-  try {
-    const bytes = await promotionStream(f)
-    const result = await importStream(f, bytes)
-    assert.equal(result.promoted, true)
-    assert.equal(readFileSync(join(f.destination, 'course', 'output', 'index.html'), 'utf8'), '<h1>Course</h1>')
-  } finally { rmSync(f.root, { recursive: true, force: true }) }
-})
-
-test('stream promotion refuses truncation, trailing data, and member corruption', async () => {
-  for (const transform of [
-    bytes => bytes.subarray(0, bytes.length - 1),
-    bytes => Buffer.concat([bytes, Buffer.from('trailing')]),
-    bytes => { const copy = Buffer.from(bytes); copy[copy.length - 1] ^= 1; return copy },
-  ]) {
-    const f = await fixture()
-    try {
-      await assert.rejects(importStream(f, transform(await promotionStream(f))))
-      assert.equal(existsSync(join(f.destination, 'course')), false)
-    } finally { rmSync(f.root, { recursive: true, force: true }) }
-  }
-})
-
-test('stream promotion refuses traversal, duplicates, and size overruns', async () => {
-  for (const [change, expected] of [
-    [header => { header.members.find(row => row.kind === 'output').path = '../escape' }, /invalid project promotion path/],
-    [header => { header.members.push({ ...header.members.find(row => row.kind === 'output') }) }, /duplicate project promotion member/],
-    [header => { header.members.find(row => row.kind === 'output').size = 2 ** 31 + 1 }, /invalid project promotion member size/],
-  ]) {
-    const f = await fixture()
-    try {
-      await assert.rejects(importStream(f, replaceHeader(await promotionStream(f), change)), expected)
-      assert.equal(existsSync(join(f.destination, 'course')), false)
-    } finally { rmSync(f.root, { recursive: true, force: true }) }
-  }
-})
-
-test('stream export refuses symlink members', async () => {
-  const f = await fixture()
-  try {
-    symlinkSync('/tmp', join(f.source, 'output', 'outside'))
-    const destination = new Writable({ write(_chunk, _encoding, callback) { callback() } })
-    await assert.rejects(writeProjectPromotionStream({ name: 'course', revision: f.revision, sourceEnvironment: 'preview', projectRoot: f.source, lifecycleStore: f.lifecycle, serialize: f.serialize, destination }), /refuses symlink/)
-  } finally { rmSync(f.root, { recursive: true, force: true }) }
-})
-
-test('source export settles and releases serialization on destination disconnect', async () => {
-  const f = await fixture()
-  try {
-    let held = false
-    const serialize = async (_name, operation) => {
-      held = true
-      try { return await operation() } finally { held = false }
-    }
-    let received = 0
-    const destination = new Writable({
-      write(chunk, _encoding, callback) {
-        received += chunk.length
-        callback()
-        if (received > 32) this.destroy()
-      },
-    })
-    await assert.rejects(writeProjectPromotionStream({ name: 'course', revision: f.revision, sourceEnvironment: 'preview', projectRoot: f.source, lifecycleStore: f.lifecycle, serialize, destination }))
-    assert.equal(held, false)
-    assert.equal(readdirSync(f.source).some(name => name.startsWith('.promotion-')), false)
-  } finally { rmSync(f.root, { recursive: true, force: true }) }
-})
-
-test('destination rejection cancels the upstream promotion body', async () => {
-  const f = await fixture()
-  try {
-    let canceled = false
-    const stream = new ReadableStream({
-      start(controller) { controller.enqueue(Buffer.from('not-a-promotion-stream')) },
-      cancel() { canceled = true },
-    })
-    await assert.rejects(importProjectPromotionStream({ stream, sourceEnvironment: 'preview', name: 'course', revision: f.revision, projectsRoot: f.destination, serialize: f.serialize }), /invalid project promotion stream/)
-    assert.equal(canceled, true)
-    assert.equal(existsSync(join(f.destination, 'course')), false)
-  } finally { rmSync(f.root, { recursive: true, force: true }) }
-})
-
-test('stream export applies backpressure beyond the v1 string limit', async () => {
-  const f = await fixture()
-  try {
-    const size = bufferConstants.MAX_STRING_LENGTH
-    const large = join(f.source, 'output', 'large.bin')
-    writeFileSync(large, '')
-    truncateSync(large, size)
-    let streamed = 0
-    const destination = new Writable({ highWaterMark: 1024, write(chunk, _encoding, callback) { streamed += chunk.length; setImmediate(callback) } })
-    await writeProjectPromotionStream({ name: 'course', revision: f.revision, sourceEnvironment: 'preview', projectRoot: f.source, lifecycleStore: f.lifecycle, serialize: f.serialize, destination })
-    assert.ok(Math.ceil(size / 3) * 4 > bufferConstants.MAX_STRING_LENGTH)
-    assert.ok(streamed > size)
-  } finally { rmSync(f.root, { recursive: true, force: true }) }
-})
-
 test('promotes the exact successful revision and rendering-only allowlist', async () => {
   const f = await fixture()
   try {
@@ -169,16 +38,6 @@ test('promotes the exact successful revision and rendering-only allowlist', asyn
     assert.equal(metadata.room, undefined)
     assert.equal(await (await createSourceLifecycleStore({ root: join(f.destination, 'course', '.source-lifecycle'), project: 'course' }).gitRepository()).head('course'), f.revision)
   } finally { rmSync(f.root, { recursive: true, force: true }) }
-})
-
-test('materializes accepted source only for QMD promotion', async () => {
-  for (const format of ['qmd', 'html']) {
-    const f = await fixture(format)
-    try {
-      await importProjectPromotion({ artifact: f.artifact, sourceEnvironment: 'preview', name: 'course', revision: f.revision, projectsRoot: f.destination, serialize: f.serialize })
-      assert.equal(existsSync(join(f.destination, 'course', 'source', 'index.qmd')), format === 'qmd')
-    } finally { rmSync(f.root, { recursive: true, force: true }) }
-  }
 })
 
 test('refuses corrupt bytes without making a project visible', async () => {

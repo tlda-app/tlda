@@ -59,7 +59,7 @@ async function checkoutOn(branch, project) {
   return { root, dir, remote, project }
 }
 
-function managerOver(root, remote, onSyncRefused, onSyncRecovered = async () => {}) {
+function managerOver(root, remote, onSyncRefused) {
   return createGitSyncManager({
     bindingsFile: join(root, 'bindings.json'),
     daemonId: 'daemon-a',
@@ -68,20 +68,7 @@ function managerOver(root, remote, onSyncRefused, onSyncRecovered = async () => 
     log: quiet,
     quietMs: 10,
     onSyncRefused,
-    onSyncRecovered,
   })
-}
-
-/** Wait for `read()` to satisfy `done`, or fail saying what it last saw. */
-async function until(read, done, what, timeoutMs = 15_000) {
-  const deadline = Date.now() + timeoutMs
-  let last
-  while (Date.now() < deadline) {
-    last = read()
-    if (done(last)) return last
-    await new Promise(resolve => setTimeout(resolve, 50))
-  }
-  assert.fail(`timed out waiting for ${what} — last saw ${JSON.stringify(last)}`)
 }
 
 async function startDaemon(manager, project, dir) {
@@ -136,56 +123,4 @@ test('the refusal carries the project, both branches, and the fix', async () => 
   assert.match(result.reason, /\bmain\b/, `names the branch the checkout is ON: ${result.reason}`)
   assert.match(result.reason, /tlda\/paper/, `names the managed branch: ${result.reason}`)
   assert.match(result.reason, /git checkout tlda\/paper/, `and the fix: ${result.reason}`)
-})
-
-/**
- * **A raised refusal has to come back down, and this is the test of that.**
- *
- * The refusal now raises the per-document sync-error sentinel, which is the one
- * surface that does not depend on who the reader is — on a deployed box the
- * chat goes to the container's OS user, so nobody reads it. An indicator that
- * can only be raised becomes wallpaper, so `onSyncRecovered` ships with it, and
- * this is the pair asserted end to end through the real watcher.
- *
- * **The shape is Skip's, not a contrivance:** a checkout that has been syncing
- * gets moved off its work branch, an edit is refused, and checking the branch
- * back out must clear the mark. A checkout that has NEVER settled has no
- * watched members, so an edit there reaches no settle at all and this path is
- * still silent for it — that gap is the file's own docstring and is unchanged.
- */
-test('a refusal is raised on an edit and cleared when the branch comes back', async () => {
-  const { root, dir, remote, project } = await checkoutOn('tlda/paper', 'paper')
-  const refused = []
-  const recovered = []
-  const manager = managerOver(root, remote, e => { refused.push(e) }, e => { recovered.push(e) })
-  await startDaemon(manager, project, dir)
-
-  // Settling once on the work branch is what gives the watcher members to see.
-  writeFileSync(join(dir, 'main.md'), '# paper\n\nfirst\n')
-  await until(() => refused.length, n => n === 0, 'nothing refused while on the work branch', 2000)
-    .catch(() => {})
-  assert.deepEqual(recovered, [], 'a project that was never refused says nothing')
-
-  // Now the failure: parked on a branch the daemon does not manage.
-  await git(dir, ['checkout', '-q', '-b', 'someone-elses-branch'])
-  writeFileSync(join(dir, 'main.md'), '# paper\n\nedited off the work branch\n')
-  const seen = await until(() => refused, r => r.length > 0, 'the off-branch edit to be refused')
-  assert.equal(seen[0].status, 'not-on-work-branch', JSON.stringify(seen[0]))
-  assert.equal(seen[0].project, project)
-  assert.deepEqual(recovered, [], 'the all-clear must not fire while still refused')
-
-  // And the recovery: back on the work branch, the next edit settles.
-  await git(dir, ['checkout', '-q', 'tlda/paper'])
-  writeFileSync(join(dir, 'main.md'), '# paper\n\nback on the work branch\n')
-  const cleared = await until(() => recovered, r => r.length > 0, 'the all-clear after recovery')
-  assert.equal(cleared[0].project, project, JSON.stringify(cleared[0]))
-  assert.equal(cleared.length, 1, `exactly one all-clear, not one per settle: ${JSON.stringify(cleared)}`)
-
-  // The counterfactual that makes the count mean something: keep editing on the
-  // work branch and no second all-clear appears, because nothing is refused.
-  writeFileSync(join(dir, 'main.md'), '# paper\n\nstill fine\n')
-  await new Promise(resolve => setTimeout(resolve, 1500))
-  assert.equal(recovered.length, 1, `the all-clear is once per refusal, not per settle: ${JSON.stringify(recovered)}`)
-
-  await manager.closeAll()
 })
