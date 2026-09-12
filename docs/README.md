@@ -14,6 +14,7 @@ the release archive.
 
 - [Document formats](document-formats.md) — LaTeX, Markdown, Quarto, and PDF inputs
 - [LiveKit](livekit.md) — voice/video setup
+- [Muse Code](muse-code.md) — experimental native adapter and fleet-readiness limitation
 
 The schemas exposed by the running CLI and MCP server remain authoritative for
 exact command/tool arguments.
