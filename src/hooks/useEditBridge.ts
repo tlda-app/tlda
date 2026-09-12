@@ -21,31 +21,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor, TLShapeId } from 'tldraw'
 import { createShapeId } from 'tldraw'
-import { EDIT_CARD_H, EDIT_CARD_W } from '../shapes/EditCardShape'
+import { EDIT_CARD_H, EDIT_CARD_W } from '../shapes/editCardMetrics'
+import { buildCleanupBrief, cardLayout, bridgeGapWidth, CARD_GAP_X, type BridgeBuild } from './editBridgeLayout'
+export { buildCleanupBrief, cardLayout, bridgeGapWidth } from './editBridgeLayout'
+export type { BridgeBuild, BridgeEditor } from './editBridgeLayout'
 import { PAGE_GAP, PDF_HEIGHT, PDF_WIDTH, TARGET_WIDTH } from '../layoutConstants'
 import { createFleetShape } from '../shapes/fleet-utils'
 import { chatInsertBus } from '../shapes/FleetPillShape'
 
 const PAGE_HEIGHT = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
-const CARD_GAP_X = 40
-const CARD_GAP_Y = 24
-/** How many cards stack vertically before the next column of cards starts. */
-const CARDS_PER_COLUMN = 6
-
-export interface BridgeEditor {
-  agentId: string
-  name: string | null
-  taskId: string | null
-  files: string[]
-}
-
-export interface BridgeBuild {
-  hash: string
-  timestamp: number
-  message: string
-  files: string[]
-  editors: BridgeEditor[]
-}
 
 export async function fetchBridge(
   projectName: string,
@@ -64,60 +48,7 @@ export async function fetchBridge(
   }
 }
 
-/** Where the bridge's cards go, in the gap the widened compare opens up. */
-export function cardLayout(index: number, originX: number, originY: number) {
-  const column = Math.floor(index / CARDS_PER_COLUMN)
-  const row = index % CARDS_PER_COLUMN
-  return {
-    x: originX + column * (EDIT_CARD_W + CARD_GAP_X),
-    y: originY + row * (EDIT_CARD_H + CARD_GAP_Y),
-  }
-}
-
-/** The extra width the compare column moves out by to make room for `count` cards. */
-export function bridgeGapWidth(count: number): number {
-  if (count <= 0) return 0
-  const columns = Math.ceil(count / CARDS_PER_COLUMN)
-  return columns * (EDIT_CARD_W + CARD_GAP_X) + CARD_GAP_X
-}
-
 const cardShapeId = (hash: string) => createShapeId(`edit-card-${hash.slice(0, 7)}`)
-
-/**
- * The cleanup brief: the interval, and what a person said about it.
- *
- * This is the payload the whole feature exists to produce -- the point is that
- * a person supplies judgment cheaply and an agent does the integration, so
- * what leaves here has to carry the judgment and enough context to act on it:
- * which versions, which builds, which files, who edited them, and the note.
- *
- * Builds nobody annotated are listed without commentary rather than dropped.
- * An interval is a sequence, and an agent told only about the annotated builds
- * would be reading a different history from the one the person looked at.
- */
-export function buildCleanupBrief(
-  from: string,
-  to: string,
-  builds: BridgeBuild[],
-  notes: Map<string, string>,
-): string {
-  const lines = [
-    `Clean up the interval \`${from.slice(0, 7)}..${to.slice(0, 7)}\` using these annotations.`,
-    '',
-    `${builds.length} build${builds.length === 1 ? '' : 's'} between the two versions, oldest first.`,
-    '',
-  ]
-  for (const build of builds) {
-    const who = build.editors.length
-      ? build.editors.map(e => e.name || e.agentId).join(', ')
-      : 'no recorded author'
-    lines.push(`- \`${build.hash.slice(0, 7)}\` ${new Date(build.timestamp).toISOString()} — ${who}`)
-    if (build.files.length) lines.push(`  files: ${build.files.join(', ')}`)
-    const note = notes.get(build.hash)?.trim()
-    if (note) lines.push(`  note: ${note}`)
-  }
-  return lines.join('\n')
-}
 
 export function useEditBridge(
   editorRef: React.MutableRefObject<Editor | null>,
@@ -135,9 +66,25 @@ export function useEditBridge(
   const [builds, setBuilds] = useState<BridgeBuild[]>([])
   const cardIdsRef = useRef<Set<TLShapeId>>(new Set())
 
+  /**
+   * Take down the bridge's scaffolding, and ONLY the scaffolding.
+   *
+   * A card someone has written on is no longer scaffolding -- it is their
+   * annotation, and collapsing the view is not a request to throw it away.
+   * Measured on a real document before this guard existed: annotate, collapse,
+   * re-expand, and every note was gone, because the card that held it had been
+   * deleted. The annotation is the product of this feature, so losing it to a
+   * view toggle is the worst defect the feature can have.
+   *
+   * An annotated card is left where it is. Re-expanding finds it again by
+   * hash, so the note comes back in place rather than being recreated empty.
+   */
   const clearCards = useCallback(() => {
     const editor = editorRef.current
-    const ids = [...cardIdsRef.current].filter(id => editor?.getShape(id))
+    const ids = [...cardIdsRef.current].filter(id => {
+      const shape = editor?.getShape(id) as any
+      return shape && !String(shape.props?.note ?? '').trim()
+    })
     cardIdsRef.current.clear()
     if (editor && ids.length > 0) editor.deleteShapes(ids)
   }, [editorRef])
@@ -200,8 +147,12 @@ export function useEditBridge(
       }
     })
 
+    // Same rule as clearCards: a card that has dropped out of this interval
+    // goes, unless somebody wrote on it.
     for (const id of cardIdsRef.current) {
-      if (!wanted.has(id) && editor.getShape(id)) editor.deleteShapes([id])
+      if (wanted.has(id)) continue
+      const stale = editor.getShape(id) as any
+      if (stale && !String(stale.props?.note ?? '').trim()) editor.deleteShapes([id])
     }
     cardIdsRef.current = wanted
   }, [visible, builds, baseColumnX, editorRef, clearCards])
