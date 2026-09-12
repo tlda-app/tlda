@@ -24,6 +24,7 @@ import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
 import { announcePageTop, announcePageBottom } from '../shared/pagination-announce.mjs';
 import { compactPrettyResult, indentPrettyResult } from '../shared/activity-pretty-result.mjs';
+import { observedTerminalReport } from '../shared/observed-terminal.mjs';
 import { parseCanonicalEventReference } from '../shared/canonical-references.mjs';
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
 import { rewriteMarkdownDepsToUrls } from '../shared/markdown-deps.mjs';
@@ -1514,29 +1515,6 @@ async function capturePaneText(agent, lines = 200) {
   } catch (e) {
     return { ok: false, error: `server capture-pane failed: ${e.message}` };
   }
-}
-
-// What a lifecycle action saw, in the shape Skip asked for: the evidence inline,
-// when it was observed with the statement that it may have moved since, and the
-// literal thing to say to look again.
-//
-// An error that names only what did not work sends the reader away to invent a
-// remedy -- and the symptom names here are worse than useless, because "the mint
-// failed", "the agent will not wake" and "hibernating with unknown activity" are
-// three names for one cause and none of them points at it. A kickoff sitting
-// unsent at the composer is obvious the moment anyone sees it. So show it.
-function observedTerminalReport(label, pane, observedAt, lines = 20) {
-  const when = observedAt || new Date().toISOString();
-  return [
-    `I, tlda, looked at ${label}'s terminal at ${when} and it looked like this:`,
-    '',
-    '```',
-    windowTail(pane, lines),
-    '```',
-    '',
-    `That is what the terminal held at ${when}. It could have changed since.`,
-    `To look again, say: terminal(agent: "${label}")`,
-  ].join('\n');
 }
 
 // ---- Server reference (set by initFleet) ----

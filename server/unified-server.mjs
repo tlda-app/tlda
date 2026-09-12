@@ -33,6 +33,7 @@ if (!process.argv.includes('--i-am-tlda-cli')) {
 import { createFilterSubscriptions } from './lib/filter-subscriptions.mjs'
 import { HARNESS } from '../shared/harness.ts'
 import { coalesceInflight } from '../shared/inflight-coalesce.mjs'
+import { observedTerminalReport } from '../shared/observed-terminal.mjs'
 import './lib/observability/otel-node.mjs'
 import express from 'express'
 import { createServer } from 'http'
@@ -2275,17 +2276,50 @@ function deliverSpawnLaunchFailure(entry, detail) {
 // reasoning was against manufacturing a failure out of a deadline; it was never
 // a reason to leave a waiting caller with nothing. (The `onExpire` no-op that
 // carries that decision is a different path and is untouched.)
+//
+// It carries the PANE. The notice firing with nothing actionable in it is the
+// defect this half closes: the launch did not work, the system does not know how
+// to fix it, and Skip's rule for exactly that case is to report what it has
+// rather than to name the failure and stop --
+//
+//   "if the app doesn't know how to fix it, at least report the info it has so
+//    it's easy for the agent"
+//
+// The inability is what makes the report load-bearing. Every cause of this
+// notice is obvious on sight in the pane and opaque as a sentence: a kickoff
+// unsent at the composer, a confirm dialog nobody recognised, a trust prompt.
+// Asking the daemon for the pane is the sanctioned direction -- a fact request,
+// not the server modelling machine-local state.
+//
+// The pane is best-effort and the notice is not. A capture that fails still
+// delivers, saying it could not look, because a missing pane must never turn
+// into a missing notice.
 function deliverSpawnNoAnswer(entry, detail) {
   if (entry.kind !== 'spawn' || !entry.ownerId) return
   const label = detail.label || entry.meta?.name || entry.meta?.agentId || 'mint'
   const agentId = detail.agentId || entry.meta?.agentId || null
+  const observed = async () => {
+    if (!agentId) return 'No agent id on this mailbox, so there is no terminal to look at.'
+    try {
+      const agent = await fleetStore.getAgent?.(agentId)
+      if (!agent) return `I could not look at ${label}'s terminal: no agent row for \`${agentId}\`.`
+      const { seat, error: seatError } = await agentRouteOrError(agent)
+      if (!seat) return `I could not look at ${label}'s terminal: ${seatError}.`
+      const observedAt = new Date().toISOString()
+      const { pane } = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, lines: 60 })
+      if (typeof pane !== 'string' || !pane.trim()) return `I looked at ${label}'s terminal at ${observedAt} and it was empty.`
+      return observedTerminalReport(label, pane, observedAt)
+    } catch (e) {
+      return `I could not look at ${label}'s terminal: ${e.message}.`
+    }
+  }
   // Not optional-chained, for the same reason the launch-failure delivery is not:
   // a delivery that silently no-ops when the method is missing reproduces the
   // exact defect it exists to close.
-  Promise.resolve(fleetStore.chat(
+  Promise.resolve(observed()).then(terminal => fleetStore.chat(
     'fleet:tlda',
     entry.ownerId,
-    `**\`${label}\` has not answered yet** — it launched, and did not log in before the deadline.\n\nIt may still arrive; the roster is where it shows up if it does.\n\nagent_id: \`${agentId || '(none)'}\` · mailbox: \`${entry.id}\` · ${detail.reason || 'login-timeout'}`,
+    `**\`${label}\` has not answered yet** — it launched, and did not log in before the deadline.\n\n${terminal}\n\nIt may still arrive; the roster is where it shows up if it does.\n\nagent_id: \`${agentId || '(none)'}\` · mailbox: \`${entry.id}\` · ${detail.reason || 'login-timeout'}`,
     { type: 'spawn_no_answer', mailbox_id: entry.id, agent_id: agentId, reason: detail.reason || 'login-timeout' },
   )).catch(e => console.error(`[spawn-mailbox] failed to deliver no-answer for ${entry.id}: ${e.message}`))
 }
