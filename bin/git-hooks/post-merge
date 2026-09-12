@@ -1,88 +1,71 @@
 #!/bin/sh
-# tlda post-merge hook: after work lands on main, find out within seconds
-# whether main still compiles — and say so where the person who just landed
-# will see it.
+# tlda post-merge hook: after work lands on main, find out whether main still
+# compiles — and say so where the person who just landed will see it.
 #
-# WHY THIS EXISTS. On 2026-09-12, main did not build for two separate stretches
+# WHY THIS EXISTS. On 2026-09-12 main did not build for two separate stretches
 # hours apart: src/App.tsx imported a file that was never committed, and
 # src/katexMacros.ts typed the KaTeX macro map as Record<string, string> while
-# shared/katex-base-macros.mjs kept adding function macros. Both build fine for
-# their author, whose disk has the missing half or whose editor is not running
-# tsc over the merged tree. Three lanes landed on top of a red main and none of
-# them could have known.
+# shared/katex-base-macros.mjs kept adding function macros. Both compile for
+# their author, whose disk holds the missing half. Three lanes landed on top of
+# a red main and none of them could have known.
 #
 # Nothing compiled main between a landing and a deploy. The deploy did, and it
-# reported ~26-35 minutes later by REFUSING SOMEBODY ELSE'S PUSH -- so the
-# person who learned about the break was never the person who caused it.
+# reported 26-35 minutes later by REFUSING SOMEBODY ELSE'S PUSH — so whoever
+# learned about a break was never whoever caused it.
 #
 # There IS a CI workflow that compiles main (.github/workflows/deploy.yml, on
 # push to main). It has never run: main is not pushed to GitHub, and local main
 # is over 1200 commits ahead of origin/main. Existing-and-broken, not missing.
 #
-# THREE PROPERTIES, EACH DELIBERATE.
-#
 # It does not block. post-merge runs after the merge is already made, and that
-# is the point -- AGENTS.md is explicit that nothing here exists to stop people
+# is deliberate — AGENTS.md is explicit that nothing here exists to stop people
 # making decisions. The failure was never that someone landed bad code, it was
 # that nobody found out for half an hour.
-#
-# It runs tsc only, not `npm ci && vite build`. npm ci took THIRTEEN MINUTES on
-# a quiet box in the measured deploy; a check that costs that will be turned off
-# or worked around, and then it protects nothing. tsc -b catches both of the
-# real breaks above and costs seconds against a warm build cache. Cheap enough
-# to actually happen beats complete enough to be right.
-#
-# It runs in the background and reports afterwards, so a landing never waits.
-# The result goes to a file as well as the terminal, because the terminal may
-# belong to an agent whose turn has ended by the time tsc finishes.
 
-# Only main. A feature branch failing to compile is its author's business and
-# is not yet anybody else's problem.
+# Only main. A feature branch that does not compile is its author's business
+# and is not yet anybody else's problem.
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 [ "$branch" = "main" ] || exit 0
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 [ -n "$REPO_ROOT" ] || exit 0
 
-# No node_modules means this is a fresh or partial checkout, not a landing to
-# vet. Staying silent beats crying wolf on a tree that was never set up.
+# No TypeScript means a fresh or partial checkout, not a landing to vet.
+# Staying silent beats crying wolf about a tree that was never set up.
 [ -d "$REPO_ROOT/node_modules/typescript" ] || exit 0
 
-# `git rev-parse --git-dir`, never "$REPO_ROOT/.git": in a WORKTREE .git is a
-# FILE pointing at the real gitdir, so writing a path under it fails with
-# "Not a directory". Most work in this repo happens in worktrees -- the shared
-# checkout is where someone else is standing -- so the worktree case is the
-# normal one, and the deliberate-failure test is what surfaced this.
-GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)" || exit 0
-case "$GIT_DIR_PATH" in /*) ;; *) GIT_DIR_PATH="$REPO_ROOT/$GIT_DIR_PATH" ;; esac
-STATUS="$GIT_DIR_PATH/tlda-main-build-status"
-SHA="$(git rev-parse --short HEAD 2>/dev/null)"
-LOG="${TMPDIR:-/tmp}/tlda-main-tsc-$SHA.log"
+WORKER="$REPO_ROOT/bin/tlda-main-build-check.sh"
+[ -f "$WORKER" ] || exit 0
 
-# Detached, so it survives the shell that merged -- and survives an agent's turn
-# ending, which reaps ordinary background children. That reaping is why several
-# long-running jobs died unexplained tonight.
-(
-  cd "$REPO_ROOT" || exit 0
-  if npx --no-install tsc -b >"$LOG" 2>&1; then
-    printf 'ok %s %s\n' "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$STATUS"
-  else
-    printf 'BROKEN %s %s\n' "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$STATUS"
-    # Loud, and on stderr so it is not swallowed by a pipeline reading stdout.
-    {
-      printf '\n'
-      printf '  main does not compile at %s\n' "$SHA"
-      printf '  ---------------------------------------------\n'
-      grep -m 5 'error TS' "$LOG" 2>/dev/null | sed 's/^/  /'
-      printf '  ---------------------------------------------\n'
-      printf '  full output: %s\n' "$LOG"
-      printf '  Everyone who lands on top of this inherits it, and the next\n'
-      printf '  deploy will refuse whoever pushes -- probably not you.\n\n'
-    } >&2
-  fi
-) </dev/null >/dev/null &
-# stderr is deliberately NOT redirected: the whole point is that the failure is
-# seen. Sending it to /dev/null here would produce a check that runs, passes its
-# own tests, and tells nobody -- which is the defect this hook exists to catch.
+# `git rev-parse --git-dir`, never "$REPO_ROOT/.git": in a WORKTREE .git is a
+# FILE pointing at the real gitdir, so a path under it fails with "Not a
+# directory". Nearly all work here happens in worktrees — the shared checkout is
+# where someone else is standing — so the worktree case is the normal one. The
+# deliberate-failure test is what surfaced this.
+GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)" || exit 0
+case "$GIT_DIR_PATH" in
+  /*) ;;
+  *) GIT_DIR_PATH="$REPO_ROOT/$GIT_DIR_PATH" ;;
+esac
+
+SHA="$(git rev-parse --short HEAD 2>/dev/null)"
+
+# `nohup`, so the check survives the shell that merged. A plain background
+# subshell dies with its parent: measured the same day, one produced NO status
+# file and NO stderr when its parent went away — a check that runs and reports
+# nothing, which is precisely the failure this hook exists to remove. Ordinary
+# background children are also reaped when an agent's turn ends.
+#
+# The work lives in a separate script invoked with ARGUMENTS rather than an
+# inlined `sh -c '...'`. Inlining looked simpler and was wrong: the quoted body
+# does not inherit the caller's shell variables, so every path arrived empty and
+# the hook announced "main does not compile at " with no sha, no errors and no
+# log — ON A TREE THAT COMPILED FINE. A checker that cries wolf gets muted, and
+# then it protects nothing.
+nohup sh "$WORKER" \
+  "$REPO_ROOT" \
+  "$GIT_DIR_PATH/tlda-main-build-status" \
+  "${TMPDIR:-/tmp}/tlda-main-tsc-$SHA.log" \
+  "$SHA" </dev/null >/dev/null 2>&1 &
 
 exit 0
