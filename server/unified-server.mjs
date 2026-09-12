@@ -4863,6 +4863,79 @@ function docsProjectName(segment) {
   return decoded
 }
 
+/**
+ * The static analog of whatever you are looking at: `/static/<project>/<source path>`.
+ *
+ * The canvas and this page are not two renders kept in step. `/docs` serves the
+ * build's own output directory, so they are the SAME BYTES from the SAME RUN and
+ * cannot drift. What was missing was only a predictable way in, keyed on the path
+ * an author thinks in — `lectures/chapter-sampling-with-replacement.qmd` — rather
+ * than on the rendered path the build happens to choose.
+ *
+ * THIS IS A FALLBACK FOR THE APP BEING BROKEN, which is the only reason it exists:
+ * "I designed for the app to fucking break. Cause all the evidence is that it does
+ * fucking break." So it must not reach into anything the canvas needs. It reads one
+ * JSON file off disk and redirects into plain file serving: no bundle, no viewer, no
+ * room, no sync. A flip implemented inside the thing that breaks is not a fallback.
+ *
+ * It redirects rather than serving the bytes itself for a mechanical reason as well
+ * as a reuse one: a rendered page references its assets relative to its own
+ * directory (`<page>_files/libs/...`), so serving those bytes under a `/static/`
+ * prefix would leave every stylesheet and script resolving against the wrong
+ * directory. The redirect lands the reader on the real path, where they already work.
+ */
+app.get('/static/:project{/*sourcePath}', requireRead, async (req, res) => {
+  const name = docsProjectName(req.params.project)
+  // Both params are read BEFORE the access check, which reassigns `req.params`
+  // to carry the name the `/docs` gate expects. It spreads the old value, so
+  // this survives either way — but a route that depends on that is one refactor
+  // away from silently losing its path.
+  const target = (req.params.sourcePath || []).join('/')
+  const gated = await runDocsAccessCheck(req, res, name)
+  // Same gate as `/docs`, applied BEFORE the redirect rather than after it: the
+  // redirect target names a rendered file, and for a gated project that filename
+  // is itself something the reader may not have.
+  if (gated) return gated === 'sent' ? undefined : res.status(404).json({ error: 'Not found' })
+
+  const pageInfoPath = join(PROJECTS_DIR, name, 'output', 'page-info.json')
+  if (!await docPathExists(pageInfoPath)) {
+    return res.status(404).json({ error: 'No rendered output for this project yet' })
+  }
+  let pageInfo
+  try {
+    pageInfo = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))
+  } catch (e) {
+    return res.status(500).json({ error: 'Could not read rendered page list', detail: e.message })
+  }
+  if (!Array.isArray(pageInfo) || pageInfo.length === 0) {
+    return res.status(404).json({ error: 'No rendered pages for this project' })
+  }
+
+  const wanted = target.replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/\.qmd$/i, '')
+  // No source path means the book's front door, which is the first page the build
+  // recorded — the same order the manifest publishes the book in.
+  const entry = wanted === ''
+    ? pageInfo[0]
+    : pageInfo.find((page) => {
+      const source = String(page?.source?.file || '').replace(/\\/g, '/').replace(/^\.?\/+/, '')
+      // Match the source the author names, with or without its extension, and
+      // accept the rendered path too so a link copied out of the app still works.
+      return source === wanted
+        || source.replace(/\.[^./]+$/, '') === wanted
+        || String(page?.file || '') === target
+    })
+
+  if (!entry?.file) {
+    return res.status(404).json({
+      error: `No rendered page for "${target}" in project "${name}"`,
+      // The list is small and it is the thing that makes a typo self-correcting
+      // for someone whose app has just died.
+      available: pageInfo.map(page => page?.source?.file).filter(Boolean),
+    })
+  }
+  res.redirect(302, `/docs/${encodeURIComponent(name)}/${entry.file.split('/').map(encodeURIComponent).join('/')}`)
+})
+
 // Serve sub-resources of html-format projects without auth (CSS, JS, fonts from site_libs)
 // These are Quarto framework files loaded by iframes that can't pass auth headers
 app.use('/docs', async (req, res, next) => {
