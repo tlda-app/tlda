@@ -668,3 +668,66 @@ from the script's own directory, so a script in `/tmp` fails with `MODULE_NOT_FO
 
 **Not fixed here** because deleting a file on the live volume is not a code change and wants its
 owner. If it is removed, delete this entry with it.
+
+---
+
+## `hibernating` — the roster's runtime status word
+
+**What it reads as:** this agent is asleep. There is no process. It needs waking.
+
+**What it means:** the server has had no liveness evidence about this agent lately. That is
+all. It is the **default branch** of the runtime projection — `_countsAsAwake` in
+`server/lib/fleet-store.mjs` tests dead, then human browser presence, then the reserved-shell
+flag, then membership of the live-evidence set, and the projection's own comment ends
+*"Anything else is hibernating."*
+
+**So it is the absence of evidence, presented as a state of the agent.** That is the same
+disease as the `markAgentNotAlive` entry at the top of this file — *"unknown is not a state of
+the agent, it is a state of our knowledge of the agent"* — arriving one layer up, on the word
+people actually read.
+
+**Where the evidence comes from, and why it dries up on a healthy agent.** `awake` requires a
+recent `markAgentAlive`, whose callers in `server/unified-server.mjs` are the `agent-status`
+handler (a daemon pane reading of `thinking` / `compacting` / `idle`) and the `activity-event`
+handler (activity extracted from the harness stream). Both are driven by the agent **doing
+things**. An agent that finishes its turn and sits at its prompt stops generating either, its
+evidence ages out, and it reads `hibernating` while its process, its harness and its MCP are
+all running.
+
+**`hibernating` therefore means idle, or unreachable, or genuinely not running, and it cannot
+tell you which.**
+
+**The cost, measured 2026-09-12: seven hours.** A chief sent two substantive briefs to an agent
+whose roster row said `hibernating`, and read that as asleep. The agent's codex harness
+(15h44m elapsed), its MCP process, and an `ESTABLISHED` socket to the server were alive the
+whole time; its pane was sitting at the idle prompt with its last completed turn on screen. It
+had simply stopped producing activity at 06:52:48. Every message reached the notification path,
+found no MCP socket, and resolved:
+
+```
+no-channel  reason=no-open-mcp-socket
+no-channel -> wake (no-op: process already alive)
+```
+
+eight times, between 08:45 and 14:16. **The remedy was aimed at the wrong layer** — the fault
+was the channel and the only action wired to that symptom asks about the process — but the
+seven hours were spent because of the word, not the mapping. The chief's own summary: *"I read
+that word as 'asleep, needs waking' and acted on it for seven hours."*
+
+**The distinction exists everywhere except in this word.** The daemon already separates the two
+cases and says so: `rpcWake` returns `alreadyAlive`, and `rpcNotificationSymptom` logs
+`(no-op: process already alive)` against `(started a process)`. Measured over the whole testing
+daemon log, those two outcomes run **20,864 no-op against 509 started** — so for the
+overwhelming majority of agents the roster calls `hibernating`, a process is right there.
+
+**A better name says which one it is**, and the information to do it already exists on the
+daemon side. Splitting *no process* from *process, no channel* is the fix; the roster collapsing
+them is what this entry is about.
+
+**Not renamed here.** `hibernating` is a user-visible status word, a filter token in the agent-set
+grammar (`awake & !goose`), a reserved label that names cannot take, and a `RUNTIME_STATUS`
+value — so a rename is a product decision about what people see and type, not a cleanup. See
+`AGENTS.md` §"A subsystem is Skip's decision, the same as a default". What is safe to fix
+without deciding that is the **mapping** — whether `no-channel` on a live process should
+escalate past `ensure-process` — which is already recorded as open point 7 in
+[Notifications and liveness](notifications-and-liveness.md) §"What is not settled".
