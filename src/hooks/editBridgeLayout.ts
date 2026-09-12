@@ -24,12 +24,23 @@ export interface BridgeEditor {
   files: string[]
 }
 
+/** What an edit did to the writing, summarised by the server. */
+export interface BridgeChange {
+  kind: 'addition' | 'deletion' | 'replacement'
+  addedWords: number
+  removedWords: number
+  rewordedWords: number
+  hunkCount: number
+  excerpt: { file: string | null; before: string; after: string } | null
+}
+
 export interface BridgeBuild {
   hash: string
   timestamp: number
   message: string
   files: string[]
   editors: BridgeEditor[]
+  change: BridgeChange | null
 }
 
 /** Where the bridge's cards go, in the gap the widened compare opens up. */
@@ -79,6 +90,18 @@ export function buildCleanupBrief(
       : 'no recorded author'
     lines.push(`- \`${build.hash.slice(0, 7)}\` ${new Date(build.timestamp).toISOString()} — ${who}`)
     if (build.files.length) lines.push(`  files: ${build.files.join(', ')}`)
+    // What it did, not only where. An agent asked to clean up an interval from
+    // a list of filenames has to go and diff every build itself, which is the
+    // bookkeeping this feature exists to take off a person -- handing it
+    // straight back to the agent is no better.
+    if (build.change) {
+      const c = build.change
+      lines.push(c.kind === 'replacement'
+        ? `  rewrote ~${c.rewordedWords} words (+${c.addedWords}/-${c.removedWords})`
+        : `  ${c.kind}: +${c.addedWords}/-${c.removedWords} words`)
+      if (c.excerpt?.before) lines.push(`    was: ${c.excerpt.before}`)
+      if (c.excerpt?.after) lines.push(`    now: ${c.excerpt.after}`)
+    }
     const note = notes.get(build.hash)?.trim()
     if (note) lines.push(`  note: ${note}`)
   }

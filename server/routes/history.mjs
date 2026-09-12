@@ -22,6 +22,7 @@ import { announcePageJson } from '../../shared/pagination-announce.mjs'
 import { broadcastSignal, putShape, upsertShape } from '../lib/sync-rooms.mjs'
 import { EDIT_CARD_H, EDIT_CARD_W } from '../../shared/edit-card-metrics.mjs'
 import { attributeEditsToBuilds, editsFromActivity } from '../lib/edit-bridge-attribution.mjs'
+import { summarizeChange } from '../lib/edit-bridge-change.mjs'
 import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
 import { loadSynctex, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 
@@ -329,8 +330,13 @@ router.get('/shadow/bridge', requireRead, async (req, res) => {
       from,
       to,
       fromTimestamp: fromTime,
-      builds: withEditors.map(build => ({
+      builds: withEditors.map(({ patch, ...build }) => ({
         ...build,
+        // What the edit DID, which is the question the card is named for. The
+        // patch itself is not sent: the card shows the prose that changed, and
+        // shipping every build's full diff to render a two-line excerpt is the
+        // payload doing the opposite of what §11's "visually compact" asks.
+        change: summarizeChange(patch),
         editors: build.editors.map(editor => ({
           ...editor,
           name: nameById.get(editor.agentId) || null,
