@@ -116,6 +116,7 @@ import { writeCandidateClip } from './lib/recording-publication.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
+import { parsePermissionMode, permissionModeKeypresses } from '../agent-runtime/status-classifier.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
@@ -9187,21 +9188,16 @@ async function dispatchFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = await agentRouteOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const parseCCMode = (pane) => {
-        if (/plan mode on/i.test(pane)) return 'plan'
-        if (/accept edits on/i.test(pane)) return 'acceptEdits'
-        return 'default'
-      }
       const cap1 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', terminalRpcPayload(agent, seat, { lines: 5 }))
-      const currentMode = parseCCMode(cap1?.content || '')
-      const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
+      const currentMode = parsePermissionMode(cap1?.pane)
+      const btabs = permissionModeKeypresses(currentMode)
       for (let i = 0; i < btabs; i++) {
         await sendDaemonEphemeral(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key: 'BTab' }))
         if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
       }
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
       const cap2 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', terminalRpcPayload(agent, seat, { lines: 5 }))
-      const finalMode = parseCCMode(cap2?.content || '')
+      const finalMode = parsePermissionMode(cap2?.pane)
       await fleetStore.updateAgentMeta?.(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
       broadcastState()
       reply({ ok: true, mode: finalMode, was: currentMode })

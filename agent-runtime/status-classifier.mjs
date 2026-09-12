@@ -20,6 +20,43 @@ export const APPROVAL_PROMPT_RE = /[○●]\s*Allow once|Allow this .{0,30}\?\s*
 export const THINKING_SCAN_LINES = 40
 export const APPROVAL_PROMPT_SCAN_LINES = 15
 
+// The permission mode showing in a Claude Code footer.
+//
+// ONE parser, here, because there were two and they disagreed. `unified-server`
+// and `routes/fleet` each carried a private `parseCCMode`, and only the latter
+// had the `auto` branch — so the same pane answered `default` in one and `auto`
+// in the other. They agreed in production only by accident: both read a field
+// the daemon does not send (`cap.content` against `rpcCapturePane`'s `pane`), so
+// both always parsed `''` and both always said `default`. Fixing the read is
+// what would have made them start contradicting each other, which is why the
+// parser had to be collapsed in the same change rather than after it.
+//
+// `bypass permissions on` is the literal footer text on most agents here, so
+// reporting it as `default` is false rather than merely coarse. That is what
+// makes `auto` correct rather than a preference.
+//
+// Verified against live panes rather than invented: an agent was cycled through
+// its own footer with shift+tab and each state captured — `⏵⏵ bypass permissions
+// on`, `⏵⏵ accept edits on`, `plan mode on`. Note `plan mode on` carries no `⏵⏵`
+// prefix, so nothing here may key on that glyph.
+export function parsePermissionMode(pane) {
+  const text = String(pane || '')
+  if (/plan mode on/i.test(text)) return 'plan'
+  if (/accept edits on/i.test(text)) return 'acceptEdits'
+  if (/auto.approve/i.test(text) || /bypass/i.test(text)) return 'auto'
+  return 'default'
+}
+
+// How many shift+tabs reach plan mode from `mode`.
+//
+// The cycle is bypass/default → acceptEdits → plan → back, confirmed by walking
+// a live agent through it. From `plan` one press leaves it; from `acceptEdits`
+// one press reaches plan; from anything else two. `auto` falls in the last
+// branch and that is correct — a bypass agent takes two presses, observed.
+export function permissionModeKeypresses(mode) {
+  return mode === 'plan' || mode === 'acceptEdits' ? 1 : 2
+}
+
 function lastLines(s, n) {
   return String(s).split('\n').slice(-n).join('\n')
 }
