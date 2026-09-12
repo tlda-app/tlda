@@ -1932,6 +1932,7 @@ export class FleetStore {
     this._getSubscriptionsByAdapter = this.db.prepare('SELECT * FROM subscriptions WHERE adapter = ? AND ended_at IS NULL ORDER BY subscription_id');
     this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ? AND ended_at IS NULL');
     this._endSubscription = this.db.prepare('UPDATE subscriptions SET ended_at = ? WHERE subscription_id = ? AND ended_at IS NULL');
+    this._endSubscriptionsByOwner = this.db.prepare('UPDATE subscriptions SET ended_at = ? WHERE owner = ? AND ended_at IS NULL');
     this._updateWiretapFilter = this.db.prepare('UPDATE wiretaps SET filter = ? WHERE id = ?');
 
     // Event queries for chat history
@@ -4312,14 +4313,26 @@ export class FleetStore {
   // itself. Roster and chat-recipient resolution already filtered on `dead`
   // directly and are unaffected. A route to a dead agent therefore still routes
   // nothing — it only means that if the agent comes back, it is reachable again.
-  markDead(id) {
+  // A dead agent's wiretaps and subscriptions end with it.
+  //
+  // They used to outlive it. `resolveWiretaps` walks every live tap on the main
+  // thread for EVERY event, so a tap nobody will ever read still costs on every
+  // message the fleet sends. Measured on live 2026-09-12: 20,843 live wiretaps
+  // and 130,380 live subscriptions against 61,302 agents — none of them ever
+  // ended, because `endWiretapsByAgent` existed and had no caller. That path's
+  // own comments record it being tuned twice at ~1,300 agents and ~2,000 taps;
+  // it was running at ten times that and the per-event cost only grows.
+  markDead(id, at = new Date().toISOString()) {
     this.db.transaction(() => {
       this._markAgentDead.run(id);
+      this._endWiretapsByAgent.run(at, id);
+      this._endSubscriptionsByOwner.run(at, id);
     })();
     this.retireTasksForGoneAgent(id, 'agent marked dead');
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
     this._bustSubscriptionTapCache();
+    this._resolvableWiretapCache = null;
   }
 
   retirePendingShell(id) {
@@ -6080,7 +6093,26 @@ export class FleetStore {
       recvOrder = 'r.timestamp DESC, r.event_id DESC';
     }
     const tailSql = tail.length ? ' AND ' + tail.join(' AND ') : '';
-    const sentBranch = `SELECT * FROM (SELECT ${cols} FROM events WHERE from_id = ?${tailSql} ORDER BY ${order} LIMIT ?)`;
+    // `agent` is one id or a set of them. A set used to be served by calling this
+    // method once per id and merging in JS, which made the cost linear in the
+    // number of ids the filter resolved to: measured on the live testing server
+    // 2026-09-12, same query and limit throughout, 1 id 351ms · 20 ids 543ms ·
+    // 60 ids 3.8s · 150 ids 10.2s · 435 ids 37.5s, past the 30s request bound.
+    // That is what `project:tlda` costs, because 435 agents carry that label, and
+    // it is the same defect as the 2026-09-06 incident where bare `tlda` expanded
+    // to 2,099 identities.
+    //
+    // One statement instead, the way `_queryPairEventsForSearch` already does the
+    // set case. The answer is unchanged: the global top-n of (sent ∪ received) is
+    // within (top-n of sent) ∪ (top-n of received) whether the branches are
+    // scoped to one id or to a set, which is the same argument queryChatHistory
+    // relies on. Exactly one id keeps `= ?` rather than `IN (?)` so the measured
+    // single-agent plan above is untouched.
+    const agentIds = [...new Set(Array.isArray(agent) ? agent : [agent])];
+    const agentPred = (col) => (agentIds.length === 1
+      ? `${col} = ?`
+      : `${col} IN (${agentIds.map(() => '?').join(',')})`);
+    const sentBranch = `SELECT * FROM (SELECT ${cols} FROM events WHERE ${agentPred('from_id')}${tailSql} ORDER BY ${order} LIMIT ?)`;
     // `events.id IN (SELECT event_id FROM recipients WHERE agent_id = ?)` had no
     // bound on the subquery, so SQLite materialized EVERY id the agent had ever
     // received (110,759 for fleet:skip), probed `events` by rowid once per id
@@ -6095,10 +6127,10 @@ export class FleetStore {
     // event timestamp is doing in that table, per queryChatHistory's note.
     const receivedBranch = `SELECT * FROM (SELECT ${cols} FROM events
       JOIN recipients r ON r.event_id = events.id
-      WHERE r.agent_id = ?${tailSql}
+      WHERE ${agentPred('r.agent_id')}${tailSql}
       ORDER BY ${recvOrder} LIMIT ?)`;
     const sql = `SELECT * FROM (${sentBranch} UNION ${receivedBranch}) ORDER BY ${order} LIMIT ?`;
-    const params = [agent, ...tailParams, limit, agent, ...tailParams, limit, limit];
+    const params = [...agentIds, ...tailParams, limit, ...agentIds, ...tailParams, limit, limit];
     const rows = this.db.prepare(sql).all(...params);
     if (beforeId) rows.reverse();
     return FleetStore.hydrateEvents(rows);
@@ -6436,15 +6468,18 @@ export class FleetStore {
             untilTs: before,
             limit,
           })
-          : agentIds.flatMap(agentId => this._queryAgentEventsForSearch({
-            agent: agentId,
+          // The whole agent set in one statement. Per-id calls merged in JS made
+          // this linear in the number of ids the filter resolved to; see the note
+          // in _queryAgentEventsForSearch for the measured cost.
+          : this._queryAgentEventsForSearch({
+            agent: agentIds,
             types: eventTypes,
             excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,
             sinceTs: since,
             untilTs: before,
             limit,
             filterSql: messageFilterSql?.events('events') || null,
-          }));
+          });
         eventRows = rows.map(r => ({
           source: 'fleet',
           id: r.id,
