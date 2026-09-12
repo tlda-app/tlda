@@ -3,7 +3,7 @@
 # Deploy with:  npm run deploy:live -- --fly-config fly.talk.toml
 #
 # A funnel can expose the tailnet hostname publicly when the deployment needs it.
-app = "your-tlda-presentation"
+app = "tlda-talk"
 primary_region = "sjc"
 
 [build]

@@ -2,7 +2,7 @@
 # Headless: API + Yjs sync + LaTeX builds + content/data. The tldraw SPA is NOT served
 # here — it runs from GitHub Pages (license-tied) and points at this backend.
 # Deploy with:  fly deploy -c fly.rc.toml
-app = "your-tlda-candidate"
+app = "tldraw-sync-skip-rc"
 primary_region = "sjc"
 
 [build]

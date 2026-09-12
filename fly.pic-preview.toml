@@ -22,7 +22,7 @@
 # If a promotion step you are about to run rebuilds anything, it is not this.
 #
 # Deploy with:  fly deploy -c fly.pic-preview.toml
-app = "your-tlda-course-preview"
+app = "pic-preview"
 primary_region = "sjc"
 
 [build]
