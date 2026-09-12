@@ -6,9 +6,11 @@
  * There are two distinct silences, and both end with a lab that was not captured:
  *
  * 1. **Capture started and failed** — `startRecording` records why in
- *    `RecorderState.error` (`recorder.ts:158`, "Microphone unavailable — …").
- *    Until this pill nothing in `src/` read `subscribeRecorder`, so the message
- *    existed and was rendered nowhere.
+ *    `RecorderState.error` ("Microphone unavailable — …"). Until this pill
+ *    nothing in `src/` read `subscribeRecorder`, so the message existed and was
+ *    rendered nowhere. A platform refusal of a request made outside a user
+ *    gesture is NOT in this class and sets no error — see
+ *    `refusedForWantOfGesture` in `recorder.ts`.
  *
  * 2. **Capture was never attempted** — `observe()` returns early when
  *    `canPublishRecording()` is false, so no `getUserMedia`, no MediaRecorder,
@@ -29,7 +31,7 @@
  * It starts no capture and holds no recorder state: the recorder remains the
  * only writer, and this is a reader of it.
  */
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { getRecorderState, subscribeRecorder } from '../recording/recorder'
 import { canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from '../authToken'
 import { classroomApi } from '../classroom/api'
@@ -41,6 +43,17 @@ export function RecorderErrorPill() {
   const canPublish = useSyncExternalStore(subscribeCanPresent, canPublishRecording)
   const permissionKnown = useSyncExternalStore(subscribeCanPresent, isPresentPermissionKnown)
   const [isInstructor, setIsInstructor] = useState(false)
+  const [showMessage, setShowMessage] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!showMessage) return
+    function handleClick(e: PointerEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setShowMessage(false)
+    }
+    document.addEventListener('pointerdown', handleClick, true)
+    return () => document.removeEventListener('pointerdown', handleClick, true)
+  }, [showMessage])
 
   useEffect(() => {
     if (!isClassroomSurface()) return
@@ -53,11 +66,27 @@ export function RecorderErrorPill() {
 
   // A failure the recorder recorded outranks everything: it is the only case
   // that carries its own reason, and it applies whoever is looking.
+  // Badge only, message on tap — the same disclosure BuildErrorPill uses, for
+  // the same reason: the reason text is a sentence, and a sentence parked in a
+  // corner is a banner. A button (not a span with a handler) so a touch reaches
+  // it; `onPointerDown` stops the canvas taking the tap first.
   if (state.error) {
     return (
-      <div className="recorder-error-container">
-        <span className="recorder-error-badge" aria-hidden="true">&#9888;</span>
-        <span className="recorder-error-text" role="status">{state.error}</span>
+      <div className="recorder-error-container" ref={containerRef}>
+        <button
+          type="button"
+          className="recorder-error-badge"
+          onClick={() => setShowMessage(s => !s)}
+          onPointerDown={e => e.stopPropagation()}
+          aria-expanded={showMessage}
+          aria-label="Recording problem"
+          title={state.error}
+        >&#9888;</button>
+        {showMessage && (
+          <div className="recorder-error-message" role="status" onPointerDown={e => e.stopPropagation()}>
+            {state.error}
+          </div>
+        )}
       </div>
     )
   }
