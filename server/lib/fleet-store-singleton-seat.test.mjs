@@ -115,3 +115,23 @@ test('migration atomically removes every prior living holder', () => withStore(s
   assert.deepEqual(store.getAgent('fleet:incoming').labels, ['on-call'])
   assert.deepEqual(store.livingHoldersOfLabel('on-call'), ['fleet:incoming'])
 }))
+
+test('explicit transfer promotes a non-singleton definition in the same transaction', () => withStore(store => {
+  addAgent(store, 'fleet:first', 'first', ['chief'])
+  addAgent(store, 'fleet:second', 'second', ['chief'])
+  addAgent(store, 'fleet:incoming', 'incoming')
+  assert.equal(Boolean(store.getLabelDefinition('chief')?.singleton), false)
+
+  assert.throws(
+    () => store.assignSingletonSeat({ label: 'chief', agentId: 'fleet:incoming', actorId: 'fleet:skip' }),
+    /already defined as non-singleton/,
+  )
+
+  const moved = store.assignSingletonSeat({
+    label: 'chief', agentId: 'fleet:incoming', actorId: 'fleet:skip', transfer: true,
+  })
+
+  assert.equal(Boolean(store.getLabelDefinition('chief')?.singleton), true)
+  assert.deepEqual(moved.previous_holders.map(holder => holder.id).sort(), ['fleet:first', 'fleet:second'])
+  assert.deepEqual(store.livingHoldersOfLabel('chief'), ['fleet:incoming'])
+}))
