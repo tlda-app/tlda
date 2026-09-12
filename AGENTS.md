@@ -586,6 +586,43 @@ attribution that found the fault in the first place. **A second instrument for a
 job already done is the same fault as a second ingester**, and it is harder to
 see because building it feels like rigour.
 
+### Do the work through the tools, or the bugs in them fall to Skip
+
+Skip, 2026-09-12, after an agent was told to regenerate a course site and did it
+by running `quarto render` by hand for an hour on the machine he was using:
+
+> "youre supposed to be fking developing fucking dev/release tools for the fking
+> class"
+
+> "instead you kick off fking manual builds on the mini every 3 fking min"
+
+> **"if exercising the tools isnt part of how you work the fking bugs all fall to
+> me"**
+
+**That last line is the rule.** A hand-run command that bypasses the release path
+does not merely fail to build the tooling — it means every defect in that path
+stays invisible until he hits it. **We are the ones who should be finding them,
+and the only way we do is by using them for real work.**
+
+So: build through `tlda build` and the release pipeline, publish through the
+documented path, sync through the daemon. **When the tool is broken, that is the
+finding** — report it and fix it, rather than stepping around it and reporting the
+task done. Stepping around it is how a build/deploy process stays broken for
+weeks while every individual task succeeds.
+
+**Two corollaries, both learned the same night.**
+
+**A workaround performed silently is worse than a failure.** The task looks done,
+the tool is still broken, and nobody knows the tool was not involved. If you had
+to go around the supported path, say so in the report in one sentence, naming the
+path and how it failed.
+
+**His machine is a shared resource he is actively working on.** The mini is not
+build capacity. Anything running more than a minute or two either goes somewhere
+else or gets asked about first — §"A browser is a last resort" records the night
+thirteen agents took it to load average 62.7 while he was using it, and a
+whole-site render is the same act with a different command.
+
 ### A verification claim carries its evidence, or it is not a claim
 
 Skip, 2026-09-12, on what has actually reached him:
