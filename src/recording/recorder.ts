@@ -145,10 +145,56 @@ function now(): number {
 }
 
 /**
+ * Safari answers `getUserMedia` called outside a user gesture with
+ * `NotAllowedError` — the same error name a real permission denial carries.
+ * The app-owned capture starts from an effect on load (`openAppRecordingSession`),
+ * so on iOS that refusal is the expected answer to a request we made at the
+ * wrong moment, not a fact about the device's microphone. Reported, it puts a
+ * permanent "Microphone unavailable" warning in front of someone whose mic
+ * works.
+ *
+ * Two things separate the speculative refusal from a genuine one, and either is
+ * enough to claim the fault:
+ *
+ *  - `permissions.query({name:'microphone'})` answering `denied`. Authoritative
+ *    where it is implemented, and absent on Safari, which is why it cannot be
+ *    the only test.
+ *  - The request having been made *inside* a user gesture. Refused then, we
+ *    asked at a moment we were entitled to ask, so the answer is about the
+ *    microphone. `startRecording(..., { userInitiated })` carries that from the
+ *    gesture retry below; `navigator.userActivation` supplies it where the
+ *    browser has it.
+ *
+ * So a speculative refusal is silent and arms the next gesture; the retry that
+ * gesture triggers is user-initiated, and if the microphone is genuinely denied
+ * that attempt warns. One tap later, not never.
+ */
+async function refusedForWantOfGesture(err: unknown, userInitiated = false): Promise<boolean> {
+  if ((err as { name?: string } | null)?.name !== 'NotAllowedError') return false
+  if (userInitiated) return false
+  if (navigator.userActivation?.isActive) return false
+  try {
+    const permission = await navigator.permissions?.query({ name: 'microphone' as PermissionName })
+    if (permission?.state === 'denied') return false
+  } catch {
+    /* Permissions API unavailable (Safari) — the gesture test above is the one
+       that decides there, which is why this is not treated as a denial. */
+  }
+  return true
+}
+
+/**
  * Begin recording. Requests mic permission (throws if denied), starts the
  * MediaRecorder, and attaches the store + camera listeners.
+ *
+ * Returns null without recording an error when the platform refused a request
+ * we made outside a user gesture — see `refusedForWantOfGesture`.
  */
-export async function startRecording(editor: Editor | null, doc: string): Promise<string | null> {
+export async function startRecording(
+  editor: Editor | null,
+  doc: string,
+  { userInitiated = false }: { userInitiated?: boolean } = {},
+): Promise<string | null> {
   if (state.status !== 'idle') return null
   const token = crypto.randomUUID()
   activeToken = token
@@ -171,15 +217,24 @@ export async function startRecording(editor: Editor | null, doc: string): Promis
     stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     })
+    micNeedsGesture = false
   } catch (err: any) {
     const msg = `Microphone unavailable — ${err?.message ?? 'grant mic access'}`
+    const speculative = await refusedForWantOfGesture(err, userInitiated)
     if (activeToken === token) {
       activeToken = null
       activeRecordingId = null
       activeDoc = null
       activeEditor = null
+      if (speculative) {
+        micNeedsGesture = true
+        log.info('recording', 'mic-awaiting-gesture', { doc, error: err?.name ?? 'NotAllowedError' })
+        setState({ status: 'idle', doc: null, error: null })
+        return null
+      }
       setState({ status: 'idle', doc: null, error: msg })
     }
+    if (speculative) return null
     throw new Error(msg)
   }
 
@@ -284,10 +339,40 @@ function recordingMeta(doc: string, id: string, audioMime: string, duration: num
   }
 }
 
-async function startConfiguredAppSession(generation: number) {
+/**
+ * The app-owned capture starts on load, which on iOS is outside any user
+ * gesture, so the platform refuses it (see `refusedForWantOfGesture`). Rather
+ * than abandon capture — which would make the absence of a warning mean
+ * nothing — take the next gesture on the page and ask again inside it. One
+ * listener, removed as soon as it fires, and the retry is marked user-initiated
+ * so a genuine denial reports itself there.
+ */
+let micNeedsGesture = false
+let gestureRetry: (() => void) | null = null
+
+function armGestureRetry() {
+  if (gestureRetry) return
+  const retry = () => {
+    window.removeEventListener('pointerdown', retry, true)
+    gestureRetry = null
+    if (!micNeedsGesture) return
+    // The generation is read here rather than captured at arming time: if the
+    // session has moved on, the current one is the session this gesture belongs
+    // to, and a stale capture would only start a recording we then stop.
+    void startConfiguredAppSession(appSessionGeneration, { userInitiated: true }).catch((error) =>
+      log.error('recording', 'gesture-retry-failed', { doc: appSessionDoc, error: String(error) }))
+  }
+  gestureRetry = retry
+  window.addEventListener('pointerdown', retry, true)
+}
+
+async function startConfiguredAppSession(generation: number, { userInitiated = false } = {}) {
   if (!appSessionDoc || appSessionToken || state.status !== 'idle') return
-  const token = await startRecording(appSessionEditor, appSessionDoc)
-  if (!token) return
+  const token = await startRecording(appSessionEditor, appSessionDoc, { userInitiated })
+  if (!token) {
+    if (micNeedsGesture) armGestureRetry()
+    return
+  }
   if (generation !== appSessionGeneration || !appSessionDoc) {
     await stopRecording(token)
     return

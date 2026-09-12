@@ -1,5 +1,5 @@
-/* RecorderErrorPill — same red and the same calm as BuildErrorPill, but the
-   message sits beside the badge instead of behind a click.
+/* RecorderErrorPill — same red, same calm and the same disclosure as
+   BuildErrorPill: a badge, with the message behind a tap.
 
    The affirmative "Recording" state is deliberately NOT red: a warning and a
    confirmation that look alike are worse than no indicator, because the glance
@@ -15,13 +15,40 @@ html[data-theme="dark"] {
   --recorder-live-pill-color: #57c98a;
 }
 
-.recorder-error-container {
-  position: relative;
+/* Bottom-right, with the app's own warnings — bottom-left is the document
+   build-error surface (BuildErrorPill and its siblings in .bottom-panels), and
+   this is the app telling you about itself, not the document. It stays mounted
+   in the build pills row and anchors itself out of that flow, which is what
+   FleetIconPill does from the same row; the stack slots below it are
+   highlighter 16px → voice-note 49px → fleet icon 82px. */
+.recorder-error-container,
+.recorder-status-container {
+  position: fixed;
+  bottom: 115px;
+  right: 16px;
+  z-index: var(--tlda-z-top-control);
   pointer-events: all;
   display: flex;
   align-items: center;
   gap: 5px;
   max-width: min(420px, calc(100vw - 48px));
+}
+
+body.phone-mode .recorder-error-container,
+body.phone-mode .recorder-status-container {
+  bottom: calc(172px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
+}
+
+/* Tablet: coarse pointer but too wide for phone-mode, so it never gets the
+   safe-area treatment and would sit under the browser chrome. Same rule the
+   mic / voice-note / fleet buttons carry. */
+@media (pointer: coarse) and (min-width: 601px) {
+  .recorder-error-container,
+  .recorder-status-container {
+    bottom: calc(115px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+    right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
+  }
 }
 
 .recorder-error-badge {
@@ -30,6 +57,54 @@ html[data-theme="dark"] {
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
   color: var(--recorder-error-pill-color);
   opacity: 0.85;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  /* 27px is the corner-control target on a pointer device; phone-mode takes the
+     44px one, as the neighbouring buttons do. */
+  min-width: 27px;
+  min-height: 27px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+
+body.phone-mode .recorder-error-badge {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.recorder-error-badge:hover { opacity: 1; }
+
+/* The message, on tap. Opens upward and inward — the badge is in the right
+   corner, so a popup anchored left would run off the screen. */
+.recorder-error-message {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 48px));
+  background: #fafafa;
+  border: 1px solid color-mix(in srgb, var(--recorder-error-pill-color) 30%, transparent);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #444;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: all;
+  z-index: 10;
+}
+
+html[data-theme="dark"] .recorder-error-message {
+  background: #1e1e1e;
+  border-color: color-mix(in srgb, var(--recorder-error-pill-color) 40%, transparent);
+  color: #ccc;
 }
 
 .recorder-error-text {
@@ -43,16 +118,8 @@ html[data-theme="dark"] {
 }
 
 /* Affirmative state: the instructor can see at a glance that the lab is being
-   captured. Same row, same weight as the warning it replaces. */
-.recorder-status-container {
-  position: relative;
-  pointer-events: all;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  max-width: min(420px, calc(100vw - 48px));
-}
-
+   captured. Same corner and same weight as the warning it replaces — its
+   anchoring is shared with .recorder-error-container above. */
 .recorder-status-dot {
   width: 7px;
   height: 7px;
