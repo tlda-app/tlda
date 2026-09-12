@@ -6246,9 +6246,17 @@ export class FleetStore {
     // DESC), in the order ORDER BY already wants, and stops at LIMIT, reading
     // ~limit rows. `from_id IN (...)` cannot walk one range; to produce a global
     // timestamp order across many ranges SQLite materialises the matching rows
-    // and sorts them, and on a 2.7GB table where a busy id has 100k+ events that
-    // is a large fraction of every filtered agent's history. N small ordered
-    // walks beat one big sort.
+    // and sorts them, and on a store this size where a busy id has 100k+ events
+    // that is a large fraction of every filtered agent's history. N small
+    // ordered walks beat one big sort.
+    //
+    // Size, with a date on it, because the figure moves and the argument gets
+    // stronger as it does: the store was **13.09 GB on 2026-09-12**. Comments in
+    // this file and in unified-server.mjs said 2.7 GB, which was true when the
+    // scan reasoning was first written and had since grown by ~5x without anyone
+    // noticing — so those notes were not merely stale, they understated their
+    // own case. If you are reading this much later, measure again rather than
+    // trusting this number; the point is the shape, and the shape worsens.
     //
     // A local corpus will NOT show this: 174k events over 435 agents sorts
     // cheaply and reported 1262ms -> 336ms, which is a true measurement of an
@@ -6273,8 +6281,9 @@ export class FleetStore {
     // `events.id IN (SELECT event_id FROM recipients WHERE agent_id = ?)` had no
     // bound on the subquery, so SQLite materialized EVERY id the agent had ever
     // received (110,759 for fleet:skip), probed `events` by rowid once per id
-    // across a 2.7GB table, temp-b-tree sorted the result, and only then applied
-    // the LIMIT. All of that is paid before the limit, so the cost was the same
+    // across the events table (13.09 GB on 2026-09-12), temp-b-tree sorted the
+    // result, and only then applied the LIMIT. All of that is paid before the
+    // limit, so the cost was the same
     // whatever the answer was — one measured call took 39.4s to return 0 rows.
     //
     // Joining instead lets SQLite drive from idx_recipients_agent_ts in the
