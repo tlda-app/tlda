@@ -4,6 +4,7 @@ import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
 import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
+import { composerState as paneComposerState, kickoffMarker } from '../agent-runtime/status-classifier.mjs'
 
 const execFileP = promisify(execFile)
 const AGENT_NICE_INCREMENT = 5
@@ -260,6 +261,69 @@ export async function dismissDevchannels(session, {
   return false
 }
 
+// Codex drives its composer through the window target; Claude through the plain
+// session target. The injectors have always differed here, so anything else
+// reading the same composer has to differ the same way or it reads a pane the
+// keypresses are not going to.
+function composerTarget(harnessKind, session) {
+  return harnessKind === 'codex' ? exactTmuxWindowTarget(session) : exactTmuxTarget(session)
+}
+
+// A live harness whose composer still holds OUR kickoff never started. Press
+// Enter -- that is the entire remedy -- and report what was seen and whether it
+// took.
+//
+// It reports the pane it read and when, because the caller's job is to show that
+// rather than to name a symptom: a kickoff sitting at the prompt is obvious on
+// sight and opaque as a description. And it is bounded to the marker we sent, so
+// it never submits a placeholder hint or something a person typed and has not
+// sent.
+export async function submitParkedKickoff(session, harnessKind, prompt, {
+  tmuxSocket = process.env.TMUX_SOCKET || null,
+  tmuxExec = tmux,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  confirmMs = 4000,
+} = {}) {
+  const target = composerTarget(harnessKind, session)
+  const marker = kickoffMarker(prompt)
+  const read = async () => {
+    const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', target, '-p')
+    return String(stdout || '')
+  }
+  let pane
+  try {
+    pane = await read()
+  } catch (error) {
+    // Could not look. That is not an observation of a healthy agent, and saying
+    // so is the whole point of carrying it separately.
+    return { observed: false, observedAt: new Date().toISOString(), pane: null, parked: false, submitted: false, error: error?.message || String(error) }
+  }
+  const observedAt = new Date().toISOString()
+  const state = paneComposerState(harnessKind, pane, marker)
+  if (!state.containsMarker || state.busyAfter) {
+    return { observed: true, observedAt, pane, parked: false, submitted: false }
+  }
+  await tmuxExec(tmuxSocket, 'send-keys', '-t', target, 'Enter').catch(() => {})
+  const deadline = Date.now() + confirmMs
+  while (Date.now() < deadline) {
+    await sleep(500)
+    let after
+    try {
+      after = await read()
+    } catch {
+      continue
+    }
+    const post = paneComposerState(harnessKind, after, marker)
+    if (post.busyAfter || (post.promptIndex >= 0 && !post.containsMarker)) {
+      return { observed: true, observedAt, pane, parked: true, submitted: true, paneAfter: after }
+    }
+  }
+  // Still parked. The kickoff stays where it is: this is the one place that
+  // must NOT clear the composer, because nothing else holds the text and
+  // clearing it would destroy the only copy of what the agent was asked to do.
+  return { observed: true, observedAt, pane, parked: true, submitted: false, paneAfter: await read().catch(() => null) }
+}
+
 export async function injectCodexPrompt(session, prompt, {
   timeoutMs = 60_000,
   tmuxSocket = process.env.TMUX_SOCKET || null,
@@ -267,19 +331,8 @@ export async function injectCodexPrompt(session, prompt, {
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   const deadline = Date.now() + timeoutMs
-  const promptMarker = prompt.slice(0, Math.min(prompt.length, 48))
-  const composerState = (pane = '') => {
-    const lines = pane.split('\n')
-    const promptIndex = lines.findLastIndex((line) => line.trimStart().startsWith('›'))
-    if (promptIndex < 0) return { promptIndex: -1, containsMarker: false, busyAfter: false }
-    return {
-      promptIndex,
-      containsMarker: lines[promptIndex].includes(promptMarker),
-      busyAfter: lines.slice(promptIndex + 1).some((line) =>
-        ['Working', 'Transmuting', 'Thinking', 'esc to interrupt', 'ESC to interrupt']
-          .some((marker) => line.includes(marker))),
-    }
-  }
+  const promptMarker = kickoffMarker(prompt)
+  const composerState = (pane = '') => paneComposerState('codex', pane, promptMarker)
   // The status line says `model: loading` until the model is up. Read the LAST
   // status line, never the whole pane: a resumed Codex pane carries the previous
   // process's transcript, so a stale `model: loading` sits in scrollback under a
@@ -378,21 +431,8 @@ export async function injectClaudePrompt(session, prompt, {
   dialogGraceMs = null,
 } = {}) {
   const deadline = Date.now() + timeoutMs
-  const promptMarker = prompt.slice(0, Math.min(prompt.length, 48))
-  // Same reading as the Codex composer, against Claude's `❯` prompt line: is
-  // our kickoff still sitting there unsent, and is the harness working below it.
-  const composerState = (pane = '') => {
-    const lines = pane.split('\n')
-    const promptIndex = lines.findLastIndex((line) => line.includes('❯'))
-    if (promptIndex < 0) return { promptIndex: -1, containsMarker: false, busyAfter: false }
-    return {
-      promptIndex,
-      containsMarker: lines[promptIndex].includes(promptMarker),
-      busyAfter: lines.slice(promptIndex + 1).some((line) =>
-        ['Thinking', 'Working', 'ESC to interrupt', 'esc to interrupt']
-          .some((marker) => line.includes(marker))),
-    }
-  }
+  const promptMarker = kickoffMarker(prompt)
+  const composerState = (pane = '') => paneComposerState('claude', pane, promptMarker)
   await dismissDevchannels(session, {
     timeoutMs: Math.min(15_000, timeoutMs),
     tmuxSocket,

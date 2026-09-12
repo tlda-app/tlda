@@ -9,7 +9,7 @@ import path from 'node:path'
 import { normalizeSpawnModelKwargs } from './models.mjs'
 import { getMachineId } from '../shared/config.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsMintShell, wsReserveShell } from './register.mjs'
-import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, sessionRuntimeState, spawnTmux, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
+import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, sessionRuntimeState, spawnTmux, submitParkedKickoff, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
 import { resolveLaunchPolicy, permissionMetadata } from './permissions.mjs'
 import { resolveCodexResumeHandle } from '../agent-runtime/codex-resume-resolver.mjs'
@@ -826,7 +826,31 @@ async function spawnRespawn(params) {
       ? deps.sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket })
         .then(runtime => ({ runtime, mcp: true }))
       : sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
-  const liveRuntimeResult = runtimeState => {
+  // A live runtime is not a started agent. Wake used to return `alreadyAlive`
+  // on the strength of the process existing, which is precisely the report that
+  // stops people looking: an agent whose kickoff is parked unsent in its
+  // composer has a live process, a live tmux session, and has never produced a
+  // turn. So before claiming the agent is already awake, look at the composer --
+  // and if our own kickoff is sitting in it, press Enter, because that is the
+  // whole remedy and there is nothing for a human to decide.
+  const recoverParkedKickoff = async () => {
+    const adapterForKind = ADAPTERS[requestedKind]
+    const kickoff = adapterForKind?.kickoffPrompt?.(friendlyName)
+    if (!kickoff) return null
+    try {
+      return await (deps.submitParkedKickoff || submitParkedKickoff)(
+        tmuxSession,
+        requestedKind,
+        kickoff,
+        { tmuxSocket: params.tmuxSocket },
+      )
+    } catch {
+      // A failed look is not evidence the agent is fine; it is the absence of
+      // evidence, and the caller reports it as such rather than as health.
+      return null
+    }
+  }
+  const liveRuntimeResult = async runtimeState => {
     if (explicitRelaunch) {
       throw new SpawnError(
         'launch-failed',
@@ -846,10 +870,34 @@ async function spawnRespawn(params) {
         model,
       }
     }
-    return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
+    const composer = await recoverParkedKickoff()
+    if (composer?.parked) {
+      // Recorded whether or not it worked. An auto-repair that fires constantly
+      // is a defect hiding behind a fix, and nothing can see that without a
+      // count of how often the repair was needed.
+      emitLifecycle(params, 'terminal-command', {
+        ok: !!composer.submitted,
+        fleet_id: fleetId,
+        name: friendlyName,
+        tmux_session: tmuxSession,
+        cwd,
+        harness: requestedKind,
+        model,
+        reason: composer.submitted ? 'kickoff-parked-resubmitted' : 'kickoff-parked-unsubmitted',
+      })
+    }
+    return {
+      ok: true,
+      fleetId,
+      tmuxSession,
+      harness: requestedKind,
+      model,
+      alreadyAlive: true,
+      ...(composer ? { composer } : {}),
+    }
   }
   const runtimeState = await readRuntimeState()
-  if (runtimeState.runtime) return liveRuntimeResult(runtimeState)
+  if (runtimeState.runtime) return await liveRuntimeResult(runtimeState)
   let handle = null
   const identityOptions = {
     identityConfigDir: params.identityConfigDir,
@@ -962,7 +1010,7 @@ async function spawnRespawn(params) {
   const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) {
     const occupiedRuntimeState = await readRuntimeState()
-    if (occupiedRuntimeState.runtime) return liveRuntimeResult(occupiedRuntimeState)
+    if (occupiedRuntimeState.runtime) return await liveRuntimeResult(occupiedRuntimeState)
     throw new SpawnError(
       'launch-failed',
       `Wake did not produce a live runtime for ${friendlyName} (${fleetId}): tmux session ${tmuxSession} exists but has no live runtime; wake declined to replace it.`,

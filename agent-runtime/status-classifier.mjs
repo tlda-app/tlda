@@ -61,6 +61,53 @@ export function classifyPane(harnessKind, pane, prevState = null, now = 0) {
   }
 }
 
+// Which character starts the harness's composer line. Codex draws `›`, Claude
+// draws `❯`; goose has no composer we drive, so it has no entry rather than a
+// guessed one.
+const COMPOSER_PROMPT = Object.freeze({ codex: '›', claude: '❯' })
+
+const BUSY_MARKERS = Object.freeze([
+  'Working', 'Transmuting', 'Thinking', 'esc to interrupt', 'ESC to interrupt',
+])
+
+// The leading slice of a kickoff we can expect to find on ONE composer line.
+// Every caller asking "is my kickoff parked?" must derive it the same way, or a
+// recovery looks for a marker the injector never matched on.
+export function kickoffMarker(prompt = '') {
+  const text = String(prompt)
+  return text.slice(0, Math.min(text.length, 48))
+}
+
+// PURE: what the harness's composer currently holds, and whether the harness is
+// working below it.
+//
+// This is the reading behind "the process is alive and no turn was produced":
+// the kickoff sits at the composer, unsent, and nothing is running underneath.
+// From outside that is indistinguishable from a dead mint -- live process, live
+// tmux session, silence -- which is why it produced three different symptom
+// names and no diagnosis.
+//
+// `marker` is the text we are asking about, normally the first characters of a
+// kickoff we sent. Asking whether OUR text is parked is deliberate: a composer
+// that merely looks non-empty may be holding a placeholder hint, or something a
+// person typed and has not sent, and neither is ours to submit.
+export function composerState(harnessKind, pane = '', marker = '') {
+  const prompt = COMPOSER_PROMPT[harnessKind]
+  const absent = { promptIndex: -1, containsMarker: false, busyAfter: false }
+  if (!prompt) return absent
+  const lines = String(pane).split('\n')
+  const promptIndex = harnessKind === 'codex'
+    ? lines.findLastIndex((line) => line.trimStart().startsWith(prompt))
+    : lines.findLastIndex((line) => line.includes(prompt))
+  if (promptIndex < 0) return absent
+  return {
+    promptIndex,
+    containsMarker: !!marker && lines[promptIndex].includes(marker),
+    busyAfter: lines.slice(promptIndex + 1).some((line) =>
+      BUSY_MARKERS.some((busy) => line.includes(busy))),
+  }
+}
+
 // PURE hysteresis for the thinking activity transition. A single missed spinner frame must
 // never fabricate a turn end, so the false edge only fires after `confirm`
 // consecutive idle scans. The true edge fires immediately (status must feel live).
