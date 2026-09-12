@@ -13,7 +13,7 @@ import { SHAPE_RENDER_ERROR_EVENT, errorFromShapeRenderEvent } from './shape-err
 import { BookViewer } from './BookViewer'
 import { DocumentWithLayers } from './classroom/DocumentWithLayers'
 import { IdentityPicker } from './IdentityPicker'
-import { sendMessage, useFleetAgents, useFleetIdentity } from './fleet-data-adapter'
+import { searchFleet, sendMessage, useFleetAgents, useFleetIdentity } from './fleet-data-adapter'
 import { subscribeChat } from './fleet/chat-subscription.mjs'
 import { convertChatEvent } from './fleet/convert-chat-event.mjs'
 import { GradebookWorkspace } from './classroom/GradebookWorkspace'
@@ -854,6 +854,43 @@ function fleetChatFilterForAgent(row: FleetAgentDirectoryRowModel | null): Fleet
   return buildFleetAgentFilter(row.exactName) as FleetChatFilter
 }
 
+// The index chat opens on a real conversation rather than on an empty panel, so
+// there is no "no agent selected" state for a placeholder to stand for. Skip,
+// 2026-09-12: "I think we just fucking populate ... the agent the user most
+// recently spoke to. And if there's nobody, like a new user, the agent anybody
+// most recently spoke to?" — and on the end of the chain: "certainly, the agent
+// who is looking at the page exists as an agent". So the chain terminates and
+// there is no degenerate case to design for.
+//
+// One `fleet-search` per index mount, limit 1. The second call runs only for a
+// viewer with no chat history at all, so this is not a fleet-wide read on every
+// page load.
+const INITIAL_CHAT_QUERY = {
+  eventType: 'chat',
+  eventOnly: true,
+  historyOnly: true,
+} as const
+
+function otherParticipant(row: { from?: unknown; recipients?: unknown }, me: string): string | null {
+  const from = typeof row?.from === 'string' ? row.from : null
+  if (from && from !== me) return from
+  const recipients = Array.isArray(row?.recipients) ? row.recipients : []
+  return recipients.find((id: unknown): id is string => typeof id === 'string' && id !== me) || from || null
+}
+
+// `me` is passed explicitly rather than left to searchFleet's getHumanId()
+// default, because the server resolves the `me` in the filter expression from
+// that same field — so the identity the query is about and the identity the
+// participant comparison below excludes are one value, not two that could drift.
+async function resolveInitialChatAgent(me: string): Promise<string> {
+  const mine = await searchFleet('', 1, { ...INITIAL_CHAT_QUERY, me, filterExpression: 'from:me | to:me' })
+  const fromMine = mine[0] ? otherParticipant(mine[0], me) : null
+  if (fromMine) return fromMine
+  const anyone = await searchFleet('', 1, { ...INITIAL_CHAT_QUERY, me })
+  const fromAnyone = anyone[0] ? otherParticipant(anyone[0], me) : null
+  return fromAnyone || me
+}
+
 // The document table's agents cell: the project's agents, most recently active
 // first. How many are visible is not decided here. The cell is as tall as the
 // history cell beside it and clips on a whole line, so the count is a
@@ -1064,10 +1101,37 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     agentName: string | null
     filter: FleetChatFilter
   } | null>(null)
+  // Resolved once, when identity lands. Until then the chat carries no filter,
+  // which is nothing to show rather than a stand-in for it.
+  const [initialChatAgentId, setInitialChatAgentId] = useState<string | null>(null)
+  useEffect(() => {
+    if (!identity.id) return
+    let live = true
+    void resolveInitialChatAgent(identity.id).then(id => { if (live) setInitialChatAgentId(id) })
+    return () => { live = false }
+  }, [identity.id])
+  // Two memos rather than one, because `agentRows` rebuilds on every roster
+  // refresh: this one returns a string, so its value stops changing once the
+  // roster knows the agent, and the filter below is keyed on that string instead
+  // of on the churning array. A bare fleet id is addressable too — the filter
+  // grammar takes one — so an agent the roster has not paged in yet still works,
+  // it just reads as an id until it does.
+  const initialChatAgentName = useMemo(
+    () => {
+      if (!initialChatAgentId) return null
+      const row = agentRows.find(candidate => candidate.id === initialChatAgentId)
+      return row?.exactName || initialChatAgentId
+    },
+    [initialChatAgentId, agentRows],
+  )
+  const initialChatFilter = useMemo(
+    () => (initialChatAgentName ? buildFleetAgentFilter(initialChatAgentName) as FleetChatFilter : [] as FleetChatFilter),
+    [initialChatAgentName],
+  )
   const selectedAgentName = selectedAgent?.exactName ?? null
   const chromeChatFilter = chromeChatOverride?.agentName === selectedAgentName
     ? chromeChatOverride.filter
-    : selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
+    : selectedAgentFilter || initialChatFilter
   useEffect(() => {
     const controller = new AbortController()
     const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
