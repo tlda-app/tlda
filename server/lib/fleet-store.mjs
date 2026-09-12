@@ -956,6 +956,48 @@ export class FleetStore {
         SELECT RAISE(ABORT, 'mandatory subscription cannot be removed while its owner is alive — subscription(operation: "policy", id, policy: "hold") instead');
       END;
     `);
+    // No subscription and no wiretap is live for a dead agent. Skip, 2026-09-12:
+    // "shall we also add a check that no sub is live for a dead agent?"
+    //
+    // It lives on `agents` rather than inside `markDead` so that the invariant
+    // holds for every writer that sets the flag, not for the one code path that
+    // remembered to clean up. That is the same reasoning as the singleton-name
+    // index: a rule beside the schema drifts from it, and the schema wins.
+    //
+    // Dropped and recreated for the reason the mandatory triggers are: an
+    // existing database keeps the text it was created with.
+    //
+    // Two things established by probe rather than assumed. `recursive_triggers`
+    // is 0 by default, so the mandatory guard does not fire on this trigger's
+    // write at all; and were it ever turned on, the guard reads the owner as
+    // already dead here and stays quiet. Correct either way, which is the point
+    // of checking -- relying on the pragma would reverse silently if it moved.
+    //
+    // The timestamp is written in the same shape `new Date().toISOString()`
+    // produces. `datetime('now')` yields "YYYY-MM-DD HH:MM:SS", and a column
+    // holding two formats compares wrong in ways nothing announces.
+    this.db.exec('DROP TRIGGER IF EXISTS trg_agents_death_ends_subscriptions');
+    this.db.exec('DROP TRIGGER IF EXISTS trg_agents_death_ends_wiretaps');
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_agents_death_ends_subscriptions
+      AFTER UPDATE OF dead ON agents
+      WHEN NEW.dead = 1 AND COALESCE(OLD.dead, 0) = 0
+      BEGIN
+        UPDATE subscriptions
+           SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE owner = NEW.id AND ended_at IS NULL;
+      END;
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_agents_death_ends_wiretaps
+      AFTER UPDATE OF dead ON agents
+      WHEN NEW.dead = 1 AND COALESCE(OLD.dead, 0) = 0
+      BEGIN
+        UPDATE wiretaps
+           SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE agent_id = NEW.id AND ended_at IS NULL;
+      END;
+    `);
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_subscriptions_owner_live
         ON subscriptions(owner) WHERE ended_at IS NULL;
@@ -4349,16 +4391,13 @@ export class FleetStore {
   // ended, because `endWiretapsByAgent` existed and had no caller. That path's
   // own comments record it being tuned twice at ~1,300 agents and ~2,000 taps;
   // it was running at ten times that and the per-event cost only grows.
-  markDead(id, at = new Date().toISOString()) {
-    // The order is load-bearing. `trg_subscriptions_mandatory_unendable` reads
-    // `agents.dead` for this owner, so the flag has to be set before the
-    // subscriptions are ended or the trigger aborts the whole transaction on
-    // the first mandatory row.
-    this.db.transaction(() => {
-      this._markAgentDead.run(id);
-      this._endWiretapsByAgent.run(at, id);
-      this._endSubscriptionsByOwner.run(at, id);
-    })();
+  // `at` is accepted and unused: ending the taps and subscriptions is the
+  // schema's job now -- `trg_agents_death_ends_subscriptions` and its wiretap
+  // twin fire on the flag itself, so every writer that marks an agent dead gets
+  // the cleanup, not just this one. Doing it here as well would be a second
+  // mechanism for one fact, and the two would drift.
+  markDead(id, _at = new Date().toISOString()) {
+    this._markAgentDead.run(id);
     this.retireTasksForGoneAgent(id, 'agent marked dead');
     this._bustAgentsCache();
     this._syncAgentRegistry(id);

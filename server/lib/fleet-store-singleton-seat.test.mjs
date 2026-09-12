@@ -116,22 +116,27 @@ test('migration atomically removes every prior living holder', () => withStore(s
   assert.deepEqual(store.livingHoldersOfLabel('on-call'), ['fleet:incoming'])
 }))
 
+// The label here has to be one the schema does NOT declare singleton, because
+// the premise of the test is that it starts non-singleton and transfer promotes
+// it. This used to say `chief`, which became a seat on 2026-09-12 alongside
+// `on-call` — so the test began failing on its first assertion, having lost its
+// subject rather than found a defect. Any non-seat label works; `scribe` is one.
 test('explicit transfer promotes a non-singleton definition in the same transaction', () => withStore(store => {
-  addAgent(store, 'fleet:first', 'first', ['chief'])
-  addAgent(store, 'fleet:second', 'second', ['chief'])
+  addAgent(store, 'fleet:first', 'first', ['scribe'])
+  addAgent(store, 'fleet:second', 'second', ['scribe'])
   addAgent(store, 'fleet:incoming', 'incoming')
-  assert.equal(Boolean(store.getLabelDefinition('chief')?.singleton), false)
+  assert.equal(Boolean(store.getLabelDefinition('scribe')?.singleton), false)
 
   assert.throws(
-    () => store.assignSingletonSeat({ label: 'chief', agentId: 'fleet:incoming', actorId: 'fleet:skip' }),
+    () => store.assignSingletonSeat({ label: 'scribe', agentId: 'fleet:incoming', actorId: 'fleet:skip' }),
     /already defined as non-singleton/,
   )
 
   const moved = store.assignSingletonSeat({
-    label: 'chief', agentId: 'fleet:incoming', actorId: 'fleet:skip', transfer: true,
+    label: 'scribe', agentId: 'fleet:incoming', actorId: 'fleet:skip', transfer: true,
   })
 
-  assert.equal(Boolean(store.getLabelDefinition('chief')?.singleton), true)
+  assert.equal(Boolean(store.getLabelDefinition('scribe')?.singleton), true)
   assert.deepEqual(moved.previous_holders.map(holder => holder.id).sort(), ['fleet:first', 'fleet:second'])
-  assert.deepEqual(store.livingHoldersOfLabel('chief'), ['fleet:incoming'])
+  assert.deepEqual(store.livingHoldersOfLabel('scribe'), ['fleet:incoming'])
 }))
