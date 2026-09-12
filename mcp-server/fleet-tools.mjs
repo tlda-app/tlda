@@ -4565,8 +4565,40 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         `This surface has no cursor: narrow with since:/before:, or read one conversation with thread(agent).`,
       );
     } else if (!isBoundedSearch && results.length >= limit) {
+      // Say which end was cut, and continue the SAME query.
+      //
+      // This footer used to read "a full page of N, so there may be more" and
+      // hand back `search({ query, limit: N*2 })` — dropping every other
+      // argument the caller passed. Both halves misled. A filter-only read is
+      // ordered oldest-first from `since`, so `search("from:skip", since:"1d",
+      // limit:5)` answers with five hits from the first two minutes of a
+      // twenty-four hour window and says only that there may be more: true, and
+      // it does not say that everything withheld is NEWER. Skip, 01:05:05:
+      // "should say newer fucking messages, although that is just how
+      // pagination works. We paginate forward in this app, and that seems
+      // normal to me." So the order stays and the omission gets named.
+      //
+      // Which end depends on how the page was chosen, and this must not trade
+      // one confident wrong sentence for another: a filter-only read is ordered
+      // by time, while a text search is ordered by FTS rank, where the rows not
+      // shown are the lower-ranked ones rather than the newer ones.
+      const orderedByTime = !query;
+      const omitted = orderedByTime
+        ? `The matches not shown are NEWER than these — this page is the oldest ${limit} in the window, because paging runs forward.`
+        : `The matches not shown ranked lower for these terms, not later in time.`;
+      // Every argument the caller supplied, so the continuation asks their
+      // question and not a wider one.
+      const nextArgs = [`query: ${JSON.stringify(args.query || '')}`];
+      for (const [key, value] of [
+        ['agent', args.agent], ['project', args.project], ['role', args.role],
+        ['since', args.since], ['before', args.before], ['context', args.context],
+      ]) {
+        if (value !== undefined && value !== null && value !== '') nextArgs.push(`${key}: ${JSON.stringify(value)}`);
+      }
+      nextArgs.push(`limit: ${Math.min(limit * 2, 100)}`);
       searchFooters.push(
-        `This is a full page of ${limit}, so there may be more. Next page: search({ query: ${JSON.stringify(args.query || '')}, limit: ${Math.min(limit * 2, 100)} }) — or bound it with since:/before:, which returns the full range.`,
+        `This is a full page of ${limit}, so there may be more. ${omitted} ` +
+        `Next page: search({ ${nextArgs.join(', ')} }) — or bound it with since:/before:, which returns the full range.`,
       );
     }
     const searchTail = searchFooters.length ? `\n\n⚠️ ${searchFooters.join('\n')}` : '';

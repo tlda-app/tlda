@@ -53,7 +53,7 @@ class StubClient extends FleetSearchClient {
 // Bounded so that WITHOUT the fix this fails in five seconds instead of hanging
 // the suite forever -- an unbounded hang is indistinguishable from an infrastructure
 // problem, which is the thing this whole change is about.
-test('a request the child never answers rejects, and names the starved child', { timeout: 5000 }, async () => {
+test('a request the child never answers rejects, and does not guess why', { timeout: 5000 }, async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '150'
   const client = new StubClient('/nonexistent.db')
 
@@ -61,11 +61,21 @@ test('a request the child never answers rejects, and names the starved child', {
   await assert.rejects(
     client.searchAll({ query: 'anything' }),
     (error) => {
-      // Name the cause, not the socket -- the caller must learn the child is
-      // starved, not that "something timed out".
+      // Name what happened and both things that cause it -- never one of them as
+      // fact. This message used to assert "which is CPU starvation ... not your
+      // query being too large", which the timeout cannot possibly know: on
+      // 2026-09-12 it fired for a query whose agent term resolved to 435 ids
+      // while the same box answered a trivial read in 563ms, and a chief spent
+      // the night on the wrong cause because this sentence sounded certain.
       assert.match(error.message, /fleet search child did not answer/)
+      assert.match(error.message, /cannot tell you why/)
       assert.match(error.message, /BELOW_NORMAL/)
+      assert.match(error.message, /resolving to many ids/)
+      // The discriminating check, so the reader can settle it in one call.
+      assert.match(error.message, /run a trivial search now/)
       assert.match(error.message, /TLDA_SEARCH_REQUEST_TIMEOUT_MS/)
+      // It must not re-acquire a confident single cause.
+      assert.doesNotMatch(error.message, /not your query being too large/)
       return true
     },
   )
