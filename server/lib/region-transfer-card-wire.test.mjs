@@ -235,6 +235,29 @@ test('a region transfer card crosses the daemon wire with the diff it is made of
       'the added side shows the bytes copied in from the staging file',
     )
     assert.equal(document.querySelector('.pretty-result'), null, 'and nothing restates it underneath')
+
+    // The narrow half: a thread card re-reads its messages from the store when
+    // it draws, so its result must NOT ride along. If this ever arrives, the
+    // ingest has gone back to carrying everything.
+    const threadPromise = waitForSubscriptionEvent(
+      historyClient,
+      'region-transfer-history',
+      event => event.type === 'activity' && event.text === 'tlda/thread',
+    )
+    assert.equal(sendActivityEvents(agentId, [{
+      tool: 'tlda/thread',
+      arg: 'skip',
+      ts: '2026-09-12T00:00:02.000Z',
+      id: 'toolu_thread_wire',
+      input: { agent: 'skip' },
+      status: 'completed',
+      prettyResult: 'THREAD RESULT',
+    }], message => {
+      daemon.send(JSON.stringify(message))
+      return true
+    }), true)
+    const threadEvent = await threadPromise
+    assert.equal(threadEvent.metadata.prettyResult, undefined)
   } finally {
     daemon?.close()
     liveClient?.close()

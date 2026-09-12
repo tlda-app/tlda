@@ -1,3 +1,4 @@
+import { cardIsBuiltFromResult } from '../../shared/activity-tool-classification.mjs'
 import { boundActivityMetadata, boundActivityPayload } from '../../shared/activity-payload-bounds.mjs'
 
 export function shouldStoreDaemonActivity(msg) {
@@ -60,13 +61,11 @@ export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.no
       arg,
       input,
       usage,
-      // The harness sets prettyResult only for the tools whose result IS the
-      // card -- PRETTY_PRINT_TOOLS, plus unknown Codex natives. Re-deciding that
-      // here is a second copy of the same classification, and the copy was
-      // narrower: it kept the Codex case and dropped every other result on the
-      // floor. A region transfer card is the one that cannot survive it, because
-      // its diff is parsed out of the result and exists nowhere else.
-      prettyResult,
+      // A result crosses only for the cards that cannot be drawn without it:
+      // unknown Codex natives, and the tools RESULT_BEARING_CARDS names. The
+      // rest of the pretty-print cards re-read what they show at render time,
+      // so carrying their output here would be payload nobody reads.
+      prettyResult: input?._unknownCodexToolKind || cardIsBuiltFromResult(tool) ? prettyResult : null,
       origTool,
       status,
       duration,

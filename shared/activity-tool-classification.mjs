@@ -63,3 +63,27 @@ export function humanToolName(name) {
 export function isPrettyPrintTool(name) {
   return PRETTY_PRINT_TOOLS.has(name) || PRETTY_PRINT_TOOLS.has(toolBaseName(name))
 }
+
+/**
+ * Tools whose card is BUILT OUT OF the result, so the result has to survive the
+ * trip to the browser.
+ *
+ * This is a narrower fact than PRETTY_PRINT_TOOLS above, and the two are not
+ * interchangeable. Most pretty-print cards re-read what they show at render
+ * time -- Skip, 2026-09-12: "search and thread don't need pretty bodies because
+ * they pull data from the actual database in the rendering code." A region
+ * transfer cannot: its arguments carry line numbers rather than text, so the
+ * diff the card is made of exists nowhere but the result string.
+ *
+ * Adding a tool here changes what appears in everyone's chat, which is Skip's
+ * decision and not a tidying one. It is not the place to put a tool because its
+ * result "would be nice to have".
+ */
+export const RESULT_BEARING_CARDS = new Set([
+  'region_transfer',
+])
+
+export function cardIsBuiltFromResult(name) {
+  const human = humanToolName(name)
+  return RESULT_BEARING_CARDS.has(human.split('/').pop())
+}
