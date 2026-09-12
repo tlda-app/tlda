@@ -3,7 +3,7 @@ import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 
 const bindings = new Map([
-  ['example-project', '/home/user/work/example-project'],
+  ['synth-combined', '/Users/skip/work/synth-randomization'],
 ])
 const resolve = input => resolveMintCwd({
   ...input,
@@ -11,12 +11,12 @@ const resolve = input => resolveMintCwd({
 })
 
 assert.equal(
-  resolve({ project: 'example-project' }),
-  '/home/user/work/example-project',
+  resolve({ project: 'synth-combined' }),
+  '/Users/skip/work/synth-randomization',
   'a named project resolves through the daemon-local source binding',
 )
 assert.equal(
-  resolve({ cwd: '/tmp/explicit', project: 'example-project' }),
+  resolve({ cwd: '/tmp/explicit', project: 'synth-combined' }),
   '/tmp/explicit',
   'an explicit cwd remains authoritative',
 )
@@ -44,15 +44,15 @@ const launcher = projects => createAgentLauncher({
 })
 
 assert.deepEqual(
-  await launcher([{ name: 'example-project', sourceDir: null }]).handlers.spawn({
-    name: 'example-worker',
-    project: 'example-project',
+  await launcher([{ name: 'synth-combined', sourceDir: null }]).handlers.spawn({
+    name: 'synth-intro-framing',
+    project: 'synth-combined',
   }),
-  { ok: false, error: "project 'example-project' has no working directory on this daemon" },
+  { ok: false, error: "project 'synth-combined' has no working directory on this daemon" },
   'the Agents-panel spawn handler rejects a known project whose working directory is absent',
 )
 assert.deepEqual(
-  await launcher([]).handlers.spawn({ name: 'example-worker' }),
+  await launcher([]).handlers.spawn({ name: 'synth-intro-framing' }),
   { ok: false, error: 'spawn requires cwd or project' },
   'the Agents-panel spawn handler rejects a request with neither cwd nor project',
 )

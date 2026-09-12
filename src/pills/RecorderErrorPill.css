@@ -1,0 +1,37 @@
+/* RecorderErrorPill — same red and the same calm as BuildErrorPill, but the
+   message sits beside the badge instead of behind a click. */
+
+:root {
+  --recorder-error-pill-color: #d9342b;
+}
+
+html[data-theme="dark"] {
+  --recorder-error-pill-color: #ff6b61;
+}
+
+.recorder-error-container {
+  position: relative;
+  pointer-events: all;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: min(420px, calc(100vw - 48px));
+}
+
+.recorder-error-badge {
+  font-size: 10px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--recorder-error-pill-color);
+  opacity: 0.85;
+}
+
+.recorder-error-text {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--recorder-error-pill-color);
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

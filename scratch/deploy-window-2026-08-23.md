@@ -1,0 +1,135 @@
+# Where the night ended — last re-checked 2026-08-23 04:52 EDT
+
+**Superseded everything this file said earlier.** It was a pre-deploy window note
+and it described a stop that no longer applies. Re-checked against `main` and the
+deployment at the moment of writing, per §"A disposition is as of now".
+
+| | |
+|---|---|
+| deployed | **`9a1cd1a0c`**, serving, `/api/health` ok, store up |
+| `main` | ahead by **docs and scratch only** — checked by path against the deployed sha |
+| load | 3.5, from 15.0 at 22:35 |
+
+**Read the tip and the deployed sha yourself before acting on this file.** It was
+written at 02:05, said `a2adffdff` for two hours after that stopped being true,
+and only got corrected because someone re-read it. A disposition is as of now.
+
+## Shipped and verified on the box
+
+- **A LaTeX project's figures never reached the server** when referenced from a
+  subfile deeper than the document root. `shared/tex-deps.mjs` resolved against
+  the *including* file; LaTeX resolves against the compilation directory. The two
+  disagreed **in both directions** — a figure that did arrive still failed to
+  compile. Fixed; the affected project went from never having built to 155 pages
+  with figures rendering.
+- **A failed build deleted its own log**, so the app said `error` and `Clean.`
+  about the same build. Fixed, plus `logMissing` so an empty error list stops
+  meaning two things.
+- **A failed format dump reported the shell command** instead of the LaTeX error.
+- **Editing in the browser never synced** — `WrongHead`, rejected silently.
+- **A mint that rotated told nobody**, and the success line printed the tmux
+  session rather than the agent name — two uniquifiers that rotate differently.
+- **The notification spec** (`docs/notifications-and-liveness.md`): the daemon
+  sideband, the server's wake queue, its drain and the circuit breaker are gone.
+  The server reports one of four symptoms and chooses nothing; the daemon decides.
+  Ack timeout is `5s` in `server.yaml`.
+
+- **Nothing reported the crash that takes his page down.** `ErrorBoundary` covers
+  the render path only and `logger.ts` batches before POSTing, so the buffer dies
+  with the page. A window-level `error`/`unhandledrejection` handler now reports
+  unbatched through the existing `sendBeacon` path — shipped at 04:39 after he hit
+  it again and nothing had captured it. **Verified in the bundle `index.html`
+  actually references, not in a local build.** He must reload once to get it.
+
+## What it cost, so nobody has to rediscover it
+
+**Two live bugs shipped in consecutive commits on the notification path.** The
+first killed two agents — one of them Skip's writing agent — by killing a session
+and then failing to name it to `wake`. It self-corrected in about a minute
+*because* the daemon's `ensure-process` is idempotent, which is the property the
+spec insists on. The second made the remedy inert for ~35 minutes.
+
+**Both were caught by a log line, not a test** — one added deliberately before
+anything was allowed to delete that path, because `rpcNotifyAgent` logged nothing.
+That is the argument for instrumenting a path *before* removing it.
+
+**The claim that shipped too early:** the spec's daemon table has two rows and
+only one was verified. The untested row is the one that shipped broken.
+
+## Open, recorded rather than guessed
+
+1. **The MCP half of the wire is not live for existing agents** — the nack needs
+   each agent's MCP to restart.
+
+   **The trigger I first set — "wait for the first `channel-silent`" — could never
+   have fired, and the positive control is what showed it.** Measured 06:57Z, all
+   `notification-symptom` lines since the remedy went live:
+
+   ```
+   419 lines total
+   247  fleet:dev
+   the rest  fleet:dev-probe-*, fleet:mcp-probe-*
+   real agents  ZERO
+   control: login-broken, notify-ship and advocate-3-2 all appear in the same
+            log window, just never in a symptom line
+   ```
+
+   **Every one of those is an agent with no MCP socket, which can only ever emit
+   `no-channel`.** So the zero was consistent both with the fleet being healthy
+   and with nothing in the corpus being *able* to express the value — and I read
+   it as the first. A real agent with a socket that acks normally produces no
+   symptom at all, so the condition I was waiting for had no producer.
+
+   **The corrected trigger: any `notification-symptom` line for an agent that is
+   not `dev` and not a probe.** That can actually occur — it is what a real
+   agent's MCP wedging looks like — and it is the case the nack exists to tell
+   apart from a refusal. Until then the nack has no work to do, which remains a
+   good reason to defer and is now a reason with an expiry that can arrive.
+2. **`chat` refuses a routeless recipient; `delegate` accepts one silently** and
+   creates a task that can never be delivered. In the spec's own unsettled list.
+   `delegate` *does* notify a live recipient — control run, tagged notification.
+3. **`qynth-advocate` has no `permission_grants` row**, so the fleet cannot wake,
+   restart or type into it. Operator-only to fix; Skip has been told.
+4. **Stored status disagrees with the column**, three times in one night: a seat
+   `awake` with no process, a `dead` fixture whose metadata read `hibernating`,
+   and `last_seen` refreshed by the status *write* rather than by the agent.
+5. **The testing `todd` stopped at 01:37** — see
+   `scratch/bot-name-rotation-deadlock.md`, recorded as a correlation only.
+
+## Open, found at 04:50 and deliberately not chased
+
+**A month-dormant probe failure came back tonight, on the path that mints probe
+seats.**
+
+```
+file-materialization: probe reserve-shell: reserve-shell timed out after 15000ms
+prior occurrences in dev's heartbeat journal: 2026-07-25 .. 2026-07-28
+none in between
+```
+
+**Why it is worth someone's morning:** it returned on the same night the
+seat-minting path changed around it — 99 probe seats marked dead by hand, and
+`111f7fa` in the bot repo changing what happens to a seat after a probe ends.
+**None of that touches `reserve-shell`, which runs first**, and the change was
+cleared on two checks (no pending file has ever existed, and `settle` is
+reachable only from a `finally`). So it is *not* attributed to either. It is
+recorded because a failure mode dormant for a month reappearing next to related
+work is the kind of coincidence that turns out not to be one.
+
+**Do not revert `111f7fa` on account of it.** That decision was made by
+`advocate-3-2`, not by its author, on the stated grounds that the revert trigger
+named the build-timeout symptom, that symptom is still at exactly 1 occurrence,
+and this failure mode predates the change by a month.
+
+**Separately, retired rather than left hanging:** `wholeFleet.dead` climbing ~2-3
+per minute is **not** something inferring death from failure. `live` stayed flat
+at ~3,810 across three readings while `dead` rose — matched creation and
+destruction, which is disposable probe seats and nothing else. The old code
+killed its seat in a `finally` too, so the rate long predates tonight.
+
+## Standing instruction that outlived the night
+
+His words: **"fixed means it implements my spec and works"** — not deployed, not
+green, not merged. And **write the revert criterion before the push**, because
+afterwards "fix forward" and "protecting the work" are indistinguishable and the
+author always has the better-sounding account.

@@ -5,6 +5,7 @@
 // place — two regexes that agree today are two that disagree after a rename.
 
 const STUDENT_ROOM_MARKER = '::student::'
+const GRADING_DRAFT_ROOM_MARKER = '::grading-draft::'
 
 /** A student's own layer over a book: a coordinate on a book you already named. */
 export function studentOverlayRoomId(bookRoomId, studentId) {
@@ -23,6 +24,29 @@ export function studentOverlayRoomOwner(roomId) {
   if (at < 0) return null
   const studentId = roomId.slice(at + STUDENT_ROOM_MARKER.length)
   return studentId ? { bookRoomId: roomId.slice(0, at), studentId } : null
+}
+
+/**
+ * The instructor's own marking layer over one handed-in submission.
+ *
+ * Marking happens in his workspace and is committed to the student afterwards —
+ * his June model, already written down as the `grading-draft` layer scope in
+ * `wm/homework-grading-surface.ts`. That scope had no consumer: it contributed
+ * to a layer id and nothing read it, so nothing was ever withheld. This is the
+ * room that makes it real, because a layer IS a sync room here and privacy is
+ * decided by who may enter one.
+ *
+ * Named after the submission room rather than the student, so flicking from one
+ * student to the next changes the draft layer with the submission and marks for
+ * two students can never share a room.
+ */
+export function gradingDraftRoomId(submissionRoomId) {
+  return `${submissionRoomId}${GRADING_DRAFT_ROOM_MARKER}`
+}
+
+/** Whether this room is an instructor's marking layer. */
+export function isGradingDraftRoom(roomId) {
+  return String(roomId).endsWith(GRADING_DRAFT_ROOM_MARKER)
 }
 
 /**
@@ -50,6 +74,15 @@ export function studentOverlayRoomOwner(roomId) {
 export function classroomRoomAccess({ roomId, tokenLevel, studentId = null, submissionOwnerId = null }) {
   if (tokenLevel === 'rw') return 'write'
   if (tokenLevel !== 'read') return 'deny'
+
+  // The instructor's marking layer, refused to everyone the `rw` line above did
+  // not already admit — including the student whose submission it hangs off.
+  //
+  // This sits ABOVE the `submissionOwnerId` branch deliberately. That branch
+  // grants the owner 'write', and a draft room is named after their submission
+  // room, so any resolver that recognised the stem would hand the student the
+  // very marks being withheld from them. Ordering is the guard, not the parse.
+  if (isGradingDraftRoom(roomId)) return 'deny'
 
   // Handed-in work. Theirs, exactly as their own layer is theirs; a read link
   // with no enrolment behind it is nobody and gets nothing.

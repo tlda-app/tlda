@@ -157,8 +157,10 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
                   waitingOn: parent.label,
                   action: input.action,
                   _semanticOutputHandle: outputHandle,
-                  // The card links back to the call that started the command,
-                  // so carry its tool-use id rather than only its display text.
+                  // The card the reader wants is the one that STARTED the
+                  // command, so carry its tool_use id and not just its text.
+                  // Skip, 2026-08-25: "can we have a hover to the actual cmd?
+                  // like the bash card? do we have a reference to it?"
                   ...(parent.id ? { _semanticWaitingOnId: parent.id } : {}),
                 }
               : { ...input, _semanticOutputHandle: outputHandle }

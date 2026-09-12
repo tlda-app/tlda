@@ -80,7 +80,7 @@ import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
 import { RibbonLane } from './shapes/RibbonLane'
 import { ProvenancePanel } from './shapes/ProvenancePanel'
 import { ProvenanceInline } from './shapes/ProvenanceInline'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, dispatchSignalDirect, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
@@ -96,15 +96,17 @@ import { FormatToolbar } from './toolbar/FormatToolbar'
 import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
-import { setCurrentDocumentInfo, pageSpacing, type SvgDocument } from './svgDocumentLoader'
+import { setCurrentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
 import { ClassroomDocViewPlayback } from './overlays/ClassroomDocViewPlayback'
+import { RecordingsButton } from './overlays/RecordingsButton'
 
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
 import { SyncErrorPill } from './pills/SyncErrorPill'
+import { RecorderErrorPill } from './pills/RecorderErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
 import { BookLayersSlot } from './classroom/BookLayersSlot'
 import { FollowingBadge } from './pills/FollowingBadge'
@@ -137,7 +139,7 @@ import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
 import { useMarkedExerciseHtmlAlignment } from './classroom/useMarkedExerciseHtmlAlignment'
-import { installFramePairBridge, installReturnMarksBridge } from './classroom/marking'
+import { installFramePairBridge } from './classroom/marking'
 import { ClassroomConnectorOverlay } from './classroom/ClassroomConnectorOverlay'
 import { ClassroomGradingSurface, type ClassroomGradingSurfaceProps } from './classroom/ClassroomGradingSurface'
 
@@ -328,6 +330,16 @@ interface SvgDocumentEditorProps {
   /** Hide this room's annotations, leaving the document. The book's layer, switched off. */
   annotationsHidden?: boolean
   onEditorMount?: (editor: Editor | null) => void
+  /**
+   * This editor is going, named rather than implied.
+   *
+   * A holder has to be able to tell whether the editor it is holding is the one
+   * being released: a remount can run the old teardown after the replacement
+   * has registered, and clearing unconditionally on `onEditorMount(null)` drops
+   * the live editor. Optional, and `onEditorMount(null)` is unchanged, so
+   * existing consumers behave exactly as before.
+   */
+  onEditorRelease?: (editor: Editor) => void
 }
 
 
@@ -456,7 +468,7 @@ function EmergencyDumpRescue({ editor, documentName }: { editor: Editor; documen
   )
 }
 
-export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, annotationsHidden = false, onEditorMount }: SvgDocumentEditorProps) {
+export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, annotationsHidden = false, onEditorMount, onEditorRelease }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
 
@@ -550,22 +562,16 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   }, [document, editorMounted])
 
   useMarkedExerciseHtmlAlignment(editorRef, document, editorMounted)
-  // Returning marks needs the editor, and the control that triggers it lives
+  // Framing the pair needs the editor, and the control that triggers it lives
   // outside this component; the bridge is a window event, as elsewhere.
-  //
-  // Page 0 is the student's submission in the compare view — his solution is
-  // page 1. Marks are scoped to that block, so what he draws on his own
-  // solution stays the common layer rather than being handed to one student.
   useEffect(() => {
     const editor = editorRef.current
-    const submissionShapeId = document.pages[0]?.shapeId
-    if (!editorMounted || !editor || !submissionShapeId) return
-    const teardown = [installReturnMarksBridge(editor, submissionShapeId)]
+    if (!editorMounted || !editor) return
     // Both panes of the compare view, so framing can bring the pair back on
     // screen after a navigation has centred one of them.
     const pairShapeIds = document.pages.slice(0, 2).map(page => page.shapeId)
-    if (pairShapeIds.length === 2) teardown.push(installFramePairBridge(editor, pairShapeIds))
-    return () => teardown.forEach(off => off())
+    if (pairShapeIds.length !== 2) return
+    return installFramePairBridge(editor, pairShapeIds)
   }, [document, editorMounted])
 
 
@@ -1174,6 +1180,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           />
         )}
         <SyncErrorPill />
+        <RecorderErrorPill />
         <BuildErrorPill />
         <BuildWarningPill warnings={pillWarnings}>
           <BuildProgressPill document={document} />
@@ -1187,6 +1194,12 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
       {IS_CLASSROOM && editorRef.current && (
         <ClassroomDocViewPlayback mainEditor={editorRef.current} />
       )}
+      {/* The way in to playback. A sibling of the route above rather than nested
+          with it, because that mount is asserted by
+          tests/classroom-doc-view-playback.test.mjs and this must not change its
+          shape. It owns its own selection and surface and writes no canvas
+          shape, so a read-only student can reach a lecture. */}
+      {IS_CLASSROOM && <RecordingsButton />}
       </div>
       {editorRef.current && (
         <div className="managed-surface-overlay-owner">
@@ -1558,20 +1571,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
                 if (cameraTimer) clearTimeout(cameraTimer)
                 cameraTimer = setTimeout(() => {
                   saveSession()
-                  // Report visible pages for watcher priority rebuild
-                  if (isSignalConnected() && document.pages.length > 0) {
-                    const vb = editor.getViewportScreenBounds()
-                    const cam = editor.getCamera()
-                    // Convert screen bounds to canvas coords
-                    const top = -cam.y + vb.y / cam.z
-                    const bottom = top + vb.h / cam.z
-                    const pageH = document.pages[0].height + pageSpacing
-                    const firstPage = Math.max(1, Math.floor(top / pageH) + 1)
-                    const lastPage = Math.min(document.pages.length, Math.floor(bottom / pageH) + 1)
-                    const pages: number[] = []
-                    for (let p = firstPage; p <= lastPage; p++) pages.push(p)
-                    writeSignal('signal:viewport', { pages })
-                  }
                 }, 500)
               })
 
@@ -1627,6 +1626,16 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           }
           return () => {
             onEditorMount?.(null)
+            // Which editor is going, for a holder that needs to tell whether the
+            // one it is holding is this one. A remount can run this teardown
+            // AFTER the replacement has already registered, so a holder that
+            // clears on the `null` above would erase the live editor — measured
+            // on the annotation overlay, which is why that component already
+            // reports its release this way.
+            //
+            // Additive: `onEditorMount?.(null)` still fires exactly as before,
+            // so every existing consumer is unaffected.
+            onEditorRelease?.(editor)
             cleanupProjectLayerModel()
             cleanupFleetPillReclaimer()
           }

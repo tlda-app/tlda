@@ -1,0 +1,254 @@
+[
+ {
+  "status": "○",
+  "item": "On the iPad you flick toward the bottom of chat and it stops short, then moves again on its own"
+ },
+ {
+  "status": "✓?",
+  "item": "Ghost text is painted at the active tone, so it reads as real text"
+ },
+ {
+  "status": "⏸",
+  "item": "A tool call we do not recognise renders as a wall"
+ },
+ {
+  "status": "🔨",
+  "item": "Chat jerks while you read it, with no input from you"
+ },
+ {
+  "status": "✓?",
+  "item": "Sometimes you can't scroll up, and it's worse than it used to be"
+ },
+ {
+  "status": "🔨",
+  "item": "A list component that behaves"
+ },
+ {
+  "status": "🔨",
+  "item": "Make layers real"
+ },
+ {
+  "status": "○",
+  "item": "A math note dragged inside a pinned annotation viewer probably cannot drop into chat"
+ },
+ {
+  "status": "🔨",
+  "item": "The canvas and the annotation viewer scroll in opposite directions"
+ },
+ {
+  "status": "○",
+  "item": "On touch you cannot move a shape without resizing it"
+ },
+ {
+  "status": "○",
+  "item": "The snapping lines are still too loud"
+ },
+ {
+  "status": "○",
+  "item": "The guides do not say which line you will actually snap to"
+ },
+ {
+  "status": "○",
+  "item": "Multi-touch resize and move do not snap"
+ },
+ {
+  "status": "🔨",
+  "item": "The picture-in-picture does not respond to touch or stylus"
+ },
+ {
+  "status": "○",
+  "item": "Scroll direction depends on which device you use"
+ },
+ {
+  "status": "○",
+  "item": "A picture-in-picture is a window onto the canvas, and one physics should serve both"
+ },
+ {
+  "status": "⏸",
+  "item": "The spatial view in the project tab is junk"
+ },
+ {
+  "status": "✓?",
+  "item": "Clicking a shared markdown chip does nothing for seconds, then does everything at once"
+ },
+ {
+  "status": "✓?",
+  "item": "Dragging a markdown chip drops a name pill, not a doc-viewer ghost"
+ },
+ {
+  "status": "✓?",
+  "item": "Resize snapping"
+ },
+ {
+  "status": "⏸",
+  "item": "Shapes drift into the document on reload"
+ },
+ {
+  "status": "🔨",
+  "item": "The doc viewer spins at load — the layout button is only how you found it"
+ },
+ {
+  "status": "⏸",
+  "item": "A two-margin layout renders into one margin with a gap on refresh"
+ },
+ {
+  "status": "🔨",
+  "item": "Why your iPad did not reconnect"
+ },
+ {
+  "status": "✓?",
+  "item": "Place-stack forward/back over documents"
+ },
+ {
+  "status": "🔨",
+  "item": "Pen/handwriting correction"
+ },
+ {
+  "status": "🔨",
+  "item": "The image/token syntax — chips in brackets, markdown for images"
+ },
+ {
+  "status": "🔨",
+  "item": "The document panel shows the readme plus fourteen other documents' headings"
+ },
+ {
+  "status": "✓?",
+  "item": "Clicking a shared markdown chip breaks the project's source sync"
+ },
+ {
+  "status": "○",
+  "item": "A mint reports the name as taken, then mints it anyway, and both appear"
+ },
+ {
+  "status": "○",
+  "item": "The mint spinner vanishes and reappears instead of unfolding"
+ },
+ {
+  "status": "○",
+  "item": "A mint can join the daemon ledger and still have no row in the server store"
+ },
+ {
+  "status": "○",
+  "item": "`mint` and `delegate` report success for an agent that never joined"
+ },
+ {
+  "status": "○",
+  "item": "A codex partial mint gets `session_id: null` and nobody has confirmed that is harmless"
+ },
+ {
+  "status": "?",
+  "item": "A Fly token was reported leaked on 2026-07-31, and the report itself has no record"
+ },
+ {
+  "status": "○",
+  "item": "A second list exists and nobody reads it"
+ },
+ {
+  "status": "🔨",
+  "item": "The agent read path does not fold amends"
+ },
+ {
+  "status": "?",
+  "item": "A bot loses its own name to its mint's shell row"
+ },
+ {
+  "status": "○",
+  "item": "An inert `dev` reclaims no disk"
+ },
+ {
+  "status": "○",
+  "item": "A shared parent for the fleet panels"
+ },
+ {
+  "status": "🔨",
+  "item": "The server mint path is still async, and it was specified not to be"
+ },
+ {
+  "status": "🔨",
+  "item": "The client logger throws away anything it fails to send"
+ },
+ {
+  "status": "🔨",
+  "item": "Every temporary-identity row in the fleet database says you are not human"
+ },
+ {
+  "status": "🔨",
+  "item": "Bots that aren't all fucked up"
+ },
+ {
+  "status": "🔨",
+  "item": "A handoff through Todd never works"
+ },
+ {
+  "status": "🔨",
+  "item": "A tmux session should die with the agent it was made for"
+ },
+ {
+  "status": "🔨",
+  "item": "Bots have no real options"
+ },
+ {
+  "status": "🔨",
+  "item": "Dead agents cannot be discovered, only confirmed"
+ },
+ {
+  "status": "🔨",
+  "item": "A mint that has not joined yet reads as `hibernating`"
+ },
+ {
+  "status": "🔨",
+  "item": "Read receipts are gone — the UI is there, disconnected"
+ },
+ {
+  "status": "○",
+  "item": "Unexplained wakes; build notices fan out to everyone who ever touched the project"
+ },
+ {
+  "status": "🔨",
+  "item": "`involving:(nobody & bot)` finds nothing for an agent you can name"
+ },
+ {
+  "status": "🔨",
+  "item": "Everything that paginates announces it, at the top and at the bottom"
+ },
+ {
+  "status": "○",
+  "item": "Who caused a build, shown on the pill and in history"
+ },
+ {
+  "status": "✓?",
+  "item": "The paper dependency graph, and edit-implication notices"
+ },
+ {
+  "status": "✓?",
+  "item": "Take build success away as a completion signal; an edit creates an obligation sized by its diff"
+ },
+ {
+  "status": "🔨",
+  "item": "A squashed merge is invisible to the merged-ness check this repo relies on"
+ },
+ {
+  "status": "🔨",
+  "item": "The `pw` CLI leaks a process every time the pool wedges"
+ },
+ {
+  "status": "?",
+  "item": "Every CLI command should be idempotent and keep going until it is done"
+ },
+ {
+  "status": "🔨",
+  "item": "Depend on the tldraw fork directly, not on a committed tarball"
+ },
+ {
+  "status": "✓?",
+  "item": "Token permissions — the switch for whether the app needs a token"
+ },
+ {
+  "status": "○",
+  "item": "Stray text refuses upload"
+ },
+ {
+  "status": "○",
+  "item": "A release you would run on for a week"
+ }
+]

@@ -443,7 +443,7 @@ export async function commitSnapshot(name, sourceRevision = null) {
       const from = join(srcDir, rel)
       const to = join(repoDir, rel)
       mkdirSync(dirname(to), { recursive: true })
-      await cpAsync(from, to, { verbatimSymlinks: true })
+      await cpAsync(from, to, { recursive: true, verbatimSymlinks: true })
     }),
   )
 

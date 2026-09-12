@@ -1698,6 +1698,7 @@ export function getFleetTools() {
             ],
             description: 'One label or a list for add/remove. replace requires the complete list; [] clears all labels.',
           },
+          singleton: { type: 'boolean', description: 'Declare the labels in THIS call singleton — at most one living agent may hold them, so applying one someone else holds is an error naming the holder. Singleton-ness is fixed when a label is first created, so this only takes on a label nobody has used yet; passing it for an existing ordinary label is an error, not a change.' },
         },
         required: ['agent'],
       },
@@ -5179,6 +5180,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           agent: args.agent,
           operation: args.operation,
           labels: args.labels,
+          ...(args.singleton == null ? {} : { singleton: !!args.singleton }),
         });
         if (labeled.error) return { content: [{ type: 'text', text: `Label failed: ${labeled.error}` }], isError: true };
         changes.push(`labels=${(labeled.labels || []).join(',') || '(none)'}`);

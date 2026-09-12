@@ -4,7 +4,7 @@
 // the process fact and only afterwards does `bindSeat` look at the grant, so the
 // rejection arrived after the write it should have prevented: the mint ended up
 // with process state recorded, a null grant, and no join -- alive, unbound, and
-// unaddressable. That is the partial-runtime shape this test reproduces.
+// unaddressable. That is the shape `fleet:32e980e8` was left in.
 //
 // Two things are under test. Where the grant comes from -- one coherent ledger
 // binding, else the same mint's durable compiled `launchRecipe.permissionGrant`,
@@ -29,7 +29,7 @@ const CONFIG = {
   },
 }
 
-const CWD = '/home/user/work/tlda'
+const CWD = '/Users/skip/work/tlda'
 const RECIPE = { kind: 'codex', cwd: CWD, model: 'opus', permissionGrant: 'app-dev' }
 const LIVE = 'fleet-half-minted'
 
@@ -37,7 +37,7 @@ const LIVE = 'fleet-half-minted'
 // any one of them is visible as a failure rather than as a passing test.
 const RECORDED_PROCESS = {
   mint_id: 'mint-1',
-  fleet_id: 'fleet:recovered-runtime',
+  fleet_id: 'fleet:32e980e8',
   name: 'half-minted',
   tmux_session: LIVE,
   pid: 54321,
@@ -94,7 +94,7 @@ function memoryStore(rows = {}) {
 function daemon({
   row,
   sessions = [LIVE, 'fleet-someone-else'],
-  runtimes = { [LIVE]: { probed: true, runtime: true, fleetId: 'fleet:recovered-runtime', envName: 'testing', daemonKey: 'mini:testing' } },
+  runtimes = { [LIVE]: { probed: true, runtime: true, fleetId: 'fleet:32e980e8', envName: 'testing', daemonKey: 'mini:testing' } },
   ledger = [],
   // What the harness session resolver reads off the running process: the
   // rollout it actually has open. In the daemon this is
@@ -244,7 +244,7 @@ function daemon({
 
 const NULL_PROCESS_ROW = {
   mintId: 'mint-1',
-  fleetId: 'fleet:recovered-runtime',
+  fleetId: 'fleet:32e980e8',
   friendlyName: 'half-minted',
   launchRecipe: RECIPE,
   envName: 'testing',
@@ -259,7 +259,7 @@ const ALREADY_PARTIAL_ROW = {
 }
 
 const LEDGER_ROW = {
-  id: 'fleet:recovered-runtime',
+  id: 'fleet:32e980e8',
   friendlyName: 'half-minted',
   tmuxSession: LIVE,
   sessionKind: 'codex',
@@ -283,7 +283,7 @@ const LEDGER_ROW = {
   assert.equal(store.get('mint-1').processState.tmux_session, LIVE)
   assert.equal(store.get('mint-1').processState.permission_grant, 'app-dev')
   assert.equal(store.get('mint-1').joinedAt, '2026-09-08T12:00:00Z', 'the bind that used to fail on a null grant')
-  assert.deepEqual(calls.bound, [{ fleetId: 'fleet:recovered-runtime', grant: 'app-dev' }])
+  assert.deepEqual(calls.bound, [{ fleetId: 'fleet:32e980e8', grant: 'app-dev' }])
   assert.equal(calls.launched, 0)
   assert.equal(calls.resumed, 0)
   assert.equal(calls.seats, 0)
@@ -307,7 +307,7 @@ const LEDGER_ROW = {
     assert.equal(process[field], RECORDED_PROCESS[field], `${field} must not be rewritten`)
   }
   assert.equal(store.get('mint-1').joinedAt, '2026-09-08T12:00:00Z')
-  assert.deepEqual(calls.bound, [{ fleetId: 'fleet:recovered-runtime', grant: 'app-dev' }])
+  assert.deepEqual(calls.bound, [{ fleetId: 'fleet:32e980e8', grant: 'app-dev' }])
   assert.equal(calls.launched, 0)
   assert.equal(calls.resumed, 0)
   assert.equal(calls.seats, 0)
@@ -411,7 +411,7 @@ const LEDGER_ROW = {
   // Conflicting: something is running there, carrying somebody else's FLEET_ID.
   const conflicting = daemon({
     row: { ...ALREADY_PARTIAL_ROW },
-    runtimes: { [LIVE]: { probed: true, runtime: true, fleetId: 'fleet:conflicting-runtime', envName: 'testing', daemonKey: 'mini:testing' } },
+    runtimes: { [LIVE]: { probed: true, runtime: true, fleetId: 'fleet:c07dedea', envName: 'testing', daemonKey: 'mini:testing' } },
   })
   const conflictOutcome = await conflicting.recoverExistingRuntime(conflicting.store.get('mint-1'))
   assert.equal(conflictOutcome.action, 'hold')
@@ -438,7 +438,7 @@ const LEDGER_ROW = {
   )
   assert.equal(store.writes.length, 1, 'and it failed AFTER the process fact was written')
   assert.equal(store.get('mint-1').processState.permission_grant, null)
-  assert.equal(store.get('mint-1').joinedAt, null, 'left recorded, unbound, and unjoined')
+  assert.equal(store.get('mint-1').joinedAt, null, 'left exactly as fleet:32e980e8 was: recorded, unbound, unjoined')
 }
 
 // 9. Remove the conflict refusal and control 4 writes through: the mint is bound

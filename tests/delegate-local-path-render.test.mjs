@@ -15,7 +15,7 @@ const ctx = {
 }
 
 test('delegate lifecycle card renders preserved local path as text, not attachment placeholder', () => {
-  const localPath = '/home/user/work/tlda/AGENTS.md'
+  const localPath = '/Users/skip/work/tlda/AGENTS.md'
   const html = renderChatLine({
     _evType: 'delegate',
     _description: 'Read guidance',
@@ -28,7 +28,7 @@ test('delegate lifecycle card renders preserved local path as text, not attachme
   }, ctx)
 
   assert.match(html, /lc-delegate/)
-  assert.match(html, /\/home\/user\/work\/tlda\/AGENTS\.md/)
+  assert.match(html, /\/Users\/skip\/work\/tlda\/AGENTS\.md/)
   assert.doesNotMatch(html, /\{\{att:0\}\}/)
   assert.doesNotMatch(html, /ref-chip-pending/)
 })

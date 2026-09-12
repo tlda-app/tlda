@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 
 // Does an edit on the mini reach the browser? Asked continuously, on the real
-// path, so an operator is not the one who finds out that it stopped.
+// path, so Skip is not the one who finds out that it stopped.
 //
-// Unit suites exercise functions. This watcher instead exercises the complete
-// edit-to-browser loop:
+// He asked for this after a night of the app failing in ways a test suite had
+// been green through: "write the fucking live watcher for that shit ... air-mini
+// or something". The suites were green because they exercised functions. This
+// exercises the loop he actually uses:
 //
 //   write a file on the mini  ->  daemon settles and pushes  ->  server accepts
 //   the revision and renders  ->  the text is in what the browser fetches
 //
 // It is deliberately NOT a test of any component. Every step here is one his
 // editing does, in the order his editing does it, and the only thing asserted is
-// the user-visible result: the edited words are in what the app serves.
+// the thing he cares about: the words he typed are in what the app serves.
 //
 // **The marker is unique per cycle and is checked absent before it is written.**
 // Without that, a watcher that fetched a cached or stale render would report
@@ -27,9 +29,6 @@ import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { fileURLToPath } from 'url'
-
-const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
 const PROJECT = process.env.TLDA_WATCH_PROJECT || 'live-watcher-probe'
 const CHECKOUT = process.env.TLDA_WATCH_DIR || join(homedir(), 'worktrees', 'live-watcher-probe')
@@ -49,8 +48,8 @@ const sh = (cmd, cmdArgs, cwd) =>
 
 function server() {
   // The same resolution the CLI uses, so the watcher cannot be watching a
-  // different server from the configured environment.
-  return sh('node', ['-e', "import('./shared/config.mjs').then(m=>process.stdout.write(m.getServerUrl()))"], ROOT)
+  // different server from the one he is looking at.
+  return sh('node', ['-e', "import('/Users/skip/work/tlda/shared/config.mjs').then(m=>process.stdout.write(m.getServerUrl()))"])
 }
 
 async function fetchDoc(base) {
@@ -74,7 +73,7 @@ function doSetup(base) {
   } catch (e) {
     // Setup is idempotent on purpose: re-run against an existing checkout, git
     // finds the document already committed and exits non-zero with nothing to
-  // do. Anything else is a real failure and must bubble.
+    // do. Anything else is a real failure and must bubble.
     if (!/nothing to commit|no changes added/i.test(String(e.stdout || e.message))) throw e
   }
   sh('tlda', ['project', 'link', PROJECT, DOC], CHECKOUT)
@@ -92,7 +91,7 @@ async function cycle(base) {
   const file = join(CHECKOUT, DOC)
   writeFileSync(file, readFileSync(file, 'utf8').replace(/\nWATCH-[^\n]*\n?$/, '') + `\n${marker}\n`)
   // Tracked, because the closure is computed over the settled tree and an
-  // untracked file is not in it. Staging is what an editor does; the watcher
+  // untracked file is not in it. Staging is what a person does; the watcher
   // does the same thing.
   sh('git', ['add', DOC], CHECKOUT)
   sh('git', ['commit', '-m', `watch ${marker}`], CHECKOUT)

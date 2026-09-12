@@ -29,7 +29,7 @@ WORKDIR /app
 #                     better-sqlite3) compile via node-gyp; python also runs
 #                     small helper probes used by fleet tooling.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      tmux git zsh ca-certificates curl \
+      tmux git ca-certificates curl \
       build-essential python3 python3-venv procps \
     && rm -rf /var/lib/apt/lists/*
 
@@ -44,7 +44,7 @@ RUN python3 -m venv /opt/venv \
 # Pinned. Auth is a per-box one-time `codex login` (ChatGPT-subscription device
 # flow); auth.json persists on the volume via the entrypoint. Its own layer so it
 # caches across app-code redeploys.
-RUN npm install -g @openai/codex@0.153.4
+RUN npm install -g @openai/codex@0.142.3
 
 # --- node runtime deps ---
 # Install the ordinary tlda runtime package at /app so the daemon and its child
@@ -70,9 +70,6 @@ COPY bin/lib/ ./bin/lib/
 COPY cli/ ./cli/
 COPY shared/ ./shared/
 COPY migrations/ ./migrations/
-COPY agent-runtime/ ./agent-runtime/
-COPY agent-launch/ ./agent-launch/
-COPY daemon/ ./daemon/
 # The daemon imports ../server/lib/permission-grants.mjs (and its transitive server/lib
 # siblings); copy the lib tree wholesale.
 COPY server/lib/ ./server/lib/

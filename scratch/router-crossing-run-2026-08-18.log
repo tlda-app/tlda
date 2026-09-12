@@ -1,0 +1,29 @@
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS | CONTROL anonymous request is rejected
+    GET /api/projects with no token -> 401 (expect 401; a 200 means gating is off and every auth result here is vacuous)
+PASS | CONTROL read token is refused on a write
+    POST .../source-snapshot with the READ token -> 403 (expect 403; proves requireRw discriminates level rather than merely existing)
+PASS | project created over the wire
+    POST /api/projects -> 201 in 37ms
+PASS | fresh project authority reads null
+    GET /source-authority -> 200, currentRevision=null (null is the uninitialized case the first write of every new project hits)
+PASS | ACCEPT: a browser-shaped write crosses the router
+    POST /source-snapshot with RW bearer -> 200 in 2878ms, sourceRevision=d4b0fe75d81f, effects=["journal","working-copy","mirror","build","cleared-conflicts","edit-event"]
+PASS | response carries the fields callers read
+    sourceRevision:string postAcceptEffects:true unchanged:false building:undefined
+PASS | a second participant lands on top
+    POST -> 200 in 6089ms, sourceRevision=eb1a5bf7ce03
+PASS | REFUSAL: a stale-base write is refused
+    POST with a superseded expectedRevision -> 409 in 4645ms, status="stale-base"
+PASS |   precondition 1: status is stale-base
+    status="stale-base"
+PASS |   precondition 2: evidence.classifications[] present
+    classifications=1 entry(s)
+PASS |   precondition 3: this path is classified conflict WITH merged
+    entry={"path":"main.md","status":"conflict","hasMerged":true}
+PASS |   precondition 4: merged decodes to real conflict markers
+    "line one\n<<<<<<< in the project\nSOMEBODY ELSE\n=======\nMY OWN EDIT\n>>>>>>> your change\nline three\n"
+PASS | refused head is top-level currentRevision, not nested under authority
+    currentRevision=eb1a5bf7ce03 authority.currentRevision=undefined
+
+13/13 pass

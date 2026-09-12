@@ -424,9 +424,9 @@ async function apiAt(server, method, path, body = null, { timeoutMs = 30000, tok
 // A project created through `tlda-dev` is a developer's fixture, so it is
 // archived on arrival. Agents make these constantly — proof sandboxes, format
 // probes, a scratch that turned out to target the live server — and every one
-// of them landed in the regular project index, which is a phone-sized list
-// whose point is the history view. Archiving developer fixtures at creation
-// keeps that index usable.
+// of them landed in Skip's index, which is a phone-sized list whose point is
+// the history view. He archived 48 by hand on 7/30 and asked for the source to
+// stop: "just make tlda-dev create archived projects."
 //
 // Archiving after create rather than passing a flag, deliberately: it needs no
 // server change, so it takes effect against an already-deployed server. A
@@ -1138,8 +1138,10 @@ async function cmdUnlink() {
  * `tlda project add <file...>` — put a file into a project this checkout is
  * already linked to, as a document root.
  *
- * This supports pulling a new file from another branch into an existing tlda
- * project by widening that project's document-root set.
+ * Skip, 2026-09-02 02:28:21 EDT: *"do we not need an add when we want to like,
+ * pull a new file from main into our tlda project?"* — and, on how: *"i mean
+ * it's effectively unlink and link with a new set of roots yes?"* (02:28:59),
+ * *"like an unlink link hack is fine"* (02:38:14).
  *
  * IT DOES NOT UNLINK. The unlink/link phrasing is a description of the effect —
  * the same checkout, a wider root set — and unlink/link is one way to get there.
@@ -1161,7 +1163,7 @@ async function cmdUnlink() {
  *      untracked file is not in the settled tree — and `filteredProjectCommit`
  *      throws `configured document root is absent` for a declared root that is
  *      not there, which is caught at warn and stops the project syncing AT ALL.
- *      Stage, THEN declare, so the declared root is present in the settled tree.
+ *      Stage, THEN declare. Skip chose staging over refusing on 2026-08-24.
  *   3. declare it, and submit, so the file is in the project now rather than at
  *      whatever moment something else happens to settle.
  *
@@ -2025,7 +2027,8 @@ function botManagerLog(message) {
 }
 
 // A bot's code is the tree its declared script lives in, minus `node_modules`
-// and `.git`. The bot manager restarts a bot when its code changes.
+// and `.git`. Skip, 2026-08-19 03:01 EDT: "the fucking bot manager should
+// restart on fucking code change too."
 //
 // Why the tree and not the entry file's mtime: a bot is more than one file, and
 // an entry-mtime check silently misses a change to a module the bot imports from
@@ -2146,6 +2149,10 @@ export function botMintId(envName, botName) {
 // fleet row holds, never which model it is. So this lookup is name-independent
 // by construction, which is the whole point.
 //
+// Skip, 2026-08-18 14:27 EDT: "if we have no bot of this model in the ledger [we
+// mint]. Otherwise, we wake them. That's name-independent, right? It's
+// model-specific."
+//
 // Why not key it on the name. Renaming a bot is the sanctioned way to stop one,
 // and a name-keyed check reads a rename as a vacancy — which a KeepAlive
 // launcher fills within seconds, so stopping a bot causes its replacement and
@@ -2163,6 +2170,10 @@ async function recordedBotOfModel(unit) {
 }
 
 // One bot of a model, for its whole life.
+//
+// Skip, 2026-08-18 14:21 EDT: "what it's supposed to do is call mint with a
+// special argument that says instead of, like, rotating, fail if I don't get the
+// name I'm asking for. AND IF YOU FAIL, WAKE"
 //
 // A name collision hands a mint an alternate name rather than rejecting it, and
 // that is the design — for two different beings wanting one name. A bot starting
@@ -2641,8 +2652,8 @@ async function cmdFleetWatch(sub) {
     // looks like successful rotation and leaves the current log blank. The
     // restart is where launchd opens the path again.
     //
-    // Nothing had ever rotated it: one observed log reached 342 MB on a volume
-    // that had filled completely.
+    // Nothing had ever rotated it: 342 MB on 2026-08-18, on the machine Skip
+    // works on, on a volume that hit 100%.
     const rotatedDaemonLog = rotateBeforeOpen(join(CONFIG_DIR, `fleet-daemon${daemonConfigSuffix(DAEMON_WORLD_NAME)}.log`))
     if (rotatedDaemonLog) console.log(dim('  rotated the daemon log before restart'))
     await runLaunchctl(['kickstart', '-k', daemonLaunchdTarget()])
@@ -2896,7 +2907,7 @@ async function probeLoginUrl(url, { timeoutMs = 10000 } = {}) {
 }
 
 async function cmdShare() {
-  // Three supported shapes:
+  // Three shapes (Skip-confirmed):
   //   (no arg) → index page (root `/`, docName=null)
   //   `.`      → the project inferred from the cwd; error if none found
   //   <name>   → that specific doc
@@ -3961,7 +3972,8 @@ export async function attachToAgent(name, {
   // an agent still marked awake with no process behind it looks like from here.
   // Without this check the caller gets tmux's own `can't find session: fleet-x`,
   // which describes the terminal and says nothing about the two states that
-  // actually differ: no such agent, or this agent has no session.
+  // actually differ: no such agent, or this agent has no session. Skip hit the
+  // second and read it as the first.
   //
   // This asserts NOTHING about whether the agent is dead. Death is a flag
   // somebody sets explicitly; a missing terminal is not evidence of one, and
@@ -4068,8 +4080,8 @@ function printLocalDaemonOutcome(result = {}) {
 }
 
 // `mint` makes a FRESH agent only. Adopting an already-running external session
-// is a separate verb (`enlist`) so creating fresh agents and enrolling extant
-// agents are never confused.
+// is a separate verb (`enlist`) so the two are never confused (Skip: "the create
+// command now is overloaded, to both create fresh agents and enroll extant agents").
 function agentMintArgs(rawArgs) {
   if (flagFromRaw(rawArgs, 'session')) {
     console.error(red('`tlda agent mint` makes a FRESH agent. To adopt an existing session, use:\n  tlda agent enlist --kind <codex|claude> <session-id> [name]'))
@@ -4132,7 +4144,7 @@ export async function runFleetSpawn(spawnArgs, {
     process.exit(1)
   }
   // The ONE permission knob is --permissions <profile>, a named profile from
-  // daemon.yaml. The CLI exposes the configured profiles directly.
+  // daemon.yaml (Skip: "in terms of the CLI, I just want my fucking profiles").
   // Naming a profile asks for that configured profile. Without --permissions,
   // fresh spawns use the configured default and wake restores the durable grant.
   const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
@@ -4151,7 +4163,8 @@ export async function runFleetSpawn(spawnArgs, {
     // operator. It stopped being operator-only the moment this flag started
     // working: it had been dropped before the RPC, so the door was shut by
     // accident, not by a check. Same gate as `agent permissions`, for the same
-    // reason: letting an agent choose its own grant is a privilege escalation.
+    // reason and in Skip's words — "the agents can't run it thing is a privilege
+    // escalation thing. It's for real."
     //
     // Scoped to the flag, not the command: an agent may still mint and wake, it
     // just cannot choose the grant. Do not relax this to a clamp — the daemon
@@ -4253,7 +4266,8 @@ export async function runFleetSpawn(spawnArgs, {
     // Rotation on collision is the design — a mint takes an alternate name
     // rather than being rejected. Saying nothing about it is what makes it a
     // trap: you cannot attach to a name nobody told you, and the only other
-    // place the fact exists is `tmux ls`.
+    // place the fact exists is `tmux ls`. Skip walked s → r → q on one name
+    // without being told once.
     if (assignedName && name && assignedName !== name) {
       console.log(yellow(`  "${name}" was taken — this agent is "${assignedName}".`))
       console.log(`  Attach with: tlda agent attach ${assignedName}`)
@@ -5593,7 +5607,9 @@ async function cmdAgent() {
 //
 // Hibernate/wake works on every harness, restores the session (same session id,
 // conversation intact — a bounce costs nothing but the seconds), and is the same
-// path the daemon already owns.
+// path the daemon already owns. Skip, 2026-08-08 17:20:23 EDT: "if it works by
+// messing around with some readline menu, it's not supposed to do that. It's
+// supposed to hibernate and wake."
 //
 // Why this exists at all: MCP-client code under `mcp-server/` reaches an agent
 // ONLY when that agent's process restarts. A fix can be merged, deployed and
@@ -6355,8 +6371,8 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     // absolute server path only — NOT the bare "server/unified-server.mjs", which
     // is a substring of every worktree's `.../.worktrees/X/server/unified-server.mjs`
     // and so swept every `tlda-dev serve` preview on every stop/deploy. That
-    // cross-worktree sweep can kill preview tabs when an unrelated process
-    // restarts the main server. Worktree dev servers are managed
+    // cross-worktree sweep is exactly what killed Skip's preview tabs when an
+    // unrelated agent restarted the main server. Worktree dev servers are managed
     // by `tlda-dev serve stop`, never by the main `server stop`.
     try { execSync(`pkill -f ${JSON.stringify(serverScript)}`, { stdio: 'pipe' }) } catch {}
     // No other fallback — if /health doesn't respond, the server is already dead.
@@ -6559,7 +6575,7 @@ async function inferProjectName() {
     //
     // Returning the first match is picking one arbitrarily, which is the same
     // fault as the basename guess this replaced, wearing a lookup's clothes.
-    // One observed checkout was bound to TWO
+    // Measured on this machine: `/Users/skip/work/balancing-act` is bound to TWO
     // projects, and iteration order handed back the one the caller did not mean,
     // so `tlda project status` there answered "Project not found" about a project
     // that exists and is syncing. The old basename guess got it right by luck,
@@ -6581,6 +6597,10 @@ async function inferProjectName() {
 
   // Not bound: say so, rather than guessing this project's name from the
   // directory's.
+  //
+  // Skip, 2026-08-25: "you've been fucked over by the app guessing shit IT
+  // ISN'T WRITING DOWN. like these fallbacks are not to like, help the user or
+  // whatever, they're to enable the app to be half-broken all the time."
   //
   // This is the worked example. The lookup above read a binding as a string
   // when a binding is an object, so it matched nothing and every caller
@@ -6769,10 +6789,13 @@ async function cmdDevUrl() {
  * This is the ONE way work gets back out of the app. Three ways in (a linked
  * checkout, the browser source editor, a linked Git remote), one way out.
  *
- * This is the map-back from filtered tlda branches, and the history is retained by replaying one
+ * Skip, 2026-09-02 02:26:20 EDT, on why the tlda commands exist at all: *"we
+ * want to like filter onto tlda branches but retain history and then map
+ * back"*. This is the map-back, and the history is retained by replaying one
  * commit per change rather than collapsing them.
  *
- * THE SPELLING IS NESTED. The earlier unmerged candidate spelled it as a
+ * THE SPELLING IS NESTED. Skip, 02:27:01 EDT: *"also it should be tlda project
+ * merge probably yes?"* The earlier unmerged candidate spelled it as a
  * top-level `tlda merge`; `PROJECT_SUBS` now carries `merge`, so that spelling
  * is refused with a pointer at this one, the same as every other moved command.
  *
