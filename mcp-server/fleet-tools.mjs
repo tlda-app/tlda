@@ -1725,7 +1725,7 @@ export function getFleetTools() {
           project: { type: 'string', description: 'List agents who worked in a project/working directory by chronological recency. Accepts a full cwd path or project basename.' },
           agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
-          limit: { type: 'number', description: 'Max results (default 20, max 100). Ignored when both since and before are set (bounded calls return full range, up to 500).' },
+          limit: { type: 'number', description: 'Max results (default 20, max 100; when both since and before are set, default 500 and max 500). Always honoured: a page that fills up says so, and says which end it kept, rather than being silently cut.' },
           context: { type: 'number', description: 'Number of surrounding messages to include with each chat match (default 0, max 20). Shows N messages before and after each match.' },
           since: { type: 'string', description: 'ISO timestamp or relative shorthand — "30s", "20m", "2h", "1d". Only return matches after this time. An unreadable value is an error, not an unbounded search; weeks and months are query-only, so write 7d or 90d here.' },
           before: { type: 'string', description: 'ISO timestamp, relative shorthand ("30s", "20m", "2h", "1d"), or "now" — only return matches before this time. Use for pagination: pass the oldest timestamp from a previous result set.' },
@@ -4491,13 +4491,19 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       }
     });
 
-    // For bounded calls, error if results hit the limit (would be silently truncated)
-    if (isBoundedSearch && results.length >= limit) {
-      return {
-        content: [{ type: 'text', text: `Bounded query returned ≥${limit} results — too many to return in one call. Narrow your time range.` }],
-        isError: true,
-      };
-    }
+    // A bounded call that fills its page reports what was withheld. It used to
+    // refuse outright — `search(query, since, before, limit: 3)` answered
+    // "Bounded query returned ≥3 results — too many to return in one call"
+    // and returned nothing, so a caller could not ask for three hits inside a
+    // window at all. The instinct was right (a bounded read must not truncate
+    // in silence) and the remedy overshot: it converted the caller's page size
+    // into a tripwire, and three descriptions of it disagreed — the tool said
+    // `limit` was ignored on bounded calls, the code capped it at 500, and the
+    // runtime raised an error.
+    //
+    // Saying what was cut satisfies the same requirement without discarding the
+    // answer, and matches the unbounded footer below.
+    const boundedPageFull = isBoundedSearch && results.length >= limit;
 
     // Log search event
     const filters = [];
@@ -4563,6 +4569,16 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       searchFooters.push(
         `${formatted.length - searchLines.length} more result(s) fetched but not shown — cut by a ${SEARCH_MAX_BYTES / 1000}k output budget, not by the query. ` +
         `This surface has no cursor: narrow with since:/before:, or read one conversation with thread(agent).`,
+      );
+    } else if (boundedPageFull) {
+      // A bounded window that filled its page. The window is the caller's own,
+      // so the continuation is a narrower window rather than a bigger limit —
+      // and it must say which end it kept, for the same reason as below.
+      const edge = !query
+        ? `these are the OLDEST ${limit} in your window and everything withheld is newer — move \`since\` forward to the last timestamp above to continue`
+        : `these are the ${limit} best matches for these terms, not the ${limit} newest — narrow the window to see the rest`;
+      searchFooters.push(
+        `Your window holds at least ${limit} matches and ${limit} is your limit, so ${edge}.`,
       );
     } else if (!isBoundedSearch && results.length >= limit) {
       // Say which end was cut, and continue the SAME query.
