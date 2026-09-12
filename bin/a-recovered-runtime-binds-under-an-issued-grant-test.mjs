@@ -29,7 +29,7 @@ const CONFIG = {
   },
 }
 
-const CWD = '/Users/skip/work/tlda'
+const CWD = '/Users/you/work/tlda'
 const RECIPE = { kind: 'codex', cwd: CWD, model: 'opus', permissionGrant: 'app-dev' }
 const LIVE = 'fleet-half-minted'
 

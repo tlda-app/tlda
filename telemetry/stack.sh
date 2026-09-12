@@ -70,7 +70,7 @@ PROM_URL="http://127.0.0.1:${PROMETHEUS_PORT}"
 PROM_OTLP_ENDPOINT="${PROM_URL}/api/v1/otlp/v1/metrics"
 # GRAFANA_HOST is resolved/validated lazily by start_grafana(), not here —
 # status/stop/footprint must stay usable without Tailscale being reachable.
-GRAFANA_PUBLIC_HOST="${GRAFANA_PUBLIC_HOST:-davids-mac-mini.cormorant-matrix.ts.net}"
+GRAFANA_PUBLIC_HOST="${GRAFANA_PUBLIC_HOST:-davids-mac-mini.example-tailnet.ts.net}"
 GRAFANA_CERT_FILE="${GRAFANA_CERT_FILE:-$STACK_DIR/certs/${GRAFANA_PUBLIC_HOST}.crt}"
 GRAFANA_CERT_KEY="${GRAFANA_CERT_KEY:-$STACK_DIR/certs/${GRAFANA_PUBLIC_HOST}.key}"
 GRAFANA_PROTOCOL="${GRAFANA_PROTOCOL:-http}"
@@ -81,7 +81,7 @@ fi
 # Callers must pass GF_AUTH_ANONYMOUS_ENABLED/GF_AUTH_ANONYMOUS_ORG_ROLE
 # explicitly (see start_grafana); this is a product/policy decision, not an
 # ops default this script should bake in.
-TLDA_FLEET_URL="${TLDA_FLEET_URL:-https://tlda-fly.cormorant-matrix.ts.net}"
+TLDA_FLEET_URL="${TLDA_FLEET_URL:-https://tlda-fly.example-tailnet.ts.net}"
 refresh_grafana_url() {
   GRAFANA_URL="${GRAFANA_PROTOCOL}://${GRAFANA_PUBLIC_HOST}:${GRAFANA_PORT}/d/tlda-live-agent-activity/live-agent-activity"
 }

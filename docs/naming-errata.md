@@ -307,7 +307,7 @@ for (const entry of measured.sort((a, b) => a.mtimeMs - b.mtimeMs)) {
 ```
 
 `budgetBytes` is `DEFAULT_WORKTREE_NODE_MODULES_BUDGET_BYTES = 50 * 1024 ** 3` (`:11`);
-`retainedBytes` is the summed size of `node_modules` under `/Users/skip/worktrees` only.
+`retainedBytes` is the summed size of `node_modules` under `/Users/you/worktrees` only.
 **`df` is never called. Free space appears nowhere in the module.** So the loop breaks on its
 first iteration whenever worktree `node_modules` total is under 50 GiB, correctly, at any
 free-space value including zero. A full volume is not a state it can perceive.

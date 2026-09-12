@@ -73,7 +73,7 @@ await runFleetSpawn([
   '--model', 'bot',
   '--kind', 'bot',
   '--cwd', configDir,
-  '--bot-script', '/Users/skip/work/tlda-bots/dev/dev-bot.mjs',
+  '--bot-script', '/Users/you/work/tlda-bots/dev/dev-bot.mjs',
   '--bot-name', 'dev',
   '--bot-env', JSON.stringify(DECLARED),
 ], {

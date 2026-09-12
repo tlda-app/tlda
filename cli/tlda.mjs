@@ -6576,7 +6576,7 @@ async function inferProjectName() {
     //
     // Returning the first match is picking one arbitrarily, which is the same
     // fault as the basename guess this replaced, wearing a lookup's clothes.
-    // Measured on this machine: `/Users/skip/work/balancing-act` is bound to TWO
+    // Measured on this machine: `/Users/you/work/balancing-act` is bound to TWO
     // projects, and iteration order handed back the one the caller did not mean,
     // so `tlda project status` there answered "Project not found" about a project
     // that exists and is syncing. The old basename guess got it right by luck,

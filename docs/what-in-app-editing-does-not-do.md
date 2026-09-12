@@ -1,7 +1,7 @@
 # What in-app source editing does not do
 
 Measured 2026-08-22 against `main` at `993553073`, on the Fly server
-(`tlda-fly.cormorant-matrix.ts.net`), using throwaway projects only. Nothing here was
+(`tlda-fly.example-tailnet.ts.net`), using throwaway projects only. Nothing here was
 established by reading anyone's real work, and nothing here should be re-established that
 way — see AGENTS.md §"NEVER DISCUSS HIS PAPERS. VERIFY ON A NEW PROJECT".
 

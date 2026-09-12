@@ -40,8 +40,8 @@ function check(label, actual, expected) {
 
 // 1. Legacy absolute-path scope. The wedge. Must build.
 withScope('legacy-absolute', [
-  '/Users/skip/work/balancing-act/main.tex',
-  '/Users/skip/work/balancing-act/figure/geometry-handpicked-crossing.bb',
+  '/Users/you/work/balancing-act/main.tex',
+  '/Users/you/work/balancing-act/figure/geometry-handpicked-crossing.bb',
 ])
 check('absolute-path scope still builds on main.tex',
   shouldBuildOnPush(project, 'legacy-absolute', push).build, true)
@@ -57,12 +57,12 @@ withScope('irrelevant-rel', ['main.tex'])
 check('unrelated file does not build (relative)',
   shouldBuildOnPush(project, 'irrelevant-rel', { changedFiles: ['scratch/notes.tex'], anyChanged: true }).build, false)
 
-withScope('irrelevant-abs', ['/Users/skip/work/balancing-act/main.tex'])
+withScope('irrelevant-abs', ['/Users/you/work/balancing-act/main.tex'])
 check('unrelated file does not build (absolute)',
   shouldBuildOnPush(project, 'irrelevant-abs', { changedFiles: ['scratch/notes.tex'], anyChanged: true }).build, false)
 
 // 4. A suffix must not match a DIFFERENT file that merely ends the same way.
-withScope('suffix-trap', ['/Users/skip/work/other-paper/appendix/main.tex'])
+withScope('suffix-trap', ['/Users/you/work/other-paper/appendix/main.tex'])
 check('bare basename does not match a deeper unrelated path',
   shouldBuildOnPush(project, 'suffix-trap', { changedFiles: ['sections/main.tex'], anyChanged: true }).build, false)
 

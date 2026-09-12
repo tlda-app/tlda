@@ -15,7 +15,7 @@ const ctx = {
 }
 
 test('delegate lifecycle card renders preserved local path as text, not attachment placeholder', () => {
-  const localPath = '/Users/skip/work/tlda/AGENTS.md'
+  const localPath = '/Users/you/work/tlda/AGENTS.md'
   const html = renderChatLine({
     _evType: 'delegate',
     _description: 'Read guidance',

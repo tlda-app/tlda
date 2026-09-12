@@ -3,16 +3,16 @@
 Deploying is a push to the deployment repository:
 
 ```bash
-git push /Users/skip/work/deploy/testing HEAD:refs/heads/main
+git push /Users/you/work/deploy/testing HEAD:refs/heads/main
 ```
 
 If a push needs to abort, wait for it to finish; killing the client does not stop the server-side deploy.
 
-`/Users/skip/work/deploy/testing` deploys `fly.live.toml`, the Fly app
-`tldraw-sync-skip` at `https://tlda-fly.cormorant-matrix.ts.net`.
+`/Users/you/work/deploy/testing` deploys `fly.live.toml`, the Fly app
+`tldraw-sync-skip` at `https://tlda-fly.example-tailnet.ts.net`.
 
-`/Users/skip/work/deploy/stable` deploys `fly.stable.toml`, the Fly app
-`tldraw-sync-skip-stable` at `https://tlda-fly-stable.cormorant-matrix.ts.net`.
+`/Users/you/work/deploy/stable` deploys `fly.stable.toml`, the Fly app
+`tldraw-sync-skip-stable` at `https://tlda-fly-stable.example-tailnet.ts.net`.
 `stable` only accepts a commit that `testing` has already deployed successfully.
 The `testing` ref is the deployment record: the stable gate reads
 `testing`'s `refs/heads/main`, requires the candidate commit to exist in that
@@ -28,8 +28,8 @@ The deploy repositories reject pushes with:
 After a successful push, verify:
 
 ```bash
-curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/build-info
-curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/health
+curl -fsS https://tlda-fly.example-tailnet.ts.net/api/build-info
+curl -fsS https://tlda-fly.example-tailnet.ts.net/api/health
 fly status -c fly.live.toml
 ```
 
@@ -46,7 +46,7 @@ running.
 Seen twice on 2026-08-17. The hook reported:
 
 ```
-verify: after 240s https://tlda-fly.cormorant-matrix.ts.net is serving nothing, wanted <sha>
+verify: after 240s https://tlda-fly.example-tailnet.ts.net is serving nothing, wanted <sha>
 push rejected: deploy did not reach the box: check whether its machine is running
 ```
 
@@ -103,7 +103,7 @@ cutover that is the only thing worth knowing.
 
 ### The cutover, once
 
-The tldraw licence is bound to `*.cormorant-matrix.ts.net` and Skip has that URL
+The tldraw licence is bound to `*.example-tailnet.ts.net` and Skip has that URL
 open, so the node has to keep its identity: the edge volume holds a **copy of the
 existing `tailscaled.state`**, which makes it the same node on a different
 machine. A fresh tailscaled registers a new node, Tailscale names it
@@ -119,7 +119,7 @@ means a failed edge boot leaves him with no app at all.
 and these steps bypass the `pre-receive` lock:
 
 ```bash
-cat /Users/skip/work/deploy/locks/fly.live.toml.lock   # absent, or a dead pid
+cat /Users/you/work/deploy/locks/fly.live.toml.lock   # absent, or a dead pid
 ```
 
 **1. Take a copy of the node state.** Copy, never move — the app machine keeps
@@ -181,7 +181,7 @@ its tailscaled.
 
 ```bash
 fly deploy -c fly.live.toml --process-groups edge
-curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/build-info
+curl -fsS https://tlda-fly.example-tailnet.ts.net/api/build-info
 fly logs -c fly.live.toml --no-tail | grep '\[edge\]'
 ```
 
@@ -201,7 +201,7 @@ door should hold his connections across it. Watch for
 fly deploy -c fly.live.toml --process-groups app
 ```
 
-**6. Make it the default.** In `/Users/skip/work/deploy/hooks/pre-receive-common.sh`,
+**6. Make it the default.** In `/Users/you/work/deploy/hooks/pre-receive-common.sh`,
 which is outside git:
 
 ```diff
@@ -306,8 +306,8 @@ onto `main` first; `git cherry main fb985dd4` then reported all 29 as `-`.
 To deploy a known-good sha directly:
 
 ```bash
-git clone git@github.com:tlda-app/tlda.git /Users/skip/worktrees/live-rollback-<sha>
-cd /Users/skip/worktrees/live-rollback-<sha>
+git clone git@github.com:tlda-app/tlda.git /Users/you/worktrees/live-rollback-<sha>
+cd /Users/you/worktrees/live-rollback-<sha>
 git checkout <known-good-sha>
 npm ci
 node scripts/live-deploy.mjs --fly-config fly.live.toml

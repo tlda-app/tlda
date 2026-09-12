@@ -238,7 +238,7 @@ working directory = ${expectedRoot}
 environment = {
 PATH => /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 TLDA_ENV => stable
-NODE_OPTIONS => --require=/Users/skip/worktrees/land-tonight/shared/node-dns-alias.cjs
+NODE_OPTIONS => --require=/Users/you/worktrees/land-tonight/shared/node-dns-alias.cjs
 }
 `)
   const startedAt = Date.now()

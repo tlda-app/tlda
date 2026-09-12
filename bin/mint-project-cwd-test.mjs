@@ -3,7 +3,7 @@ import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 
 const bindings = new Map([
-  ['synth-combined', '/Users/skip/work/synth-randomization'],
+  ['synth-combined', '/Users/you/work/synth-randomization'],
 ])
 const resolve = input => resolveMintCwd({
   ...input,
@@ -12,7 +12,7 @@ const resolve = input => resolveMintCwd({
 
 assert.equal(
   resolve({ project: 'synth-combined' }),
-  '/Users/skip/work/synth-randomization',
+  '/Users/you/work/synth-randomization',
   'a named project resolves through the daemon-local source binding',
 )
 assert.equal(
