@@ -1,4 +1,4 @@
-# fly.pic-preview.toml — the frozen pre-publication candidate surface for QTM 285.
+# fly.pic-preview.toml — a frozen pre-publication course candidate.
 #
 # Three tiers, and this is the middle one:
 #   pic-dev      live content development; expected to move.
@@ -22,7 +22,7 @@
 # If a promotion step you are about to run rebuilds anything, it is not this.
 #
 # Deploy with:  fly deploy -c fly.pic-preview.toml
-app = "pic-preview"
+app = "your-tlda-course-preview"
 primary_region = "sjc"
 
 [build]
@@ -36,11 +36,8 @@ primary_region = "sjc"
   # committed and baked into the image. TLDA_DEPLOYMENT names that directory and
   # is the only pointer that must arrive from outside it.
   TLDA_DEPLOYMENT = "pic-preview"
-  # The tailnet node name, and therefore the URL:
-  # pic-preview.cormorant-matrix.ts.net. It must stay inside
-  # *.cormorant-matrix.ts.net — the tldraw license is bound to that domain and a
-  # *.fly.dev name would lose the canvas.
-  TS_HOSTNAME = "pic-preview"
+  # The tailnet node name. Supply a private deployment-specific value.
+  TS_HOSTNAME = "course-preview"
 
 # NO TS_FUNNEL, deliberately, and it is the mechanism rather than a preference.
 # Without it scripts/fly-entrypoint-live.sh runs `tailscale serve` instead of

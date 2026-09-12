@@ -2,16 +2,11 @@
 //
 // **A build slot came back only when the worker process EXITED.**
 //
-// Nothing bounded that. A worker found on the live box had been sitting in
-// state `T` -- suspended, 0.2% CPU, no LaTeX child, on a box at load 0.28 --
-// for 34 minutes, and it was still holding its slot. The queue ran at half
-// capacity for the whole period, and every edit that queued behind it was
-// logged as `proposal admission confirmed` and then never built.
+// Nothing bounded that. A suspended worker could remain silent while still
+// holding its slot, leaving queued edits admitted but never built.
 //
 // With every slot held that way, the server stops building anything at all,
-// for every project, until it is restarted. Skip, 2026-08-26: *"we really,
-// really, really need consistent behavior. Like, we can't have builds just,
-// like, locking up."*
+// for every project, until it is restarted.
 //
 // **An in-process timeout cannot catch it.** The worker's own timers are
 // suspended along with the worker, which is why the `timeout: 120000` on every
@@ -20,9 +15,8 @@
 //
 // **The signal is worker silence, not renderer silence or duration**, and that distinction is the reason
 // this is testable at all. A wall-clock limit cannot separate a stalled tex
-// pass from a large qmd render that legitimately runs for minutes -- Skip put
-// exactly that objection: a tex build should take *"ten fifteen seconds"* while
-// a render can run far longer. The worker heartbeat remains live even when a
+// pass from a large qmd render that legitimately runs for minutes. The worker
+// heartbeat remains live even when a
 // renderer is quiet, and only a stopped worker goes quiet.
 //
 // Asserted here as behaviour: a worker that says nothing loses its slot, and a

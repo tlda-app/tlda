@@ -89,11 +89,9 @@ export class LocalAgentLedger {
       this.db.pragma('foreign_keys = ON')
     }
     this.db.exec(`
-      -- Skip, 2026-08-19 05:39 EDT: "never inhabited shells, though. Like,
-      -- release the name means mark dead, dude." / "you kill a never inhabited
-      -- shell. You don't delete it." The name is released because the row is
-      -- dead, not because the row is gone -- so every read here is dead = 0
-      -- and the reservation, its recipe and its conversation stay readable.
+      -- Release a reserved name by marking its row dead, not by deleting it.
+      -- Every active read therefore filters on dead = 0 while the reservation,
+      -- its process recipe, and its conversation remain available for history.
       CREATE TABLE IF NOT EXISTS local_agents (
         local_agent_id TEXT PRIMARY KEY,
         server_agent_id TEXT UNIQUE,

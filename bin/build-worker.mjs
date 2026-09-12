@@ -149,11 +149,7 @@ process.on('message', async (msg) => {
     if (!pending) return
     pendingRpc.delete(msg.id)
     if (msg.ok) pending.resolve(msg.result)
-    else {
-      const error = new Error(msg.error || 'worker RPC failed')
-      error.remoteStack = msg.errorStack || null
-      pending.reject(error)
-    }
+    else pending.reject(new Error(msg.error || 'worker RPC failed'))
     return
   }
   if (msg?.t !== 'build') return
@@ -173,7 +169,6 @@ process.on('message', async (msg) => {
     if (!msg.sourceRevision) throw new Error(`build worker for ${msg.name} requires an immutable source revision`)
     const lifecycle = await sourceLifecycleStore(msg.name)
     const liveProject = projectDir(msg.name)
-    const acceptedProject = await readProject(msg.name)
     // BEFORE `setProjectPathOverride` below, and that ordering is the whole
     // reason this sits up here rather than beside the render it governs:
     // `shouldBuildOnPush` reads `relevant-files.json` out of `outputDir(name)`,
@@ -182,14 +177,7 @@ process.on('message', async (msg) => {
     // `no-relevant-files-yet` on every build forever — a filter that always
     // says yes, which is indistinguishable from the filter not being wired in.
     const relevance = msg.kind === 'parts' ? null : await renderRelevance(msg, lifecycle)
-    const instance = await materializeBuildInstance({
-      name: msg.name,
-      sourceRevision: msg.sourceRevision,
-      lifecycle,
-      seedProject: liveProject,
-      seedOutput: acceptedProject?.format === 'qmd',
-      materializeLinks: acceptedProject?.format === 'qmd',
-    })
+    const instance = await materializeBuildInstance({ name: msg.name, sourceRevision: msg.sourceRevision, lifecycle, seedProject: liveProject })
     instanceRoot = instance.root
     instanceProject = instance.project
     setProjectPathOverride(msg.name, instanceProject)
@@ -277,10 +265,7 @@ process.on('message', async (msg) => {
     // with nothing to point at. The reason is passed so there is always
     // something to write when there was nothing to carry out.
     try {
-      const reason = e?.message || String(e)
-      const stack = e?.remoteStack || e?.stack
-      const diagnostic = stack ? `${reason}\n${stack}` : reason
-      await callParent('publishBuildDiagnostics', [msg.name, instanceProject, diagnostic])
+      await callParent('publishBuildDiagnostics', [msg.name, instanceProject, e?.message || String(e)])
     } catch (diagError) {
       // Never let saving the explanation replace the failure being explained.
       console.error(`[build-worker] could not preserve diagnostics for ${msg.name}: ${diagError?.message || diagError}`)
@@ -295,11 +280,7 @@ process.on('message', async (msg) => {
     } catch (recordError) {
       e.message = `${e?.message || String(e)}; build disposition persistence failed: ${recordError?.message || recordError}`
     }
-    process.send?.({
-      t: 'done', ok: false,
-      error: e?.message || String(e),
-      errorStack: e?.remoteStack || e?.stack || null,
-    })
+    process.send?.({ t: 'done', ok: false, error: e?.message || String(e) })
     setImmediate(() => process.exit(1))
   } finally {
     if (heartbeat) clearInterval(heartbeat)

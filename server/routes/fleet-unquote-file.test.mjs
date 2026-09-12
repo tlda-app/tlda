@@ -43,7 +43,7 @@ test('unquote-file routes rechat through the durable daemon route', async () => 
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         eventId: 17,
-        quoted: '/Users/skip/work/talks/imagined-randomization-20min-review.md',
+        quoted: '/home/user/work/talks/example-review.md',
         agentId: 'fleet:reviewer',
       }),
     })
@@ -53,7 +53,7 @@ test('unquote-file routes rechat through the durable daemon route', async () => 
       op: 'rechat',
       params: {
         agent_id: 'fleet:reviewer',
-        text: '/Users/skip/work/talks/imagined-randomization-20min-review.md',
+        text: '/home/user/work/talks/example-review.md',
       },
     }])
   } finally {
@@ -86,13 +86,13 @@ test('resolve-chat-file materializes a sender-local path through its daemon', as
     const { port } = server.address()
     const response = await fetch(`http://127.0.0.1:${port}/api/resolve-chat-file`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ agentId: 'fleet:reviewer', path: '/Users/skip/work/report.md' }),
+      body: JSON.stringify({ agentId: 'fleet:reviewer', path: '/home/user/work/report.md' }),
     })
     assert.equal(response.status, 200)
     assert.equal((await response.json()).url, '/api/file?path=%2Fuploads%2Freport.md')
     assert.deepEqual(calls, [{
       daemonKey: 'mini:testing', op: 'rechat',
-      params: { agent_id: 'fleet:reviewer', text: '/Users/skip/work/report.md' },
+      params: { agent_id: 'fleet:reviewer', text: '/home/user/work/report.md' },
     }])
   } finally {
     await new Promise(resolve => server.close(resolve))

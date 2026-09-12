@@ -30,10 +30,10 @@ struct TldrawWebView: UIViewRepresentable {
         pencilInteraction.delegate = context.coordinator
         webView.addInteraction(pencilInteraction)
 
-        // Load the dev server — change this to your Mac's local IP
+        // Load the dev server — change this example to your Mac's local IP
         // The app will also check for a stored URL preference
         let urlString = UserDefaults.standard.string(forKey: "serverURL")
-            ?? "http://10.0.0.18:5173/?project=bregman"
+            ?? "http://192.0.2.1:5173/?project=example"
         if let url = URL(string: urlString) {
             webView.load(URLRequest(url: url))
         }

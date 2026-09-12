@@ -1438,71 +1438,6 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_label_history_open ON label_history(fleet_id) WHERE to_ts IS NULL;
     `);
 
-    // A label carries one property of its own: whether it is a SINGLETON — a
-    // label at most one living agent may hold. Skip, 2026-09-01 03:55 EDT:
-    //
-    //   labels should be, at creation time, marked singleton or not
-    //   like we alreayd have the mechanism for friendlynames
-    //   then firendlynames would just be like, effetively singleton labels
-    //   but i'm thinking like on-call
-    //   perhaps we don't want multiple on-call agents
-    //   so if you try to apply on-call
-    //   and someone has it, you get an error telling you that like, if you
-    //   really mean it, strip it and then apply it
-    //
-    // This table is NOT a cache over events, and that is deliberate. Which
-    // agents hold a label is folded from labeling events; whether the label is
-    // singleton is a fact about the token itself, declared once and read back.
-    // Rows are never deleted: a label nobody currently holds keeps its
-    // definition, so re-applying it later gets the same rule rather than
-    // silently becoming an ordinary label because its last holder died.
-    //
-    // Enforcement is checkNameAvailable, for the reason written there: a label
-    // is a string inside the `agents.labels` JSON array rather than a row, so
-    // no index can see a second holder the way idx_agents_live_name sees a
-    // second holder of a friendly name.
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS label_definitions (
-        label TEXT PRIMARY KEY,
-        singleton INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        created_by TEXT,
-        singleton_set_at TEXT,
-        singleton_set_by TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_label_definitions_singleton
-        ON label_definitions(label) WHERE singleton = 1;
-    `);
-
-    // Skip, 2026-09-01 03:59 EDT: "prob even if like singleton is like an
-    // on-creation-time property like; we should like make on-call singleton as
-    // a migration or wahtever / obvs". `on-call` predates the property, so it
-    // cannot acquire it at creation time; this is that migration.
-    //
-    // It declares the rule and touches nobody's labels. If several living
-    // agents hold `on-call` right now they keep it — nothing here deletes a
-    // label — and it is the next application that is rejected. The count is
-    // logged rather than repaired, because which of them is on call is not a
-    // question this migration can answer.
-    const _labelDefNow = new Date().toISOString();
-    this.db.prepare(`
-      INSERT INTO label_definitions (label, singleton, created_at, created_by, singleton_set_at, singleton_set_by)
-      VALUES ('on-call', 1, ?, 'migration', ?, 'migration')
-      ON CONFLICT(label) DO UPDATE SET
-        singleton = 1,
-        singleton_set_at = COALESCE(label_definitions.singleton_set_at, excluded.singleton_set_at),
-        singleton_set_by = COALESCE(label_definitions.singleton_set_by, excluded.singleton_set_by)
-      WHERE label_definitions.singleton = 0
-    `).run(_labelDefNow, _labelDefNow);
-    const _onCallHolders = this.db.prepare(`
-      SELECT COUNT(*) AS n FROM agents
-      WHERE dead = 0
-        AND EXISTS (SELECT 1 FROM json_each(COALESCE(agents.labels, '[]')) WHERE value = 'on-call')
-    `).get()?.n || 0;
-    if (_onCallHolders > 1) {
-      console.log(`[fleet-store] on-call is now a singleton label; ${_onCallHolders} living agents currently hold it. Existing holders are left alone; the next application is what will be rejected.`);
-    }
-
     // Retain the historical table for temporal queries, but remove its row
     // triggers. Insertion does not prove an AI awake or a human here; those are
     // live daemon/browser observations.
@@ -2774,20 +2709,10 @@ export class FleetStore {
         );
         const ownName = agent.friendly_name || current?.friendly_name || null;
         if (ownName) taken.add(ownName);
-        // Same strip, second reason: a singleton label another living agent
-        // already holds. Without this, register and login are a way around the
-        // rule mutateAgentLabels enforces — one rule, two code paths, which is
-        // how the friendly-name half of this gate drifted in the first place.
-        for (const row of this.db.prepare(`
-          SELECT DISTINCT je.value AS label
-          FROM agents, json_each(COALESCE(agents.labels, '[]')) je
-          JOIN label_definitions d ON d.label = je.value AND d.singleton = 1
-          WHERE agents.dead = 0 AND agents.id != ?
-        `).all(agent.id || '')) taken.add(row.label);
         const filtered = agent.labels.filter(l => !taken.has(l));
         if (filtered.length !== agent.labels.length) {
           const dropped = agent.labels.filter(l => taken.has(l));
-          console.log(`[fleet-store] stripped label(s) held by another living agent as a name or a singleton label from ${agent.id}: ${dropped.join(', ')}`);
+          console.log(`[fleet-store] stripped friendly-name-colliding label(s) from ${agent.id}: ${dropped.join(', ')}`);
           agent = { ...agent, labels: filtered };
         }
       }
@@ -2796,11 +2721,6 @@ export class FleetStore {
       const nextLabels = hasLabels ? this._normalizeCompleteLabels(agent.labels) : null;
       const labelsChanged = hasLabels
         && JSON.stringify(nextLabels) !== (before?.labels || '[]');
-      if (hasLabels) {
-        let beforeLabels = [];
-        try { beforeLabels = JSON.parse(before?.labels || '[]'); } catch { beforeLabels = []; }
-        this._assertSingletonLabelsAvailable(nextLabels.filter(label => !beforeLabels.includes(label)), agent.id);
-      }
       let insertedEvent = null;
       this.db.transaction(() => {
         this._upsertAgent.run(
@@ -2817,11 +2737,6 @@ export class FleetStore {
           agent.metadata ? JSON.stringify(agent.metadata) : null
         );
         if (!before || labelsChanged) {
-          // First appearance of a label is its creation, whichever path it
-          // arrives on. Registering one defines it non-singleton; only an
-          // explicit request makes a singleton, and that request cannot reach
-          // here — this path has no way to express one.
-          this._ensureLabelDefinitions(nextLabels || [], { actorId: agent.id });
           const timestamp = !before
             ? (agent.registered_at || new Date().toISOString())
             : new Date().toISOString();
@@ -2858,143 +2773,6 @@ export class FleetStore {
       normalized.push(raw);
     }
     return normalized;
-  }
-
-  _singletonLabelHolders(label, excludeId = null) {
-    return this.db.prepare(`
-      SELECT a.id, a.friendly_name
-      FROM agents a, json_each(CASE WHEN json_valid(a.labels) THEN a.labels ELSE '[]' END) member
-      WHERE a.dead = 0 AND a.id != ? AND member.value = ?
-      ORDER BY a.last_seen DESC, a.id
-    `).all(excludeId || '', label);
-  }
-
-  _singletonLabelHolder(label, excludeId = null) {
-    return this._singletonLabelHolders(label, excludeId)[0] || null;
-  }
-
-  _assertSingletonLabelsAvailable(labels, excludeId = null) {
-    for (const label of labels) {
-      const definition = this.getLabelDefinition(label);
-      if (!definition?.singleton) continue;
-      const holder = this._singletonLabelHolder(label, excludeId);
-      if (holder) {
-        throw new Error(`Label rejected: singleton label "${label}" is held by ${holder.friendly_name || holder.id} (${holder.id}). Remove it there before applying it here.`);
-      }
-    }
-  }
-
-  assignSingletonSeat({ label, agentId, actorId = null, transfer = false, batchPolicy = 'batch(default)' }) {
-    const target = this._getAgent.get(agentId);
-    if (!target || target.dead) throw new Error(`Cannot assign "${label}": target agent ${agentId} is not living.`);
-    const emitted = [];
-    const changedAgents = new Set();
-    const previousHolders = [];
-    let renamed = null;
-    let subscriptions = null;
-    const now = new Date().toISOString();
-
-    this.db.transaction(() => {
-      const existingDefinition = this.getLabelDefinition(label);
-      if (existingDefinition && !existingDefinition.singleton) {
-        throw new Error(`Label "${label}" is already defined as non-singleton.`);
-      }
-      const holders = this._singletonLabelHolders(label, agentId);
-      if (holders.length && !transfer) {
-        const holder = holders[0];
-        throw new Error(`Singleton label "${label}" is held by ${holder.friendly_name || holder.id} (${holder.id}). Use "Todd transfer ${label} to ${target.friendly_name || target.id}" to move it explicitly.`);
-      }
-
-      const nameHolder = this.db.prepare(
-        'SELECT id, friendly_name FROM agents WHERE dead = 0 AND friendly_name = ? LIMIT 1',
-      ).get(label);
-      if (nameHolder) {
-        const newName = this.allocateFreshFriendlyName(`${label}-agent`, { excludeId: nameHolder.id });
-        this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(newName, nameHolder.id);
-        const metadata = { subtype: 'rename', reason: 'reserve-singleton-label', oldName: label, newName };
-        const result = this._insertEvent.run(
-          'lifecycle', now, actorId, `rename: ${label} -> ${newName}`, JSON.stringify(metadata), null, nameHolder.id,
-        );
-        emitted.push({
-          id: Number(result.lastInsertRowid), type: 'lifecycle', timestamp: now,
-          from_id: actorId, recipients: [], text: `rename: ${label} -> ${newName}`,
-          metadata, task_id: null, agent_id: nameHolder.id, read: false,
-        });
-        changedAgents.add(nameHolder.id);
-        renamed = { agent: nameHolder.id, from: label, to: newName };
-      }
-
-      if (!existingDefinition) {
-        this.db.prepare(`
-          INSERT INTO label_definitions (label, singleton, created_at, created_by)
-          VALUES (?, 1, ?, ?)
-        `).run(label, now, actorId);
-      }
-
-      for (const holder of holders) {
-        previousHolders.push({ id: holder.id, name: holder.friendly_name || holder.id });
-        const outgoing = this._currentLabelStateFromEvents(holder.id);
-        if (!outgoing) throw new Error(`agent ${holder.id} has no canonical label event; run the label-history migration`);
-        const next = outgoing.filter(item => item !== label);
-        this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?').run(JSON.stringify(next), holder.id);
-        const event = this._insertLabelStateEvent({
-          type: 'label', agentId: holder.id, actorId: actorId || agentId,
-          labels: next, operation: 'remove', timestamp: now,
-        });
-        this._rebuildLabelHistoryForAgent(holder.id);
-        emitted.push(event);
-        changedAgents.add(holder.id);
-        const outgoingGroup = this.ensureSubscription({
-          owner: holder.id, query: DEFAULT_SUBSCRIPTION_QUERY,
-          notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, createdBy: actorId || agentId, mandatory: true,
-        });
-        this.setSubscriptionPolicy(outgoingGroup.subscription_id, DEFAULT_SUBSCRIPTION_POLICY);
-      }
-
-      const current = this._currentLabelStateFromEvents(agentId);
-      if (!current) throw new Error(`agent ${agentId} has no canonical label event; run the label-history migration`);
-      if (!current.includes(label)) {
-        const next = [...current, label];
-        this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?').run(JSON.stringify(next), agentId);
-        const event = this._insertLabelStateEvent({
-          type: 'label', agentId, actorId: actorId || agentId,
-          labels: next, operation: 'add', timestamp: now,
-        });
-        this._rebuildLabelHistoryForAgent(agentId);
-        emitted.push(event);
-        changedAgents.add(agentId);
-      }
-
-      const direct = this.ensureSubscription({
-        owner: agentId, query: 'to:me', notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY,
-        createdBy: actorId || agentId, mandatory: true,
-      });
-      const group = this.ensureSubscription({
-        owner: agentId, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: batchPolicy,
-        createdBy: actorId || agentId, mandatory: true,
-      });
-      this.setSubscriptionPolicy(direct.subscription_id, DEFAULT_SUBSCRIPTION_POLICY);
-      this.setSubscriptionPolicy(group.subscription_id, batchPolicy);
-      subscriptions = {
-        direct: this.getSubscription(direct.subscription_id),
-        labels: this.getSubscription(group.subscription_id),
-      };
-    })();
-
-    this._bustAgentsCache();
-    this._bustSubscriptionTapCache();
-    for (const id of changedAgents) this._syncAgentRegistry(id);
-    for (const event of emitted) this._notifyEvent(event);
-    const assigned = this._getAgent.get(agentId);
-    return {
-      label,
-      agent: agentId,
-      holder: assigned?.friendly_name || agentId,
-      previous_holder: previousHolders[0] || null,
-      previous_holders: previousHolders,
-      renamed,
-      subscriptions,
-    };
   }
 
   _insertLabelStateEvent({ type, agentId, actorId, labels, operation, timestamp }) {
@@ -3176,92 +2954,8 @@ export class FleetStore {
     return { events: inserted.length };
   }
 
-  // ---- Label definitions: is this label a singleton? ----
-
-  getLabelDefinition(label) {
-    if (!label || typeof label !== 'string') return null;
-    return this.db.prepare(
-      'SELECT label, singleton, created_at, created_by, singleton_set_at, singleton_set_by FROM label_definitions WHERE label = ?'
-    ).get(label) || null;
-  }
-
-  listSingletonLabels() {
-    return this.db.prepare('SELECT label FROM label_definitions WHERE singleton = 1 ORDER BY label')
-      .all().map(row => row.label);
-  }
-
-  // Living agents currently holding `label`. The gate needs this and so does
-  // anyone about to promote a label to singleton, which is why it is one query
-  // rather than two readings of the labels column.
-  livingHoldersOfLabel(label, { excludeId = null } = {}) {
-    if (!label || typeof label !== 'string') return [];
-    return this.db.prepare(`
-      SELECT id FROM agents
-      WHERE dead = 0 AND id != ?
-        AND EXISTS (SELECT 1 FROM json_each(COALESCE(agents.labels, '[]')) WHERE value = ?)
-      ORDER BY id
-    `).all(excludeId || '', label).map(row => row.id);
-  }
-
-  // Declare a label. Singleton-ness is a creation-time property, so this
-  // refuses to re-declare an existing label the other way: the label already
-  // means something to everyone holding it, and quietly changing what it means
-  // is not a labeling operation. The explicit route is setLabelSingleton, which
-  // is what the on-call migration uses.
-  defineLabel(label, { singleton = false, actorId = null } = {}) {
-    if (!label || typeof label !== 'string') throw new TypeError('label must be a non-empty string');
-    const want = singleton ? 1 : 0;
-    const existing = this.getLabelDefinition(label);
-    if (existing) {
-      if (existing.singleton !== want) {
-        throw new Error(
-          `"${label}" already exists as a ${existing.singleton ? 'singleton' : 'non-singleton'} label. ` +
-          'Singleton-ness is set when a label is created; changing it is a migration, not a labeling operation.'
-        );
-      }
-      return existing;
-    }
-    const now = new Date().toISOString();
-    this.db.prepare(`
-      INSERT INTO label_definitions (label, singleton, created_at, created_by, singleton_set_at, singleton_set_by)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(label, want, now, actorId, want ? now : null, want ? actorId : null);
-    return this.getLabelDefinition(label);
-  }
-
-  // The migration verb. Reports who holds the label rather than stripping
-  // anyone: nothing in this app deletes, and which holder should keep a label
-  // being promoted is not a question this can answer.
-  setLabelSingleton(label, singleton, { actorId = null } = {}) {
-    if (!label || typeof label !== 'string') throw new TypeError('label must be a non-empty string');
-    const want = singleton ? 1 : 0;
-    const now = new Date().toISOString();
-    this.db.prepare(`
-      INSERT INTO label_definitions (label, singleton, created_at, created_by, singleton_set_at, singleton_set_by)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(label) DO UPDATE SET
-        singleton = excluded.singleton,
-        singleton_set_at = excluded.singleton_set_at,
-        singleton_set_by = excluded.singleton_set_by
-    `).run(label, want, now, actorId, now, actorId);
-    return { ...this.getLabelDefinition(label), holders: this.livingHoldersOfLabel(label) };
-  }
-
-  // Every label an agent applies gets a definition, so the table answers "is
-  // this a singleton" for a label anyone has ever used rather than only for the
-  // ones somebody remembered to declare. Absent an explicit request the answer
-  // is no — a label is an ordinary group tag unless it was created as a
-  // singleton.
-  _ensureLabelDefinitions(labels, { singleton = null, actorId = null } = {}) {
-    for (const label of labels) {
-      if (singleton === null && this.getLabelDefinition(label)) continue;
-      this.defineLabel(label, { singleton: singleton === true, actorId });
-    }
-  }
-
-  mutateAgentLabels(id, operation, value, { actorId = null, timestamp = null, singleton = null } = {}) {
+  mutateAgentLabels(id, operation, value, { actorId = null, timestamp = null } = {}) {
     if (!['add', 'remove', 'replace'].includes(operation)) throw new Error('label operation must be add, remove, or replace');
-    if (singleton != null && operation === 'remove') throw new Error('singleton is a property of a label being applied; it has no meaning for remove');
     const incoming = operation === 'replace'
       ? this._normalizeCompleteLabels(value)
       : this._normalizeCompleteLabels(Array.isArray(value) ? value : [value]);
@@ -3275,12 +2969,6 @@ export class FleetStore {
       if (operation === 'add') labels = [...current, ...incoming.filter(label => !current.includes(label))];
       else if (operation === 'remove') labels = current.filter(label => !incoming.includes(label));
       else labels = incoming;
-      // Declare before the gate, inside the same transaction: an add that
-      // creates a singleton label and then loses the collision check must not
-      // leave the definition behind.
-      if (operation !== 'remove') {
-        this._ensureLabelDefinitions(incoming, { singleton, actorId: actorId || id });
-      }
       const collisions = this.checkNameAvailable(labels, { excludeId: id, asFriendlyName: false });
       if (labels.includes(id)) collisions.push({ name: id, kind: 'self_id', agent_id: id });
       if (collisions.length) throw new Error(this.labelCollisionMessage(collisions));
@@ -3834,10 +3522,6 @@ export class FleetStore {
   //      agent's label — friendly_name=X with someone else's label=X has the
   //      same fan-out problem. (When setting labels, repetition across agents
   //      is allowed; group tags are intentional.)
-  //   4. A label declared SINGLETON may not be applied while another live agent
-  //      holds it. Repetition is what rule 3 permits for ordinary labels; a
-  //      singleton label is the one that opted out of it, which is what makes a
-  //      friendly name effectively a singleton label with display semantics.
   //
   // `excludeId` is the agent the names are being assigned to; it's exempt
   // from the friendly_name and label collision checks.
@@ -3846,12 +3530,6 @@ export class FleetStore {
     const rows = this.db.prepare(
       'SELECT id, friendly_name, labels FROM agents WHERE dead = 0 AND id != ?'
     ).all(excludeId || '');
-    // Read once, and only when a label is actually being applied.
-    let singletonLabelCache = null;
-    const getSingletonLabels = () => {
-      if (!singletonLabelCache) singletonLabelCache = new Set(this.listSingletonLabels());
-      return singletonLabelCache;
-    };
     const ids = new Set();
     const nameToId = new Map();
     const labelToIds = new Map();
@@ -3922,18 +3600,6 @@ export class FleetStore {
         if (labelHolders?.length) {
           for (const id of labelHolders) collisions.push({ name, kind: 'label', agent_id: id });
         }
-      } else {
-        // The singleton half of the same namespace rule. `asFriendlyName`
-        // already rejects every label holder above, so this only has work to do
-        // when a label is being applied. `rows` excludes `excludeId`, so
-        // re-applying a singleton label you already hold is not a collision.
-        const singletonLabels = getSingletonLabels();
-        if (singletonLabels.has(name)) {
-          const labelHolders = labelToIds.get(name);
-          if (labelHolders?.length) {
-            for (const id of labelHolders) collisions.push({ name, kind: 'singleton_label', agent_id: id });
-          }
-        }
       }
     }
     return collisions;
@@ -3960,8 +3626,6 @@ export class FleetStore {
           return `"${c.name}" is this agent's own id.`;
         case 'label':
           return `"${c.name}" is already a label on agent ${c.agent_id}.`;
-        case 'singleton_label':
-          return `"${c.name}" is a singleton label and agent ${c.agent_id} holds it. If you really mean it, remove it from ${c.agent_id} first, then apply it here.`;
         default:
           return `"${c.name}" is unavailable.`;
       }

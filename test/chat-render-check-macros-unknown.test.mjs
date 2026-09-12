@@ -4,9 +4,9 @@
 // a 2s fetch timeout, an unbuilt project, a non-ok response -- also produced
 // `{}`. So "could not read your preamble" and "your preamble is empty" arrived
 // identically, and the lint chose the second wording: "you have no project
-// preamble set". An agent working in /Users/skip/work/bregman-lower-bound got
+// preamble set". An agent working in /home/user/work/example-paper got
 // that sentence while 56 macros sat in the project's artifact, made two
-// redundant configuration() calls and filed a report. Skip set his preamble
+// redundant configuration() calls and filed a report. The user set the preamble
 // twice for the same reason.
 //
 // Its own words for what it wanted instead: "a correct instrument would have

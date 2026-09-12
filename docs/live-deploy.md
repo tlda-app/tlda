@@ -1,525 +1,155 @@
 # Fly deployment
 
-Deploying is a push to the deployment repository:
+tlda's production deployment uses a guarded Git remote. Pushing a candidate to
+that remote runs validation, builds the image, deploys it, verifies the running
+revision, and only then advances the remote's `main` ref.
+
+The deployment repository is intentionally separate from this checkout. In the
+examples below, set these values for your installation:
 
 ```bash
-git push /Users/skip/work/deploy/testing HEAD:refs/heads/main
+DEPLOY_REPO=/path/to/deploy/live
+HEALTH_URL=https://live.example.invalid
+FLY_CONFIG=fly.live.toml
 ```
 
-If a push needs to abort, wait for it to finish; killing the client does not stop the server-side deploy.
-
-`/Users/skip/work/deploy/testing` deploys `fly.live.toml`, the Fly app
-`tldraw-sync-skip` at `https://tlda-fly.cormorant-matrix.ts.net`.
-
-`/Users/skip/work/deploy/stable` deploys `fly.stable.toml`, the Fly app
-`tldraw-sync-skip-stable` at `https://tlda-fly-stable.cormorant-matrix.ts.net`.
-`stable` only accepts a commit that `testing` has already deployed successfully.
-The `testing` ref is the deployment record: the stable gate reads
-`testing`'s `refs/heads/main`, requires the candidate commit to exist in that
-repository, and requires it to be an ancestor of the `testing` ref. The
-`testing/deploy-state/last-successful-sha` marker is written after Git accepts
-the ref, so it is status, not the authority for promotion.
-
-The deploy repositories reject pushes with:
-
-- conflict markers in the pushed tree;
-- server `.mjs` files that fail `node --check`.
-
-After a successful push, verify:
+Deploy a reviewed commit with:
 
 ```bash
-curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/build-info
-curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/health
-fly status -c fly.live.toml
+git push "$DEPLOY_REPO" HEAD:refs/heads/main
 ```
 
-`/api/build-info` must report the pushed `gitSha`; `/api/health` must return
-`ok` with `store: up`; Fly must show the machine as `started`.
+Do not kill a push merely because it is quiet. The server-side hook continues
+after the local client exits, so terminating the client does not cancel the
+deployment.
 
-## A rejected push does not mean nothing shipped
+## Verify the running revision
 
-The deploy runs inside the pre-receive hook, so the machine is updated **before**
-the hook decides whether to accept the ref. If its verification window expires,
-the push is rejected and the ref does not move — while the new image is already
-running.
+After a successful push, check the application surface and Fly state:
 
-Seen twice on 2026-08-17. The hook reported:
-
-```
-verify: after 240s https://tlda-fly.cormorant-matrix.ts.net is serving nothing, wanted <sha>
-push rejected: deploy did not reach the box: check whether its machine is running
+```bash
+curl -fsS "$HEALTH_URL/api/build-info"
+curl -fsS "$HEALTH_URL/api/health"
+fly status -c "$FLY_CONFIG"
 ```
 
-The box came up on that exact sha about five minutes later. The server can take
-longer than the verification window to bind its port, and during that time it is
-alive and logging — `[event-loop-lag]` lines appear — while the proxy answers
-502 with `connect: connection refused` on 5176. **An alive process that is not
-yet listening looks identical to a crash loop in the logs.**
+`/api/build-info` must report the pushed `gitSha`. `/api/health` must return
+`ok` with `store: up`. Fly must report the machine as started.
 
-So on a rejected push:
+A rejected push does not prove that the old image is still running. The hook
+deploys before it decides whether to advance the ref, so a slow startup can
+leave the application ahead of the deployment repository. Read
+`/api/build-info`, wait for the health endpoint to bind, and reconcile the ref
+if the intended revision is already serving.
 
-1. **Do not assume the old code is running.** Read `/api/build-info` and see
-   which sha the box actually serves.
-2. **Wait for the port before concluding anything.** Poll `/api/health` for
-   several minutes rather than reading the first 502 as a failed deploy.
-3. **Reconcile the ref.** If the box is serving the new sha, push again — it
-   verifies immediately and the deploy repo catches up. Leaving it is the
-   dangerous state: the box ahead of the ref means the *next* deploy from that
-   ref silently reverts what is running, which is the stale-branch failure in
-   §"`main` is assembled by cherry-pick" wearing different clothes.
-
-The frozen release-candidate interval is defined in
+The frozen release-candidate interval is described in
 [Frozen release candidate](release-candidate.md).
 
-## The front door is not in the machine being deployed
+## Keep the front door available
 
-`fly.live.toml` has two process groups. `app` carries the volume, so it has to
-stop to be redeployed — one volume means no blue/green, and `fleet.db` is on it.
-`edge` is the tailnet node and the front door, carries nothing, and the app
-deploy leaves it alone:
+`fly.live.toml` defines two process groups:
 
-```bash
-fly deploy -c fly.live.toml --process-groups app
-```
+- `app` owns the persistent volume and runs tlda;
+- `edge` owns the stable network identity and proxies connections to `app`.
 
-**That flag is the deploy.** Without it, `fly deploy` updates both groups and the
-tailnet name goes down with them, which is the thing this arrangement exists to
-stop.
-
-Behind the tailnet node, `scripts/fly-edge-proxy.mjs` is a TCP pipe that **waits**
-for the app machine instead of answering 502. While the app machine is being
-replaced a connection is held, not refused, so a browser sees one slow request
-rather than a dead page. The wait is `TLDA_EDGE_HOLD_SECONDS`; past it the
-connection is dropped with a line in `fly logs`.
-
-The measured app-machine gap on 2026-08-18 was about 60 seconds — machine stop
-03:11:45Z, serving 03:12:45Z. A cold start on this box has been measured near 90s.
-
-`TLDA_EDGE_HEALTH_PORT` answers, on its own port, the one question a `curl`
-against the tailnet name cannot: **which half is missing.** A reply at all means
-the edge machine is up; `up: true` means the app machine is answering right now.
-From outside, an absent edge and an absent app look identical, and during a
-cutover that is the only thing worth knowing.
-
-### The cutover, once
-
-The tldraw licence is bound to `*.cormorant-matrix.ts.net` and Skip has that URL
-open, so the node has to keep its identity: the edge volume holds a **copy of the
-existing `tailscaled.state`**, which makes it the same node on a different
-machine. A fresh tailscaled registers a new node, Tailscale names it
-`tlda-fly-1`, and his URL moves.
-
-**Edge goes up first, while the app machine is still running its old image and
-still holding the tailnet node.** That ordering is the whole safety property: if
-anything about the edge machine is wrong, destroying it puts things back exactly,
-and the name is never down. Deploying both groups at once is one step shorter and
-means a failed edge boot leaves him with no app at all.
-
-**0. Nothing else may be deploying.** Two `fly deploy` runs against one app race,
-and these steps bypass the `pre-receive` lock:
-
-```bash
-cat /Users/skip/work/deploy/locks/fly.live.toml.lock   # absent, or a dead pid
-```
-
-**1. Take a copy of the node state.** Copy, never move — the app machine keeps
-its own until step 5.
-
-```bash
-fly sftp get -c fly.live.toml /app/server/persist/tailscale/tailscaled.state ./tailscaled.state
-test -s tailscaled.state && echo "have $(wc -c < tailscaled.state) bytes"
-```
-
-**2. The edge volume, same region as the app.** One already exists —
-`edge_ts_state`, created 2026-08-18 during an attempt that stopped here — so
-**check before creating**, or you get a second volume and the machine mounts
-whichever Fly picks:
-
-```bash
-fly volumes list -c fly.live.toml | grep edge_ts_state
-fly volumes create edge_ts_state -c fly.live.toml -r sjc -s 1   # only if absent
-```
-
-**3. Seed it.** A throwaway machine is the only way to read or write a volume
-nothing has mounted. Run it on the image the app is running now, with an **inert
-command** — the image's default CMD is the live entrypoint, which must not run on
-a machine holding this volume:
-
-```bash
-fly machine run <current app image> -c fly.live.toml -r sjc \
-  -v edge_ts_state:/var/lib/tlda-edge --vm-memory 512 sleep 900
-```
-
-Look before writing — this is also how you learn whether an earlier attempt
-seeded it:
-
-```bash
-fly ssh console -c fly.live.toml --machine "$SEED" \
-  -C "sh -c 'wc -c /var/lib/tlda-edge/tailscale/tailscaled.state 2>&1'"
-```
-
-Then `mkdir -p /var/lib/tlda-edge/tailscale`, `fly sftp put --machine "$SEED"`
-the file to `/var/lib/tlda-edge/tailscale/tailscaled.state`, and
-`fly machine destroy "$SEED" --force` when done. Destroying the machine does not
-touch the volume. Do not use `--rm`: it removes the machine when the command
-exits, and a `sleep` that ends mid-transfer takes your file with it.
-
-**Overwrite even if a state file is already there.** A copy taken days ago is
-days of the app machine re-registering ago; if the node re-keyed since, a stale
-state boots the edge as a *new* node and the URL moves.
-
-**Check before going on:** compare the byte count **and** an `md5sum` taken on
-the volume against the local file. Same size and same digest, or stop.
-
-**Do not read the volume's snapshot sizes as evidence of what is on it.** The
-first snapshot is a baseline and the rest are deltas, and an empty ext4 on 1 GiB
-is ~33 MiB by itself — so "33 MiB then 1.4 KiB" means *formatted, barely
-written*, not *filled then emptied*. A 2.7 KB state file moves neither number.
-
-**4. Bring up the edge machine only.** The app group keeps its current image and
-its tailscaled.
-
-```bash
-fly deploy -c fly.live.toml --process-groups edge
-curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/build-info
-fly logs -c fly.live.toml --no-tail | grep '\[edge\]'
-```
-
-**Check, and this is the one that matters:** the node did not rename. If the
-hostname moved to `tlda-fly-1`, **stop** — destroy the edge machine, and the app
-machine still holds `tlda-fly`. Nothing was lost and step 1 or 3 is wrong.
-
-There is a brief window here where the app machine and the edge machine hold the
-same node key. That is why step 5 follows immediately rather than later.
-
-**5. Land the app group.** This is the deploy that deletes tailscaled from the
-app container — and the first live proof of the whole thing, because the front
-door should hold his connections across it. Watch for
-`[edge] held a connection NNNNms`: that line is the outage, absorbed.
+Deploy the application group without replacing the edge:
 
 ```bash
 fly deploy -c fly.live.toml --process-groups app
 ```
 
-**6. Make it the default.** In `/Users/skip/work/deploy/hooks/pre-receive-common.sh`,
-which is outside git:
+The edge proxy, `scripts/fly-edge-proxy.mjs`, holds a connection while the app
+machine restarts instead of immediately returning a connection error. Its wait
+window is configured by `TLDA_EDGE_HOLD_SECONDS`. The independent
+`TLDA_EDGE_HEALTH_PORT` reports whether the edge is running and whether its app
+upstream currently answers.
 
-```diff
--    fly deploy -c "$fly_config"
-+    fly deploy -c "$fly_config" --process-groups app
-```
+The edge process persists its Tailscale state on `edge_ts_state`. Preserve that
+volume across replacements; registering a fresh node can change the configured
+hostname. If the volume must be seeded, copy the current state, verify its size
+and digest after transfer, and keep the existing app process available until
+the edge has answered on the expected hostname.
 
-Not before step 5 — it buys nothing until the edge group exists. Until it lands,
-an ordinary `git push` deploys **both** groups and takes the name down, which is
-the thing this arrangement exists to stop.
+## Server and daemon changes land separately
 
-### Rolling it back
+A deployment updates the server image. Machine-local fleet daemons load code
+only when they restart. Any change spanning `server/` and `daemon/` or
+`bin/fleet-daemon.mjs` therefore has two independently verifiable halves.
 
-Before step 6, the whole cutover is undone by destroying one machine:
+For those changes:
 
-```bash
-fly machine destroy <edge-machine-id> -c fly.live.toml --force
-```
+1. deploy and verify the server revision;
+2. restart the daemons for that environment;
+3. verify the server/daemon interaction through the behavior the change was
+   intended to affect.
 
-After step 5 the app container no longer runs tailscaled. Roll back in this
-order: copy the edge's current `tailscaled.state` back to the app's persisted
-Tailscale path, destroy the edge machine, then redeploy the app group from a
-`main` without these commits. Do not redeploy the old app while the edge still
-holds `tlda-fly`, or the returning app node can be renamed.
+A deployed SHA is not proof that a long-running daemon loaded the same code.
 
-### What the move costs
+## A push replaces the running revision
 
-`server/lib/tailscale-peers.mjs` shells out to `tailscale status --json` in the
-app container to stamp a chat sender's machine name onto message metadata. There
-is no tailscaled in that container any more, so the lookup returns null and the
-stamp is omitted. It is omitted, never guessed wrong — that module is
-fail-visible by construction. Closing it means either the edge publishing its
-peer map or the app machine holding a tailnet node of its own without `serve`.
-
-## A daemon/server change has no atomic landing
-
-A deploy ships the server. It does not ship the daemons that talk to it.
-
-The server half of a change arrives when the image boots. The daemon half
-arrives only when a daemon restarts from the shared checkout — which happens on
-its own schedule, or not for hours. So a change that spans both lands in two
-parts, in an order nobody chooses, and there is a window in which one side has it
-and the other does not.
-
-Both directions have shipped and both were reported as something else:
-
-- A daemon running code older than the server, whose reading of a file was
-  correct about a path that no longer ran.
-- A daemon running code newer than the server, whose new gate waited 120s for a
-  reply the server had no handler to send — turning a link that used to succeed
-  into a timeout.
-
-So when a change touches `daemon/` or `bin/fleet-daemon.mjs` as well as the
-server, restarting the daemons for that environment is part of the deploy rather
-than a follow-up. Otherwise the server has the new behaviour, the daemon never
-invokes it, and the pair reads as working while being half-live.
-
-The check is the same shape as verifying `/api/build-info` reports the pushed
-sha: **a deployed sha is not a loaded module.** Ask what each side is actually
-running, not what was pushed.
-
-## What you push replaces what the daemon is running, so it must contain it
-
-`post-receive` on the deploy repo does not only ship the server. It fetches the
-deployed sha into the daemon's checkout, `reset --hard`s that checkout to it, and
-`launchctl kickstart -k`s the daemon. So **the daemon tracks the deployed sha, not
-`main`** — it cannot be left behind it and cannot be left ahead of it.
-
-That makes a push a replacement rather than an addition. **If the sha you push does
-not contain what the server and daemon are running now, the push removes it** — no
-one chooses that, and nothing reports it.
-
-**It fires on any accepted push, not only a push of `main`.** A hotfix, an unrelated
-branch or a revert moves the daemon off its current sha just as completely.
-
-**Check before pushing, not after:**
-
-```sh
-# what the server is running now
-curl -s -H "Authorization: Bearer $TOKEN" "$SERVER/api/build-info"   # -> gitSha
-
-# every commit live on that sha that the sha you are about to push does NOT contain
-git cherry <sha-you-are-pushing> <deployed-gitSha>   # any "+" line is work the push deletes
-```
-
-`git cherry` rather than `git merge-base --is-ancestor`: `main` here is assembled by
-cherry-pick, so the deployed sha is a copy and ancestry reports "missing" for work that
-is fully present. `git cherry` compares patches and marks a landed copy `-`.
-
-**A "+" line is not a merge conflict to resolve later. It is code that is running in
-production and will stop running the moment the push is accepted.**
-
-Measured instance, 2026-08-18: the server reported `gitSha fb985dd4`, which was not an
-ancestor of this repo's `main`, and `main` was missing **all 29** of its commits —
-including two fixes to the daemon's outbox ack path that existed nowhere else. Deploying
-`main` at that moment would have reverted the running server and daemon by 29 commits
-and reintroduced the outage that had been diagnosed hours earlier. The 29 were landed
-onto `main` first; `git cherry main fb985dd4` then reported all 29 as `-`.
-
-## Rollback
-
-To deploy a known-good sha directly:
+The guarded remote updates the daemon checkout to the deployed SHA. Before
+pushing, check whether the candidate would remove patches present in the
+running revision:
 
 ```bash
-git clone git@github.com:tlda-app/tlda.git /Users/skip/worktrees/live-rollback-<sha>
-cd /Users/skip/worktrees/live-rollback-<sha>
+RUNNING_SHA=$(curl -fsS "$HEALTH_URL/api/build-info" | jq -r .gitSha)
+git cherry HEAD "$RUNNING_SHA"
+```
+
+Because this repository can carry cherry-picked equivalents, use `git cherry`
+rather than ancestry alone. Any `+` row is a patch that the candidate does not
+contain; resolve it before deploying.
+
+## Roll back through the same path
+
+Build and deploy a known-good revision through the guarded remote rather than
+creating build artifacts by hand:
+
+```bash
+rollback_dir=$(mktemp -d)
+git clone git@github.com:tlda-app/tlda.git "$rollback_dir/tlda"
+cd "$rollback_dir/tlda"
 git checkout <known-good-sha>
-npm ci
-node scripts/live-deploy.mjs --fly-config fly.live.toml
+git push "$DEPLOY_REPO" HEAD:refs/heads/main
 ```
 
-## A deploy takes the daemons offline for about ninety seconds
+The guarded path supplies generated inputs consumed by `Dockerfile.live`,
+including `server/build-info.json` and `dist/`. A bare `fly deploy` from a
+clean checkout lacks those files. Hand-writing them bypasses the revision and
+build checks and can ship a stale client.
 
-Every app restart drops the fleet daemon's WebSocket. It reconnects with
-exponential backoff, and while it is away the machine-local half of the system
-is simply not there: mirrors are not accepted, source changes are not
-acknowledged, terminals and sessions are unreachable.
+## Provision another guarded remote
 
-Measured on 2026-08-17 in `~/.config/tlda/fleet-daemon.testing.log`: **1919
-`Unexpected server response: 502` in 33 bursts**, each 7–9 reconnect attempts
-spanning 60–120 seconds. The bursts land one per deploy. One ran nine minutes
-(16:37–16:47Z), which is the window Skip's browser showed him `HTTP ERROR 502`.
+Seed a local bare repository so the first push does not transfer the entire
+history:
 
-Three consequences worth knowing before you push:
-
-- **A build started just after a deploy will fail, and the failure will describe
-  the wrong thing.** Its mirror lands in the disconnected window and reports
-  that no daemon accepted it. That is the deploy, not the mirror.
-- **Outbound source sync can be left blocked rather than merely delayed.**
-  `daemon/source-sync.mjs` rebases a `stale-base` rejection once and blocks the
-  project on the second failure. A reconnect storm plus a moving server head
-  reaches the second failure easily, and a person's edit then sits on disk
-  unaccepted until something clears the block.
-- **Deploying repeatedly to chase a bug can be what keeps reproducing it.** On
-  2026-08-17 the fleet deployed 33 times into a paper that was being edited, and
-  several of the build failures under investigation were caused by the
-  investigation's own deploys.
-
-So: **do not deploy while Skip is working in a document**, and when a build fails
-within two minutes of a push, re-run it in a quiet window before believing what
-it said. Neither of these is a rule about deploying less. They are about not
-reading your own outage as the app's behaviour.
-
-**The daemon log will not tell you this if you grep it by time.** `ResilientWS`
-writes its connection errors through a bare `console.log`, so those lines carry
-**no timestamp** while every other line in the file does. A grep anchored on a
-timestamp — the obvious way to search a log — silently excludes exactly the lines
-naming the error, and leaves you reading `reason: "error"` with no cause attached.
-
-## The hook cleans up its checkout, and the hook is not in this repository
-
-Each deploy builds in a fresh checkout at
-`${TMPDIR:-/tmp}/tlda-<repo>-deploy.XXXXXX`, several GB with `node_modules`.
-**It used to leave every one of them behind.** Seventy had accumulated by
-2026-08-18, on a volume that reached **100% with 179 MiB free** — found when
-`git commit` printed `No space left on device` while still succeeding.
-
-That is not housekeeping. **A deploy that hits ENOSPC mid-build is the trigger
-for a project's sync pinning permanently**, so the release path was one push away
-from causing the failure it exists to ship fixes for.
-
-There *was* a cleanup trap. It never fired: the build runs inside a `{ … } 2>&1 |
-tee "$log"` block, the pipe makes that a subshell, and an `EXIT` trap registered
-there does not remove the directory. Reproducing the exact structure leaked on
-the **successful** path, the failed path and the killed path alike — so this was
-losing a checkout on every deploy, not only on abnormal ones.
-
-Now the checkout is created in the hook's own shell and removed after the block,
-where `work` is actually in scope; and each run first sweeps sibling
-`tlda-<repo>-deploy.*` directories, keeping its own, which is what recovers a run
-that was killed before it got there. The keep-check is by **basename**: a
-trailing slash on `TMPDIR` makes `find` emit `/tmp//tlda-…`, and a `-path`
-comparison would then fail to match and delete the checkout the deploy is about
-to use.
-
-**The hook lives in `~/work/deploy/_utils/pre-receive-common.sh`, outside git.**
-So none of this is in any commit, `git log` will never show it, and a search of
-this tree for the fix will find only this paragraph. Editing it changes the
-release path for the next push with no review and no rollback but a backup —
-treat it accordingly.
-
-## Which boxes have a guarded remote
-
-As of 2026-09-03 there are five, under `~/work/deploy/`: `testing`
-(`fly.live.toml`), `stable`, `pic`, and — added that day — `pic-dev` and
-`pic-preview`. Each is a bare repository whose `hooks/pre-receive` is a
-six-line wrapper that exports `DEPLOY_REPO_NAME`, `DEPLOY_FLY_CONFIG`,
-`DEPLOY_HEALTH_URL` and `DEPLOY_ROOT`, then `exec`s the shared
-`hooks/pre-receive-common.sh`. Adding a box is that file and nothing else.
-
-**`DEPLOY_HEALTH_URL` must be probed before it is written down.**
-`verify_serving` fails closed on a URL that does not answer, so a wrong one
-does not degrade the deploy, it blocks every deploy to that box. Check
-`curl -fsS "$URL/api/build-info"` returns JSON first.
-
-### Two ways a new deploy remote is born broken
-
-Both were hit creating `pic-dev` and `pic-preview`, and neither announces
-itself — the first looks like a hang, the second looks like success.
-
-**An empty bare repository makes the first push transfer the entire history**,
-and the hook does not run until the pack has arrived. Three attempts timed out
-at two and three minutes with no output. Seed it instead:
-
-```sh
-git clone --bare --local ~/work/tlda ~/work/deploy/<box>   # hardlinked, instant
+```bash
+git clone --bare --local /path/to/tlda /path/to/deploy/<environment>
+git --git-dir=/path/to/deploy/<environment> for-each-ref \
+  --format='delete %(refname)' \
+  | git --git-dir=/path/to/deploy/<environment> update-ref --stdin
+git --git-dir=/path/to/deploy/<environment> \
+  update-ref refs/deploy/base <recent-main-sha>
 ```
 
-**With no refs at all, `git push` has nothing to negotiate against and repacks
-all ~11,000 commits on every push.** That is why each repository keeps a
-`refs/deploy/base` pointing at a recent `main` commit. It is a negotiation base
-and nothing else reads it. **Do not tidy it away** — deleting it reintroduces
-the multi-minute push.
+Leave `refs/heads/main` absent until the first real deployment. Otherwise the
+first push may report `Everything up-to-date` without running the hook.
 
-**`refs/heads/main` must be absent until the first real deploy.** Seed the
-objects, then delete every ref the clone brought over:
+The remote's `hooks/pre-receive` should provide its deployment name, Fly
+configuration, health URL, and root directory to the shared guarded-deploy
+hook. Probe the health URL before installing it: a bad URL correctly blocks
+every deployment rather than silently weakening verification.
 
-```sh
-git --git-dir=<repo> for-each-ref --format='delete %(refname)' \
-  | git --git-dir=<repo> update-ref --stdin
-git --git-dir=<repo> update-ref refs/deploy/base <a recent main sha>
-```
+Verify hook wiring without building by pushing a non-`main` ref and confirming
+that the hook rejects it as non-deployable.
 
-If `refs/heads/main` is left at the current tip, the first `git push … main`
-reports **`Everything up-to-date`**, the pre-receive hook never runs, and
-nothing is built or deployed. **That is a deploy remote that silently does
-nothing** — the exact failure this whole path exists to remove, wearing the
-costume of a successful push.
+## Operational rules
 
-### A push prints nothing for its first several minutes
-
-`check_ref` runs `node --check` over every server `.mjs`, the server-import
-check and the conflict-marker scans **before** the deploy lock is taken — and
-`deploy-logs/` is not written until after it. So there is a stretch at the
-start of every push with **no log file to tail and no output on the push**.
-
-The hook's own comment claimed *"about a minute on a warm checkout. Measured at
-62s."* **Measured 2026-09-03 on `pic-preview` at load average ~20 on 10 cores:
-about nine minutes.** Both are real — the box was busier for the second — which
-is why any figure here has to carry the load it was taken at.
-
-**This is worth knowing before you push, not after.** Nine silent minutes reads
-as a hang at exactly the point where the hook is doing its most valuable work,
-and a person who concludes that either kills a good deploy or goes around it.
-Going around it is what this whole path exists to prevent.
-
-(The comment in `pre-receive-common.sh` has been corrected, but that file is
-outside git — see below — so this is the copy that survives.)
-
-**Verifying a new remote costs no build.** Push a non-`main` ref: `check_ref`
-rejects it before `npm ci`, which proves the hook is wired, executable and
-reached.
-
-```
-$ git push ~/work/deploy/pic-preview <sha>:refs/heads/wiring-probe
-remote: push rejected: only refs/heads/main is deployable, got refs/heads/wiring-probe
-```
-
-## A bare `fly deploy` from a fresh checkout fails under two different names
-
-`Dockerfile.live` copies two things **the guarded path is the only producer of**:
-
-| line | copies | written by |
-|---|---|---|
-| `261` | `server/build-info.json` | the hook's stamp, or `live-deploy-preflight.mjs` |
-| `319` | `dist/` | `npm run build` (`tsc -b && vite build`) |
-
-Both are gitignored, so **a fresh worktree has neither**, and the image build
-cannot start. Measured 2026-09-03 with `fly deploy --build-only` from a clean
-detached worktree at `4490e53ac`: **exit 1**, with *both* COPY steps failing —
-
-```
-#26 [22/39] COPY server/build-info.json ./server/build-info.json
-#26 ERROR: ... "/server/build-info.json": not found
-#39 [35/39] COPY dist/ ./dist/
-#39 ERROR: ... "/dist": not found
-```
-
-**The single top-level `Error:` line named `/dist`.** On an earlier occasion
-the same fault, on the same Dockerfile, surfaced as
-`"/server/build-info.json": not found`.
-
-**BuildKit is a DAG, not a script.** It schedules both COPY steps in parallel
-and reports whichever resolves last, so **the error wording is not stable
-across runs** even though the fault is identical. Two consequences, and the
-second is the expensive one:
-
-- **Someone who hits this twice will reasonably believe they have two
-  different problems**, and will go looking for a missing `dist` on one day and
-  a missing stamp on the next.
-- **Neither wording names the cause.** The true statement is *nothing built the
-  products this image consumes*, and no error says it. What both actually mean
-  is **you are deploying from outside the guarded path.**
-
-**Do not "fix" this by generating the stamp unconditionally.** Until
-`fly.toml` was deleted, this loud failure was the only thing standing between a
-bare `fly deploy` and silently shipping a stale client — the `dist/` in the
-context would simply have been whatever was last built there, which is how a
-client 35 commits behind reached a live box. **The trap is the last thing
-standing between a bare `fly deploy` and shipping a stale client, and it should
-stay until something else refuses first. With `fly.toml` deleted, something
-else now does.**
-
-## A guarded remote does not stop anyone going around it
-
-On 2026-09-03 `tlda-pic` — the student-facing box, which **had** a working
-guarded remote — was deployed by hand instead: `server/build-info.json` was
-written by hand to get past the Docker build failing on that gitignored file,
-then `fly deploy --process-groups app` was run directly. The box served a build
-whose stamp no build step produced.
-
-It was identifiable only because the hand-written stamp carried **six**
-fractional-second digits (`datetime.isoformat()`) where the hook's generator
-emits **three** (`new Date().toISOString()`), and because `pic/deploy-logs` had
-nothing since `2bee45d53` that morning.
-
-**So the reason to bypass is a build error, and the bypass is always available
-when a config sits in the root.** Deleting `fly.toml` removed the unflagged
-version of it. It did not remove the motive, and no mechanism in this document
-does. If you are hand-writing a build artifact to get a deploy through, that is
-the signal to fix the build, not the deploy.
+- Serialize deployments to the same Fly application.
+- Treat a quiet push as active until the remote reports otherwise.
+- Verify the browser-facing health and build-info endpoints after every deploy.
+- Keep generated build inputs under the guarded path.
+- Reconcile the deployment ref with the revision actually serving.
+- Do not deploy repeatedly while diagnosing an outage; each restart temporarily
+  removes the machine-local daemon path and can reproduce the symptom under
+  investigation.

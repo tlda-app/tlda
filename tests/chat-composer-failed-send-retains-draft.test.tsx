@@ -8,7 +8,7 @@ test('fleet chat returns the transport settlement to the shared composer', () =>
   const end = source.indexOf('\n\n  const composerCommand', start)
   const composerSend = source.slice(start, end)
   assert.ok(start >= 0 && end > start)
-  assert.match(composerSend, /const settlement = \(async \(\) => \{[\s\S]*return \{ accepted: true as const, settlement \}/)
+  assert.match(composerSend, /return \(async \(\) => \{[\s\S]*return sendWithFailedRetry/)
 })
 
 test('failed chat send leaves the exact composer text and durable draft intact', async () => {
@@ -71,44 +71,14 @@ test('failed chat send leaves the exact composer text and durable draft intact',
   textarea.value = 'exact dictated text'
   await act(async () => textarea.dispatchEvent(new dom.window.Event('input', { bubbles: true })))
   textarea.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  textarea.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
   assert.equal(sendCount, 1, 'pending send must not be submitted twice')
-  assert.equal(textarea.value, 'exact dictated text', 'a legacy promise sender retains its field until settlement')
+  assert.equal(textarea.value, 'exact dictated text', 'pending send must not erase the field')
   await act(async () => { rejectSend(false); await sendResult })
   assert.equal(textarea.value, 'exact dictated text', 'failed send must leave the field intact')
   await new Promise(resolve => setTimeout(resolve, 350))
   const drafts = JSON.parse(localStorage.getItem('tlda-chat-drafts') || '{}')
   assert.equal(drafts['chat:test']?.text, 'exact dictated text', 'failed text must survive reload')
-
-  let settleDispatched!: (value: boolean) => void
-  const dispatchedSettlement = new Promise<boolean>(resolve => { settleDispatched = resolve })
-  await act(async () => root.render(createElement(ChatComposer, {
-    key: 'dispatched', sendTargets: ['fleet:recipient'], agentNames: {}, draftKey: 'chat:dispatched',
-    onSend: () => ({ accepted: true as const, settlement: dispatchedSettlement }),
-  })))
-  const dispatchedTextarea = document.querySelector('textarea')!
-  dispatchedTextarea.value = 'submitted dictated text'
-  await act(async () => dispatchedTextarea.dispatchEvent(new dom.window.Event('input', { bubbles: true })))
-  dispatchedTextarea.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-  assert.equal(dispatchedTextarea.value, '', 'accepted dispatch clears without waiting for transport settlement')
-  dispatchedTextarea.value = 'continued voice composition'
-  await act(async () => dispatchedTextarea.dispatchEvent(new dom.window.Event('input', { bubbles: true })))
-  await act(async () => { settleDispatched(true); await dispatchedSettlement })
-  assert.equal(dispatchedTextarea.value, 'continued voice composition', 'delayed success preserves continued composition')
-
-  let failDispatched!: (value: boolean) => void
-  const failedDispatchSettlement = new Promise<boolean>(resolve => { failDispatched = resolve })
-  await act(async () => root.render(createElement(ChatComposer, {
-    key: 'failed-dispatch', sendTargets: ['fleet:recipient'], agentNames: {}, draftKey: 'chat:failed-dispatch',
-    onSend: () => ({ accepted: true as const, settlement: failedDispatchSettlement }),
-  })))
-  const failedDispatchTextarea = document.querySelector('textarea')!
-  failedDispatchTextarea.value = 'failed submitted bytes'
-  await act(async () => failedDispatchTextarea.dispatchEvent(new dom.window.Event('input', { bubbles: true })))
-  failedDispatchTextarea.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-  failedDispatchTextarea.value = 'newer dictated bytes'
-  await act(async () => failedDispatchTextarea.dispatchEvent(new dom.window.Event('input', { bubbles: true })))
-  await act(async () => { failDispatched(false); await failedDispatchSettlement })
-  assert.equal(failedDispatchTextarea.value, 'failed submitted bytes\nnewer dictated bytes', 'failed dispatch restores submitted bytes without eating newer voice text')
 
   let acceptOldSend!: (value: boolean) => void
   const oldSendResult = new Promise<boolean>(resolve => { acceptOldSend = resolve })

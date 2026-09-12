@@ -103,17 +103,63 @@ profiles:
     write: { allow: [machine], deny: [] }
 grants:
   localhost: ops
-models: {}
+models:
+  default: terra
+  values:
+    terra:
+      id: gpt-5.6-terra
+      harness:
+        kind: codex
+        required: []
+        preferences:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        controls: true
+      group: codex
+      level: 4
+      description: Codex Terra
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
 default: ops
 EOF
+fi
+
+# Upgrade friend volumes created by the earlier image, whose generated config
+# had no spawnable model. This exact replacement leaves user-edited configs alone.
+if grep -qx 'models: {}' /root/.config/tlda/daemon.yaml; then
+  sed -i '/^models: {}$/c\models:\
+  default: terra\
+  values:\
+    terra:\
+      id: gpt-5.6-terra\
+      harness:\
+        kind: codex\
+        required: []\
+        preferences:\
+          - "--dangerously-bypass-approvals-and-sandbox"\
+        controls: true\
+      group: codex\
+      level: 4\
+      description: Codex Terra\
+      options:\
+        effort:\
+          default: medium\
+          values:\
+            low: {}\
+            medium: {}\
+            high: {}' /root/.config/tlda/daemon.yaml
 fi
 
 # Put the friend paper where an agent expects to work: a real git checkout in
 # ~/work/<project>, watched by this daemon. This mirrors a normal user machine:
 # agents start in the project repo, not an empty container directory.
 if [ -n "$PROJECT_DIR" ]; then
-  node -e 'const fs=require("fs"); const file=process.argv[1]; const project=process.argv[2]; const dir=process.argv[3]; let cfg={}; try { cfg=JSON.parse(fs.readFileSync(file,"utf8")) || {}; } catch {} if (cfg[project] !== dir) { cfg[project] = dir; fs.mkdirSync(require("path").dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(cfg, null, 2)); }' \
-    /root/.config/tlda/source-bindings.json "${PROJECT_NAME:-project}" "$PROJECT_DIR"
+  node -e 'const fs=require("fs"); const file=process.argv[1]; const project=process.argv[2]; const dir=process.argv[3]; const pollSeconds=Math.max(15, Number(process.argv[4]) || 60); let cfg={}; try { cfg=JSON.parse(fs.readFileSync(file,"utf8")) || {}; } catch {} const prior=cfg[project]; if (!prior || typeof prior === "string" || prior.sourceDir !== dir || !prior.bindingId || prior.pollSeconds !== pollSeconds) { cfg[project] = { ...(prior && typeof prior === "object" ? prior : {}), sourceDir: dir, bindingId: `${project}-friend`, pollSeconds }; fs.mkdirSync(require("path").dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(cfg, null, 2)); }' \
+    /root/.config/tlda/source-bindings.json "${PROJECT_NAME:-project}" "$PROJECT_DIR" "${TLDA_FRIEND_POLL_SECONDS:-60}"
 
   FRIEND_REMOTE="${TLDA_FRIEND_GIT_REMOTE:-}"
   if [ -z "$FRIEND_REMOTE" ] && [ -n "${TLDA_FRIEND_GIT_URL}" ]; then

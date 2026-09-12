@@ -5,7 +5,7 @@
 // the request above it: "Keyterm limit exceeded. The maximum number of tokens
 // across all keyterms is 500." We do not have their tokenizer, so estimate high
 // and sit under the ceiling — undercounting costs a refused connection, which
-// takes Skip's microphone down.
+// takes the microphone down.
 export const KEYTERM_TOKEN_BUDGET = 400
 
 // Deliberately pessimistic: a rare proper noun splits into more subword tokens
@@ -22,7 +22,7 @@ export function estimateKeytermTokens(term) {
  * math/paper vocabulary).
  *
  * The base vocabulary is kept whole and is exempt from the budget check: it is
- * load-bearing for the writing Skip actually does, and dropping "Bregman" to
+ * load-bearing for the configured writing vocabulary, and dropping "Bregman" to
  * make room for an agent minted five minutes ago would be a bad trade. Roster
  * names fill whatever remains, in order, and the overflow is returned so the
  * caller can log the truncation rather than silently shortening the roster.

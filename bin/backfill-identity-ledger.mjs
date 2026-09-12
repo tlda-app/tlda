@@ -18,7 +18,7 @@ const DRY_RUN = process.argv.includes('--dry-run');
 const PROJECTS_BASE = join(homedir(), '.claude', 'projects');
 
 // Convert project dir name back to cwd path
-// e.g. "-Users-skip-work-tlda" → "/Users/skip/work/tlda"
+// e.g. "-home-user-work-project" → "/home/user/work/project"
 function dirToCwd(dirName) {
   if (!dirName || dirName === '-') return null;
   // Replace leading - and all - with /

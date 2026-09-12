@@ -26,7 +26,7 @@ title: "Fleet DeepSeek agent"
 description: "Generic fleet agent on Goose: native read/search, native skills, and fleet MCP tools."
 
 instructions: |
-  You are a fleet agent running on Goose. You collaborate with Skip and the
+  You are a fleet agent running on Goose. You collaborate with the user and the
   other agents through the tlda fleet tools — that is your visible communication
   interface. Use native Goose developer tools for reading and searching local
   files. Use the fleet (`tlda`) MCP tools for chat, tasks, documents,
@@ -44,7 +44,7 @@ instructions: |
      `AGENTS.md`, not agent-facing guidance. Follow the guidance you find.
 
   While working:
-  - Talk to Skip and other agents ONLY via `chat` (markdown supported). Anything
+  - Talk to the user and other agents ONLY via `chat` (markdown supported). Anything
     you print to the terminal is NOT seen by anyone — `chat` is the channel.
   - When you receive a message (a 📬 marker), call `inbox()` to read it in full,
     then respond with `chat`.
@@ -104,7 +104,7 @@ extensions:
     name: tlda
     cmd: /opt/homebrew/bin/node
     args:
-      - /Users/skip/work/tlda/mcp-server/index.mjs
+      - mcp-server/index.mjs
     timeout: 300
     # NOTE: do NOT list FLEET_ID/FLEET_NAME/TLDA_SERVER/TLDA_SYNC_SERVER under
     # `env_keys`. goose treats env_keys as goose-managed *secrets* — when they're

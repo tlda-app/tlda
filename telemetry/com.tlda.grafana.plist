@@ -6,17 +6,17 @@
   <string>com.tlda.grafana</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/skip/work/tlda/telemetry/grafana-launch.sh</string>
+    <string>/Users/you/work/tlda/telemetry/grafana-launch.sh</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/skip/work/tlda</string>
+  <string>/Users/you/work/tlda</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/Users/skip/.config/tlda/grafana-launchd.log</string>
+  <string>/Users/you/.config/tlda/grafana-launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/skip/.config/tlda/grafana-launchd.log</string>
+  <string>/Users/you/.config/tlda/grafana-launchd.log</string>
 </dict>
 </plist>

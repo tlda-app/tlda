@@ -28,7 +28,7 @@ process.env.TLDA_DAEMON_CONFIG_DIR = configDir
 process.env.TLDA_ENV = 'stable'
 
 writeFileSync(join(configDir, 'server.yaml'), '')
-writeFileSync(join(configDir, 'daemon.yaml'), `machineId: mini
+writeFileSync(join(configDir, 'daemon.yaml'), `machineId: testbox
 environments:
   default: stable
   values:
@@ -73,7 +73,7 @@ await runFleetSpawn([
   '--model', 'bot',
   '--kind', 'bot',
   '--cwd', configDir,
-  '--bot-script', '/Users/skip/work/tlda-bots/dev/dev-bot.mjs',
+  '--bot-script', '/opt/tlda-bots/dev/dev-bot.mjs',
   '--bot-name', 'dev',
   '--bot-env', JSON.stringify(DECLARED),
 ], {

@@ -134,9 +134,7 @@ curl -fsS https://<host>/api/voice/backends
 
 A configured server includes `{"value":"deepgram-sdk","label":"Deepgram"}` in
 the returned `backends` array, and the Settings voice-backend selector includes
-Deepgram. Without the secret, that option is absent. On 2026-07-27 this check
-passed on both project Fly environments; an end-to-end transcription was not
-performed as part of this documentation audit.
+Deepgram. Without the secret, that option is absent.
 
 ### LiveKit
 
@@ -162,9 +160,7 @@ curl -fsS https://<host>/api/livekit/config
 
 Success is `{"configured":true,"url":"wss://..."}`. Missing configuration
 returns `{"configured":false,...}`, and the room controls cannot obtain a join
-token. On 2026-07-27 configuration and token issuance were checked on both
-project Fly environments; a two-participant media call was not performed as
-part of this documentation audit.
+token.
 
 ## Multi-machine rule
 

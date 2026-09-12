@@ -1,13 +1,11 @@
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
-import { proposalRef } from '../shared/history-seed-ref.mjs'
 
-const defaultExecFile = promisify(execFileCb)
+const execFile = promisify(execFileCb)
 
-export function createRemoteGitBridge({ sourceDir, remote = 'origin', branch = 'main', mode = 'branch', project = null, daemonId = null, onRemoteSettled, onPublishFailed = async () => {}, execFile = defaultExecFile, log = console } = {}) {
+export function createRemoteGitBridge({ sourceDir, remote = 'origin', branch = 'main', onRemoteSettled, log = console } = {}) {
   if (!sourceDir || typeof onRemoteSettled !== 'function') throw new Error('sourceDir and onRemoteSettled are required')
-  if (mode === 'tlda-project' && (!project || !daemonId)) throw new Error('tlda-project remote bridge requires project and daemonId')
   const observedRef = 'refs/tlda/remote/observed'
   const publishedRef = 'refs/tlda/remote/published'
   let operation = Promise.resolve()
@@ -43,25 +41,6 @@ export function createRemoteGitBridge({ sourceDir, remote = 'origin', branch = '
   }
 
   async function publishOnce(revision) {
-    if (mode === 'tlda-project') {
-      const ref = proposalRef({ daemonId, branch, revision })
-      try {
-        const existing = (await git(['ls-remote', '--refs', remote, ref])).stdout.trim().split(/\s+/)[0] || null
-        if (existing) {
-          if (existing !== revision) throw new Error(`remote proposal ${ref} does not identify ${revision}`)
-          return { ok: true, status: 'proposal-present', revision, ref }
-        }
-        const pushed = await git(['push', remote, `${revision}:${ref}`])
-        const output = `${pushed.stdout || ''}\n${pushed.stderr || ''}`
-        if (!output.includes(`SubmittedToBuildQueue ${revision}`)) {
-          throw new Error(`remote did not return a proposal-acceptance receipt for ${revision}: ${output.trim() || 'no response'}`)
-        }
-        return { ok: true, status: 'proposal-accepted', revision, ref }
-      } catch (error) {
-        await onPublishFailed({ project, revision, remote, branch, error })
-        throw error
-      }
-    }
     try {
       await git(['fetch', '--no-tags', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`])
     } catch (error) {
@@ -73,12 +52,7 @@ export function createRemoteGitBridge({ sourceDir, remote = 'origin', branch = '
       await createGitRemotes({ sourceDir }).push(remote, branch, revision)
     } catch (error) {
       log.warn?.(`remote push rejected; fetching and merging: ${error.message}`)
-      const result = await pollOnce()
-      if (!result?.revision) {
-        await onPublishFailed({ project, revision, remote, branch, error })
-        throw error
-      }
-      return result
+      return pollOnce()
     }
     const previous = await rev(publishedRef)
     await git(['update-ref', publishedRef, revision, previous || '0000000000000000000000000000000000000000'])

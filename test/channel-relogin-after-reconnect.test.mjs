@@ -29,8 +29,8 @@ const AGENT = 'fleet:relogin-proof'
 // and `project` follow the agent's working directory, and `detectedTmux` is an
 // `execSync` with a 3s timeout that answers null when it loses the race.
 const ROUTE = [
-  { cwd: '/Users/skip/work/tlda', tmux_session: 'fleet-relogin' },
-  { cwd: '/Users/skip/worktrees/moved', tmux_session: 'fleet-relogin' },
+  { cwd: '/home/user/work/tlda', tmux_session: 'fleet-relogin' },
+  { cwd: '/home/user/worktrees/moved', tmux_session: 'fleet-relogin' },
 ]
 
 async function until(pred, ms = 5000) {
@@ -154,7 +154,7 @@ test('identical route facts still coalesce rather than duplicating the login', a
     sendEphemeral: () => assert.fail('ephemeral send not expected'),
     sendDurable: (_type, params) => { sent.push(params); return Promise.resolve({ ok: true, queued: true }) },
   })
-  const body = { agent_id: AGENT, cwd: '/Users/skip/work/tlda' }
+  const body = { agent_id: AGENT, cwd: '/home/user/work/tlda' }
   const key = channelLoginCoalesceKey(AGENT, body)
 
   await Promise.all([

@@ -13,13 +13,13 @@ Line references are `server/lib/fleet-store.mjs` unless stated otherwise.
 
 ## Part 1 — The intended model
 
-Three statements, in Skip's words. This is the design.
+Three statements define the design.
 
 **One namespace.**
 
-> Friendly names are labels with a unique living occupant. So friendly names and
-> other labels share a namespace — the only distinction is that only one living
-> agent may occupy a friendly name.
+Friendly names are labels with a unique living occupant. Friendly names and
+other labels share a namespace; only one living agent may occupy a friendly
+name.
 
 A friendly name, an ordinary label, a reserved routing word, an agent id and
 `human` are all entries in one space of tokens. A filter expression cannot tell
@@ -29,16 +29,10 @@ a separate category.
 
 **Status is a label too.**
 
-> in a sense, status is just a fucking label too.
-
 `awake`, `hibernating`, `dead`, `here`, `away` are a more granular form of the
 same thing, not a second concept living beside labels.
 
 **Labeling is recorded as events; labels are computed.**
-
-> I was not thinking that labels should be recorded historically. I was thinking
-> that labeling *events* should be recorded historically. And then labels should
-> be computed.
 
 The events are the record. Everything else — the current set, the history — is a
 fold over them. A table holding folded results is a cache.
@@ -90,7 +84,7 @@ the one comparison that would perpetuate a divergence rather than repair it.
 table is the only record that a name was ever held. Two triggers on the column
 maintain it (`:1188-1204`): insert opens a span; any change to `friendly_name`
 closes the open span and opens a new one. Because they are triggers, no write
-path can skip them — the rename route, lineage rotation, the worker and external
+path can bypass them — the rename route, lineage rotation, the worker and external
 sweep scripts all pass through `agents`.
 
 It also has writers that bypass the column entirely: `_backfillNameHistory`,
@@ -127,16 +121,15 @@ the **liveness edge**, not on `dead`. An agent that slept six hours is recorded 
 `hibernating` across them. **The live and historical paths agree on runtime
 status, and the lexical property holds.**
 
-Skip's question — *"hibernation, like, waking? Is not an event. That's
-surprising."* — has a precise answer: hibernating **is** recorded, but **not as an
-event**. It is written straight to a span.
+Hibernating **is** recorded, but **not as an event**. It is written straight to
+a span.
 
 ### One of three is a fold; two are shadows
 
 That is the distance between the model and the system, and it is the answer to
 "why does this feel half-and-half." Labels go event → fold. Names and status are
 written directly. **Both are correct today. Neither is a defect.** But only labels
-have the property Skip specified, and anyone unifying these needs to know which
+have the intended event-sourced property, and anyone unifying these needs to know which
 is which before starting.
 
 What realizing status-as-events would actually cost, so nobody reads this as an
@@ -146,13 +139,7 @@ write that decision down. Today that decision lives in the liveness tracker and
 goes straight to a span. Turning it into a log means giving the tracker an event
 writer and folding it back.
 
-And it is not urgent, which Skip has settled:
-
-> we don't have to be perfectly accurate in terms of history, but we can do the
-> backfill really easily.
-
-One human, effectively always here. The historical gap is cheap to repair if it
-ever matters.
+The historical gap is cheap to repair with a backfill if it ever matters.
 
 ### Why `dead` is still a column
 
@@ -207,20 +194,11 @@ it from a missing route.
 A historical label filter joins `label_history` spans and requires the agent to
 have held the label **at the event's timestamp**, not now.
 
-> this is a question of lexical versus dynamic scope. And no one likes
-> dynamically scoped variables. It just makes code impossible to reason about. It
-> makes history impossible to reason about. So the current label behaviour is
-> right.
-
 Folding events up to time T *is* "who held it then," so the event-sourced design
 and the lexical rule are one statement. Under dynamic scope the same query would
 return different history depending on when it ran.
 
-**This is not a gap and must not be reported as one.** It is the expensive thing,
-done on purpose:
-
-> It turns out implementing lexical scope is harder than implementing dynamic
-> scope… it took fucking work to implement lexical scope.
+**This is not a gap.** The lexical behavior is deliberate.
 
 The machinery is `TemporalMembership` in `server/lib/filter-subscriptions.mjs` — a
 per-filter temporal table, extended forward by live events and backward only
@@ -228,10 +206,6 @@ across the interval a history page actually queries. A present-day roster is nev
 projected onto an old message.
 
 ## Who reads `name_history`
-
-Asked because it was worth asking — *"name history, I think, was written to do
-that — I don't actually know that we need to do [it] at all anymore."* Checked by
-grepping the call sites rather than reasoning from the name.
 
 **It is load-bearing, in three current places**, and the reason is the same
 lexical property as labels, applied to names:
@@ -286,10 +260,8 @@ disambiguation and still falls back to a dead row for reanimate-by-name.
 **Never add a code check beside that index.** It is the enforcement; code looking
 at the same question exists for the error message.
 
-A name collision **rotates the loser; it does not kill it** (`:860-896`). This path
-already ran on real rows.
-
-> Nothing should kill an agent, ever, other than a manual operation.
+A name collision **rotates the loser; it does not kill it** (`:860-896`). This
+path already ran on real rows. Only a manual operation marks an agent dead.
 
 If a name cannot be rotated it is cleared — the index is partial on
 `friendly_name IS NOT NULL`, so a nameless agent satisfies it and stays alive.
@@ -297,61 +269,7 @@ If a name cannot be rotated it is cleared — the index is partial on
 The rest of the rule is enforced in code by `checkNameAvailable` (`:2892`): one
 gate, one error shape, several reasons — unaddressable syntax, reserved routing
 word (`PSEUDO_LABELS`, `shared/fleet-labels.mjs:28`), agent id, living friendly
-name, a singleton label another living agent holds, and, only when assigning a
-name, another agent's label.
-
-**Both rename paths call it.** The HTTP route always did; the WS `rename`
-handler asked only `nameTakenByOther`, which compares names against names, so
-over that socket a rename could take a name equal to another living agent's
-label — the fan-out this gate exists to stop — and could take a reserved routing
-word besides. Fixed in the singleton-label commit, found by its wire test rather
-than by looking.
-
-## Singleton labels
-
-A **singleton label** is a label at most one living agent may hold. Skip,
-2026-09-01 03:55 EDT:
-
-> labels should be, at creation time, marked singleton or not
->
-> like we alreayd have the mechanism for friendlynames
->
-> then firendlynames would just be like, effetively singleton labels
->
-> but i'm thinking like on-call — perhaps we don't want multiple on-call agents
->
-> so if you try to apply on-call and someone has it, you get an error telling
-> you that like, if you really mean it, strip it and then apply it
-
-So it is **reject and name the holder**, never an implicit move. An atomic move
-was proposed in that same exchange and withdrawn within twenty seconds; it is a
-rejected route, not an open question.
-
-`label_definitions` holds the property. It is **not** a fold over events, and
-that asymmetry is the point: which agents hold a label is computed from labeling
-events, while whether the label is singleton is a fact about the *token*,
-declared once and read back. Rows are never deleted, so a label nobody currently
-holds keeps its rule rather than quietly becoming ordinary when its last holder
-dies.
-
-**Why it is not an index.** This is the same wall as label-against-living-name
-above: a label is a string inside the `agents.labels` JSON array rather than a
-row, so nothing can see a second holder the way `idx_agents_live_name` sees a
-second holder of a name. Enforcement is therefore `checkNameAvailable`, and — as
-with the rule above — the register/login path strips rather than throwing, in
-`upsertAgent`, because that path has no caller to raise to. Without that strip,
-login is a way around the rule.
-
-**`on-call` is singleton by migration**, per his "we should like make on-call
-singleton as a migration or wahtever / obvs". The migration declares the rule and
-touches nobody's labels: several living holders today keep it and the next
-application is what is refused. Which of them is actually on call is not a
-question a migration can answer, so it logs the count and leaves them alone.
-
-**What was deliberately not built:** friendly names are not reimplemented on top
-of this. He described the relationship — names are effectively singleton labels —
-he did not ask for the enforcement to move off `idx_agents_live_name`, and moving
-it is the schema change §"The namespace already exists as a projection" is about.
+name, and, only when assigning a name, another agent's label.
 
 ### The addressability rule
 

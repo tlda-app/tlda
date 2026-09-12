@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { classroomRoomAccess, gradingDraftRoomId, studentOverlayRoomId, studentOverlayRoomOwner } from '../shared/classroom-rooms.mjs'
+import { classroomRoomAccess, studentOverlayRoomId, studentOverlayRoomOwner } from '../shared/classroom-rooms.mjs'
 
 // Who may enter which sync room.
 //
@@ -93,43 +93,4 @@ test('nothing changes for a room that is not a submission', () => {
   assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read', submissionOwnerId: null }), 'read')
   assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read', studentId: 'ada', submissionOwnerId: null }), 'write')
   assert.equal(classroomRoomAccess({ roomId: ADA, tokenLevel: 'read', studentId: 'ada', submissionOwnerId: null }), 'write')
-})
-
-// --- the instructor's marking layer ---
-//
-// A layer is a sync room, so "withheld until returned" is decided here: the
-// grading draft is a room the student cannot enter. Nothing else in the marking
-// path can withhold a mark, because the panes write to one shared store.
-
-const GRADING_DRAFT = gradingDraftRoomId(SUBMISSION_ROOM)
-
-test('the marking layer is refused to the student whose submission it hangs off', () => {
-  // The one that matters. The draft room is named after Ada's submission room,
-  // and Ada may write that submission room — so if the draft check sat below the
-  // submission-owner branch she would be handed the marks being withheld.
-  assert.equal(classroomRoomAccess({
-    roomId: GRADING_DRAFT, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
-  }), 'deny')
-})
-
-test('the marking layer is refused to a classmate and to the class read link', () => {
-  assert.equal(classroomRoomAccess({
-    roomId: GRADING_DRAFT, tokenLevel: 'read', studentId: 'qtm285:bo', submissionOwnerId: 'qtm285:ada',
-  }), 'deny')
-  assert.equal(classroomRoomAccess({ roomId: GRADING_DRAFT, tokenLevel: 'read' }), 'deny')
-})
-
-test('the instructor may write their own marking layer', () => {
-  // Without this the refusals above would pass on a rule that locked everyone
-  // out, which withholds marks by making them impossible to make.
-  assert.equal(classroomRoomAccess({ roomId: GRADING_DRAFT, tokenLevel: 'rw' }), 'write')
-})
-
-test('naming a draft layer does not narrow the submission room it hangs off', () => {
-  // The control for the marker itself: the stem must keep behaving exactly as it
-  // did, or this change withholds the returned work too.
-  assert.equal(classroomRoomAccess({
-    roomId: SUBMISSION_ROOM, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
-  }), 'write')
-  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read' }), 'read')
 })

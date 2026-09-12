@@ -353,8 +353,8 @@ export function createAgentLauncher({
       // It tortured Skip for hours and looked like "the models are broken" when the
       // real cause was infra handing out empty grants. An agent that is alive but
       // cannot act is worse than no agent: it consumes a seat, answers, and does
-      // nothing. Skip's rule, verbatim: "Spawning an agent without any grant at all
-      // is an error." Refuse loudly. A deliberately minimal/read-only profile that
+      // nothing. Spawning an agent without any grant at all is an error. Refuse
+      // loudly. A deliberately minimal/read-only profile that
       // someone actually specified still passes — this only catches the accidental
       // empty. If you are here to weaken this because a spawn is being refused, the
       // fix is to specify a real profile/grant, NOT to delete this guard.
@@ -374,7 +374,7 @@ export function createAgentLauncher({
     // The requester asked for a profile and got a narrower one. Logged and traced
     // here; told to the requester by the server, which is the only party that
     // knows who asked. NOT a `daemon-warning` — those go to the server owner, and
-    // a routine clamp is not Skip's business.
+    // a routine clamp does not belong in the server owner's warning stream.
     const clampLine = permissionClampLine(grant.permissionClamp)
     if (clampLine) log.warn(`${agentName}: ${clampLine}`)
     trace('grant', {

@@ -1,8 +1,8 @@
-# fly.live.toml — the LIVE tlda backend (takes over the existing tldraw-sync-skip app).
+# fly.rc.toml — release-candidate tlda backend.
 # Headless: API + Yjs sync + LaTeX builds + content/data. The tldraw SPA is NOT served
 # here — it runs from GitHub Pages (license-tied) and points at this backend.
-# Deploy with:  fly deploy -c fly.live.toml
-app = "tldraw-sync-skip-rc"
+# Deploy with:  fly deploy -c fly.rc.toml
+app = "your-tlda-candidate"
 primary_region = "sjc"
 
 [build]
@@ -23,7 +23,7 @@ primary_region = "sjc"
   size = "performance-2x"
   memory = "4096"
 
-# 10 GB volume for mutable content/data: projects (~3.7G), fleet.db (~568M), yjs data.
+# 10 GB volume for mutable project, fleet, and collaboration data.
 # If reusing the existing sync_data volume, extend it to 10G:  fly volumes extend <id> -s 10
 [mounts]
   source = "sync_data"

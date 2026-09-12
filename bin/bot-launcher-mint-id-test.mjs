@@ -14,7 +14,7 @@ process.env.TLDA_DAEMON_CONFIG_DIR = configDir
 process.env.TLDA_ENV = 'stable'
 
 writeFileSync(join(configDir, 'server.yaml'), '')
-writeFileSync(join(configDir, 'daemon.yaml'), `machineId: mini
+writeFileSync(join(configDir, 'daemon.yaml'), `machineId: testbox
 environments:
   default: stable
   values:
@@ -65,7 +65,7 @@ function spawnArgs() {
     '--model', 'bot',
     '--kind', 'bot',
     '--cwd', configDir,
-    '--bot-script', '/Users/skip/work/tlda-bots/grammar/grammar-bot.mjs',
+    '--bot-script', '/opt/tlda-bots/grammar/grammar-bot.mjs',
     '--bot-name', 'grammar',
   ]
 }
@@ -78,7 +78,7 @@ assert.equal(calls[0][0], 'mint')
 assert.equal(calls[0][1].mint_id, 'bot:stable:grammar')
 assert.equal(calls[0][1].name, 'grammar')
 assert.equal(!!calls[0][1].failIfNotFresh, false)
-assert.equal(calls[0][1].botScript, '/Users/skip/work/tlda-bots/grammar/grammar-bot.mjs')
+assert.equal(calls[0][1].botScript, '/opt/tlda-bots/grammar/grammar-bot.mjs')
 // It is a spawn option, not a model option: an unclassified flag is collected as
 // one and would be handed to the harness as a model setting.
 assert.equal('mint-id' in (calls[0][1].modelOptions || {}), false)

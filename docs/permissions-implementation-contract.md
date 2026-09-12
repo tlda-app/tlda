@@ -1,19 +1,7 @@
 # Permissions Implementation Contract
 
-Source pointers:
-
-- Fleet chat `permissions-canon-reader` → `stabilizer`, 2026-07-16
-  14:04:14 EDT, message `1349001` (full canon).
-- Fleet chat `stabilizer` → `permissions-canon-reader`, 2026-07-16
-  14:05:34 EDT (acceptance).
-- Fleet chat Skip correction, 2026-07-16, message `1350116` (printer
-  authority).
-- Fleet chat chief correction, 2026-07-16, message `1350129` (printer
-  authority).
-- Local transcription: `scratch/skip-permissions-canon.md`.
-
-This contract resolves the canon's open local intersection question. It does
-not settle the deferred cross-box mapping schema.
+This contract defines local permission-profile resolution and enforcement. It
+does not define a cross-machine profile-mapping schema.
 
 ## Objects
 
@@ -55,7 +43,7 @@ synonymous request/grant fields are forbidden.
 
 Printing permission detail is optional and observational. The printer may omit
 the line when it cannot produce one of the legal coherent forms below. If
-printed, it must name a complete real object using Skip's vocabulary:
+printed, it must name a complete configured object:
 
 - a configured profile name, for example `permissions: wd`;
 - an honest intersection of configured profile names, for example
@@ -76,9 +64,9 @@ resolution and enforcement upstream, independently of display.
 
 - Every configured profile includes the basic-usability region needed for
   fleet communication.
-- When Skip requests a grant, implement the grant directly. Do not substitute
-  a workaround, fallback store, compatibility path, sandbox bypass dance, or
-  retained implementer restriction.
+- Implement the requested grant directly. Do not substitute a workaround,
+  fallback store, compatibility path, sandbox bypass, or retained implementer
+  restriction.
 - Permission-to-spawn is separate from permissions-at-spawn and remains tied
   to the agent's local daemon/box grant.
 - Sessions ordinarily run with their agent's durable grant; mismatched session

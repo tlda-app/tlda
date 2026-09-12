@@ -1,9 +1,9 @@
 // A `?token=` link must never take access away from a browser that already has
 // more.
 //
-// Skip's course syllabus links to `/app`, which resolves to a URL carrying the
-// class's read token. Students are meant to have that. The defect was what
-// happened when HE followed his own syllabus: the read token in the URL
+// A course syllabus can link to `/app` through a URL carrying the class's read
+// token. Students are meant to have that. The defect appeared when an owner
+// followed the same syllabus: the read token in the URL
 // outranked his read-write cookie by being written down in a more preferred
 // place, so `extractToken` handed the read one to every gate. And there is no
 // logout — `/auth/login` overwrote the cookie outright, which made it a 30-day
@@ -111,7 +111,7 @@ if (process.argv[2] === '--serve') {
   check('student: a read cookie alone still cannot write',
     (await get('/rw', { cookie: READ })).status === 403)
 
-  // --- Skip, who already holds read-write: the link must not cost him anything ---
+  // --- an owner who already holds read-write must retain that access ---
   check('rw cookie + read link stays rw',
     await level(await get(`/read?token=${READ}`, { cookie: RW })) === 'rw')
   check('rw cookie + read link can still write',
@@ -151,9 +151,9 @@ if (process.argv[2] === '--serve') {
   const studentSocket = await upgrade(`?token=${READ}`)
   check('sync socket: student read link connects', studentSocket.level === 'read')
   check('sync socket: student read link is read-only', studentSocket.readonly === true)
-  const skipSocket = await upgrade(`?token=${READ}`, RW)
-  check('sync socket: rw cookie + read link stays rw', skipSocket.level === 'rw')
-  check('sync socket: rw cookie + read link is NOT read-only', skipSocket.readonly === false)
+  const ownerSocket = await upgrade(`?token=${READ}`, RW)
+  check('sync socket: rw cookie + read link stays rw', ownerSocket.level === 'rw')
+  check('sync socket: rw cookie + read link is NOT read-only', ownerSocket.readonly === false)
   check('sync socket: no credential is refused', (await upgrade('')).level.startsWith('error'))
 
   console.log(failures === 0 ? 'PASS' : `FAIL: ${failures} check(s)`)

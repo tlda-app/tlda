@@ -1,9 +1,8 @@
 /**
  * A poll never becomes the thing being waited on.
  *
- * Skip, 2026-08-25, looking at ~30 rows of it in his chat: "it's like the agent
- * does something bged and then is waiting on it?" — and the card said
- * `waitingOn: BashOutput`, which names the poll rather than the command.
+ * A broken card said `waitingOn: BashOutput`, which names the poll rather than
+ * the command.
  *
  * A backgrounded command is reached through a chain. The shell yields a cell,
  * a poll waits on it, and the poll's OWN result yields a cell again. Each link
@@ -47,7 +46,7 @@ function output(callId, text) {
 const YIELD = cell => `Script running with cell ID ${cell}\nWall time 30.0 seconds\nOutput:\n`
 
 {
-  // The shape from Skip's chat: a command backgrounded in a shell session, then
+  // The observed shape: a command backgrounded in a shell session, then
   // polled by write_stdin (session-keyed), whose result yields a cell that a
   // wait then polls. The wait must name the command, not the poll.
   const extractor = createActivityExtractor()

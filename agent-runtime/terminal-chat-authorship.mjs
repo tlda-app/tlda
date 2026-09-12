@@ -39,8 +39,8 @@ const HARNESS_NOTICES = [
 //
 // RETURN_NOTICE needed a pattern rather than a prefix because the notice is
 // prepended ahead of the 📬 line. It also required the trailing newline, so a
-// bare notice with nothing after it never matched and landed in Skip's chat as
-// him — 769 rows of it.
+// bare notice with nothing after it never matched and was misattributed as
+// human-authored text.
 const RETURN_NOTICE = /^You were away as \S+ for [^\n]*(\n|$)/
 const NOTIFICATION_PREFIX = '📬'
 
@@ -94,11 +94,11 @@ export function isMachineAuthoredText(text) {
   // with the prompt-clear (Ctrl-U) or a carriage return still on the front. That
   // is not a different kind of text, it is the same text with a control byte in
   // front of it, so the byte comes off before the shape is read — 31 rows of
-  // machine output reached Skip's history through that gap.
+  // machine output reached human-authored history through that gap.
   const start = String(text).replace(LEADING_CONTROL, '')
   if (!start) return false
   // The rule: every line tlda writes into a terminal is one line and starts with
-  // 💻 or 📬, and Skip starts no line with either. Text whose lines are all
+  // 💻 or 📬, and human input does not use either marker. Text whose lines are all
   // marked is the app talking, whatever it says.
   if (isFullyMarked(start)) return true
   if (HARNESS_NOTICES.includes(start)) return true
