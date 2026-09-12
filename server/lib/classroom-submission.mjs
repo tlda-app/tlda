@@ -15,6 +15,11 @@ const MARKDOWN_IMAGE = /!\[[^\]]*\]\(\s*<?([^)>\s]+)>?[^)]*\)/g
 const QUARTO_INCLUDE = /\{\{<\s*include\s+(?:"([^"]+)"|'([^']+)'|([^\s>]+))\s*>\}\}/g
 // Answer blocks carry the exercise id that problem-by-problem marking groups by.
 const ANSWER_ID = /:::\s*\{[^}]*#(ans-[A-Za-z0-9_-]+)[^}]*\}/g
+// The question itself. Deleting one is the other half of the same mistake: the
+// answer block survives with nothing stating what it answers. Matched in the
+// fenced form every handout uses — `::: {#exr-… .callout-exercise}` — so a
+// document written some other way is one we make no claim about.
+const EXERCISE_ID = /:::\s*\{[^}]*#(exr-[A-Za-z0-9_-]+)[^}]*\}/g
 const REMOTE = /^(https?:|data:|mailto:|#)/i
 // What a blanked answer block holds before anyone types in it, from his own
 // bin/make-handout.py.
@@ -97,10 +102,26 @@ function withoutCode(source) {
  * blocking a student for it would charge them for someone else's mistake.
  */
 export function missingAnswers(template, answerIds) {
+  return missingFrom(template, ANSWER_ID, answerIds)
+}
+
+/**
+ * Exercises the template declares that this submission no longer has.
+ *
+ * The same invariant from the other side: an answer with its question deleted
+ * says nothing about what was asked, and the marking surface pairs the two by
+ * id. Skip, 01:16:07: "Students should not be deleting exercise blocks and
+ * students should not be deleting the corresponding answer blocks."
+ */
+export function missingExercises(template, exerciseIds) {
+  return missingFrom(template, EXERCISE_ID, exerciseIds)
+}
+
+function missingFrom(template, pattern, present) {
   if (!template) return []
-  const present = new Set(answerIds)
-  const expected = [...template.matchAll(ANSWER_ID)].map(match => match[1])
-  return [...new Set(expected)].filter(id => !present.has(id))
+  const held = new Set(present)
+  const expected = [...template.matchAll(pattern)].map(match => match[1])
+  return [...new Set(expected)].filter(id => !held.has(id))
 }
 
 export function parseQmdReferences(source) {
@@ -116,7 +137,8 @@ export function parseQmdReferences(source) {
     if (!REMOTE.test(target)) includes.push(target)
   }
   const answerIds = [...source.matchAll(ANSWER_ID)].map(match => match[1])
-  return { images, includes, answerIds }
+  const exerciseIds = [...source.matchAll(EXERCISE_ID)].map(match => match[1])
+  return { images, includes, answerIds, exerciseIds }
 }
 
 /**
@@ -161,6 +183,7 @@ export function inspectSubmissionArchive(bytes, { template = null } = {}) {
 
   const qmdPath = answerFiles[0].name
   const answerIds = answerFiles[0].answerIds
+  const exerciseIds = answerFiles[0].exerciseIds
 
   // Image targets are written relative to the .qmd, which is how the student
   // sees them in their own editor.
@@ -198,6 +221,10 @@ export function inspectSubmissionArchive(bytes, { template = null } = {}) {
       const exercises = deleted.map(id => id.replace(/^ans-/, ''))
       errors.push(`${qmdPath} is missing the answer ${deleted.length === 1 ? 'block' : 'blocks'} for ${exercises.join(', ')}. ${deleted.length === 1 ? 'That block is' : 'Those blocks are'} in the template you started from; put ${deleted.length === 1 ? 'it' : 'them'} back and write your answer inside.`)
     }
+  }
+  const dropped = missingExercises(template, exerciseIds)
+  if (dropped.length) {
+    errors.push(`${qmdPath} is missing the question ${dropped.length === 1 ? 'block' : 'blocks'} for ${dropped.join(', ')}. ${dropped.length === 1 ? 'It is' : 'They are'} in the template you started from; put ${dropped.length === 1 ? 'it' : 'them'} back, above your answer.`)
   }
 
   // `entries` rides along so accepting a submission does not unzip a second

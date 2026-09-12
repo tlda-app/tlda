@@ -7,7 +7,7 @@ import express from 'express'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { zipSync } from 'fflate'
-import { strayAnswers, inspectSubmissionArchive, parseQmdReferences, missingAnswers } from '../server/lib/classroom-submission.mjs'
+import { strayAnswers, inspectSubmissionArchive, parseQmdReferences, missingAnswers, missingExercises } from '../server/lib/classroom-submission.mjs'
 import { ClassroomStore } from '../server/lib/classroom-store.mjs'
 import { createClassroomRouter } from '../server/routes/classroom.mjs'
 
@@ -63,6 +63,31 @@ test('the refusal reaches the student as a sentence naming the exercise', () => 
   // is missing, so it must not.
   const unvouched = inspectSubmissionArchive(zipSync({ 'hw9.qmd': new Uint8Array(Buffer.from(without)) }))
   assert.ok(!unvouched.errors.some(error => error.includes('missing the answer')), unvouched.errors.join(' | '))
+})
+
+const deleteBlock = (source, id) =>
+  source.replace(new RegExp(`:::\\s*\\{[^}]*#${id}[^}]*\\}[\\s\\S]*?\\n:::\\n`), '')
+
+test('a deleted question block is caught too, in both documents', () => {
+  for (const [name, source] of [['hw9', hw9], ['week 0', week0]]) {
+    const id = parseQmdReferences(source).exerciseIds[0]
+    const without = deleteBlock(source, id)
+    assert.ok(!parseQmdReferences(without).exerciseIds.includes(id), `${name}: fixture edit removed ${id}`)
+    assert.deepEqual(missingExercises(source, parseQmdReferences(without).exerciseIds), [id], `${name}: names the deleted question`)
+  }
+  assert.deepEqual(missingExercises(hw9, parseQmdReferences(hw9).exerciseIds), [])
+  assert.deepEqual(missingExercises(week0, parseQmdReferences(week0).exerciseIds), [])
+})
+
+test('the student is told which question they deleted', () => {
+  const id = parseQmdReferences(hw9).exerciseIds[0]
+  const without = deleteBlock(hw9, id)
+  const result = inspectSubmissionArchive(zipSync({ 'hw9.qmd': new Uint8Array(Buffer.from(without)) }), { template: hw9 })
+  assert.equal(result.ok, false)
+  assert.ok(result.errors.some(error => error.includes('question') && error.includes(id)), result.errors.join(' | '))
+  // Without a template there is nothing vouching for that question, so no claim.
+  const unvouched = inspectSubmissionArchive(zipSync({ 'hw9.qmd': new Uint8Array(Buffer.from(without)) }))
+  assert.ok(!unvouched.errors.some(error => error.includes('missing the question')), unvouched.errors.join(' | '))
 })
 
 test('an answer typed under the box is caught and quoted back', () => {
