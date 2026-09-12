@@ -83,6 +83,26 @@ function withoutCode(source) {
     .replace(/`[^`\n]*`/g, '')
 }
 
+/**
+ * Answer blocks the template wrote that this submission no longer has.
+ *
+ * The template carries one blanked answer block per exercise, so an id that is
+ * in the template and not in the submission is a block the student deleted —
+ * and the mark for that question would silently go missing. Caught here, they
+ * are told while they can still fix it.
+ *
+ * Judged against the template's own answer blocks rather than against its
+ * exercises, for the same reason the rest of this file refuses to guess: an
+ * exercise the template never wrote an answer box for is an authoring slip, and
+ * blocking a student for it would charge them for someone else's mistake.
+ */
+export function missingAnswers(template, answerIds) {
+  if (!template) return []
+  const present = new Set(answerIds)
+  const expected = [...template.matchAll(ANSWER_ID)].map(match => match[1])
+  return [...new Set(expected)].filter(id => !present.has(id))
+}
+
 export function parseQmdReferences(source) {
   const images = []
   const includes = []
@@ -172,6 +192,12 @@ export function inspectSubmissionArchive(bytes, { template = null } = {}) {
   }
   if (answerIds.length === 0) {
     errors.push(`${qmdPath} has no answer blocks. Write your answers inside the blanked solution callouts from the template rather than replacing them.`)
+  } else {
+    const deleted = missingAnswers(template, answerIds)
+    if (deleted.length) {
+      const exercises = deleted.map(id => id.replace(/^ans-/, ''))
+      errors.push(`${qmdPath} is missing the answer ${deleted.length === 1 ? 'block' : 'blocks'} for ${exercises.join(', ')}. ${deleted.length === 1 ? 'That block is' : 'Those blocks are'} in the template you started from; put ${deleted.length === 1 ? 'it' : 'them'} back and write your answer inside.`)
+    }
   }
 
   // `entries` rides along so accepting a submission does not unzip a second
