@@ -570,6 +570,64 @@ the code enforces it.** It was caught before it ran only because the process tha
 would have executed it had not been restarted, which is timing rather than
 design.
 
+### 17. A guard that exists and never runs, four layers deep
+
+**2026-09-12.** `main` was unbuildable twice in one day, hours apart and from
+different lanes — `src/App.tsx` importing a file that was never committed, and
+`src/katexMacros.ts` typing the KaTeX macro map as `Record<string, string>`
+while `shared/katex-base-macros.mjs` kept adding function macros. Both compile
+for their author, whose disk holds the missing half. Three lanes landed on top
+of a red tree and none of them could have known.
+
+**Nothing compiled `main` between a landing and a deploy.** The deploy did, and
+reported 26–76 minutes later by rejecting somebody else's push — so whoever
+learned about a break was never whoever caused it.
+
+**The remedy was a `post-merge` hook that compiles `main` and says so. It went
+wrong four times, and each layer looks fine from the layer above.**
+
+1. **The check was never installed.** It sat on `main` as a source file.
+   `bin/git-hooks/` is a source directory; `.git/hooks/` is where git looks.
+   **Landing a hook is not installing it, in the way merging a commit is not
+   deploying it.**
+2. **The installer could not install it.** `bin/install-git-hooks.sh` used
+   `$REPO_ROOT/.git/hooks` — and in a worktree `.git` is a **file** pointing at
+   the real gitdir, so `cp` failed with `Not a directory`. It only ever worked
+   from the canonical checkout, which is the one place nobody works, because
+   that is where someone else is standing.
+3. **Once installed, it listens for an event this repository does not use.**
+   `post-merge` fires on `git merge`. `main` advances here by `git update-ref`
+   from a detached worktree — a workaround for the shared checkout, which
+   silently disabled the fix for the other problem. The hook was present,
+   installed, executable, and structurally unable to fire.
+4. **And the same `.git`-is-a-file bug was inside the check itself**, writing
+   its status file to a path under a file. That one was caught by a
+   deliberate-failure test before landing; the other three were not.
+
+**Every one of these reports healthy by being absent.** No error, no red,
+nothing to notice — the shape this page opens with, where a grep finds a call
+that is present and can never find one that is missing.
+
+**What distinguishes the layer that was caught from the three that were not:**
+the failure control ran the thing and watched it fail. The others were verified
+by looking — the file is on `main`, the installer exited, the hook is in
+`.git/hooks` and executable. **"Show me it fired on a real landing" and "show me
+it is installed" are different questions, and only the first one has ever caught
+any of this.**
+
+**Two facts worth keeping, both measured rather than assumed:**
+
+- **Hooks are per-clone, not per-worktree.** All 838 worktrees here resolve
+  `--git-common-dir` to one `.git`, so installing once covers every one of them.
+  **Separate clones do not share it**, and several exist on this box. So
+  "installed" is a statement about a clone, not about the repository.
+- **The trigger question is still open, and honestly so.** `reference-transaction`
+  fires on any ref update including `update-ref`, which is the event that
+  actually happens here — but I could not run the experiment to establish
+  whether it fires once per landing or once per ref per phase, and **a hook that
+  fires three times per landing is its own problem.** Recorded as a candidate,
+  not a finding. A fast answer here would be the fifth layer.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see
