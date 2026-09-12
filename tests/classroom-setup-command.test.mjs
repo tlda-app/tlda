@@ -161,7 +161,15 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     assert.match(result.stdout, /Generated from: homework\/hw1\.qmd/)
     assert.match(result.stdout, /Filters: handout=bin\/make-handout\.py; solution=homework\/solution-callout\.lua/)
     assert.match(result.stdout, /Solutions: hw1-solutions@solutions-rev/)
-    assert.match(result.stdout, /Registration: \?workspace=classroom-register&course=qtm285/)
+    // The project in the registration path is the one the STUDENT opens, so it
+    // is the handout. Naming the source project here serves them the master,
+    // solutions and all: that project's mainFile is the master QMD, and
+    // documentAccess does not restrict it — a source key is neither a solutions
+    // doc nor a submission, so it is readable by anybody. This assertion was
+    // previously unanchored at `course=qtm285`, which is why pointing it at the
+    // source passed unnoticed from 2026-08-28.
+    assert.match(result.stdout, /Registration: \?workspace=classroom-register&course=qtm285&project=hw1-handout$/m)
+    assert.doesNotMatch(result.stdout, /Registration:.*project=hw1-source/)
     assert.doesNotMatch(result.stdout, /name=/)
     assert.deepEqual(fixture.requests.map(req => `${req.method} ${req.url}`), [
       'POST /api/projects',

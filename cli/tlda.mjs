@@ -3306,7 +3306,20 @@ async function publishClassroomAssignment({
   // `project` is not decoration: ClassroomRegistration renders "Continue to
   // class" only when it is present, so a registration path without it registers
   // the student and then offers them nowhere to go.
-  console.log(`  Registration: ?workspace=classroom-register&course=${encodeURIComponent(courseId)}&project=${encodeURIComponent(sourceDocKey)}`)
+  //
+  // It is the HANDOUT, because this is the project the student opens.
+  // The source project's mainFile is the master QMD — solutions included — and
+  // nothing stops them reading it: solutionDocumentAccess only restricts a key
+  // that assignmentsForSolutionsDoc matches, and a source key is neither a
+  // solutions doc nor a submission, so it answers {restricted: false, allowed:
+  // true} for a student as readily as for an instructor. The guarantee that the
+  // student gets the blanked document was being enforced on the artifact the
+  // generator produced and not on the route that hands it to them.
+  //
+  // This is not the frozen template, which is a different thing for a different
+  // reader: that is read as source text server-side and diffed against the
+  // student's uploaded QMD, so it stays the source. The student never opens it.
+  console.log(`  Registration: ?workspace=classroom-register&course=${encodeURIComponent(courseId)}&project=${encodeURIComponent(handoutDocKey)}`)
   console.log(`  Gradebook:    ?workspace=classroom-gradebook&course=${encodeURIComponent(courseId)}`)
   console.log(`  Marking:      ?workspace=classroom-problems&assignment=${encodeURIComponent(assignmentId)}`)
   console.log(`  Student work: ?workspace=classroom-work&assignment=${encodeURIComponent(assignmentId)}`)
