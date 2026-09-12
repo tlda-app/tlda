@@ -56,19 +56,42 @@ function requestTimeoutMs() {
 // message swore it was not. A chief spent the night chasing CPU starvation on
 // the strength of that sentence and repeated it to Skip as fact.
 //
-// So it states what was observed, then gives the reader the one-line check that
-// tells the two causes apart, rather than picking one for them.
+// Then it was wrong a second way, and that one was worse because the advice was
+// actionable. It told the reader to "run a trivial search now" to tell the two
+// causes apart, and said a retry "queues behind the same child".
+//
+// Neither is true, because THIS TIMEOUT DOES NOT CANCEL THE QUERY. `_call`
+// deletes its pending entry and rejects the caller; it sends nothing to the
+// child, and the child has no abort path — it runs `await store[method](...)`
+// over synchronous SQLite with nothing to interrupt. So the scan continues to
+// completion, holding the only child, long after the caller gave up.
+//
+// Which means the prescribed discriminator ADDS a second uncancellable scan on
+// a box that is already saturated, and a retry does not queue behind anything —
+// it compounds. On 2026-09-12 a chief ran that trivial lookup four times over
+// two hours, on this message's instruction, and was a meaningful share of the
+// load they were reporting as the problem. Measured during it: the child held
+// ~52 MB/s of disk reads for sixteen minutes after the last caller had given up.
+//
+// So this message no longer prescribes any query. The only honest advice at the
+// moment of failure is to stop issuing them, and that is what it says.
+//
+// The real fix is for the child to be interruptible — `better-sqlite3` exposes
+// an interrupt — or for the client to kill and respawn it on timeout rather than
+// abandon the request. Until one of those exists, this text is the guard.
 function starvedChildError(what, timeoutMs) {
   return new Error(
     `the fleet search child did not answer ${what} within ${timeoutMs}ms. `
-    + `The child is alive but has not replied; this bound cannot tell you why. `
-    + `Two causes produce it. Either this query is genuinely expensive — an agent term `
-    + `resolving to many ids is the usual one, and a label like project:<name> can resolve `
-    + `to hundreds — or the child is starved of CPU, since it runs at BELOW_NORMAL priority `
-    + `and a build or render saturating the box will starve it while the main thread still `
-    + `looks healthy. To tell them apart, run a trivial search now: if that returns promptly `
-    + `the box is fine and the cost is in this query, so narrow it rather than retrying. `
-    + `Either way, retrying this query immediately queues behind the same child. `
+    + `IMPORTANT: this timeout did NOT cancel your query. It is still running on the server `
+    + `and still holding the single search child, and there is currently no way to stop it. `
+    + `So: do not retry, and do not run a "quick" search to test whether search is working — `
+    + `each one adds another query that cannot be cancelled, to a queue you cannot see, `
+    + `and that is how a slow minute becomes an unusable hour. Wait instead. `
+    + `Why it happened, in the order worth suspecting: your query was expensive (an agent term `
+    + `resolving to many ids is the usual cause, and a label like project:<name> can resolve to `
+    + `hundreds); or earlier abandoned queries are still running and saturating the box; or the `
+    + `child is starved, since it runs at BELOW_NORMAL priority. `
+    + `This bound cannot tell you which, and it is not worth a query to find out. `
     + `Raise TLDA_SEARCH_REQUEST_TIMEOUT_MS if this bound is too tight for a legitimately slow search.`,
   )
 }

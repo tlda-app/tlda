@@ -61,21 +61,31 @@ test('a request the child never answers rejects, and does not guess why', { time
   await assert.rejects(
     client.searchAll({ query: 'anything' }),
     (error) => {
-      // Name what happened and both things that cause it -- never one of them as
+      // Name what happened and the things that cause it -- never one of them as
       // fact. This message used to assert "which is CPU starvation ... not your
       // query being too large", which the timeout cannot possibly know: on
       // 2026-09-12 it fired for a query whose agent term resolved to 435 ids
       // while the same box answered a trivial read in 563ms, and a chief spent
       // the night on the wrong cause because this sentence sounded certain.
       assert.match(error.message, /fleet search child did not answer/)
-      assert.match(error.message, /cannot tell you why/)
       assert.match(error.message, /BELOW_NORMAL/)
       assert.match(error.message, /resolving to many ids/)
-      // The discriminating check, so the reader can settle it in one call.
-      assert.match(error.message, /run a trivial search now/)
       assert.match(error.message, /TLDA_SEARCH_REQUEST_TIMEOUT_MS/)
       // It must not re-acquire a confident single cause.
       assert.doesNotMatch(error.message, /not your query being too large/)
+
+      // The load-bearing part, and the reason this message exists at all: the
+      // timeout does NOT cancel the query, so the reader must be told to stop
+      // rather than to probe. The old text prescribed "run a trivial search now"
+      // as a discriminator -- advice that adds a second uncancellable scan to a
+      // saturated box. A chief followed it four times in two hours and became a
+      // meaningful share of the load they were reporting.
+      assert.match(error.message, /did NOT cancel your query/)
+      assert.match(error.message, /still running/)
+      assert.match(error.message, /do not retry/)
+      assert.match(error.message, /Wait instead/)
+      // And it must never again tell anyone to issue a query to diagnose this.
+      assert.doesNotMatch(error.message, /run a trivial search/)
       return true
     },
   )
