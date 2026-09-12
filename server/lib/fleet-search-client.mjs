@@ -42,13 +42,33 @@ function requestTimeoutMs() {
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_REQUEST_TIMEOUT_MS
 }
 
+// What this error may and may not assert.
+//
+// It used to name CPU starvation as the cause, in those words, and rule out the
+// alternative: "which is CPU starvation on the server box, not your query being
+// too large". The timeout cannot distinguish those. All it observes is that no
+// reply arrived in time.
+//
+// It was wrong, and expensively. On 2026-09-12 `from:skip & project:tlda` hit
+// this bound because `project:tlda` resolves to 435 agents and the read then
+// cost ~86ms per id; seconds later the same server answered a trivial read in
+// 563ms, so the box was not starved and the query was exactly the thing this
+// message swore it was not. A chief spent the night chasing CPU starvation on
+// the strength of that sentence and repeated it to Skip as fact.
+//
+// So it states what was observed, then gives the reader the one-line check that
+// tells the two causes apart, rather than picking one for them.
 function starvedChildError(what, timeoutMs) {
   return new Error(
     `the fleet search child did not answer ${what} within ${timeoutMs}ms. `
-    + `The child process is alive but not replying, which is CPU starvation on the server box, `
-    + `not your query being too large and not the store being down: it runs at BELOW_NORMAL priority, `
-    + `so a build or render saturating the box starves it while the main thread still looks healthy. `
-    + `Retrying now queues behind the same starved child. `
+    + `The child is alive but has not replied; this bound cannot tell you why. `
+    + `Two causes produce it. Either this query is genuinely expensive — an agent term `
+    + `resolving to many ids is the usual one, and a label like project:<name> can resolve `
+    + `to hundreds — or the child is starved of CPU, since it runs at BELOW_NORMAL priority `
+    + `and a build or render saturating the box will starve it while the main thread still `
+    + `looks healthy. To tell them apart, run a trivial search now: if that returns promptly `
+    + `the box is fine and the cost is in this query, so narrow it rather than retrying. `
+    + `Either way, retrying this query immediately queues behind the same child. `
     + `Raise TLDA_SEARCH_REQUEST_TIMEOUT_MS if this bound is too tight for a legitimately slow search.`,
   )
 }
