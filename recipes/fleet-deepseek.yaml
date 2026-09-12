@@ -104,7 +104,7 @@ extensions:
     name: tlda
     cmd: /opt/homebrew/bin/node
     args:
-      - /Users/skip/work/tlda/mcp-server/index.mjs
+      - /Users/you/work/tlda/mcp-server/index.mjs
     timeout: 300
     # NOTE: do NOT list FLEET_ID/FLEET_NAME/TLDA_SERVER/TLDA_SYNC_SERVER under
     # `env_keys`. goose treats env_keys as goose-managed *secrets* — when they're

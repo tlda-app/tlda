@@ -4,7 +4,7 @@
 # Deploy with:  npm run deploy:live -- --fly-config fly.talk.toml
 #
 # Why a funnel rather than a public [http_service] on *.fly.dev: the tldraw
-# license key is bound to *.cormorant-matrix.ts.net. Off that domain the canvas
+# license key is bound to *.example-tailnet.ts.net. Off that domain the canvas
 # does not license, and the canvas IS the annotation layer Skip presents with.
 # So the box joins the tailnet for its hostname and `tailscale funnel` makes
 # that same hostname public.
@@ -20,7 +20,7 @@ primary_region = "sjc"
   TLDA_DEPLOYMENT = "talk"
   # Its own tailnet node — NOT tlda-fly, which is `testing` and must not be
   # disturbed. This name is also the public hostname, and Skip picked it: he is
-  # registering https://imagined-randomization.cormorant-matrix.ts.net and reads
+  # registering https://imagined-randomization.example-tailnet.ts.net and reads
   # this string out loud, so it is the deliverable, not an internal label.
   TS_HOSTNAME = "imagined-randomization"
   # Expose with `tailscale funnel` instead of `tailscale serve`. Unset on every

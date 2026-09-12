@@ -37,8 +37,8 @@ primary_region = "sjc"
   # is the only pointer that must arrive from outside it.
   TLDA_DEPLOYMENT = "pic-preview"
   # The tailnet node name, and therefore the URL:
-  # pic-preview.cormorant-matrix.ts.net. It must stay inside
-  # *.cormorant-matrix.ts.net — the tldraw license is bound to that domain and a
+  # pic-preview.example-tailnet.ts.net. It must stay inside
+  # *.example-tailnet.ts.net — the tldraw license is bound to that domain and a
   # *.fly.dev name would lose the canvas.
   TS_HOSTNAME = "pic-preview"
 

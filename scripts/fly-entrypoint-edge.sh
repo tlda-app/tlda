@@ -52,7 +52,7 @@ fi
 
 # `serve` keeps the name tailnet-only and is the default for every deployment.
 # `funnel` publishes the same name to the public internet and is opted into by
-# TS_FUNNEL in one fly.*.toml. The hostname stays inside *.cormorant-matrix.ts.net
+# TS_FUNNEL in one fly.*.toml. The hostname stays inside *.example-tailnet.ts.net
 # either way — the tldraw licence is bound to that domain.
 if tailscale --socket=/var/run/tailscale/tailscaled.sock up \
     $AUTH_ARG --hostname="${TS_HOSTNAME:-tlda-fly}" --accept-dns=false --timeout=45s; then

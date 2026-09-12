@@ -21,7 +21,7 @@
 import { readFileSync, existsSync, renameSync } from 'fs'
 import { join } from 'path'
 
-const SERVER_PROJECTS_DIR = '/Users/skip/work/tlda/server/projects'
+const SERVER_PROJECTS_DIR = '/Users/you/work/tlda/server/projects'
 
 const projectName = process.argv[2]
 if (!projectName) {
@@ -76,10 +76,10 @@ if (existsSync(shadowDir)) {
 }
 
 // Initialize project store (so server-lib functions can resolve paths).
-const ps = await import('/Users/skip/work/tlda/server/lib/project-store.mjs')
+const ps = await import('/Users/you/work/tlda/server/lib/project-store.mjs')
 await ps.initProjectStore(SERVER_PROJECTS_DIR)
 
-const sr = await import('/Users/skip/work/tlda/server/lib/shadow-repo.mjs')
+const sr = await import('/Users/you/work/tlda/server/lib/shadow-repo.mjs')
 try {
   const repo = await sr.initShadowFromProjectRepo(projectName, sourceDir, scope)
   console.log(`OK new shadow at: ${repo}`)

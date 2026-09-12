@@ -23,7 +23,7 @@ let _loading = false
 
 function shortName(peer) {
   if (!peer) return null
-  // DNSName: "davids-macbook-air-2.cormorant-matrix.ts.net." → first label.
+  // DNSName: "davids-macbook-air-2.example-tailnet.ts.net." → first label.
   const dns = (peer.DNSName || '').split('.')[0]
   return dns || peer.HostName || null
 }

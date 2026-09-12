@@ -122,7 +122,7 @@ export function detectAttachments(message, agentCwd, serverBaseUrl = null, optio
     return `{{att:${id}}}`
   })
   // 3a-ter. Mask remaining http(s) URLs so the bare-path pass never reads a URL
-  // as a file. Without this, a host like `cormorant-matrix.ts.net` matches the
+  // as a file. Without this, a host like `example-tailnet.ts.net` matches the
   // `.ts` extension (pathRe's `(?!\w)` allows the following `.`), mangling the
   // link into `https:{{att:N}}.net/...`. (api-file markdown images were already
   // consumed in 3a above; this only masks plain URLs.)

@@ -233,7 +233,7 @@ async function replay() {
   const into = arg('into')
   const speed = Number(arg('speed', '1'))
   const dry = has('dry-run')
-  const base = arg('base', 'https://tlda-pic-dev.cormorant-matrix.ts.net')
+  const base = arg('base', 'https://tlda-pic-dev.example-tailnet.ts.net')
   const token = process.env.TLDA_TOKEN || die('replay needs TLDA_TOKEN in the environment')
 
   const trace = JSON.parse(readFileSync(tracePath, 'utf8'))

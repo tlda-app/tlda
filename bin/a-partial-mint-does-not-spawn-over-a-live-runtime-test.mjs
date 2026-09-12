@@ -16,7 +16,7 @@ import {
 import { createDaemonMintCore } from '../daemon/mint-core.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 
-const RECIPE = { kind: 'codex', cwd: '/Users/skip/work/tlda', model: 'opus' }
+const RECIPE = { kind: 'codex', cwd: '/Users/you/work/tlda', model: 'opus' }
 
 const MINT = {
   mintId: 'mint-1',
@@ -33,7 +33,7 @@ const OWN_IDENTITY = {
   sessionId: 'session-live',
   sessionPath: '/rollouts/session-live.jsonl',
   friendlyName: 'half-minted',
-  cwd: '/Users/skip/work/tlda',
+  cwd: '/Users/you/work/tlda',
   harness: 'codex',
   model: 'opus',
   envName: 'testing',
@@ -179,7 +179,7 @@ function recovery({
       fleetId: null,
       sessionId: null,
       friendlyName: 'half-minted',
-      cwd: '/Users/skip/work/tlda',
+      cwd: '/Users/you/work/tlda',
       harness: null,
       model: null,
       envName: null,
@@ -594,7 +594,7 @@ function wakeHarness({ recoverExistingRuntime, liveSessions = ['fleet-half-minte
       sessionId: 'session-live',
       sessionPath: '/rollouts/session-live.jsonl',
       model: 'opus',
-      cwd: '/Users/skip/work/tlda',
+      cwd: '/Users/you/work/tlda',
       envName: 'testing',
       daemonKey: 'mini:testing',
     }],

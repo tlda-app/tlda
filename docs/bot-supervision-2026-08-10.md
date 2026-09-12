@@ -46,7 +46,7 @@ Dead at that check:
   identity file.
 - `grammar.stable`: has identity `fleet:grammar` and pidfile `45874`, but its
   plist is the old direct tmux form and points at missing
-  `/Users/skip/work/tlda/bin/bots/grammar-bot.mjs`.
+  `/Users/you/work/tlda/bin/bots/grammar-bot.mjs`.
 
   **Correction 2026-08-10:** its plist is *not* the old form. It is the current
   `tlda agent wake` form, identical in shape to `todd.stable`'s working one; it

@@ -49,7 +49,7 @@ const sh = (cmd, cmdArgs, cwd) =>
 function server() {
   // The same resolution the CLI uses, so the watcher cannot be watching a
   // different server from the one he is looking at.
-  return sh('node', ['-e', "import('/Users/skip/work/tlda/shared/config.mjs').then(m=>process.stdout.write(m.getServerUrl()))"])
+  return sh('node', ['-e', "import('/Users/you/work/tlda/shared/config.mjs').then(m=>process.stdout.write(m.getServerUrl()))"])
 }
 
 async function fetchDoc(base) {

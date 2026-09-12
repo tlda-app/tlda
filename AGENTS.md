@@ -841,7 +841,7 @@ never existed.
 correctly.**
 
 **A bare `git grep` reads the branch the checkout is sitting on, not `main`.** The
-shared checkout at `/Users/skip/work/tlda` sits on whatever branch it was last left
+shared checkout at `/Users/you/work/tlda` sits on whatever branch it was last left
 on. `refusedRevision` returned **0 sites bare and 8 on `main`** — a manufactured
 "nobody is listening" on exactly the pattern this check exists to find. **Name the
 ref**: `git grep <literal> main`, or work from a worktree pinned to `main` tip.

@@ -238,9 +238,9 @@ points at, and **they do not all point at the same checkout.** As of 2026-08-18:
 
 | LaunchAgent | checkout |
 |---|---|
-| `com.tlda.fleet-daemon.testing` | `/Users/skip/worktrees/daemon-testing` |
-| `com.tlda.fleet-daemon.stable` | `/Users/skip/work/tlda` |
-| `com.tlda.fleet-daemon.pic` | `/Users/skip/work/tlda` |
+| `com.tlda.fleet-daemon.testing` | `/Users/you/worktrees/daemon-testing` |
+| `com.tlda.fleet-daemon.stable` | `/Users/you/work/tlda` |
+| `com.tlda.fleet-daemon.pic` | `/Users/you/work/tlda` |
 
 Read the plist rather than this table — that is the authority, and this line has
 already been stale once. `testing` is the environment Skip uses, so the one most
