@@ -634,6 +634,67 @@ export async function listVersions(name, { limit = 20 } = {}) {
 }
 
 /**
+ * When one build happened, in epoch milliseconds. Null if the ref is unknown.
+ *
+ * The bridge needs the EARLIER endpoint's own time to bound its provenance
+ * window, and that build is deliberately not in `listVersionRange`'s output.
+ */
+export async function versionTimestamp(name, ref) {
+  const repoDir = shadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) return null
+  if (!/^[0-9a-f]{7,40}$/i.test(ref)) return null
+  try {
+    const { stdout } = await execAsync(`git log -1 --format="%at" "${ref}"`, { cwd: repoDir, timeout: 5000 })
+    const seconds = parseInt(stdout.trim(), 10)
+    return Number.isFinite(seconds) ? seconds * 1000 : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * List the builds between two refs, oldest first, with the files each changed.
+ *
+ * This is the bridge's range question, and it is a different question from
+ * `listVersions`: that one walks back from the tip by a count and deliberately
+ * has no cursor, so it cannot answer "what happened between these two
+ * versions" at all. Hence a second function rather than a wider first one.
+ *
+ * `from` is exclusive and `to` is inclusive -- the same convention as
+ * `git log from..to` -- because `from` is a version the reader already has in
+ * front of them in the left column. Its own changes are not part of what
+ * happened between the two.
+ *
+ * Paths are project-relative, as the shadow repo stores them.
+ */
+export async function listVersionRange(name, from, to) {
+  const repoDir = shadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) return []
+  if (!/^[0-9a-f]{7,40}$/i.test(from) || !/^[0-9a-f]{7,40}$/i.test(to)) {
+    throw new Error('from and to must be Git commit hashes')
+  }
+
+  // A record separator lets the file list stay a plain newline block per commit
+  // without a second call per commit -- a range of a few hundred builds would
+  // otherwise be a few hundred git invocations.
+  const { stdout } = await execAsync(
+    `git log --reverse --name-only --format="%x1e%H %at %s" "${from}..${to}"`,
+    { cwd: repoDir, timeout: 20000 },
+  )
+
+  return stdout.split('\x1e').filter(chunk => chunk.trim()).map(chunk => {
+    const [header, ...rest] = chunk.split('\n')
+    const [hash, unixTime, ...msgParts] = header.split(' ')
+    return {
+      hash,
+      timestamp: parseInt(unixTime, 10) * 1000,
+      message: msgParts.join(' '),
+      files: rest.filter(line => line.trim()),
+    }
+  }).filter(v => v.message !== 'init')
+}
+
+/**
  * Get the source files at a given ref. Extracts via git archive into a temp dir.
  * Returns the temp dir path. Caller is responsible for cleanup.
  */
