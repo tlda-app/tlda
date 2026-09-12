@@ -166,7 +166,11 @@ test('Codex prompt injection waits for model loading to finish before one Enter'
   let enterCount = 0
   const tmuxExec = async (_socket, command, ...args) => {
     if (command === 'capture-pane') {
-      if (enterCount === 0 && pane.includes(prompt) && pane.includes('model: loading')) {
+      // Readiness arrives on its own schedule. It is NOT gated on the prompt
+      // having been pasted: the injection waits for the model before pasting, so
+      // a fake that only becomes ready once the composer is loaded would encode
+      // the old order rather than test it.
+      if (enterCount === 0 && pane.includes('model: loading')) {
         loadingCaptures += 1
         if (loadingCaptures === 3) pane += '\n\ngpt-5.6-sol default · ~/work/tlda'
       }
@@ -191,7 +195,10 @@ test('Codex prompt injection waits for model loading to finish before one Enter'
   })
 
   assert.equal(delivered, true)
-  assert.equal(loadingCaptures, 3)
+  // It waited for the model. The exact number of captures is the polling
+  // cadence rather than a property; the load-bearing claims are that Enter went
+  // out once, and that the fake asserted a ready footer when it did.
+  assert.ok(loadingCaptures >= 3, `expected to wait through loading, got ${loadingCaptures} captures`)
   assert.equal(enterCount, 1)
 })
 
@@ -247,23 +254,44 @@ test('Codex prompt injection does not trust stale ready text over the live loadi
   assert.equal(enterCount, 0)
 })
 
-test('Codex prompt injection does not press Enter if the kickoff leaves the composer while loading', async () => {
+// The failure this whole path exists to prevent: an injection that gives up
+// must not leave the kickoff sitting in the composer. A parked prompt is
+// indistinguishable from a dead mint from outside -- live process, live tmux
+// session, no turn ever produced -- and it cost two agents a night.
+test('Codex prompt injection that cannot confirm submission leaves no prompt in the composer', async () => {
   const prompt = 'Call login() and check your inbox.'
-  let pane = 'model: loading\n› Summarize recent commits'
-  let pastedCaptures = 0
+  // Ready to accept the paste, and then Enter never submits: the composer keeps
+  // the prompt no matter how many times Enter goes out.
+  let composer = 'Summarize recent commits'
+  const pane = () => `› ${composer}\n\ngpt-5.6-sol default · ~/work/tlda`
   let enterCount = 0
   const tmuxExec = async (_socket, command, ...args) => {
-    if (command === 'capture-pane') {
-      if (pane.includes(prompt)) {
-        pastedCaptures += 1
-        if (pastedCaptures === 2) pane = 'model: loading\n› Different input'
-      }
-      return { stdout: pane }
-    }
+    if (command === 'capture-pane') return { stdout: pane() }
     assert.equal(command, 'send-keys')
-    if (args.at(-1) === 'C-u') pane = pane.replace(/›[^\n]*$/, '› ')
+    if (args.at(-1) === 'C-u') composer = ''
     const literalIndex = args.indexOf('-l')
-    if (literalIndex >= 0) pane += args[literalIndex + 1]
+    if (literalIndex >= 0) composer += args[literalIndex + 1]
+    if (args.at(-1) === 'Enter') enterCount += 1
+    return { stdout: '' }
+  }
+
+  const delivered = await injectCodexPrompt('fleet-agent', prompt, {
+    timeoutMs: 1200,
+    tmuxExec,
+  })
+
+  assert.equal(delivered, false, 'an unconfirmed submission is not a delivery')
+  assert.ok(enterCount >= 1, 'it did try to submit')
+  assert.equal(composer, '', 'the composer was cleared rather than left holding the kickoff')
+})
+
+test('Codex prompt injection presses no Enter while the model is still loading', async () => {
+  const prompt = 'Call login() and check your inbox.'
+  const pane = 'model: loading\n› Summarize recent commits'
+  let enterCount = 0
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: pane }
+    assert.equal(command, 'send-keys')
     if (args.at(-1) === 'Enter') enterCount += 1
     return { stdout: '' }
   }
