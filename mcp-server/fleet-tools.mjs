@@ -59,7 +59,7 @@ import {
 } from '../agent-launch/permission-ledger.mjs';
 import { classifyLaunder } from '../agent-runtime/launder-classifier.mjs';
 import { applyNonClaudeRolePack } from '../shared/task-role-routing.mjs';
-import { parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
+import { PSEUDO_LABELS, parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import { harnessFromEnv, harnessKindFromEnv } from './lib/harness-adapters.mjs';
@@ -4302,9 +4302,34 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     // A name that matches no agent can only ever return zero rows, and zero rows
     // reads as "nothing was said" rather than "nobody is called that". Say which
     // name failed, whether or not the rest of the query found anything.
-    const unresolvedNote = unresolvedNames.length
-      ? `${unresolvedNames.map(n => `"${n}"`).join(', ')} ${unresolvedNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.${mistypedKeyHint(unresolvedNames)}`
-      : '';
+    //
+    // A status label is a different failure and must not be reported as this
+    // one. `awake` matches 16 agents in `roster(filter:)` and 0 here, so
+    // "matches no agent" is false — it reads as "nobody is called that" when the
+    // truth is "this surface does not implement it", and it sends the reader off
+    // to check a spelling that was right.
+    //
+    // Note what this deliberately does NOT do: resolve it against who is awake
+    // NOW. Search asks about history, so `from:awake` means "messages from
+    // agents who WERE awake", and answering from current status would make the
+    // same query return different history depending on when it ran. That is
+    // dynamic scope, which docs/identity-and-labeling.md rules out for labels,
+    // and a pseudo-label is a label. The lexically correct answer is a span join
+    // against `runtime_status_history` at each event's timestamp — that table is
+    // spans, `from_ts`/`to_ts`, so the join is the same shape `label_history`
+    // already uses. Until that exists, saying so is the honest answer; a
+    // present-tense answer would be a wrong one that saved filters would then
+    // depend on.
+    const unresolvedStatusLabels = unresolvedNames.filter(n => PSEUDO_LABELS.includes(String(n).toLowerCase()));
+    const unresolvedAgentNames = unresolvedNames.filter(n => !PSEUDO_LABELS.includes(String(n).toLowerCase()));
+    const unresolvedParts = [];
+    if (unresolvedAgentNames.length) {
+      unresolvedParts.push(`${unresolvedAgentNames.map(n => `"${n}"`).join(', ')} ${unresolvedAgentNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.${mistypedKeyHint(unresolvedAgentNames)}`);
+    }
+    if (unresolvedStatusLabels.length) {
+      unresolvedParts.push(`${unresolvedStatusLabels.map(n => `"${n}"`).join(', ')} ${unresolvedStatusLabels.length > 1 ? 'are status labels' : 'is a status label'}, which search cannot filter on — it is not a spelling you can fix. Status is a property of a moment, and search reads history, so this needs "who held it then" rather than "who holds it now"; that is not implemented on this surface. roster(filter:) answers it for the present.`);
+    }
+    const unresolvedNote = unresolvedParts.join(' ');
 
     if (results.length === 0) {
       if (unresolvedNote) {
@@ -4955,8 +4980,20 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       // Same rule as search: a name nothing answers to must not read as an
       // empty history.
       if (threadUnresolvedNames.length) {
-        const names = threadUnresolvedNames.map(n => `"${n}"`).join(', ');
-        return { content: [{ type: 'text', text: `No messages found. ${names} ${threadUnresolvedNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.${mistypedKeyHint(threadUnresolvedNames)}` }] };
+        // And the same exception: a status label is not a misspelt agent, so it
+        // must not be reported as one here either. See the note in `search`.
+        const statusLabels = threadUnresolvedNames.filter(n => PSEUDO_LABELS.includes(String(n).toLowerCase()));
+        const agentNames = threadUnresolvedNames.filter(n => !PSEUDO_LABELS.includes(String(n).toLowerCase()));
+        const parts = [];
+        if (agentNames.length) {
+          const names = agentNames.map(n => `"${n}"`).join(', ');
+          parts.push(`${names} ${agentNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.${mistypedKeyHint(agentNames)}`);
+        }
+        if (statusLabels.length) {
+          const names = statusLabels.map(n => `"${n}"`).join(', ');
+          parts.push(`${names} ${statusLabels.length > 1 ? 'are status labels' : 'is a status label'}, which thread cannot filter on — it is not a spelling you can fix. Status is a property of a moment and this reads history; roster(filter:) answers it for the present.`);
+        }
+        return { content: [{ type: 'text', text: `No messages found. ${parts.join(' ')}` }] };
       }
       // An empty two-party read used to print "no indexed fleet messages were
       // found", which describes an absent CORPUS when the truth is an absent
