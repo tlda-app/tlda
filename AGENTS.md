@@ -566,13 +566,18 @@ subsystem shipped that could not see the file it was written for, and every
 
 **And the obvious repair has a shell-specific hole.** `${PIPESTATUS[0]}` is the
 `bash` answer and it is what everyone reaches for. This machine's shell is `zsh`,
-where the array is `$pipestatus` and **1-indexed**, so `${PIPESTATUS[0]}` expands
-to **nothing at all** — `echo "TSC_EXIT=${PIPESTATUS[0]}"` prints `TSC_EXIT=` and
-a reader skims the blank as a pass. Measured 2026-09-12: a typecheck reported
-exactly that, and it was caught only because the field came out empty rather than
-wrong, which is luck and not method. In `zsh` it is `$pipestatus[1]`. **Better,
-do not read an exit code through a pipe at all:** redirect to a file, `echo $?` on
-the next line, and read the file.
+where that name does not exist at all and the array is `$pipestatus`,
+**1-indexed** — so `${PIPESTATUS[0]}` and `$pipestatus[0]` both expand to
+**nothing**, and `echo "TSC_EXIT=${PIPESTATUS[0]}"` prints `TSC_EXIT=` with a
+blank a reader skims as a pass. The wrong name and the wrong index fail the same
+silent way, so knowing about the `zsh` array does not save you. Measured
+2026-09-12, by **two agents four hours apart who did not know of each other**,
+both of whom caught it only because the field came out empty rather than wrong —
+which is luck, not method. **`$pipestatus` is also clobbered by the next
+command**: a check that prints it after anything else describes that something
+else, which produced a `0` for a failing stage while this note was being written.
+**So do not read an exit status through a pipe at all** — redirect to a file,
+`echo $?` on the very next line, and read the file.
 
 **The tell they share: the check cannot distinguish the state you care about from
 a state you did not think about.** No output is not no matches. An aggregate over
