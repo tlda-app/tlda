@@ -18,7 +18,11 @@ import { useEffect, useRef, useState } from 'react'
 import { setVoiceTarget, clearVoiceTarget, completeMessageSend, submitWhenVoiceFinal, isRecording, onRecordingChange } from '../voice.mjs'
 import { getComposerDraft, saveComposerDraft, flushComposerDraft, clearComposerDraft } from '../stores/composerDraftStore'
 
-export type ComposerSend = (text: string, targets: string[]) => boolean | void | Promise<boolean | void>
+type DispatchedComposerSend = {
+  accepted: true
+  settlement: Promise<boolean | void>
+}
+export type ComposerSend = (text: string, targets: string[]) => boolean | void | Promise<boolean | void> | DispatchedComposerSend
 export type VoiceTargetHandle = {
   sendTargets: string[]
   agentNames: Record<string, string>
@@ -139,7 +143,13 @@ export function ChatComposer({
     const text = rawText.trim()
     if (!ta || !text || sendTargets.length === 0 || sendPendingRef.current) return false
     if (onCommand?.(text, sendTargets, ta)) return true
-    const sendOwner = ++sendOwnerRef.current
+    const sendOwner = sendOwnerRef.current
+    const restore = () => {
+      if (sendOwnerRef.current !== sendOwner) return
+      ta.value = ta.value ? `${rawText}\n${ta.value}` : rawText
+      recordDraft(ta)
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    }
     const finish = (sent: boolean) => {
       // The textarea that submitted may have been replaced while transport was
       // pending. Its settlement does not own the replacement instance's draft.
@@ -173,7 +183,10 @@ export function ChatComposer({
       historyIndexRef.current = -1
     }
     const result = onSend(text, sendTargets)
-    if (result && typeof (result as Promise<boolean | void>).then === 'function') {
+    if (result && typeof result === 'object' && 'accepted' in result && result.accepted === true) {
+      finish(true)
+      void result.settlement.then(value => { if (value === false) restore() }, restore)
+    } else if (result && typeof (result as Promise<boolean | void>).then === 'function') {
       sendPendingRef.current = true
       void Promise.resolve(result).then(value => finish(value !== false), () => finish(false))
     } else {

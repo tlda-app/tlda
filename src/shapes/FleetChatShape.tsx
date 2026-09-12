@@ -5548,7 +5548,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       timestamp: new Date().toISOString(),
       read: false,
     }, chatEventBufferKey)
-    return (async () => {
+    const settlement = (async () => {
       const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
       if (context) await enrichContextWithSourceLines(context)
       const bullets = consumeBulletContexts()
@@ -5604,6 +5604,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // event, every recipient, instead of N independent sends nothing rejoins.
 	      return sendWithFailedRetry(targets.join('|'), text, tempId, sendOpts)
 	    })()
+	    return { accepted: true as const, settlement }
 	  }
 
   const composerCommand = (text: string, targets: string[], ta: HTMLTextAreaElement): boolean => {
