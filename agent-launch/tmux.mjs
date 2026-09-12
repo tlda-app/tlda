@@ -317,10 +317,11 @@ export async function submitParkedKickoff(session, harnessKind, prompt, {
   // code and not just the plan.
   //
   // RAW `pane`, deliberately -- not the ghost-stripped text `composer()` reads
-  // two lines up. The dev-channels dialog renders in `38;5;246`, which is inside
-  // the greyscale ghost range, so the stripped version has the dialog removed
-  // from it and this check would pass on the exact pane it exists to catch.
-  // These two lines read the same variable through opposite filters on purpose.
+  // two lines up. These two lines read the same variable through different
+  // filters on purpose: a safety check does not take a lossily filtered input.
+  // It was load-bearing while a greyscale range lived in the ghost filter, which
+  // deleted the trust dialog's own `1.` and let this check pass on the pane it
+  // exists to catch; that range is reverted, so today it is belt-and-braces.
   if (dialogAwaitingKeypress(pane)) {
     return { observed: true, observedAt, pane, parked: true, submitted: false, blockedByDialog: true }
   }
