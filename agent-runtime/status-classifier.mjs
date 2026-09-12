@@ -111,9 +111,9 @@ export function kickoffMarker(prompt = '') {
 // THERE ARE TWO DIM RENDERINGS NEAR THE PROMPT AND THEY MEAN OPPOSITE THINGS.
 // Measured, by `notify-does-not-wake` and confirmed against a live claude pane:
 //
-//   ESC[2m …            dimmed foreground  -> ghost, buffer EMPTY
-//   ESC[38;5;246m …     grey foreground    -> ghost, buffer EMPTY
+//   ESC[2m …            dimmed foreground  -> placeholder, buffer EMPTY
 //   ESC[48;5;237m …     highlighted BLOCK  -> a genuinely QUEUED, unconsumed prompt
+//   plain text                             -> real typed input
 //
 // So a foreground dim is a placeholder and a background highlight is real work
 // waiting. Conflating them is what made an earlier "19 agents are stuck" count a
@@ -121,11 +121,15 @@ export function kickoffMarker(prompt = '') {
 // a queued unconsumed prompt is real pending input, and for the parked-kickoff
 // case it is exactly the state worth acting on.
 //
-// The grey is matched by the xterm-256 GREYSCALE RAMP (232-255) rather than by
-// the one index that was observed, so this is a range from the colour spec and
-// not an enumeration of what somebody happened to see. Terminators differ too:
-// a dim span closes with ESC[0m, a foreground colour with ESC[39m.
-const GHOST_SPAN_RE = /\x1b\[(?:2|38;5;(?:23[2-9]|24\d|25[0-5]))m.*?(?:\x1b\[(?:0|39)m|$)/g
+// A GREYSCALE RANGE WAS TRIED HERE AND REVERTED, because grey is used for real
+// content as well. Measured on a live claude pane: the trust dialog colours every
+// word separately and wraps its `1.` in `38;5;246`, so a greyscale rule deleted
+// real dialog text. And it was never needed -- both harnesses render their
+// placeholder as SGR 2, real typed input arrives PLAIN, and the `38;5;246` that
+// prompted the range turns out to wrap the prompt GLYPH on an empty composer
+// rather than any ghost text. Enumerating colours failed the same way
+// enumerating dialogs does.
+const GHOST_SPAN_RE = /\x1b\[2m.*?(?:\x1b\[(?:0|39)m|$)/g
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g
 
 export function stripGhostSpans(text = '') {
@@ -147,9 +151,14 @@ export function stripGhostSpans(text = '') {
 // the alternative is enumerating dialogs, which is the treadmill that produced
 // a third unrecognised case within a day of there being two.
 //
-// **Run this on the raw pane, never on ghost-stripped text.** The dialog renders
-// in `38;5;246`, which is inside the greyscale ghost range above, so stripping
-// first would remove the very thing this looks for.
+// **Run this on the raw pane rather than on ghost-stripped text.** A safety
+// check should not be handed a lossily filtered input on principle -- and the
+// specific hazard was real while a greyscale range was in `GHOST_SPAN_RE`: the
+// trust dialog wraps its `1.` in `38;5;246`, so stripping deleted dialog text
+// and this check passed on the exact pane it exists to catch. **That range has
+// since been reverted**, so stripping no longer eats it and the raw-pane rule is
+// now belt-and-braces rather than load-bearing. Kept, because the filter above
+// may grow again and this check must not depend on what it currently removes.
 const DIALOG_KEYPRESS_RE = /Enter to confirm|Esc to cancel|❯\s*\d\.\s|Press enter to continue/
 export function dialogAwaitingKeypress(pane = '', tailLines = 25) {
   const tail = String(pane).split('\n').slice(-tailLines).join('\n')

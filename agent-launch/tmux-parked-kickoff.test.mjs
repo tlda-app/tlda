@@ -171,12 +171,15 @@ test('the harness placeholder is never mistaken for our kickoff', async () => {
 // `notify-does-not-wake` and confirmed against a live claude pane, which renders
 // its own prompt as ESC[38;5;246m — grey, not SGR 2. Conflating them is what made
 // an earlier "19 agents are stuck" count a sum of two different states.
-test('both ghost renderings are rejected, and a queued prompt is not', async () => {
+test('placeholders are rejected, and a queued prompt is not', async () => {
   const K = KICKOFF
   const cases = [
     ['SGR 2 dim, the codex ghost', `${ESC}[1m❯${ESC}[0m ${ESC}[2m${K}${ESC}[0m`, false],
-    ['grey 246, the claude ghost', `${ESC}[38;5;246m❯ ${ESC}[38;5;246m${K}${ESC}[39m`, false],
-    ['grey 240, same ramp', `${ESC}[1m❯${ESC}[0m ${ESC}[38;5;240m${K}${ESC}[39m`, false],
+    // Claude's real placeholder, measured off a live pane: SGR 2, same as codex.
+    ['SGR 2 dim, the claude placeholder', `${ESC}[39m❯ ${ESC}[2mTry "refactor fleet-daemon.mjs"${ESC}[0m`, false],
+    // Grey wraps the prompt GLYPH on an empty composer, not ghost text -- which
+    // is why the greyscale range was reverted. No marker here, so: not parked.
+    ['grey prompt glyph, empty composer', `${ESC}[38;5;246m❯ ${ESC}[39m`, false],
     // A highlighted BLOCK is a genuinely queued, unconsumed prompt -- real work
     // waiting, and for this function exactly the state worth acting on.
     ['highlight block 237, a queued prompt', `${ESC}[1m❯${ESC}[0m ${ESC}[48;5;237m${K}${ESC}[0m`, true],
