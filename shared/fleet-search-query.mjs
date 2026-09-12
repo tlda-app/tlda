@@ -55,7 +55,35 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
     const token = parts[i]
     const key = filterKey(token)
     if (key === 'role') {
+      // `role:` is lifted out of the expression into its own wire parameter,
+      // because the expression language has no role term. Lifting it out silently
+      // left whatever joined it behind: `from:skip & role:user` emitted
+      // `"from: skip &"` and died on "unexpected end of", and `role:user &
+      // from:skip` emitted a leading `&`. Measured against all eleven other
+      // filter keys in both orders on 2026-09-12 — every pair containing `role:`
+      // was a parse error, so `role:` could not be combined with anything at all,
+      // and the message quoted the mangled internal string rather than what the
+      // caller typed.
+      //
+      // The join goes with it, but only where that is honest. `role` is ANDed
+      // against everything else at the wire, so an `&` beside it is redundant and
+      // dropping it means exactly what the caller wrote. Under `|` or `!` it is
+      // not expressible at all — there is no way to OR a wire parameter against
+      // an expression term — and quietly treating it as an AND would answer a
+      // different question, so that is refused in the caller's own words.
+      const prev = filterParts[filterParts.length - 1]
+      const next = parts[i + 1]
+      const badJoin = (prev === '|' || prev === '!') ? prev : (next === '|' ? next : null)
+      if (badJoin) {
+        throw new Error(
+          `"${token}" cannot be combined with "${badJoin}" in "${raw}". `
+          + `role: selects which kind of entry to search and is applied to every match, `
+          + `so it can only narrow a query — write it with "&", or drop it and filter the results.`,
+        )
+      }
       filters.role = token.slice(5)
+      if (prev === '&') filterParts.pop()
+      else if (next === '&') i++
       continue
     }
     if (key === 'type') filters.type = token.slice(5)
