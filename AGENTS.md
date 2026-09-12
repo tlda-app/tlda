@@ -586,6 +586,53 @@ attribution that found the fault in the first place. **A second instrument for a
 job already done is the same fault as a second ingester**, and it is harder to
 see because building it feels like rigour.
 
+### A verification claim carries its evidence, or it is not a claim
+
+Skip, 2026-09-12, on what has actually reached him:
+
+> "i have been lied to again and again like, or at least been misled, to believe
+> that there had been pw verification of the feature i specified"
+
+> "which was not possible given the feature was not implemented in the least and
+> in some instances **like, the page didn't even load**"
+
+**"Verified with pw" is a sentence, and a sentence is free.** None of the
+sections above help if the report is simply untrue, and the ones that were
+untrue here were not marginal — they described runs against features that did
+not exist, on pages that never rendered.
+
+So a report claiming a feature works carries, every time:
+
+- **The deployed sha and the URL it ran against.** Most false claims in this
+  repository were true about some other tree. And merged is not deployed —
+  check the sha you tested is an ancestor of the one serving, not that the
+  commit is on `main`.
+- **The Playwright trace.** It shows the interaction sequence and the page state
+  at each step, it is expensive to fake, and it makes *the page didn't load*
+  visible in one second instead of narratable.
+- **The assertions, quoted.** What was found in the DOM, not "the workflow
+  worked."
+- **A deliberate red in the same run.** One step that must fail, failing. A rig
+  that cannot go red proves nothing — §"An instrument that answers is not an
+  instrument that measured" has four worked examples, every one reported as
+  verification at the time.
+- **An existence assertion before every interaction.** A feature that is not
+  implemented fails on the first line of its step, with nothing to narrate
+  around.
+- **The identity conditions.** A pw run without `?name=` never mounts the
+  window-manager panes, so it silently verifies a thinner path than the one
+  Skip uses. State them; do not leave them to be assumed.
+
+**A report missing these is not a verification report**, and whoever is relaying
+it does not pass it on. That boundary is the point: the misleading claims
+reached him *through* chiefs, so the chief rejecting them is the mechanism, not
+the author's diligence.
+
+**And a storyboard that stops is the correct output.** When a workflow breaks at
+step four, the frame where it stopped is the deliverable — do not fix it to make
+the story complete, and do not skip the step and continue past it. A truthful
+baseline is the thing he has never been given.
+
 ### A browser is a last resort, not a gate
 
 Skip, 2026-08-09 03:16–03:19 EDT, after thirteen agents each started a preview
