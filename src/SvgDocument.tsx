@@ -46,6 +46,7 @@ import { installProjectLayerModel } from './wm/project-layer-model'
 import { log } from './logger'
 import { dispatchShapeRenderError } from './shape-error-surface'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
+import { EditCardShapeUtil } from './shapes/EditCardShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { OutlineShapeUtil } from './shapes/OutlineShape'
 import { GraphNodeShapeUtil } from './shapes/GraphNodeShape'
@@ -131,7 +132,8 @@ import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { usePanMode } from './hooks/usePanMode'
 import { usePanPerfLog, useLongTaskProfileLog } from './hooks/usePanPerfLog'
 import { STORE_WS, LICENSE_KEY as CFG_LICENSE_KEY } from './activeConfig'
-import { useShadowOverlay } from './hooks/useShadowOverlay'
+import { useShadowOverlay, compareColumnX } from './hooks/useShadowOverlay'
+import { useEditBridge } from './hooks/useEditBridge'
 import { useDividerDiff } from './hooks/useDividerDiff'
 import { useWholeDocumentDiff } from './hooks/useWholeDocumentDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
@@ -278,7 +280,7 @@ export function createDocumentShapeUtils() {
   )
   // Wrap every custom shape util with an error boundary so a single broken shape
   // renders an error placeholder instead of crashing the entire app.
-  const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetReportArtifactShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, PlaybackFrameShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil]
+  const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetReportArtifactShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, EditCardShapeUtil, TerminalShapeUtil, PlaybackFrameShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil]
   return [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))]
 }
 
@@ -540,12 +542,32 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   // Spatial timeline overlay — activity scatter plot
   const { timelineActive, toggleTimeline } = useTimelineOverlay(editorRef, document, projectName)
 
-  // Shadow history scrubber
+  // Shadow history scrubber.
+  //
+  // The edit bridge widens the gap between the two columns, so the compare
+  // column's position depends on how many builds the bridge is showing, and
+  // the bridge's endpoints are the versions this hook resolves. The offset
+  // therefore lands one render later, through state: the column slides out as
+  // the interval loads, which is the expansion the bridge is supposed to be.
+  const [bridgeColumnOffsetApplied, setBridgeColumnOffsetApplied] = useState(0)
   const {
     shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
     shadowColumnX, shadowYOffset, shadowChangelog,
     toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
-  } = useShadowOverlay(editorRef, document, projectName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
+  } = useShadowOverlay(editorRef, document, projectName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef, bridgeColumnOffsetApplied)
+
+  const {
+    bridgeVisible, bridgeLoading, bridgeError, bridgeBuilds, bridgeColumnOffset, toggleEditBridge, handOffCleanup,
+  } = useEditBridge(
+    editorRef,
+    projectName,
+    shadowActiveVersion?.hash ?? null,
+    shadowTimeBounds?.newest?.hash ?? null,
+    compareColumnX(document.pages),
+  )
+  useEffect(() => {
+    setBridgeColumnOffsetApplied(bridgeColumnOffset)
+  }, [bridgeColumnOffset])
 
   useEffect(() => {
     if (initialHistoryPageHandledRef.current || editorMounted === 0) return
@@ -840,7 +862,15 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     wholeDocumentDiffLoading,
     wholeDocumentDiffError,
     onToggleWholeDocumentDiff: shadowActiveVersion ? toggleWholeDocumentDiff : undefined,
-  }), [proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError, toggleWholeDocumentDiff])
+    bridgeVisible,
+    bridgeLoading,
+    bridgeError,
+    bridgeBuildCount: bridgeBuilds.length,
+    // The bridge expands a comparison, so it is offered only once there is one.
+    onToggleEditBridge: shadowActiveVersion ? toggleEditBridge : undefined,
+    // Offered only with an interval on screen: an empty brief helps nobody.
+    onHandOffCleanup: bridgeVisible && bridgeBuilds.length > 0 ? handOffCleanup : undefined,
+  }), [proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError, toggleWholeDocumentDiff, bridgeVisible, bridgeLoading, bridgeError, bridgeBuilds.length, toggleEditBridge, handOffCleanup])
 
   // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
   // shapes must remain visible to custom WM viewports; the HUD renders from the

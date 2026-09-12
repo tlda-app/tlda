@@ -82,6 +82,21 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'edit-card': {
+    props: {
+      w: T.number,
+      h: T.number,
+      hash: T.string,
+      timestamp: T.number,
+      filesJson: T.string,
+      editorsJson: T.string,
+      note: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.edit-card',
+      sequence: [],
+    }),
+  },
   'html-page': {
     props: {
       w: T.number,

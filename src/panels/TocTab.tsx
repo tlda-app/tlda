@@ -701,6 +701,33 @@ export function TocTab({ query = '' }: { query?: string }) {
             {ctx.wholeDocumentDiffLoading ? 'Diffing…' : ctx.wholeDocumentDiffError ? 'Diff failed' : ctx.wholeDocumentDiffVisible ? 'Hide diff' : 'Show diff'}
           </button>
         )}
+        {ctx?.onToggleEditBridge && (
+          <button
+            className={`toc-diff-hint history-compare-btn${ctx.bridgeVisible ? ' active' : ''}`}
+            type="button"
+            onClick={ctx.onToggleEditBridge}
+            disabled={ctx.bridgeLoading}
+            title={ctx.bridgeError || 'Expand the builds between these two versions into the gap'}
+          >
+            {ctx.bridgeLoading
+              ? 'Expanding…'
+              : ctx.bridgeError
+                ? 'Bridge failed'
+                : ctx.bridgeVisible
+                  ? `Hide edit bridge${ctx.bridgeBuildCount ? ` (${ctx.bridgeBuildCount})` : ''}`
+                  : 'Show edit bridge'}
+          </button>
+        )}
+        {ctx?.onHandOffCleanup && (
+          <button
+            className="toc-diff-hint history-compare-btn"
+            type="button"
+            onClick={ctx.onHandOffCleanup}
+            title="Open a chat with this interval and your notes, ready to hand to an agent"
+          >
+            Clean up ↗
+          </button>
+        )}
         {pdfDocuments.map(document => (
           <button
             key={document.texBase}
