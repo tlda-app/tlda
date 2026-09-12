@@ -553,7 +553,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const {
     shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
     shadowColumnX, shadowYOffset, shadowChangelog,
-    toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
+    toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, handleShadowScrubVersion, realignShadow,
   } = useShadowOverlay(editorRef, document, projectName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef, bridgeColumnOffsetApplied)
 
   const {
@@ -1180,6 +1180,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           loading={shadowLoading}
           onScrubTime={handleShadowScrubTime}
           onStep={handleShadowStep}
+          onJumpOldest={shadowTimeBounds ? () => handleShadowScrubVersion(shadowTimeBounds.oldest) : undefined}
           onClose={hideShadowOverlay}
           onRealign={realignShadow}
           changelog={shadowChangelog.commits.length > 0 ? shadowChangelog : undefined}

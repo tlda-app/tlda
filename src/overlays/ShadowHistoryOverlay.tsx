@@ -58,13 +58,15 @@ interface Props {
   loading: boolean
   onScrubTime: (timestamp: number) => void
   onStep: (dir: 'older' | 'newer') => void
+  /** Jump straight to the oldest build, instead of stepping to it. */
+  onJumpOldest?: () => void
   onClose: () => void
   onRealign?: () => void
   /** Changelog data for space-time dots overlay */
   changelog?: { commits: ChangelogCommit[]; totalPages: number }
 }
 
-export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign, changelog }: Props) {
+export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign, onJumpOldest, changelog }: Props) {
   const resolvedSliderVal = activeVersion
     ? timestampToSliderPos(activeVersion.timestamp, timeBounds)
     : SLIDER_STEPS  // rightmost = current
@@ -133,6 +135,18 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
 
       {/* Scrubber bar */}
       <div className="shadow-scrubber-bar">
+        {/* An overnight run is as many steps as the agent made builds, so the
+            far end of the history needs one click rather than N. The slider
+            reaches it too; a button says so. */}
+        {onJumpOldest && (
+          <button
+            className="shadow-scrubber-step"
+            disabled={isAtOldest}
+            onClick={onJumpOldest}
+            title="Oldest build — the start of the history"
+          >⏮</button>
+        )}
+
         <button
           className="shadow-scrubber-step"
           disabled={isAtOldest}
