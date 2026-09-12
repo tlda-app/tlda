@@ -134,7 +134,11 @@ export function createSourceLifecycleStore({ root, project = 'project', onStatus
       return value.revisionLifecycle[sourceRevision]
     },
     recordRevisionPhase(name, sourceRevision, phase, state, result = null) {
-      if (!['build', 'version', 'mirror'].includes(phase)) throw new Error(`Invalid source revision phase: ${phase}`)
+      // `promotion` records that this revision was published to THIS box and
+      // from where. `projectRevisionStatus` reads only build and version, so a
+      // promotion phase cannot change any project's reported status; it exists
+      // so "when was this last published" has an answer, which it did not.
+      if (!['build', 'version', 'mirror', 'promotion'].includes(phase)) throw new Error(`Invalid source revision phase: ${phase}`)
       const value = journal()
       const lifecycle = value.revisionLifecycle[sourceRevision]
       if (!lifecycle || lifecycle.project !== name) throw new Error(`Source revision ${sourceRevision} is not recorded for ${name}`)

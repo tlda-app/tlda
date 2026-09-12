@@ -97,7 +97,15 @@ destination resolves.
 fully provisioned, secret-backed, boot-enforced path with **no button**. The
 config is not the gap; §3 is.
 
-## 3. The finding that shapes the caller: it cannot re-publish
+> **Superseded, 2026-09-12.** §3 below describes the defect as it was found.
+> It is fixed: `importProjectPromotionStream` now republishes over an existing
+> project, carrying forward everything the stream does not itself carry, and
+> `tlda project promote` is the caller. §3 is kept because it is the reason the
+> rest of this document exists and the reason the fix looks the way it does —
+> not as a description of current behaviour. The v1/v2 table is still current:
+> the v1 pair remains dead code with no production caller.
+
+## 3. The finding that shaped the caller: it could not re-publish
 
 `importProjectPromotionStream` opens with:
 

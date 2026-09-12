@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { createReadStream, createWriteStream, existsSync } from 'node:fs'
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
 import { Readable } from 'node:stream'
 import { finished } from 'node:stream/promises'
@@ -333,12 +333,137 @@ function validateStreamHeader(header, { sourceEnvironment, name, revision }) {
   if (header.sha256 !== streamArtifactHash(header)) throw new Error('promotion artifact hash mismatch')
 }
 
+/**
+ * A directory the swap below moved out of the way. It holds a marker naming
+ * the project it came from, so the next promotion can put it back: a crash
+ * between the two renames leaves the project absent, and the recovery is to
+ * run the promotion again rather than to have a startup pass for a window two
+ * adjacent renames wide.
+ *
+ * NOT the shape build-dispatch recovers. Its window spans a cross-filesystem
+ * copy of the whole render — 936 MB for the largest tree here — which is why
+ * it earns a startup phase and this does not.
+ */
+const ASIDE_MARKER = '.promoted-aside.json'
+
+function asidePath(projectsRoot, name) {
+  return join(projectsRoot, `.promotion-aside-${name}`)
+}
+
+/**
+ * Put back a project that a previous promotion moved aside and then died
+ * before replacing. Runs before every promotion, so re-running the operation
+ * converges instead of needing someone to notice.
+ */
+async function restoreInterruptedSwap(projectsRoot, name) {
+  const aside = asidePath(projectsRoot, name)
+  const destination = join(projectsRoot, name)
+  if (!existsSync(aside) || existsSync(destination)) return
+  try {
+    const marker = JSON.parse(await readFile(join(aside, ASIDE_MARKER), 'utf8'))
+    if (marker?.project !== name) return
+  } catch {
+    return
+  }
+  await rm(join(aside, ASIDE_MARKER), { force: true })
+  await rename(aside, destination)
+}
+
+/**
+ * Is the destination already holding exactly this promotion? Then say so and
+ * change nothing.
+ *
+ * This is the idempotent retry the v1 import had and the v2 stream rewrite
+ * dropped. Every member's sha256 was verified as it was written to `pending`,
+ * so the staged copy is known good; the question here is only whether the LIVE
+ * copy is the same revision with the same bytes. A destination carrying the
+ * right revision and the wrong render must NOT report itself already promoted,
+ * because that is what an interrupted earlier swap leaves behind.
+ */
+async function promotedRevisionMatches({ destination, name, revision, header }) {
+  try {
+    const operations = JSON.parse(await readFile(join(destination, '.source-lifecycle', 'operations.json'), 'utf8'))
+    const live = operations.revisionLifecycle?.[revision]
+    if (!live) return false
+    // Compare only what the SOURCE asserted, and not `updatedAt`. The
+    // destination writes its own phases onto this row after activation — the
+    // `promotion` record is the first of them — so a whole-row comparison
+    // reports every already-promoted revision as new, which is exactly what it
+    // did until the wire test caught it. Everything the source claims must
+    // still match; what this box added locally is not the source's business.
+    for (const key of Object.keys(header.lifecycle)) {
+      if (key === 'updatedAt') continue
+      if (stableJson(live[key]) !== stableJson(header.lifecycle[key])) return false
+    }
+    const metadata = JSON.parse(await readFile(join(destination, 'project.json'), 'utf8'))
+    if (stableJson(metadata) !== stableJson(header.metadata)) return false
+    const gitDir = join(destination, '.source-lifecycle', 'git')
+    const sourceRef = `refs/tlda/source/${encodeRefComponent(name)}`
+    const head = (await execFileAsync('git', [`--git-dir=${gitDir}`, 'rev-parse', `${sourceRef}^{commit}`], { encoding: 'utf8' })).stdout.trim()
+    if (head !== revision) return false
+    for (const member of header.members) {
+      if (member.kind === 'output') {
+        const path = join(destination, 'output', ...member.path.split('/'))
+        if (!existsSync(path) || await fileDigest(path) !== member.sha256) return false
+      } else if (member.kind === 'buildLog') {
+        const path = join(destination, 'build.log')
+        if (!existsSync(path) || await fileDigest(path) !== member.sha256) return false
+      }
+    }
+    // A live render with EXTRA files is not this promotion, and the digest
+    // loop above cannot see them — it only checks the files the stream sent.
+    // Counted by name rather than by `regularFileDescriptors`, which hashes
+    // every file and would put a second full pass over a render measured at
+    // 936 MB elsewhere in this tree.
+    const liveOutputCount = await countRegularFiles(join(destination, 'output'))
+    return liveOutputCount === header.members.filter(member => member.kind === 'output').length
+  } catch {
+    return false
+  }
+}
+
+async function countRegularFiles(root) {
+  let total = 0
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (entry.isDirectory()) total += await countRegularFiles(join(root, entry.name))
+    else total++
+  }
+  return total
+}
+
+/**
+ * Carry forward everything the live project holds that this promotion did not
+ * stage — `build-cache`, `latex.log`, a non-qmd `source`, and anything else
+ * per-project that nobody has thought of yet.
+ *
+ * Written as "every entry not staged" rather than as a list of known names on
+ * purpose. A list is a second place to remember something, and the entry it
+ * forgets is deleted silently on the next publish. Skip's ruling, via the
+ * chief: a republish that drops these is a delete, and delete-by-omission is
+ * not a lesser kind. See AGENTS.md "NOTHING IN THIS APP DELETES ANYTHING".
+ */
+async function carryForwardUnstagedItems(destination, pending) {
+  for (const entry of await readdir(destination, { withFileTypes: true })) {
+    // Another operation's scratch, including an aside this promotion is about
+    // to create. Copying one in would publish a transaction directory.
+    if (entry.name.startsWith('.promotion-') || entry.name.startsWith('.build-publish-')) continue
+    if (entry.name === ASIDE_MARKER) continue
+    if (existsSync(join(pending, entry.name))) continue
+    await cp(join(destination, entry.name), join(pending, entry.name), { recursive: true, verbatimSymlinks: true })
+  }
+}
+
 export async function importProjectPromotionStream({ stream, sourceEnvironment, name, revision, projectsRoot, serialize, onActivated = null, beforeActivation = null }) {
   validatePromotionName(name)
   if (!/^[0-9a-f]{40}$/i.test(revision || '')) throw new Error('exact source revision is required')
   return serialize(name, async () => {
+    await restoreInterruptedSwap(projectsRoot, name)
     const destination = join(projectsRoot, name)
-    if (existsSync(destination)) throw new Error(`Project "${name}" already exists`)
+    // A project already here is a REPUBLISH, not a collision. Refusing it is
+    // what left promotion able to create a project and never able to publish a
+    // second revision of one, which is the whole of why the endpoint had no
+    // caller worth writing.
+    const republishing = existsSync(destination)
     const pending = join(projectsRoot, `.promotion-${name}-${process.pid}-${randomUUID()}`)
     let activated = false
     let iterator = null
@@ -364,7 +489,19 @@ export async function importProjectPromotionStream({ stream, sourceEnvironment, 
       await mkdir(join(pending, '.source-lifecycle', 'git'), { recursive: true })
       await execFileAsync('git', ['init', '--bare', '--quiet', join(pending, '.source-lifecycle', 'git')])
       const sourceRef = `refs/tlda/source/${encodeRefComponent(name)}`
-      await execFileAsync('git', [`--git-dir=${join(pending, '.source-lifecycle', 'git')}`, 'fetch', join(pending, 'source.bundle'), `${sourceRef}:${sourceRef}`], { timeout: 30000 })
+      // On a republish, the destination's own history comes across FIRST, all
+      // refs, so the promoted ref lands on top of it rather than in place of
+      // it. In the ordinary case the bundle's history already contains the
+      // destination's, and this adds nothing; it matters when it does not —
+      // revisions the source no longer has, or refs the destination holds that
+      // the source never did — and those are exactly the ones a fresh repo
+      // would silently drop.
+      if (republishing && existsSync(join(destination, '.source-lifecycle', 'git'))) {
+        await execFileAsync('git', [`--git-dir=${join(pending, '.source-lifecycle', 'git')}`, 'fetch', join(destination, '.source-lifecycle', 'git'), '+refs/*:refs/*'], { timeout: 30000 })
+      }
+      // `+` so the promoted revision wins the ref against whatever the
+      // destination had. The commit it replaces is still reachable by sha.
+      await execFileAsync('git', [`--git-dir=${join(pending, '.source-lifecycle', 'git')}`, 'fetch', join(pending, 'source.bundle'), `+${sourceRef}:${sourceRef}`], { timeout: 30000 })
       const importedHead = (await execFileAsync('git', [`--git-dir=${join(pending, '.source-lifecycle', 'git')}`, 'rev-parse', `${sourceRef}^{commit}`], { encoding: 'utf8' })).stdout.trim()
       if (importedHead !== revision) throw new Error('promotion bundle head mismatch')
       const tree = (await execFileAsync('git', [`--git-dir=${join(pending, '.source-lifecycle', 'git')}`, 'rev-parse', `${revision}^{tree}`], { encoding: 'utf8' })).stdout.trim()
@@ -374,13 +511,61 @@ export async function importProjectPromotionStream({ stream, sourceEnvironment, 
         const files = await imported.readManifest(revision)
         await materializeAcceptedRevision({ revision: { id: revision, files }, lifecycle: { readRevisionFile: (_id, path) => imported.readRevisionFile(revision, path) }, destination: join(pending, 'source') })
       }
-      await writeFile(join(pending, '.source-lifecycle', 'operations.json'), `${JSON.stringify({ version: 1, revisionLifecycle: { [revision]: header.lifecycle } }, null, 2)}\n`)
+      // The journal is MERGED, never replaced. The promotion record lives in
+      // it, so a wholesale replace would delete the one thing that answers
+      // when a project was last published — and it would delete the
+      // destination's earlier revisions with it.
+      const priorJournal = republishing
+        ? await readFile(join(destination, '.source-lifecycle', 'operations.json'), 'utf8').then(JSON.parse).catch(() => null)
+        : null
+      await writeFile(join(pending, '.source-lifecycle', 'operations.json'), `${JSON.stringify({
+        ...(priorJournal || {}),
+        version: 1,
+        revisionLifecycle: { ...(priorJournal?.revisionLifecycle || {}), [revision]: header.lifecycle },
+      }, null, 2)}\n`)
       await writeFile(join(pending, 'project.json'), `${JSON.stringify(header.metadata, null, 2)}\n`)
       await rm(join(pending, 'source.bundle'), { force: true })
+
+      if (republishing) {
+        if (await promotedRevisionMatches({ destination, name, revision, header })) {
+          await rm(pending, { recursive: true, force: true })
+          await onActivated?.()
+          return { promoted: false, alreadyPromoted: true, revision, tree }
+        }
+        await carryForwardUnstagedItems(destination, pending)
+      }
+
       await beforeActivation?.(pending)
-      if (existsSync(destination)) throw new Error(`Project "${name}" already exists`)
-      await rename(pending, destination)
-      activated = true
+
+      if (!republishing) {
+        // Unchanged: one rename into an absent path.
+        if (existsSync(destination)) throw new Error(`Project "${name}" already exists`)
+        await rename(pending, destination)
+        activated = true
+      } else {
+        // Two renames, in one directory, on one filesystem. `pending` is a
+        // COMPLETE project by this point — the promoted render plus everything
+        // carried forward — so the swap replaces the whole directory at once
+        // rather than item by item. Item-by-item leaves a crash window per
+        // item and no way to know which item was in flight.
+        const aside = asidePath(projectsRoot, name)
+        await rm(aside, { recursive: true, force: true })
+        // The marker goes in while the directory is still live, so it travels
+        // with it into `aside` and names what `restoreInterruptedSwap` should
+        // put back. A crash here leaves the live project intact plus one stray
+        // file, which `carryForwardUnstagedItems` is written to skip.
+        await writeFile(join(destination, ASIDE_MARKER), `${JSON.stringify({ version: 1, project: name, revision })}\n`)
+        await rename(destination, aside)
+        try {
+          await rename(pending, destination)
+        } catch (error) {
+          await rm(join(aside, ASIDE_MARKER), { force: true })
+          await rename(aside, destination).catch(() => {})
+          throw error
+        }
+        activated = true
+        await rm(aside, { recursive: true, force: true })
+      }
       await onActivated?.()
       return { promoted: true, alreadyPromoted: false, revision, tree }
     } catch (error) {
