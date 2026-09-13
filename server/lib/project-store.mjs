@@ -906,6 +906,29 @@ export async function readBuildLogAsync(name) {
 }
 
 /**
+ * When the build log was last written.
+ *
+ * WHY THIS IS NEEDED. `lastBuild` is the last COMPLETED build, so while a build
+ * is running it names an earlier one -- and the log beside it may be that
+ * earlier build's, or the running one's, with nothing in the response saying
+ * which. On 2026-09-13 three people read a stale failure as current, one of them
+ * twice: it reports the last time things worked, which is indistinguishable from
+ * current state precisely when every build is failing.
+ *
+ * The log file's mtime answers it, because a running build appends as it goes.
+ * Newer than `lastBuild` means you are reading the build in flight; not newer
+ * means you are reading the one that finished.
+ */
+export async function buildLogModifiedAsync(name) {
+  const logPath = join(projectsDir, name, 'build.log')
+  try {
+    return (await stat(logPath)).mtime.toISOString()
+  } catch {
+    return null
+  }
+}
+
+/**
  * Extract pipeline warnings from the build log (non-fatal failures, skipped phases).
  * These are build-runner issues, not LaTeX issues — synctex missing, image patching failed, etc.
  */

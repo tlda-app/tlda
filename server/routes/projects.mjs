@@ -24,7 +24,7 @@ import { requireRead, requireRecordingPrivateRead, requireRw } from '../lib/auth
 import {
   createProject, readProject, updateProject, listProjects,
   readProjectMeta,
-  listSourceFiles, hashSourceFiles, readSourceFileAsync, writeSourceFileAsync, deleteSourceFileAsync, readBuildLogAsync, sourceDir as getSourceDir, outputDir as getOutputDir,
+  listSourceFiles, hashSourceFiles, readSourceFileAsync, writeSourceFileAsync, deleteSourceFileAsync, readBuildLogAsync, buildLogModifiedAsync, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarningsAsync, addBookMember, getProjectsDir, projectDir as getProjectDir,
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest, referencedSourcePaths,
   projectDocumentRoots,
@@ -1309,6 +1309,7 @@ router.get('/:name/build/status', requireRead, async (req, res) => {
 
   const durableStatus = projectRevisionStatus((await sourceLifecycleStore(req.params.name)).listRevisionLifecycles(req.params.name))
   const buildLog = await readBuildLogAsync(req.params.name)
+  const logModified = await buildLogModifiedAsync(req.params.name)
   const { errors, warnings, logMissing } = await extractBuildErrors(req.params.name)
   const pipelineWarnings = await extractPipelineWarningsAsync(req.params.name)
 
@@ -1319,6 +1320,11 @@ router.get('/:name/build/status', requireRead, async (req, res) => {
     acceptSeq: durableStatus.acceptSeq,
     lastBuild: project.lastBuild,
     log: buildLog,
+    // `lastBuild` is the last COMPLETED build, so during a run it names an
+    // earlier one and the log beside it may belong to either. This says when the
+    // log was last written: newer than `lastBuild` means you are reading the
+    // build in flight.
+    logModified,
     errors,
     warnings,
     // See the same field on build/errors below: an empty `errors` is only good

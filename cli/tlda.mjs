@@ -3103,9 +3103,18 @@ async function cmdStatus() {
   console.log(`Project: ${bold(name)}`)
   console.log(`  Status: ${statusColor(data.status)}`)
   if (data.phase) console.log(`  Phase: ${data.phase}`)
-  if (data.lastBuild) console.log(`  Last build: ${data.lastBuild}`)
+  if (data.lastBuild) console.log(`  Last build (completed): ${data.lastBuild}`)
   if (data.log) {
-    console.log('\nBuild log:')
+    // Which build this log belongs to is the question people actually have, and
+    // `Last build` cannot answer it -- it names the last COMPLETED build, so
+    // while one is running it points at an earlier one. The log's own mtime
+    // does answer it, because a running build appends as it goes.
+    const live = data.logModified && data.lastBuild && data.logModified > data.lastBuild
+    console.log(live
+      ? `\nBuild log (IN FLIGHT, written ${data.logModified}):`
+      : data.logModified
+        ? `\nBuild log (from the completed build, written ${data.logModified}):`
+        : '\nBuild log:')
     console.log(data.log)
   }
 }
