@@ -40,7 +40,7 @@ import { getPageUrl } from '../stores/pageUrlStore'
 import { createOwnedFleetPanelShape, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
-import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
+import { getEditorWMCore } from '../wm/editor-wm'
 import { optionalJson } from '../optionalJson'
 import { FleetHudRenderGate } from './useIsInViewport'
 import { resolveDocViewTargetShapeId } from './docViewTarget'
@@ -474,14 +474,11 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     })
   }, [mainEditor, shape.id, shape.props.userId, shape.props.deviceId, bounds, targetShapeId, targetShapePageBounds, boundsPageIdx, doc, w, panelH, activeSource])
 
-  const docviewSurfaceRef = useRef<FleetDocviewSurfaceState | null>(null)
-  docviewSurfaceRef.current = docviewSurface
-  useEffect(() => {
-    return () => {
-      const surface = docviewSurfaceRef.current
-      if (surface) removeLayers(surface.wm, [surface.layerId])
-    }
-  }, [])
+  // No unmount cleanup: the layer is keyed by `shape.id` in the editor-scoped
+  // core, so it belongs to the shape and not to this renderer. The fleet HUD
+  // mounts a second copy of this component for the same shape, and removing
+  // the layer here deleted it out from under that copy. It is removed when the
+  // shape is deleted, in `installSurfaceLayerDisposal`.
 
   if (!mainEditor || (!doc && !targetShapeBounds)) {
     return (

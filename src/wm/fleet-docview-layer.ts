@@ -50,6 +50,19 @@ function slug(value: string) {
 	return value.replace(/^shape:/, '').replace(/[^a-zA-Z0-9_-]/g, '-')
 }
 
+/**
+ * The layer a docview shape draws into, derived from the shape's id alone.
+ *
+ * Exported because the layer outlives any one renderer of the shape: the fleet
+ * HUD is a second viewport over the same store, so the component mounts twice
+ * with this same id, and the removal therefore happens on shape deletion in
+ * `installTldaShapeLayers` rather than on unmount. Both sides must agree on the
+ * string, so there is one of it.
+ */
+export function fleetDocviewLayerId(shapeId: string) {
+	return `${FLEET_DOCVIEW_LAYER_ID}:${slug(shapeId)}`
+}
+
 export function createFleetDocviewSurface({
 	shapeId,
 	bounds,
@@ -68,7 +81,7 @@ export function createFleetDocviewSurface({
 		y: -(boundsCenter - (panelHeight / zoom) / 2),
 		z: zoom,
 	}
-	const surfaceId = `${FLEET_DOCVIEW_LAYER_ID}:${slug(shapeId)}`
+	const surfaceId = fleetDocviewLayerId(shapeId)
 	const viewportId = `${FLEET_DOCVIEW_VIEWPORT_PREFIX}:${slug(shapeId)}`
 	ensureViewLayer(wm, surfaceId, {
 		parent: FLEET_DOCVIEW_ROOT_LAYER_ID,
