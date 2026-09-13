@@ -126,6 +126,23 @@ Silence is not proof of zero matches when the command itself may have failed.
 Before claiming completion, re-run the relevant checks against the final diff
 and inspect the surface that proves the requested behavior.
 
+Never work inside a project someone is actively using. The reason is state: an
+agent working in a live project can corrupt its tldraw store or the files on
+disk. That is the only reason for the rule — it is not about which projects
+exist, who owns them, or what they are called.
+
+Test on a copy of an actively used project rather than on an empty one. This
+matters most when the work came out of that project: a fix for a bug encountered
+there, or a feature prompted by something that happened while working in it.
+Classroom features are tested against the course's own content; a feature
+touching churn, versions, or history is tested against real churn in the real
+history of a real project.
+
+A fixture is for development, not for acceptance. Developing against one is fine
+and often the fast way to work, but it exercises a thinner path than a real user
+is on, so passing against a fixture is not evidence that the feature works. This
+is the ordinary distinction between a unit test and a behavior test.
+
 ## Failure messages
 
 A failure message reports what the system already knows. At the moment something
