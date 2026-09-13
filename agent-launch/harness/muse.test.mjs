@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { HARNESS } from '../../shared/harness.ts'
 import { buildArgs, buildCmd, capabilities, prepareFleetConfig, resolveLiveSessionIdentity, resolveModelSelection, resumeId } from './muse.mjs'
-import { museAdapter, museSessionIdFromPath } from '../../agent-runtime/resolve-transcript.mjs'
+import { museAdapter, museSessionIdFromPath, museTranscriptPathForSession } from '../../agent-runtime/resolve-transcript.mjs'
 import { runtimeStateFromProcessList } from '../tmux.mjs'
 import { probeSpawnAvailability } from '../availability.mjs'
 import { readDaemonConfig, withDaemonModelAliases } from '../permission-ledger.mjs'
@@ -177,11 +177,50 @@ const LIVE_FDS = [
 test('a live session is identified by the runtime json the process holds, with model and cwd off its argv', async () => {
   const identity = await resolveLiveSessionIdentity({
     tmuxSession: 'fleet-a',
-    _deps: { execFile: stubExec(), findOpenTranscript: stubOpenFds(LIVE_FDS) },
+    _deps: { execFile: stubExec(), findOpenTranscript: stubOpenFds(LIVE_FDS), transcriptPath: id => `/Users/x/.local/share/muse/sessions/2026/09/12/${id}/session.jsonl` },
   })
   assert.equal(identity.sessionId, SESSION)
   assert.equal(identity.model, model)
   assert.equal(identity.cwd, '/Users/x/work/tlda')
+  // The TRANSCRIPT, not the identity file the adapter bound. Anything tailing
+  // this agent's activity reads `jsonlPath`; a null here reads downstream as
+  // "this agent did nothing", which is why it is asserted rather than assumed.
+  assert.ok(identity.jsonlPath, 'jsonlPath must be present')
+  assert.ok(identity.jsonlPath.endsWith('/session.jsonl'), identity.jsonlPath)
+  assert.ok(identity.jsonlPath.includes(SESSION), identity.jsonlPath)
+  assert.notEqual(identity.jsonlPath, RUNTIME_JSON)
+})
+
+// Muse's identity file and transcript are DIFFERENT FILES -- 234 bytes against
+// 0.8-7.6 MB on the live panes measured 2026-09-13 -- so a consumer handed the
+// identity file instead of the transcript sees an agent that did nothing.
+// The date partition is not recoverable from the uuid, hence the scan.
+test('the transcript path is derived from the session id by finding its date partition', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'muse-sessions-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const dir = path.join(root, '2026', '09', '12', SESSION)
+  mkdirSync(dir, { recursive: true })
+  mkdirSync(path.join(root, '2026', '09', '13', '01a09965-942a-74f3-be55-28b5a32c5504'), { recursive: true })
+  writeFileSync(path.join(dir, 'session.jsonl'), '{"turn":1}\n')
+
+  assert.equal(museTranscriptPathForSession(SESSION, { root }), path.join(dir, 'session.jsonl'))
+  assert.equal(museTranscriptPathForSession('01a09965-942a-74f3-be55-28b5a32c5504', { root }),
+    path.join(root, '2026', '09', '13', '01a09965-942a-74f3-be55-28b5a32c5504', 'session.jsonl'),
+    'a second session in a different day partition resolves to its own transcript')
+  assert.equal(museTranscriptPathForSession('01a00000-0000-7000-8000-000000000000', { root }), null,
+    'an unknown session is null rather than somebody else transcript')
+  assert.equal(museTranscriptPathForSession(null, { root }), null)
+})
+
+test('a session that has not written its first turn still has a transcript path', t => {
+  // The identity resolves as soon as the runtime json is held, which can beat
+  // the first transcript write. Returning null there would hand the launch
+  // path a session with nowhere to tail.
+  const root = mkdtempSync(path.join(tmpdir(), 'muse-sessions-empty-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const dir = path.join(root, '2026', '09', '13', SESSION)
+  mkdirSync(dir, { recursive: true })
+  assert.equal(museTranscriptPathForSession(SESSION, { root }), path.join(dir, 'session.jsonl'))
 })
 
 test('the muse adapter ignores the transcript and the lock, and takes the runtime json', () => {
