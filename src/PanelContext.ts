@@ -27,9 +27,6 @@ export interface PanelContextValue {
   // Spatial timeline overlay
   timelineActive?: boolean
   onToggleTimeline?: () => void
-  // Shadow history scrubber
-  shadowHistoryVisible?: boolean
-  onToggleShadowHistory?: () => void
   // Currently displayed shadow version (null = showing the current project).
   // Used to stamp outgoing chats with the project version the user is viewing.
   shadowActiveVersion?: { hash: string; timestamp: number } | null

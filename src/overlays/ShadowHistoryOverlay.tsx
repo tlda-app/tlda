@@ -60,13 +60,31 @@ interface Props {
   onStep: (dir: 'older' | 'newer') => void
   /** Jump straight to the oldest build, instead of stepping to it. */
   onJumpOldest?: () => void
+  /* What to do with the version you have scrubbed to. His, 2026-09-12: the
+     compare affordances "can just be on the same control as the scrubber for
+     versions", rather than behind a button in the table of contents that
+     "replicates the version wheel that already exists". Undefined while there
+     is no version selected, which is when neither action means anything. */
+  onToggleWholeDocumentDiff?: () => void
+  wholeDocumentDiffVisible?: boolean
+  wholeDocumentDiffLoading?: boolean
+  wholeDocumentDiffError?: string | null
+  onToggleEditBridge?: () => void
+  bridgeVisible?: boolean
+  bridgeLoading?: boolean
+  bridgeError?: string | null
+  bridgeBuildCount?: number
   onClose: () => void
   onRealign?: () => void
   /** Changelog data for space-time dots overlay */
   changelog?: { commits: ChangelogCommit[]; totalPages: number }
 }
 
-export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign, onJumpOldest, changelog }: Props) {
+export function ShadowHistoryOverlay({
+  timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign, onJumpOldest, changelog,
+  onToggleWholeDocumentDiff, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError,
+  onToggleEditBridge, bridgeVisible, bridgeLoading, bridgeError, bridgeBuildCount,
+}: Props) {
   const resolvedSliderVal = activeVersion
     ? timestampToSliderPos(activeVersion.timestamp, timeBounds)
     : SLIDER_STEPS  // rightmost = current
@@ -172,6 +190,34 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
         >›</button>
 
         <span className="shadow-scrubber-label">{labelText}</span>
+
+        {onToggleWholeDocumentDiff && (
+          <button
+            className={`shadow-scrubber-action${wholeDocumentDiffVisible ? ' active' : ''}`}
+            onClick={onToggleWholeDocumentDiff}
+            disabled={wholeDocumentDiffLoading}
+            title={wholeDocumentDiffError || 'Highlight every change between the current and historical document'}
+          >
+            {wholeDocumentDiffLoading ? 'Diffing…' : wholeDocumentDiffError ? 'Diff failed' : wholeDocumentDiffVisible ? 'Hide diff' : 'Show diff'}
+          </button>
+        )}
+
+        {onToggleEditBridge && (
+          <button
+            className={`shadow-scrubber-action${bridgeVisible ? ' active' : ''}`}
+            onClick={onToggleEditBridge}
+            disabled={bridgeLoading}
+            title={bridgeError || 'Expand the builds between these two versions into the gap'}
+          >
+            {bridgeLoading
+              ? 'Expanding…'
+              : bridgeError
+                ? 'Bridge failed'
+                : bridgeVisible
+                  ? `Hide edit bridge${bridgeBuildCount ? ` (${bridgeBuildCount})` : ''}`
+                  : 'Show edit bridge'}
+          </button>
+        )}
 
         {onRealign && !isCurrent && (
           <button
