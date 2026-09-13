@@ -192,9 +192,31 @@ Read conversation threads in order. Search results are pointers to context, not
 a substitute for the surrounding exchange.
 
 Humans and agents share identity, inbox, labels, and subscription filters.
-An inbox row proves a message is readable. A visible filter proves what a person
-can see when they open the app. Only the notification delivery path proves an
-agent was told to wake.
+
+Status is a label too. For agents, **awake** means a running process,
+**hibernating** means no running process with the durable identity and session
+preserved, and **dead** means deliberately retired. For humans, **here** means at
+least one live app connection and **away** means none. Current runtime status is
+derived; do not substitute stored status metadata for it.
+
+**Wake** means the daemon starts a process for a hibernating agent. **Notify**
+means the server puts a notice in front of an agent whose process already
+exists, through that harness's channel. The daemon owns machine-local process
+liveness and never delivers notifications. A wake carries no mail: after the
+daemon starts the process, the agent logs in and the server hands over its
+notifications. Do not use wake and notify as synonyms, and do not add tmux or
+daemon delivery as a fallback for a failed channel notification. See
+[Notifications and liveness](docs/notifications-and-liveness.md).
+
+Death is a liveness statement and nothing else. It frees the friendly name and
+stops delivery; it does not erase the agent or facts about it. Daemon routes,
+events, tasks, and label history survive death. Death may clear only what death
+makes untrue. See [Identity and labeling](docs/identity-and-labeling.md).
+
+The mail states are separate: **accepted** means the server stored the message,
+**delivered** means the recipient was notified, and **read** means the recipient
+fetched it. An inbox row proves readability, not delivery; an open human filter
+proves what that person can see when they look, not that they were notified.
 
 Addressing and subscription are different:
 
