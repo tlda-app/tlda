@@ -15,7 +15,7 @@ import {
 // the swap, which is the one part that must not be interleaved.
 import { cp, rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { updateProject, getProjectsDir, listProjects, aggregateBookToc, sourceLifecycleStore, projectDir, deleteProject } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
@@ -80,8 +80,16 @@ export function serializedPublication(name, operation) {
   return current
 }
 
+// A replaced item may be a PATH (`.quarto/xref`), not just a top-level name,
+// so its slot inside the transaction directory cannot contain the separator —
+// `old-.quarto/xref` would silently want a `old-.quarto` directory that nothing
+// creates, and `renameSync` would fail mid-swap with items already moved aside.
+// Flattening the separator keeps every slot a single entry, which is what the
+// transaction directory and `recoverBuildPublications` both assume.
+const transactionSlot = item => item.replaceAll('/', '__')
+
 function moveAside(live, transaction, name) {
-  const held = join(transaction, `old-${name}`)
+  const held = join(transaction, `old-${transactionSlot(name)}`)
   if (existsSync(live)) renameSync(live, held)
   return held
 }
@@ -101,7 +109,19 @@ function restoreAside(live, held) {
 // for the build instance's copy. Anything living inside one of these does not
 // survive a build unless the revision named it. Exported so the containment
 // test reads this list rather than a second copy of it that can drift.
-export const PUBLISH_REPLACED_ITEMS = Object.freeze(['source', 'output', 'build-cache', 'build.log', 'latex.log'])
+//
+// The `.quarto/*` entries are Quarto's project state, and they are here rather
+// than as a whole `.quarto` because that directory is 450 MB in the real course
+// and almost all of it is a freeze mirror Quarto rebuilds from the committed
+// `_freeze/`. These three are 4.0 MB together and are the parts nothing else
+// can reconstruct: `xref/` is the crossref index, `idx/` the per-file target
+// index, `cites/` the citation index. Replacing each as a unit is deliberate —
+// it prunes entries for documents that no longer exist, which merging would
+// accumulate instead.
+export const PUBLISH_REPLACED_ITEMS = Object.freeze([
+  'source', 'output', 'build-cache', 'build.log', 'latex.log',
+  '.quarto/xref', '.quarto/idx', '.quarto/cites',
+])
 
 // Which of the replaced items a build instance may legitimately be missing.
 // `build-cache` is an optional cache, and a build that produced no `latex.log`
@@ -115,7 +135,16 @@ export const PUBLISH_REPLACED_ITEMS = Object.freeze(['source', 'output', 'build-
 // `no-relevant-files-yet`, renders, and puts it all back — which makes it
 // intermittent rather than obvious. A build that rendered nothing is a failed
 // build, and a failed build must never replace a working render.
-const OPTIONALLY_ABSENT_PUBLISHED_ITEMS = new Set(['build-cache', 'build.log', 'latex.log'])
+//
+// The `.quarto/*` entries MUST be here. Only a Quarto project produces them, so
+// for every markdown, tex and html project the instance has none — and anything
+// outside this set throws rather than publishing. Omitting them would refuse
+// the publication of every non-Quarto build in the system, which is a total
+// outage wearing the costume of a cache change.
+const OPTIONALLY_ABSENT_PUBLISHED_ITEMS = new Set([
+  'build-cache', 'build.log', 'latex.log',
+  '.quarto/xref', '.quarto/idx', '.quarto/cites',
+])
 
 const BUILD_DIAGNOSTIC_FILES = ['build.log', 'latex.log']
 
@@ -219,7 +248,7 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
     // per project, so no second publication of this project can interleave, and
     // the function already awaits git reads inside the same transaction.
     for (const item of staging) {
-      await cp(join(instanceProject, item), join(transaction, `new-${item}`), {
+      await cp(join(instanceProject, item), join(transaction, `new-${transactionSlot(item)}`), {
         recursive: true,
         verbatimSymlinks: true,
       })
@@ -237,8 +266,13 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
       }
       for (const item of replacedItems) {
         old[item] = moveAside(join(liveProject, item), transaction, item)
-        const staged = join(transaction, `new-${item}`)
-        if (existsSync(staged)) renameSync(staged, join(liveProject, item))
+        const staged = join(transaction, `new-${transactionSlot(item)}`)
+        if (existsSync(staged)) {
+          // A pathed item (`.quarto/xref`) needs its parent to exist in the live
+          // project: the whole point is that `.quarto` did NOT survive.
+          mkdirSync(dirname(join(liveProject, item)), { recursive: true })
+          renameSync(staged, join(liveProject, item))
+        }
       }
       await git.advanceHead(name, sourceRevision, expectedHead)
       headMoved = true
@@ -295,7 +329,7 @@ export async function recoverBuildPublications() {
       const head = await git.head(project.name)
       if (head !== marker.sourceRevision) {
         for (const item of PUBLISH_REPLACED_ITEMS) {
-          restoreAside(join(liveProject, item), join(transaction, `old-${item}`))
+          restoreAside(join(liveProject, item), join(transaction, `old-${transactionSlot(item)}`))
         }
       }
       rmSync(transaction, { recursive: true, force: true })

@@ -33,7 +33,23 @@ export async function materializeBuildInstance({ name, sourceRevision, lifecycle
   const seedOutputMs = since(mark)
 
   mark = process.hrtime.bigint()
-  for (const privateCache of ['build-cache', '.biber-par-cache']) {
+  // The `.quarto/*` entries carry Quarto's project state across builds. Without
+  // them Quarto rebuilds its crossref and target indexes from nothing every
+  // time, and — because the instance is destroyed afterwards — no index ever
+  // survives for anything else to read.
+  //
+  // Three subdirectories rather than `.quarto` itself: that directory measures
+  // 450 MB on the real course, and all but 4.0 MB of it is a freeze mirror
+  // Quarto repopulates from the committed `_freeze/`. Carrying the mirror would
+  // cost 450 MB per project per build to move something already on disk twice.
+  //
+  // An entry may therefore be a PATH. Nothing creates `.quarto` here and
+  // nothing needs to: `cpSync` with `recursive` makes the intermediate
+  // directories itself. That was checked rather than assumed — a defensive
+  // `mkdirSync` stood here until removing it changed no test and a direct
+  // check confirmed the copy creates its own parents. `renameSync` on the
+  // publish side does NOT, which is why the equivalent line survives there.
+  for (const privateCache of ['build-cache', '.biber-par-cache', '.quarto/xref', '.quarto/idx', '.quarto/cites']) {
     const seed = seedProject ? join(seedProject, privateCache) : null
     if (seed && existsSync(seed)) cpSync(seed, join(project, privateCache), { recursive: true })
   }
