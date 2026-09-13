@@ -94,3 +94,16 @@ already shows one, stop — do not press Return marks to "confirm".
 Any of these is the result, unrepaired: the surface does not come up; there is
 nothing to mark on; `Return marks` refuses; the shape never arrives; or it
 arrives without the record. **Do not fix a step to complete the story.**
+
+## The data this should run against, when it next runs
+
+**Skip's standing instruction, 2026-09-12:** tlda is an extension supporting one
+class, and work is to be measured against his real course rather than fixtures —
+*"everything measured on synthetic projects tonight was uninterpretable to him"*.
+
+The four enrolments on the preview box are invented, and they were the fastest
+way to get four states in front of a camera. **They are not the bar.** Copying
+real student files onto `pic-preview` is authorised — his words, tonight — so
+the next run of this walk should use them, and the walk is otherwise unchanged:
+the instrument, the red, and what counts as a pass do not depend on whose work
+is in the room.
