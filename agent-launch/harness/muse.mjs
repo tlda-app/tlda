@@ -8,6 +8,7 @@ import { activeEnvName, repoRoot } from '../identity.mjs'
 import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 import { SYSTEM_MARKER } from '../../shared/terminal-system-markers.mjs'
 import { museSessionIdFromPath, museTranscriptPathForSession, resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
+import { soleOwnedRuntime } from '../process-tree.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -161,32 +162,6 @@ function argFlag(args, flag) {
   return m ? (m[1] || m[2] || m[3] || null) : null
 }
 
-function ownedRuntimePid(panePids, psText) {
-  const children = new Map()
-  const argsByPid = new Map()
-  for (const line of psText.split('\n')) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
-    if (!match) continue
-    const [, pid, ppid, args] = match
-    if (!children.has(ppid)) children.set(ppid, [])
-    children.get(ppid).push(pid)
-    argsByPid.set(pid, args)
-  }
-  const stack = [...panePids]
-  const seen = new Set()
-  const owned = []
-  while (stack.length) {
-    const pid = stack.pop()
-    if (seen.has(pid)) continue
-    seen.add(pid)
-    if (MUSE_RUNTIME.test(argsByPid.get(pid) || '')) owned.push(pid)
-    stack.push(...(children.get(pid) || []))
-  }
-  // Exactly one, for the reason claude.mjs requires it: two owned runtimes mean
-  // the pane is not evidence about which session belongs to this agent.
-  return owned.length === 1 ? { pid: owned[0], args: argsByPid.get(owned[0]) || '' } : null
-}
-
 export async function resolveLiveSessionIdentity({ tmuxSession, tmuxArgs = [], tmuxSocket = null, _deps = {} } = {}) {
   const run = _deps.execFile || execFileP
   if (!tmuxSession) return null
@@ -201,7 +176,9 @@ export async function resolveLiveSessionIdentity({ tmuxSession, tmuxArgs = [], t
   try {
     ;({ stdout: psText } = await run('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
   } catch { return null }
-  const runtime = ownedRuntimePid(panePids, psText)
+  // Exactly one, for the reason claude.mjs requires it: two owned runtimes mean
+  // the pane is not evidence about which session belongs to this agent.
+  const runtime = soleOwnedRuntime(panePids, psText, args => MUSE_RUNTIME.test(args))
   if (!runtime) return null
   // `processOwnedOnly` because a missing identity has to stay missing: the
   // adapter's launch-window fallback would pick the newest runtime json under

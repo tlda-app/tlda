@@ -13,6 +13,7 @@ import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 import { claudeJsonlPath } from '../resume.mjs'
 import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 import { SYSTEM_MARKER } from '../../shared/terminal-system-markers.mjs'
+import { soleOwnedRuntime } from '../process-tree.mjs'
 
 // Marked as a system message: the daemon types this into the terminal at spawn,
 // and an unmarked line there reads back as something Skip typed — 328 rows of
@@ -162,6 +163,10 @@ export function resumeId(handle) {
   return handle?.sessionId || null
 }
 
+// Exactly one owned runtime, or nothing: two under one pane means the pane is
+// not evidence about which session belongs to this agent.
+const CLAUDE_RUNTIME = /(?:^|\s|[/\\])claude(?:\.exe)?(?:\s|$)/
+
 export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, _deps = {} } = {}) {
   const run = _deps.execFile || execFileP
   const resolve = _deps.resolveTranscript || resolveTranscript
@@ -178,28 +183,9 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   try {
     ;({ stdout: psOut } = await run('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
   } catch { return null }
-  const children = new Map()
-  const runtimes = new Set()
-  for (const line of psOut.split('\n')) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
-    if (!match) continue
-    const [, pid, ppid, args] = match
-    if (!children.has(ppid)) children.set(ppid, [])
-    children.get(ppid).push(pid)
-    if (/(?:^|\s|[/\\])claude(?:\.exe)?(?:\s|$)/.test(args)) runtimes.add(pid)
-  }
-  const stack = [...panePids]
-  const seen = new Set()
-  const ownedRuntimes = []
-  while (stack.length) {
-    const candidate = stack.pop()
-    if (seen.has(candidate)) continue
-    seen.add(candidate)
-    if (runtimes.has(candidate)) ownedRuntimes.push(candidate)
-    stack.push(...(children.get(candidate) || []))
-  }
-  if (ownedRuntimes.length !== 1) return null
-  const pid = ownedRuntimes[0]
+  const owned = soleOwnedRuntime(panePids, psOut, args => CLAUDE_RUNTIME.test(args))
+  if (!owned) return null
+  const pid = owned.pid
   const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
   const expectedSessionId = agent?.session_id || null
   const jsonlPath = await resolve({
