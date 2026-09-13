@@ -20,6 +20,7 @@ import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
 
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
+import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { createDocumentManifest } from './document-manifest.mjs'
 import { childFailureDetail, getBuildReporter, streamChildOutput } from './build-runner.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
@@ -531,6 +532,70 @@ export function clearQmdFreeze(outDir, root) {
   rmSync(join(outDir, '_freeze', normalized), { recursive: true, force: true })
 }
 
+// A script a chunk loads is a dependency of the document, and the markdown
+// closure cannot see it -- it walks includes and assets, and `source(...)` is
+// neither. Measured on the course: of 37 chapters with a shared dependency, 35
+// reach it by `{{< include >}}` and 2 by `source('../shared-code/estimators.R')`.
+// Covering only the first leaves those two silently stale, which is the whole
+// defect.
+//
+// Deliberately just this one form. It is what the content uses, and a scanner
+// that tries to resolve computed paths would report dependencies that are not
+// there -- a wrong edge costs a needless re-execution, but pretending to a
+// generality it does not have is how the next person stops checking.
+const CHUNK_SOURCE_CALL = /(?:^|[^\w.])source\s*\(\s*(['"])([^'"]+)\1/g
+
+function chunkSourcedFiles(documentPath, projectDir) {
+  const abs = join(projectDir, documentPath)
+  if (!existsSync(abs)) return []
+  const found = []
+  for (const [, , ref] of readFileSync(abs, 'utf8').matchAll(CHUNK_SOURCE_CALL)) {
+    const rel = relative(projectDir, join(dirname(abs), ref)).replace(/\\/g, '/')
+    if (!rel || rel.startsWith('../')) continue
+    found.push(rel)
+  }
+  return found
+}
+
+/**
+ * The documents whose results are stale because something they depend on changed.
+ *
+ * WHY THIS HAS TO EXIST. Quarto's freeze hash is md5 of the document's OWN bytes
+ * and nothing else -- `freezeInputHash` reads one file, and that comparison is
+ * the only gate before a thaw. So a changed include, a changed sourced script, a
+ * changed data file invalidates NOTHING. The document thaws and the page keeps
+ * the old numbers.
+ *
+ * Demonstrated 2026-09-13 with a control: change a sourced script, the page is
+ * unchanged; change the document's own bytes, the page updates. The second is
+ * what makes the first evidence rather than a broken rig.
+ *
+ * RENDERING THE WHOLE BOOK DOES NOT FIX IT, which is the part that misleads.
+ * Each document is still checked against its own hash, so every unchanged
+ * chapter thaws exactly as it would have. Falling back to a whole-project render
+ * on a shared-input change therefore buys nothing at all -- it costs the whole
+ * book's wall clock and propagates the change to no one.
+ *
+ * The document whose own bytes changed is not in this list. Quarto's hash
+ * already catches that one, and it is the only case it catches.
+ */
+export function qmdDocumentsStaleByDependency(outDir, changedFiles = []) {
+  const changed = new Set(
+    (changedFiles || []).map(file => String(file).replace(/\\/g, '/').replace(/^\.?\/+/, '')),
+  )
+  if (changed.size === 0) return []
+
+  const stale = []
+  for (const document of new Set([...quartoBookRoots(outDir), ...qmdDeckRenderRoots(outDir)])) {
+    if (changed.has(document)) continue
+    const { files } = scanMarkdownDependencyClosure(document, outDir)
+    const dependencies = new Set([...files, ...chunkSourcedFiles(document, outDir)])
+    dependencies.delete(document)
+    if ([...dependencies].some(dependency => changed.has(dependency))) stale.push(document)
+  }
+  return stale
+}
+
 /**
  * Publish a component render that Quarto wrote beside its source.
  *
@@ -945,6 +1010,21 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
 
   await restoreRenv(outDir, addLog)
   const nativeTldaProject = isNativeTldaProject(outDir)
+
+  // Before any render decision, and for every build rather than only the
+  // incremental ones. Quarto's freeze hash reads the document's own bytes and
+  // nothing else, so a changed include or sourced script leaves every dependent
+  // document thawing its old results -- on a whole-book render exactly as much
+  // as on a one-chapter one. Dropping their records is what makes the change
+  // reach the page, and it is the only thing that does.
+  if (nativeTldaProject) {
+    const staleByDependency = qmdDocumentsStaleByDependency(outDir, changedFiles)
+    for (const document of staleByDependency) clearQmdFreeze(outDir, document)
+    if (staleByDependency.length > 0) {
+      addLog(`[qmd] re-executing ${staleByDependency.length} document(s) whose dependencies changed: ${staleByDependency.join(', ')}`)
+    }
+  }
+
   const incrementalRoots = nativeTldaProject ? qmdIncrementalRenderRoots(outDir, changedFiles) : null
   const deckPairs = nativeTldaProject ? qmdDeckChapterPairs(outDir, addLog) : []
   const deckRoots = new Set(deckPairs.map(({ deck }) => deck))
