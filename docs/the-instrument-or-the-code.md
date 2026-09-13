@@ -720,6 +720,65 @@ difference; it does not report who made it or when, and the words it uses
 —"staged", "modified" — name actions. The event here was a ref moving under a
 directory, which has no vocabulary in that output at all.
 
+### 20. A walk that navigates to the machine's own hostname, because `zsh` got there first
+
+**Four assertions came back red — `RED: no roster cells`, `RED: no titled chip`, `RED: no
+status chips` — against a server that was serving correctly the whole time.** Measured
+while the reds were being produced: root `200` in 0.67s, the API `200`.
+
+Every navigation had gone to `https://mini.local/`, which serves nothing. The script said:
+
+```sh
+: ${HOST:=https://localhost:5179}
+```
+
+**`zsh` presets `HOST` to the machine's hostname**, so the `:=` default never fires and the
+variable a reader sees assigned is never the value used:
+
+```
+zsh -c 'echo $HOST'                                    → mini.local
+zsh -c ': ${HOST:=https://localhost:5179}; echo $HOST' → mini.local
+```
+
+**The page stayed `about:blank` and every DOM query was therefore true and meaningless.**
+This is §"they set up environments in which nothing happens and then are like, oh, nothing's
+happening" arriving through a variable name rather than a missing fixture — and it reads
+worse than a crash, because four independent-looking assertions agree.
+
+**`HOST` is not special; it is the one that has bitten us.** Checked with `zsh -f`, so this
+is the shell rather than anything in Skip's config: `PATH`, `PWD`, `OLDPWD`, `LINES`,
+`COLUMNS`, `RANDOM` and `SECONDS` are preset too, and any of them used as a script parameter
+has the same silent-override shape. **Prefer a name nothing else
+owns** — `WALK_HOST`, `TARGET_URL` — and, before believing a red, **assert the page is not
+`about:blank` and print the URL the browser actually landed on.**
+
+### 21. A capture verb that reports nothing and writes nothing
+
+**A five-step walk ran twice and produced zero pictures, while reporting `done`.**
+
+```sh
+tlda-dev pw screenshot scratch/walk-frames/1-roster.png
+```
+
+`screenshot`'s first positional argument is a **target selector**, not a path; the path goes
+in `--filename`. So each step errored with `Unexpected token "" while parsing css selector
+""` — a message about CSS, in a walk about glyphs, easy to read as noise from the page — and
+wrote no file. **Three separate walk scripts written that night carried the same call.**
+
+**A picture is the deliverable of a walk, so this is not a cosmetic defect: it is the whole
+output silently missing.** `ls` the output directory after a capture. A verb's exit status
+describes the verb; only the file describes the frame.
+
+### 22. A walk that loses a step to a lock and prints `done` anyway
+
+**The last step of the same walk never executed.** Another agent took the shared browser
+pool's lock mid-run, the step's `eval` printed `pw busy … Try again`, and the script
+continued to its final line and announced completion.
+
+**A skipped step is a stop, not a silence.** The report shape that prevents it is a count —
+steps run against steps in the script — rather than a trailing `done`, which describes only
+that the interpreter reached the end of the file.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see

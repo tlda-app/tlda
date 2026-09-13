@@ -31,7 +31,24 @@ work here, because the store that answers is the one running the old server code
 
 ### Route A — after the deploy (simple, preferred)
 
-Once a deploy carrying `de9d74908` is serving, there is nothing to stand up:
+**Check the deploy by CONTENT, not by ancestry.** `main` here is assembled by cherry-pick,
+so the landed fix exists under a second sha and
+`git merge-base --is-ancestor de9d74908 <deployed>` answers about the wrong commit — that
+read already failed one walk tonight against a correct deployment. Ask the deployed tree
+whether it carries the line:
+
+```sh
+SHA=$(curl -sk https://tlda-fly.cormorant-matrix.ts.net/api/build-info \
+      | sed -n 's/.*"gitSha":"\([0-9a-f]*\)".*/\1/p')
+git show "$SHA":server/lib/daemon-activity-ingest.mjs | grep -c cardIsBuiltFromResult
+```
+
+**Non-zero means the serving tree has the fix; `0` means it does not, and nothing below can
+work** — stop there and say so; that is a frame too. Both controls run, just now, rather
+than asserted: the same `grep -c` returns **2** against `de9d74908` (the import and the call
+site) and **0** against `40f2bafb6`, which is what `/api/build-info` reports today.
+
+Then there is nothing to stand up:
 
 1. In a fresh scratch directory, write two disposable files — a `.md` staging file and any
    target file. The source **must** end in `.md` or `.markdown`; the tool refuses otherwise.
