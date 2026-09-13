@@ -40,6 +40,8 @@
  * hundred characters, so the quadratic cost is nothing and a smarter algorithm
  * would only be harder to read.
  */
+import { EDIT_CARD_EXCERPT_CHARS } from '../../shared/edit-card-metrics.mjs'
+
 export function markWordDiff(before, after) {
   const a = before ? before.split(/(\s+)/).filter(t => t !== '') : []
   const b = after ? after.split(/(\s+)/).filter(t => t !== '') : []
@@ -149,7 +151,7 @@ export function hunksFromPatch(patch) {
  * replaces: "3 files, +40 -12" tells you an edit was big, never whether it was
  * wrong.
  */
-export function summarizeChange(patch, { excerptChars = 240 } = {}) {
+export function summarizeChange(patch, { excerptChars = EDIT_CARD_EXCERPT_CHARS } = {}) {
   const hunks = hunksFromPatch(patch)
   if (hunks.length === 0) return null
 

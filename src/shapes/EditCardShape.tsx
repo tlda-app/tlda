@@ -73,9 +73,10 @@ function MarkedText({ parts, fallback }: { parts?: { text: string; changed: bool
  * says so plainly so it can be skimmed past.
  */
 function changeHeadline(change: EditCardChange): string {
-  if (change.kind === 'addition') return `added ${change.addedWords} words`
-  if (change.kind === 'deletion') return `deleted ${change.removedWords} words`
-  return `rewrote ~${change.rewordedWords} words  (+${change.addedWords} / −${change.removedWords})`
+  const words = (n: number) => `${n} ${n === 1 ? 'word' : 'words'}`
+  if (change.kind === 'addition') return `added ${words(change.addedWords)}`
+  if (change.kind === 'deletion') return `deleted ${words(change.removedWords)}`
+  return `rewrote ~${words(change.rewordedWords)}  (+${change.addedWords} / −${change.removedWords})`
 }
 
 export { EDIT_CARD_H, EDIT_CARD_W }
