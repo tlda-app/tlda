@@ -2,6 +2,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import { parseCodexLine, parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
+import { createMuseRecordParser, parseMuseLine } from '../agent-runtime/muse-activity.mjs'
 import { harnessKindForAgent } from '../agent-runtime/daemon-guards.mjs'
 import { extractActivityEvents, parseSessionLine, parseSessionRecord } from './activity-events.mjs'
 
@@ -12,6 +13,7 @@ export function createHarnessRuntime({
 } = {}) {
   const TMUX_ARGS = tmuxArgs || []
   const execFileP = promisify(execFileImpl)
+  const parseMuseRecord = createMuseRecordParser()
 
   async function findRuntimePidForAgent(agent, kind) {
     const adapter = harnessAdapters[kind]
@@ -81,6 +83,18 @@ export function createHarnessRuntime({
         parseRecord: parseCodexRecord,
         usesClaudeSessionIds: false,
         backfillSearch: true,
+        terminalChat: false,
+      },
+    },
+    muse: {
+      kind: 'muse',
+      processRe: /(?:^|\s|[/\\])muse(?:-bin-[\w.-]+)?(?:\.exe)?(?:\s|$)/,
+      activity: {
+        kind: 'muse',
+        parseLine: parseMuseLine,
+        parseRecord: parseMuseRecord,
+        usesClaudeSessionIds: false,
+        backfillSearch: false,
         terminalChat: false,
       },
     },

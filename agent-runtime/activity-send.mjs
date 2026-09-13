@@ -23,6 +23,8 @@ export function activityEventMessage(agentId, evt) {
     ...(evt.correlationId || evt.id ? { correlationId: evt.correlationId || evt.id } : {}),
     ...(evt.project ? { project: evt.project } : {}),
     ...(evt.sourceFile ? { sourceFile: evt.sourceFile } : {}),
+    ...(evt.operationId ? { operation_id: evt.operationId } : {}),
+    ...(evt.historical ? { historical: true } : {}),
   }
 }
 

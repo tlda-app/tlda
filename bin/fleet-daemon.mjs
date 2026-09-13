@@ -450,6 +450,16 @@ function bufferActivity(agentId, evts) {
   return sendActivityEvents(agentId, stampedEvents, sendMsg)
 }
 
+function bufferHistoricalActivity(agentId, evts) {
+  daemonActivityDeliveryCounters.record(
+    ACTIVITY_DELIVERY_STAGES.JSONL_EXTRACTED,
+    { type: 'activity-event' },
+    evts.length,
+    { agent: agentId }
+  )
+  return sendActivityEvents(agentId, evts.map(event => ({ ...event, historical: true })), sendMsg)
+}
+
 // ---------- JSONL ingestion ----------
 function currentJsonlBindingAgents() {
   return projectJsonlAgentsFromProcessBindings(permissionLedger.listProcessBindings(), {
@@ -474,6 +484,7 @@ jsonlIngestor = createJsonlIngestor({
   harnessAdapters: harnessRuntime.harnessAdapters,
   permissionLedger,
   bufferActivity,
+  bufferHistoricalActivity,
   extractActivityEvents: harnessRuntime.extractActivityEvents,
   activityDeliveryCounters: daemonActivityDeliveryCounters,
   editOperationStore,
@@ -1901,6 +1912,7 @@ const daemonOperationContext = new AsyncLocalStorage()
 function sendMsg(obj) {
   const parent = daemonOperationContext.getStore()
   return daemonServerTransport.durable(obj?.type || 'daemon-message', obj, {
+    operationId: obj?.operation_id || null,
     sender: `${MACHINE_ID}:${ACTIVE_ENV}`,
     destination: 'server',
     parentOperationId: parent?.operation_id || null,
@@ -2165,6 +2177,7 @@ async function handleServerMessage(msg, wsAttemptId) {
     sendActivityDeliveryMetrics('daemon-welcome')
     await reconcileJsonlProcessBindings('daemon-welcome')
     jsonlIngestor.resumeAfterServerReady()
+    jsonlIngestor.startMuseHistoricalBackfill()
     jsonlIngestor.retryPendingNativeSubagents()
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()

@@ -369,6 +369,7 @@ export function createJsonlIngestor({
   jsonlTranscriptRoots = null,
   permissionLedger,
   bufferActivity,
+  bufferHistoricalActivity = bufferActivity,
   extractActivityEvents,
   activityDeliveryCounters = null,
   editOperationStore = null,
@@ -382,6 +383,8 @@ export function createJsonlIngestor({
   jsonlTailIdleMs = 10 * 60 * 1000,
   nowMs = () => Date.now(),
   random = Math.random,
+  museSessionsRoot = path.join(os.homedir(), '.local', 'share', 'muse', 'sessions'),
+  museSessionIndexPath = path.join(os.homedir(), '.local', 'share', 'muse', 'session-index.db'),
 }) {
   // ---------- cursor persistence ----------
 
@@ -975,7 +978,7 @@ export function createJsonlIngestor({
         continue
       }
 
-      const sessionId = path.basename(resolvedPath, '.jsonl')
+      const sessionId = sessionIdForJsonlPath(resolvedPath, agent)
       let nativeSubagent = null
       try {
         nativeSubagent = await resolveNativeSubagent(resolvedPath, sessionId)
@@ -1356,6 +1359,10 @@ export function createJsonlIngestor({
 
   async function handleJsonlBackfillBatch(msg) {
     let delivered = true
+    for (const activity of msg.activities || []) {
+      if (!activity?.agentId || !Array.isArray(activity.events)) continue
+      if (bufferHistoricalActivity(activity.agentId, activity.events) === false) delivered = false
+    }
     if (msg.entries?.length) {
       try {
         await sendMsgWithReply({ type: 'jsonl-index', entries: msg.entries })
@@ -1393,7 +1400,12 @@ export function createJsonlIngestor({
         cursors[job.sessionId] = markSearchBackfilled(cursors[job.sessionId], job.harnessKind)
         scheduleCursorSave()
       }
-      log.info(`JSONL ${job?.kind || 'backfill'} job complete: ${msg.jobId}`)
+      if (job?.jobKind === 'muse-history') {
+        const c = msg.result || {}
+        log.info(`Muse history backfill: walked=${c.sessionsWalked || 0} ingested=${c.ingested || 0} activity_events=${c.activityEvents || 0} skipped_subagent=${c.skippedSubagent || 0} skipped_probe=${c.skippedProbe || 0} skipped_no_prompt=${c.skippedNoPrompt || 0} skipped_agent_launch_without_identity=${c.skippedAgentLaunchWithoutIdentity || 0}`)
+      } else {
+        log.info(`JSONL ${job?.kind || 'backfill'} job complete: ${msg.jobId}`)
+      }
     } else {
       log.warn(`JSONL ${job?.kind || 'backfill'} job failed: ${msg.jobId}: ${msg.error || 'unknown error'}`)
       if (job && (job.attempts || 0) < 3 && !_shuttingDown) {
@@ -1700,6 +1712,19 @@ export function createJsonlIngestor({
     })
   }
 
+  function startMuseHistoricalBackfill() {
+    const jobId = 'muse-history:v1'
+    if (!harnessAdapters.muse || searchBackfillJobs.has(jobId)) return false
+    startJsonlBackfillJob({
+      jobId,
+      kind: 'muse-history',
+      jobKind: 'muse-history',
+      sessionsRoot: museSessionsRoot,
+      sessionIndexPath: museSessionIndexPath,
+    })
+    return true
+  }
+
   function syncIfRosterChanged({ agents, signature, reason, onChanged }) {
     const nextSignature = sessionWatcherRosterSignature(agents)
     if (nextSignature === signature) return signature
@@ -1765,6 +1790,7 @@ export function createJsonlIngestor({
   return {
     sync: syncSessionWatchers,
     reconcileDesiredTails,
+    startMuseHistoricalBackfill,
     syncIdentityNames: syncSessionIdentityNamesFromAgents,
     syncIfRosterChanged,
     rosterSignature: sessionWatcherRosterSignature,
@@ -1780,4 +1806,8 @@ export function createJsonlIngestor({
     shutdown,
     saveCursors,
   }
+}
+
+export function sessionIdForJsonlPath(jsonlPath, agent = null) {
+  return agent?.session_id || path.basename(jsonlPath, '.jsonl')
 }

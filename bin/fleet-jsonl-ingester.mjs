@@ -10,8 +10,10 @@ import { PassThrough } from 'stream'
 import { createInterface } from 'readline'
 import { pathToFileURL } from 'url'
 import chokidar from 'chokidar'
+import Database from 'better-sqlite3'
 import { parser as jsonlParser } from 'stream-json/jsonl/parser.js'
 import { parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
+import { createMuseRecordParser, museLoginMarkerFromRecord, parseMuseRecord } from '../agent-runtime/muse-activity.mjs'
 import {
   extractIdentityFromRecord,
 } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
@@ -202,6 +204,7 @@ const send = createSafeIpcSender(process, {
 function parseRecordForHarness(harnessKind, record) {
   if (harnessKind === 'claude') return parseSessionRecord(record)
   if (harnessKind === 'codex') return parseCodexRecord(record)
+  if (harnessKind === 'muse') return parseMuseRecord(record)
   return null
 }
 
@@ -333,6 +336,128 @@ async function readJsonlLines(filePath, onRecord) {
   }
 }
 
+const MUSE_AGENT_LAUNCH_PROMPT = /^(?:💻 )?Call (?:the exact registered tool )?mcp__tlda__login\b/i
+
+function museSessionFiles(sessionsRoot) {
+  const files = []
+  const stack = [sessionsRoot]
+  while (stack.length) {
+    const current = stack.pop()
+    let entries
+    try { entries = fs.readdirSync(current, { withFileTypes: true }) } catch (e) {
+      if (e?.code === 'ENOENT') continue
+      throw e
+    }
+    for (const entry of entries) {
+      const child = path.join(current, entry.name)
+      if (entry.isDirectory()) stack.push(child)
+      else if (entry.isFile() && entry.name === 'session.jsonl') files.push(child)
+    }
+  }
+  return files.sort()
+}
+
+function museIndexRows(sessionIndexPath) {
+  if (!sessionIndexPath || !fs.existsSync(sessionIndexPath)) return []
+  const db = new Database(sessionIndexPath, { readonly: true, fileMustExist: true })
+  try {
+    return db.prepare('SELECT session_id, prompt_count, first_user_prompt FROM sessions').all()
+  } finally {
+    db.close()
+  }
+}
+
+export function classifyUnattributedMuseSession({ promptCount = 0, firstPrompt = '' } = {}) {
+  if (!promptCount) return 'noPrompt'
+  if (MUSE_AGENT_LAUNCH_PROMPT.test(firstPrompt || '')) return 'agentLaunchWithoutIdentity'
+  return 'probe'
+}
+
+export function collectMuseHistoricalSessions({ sessionsRoot, sessionIndexPath, indexRows = null } = {}) {
+  const files = museSessionFiles(sessionsRoot)
+  const indexed = new Map((indexRows || museIndexRows(sessionIndexPath)).map(row => [row.session_id, row]))
+  const batches = []
+  const census = {
+    sessionsWalked: files.length,
+    ingested: 0,
+    skippedSubagent: 0,
+    skippedProbe: 0,
+    skippedNoPrompt: 0,
+    skippedAgentLaunchWithoutIdentity: 0,
+    activityEvents: 0,
+  }
+
+  for (const jsonlPath of files) {
+    if (jsonlPath.includes(`${path.sep}subagent${path.sep}`)) {
+      census.skippedSubagent += 1
+      continue
+    }
+    const sessionId = path.basename(path.dirname(jsonlPath))
+    const parse = createMuseRecordParser()
+    const events = []
+    let marker = null
+    let observedPromptCount = 0
+    let observedFirstPrompt = ''
+    let recordOrdinal = 0
+    for (const line of fs.readFileSync(jsonlPath, 'utf8').split('\n')) {
+      if (!line.trim()) continue
+      let record
+      try { record = JSON.parse(line) } catch { continue }
+      recordOrdinal += 1
+      marker ||= museLoginMarkerFromRecord(record)
+      if (record?.payload_type === 'runtime.user_intent.accepted') {
+        const prompt = (record.payload?.refill_blocks || [])
+          .filter(block => block?.kind === 'text')
+          .map(block => block.text || '')
+          .join('')
+        if (prompt) {
+          observedPromptCount += 1
+          observedFirstPrompt ||= prompt
+        }
+      }
+      const parsed = parse(record)
+      if (!parsed) continue
+      const extracted = defaultActivityExtractor.extractActivityEvents([parsed])
+      extracted.forEach((event, index) => events.push({
+        ...event,
+        operationId: `muse-history:${sessionId}:${record.id || record.sequence || recordOrdinal}:${index}`,
+      }))
+    }
+    if (marker?.fleet_id) {
+      census.ingested += 1
+      census.activityEvents += events.length
+      batches.push({ agentId: marker.fleet_id, sessionId, jsonlPath, events })
+      continue
+    }
+    const indexRow = indexed.get(sessionId)
+    const reason = classifyUnattributedMuseSession({
+      promptCount: indexRow?.prompt_count ?? observedPromptCount,
+      firstPrompt: indexRow?.first_user_prompt || observedFirstPrompt,
+    })
+    if (reason === 'noPrompt') census.skippedNoPrompt += 1
+    else if (reason === 'agentLaunchWithoutIdentity') census.skippedAgentLaunchWithoutIdentity += 1
+    else census.skippedProbe += 1
+  }
+  return { census, batches }
+}
+
+export async function runMuseHistoryBackfillJob(job) {
+  const result = collectMuseHistoricalSessions(job)
+  for (const batch of result.batches) {
+    for (let i = 0; i < batch.events.length; i += 100) {
+      await sendJobBatch(job, {
+        activities: [{
+          agentId: batch.agentId,
+          sessionId: batch.sessionId,
+          jsonlPath: batch.jsonlPath,
+          events: batch.events.slice(i, i + 100),
+        }],
+      })
+    }
+  }
+  return result.census
+}
+
 export async function runSearchBackfillJob(job) {
   const entries = []
   const identities = []
@@ -387,6 +512,8 @@ async function startJob(msg) {
     let result
     if (job.jobKind === 'search') {
       result = await runSearchBackfillJob(job)
+    } else if (job.jobKind === 'muse-history') {
+      result = await runMuseHistoryBackfillJob(job)
     } else {
       throw new Error(`unknown job kind: ${job.jobKind}`)
     }
