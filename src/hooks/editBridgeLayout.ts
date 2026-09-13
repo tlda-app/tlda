@@ -29,7 +29,13 @@ export interface BridgeChange {
   removedWords: number
   rewordedWords: number
   hunkCount: number
-  excerpt: { file: string | null; before: string; after: string } | null
+  excerpt: {
+    file: string | null
+    before: string
+    after: string
+    beforeParts?: { text: string; changed: boolean }[]
+    afterParts?: { text: string; changed: boolean }[]
+  } | null
 }
 
 export interface BridgeBuild {

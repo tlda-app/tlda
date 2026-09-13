@@ -38,7 +38,30 @@ interface EditCardChange {
   removedWords: number
   rewordedWords: number
   hunkCount: number
-  excerpt: { file: string | null; before: string; after: string } | null
+  excerpt: {
+    file: string | null
+    before: string
+    after: string
+    /** The same text, split so the words that differ can be marked. */
+    beforeParts?: { text: string; changed: boolean }[]
+    afterParts?: { text: string; changed: boolean }[]
+  } | null
+}
+
+/**
+ * A passage with the words that differ marked.
+ *
+ * Showing two whole passages answers "something in here changed" and nothing
+ * more -- on his course a one-command fix rendered as two identical lines.
+ * Marking the span is what makes a correction visible at card size.
+ */
+function MarkedText({ parts, fallback }: { parts?: { text: string; changed: boolean }[]; fallback: string }) {
+  if (!parts?.length) return <>{fallback}</>
+  return <>{parts.map((part, i) => (
+    part.changed
+      ? <mark key={i} className="edit-card-word">{part.text}</mark>
+      : <span key={i}>{part.text}</span>
+  ))}</>
 }
 
 /**
@@ -213,10 +236,14 @@ function EditCard({ shape }: { shape: any }) {
               {change.excerpt && (
                 <div className="edit-card-diff">
                   {change.excerpt.before && (
-                    <div className="edit-card-was" title={change.excerpt.before}>{change.excerpt.before}</div>
+                    <div className="edit-card-was" title={change.excerpt.before}>
+                      <MarkedText parts={change.excerpt.beforeParts} fallback={change.excerpt.before} />
+                    </div>
                   )}
                   {change.excerpt.after && (
-                    <div className="edit-card-now" title={change.excerpt.after}>{change.excerpt.after}</div>
+                    <div className="edit-card-now" title={change.excerpt.after}>
+                      <MarkedText parts={change.excerpt.afterParts} fallback={change.excerpt.after} />
+                    </div>
                   )}
                 </div>
               )}

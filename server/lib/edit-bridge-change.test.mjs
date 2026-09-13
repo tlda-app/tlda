@@ -108,3 +108,43 @@ test('context lines end a hunk instead of joining the change', () => {
   assert.ok(!change.excerpt.before.includes('unchanged'), 'context is not part of the change')
   assert.equal(change.excerpt.before, 'was this')
 })
+
+// --- what real course content does, which the docs fixture could not show ---
+
+test('a one-word correction is marked, not shown as two identical lines', () => {
+  // His course, lectures/Lecture3.qmd, "fixed typo in L3": 13 words each side,
+  // one word different. Whole-passage before/after rendered two matching lines.
+  const change = summarizeChange(patch(
+    '@@ -3,1 +3,1 @@\n' +
+    '- Suppose we are calculating the probability of the response sequence.\n' +
+    '+ Suppose we are computing the probability of the response sequence.\n',
+  ))
+  const marked = change.excerpt.beforeParts.filter(p => p.changed).map(p => p.text.trim())
+  const markedAfter = change.excerpt.afterParts.filter(p => p.changed).map(p => p.text.trim())
+  assert.deepEqual(marked, ['calculating'])
+  assert.deepEqual(markedAfter, ['computing'])
+  assert.ok(change.excerpt.beforeParts.some(p => !p.changed), 'the unchanged surround is still there')
+})
+
+test('a LaTeX command fix survives markup stripping', () => {
+  // `\ldot` -> `\ldots`. proseOf turns BOTH into a space, so stripping erased
+  // the whole change and the card showed two identical lines. Measured on his
+  // course before this guard existed.
+  const change = summarizeChange(patch(
+    '@@ -3,1 +3,1 @@\n' +
+    '-- Suppose the sequence $a_1 \\ldot a_n = 0$.\n' +
+    '++ Suppose the sequence $a_1 \\ldots a_n = 0$.\n',
+  ))
+  assert.notEqual(change.excerpt.before, change.excerpt.after, 'the two sides must differ')
+  const after = change.excerpt.afterParts.filter(p => p.changed).map(p => p.text.trim()).join(' ')
+  assert.match(after, /\\ldots/, 'the command that changed is the marked span')
+})
+
+test('the raw fallback does not fire when stripping kept the difference', () => {
+  const change = summarizeChange(patch(
+    '@@ -3,1 +3,1 @@\n' +
+    '-\\emph{The estimator} is consistent.\n' +
+    '+\\emph{The estimator} is efficient.\n',
+  ))
+  assert.ok(!change.excerpt.before.includes('\\emph'), 'ordinary prose stays stripped')
+})

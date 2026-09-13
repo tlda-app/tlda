@@ -25,6 +25,50 @@
  * through untouched for whatever wants it there.
  */
 
+/**
+ * The words that differ between two passages, marked.
+ *
+ * Whole-passage before/after answers "a paragraph changed" and fails on the
+ * case that is most of his real traffic: a correction inside a long passage.
+ * Measured on his course, `lectures/Lecture3.qmd`, commit "fixed typo in L3" --
+ * 13 words on each side, one character different, and the card rendered two
+ * lines that looked identical. A reader learned less than the commit subject
+ * already told them.
+ *
+ * So the card marks the span that differs rather than showing two passages that
+ * contain it. Plain LCS over words: the excerpts are clipped to a couple of
+ * hundred characters, so the quadratic cost is nothing and a smarter algorithm
+ * would only be harder to read.
+ */
+export function markWordDiff(before, after) {
+  const a = before ? before.split(/(\s+)/).filter(t => t !== '') : []
+  const b = after ? after.split(/(\s+)/).filter(t => t !== '') : []
+  // lcs[i][j] = longest common run of a.slice(i) and b.slice(j)
+  const lcs = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1))
+  for (let i = a.length - 1; i >= 0; i -= 1) {
+    for (let j = b.length - 1; j >= 0; j -= 1) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1])
+    }
+  }
+  const beforeParts = []
+  const afterParts = []
+  const push = (parts, text, changed) => {
+    const last = parts[parts.length - 1]
+    if (last && last.changed === changed) last.text += text
+    else parts.push({ text, changed })
+  }
+  let i = 0
+  let j = 0
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { push(beforeParts, a[i], false); push(afterParts, b[j], false); i += 1; j += 1 }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) { push(beforeParts, a[i], true); i += 1 }
+    else { push(afterParts, b[j], true); j += 1 }
+  }
+  while (i < a.length) { push(beforeParts, a[i], true); i += 1 }
+  while (j < b.length) { push(afterParts, b[j], true); j += 1 }
+  return { beforeParts, afterParts }
+}
+
 /** Markup that is noise when the question is "what words changed". */
 function proseOf(line) {
   return line
@@ -39,6 +83,11 @@ function proseOf(line) {
     .replace(/[*_`]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/** The line as written, with only the diff marker removed. */
+function rawOf(line) {
+  return line.replace(/^[+-]/, '').replace(/\s+/g, ' ').trim()
 }
 
 function words(text) {
@@ -108,8 +157,22 @@ export function summarizeChange(patch, { excerptChars = 240 } = {}) {
   let removedWords = 0
   let best = null
   for (const hunk of hunks) {
-    const before = hunk.removed.map(proseOf).filter(Boolean).join(' ')
-    const after = hunk.added.map(proseOf).filter(Boolean).join(' ')
+    let before = hunk.removed.map(proseOf).filter(Boolean).join(' ')
+    let after = hunk.added.map(proseOf).filter(Boolean).join(' ')
+    // Stripping must never erase the change itself.
+    //
+    // His course is LaTeX-heavy and a common real edit is a command fix:
+    // `\ldot` -> `\ldots`, measured on `lectures/Lecture3.qmd`, commit
+    // "fixed typo in L3". `proseOf` turns BOTH into a space, so the two sides
+    // came out identical and the card showed a person two matching lines and
+    // called it a rewrite. When that happens the markup IS the change, so the
+    // lines are shown as written -- he reads LaTeX, and raw beats a passage
+    // whose only difference has been deleted.
+    if (before && before === after) {
+      const rawBefore = hunk.removed.map(rawOf).filter(Boolean).join(' ')
+      const rawAfter = hunk.added.map(rawOf).filter(Boolean).join(' ')
+      if (rawBefore !== rawAfter) { before = rawBefore; after = rawAfter }
+    }
     addedWords += words(after)
     removedWords += words(before)
     // The biggest rewrite, not the biggest hunk: a hunk that only adds is not
@@ -144,7 +207,13 @@ export function summarizeChange(patch, { excerptChars = 240 } = {}) {
     removedWords,
     // Only meaningful for a replacement, and the reason the distinction exists.
     rewordedWords: kind === 'replacement' ? Math.min(addedWords, removedWords) : 0,
-    excerpt: best ? { file: best.file, before: clip(best.before), after: clip(best.after) } : null,
+    excerpt: best ? (() => {
+      const before = clip(best.before)
+      const after = clip(best.after)
+      // Marked AFTER clipping, so the marks line up with the text the card
+      // actually shows rather than with a passage it truncated.
+      return { file: best.file, before, after, ...markWordDiff(before, after) }
+    })() : null,
     hunkCount: hunks.length,
   }
 }

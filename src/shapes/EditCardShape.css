@@ -151,3 +151,16 @@
 .edit-card-now {
   border-left-color: var(--ok, #6a9);
 }
+
+/* The words that actually differ. Without this a one-command fix in his course
+   rendered as two identical lines — the passage changed, and you could not see
+   where. */
+.edit-card-word {
+  background: rgba(200, 160, 40, 0.28);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+.edit-card-was .edit-card-word { background: rgba(200, 80, 80, 0.26); }
+.edit-card-now .edit-card-word { background: rgba(90, 170, 130, 0.28); }
