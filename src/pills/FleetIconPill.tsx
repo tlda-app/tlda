@@ -398,9 +398,41 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       const ownedFleetShapeCount = mainEditor.getCurrentPageShapes().filter((shape: any) =>
         isFleetShapeForOwnerKey(shape, userId, ownerDeviceId),
       ).length
+      // A pooled-browser session is told it already has a layout, so nothing is
+      // fabricated for it.
+      //
+      // Read the branch below rather than this line: a desktop human is given
+      // no auto layout at all, and then sees the panes they placed themselves,
+      // which persist in the room. An automated session was being handed a
+      // `3-col` nobody is ever given — so a camera pointed at this app was
+      // photographing a layout that exists for no one.
+      //
+      // This does not make the pooled session equal to a person's: it is a
+      // fresh anonymous identity every launch, so it owns nothing and now gets
+      // an empty canvas, which is also not what anybody sees. Both are wrong;
+      // an absent pane is visibly absent, while a fabricated one reads as a
+      // feature. A walk that needs a pane opens it, which exercises the act.
+      //
+      // `pw=1` rather than `navigator.webdriver`, because `tlda-dev pw goto`
+      // and `pwSetupUrl` both set it on every URL the pool opens, and a browser
+      // driven some other way is not the case this is about.
+      //
+      // "Is this automated" is answered in three places — here,
+      // `src/cameraLink.ts` and `src/main.tsx` — and this one now deliberately
+      // differs from the other two, which still read
+      // `navigator.webdriver || pw === '1'`. Written down rather than unified:
+      // whoever changes what automated means should know there are three
+      // answers, and a refactor to one nobody asked for is how a fix acquires a
+      // second concept here.
+      //
+      // It also stops the debris: the layout writes six fleet shapes into the
+      // project's synced room, and an automated launch mints a fresh identity
+      // each time, so eleven launches once left sixty-six shapes under eleven
+      // identities in a room other people read.
+      const pooledBrowserSession = new URLSearchParams(window.location.search).get('pw') === '1'
       const defaultLayout = selectAutoFleetDefaultLayout({
-        explicitLayout: false,
-        automatedSession: navigator.webdriver || new URLSearchParams(window.location.search).get('pw') === '1',
+        explicitLayout: pooledBrowserSession,
+        automatedSession: navigator.webdriver || pooledBrowserSession,
         phoneViewport: isPhoneFleetDefaultViewport({
           ...viewport,
           pointerCoarse: window.matchMedia?.('(pointer: coarse)').matches || false,
