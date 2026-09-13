@@ -27,7 +27,7 @@ import * as goose from './harness/goose.mjs'
 import * as muse from './harness/muse.mjs'
 import * as bot from './harness/bot.mjs'
 import { randomUUID } from 'node:crypto'
-import { assertCodexKickoffDelivered } from './launch-result.mjs'
+import { assertCodexKickoffDelivered, recordKickoffFailure } from './launch-result.mjs'
 
 export class SpawnError extends Error {
   constructor(reason, message, detail = {}) {
@@ -390,7 +390,10 @@ export async function launchMintProcess(params) {
       codex.kickoffPrompt(name),
       { tmuxSocket: params.tmuxSocket },
     )
-    assertCodexKickoffDelivered(delivered, tmuxSession)
+    assertCodexKickoffDelivered(delivered, tmuxSession, {
+      crashLogPath: params.crashLogPath,
+      detail: { name, mint_id: mintId, fleet_id: fleetId, path: 'mint' },
+    })
   }
   return {
     mint_id: mintId,
@@ -1044,6 +1047,7 @@ async function spawnRespawn(params) {
   if (requestedKind === 'codex') {
     const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
     if (!injected) {
+      recordKickoffFailure(tmuxSession, params.crashLogPath, { name: friendlyName, fleet_id: fleetId, path: 'respawn' })
       throw new SpawnError('launch-failed', `codex prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
     }
   } else if (requestedKind === 'claude' && resumeId) {
@@ -1164,6 +1168,7 @@ async function spawnRefresh(params) {
   if (requestedKind === 'codex') {
     const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
     if (!injected) {
+      recordKickoffFailure(tmuxSession, params.crashLogPath, { name: friendlyName, fleet_id: fleetId, path: 'refresh' })
       throw new SpawnError('launch-failed', `codex prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
     }
   }
