@@ -2,6 +2,7 @@ import {
   appendFileSync,
   cpSync,
   existsSync,
+  statSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -148,6 +149,60 @@ const OPTIONALLY_ABSENT_PUBLISHED_ITEMS = new Set([
 
 const BUILD_DIAGNOSTIC_FILES = ['build.log', 'latex.log']
 
+// Where a failed instance's freeze can be, and both cases are real. The success
+// path moves it beside `output/` just before the publication sweep; a render
+// that threw never got there, so it is still inside the render directory.
+const FAILED_INSTANCE_FREEZE_LOCATIONS = ['_freeze', join('output', '_freeze')]
+
+/**
+ * Carry a failed build's freeze out of its instance, MERGED into whatever the
+ * project already has.
+ *
+ * WHY A FAILED BUILD'S FREEZE IS WORTH KEEPING. Quarto's freeze is the record of
+ * executing a document, keyed by the md5 of that document's source. A build that
+ * rendered 48 of 73 chapters and then died computed 48 of those records, and
+ * they were destroyed with the instance -- so the next build started cold, and
+ * so did the one after it. Measured 2026-09-13: a cold render exceeded the
+ * fifteen-minute `RENDER_TIMEOUT_MS`, was SIGTERMed at document 48, discarded
+ * everything it had executed, and the next attempt began again from nothing.
+ * **That is a loop with no exit**, and it is the idempotence failure `AGENTS.md`
+ * describes -- run it again and converge is exactly what it could not do.
+ *
+ * MERGED, NOT REPLACED, and that is the whole correctness of it. A failed build
+ * executed a SUBSET; the project may hold records for documents this run never
+ * reached. Replacing would throw those away and leave the cache no better than
+ * before -- which is the bug, not the fix.
+ *
+ * It cannot publish a wrong result. Quarto compares the stored hash against the
+ * source before thawing, so a record that does not match is re-executed. The
+ * worst a carried record can do is be ignored.
+ *
+ * It is also not an artifact in the sense the rest of this file protects: the
+ * freeze sits beside `output/`, nothing serves it over `/docs/` and nothing
+ * promotes it. The last good render stays the published one.
+ */
+export function carryFreezeOutOfFailedInstance(name, instanceProject) {
+  if (!instanceProject) return null
+  const target = join(projectDir(name), '_freeze')
+  for (const location of FAILED_INSTANCE_FREEZE_LOCATIONS) {
+    const from = join(instanceProject, location)
+    if (!existsSync(from)) continue
+    // A DIRECTORY, checked rather than assumed. `cpSync` does not refuse a file
+    // here -- it copies it happily and leaves a FILE named `_freeze` in the
+    // project, which the next build's staging then treats as the freeze tree.
+    // Measured while testing this: the copy returned success and produced a
+    // cache that cannot be read, which is worse than the throw I was guarding
+    // against because nothing reports it.
+    if (!statSync(from).isDirectory()) continue
+    // `force: true` overwrites same-named records and leaves the rest, which is
+    // the merge. A newer record for a document beats an older one for the same
+    // document, and documents this build never touched keep what they had.
+    cpSync(from, target, { recursive: true, force: true })
+    return location
+  }
+  return null
+}
+
 /**
  * Carry a failed build's diagnostics out of its instance before the instance is
  * destroyed. This is NOT a publication: it takes no head, moves no artifacts,
@@ -169,6 +224,28 @@ export function publishBuildDiagnostics(name, instanceProject, failureReason = n
     // places if the removal then failed.
     cpSync(from, join(liveProject, file))
     copied.push(file)
+  }
+
+  // Before the instance is removed, and for the same reason as the logs: it
+  // exists nowhere else. Unlike the logs it is not diagnostics -- it is the work
+  // this build actually completed, and discarding it is what made repeated
+  // builds restart from cold instead of converging.
+  //
+  // CAUGHT, and the ordering is why. The failure reason is written below, and it
+  // is the only account of why this build died. An unguarded copy here -- a full
+  // disk, an EACCES, a tree that vanished under it -- would throw past that write
+  // and destroy the diagnostic to save a cache. A cache is worth one wasted
+  // render; the reason is worth the next person's night.
+  let carriedFreeze = null
+  try {
+    carriedFreeze = carryFreezeOutOfFailedInstance(name, instanceProject)
+  } catch (e) {
+    // Swallowed deliberately: this is a cache, and the failure reason written
+    // below is the only account of why the build died. Rethrowing here would
+    // destroy that account to report a lost cache -- one wasted render against
+    // the next person having nothing to read. The cache's absence costs a
+    // re-execution and says so in the next build's timings.
+    console.error(`[build] could not carry the freeze out of ${name}'s failed instance: ${e?.message || e}`)
   }
 
   // A build can fail BEFORE it has an instance to log into — resolving the
@@ -195,7 +272,7 @@ export function publishBuildDiagnostics(name, instanceProject, failureReason = n
       console.error(`[build] could not write failure log for ${name}: ${e?.message || e}`)
     }
   }
-  return { copied, wrote }
+  return { copied, wrote, carriedFreeze }
 }
 
 /**
