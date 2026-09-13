@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { HARNESS } from '../../shared/harness.ts'
-import { buildArgs, buildCmd, capabilities, prepareFleetConfig, resolveLiveSessionIdentity, resolveModelSelection, resumeId } from './muse.mjs'
+import { buildArgs, buildCmd, capabilities, launchEnvHasApiKey, prepareFleetConfig, resolveLiveSessionIdentity, resolveModelSelection, resumeId } from './muse.mjs'
 import { museAdapter, museSessionIdFromPath, museTranscriptPathForSession } from '../../agent-runtime/resolve-transcript.mjs'
 import { runtimeStateFromProcessList } from '../tmux.mjs'
 import { probeSpawnAvailability } from '../availability.mjs'
@@ -285,4 +285,37 @@ test('availability accepts deployment API authentication without an account auth
   const result = await probeSpawnAvailability({ env: { META_API_KEY: 'deployment-secret' }, deps: { config, run } })
   assert.equal(result.harnesses.muse.available, true)
   assert.equal(result.harnesses.muse.authenticated.source, 'META_API_KEY')
+})
+
+
+const tmp = mkdtempSync(path.join(tmpdir(), 'muse-auth-env-'))
+const cfg = mkdtempSync(path.join(tmpdir(), 'muse-auth-cfg-'))
+mkdirSync(path.join(cfg, 'muse'), { recursive: true })
+writeFileSync(path.join(cfg, 'muse', 'auth.json'), JSON.stringify({ providers: { meta: { storage: 's' } } }))
+
+// The launch environment must agree with the auth decision. These are the two
+// arms that disagreed in production: a developer box whose login profile sets
+// META_API_KEY while the daemon's own environment does not, and a deployment
+// whose daemon environment carries it.
+//
+// The assertion is on the emitted command rather than on a flag, because the
+// defect was that the flag said one thing and the command did another.
+
+test('an account-auth launch unsets the key the login shell would supply', () => {
+  const cmd = buildCmd({ ...base, fleetId: 'fleet:a', localAgentId: 'local-a', env: { TMPDIR: tmp, XDG_CONFIG_HOME: cfg } })
+  assert.match(cmd, /unset META_API_KEY; /, 'the decision was account auth, so the child must not receive a key')
+  assert.match(cmd, /zsh -lc /)
+})
+
+test('a deployment launch keeps the key, because that is what the feature is for', () => {
+  const cmd = buildCmd({ ...base, fleetId: 'fleet:b', localAgentId: 'local-b', env: { TMPDIR: tmp, XDG_CONFIG_HOME: cfg, META_API_KEY: 'deployment-secret' } })
+  assert.doesNotMatch(cmd, /unset META_API_KEY/, 'a daemon-supplied key is the deployment credential and must survive')
+  assert.doesNotMatch(cmd, /deployment-secret/, 'and it must never be written into the command line')
+})
+
+test('the decision has one implementation, so the two callers cannot disagree', () => {
+  assert.equal(launchEnvHasApiKey({ env: {} }), false)
+  assert.equal(launchEnvHasApiKey({ env: { META_API_KEY: 'k' } }), true)
+  // harnessOptions.env wins the same way prepareFleetConfig reads it
+  assert.equal(launchEnvHasApiKey({ env: {}, harnessOptions: { env: { META_API_KEY: 'k' } } }), true)
 })
