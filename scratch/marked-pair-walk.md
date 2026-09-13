@@ -29,6 +29,41 @@ The data on `pic-preview`: four enrolments, one assignment, one problem, put
 there through the real submit/mark/return routes. It is tailnet-only, writes are
 free, and it gets wiped.
 
+## Before frame 1: the docview pane that crashed the last run
+
+The crash on advancing between students was a `fleet-docview` shape belonging to
+the automated session's own `3-col` layout — **a desktop human is given no fleet
+layout at all**, and the auto-layout is applied once per identity per room, so an
+identity that already owns fleet shapes there keeps whatever it has, stray
+docview included.
+
+**So clear it before advancing.** List the room and delete any `fleet-docview`
+that is yours:
+
+```
+curl -s  <base>/api/projects/<room>/shapes | grep fleet-docview
+curl -X DELETE <base>/api/projects/<room>/shapes/<shape-id>   # needs the rw token
+```
+
+The error message carries the shape's id, so the failing run names what to
+remove. **If the crash survives with no docview shape in the room, that is a
+finding and the walk stops there.**
+
+## Frame 0: is a mark in the room visible to the student at all?
+
+**Independent of everything below, and it needs no marking canvas.** A `draw`
+shape was written into `submission-homework-1-walk-b`'s room through the server
+API — `shape:isolation-probe-mark`, red, four points, at x 120 y 200. It is not a
+returned mark and did not come from the marking surface; it is there to answer
+one question.
+
+Open `?name=<you>&workspace=classroom-work&assignment=homework-1&student=walk-b`
+and look for a red squiggle over the work.
+
+**Visible** → a mark that reaches the room reaches the student, and item 2
+reduces to the publish step. **Not visible** → that is a bigger finding than the
+crash, because nothing in the code filters that room by author or by state.
+
 ## The frames
 
 **1. The marking surface comes up.**
