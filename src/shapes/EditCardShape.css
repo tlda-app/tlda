@@ -148,9 +148,22 @@
   line-height: 1.3;
 }
 
+/* Muted with `color`, NOT with `opacity`.
+
+   `opacity` on this element creates a stacking context and fades everything
+   inside it, including the mark — and an ancestor's opacity cannot be undone
+   by a descendant, so no rule on `.edit-card-word` could have restored it.
+   The struck side was therefore unreadable by construction: measured at 4x on
+   a real frame, a struck-and-marked line rendered as a solid bar with zero
+   legible glyphs while the struck-but-unmarked line above it was fully
+   legible — same card, same strikethrough, the mark the only difference.
+
+   Muting the text colour instead leaves the mark free to carry full strength,
+   which matters most on this side: the struck token is the thing a reader is
+   trying to read. */
 .edit-card-was {
   border-left-color: var(--danger, #c66);
-  opacity: 0.65;
+  color: color-mix(in srgb, var(--text, #111) 62%, var(--bg, #fff));
   text-decoration: line-through;
   text-decoration-color: rgba(170, 51, 51, 0.35);
 }
@@ -162,9 +175,12 @@
 /* The words that actually differ. Without this a one-command fix in his course
    rendered as two identical lines — the passage changed, and you could not see
    where. */
+/* The marked token is the one thing on the card that must be readable, so it
+   opts out of the surrounding mute rather than inheriting it. `color: inherit`
+   made it as faint as the passage it is meant to stand out from. */
 .edit-card-word {
   background: rgba(200, 160, 40, 0.28);
-  color: inherit;
+  color: var(--text, #111);
   padding: 0 1px;
   border-radius: 2px;
 }
