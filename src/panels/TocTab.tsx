@@ -720,50 +720,6 @@ export function TocTab({ query = '' }: { query?: string }) {
         <PlaceStackNav />
         <CameraLinkToggle />
         <JoinVoiceVideoToggle />
-        {/* The door to the comparison, next to what it leads to.
-            Until now the only way in was the version stamp on the document
-            surface, which offers the five most recent builds -- so reaching
-            an older one meant stepping, and the control that expands the
-            history sat on a different surface from the control that starts
-            it. */}
-        {ctx?.onToggleShadowHistory && (
-          <button
-            className={`toc-diff-hint history-compare-btn${ctx.shadowHistoryVisible ? ' active' : ''}`}
-            type="button"
-            onClick={ctx.onToggleShadowHistory}
-            title="Compare this document against an earlier version"
-          >
-            {ctx.shadowHistoryVisible ? 'Close compare' : 'Compare versions'}
-          </button>
-        )}
-        {ctx?.onToggleWholeDocumentDiff && (
-          <button
-            className={`toc-diff-hint history-compare-btn${ctx.wholeDocumentDiffVisible ? ' active' : ''}`}
-            type="button"
-            onClick={ctx.onToggleWholeDocumentDiff}
-            disabled={ctx.wholeDocumentDiffLoading}
-            title={ctx.wholeDocumentDiffError || 'Highlight every change between the current and historical document'}
-          >
-            {ctx.wholeDocumentDiffLoading ? 'Diffing…' : ctx.wholeDocumentDiffError ? 'Diff failed' : ctx.wholeDocumentDiffVisible ? 'Hide diff' : 'Show diff'}
-          </button>
-        )}
-        {ctx?.onToggleEditBridge && (
-          <button
-            className={`toc-diff-hint history-compare-btn${ctx.bridgeVisible ? ' active' : ''}`}
-            type="button"
-            onClick={ctx.onToggleEditBridge}
-            disabled={ctx.bridgeLoading}
-            title={ctx.bridgeError || 'Expand the builds between these two versions into the gap'}
-          >
-            {ctx.bridgeLoading
-              ? 'Expanding…'
-              : ctx.bridgeError
-                ? 'Bridge failed'
-                : ctx.bridgeVisible
-                  ? `Hide edit bridge${ctx.bridgeBuildCount ? ` (${ctx.bridgeBuildCount})` : ''}`
-                  : 'Show edit bridge'}
-          </button>
-        )}
         {/* Which interval is on screen, and whether its far end will move.
             An unpinned bridge grows as builds arrive, which is wanted while
             somebody is working and misleading if it is not said out loud. */}

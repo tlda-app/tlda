@@ -553,7 +553,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const {
     shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
     shadowColumnX, shadowYOffset, shadowChangelog,
-    toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, handleShadowScrubVersion, realignShadow,
+    hideShadowOverlay, handleShadowScrubTime, handleShadowStep, handleShadowScrubVersion, realignShadow,
   } = useShadowOverlay(editorRef, document, projectName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef, bridgeColumnOffsetApplied)
 
   const {
@@ -856,8 +856,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     buildWarnings,
     timelineActive,
     onToggleTimeline: toggleTimeline,
-    shadowHistoryVisible: shadowVisible,
-    onToggleShadowHistory: toggleShadowOverlay,
     shadowActiveVersion,
     wholeDocumentDiffVisible,
     wholeDocumentDiffLoading,
@@ -875,7 +873,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     bridgeToHash,
     bridgeUpperPinned,
     onPinBridgeUpper: bridgeVisible ? pinUpperToCompare : undefined,
-  }), [proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError, toggleWholeDocumentDiff, bridgeVisible, bridgeLoading, bridgeError, bridgeBuilds.length, toggleEditBridge, handOffCleanup, bridgeFromHash, bridgeToHash, bridgeUpperPinned, pinUpperToCompare])
+  }), [proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, shadowActiveVersion, wholeDocumentDiffVisible, wholeDocumentDiffLoading, wholeDocumentDiffError, toggleWholeDocumentDiff, bridgeVisible, bridgeLoading, bridgeError, bridgeBuilds.length, toggleEditBridge, handOffCleanup, bridgeFromHash, bridgeToHash, bridgeUpperPinned, pinUpperToCompare])
 
   // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
   // shapes must remain visible to custom WM viewports; the HUD renders from the
@@ -1183,6 +1181,15 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           onJumpOldest={shadowTimeBounds ? () => handleShadowScrubVersion(shadowTimeBounds.oldest) : undefined}
           onClose={hideShadowOverlay}
           onRealign={realignShadow}
+          onToggleWholeDocumentDiff={shadowActiveVersion ? toggleWholeDocumentDiff : undefined}
+          wholeDocumentDiffVisible={wholeDocumentDiffVisible}
+          wholeDocumentDiffLoading={wholeDocumentDiffLoading}
+          wholeDocumentDiffError={wholeDocumentDiffError}
+          onToggleEditBridge={shadowActiveVersion ? toggleEditBridge : undefined}
+          bridgeVisible={bridgeVisible}
+          bridgeLoading={bridgeLoading}
+          bridgeError={bridgeError}
+          bridgeBuildCount={bridgeBuilds.length}
           changelog={shadowChangelog.commits.length > 0 ? shadowChangelog : undefined}
         />
       )}

@@ -96,6 +96,34 @@
   cursor: default;
 }
 
+/* The two actions that act on the version you have scrubbed to. Siblings of
+   the step buttons, not icons: they carry words, so they size to their text
+   rather than to a 22px square. `active` is the pressed state, matching how
+   the same two controls read when they lived in the table of contents. */
+.shadow-scrubber-action {
+  flex: none;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 7px;
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.shadow-scrubber-action:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.15);
+}
+.shadow-scrubber-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.shadow-scrubber-action.active {
+  background: rgba(148, 163, 184, 0.28);
+}
+
 /* Range slider */
 .shadow-scrubber-range {
   flex: 1;
