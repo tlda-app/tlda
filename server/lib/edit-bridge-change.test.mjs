@@ -148,3 +148,19 @@ test('the raw fallback does not fire when stripping kept the difference', () => 
   ))
   assert.ok(!change.excerpt.before.includes('\\emph'), 'ordinary prose stays stripped')
 })
+
+test('a change beyond the clip window is still what the excerpt shows', () => {
+  // Measured on a paper of his: a correction ~500 characters into a long
+  // passage. Clipping the first N characters and marking afterwards gave two
+  // byte-identical windows with no marks -- the same failure as not marking.
+  const lead = Array.from({ length: 120 }, (_, i) => `lead${i}`).join(' ')
+  const change = summarizeChange(patch(
+    '@@ -3,1 +3,1 @@\n' +
+    `-${lead} the estimator is consistent.\n` +
+    `+${lead} the estimator is efficient.\n`,
+  ), { excerptChars: 120 })
+  assert.ok(change.excerpt.before.startsWith('…'), 'the window moved off the start and says so')
+  assert.match(change.excerpt.before, /consistent/, 'the changed span is inside the window')
+  assert.match(change.excerpt.after, /efficient/)
+  assert.ok(change.excerpt.afterParts.some(p => p.changed && /efficient/.test(p.text)))
+})
