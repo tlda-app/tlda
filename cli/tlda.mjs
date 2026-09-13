@@ -4114,11 +4114,182 @@ export async function attachToAgent(name, {
  * the thing being routed around. Wanting a filter here means rebuilding `chat()` on
  * the wrong side of the boundary.
  */
+// Per-harness submit behaviour for `tlda agent message`, established against
+// real panes 2026-09-13 on scratch sessions running the same binaries:
+//
+// muse:   `send-keys -l` + immediate Enter LOSES the Enter (text sits after
+//         ❯; 1/1 immediate lost, 5/5 accepted once the text is confirmed
+//         visible first). Submitting mid-turn steers the running turn.
+// claude: input arrives SLOW (seconds) but in order — nothing is lost, the
+//         text just renders late. Working state shows a spinner line.
+//
+// A harness with no entry here is REFUSED, not attempted: typing hopefully
+// into an unknown TUI leaves a line sitting at a prompt nobody knows is
+// there, which is the entire defect this verb exists to avoid.
+const MESSAGE_SUBMIT_DRIVERS = {
+  muse: {
+    // Words that prove the TUI took the submission. "Queued input" is
+    // reported, not personally verified (PM, 2026-09-13, on a
+    // harness-driven muse pane); a non-match fails loud, never false.
+    evidence: [/Working/, /Thinking/, /Queued input/, /steering the running turn/],
+    // Empty compose. muse renders a bare ❯; any text there is someone composing.
+    composeClear: /^❯\s*$/,
+  },
+  claude: {
+    evidence: [/Forging/, /Sautéed/, /Churned/, /esc to interrupt/],
+    // Claude renders a ghost placeholder when empty (`❯ Try "..."`, seen 3x);
+    // anything else on the prompt line is someone composing.
+    composeClear: /^❯\s*(Try\s.+)?$/,
+  },
+}
+
+function messageSleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function capturePaneLines(spawnSync, target) {
+  const r = spawnSync('tmux', [...tmuxBase(), 'capture-pane', '-t', target, '-p', '-S', '-100'])
+  return String(r.stdout || '').split('\n')
+}
+
+function lastPromptLine(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].includes('❯')) return lines[i]
+  }
+  return ''
+}
+
+// One sender per pane. Two `tlda agent message` runs are separate processes,
+// so the exclusion has to be a file lock, not a variable. A sender that finds
+// the pane locked fails loudly instead of interleaving its text with the
+// holder's — stacked lines at one prompt are indistinguishable afterwards.
+async function withPaneMessageLock(tmuxSession, fn) {
+  const { default: lockfile } = await import('proper-lockfile')
+  const { default: os } = await import('node:os')
+  const { default: path } = await import('node:path')
+  const { mkdirSync, writeFileSync } = await import('node:fs')
+  const sock = (readDaemonConfig().tmuxSocket || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')
+  const dir = path.join(os.tmpdir(), 'tlda-agent-message-locks')
+  mkdirSync(dir, { recursive: true })
+  const sentinel = path.join(dir, `pane-${sock}-${tmuxSession.replace(/[^a-zA-Z0-9_-]/g, '_')}`)
+  writeFileSync(sentinel, '', { flag: 'a' })
+  let release = null
+  try {
+    release = await lockfile.lock(sentinel, {
+      stale: 30000, update: 10000, realpath: false,
+      retries: { retries: 30, minTimeout: 500, maxTimeout: 500 },
+    })
+  } catch (error) {
+    throw new Error(`another sender is messaging this pane; not interleaving (${error.message})`)
+  }
+  try {
+    return await fn()
+  } finally {
+    await release()
+  }
+}
+
+function submitFailure(code, message) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
+// Evidence the TUI took the submission, read from the pane itself: either a
+// harness working-state word, or our text moved from the compose line into
+// the transcript. A transcript match alone is not enough — the check runs
+// only once the compose line is clear of our text.
+function submitEvidence(driver, lines, probe) {
+  const body = lines.join('\n')
+  const hit = driver.evidence.find(re => re.test(body))
+  if (hit) return `tui state ${hit}`
+  const prompts = lines.filter(l => l.includes('❯'))
+  if (prompts.slice(0, -1).some(l => l.includes(probe))) return 'transcript'
+  return null
+}
+
+function readPane(spawnSync, target) {
+  const r = spawnSync('tmux', [...tmuxBase(), 'capture-pane', '-t', target, '-p', '-S', '-100'])
+  if ((r.status ?? 0) !== 0) throw submitFailure('pane-gone', 'pane became unreadable mid-submit')
+  return String(r.stdout || '').split('\n')
+}
+
+// The probe is the message's first line, shortened: a narrow pane wraps long
+// compose lines, so the full text may never sit on one row. The 💬 marker the
+// wrapper stamps makes even the prefix distinctive under the pane lock.
+function messageProbe(marked) {
+  const first = String(marked).split('\n').map(l => l.trim()).filter(Boolean)[0] || ''
+  return first.slice(0, 32) || String(marked).slice(0, 32)
+}
+
+async function typeAndSubmitVerified(spawnSync, target, marked, driver) {
+  const probe = messageProbe(marked)
+  // Someone else's text in the compose box may be Skip mid-sentence — never
+  // hijack it. Our own probe already there means a previous run typed but
+  // never submitted; skip typing (retyping would duplicate it) and go submit.
+  const busy = lastPromptLine(readPane(spawnSync, target))
+  if (!busy.includes(probe)) {
+    if (!driver.composeClear.test(busy)) {
+      throw submitFailure('compose-busy', `prompt holds someone else's text (${JSON.stringify(busy.trim().slice(0, 60))}); refusing to type over it`)
+    }
+    // `-l` sends the text literally, so a message containing `Enter`, `C-c`
+    // or a semicolon is typed rather than interpreted as tmux key names.
+    const typed = spawnSync('tmux', [...tmuxBase(), 'send-keys', '-t', target, '-l', marked])
+    if ((typed.status ?? 0) !== 0) {
+      throw submitFailure('send-failed', `tmux send-keys failed: ${typed.stderr?.toString().trim() || `status ${typed.status}`}`)
+    }
+    // The TUI consumes typed input asynchronously (measured seconds on
+    // claude) — an Enter sent before the text lands is processed first or
+    // dropped. Wait for our text, bounded; never Enter blindly.
+    const deadline = Date.now() + 10000
+    let landed = false
+    while (Date.now() < deadline) {
+      messageSleepMs(300)
+      if (lastPromptLine(readPane(spawnSync, target)).includes(probe)) { landed = true; break }
+    }
+    if (!landed) throw submitFailure('type-not-accepted', 'typed text never appeared in the prompt; not submitting blindly')
+  }
+  // The Enter is the one keystroke we do mean, so it goes without `-l` — and
+  // it can be lost (measured on muse: text sitting after ❯ after the Enter).
+  // Retry while our text is still in the compose box, bounded; once it is
+  // gone, require positive evidence before calling it submitted.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const submitted = spawnSync('tmux', [...tmuxBase(), 'send-keys', '-t', target, 'Enter'])
+    if ((submitted.status ?? 0) !== 0) {
+      throw submitFailure('send-failed', `tmux send-keys Enter failed: ${submitted.stderr?.toString().trim() || `status ${submitted.status}`}`)
+    }
+    const deadline = Date.now() + 8000
+    while (Date.now() < deadline) {
+      messageSleepMs(400)
+      const lines = readPane(spawnSync, target)
+      if (!lastPromptLine(lines).includes(probe)) {
+        const evidence = submitEvidence(driver, lines, probe)
+        if (evidence) return evidence
+      }
+    }
+    if (attempt === 3) break
+  }
+  throw submitFailure('submit-unconfirmed', 'message still in the prompt after 3 Enters, or no submit evidence; refusing to claim it sent')
+}
+
+async function enqueueChatHistory({ to, from, message, sentAt }) {
+  const { DaemonOutbox, defaultOutboxPath } = await import('../daemon/outbox.mjs')
+  const { daemonStateSuffix } = await import('../shared/daemon-socket-path.mjs')
+  const outbox = new DaemonOutbox(defaultOutboxPath(CONFIG_DIR, daemonStateSuffix(localDaemonEnvName())))
+  try {
+    return outbox.enqueue({ type: 'chat', message, to, from, sentAt })
+  } finally {
+    outbox.close()
+  }
+}
+
 export async function messageLocalAgent(name, text, {
   spawnSyncImpl = null,
   log = console,
   exitImpl = code => process.exit(code),
   openLedger = () => new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() }),
+  enqueueHistory = enqueueChatHistory,
+  withPaneLock = withPaneMessageLock,
 } = {}) {
   if (!name || !text) {
     log.error('Usage: tlda agent message <agent> <text>')
@@ -4143,6 +4314,16 @@ export async function messageLocalAgent(name, text, {
     exitImpl(1)
     return { ok: false, error: 'process-missing', agent }
   }
+  // The harness decides whether this verb may drive the pane at all. Read from
+  // the launch recipe on the already-resolved agent — read-only; this verb
+  // never writes launch_recipe, which is what `wake` relaunches from.
+  const harnessKind = agent.launchRecipe?.kind || null
+  const driver = harnessKind ? MESSAGE_SUBMIT_DRIVERS[harnessKind] : null
+  if (!driver) {
+    log.error(`Cannot message ${agent.friendlyName || agent.fleetId || agent.mintId}: harness "${harnessKind || 'unknown'}" has no verified submit behaviour — refusing rather than typing hopefully. Supported: ${Object.keys(MESSAGE_SUBMIT_DRIVERS).join(', ')}.`)
+    exitImpl(1)
+    return { ok: false, error: 'unsupported-harness', agent, harnessKind }
+  }
   const spawnSync = spawnSyncImpl || (await import('child_process')).spawnSync
   // Resolve the pane rather than reusing `attach`'s target. `exactTmuxTarget`
   // yields `=session`, which is exact-match SESSION syntax: `attach-session`
@@ -4161,21 +4342,17 @@ export async function messageLocalAgent(name, text, {
   // place that vocabulary lives — do not write the glyph here, or there are two.
   const { chatMessage } = await import('../shared/terminal-system-markers.mjs')
   const marked = chatMessage(text)
-  // `-l` sends the text literally, so a message containing `Enter`, `C-c` or a
-  // semicolon is typed rather than interpreted as tmux key names. The newline is a
-  // separate call for the same reason: it is the one keystroke we do mean.
-  const typed = spawnSync('tmux', [...tmuxBase(), 'send-keys', '-t', target, '-l', marked])
-  if ((typed.status ?? 0) !== 0) {
-    log.error(`tmux send-keys failed for ${tmuxSession}: ${typed.stderr?.toString().trim() || `status ${typed.status}`}`)
-    exitImpl(typed.status || 1)
-    return { ok: false, error: 'send-failed', agent, tmuxSession }
-  }
-  const submitted = spawnSync('tmux', [...tmuxBase(), 'send-keys', '-t', target, 'Enter'])
-  const status = submitted.status ?? 0
-  if (status !== 0) {
-    log.error(`tmux send-keys Enter failed for ${tmuxSession}: ${submitted.stderr?.toString().trim() || `status ${status}`}`)
-    exitImpl(status || 1)
-    return { ok: false, error: 'submit-failed', agent, tmuxSession }
+  // Type-and-submit is one operation under the pane lock: type, confirm the
+  // text landed, Enter, confirm the TUI took it, retrying a lost Enter —
+  // instead of two hopeful calls. A bare `send-keys` status 0 only proves
+  // tmux accepted the keystroke, not that the TUI submitted anything.
+  let evidence = null
+  try {
+    evidence = await withPaneLock(tmuxSession, () => typeAndSubmitVerified(spawnSync, target, marked, driver))
+  } catch (error) {
+    log.error(`Could not message ${agent.friendlyName || agent.fleetId || agent.mintId} in ${tmuxSession}: ${error.message}`)
+    exitImpl(1)
+    return { ok: false, error: error.code || 'submit-unconfirmed', agent, tmuxSession }
   }
   // Delivery is the transport; the event is the record. It is an ordinary `chat`
   // row — same type, same shape as `fleet-data.mjs` sends — queued in the daemon's
@@ -4191,31 +4368,26 @@ export async function messageLocalAgent(name, text, {
   // receive, this is where the fix belongs.
   let queued = null
   try {
-    const { DaemonOutbox, defaultOutboxPath } = await import('../daemon/outbox.mjs')
-    const { daemonStateSuffix } = await import('../shared/daemon-socket-path.mjs')
-    const outbox = new DaemonOutbox(defaultOutboxPath(CONFIG_DIR, daemonStateSuffix(localDaemonEnvName())))
-    try {
-      queued = outbox.enqueue({
-        type: 'chat',
-        message: text,
-        to: agent.fleetId || agent.mintId,
-        from: process.env.FLEET_ID || null,
-        sentAt: new Date().toISOString(),
-      })
-    } finally {
-      outbox.close()
-    }
+    queued = await enqueueHistory({
+      to: agent.fleetId || agent.mintId,
+      from: process.env.FLEET_ID || null,
+      message: text,
+      sentAt: new Date().toISOString(),
+    })
   } catch (error) {
     // The terminal already has it. A failed queue costs the history row, not the
     // message, so it is reported and does not fail the command — the caller is
-    // usually mid-incident and the delivery is the urgent half.
-    log.error(`Delivered, but not queued for history: ${error.message}`)
+    // usually mid-incident and the submit is the urgent half.
+    log.error(`Submitted to the terminal, but not queued for history: ${error.message}`)
   }
   // Says "not in history" every time, not only when the queue write fails. The
-  // event is queued and nothing consumes it, so a bare "Delivered" would be a
+  // event is queued and nothing consumes it, so a bare success word would be a
   // success line for work that half happened — the shape this whole verb exists
   // because of. Delete this clause in the commit that gives the event a receiver.
-  log.log(`Delivered to ${agent.friendlyName || agent.fleetId || agent.mintId} in ${tmuxSession} — terminal only, not in history.`)
+  // "Delivered" is reserved for recipient notification through the real notify
+  // path (AGENTS.md §"Fleet communication uses mail words"); typing into a pane
+  // is not that, so the line says what happened: typed and submitted.
+  log.log(`Message submitted in ${tmuxSession} (${evidence}) — terminal only, not in history.`)
   exitImpl(0)
   return { ok: true, agent, tmuxSession, queued }
 }
@@ -5269,7 +5441,8 @@ message is BREAK-GLASS and does two things, one of which does not work yet:
   to reach someone during an outage, then say what you did through chat() once the
   server is back, or the only record is in their scrollback.
   This machine only. One agent, one message. No labels or filters — those need the
-  roster, which is the thing being routed around.
+  roster, which is the thing being routed around. Refuses harnesses without a
+  verified submit (currently muse, claude) rather than typing hopefully.
 --permissions names one of the profiles above; without it, fresh uses the configured default and wake restores the durable grant.
 Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 only as a mint/wake-time emergency override to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
