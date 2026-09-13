@@ -249,6 +249,19 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'An unknown Codex tool arriving over /ws/fleet and rendering without a handler for it. Endpoint: /ws/fleet.',
   },
+  'server/lib/region-transfer-card-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Drives the DAEMON ingress, /ws/fleet-daemon, which is not the fleet message protocol: raw '
+      + '`daemon-hello` and `activity-event` frames that the server normalizes into a stored event. What is '
+      + 'under test is whether the ingest carries a tool result across that boundary at all -- a region '
+      + 'transfer card parses its diff out of the result, and the ingest dropped it, so the card drew as a '
+      + 'plain text line for as long as the feature has existed. The in-process test passed throughout, which '
+      + 'is why this one exists: both ends were right and the wire between them was not. It then reads the '
+      + 'stored event back over /ws/fleet to prove the same socket a browser uses delivers it. The transport '
+      + 'library speaks the fleet protocol and would carry neither leg, and routing this through it would '
+      + 'prove the library. Endpoints: /ws/fleet-daemon and /ws/fleet.',
+  },
   // --- exceptions: protocols the fleet transport does not carry ------------
   'src/voice.mjs': {
     count: 2,
