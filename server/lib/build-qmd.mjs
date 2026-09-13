@@ -588,8 +588,18 @@ export function qmdDocumentsStaleByDependency(outDir, changedFiles = []) {
   const stale = []
   for (const document of new Set([...quartoBookRoots(outDir), ...qmdDeckRenderRoots(outDir)])) {
     if (changed.has(document)) continue
-    const { files } = scanMarkdownDependencyClosure(document, outDir)
-    const dependencies = new Set([...files, ...chunkSourcedFiles(document, outDir)])
+    // Scan every markdown file in the closure for `source(...)`, not just the
+    // root. A chapter reaches a script one hop away: it `{{< include >}}`s a
+    // file, and the `source(...)` is written inside THAT file. Scanning only the
+    // root sees neither the include's chunk nor anything it pulls in, so the
+    // script has no dependents and a change to it marks nothing stale.
+    //
+    // `markdown` contains the root, so this subsumes scanning it directly.
+    const { files, markdown } = scanMarkdownDependencyClosure(document, outDir)
+    const dependencies = new Set(files)
+    for (const included of markdown) {
+      for (const sourced of chunkSourcedFiles(included, outDir)) dependencies.add(sourced)
+    }
     dependencies.delete(document)
     if ([...dependencies].some(dependency => changed.has(dependency))) stale.push(document)
   }
