@@ -82,8 +82,7 @@ const COURSE_ITEM_BADGE: Record<CourseItemType, string> = {
   deck: 'DECK',
 }
 
-type HomeworkEntry = { assignmentId: string; returned: boolean }
-const EMPTY_HOMEWORK: ReadonlyMap<string, HomeworkEntry> = new Map<string, HomeworkEntry>()
+const EMPTY_HOMEWORK: ReadonlySet<string> = new Set<string>()
 const EMPTY_PAGE_FILES: readonly string[] = []
 
 export function TocTab({ query = '' }: { query?: string }) {
@@ -224,7 +223,7 @@ export function TocTab({ query = '' }: { query?: string }) {
   // Which book pages are homework. Setup records the rendered page path on its
   // assignment, so a flat Quarto book can join a TOC chapter to the student's
   // own submission without inferring either from a project name.
-  const [homeworkByPage, setHomeworkByPage] = useState<ReadonlyMap<string, HomeworkEntry>>(EMPTY_HOMEWORK)
+  const [homeworkPages, setHomeworkPages] = useState<ReadonlySet<string>>(EMPTY_HOMEWORK)
   // The project whose table of contents this panel is showing. A book shows its
   // own; everything else shows the mounted document's project.
   const tocProjectName = book?.bookName ?? doc?.projectName
@@ -240,18 +239,15 @@ export function TocTab({ query = '' }: { query?: string }) {
     classroomApi.assignments(courseId)
       .then(({ assignments }) => {
         if (cancelled) return
-        const pages = new Map<string, HomeworkEntry>()
+        const pages = new Set<string>()
         for (const assignment of assignments) {
-          if (assignment.bookPageFile) pages.set(assignment.bookPageFile, {
-            assignmentId: assignment.id,
-            returned: assignment.submission?.gradingStatus === 'returned',
-          })
+          if (assignment.bookPageFile) pages.add(assignment.bookPageFile)
         }
-        setHomeworkByPage(pages)
+        setHomeworkPages(pages)
       })
       // 401 for a reader with no classroom credential, which is most readers.
       // The book stays a book; the rows simply carry no homework mark.
-      .catch(() => { if (!cancelled) setHomeworkByPage(EMPTY_HOMEWORK) })
+      .catch(() => { if (!cancelled) setHomeworkPages(EMPTY_HOMEWORK) })
     return () => { cancelled = true }
   }, [tocProjectName])
 
@@ -630,7 +626,7 @@ export function TocTab({ query = '' }: { query?: string }) {
     // the offset, because reading it 0-based resolves a homework row to the
     // SOLUTIONS page beside it rather than to nothing.
     const homeworkKey = homeworkKeyForTocRow(h, pageFiles)
-    const homework = homeworkKey ? homeworkByPage.get(homeworkKey) : undefined
+    const homework = homeworkKey ? homeworkPages.has(homeworkKey) : false
     return (
       <div key={i} className={`toc-item ${h.level}${isCurrent ? ' toc-item-current' : ''}`}>
         {hasChildren ? (
@@ -643,12 +639,7 @@ export function TocTab({ query = '' }: { query?: string }) {
         )}
         {renderCenterButton(h)}
         <span className="toc-title" onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
-        {homework?.returned ? <a
-          className="toc-item-type toc-item-type--homework"
-          href={`?workspace=classroom-work&assignment=${encodeURIComponent(homework.assignmentId)}`}
-          title="Open your returned homework"
-          aria-label="Open your returned homework"
-        >{COURSE_ITEM_BADGE.homework}</a> : (homework || itemType) && (
+        {(homework || itemType) && (
           <span
             className={`toc-item-type toc-item-type--${homework ? 'homework' : itemType}`}
             title={COURSE_ITEM_LABEL[homework ? 'homework' : itemType!]}
