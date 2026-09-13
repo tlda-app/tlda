@@ -49,7 +49,13 @@ export async function materializeBuildInstance({ name, sourceRevision, lifecycle
   // `mkdirSync` stood here until removing it changed no test and a direct
   // check confirmed the copy creates its own parents. `renameSync` on the
   // publish side does NOT, which is why the equivalent line survives there.
-  for (const privateCache of ['build-cache', '.biber-par-cache', '.quarto/xref', '.quarto/idx', '.quarto/cites']) {
+  //
+  // `_freeze` is the same shape and the bigger prize: Quarto's executed chunk
+  // output, keyed on the source md5. Without it every build re-runs R from
+  // scratch. It lives BESIDE `output/` rather than in it — see
+  // `stageFreezeIntoRender` in build-qmd.mjs for why — so it is a sibling here
+  // too, and never becomes part of the published or promoted tree.
+  for (const privateCache of ['build-cache', '.biber-par-cache', '_freeze', '.quarto/xref', '.quarto/idx', '.quarto/cites']) {
     const seed = seedProject ? join(seedProject, privateCache) : null
     if (seed && existsSync(seed)) cpSync(seed, join(project, privateCache), { recursive: true })
   }
