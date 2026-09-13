@@ -247,3 +247,49 @@ test('the marked span survives the card clipping it to two lines', () => {
     }
   }
 })
+
+test('snapping the cut to a word boundary never eats the mark', () => {
+  // The word snap exists because a 72-character budget lands mid-word often
+  // enough to read as a rendering fault -- the wire showed `regularity
+  // conditio…`. Its own failure mode is the snap moving the cut back PAST the
+  // marked span, which would reintroduce exactly the bug it sits next to.
+  //
+  // So this drives the mark across a range of offsets rather than testing one:
+  // a single position can pass by luck about where the spaces fall.
+  for (let pad = 0; pad < 40; pad += 1) {
+    const lead = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu '.repeat(4)
+    const prefix = lead.slice(0, lead.length - pad)
+    const before = `${prefix}the estimator is consistent under review`
+    const after = `${prefix}the estimator is efficient under review`
+    const change = summarizeChange(patch(`@@ -3,1 +3,1 @@\n-${before}\n+${after}\n`))
+    for (const [side, word] of [['before', 'consistent'], ['after', 'efficient']]) {
+      const parts = change.excerpt[`${side}Parts`]
+      const marked = parts.filter(p => p.changed).map(p => p.text).join(' ')
+      assert.match(marked, new RegExp(word), `pad ${pad}: ${side} lost its mark to the snap`)
+      assert.ok(
+        change.excerpt[side].includes(word),
+        `pad ${pad}: ${side} excerpt ${JSON.stringify(change.excerpt[side])} no longer contains the change`,
+      )
+    }
+  }
+})
+
+test('a long marked span is not shortened by the word snap', () => {
+  // The snap's own failure mode, and the case the loop above never reaches:
+  // when the marked span itself runs to the edge of the budget, the last
+  // space before the cut falls INSIDE the mark, so snapping back to it eats
+  // the end of the change. The mark may be truncated by the budget -- that is
+  // the budget doing its job and the ellipsis says so -- but not by the snap.
+  const prefix = 'The estimator is invariant to the choice of weight scale and design '
+  const change = summarizeChange(patch(
+    '@@ -3,1 +3,1 @@\n' +
+    `-${prefix}here\n` +
+    `+${prefix}the result holds under mild regularity conditions throughout the study\n`,
+  ))
+  const marked = change.excerpt.afterParts.filter(p => p.changed).map(p => p.text).join('')
+  assert.match(marked, /regularity condition/, 'the snap pulled the cut back into the marked span')
+  assert.ok(
+    change.excerpt.after.includes(marked),
+    'the excerpt text and its marked parts disagree about what was kept',
+  )
+})
