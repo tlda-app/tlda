@@ -47,6 +47,36 @@ worth reporting** — different from archaeology, and worth knowing.
 **Photographed by someone other than me when it is done**, per the standing
 rule.
 
+## 1b. Maths at rest: raw or stripped — WITH HIM, do not pre-empt
+
+Stripping markup makes prose readable and makes dense maths lossy: `\hat` and
+friends are dropped, so `If( )=op(1)` shows empty parens where a symbol was.
+Word-marking rescues most of it — you can see *which* tokens changed even where
+the surround is degraded — and that is the argument for keeping the strip.
+
+**The alternative is one line: show maths as written at rest.** It is a product
+choice on his content, it is in front of him, and it is not to be decided here.
+
+## 1c. How to run the client loop — 4 seconds, not 26 minutes
+
+Do not build to see a client change. From the worktree, against your own
+sandbox:
+
+```sh
+tmux new-session -d -s <name> -c ~/worktrees/edit-bridge \
+  'VITE_SERVER_PORT=<sandbox port> npx vite --port <free port>'
+```
+
+Two traps, either of which wastes an hour looking like a broken feature:
+`TLDA_VITE_PROXY_ACTIVE_CONFIG=1` proxies to a **named environment** and cannot
+reach a per-worktree sandbox — it is the form people pass around and it is the
+wrong one for this. And the proxy scheme follows **vite's** TLS, not the
+target's, so an `http` vite against an `https` sandbox fails *looking like a
+missing route*. Curl the vite port first.
+
+The sandbox port moves between restarts — read it from `tlda-dev serve url`,
+do not assume the last one.
+
 ## 2. The high-zoom source hunk — §8, decided but not built
 
 The chief's ruling: the **rendered difference on the card at rest** (built), and
@@ -58,6 +88,21 @@ render a two-line excerpt is the opposite of §11's "visually compact".
 So the shape is a reach, not a bigger payload: a card asks for its own hunk when
 it is opened. `/history/shadow/diff?ref1=<parent>&ref2=<hash>` already exists
 and answers exactly this.
+
+## 2b. What real content broke, so nobody re-fixes it in the wrong place
+
+Three distinct causes of "the card shows two lines that look identical", all
+found on his real writing and none reproducible on a synthetic fixture:
+
+- **no marking** — whole-passage before/after says only "something changed"
+- **stripping erased the change** — `\ldot` → `\ldots`, where both sides
+  became a space; when stripping collapses a hunk to equality and the raw
+  lines differ, the lines now show as written
+- **the change sat past the clip** — an edit ~500 characters into a passage
+  with a 240-character excerpt taken from the start; the window is now centred
+  on the first marked span
+
+**If it happens a fourth way, that frame is the deliverable, not a fix.**
 
 ## 3. Left unbuilt from his spec
 
