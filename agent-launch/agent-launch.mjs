@@ -8,6 +8,7 @@ import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-led
 import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 import { bindAgentRoute } from './route-binding.mjs'
+import { liveIdentityResolverMap } from './live-identity-resolvers.mjs'
 import { wsReserveShell } from './register.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
@@ -35,8 +36,7 @@ export function createAgentLauncher({
   tmuxSocket = null,
   spawnImpl = null,
   startupFailureProbeMs = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500),
-  liveCodexSessionIdentityResolver = null,
-  liveClaudeSessionIdentityResolver = null,
+  liveIdentityResolvers = null,
   bindAgentRouteImpl = bindAgentRoute,
   liveSessionIdentityTimeoutMs = 20_000,
   liveSessionIdentityPollMs = 500,
@@ -506,11 +506,26 @@ export function createAgentLauncher({
       // parallel (the resolvers differ ONLY in where each harness records its
       // session; everything else here is shared) — and persist it before the
       // spawn returns.
-      const liveIdentityResolvers = {
-        codex: liveCodexSessionIdentityResolver,
-        claude: liveClaudeSessionIdentityResolver,
+      // Resolvers are derived from what harness adapters export, wrapped with
+      // this launch's tmux binding. An injected map (tests) wins; otherwise the
+      // derived map decides, so no site names a harness.
+      const derivedResolvers = liveIdentityResolverMap()
+      const wrappedDerived = {}
+      for (const [harness, adapterFn] of Object.entries(derivedResolvers)) {
+        wrappedDerived[harness] = async (args) => adapterFn({
+          agent: {
+            id: args.fleetId,
+            session_id: args.sessionId || null,
+            cwd: args.cwd,
+            registered_at: args.launchStartedAt,
+          },
+          tmuxSession: args.tmuxSession,
+          tmuxArgs,
+          tmuxSocket,
+        })
       }
-      const liveIdentityResolver = liveIdentityResolvers[launched.harness] || null
+      const effectiveResolvers = liveIdentityResolvers || wrappedDerived
+      const liveIdentityResolver = effectiveResolvers[launched.harness] || null
       let liveIdentity = null
       const preResolutionLedgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
       const existingDurableSessionId = launched.resumeId || preResolutionLedgerRow?.sessionId || sessionId || null

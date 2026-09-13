@@ -4969,7 +4969,7 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   if (result?.fleetId && result.tmuxSession && result.resumeId) {
     return { bound: true, existing: true }
   }
-  if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
+  if (!result?.fleetId || !result.tmuxSession || !(await import(`../agent-launch/harness/${result.harness}.mjs`).catch(() => null))?.resolveLiveSessionIdentity) {
     return { bound: false, skipped: true }
   }
   let resolution = result.identityResolution || null
@@ -4997,10 +4997,13 @@ export async function pollLifecycleResumeIdentity(result, {
   timeoutMs = process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS ? Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS) : null,
   intervalMs = 250,
 } = {}) {
-  if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
+  if (!result?.fleetId || !result.tmuxSession) {
     return { identity: null, diagnostics: { failureStage: 'skipped' } }
   }
-  const resolver = resolveIdentity || (await import(`../agent-launch/harness/${result.harness}.mjs`)).resolveLiveSessionIdentity
+  const resolver = resolveIdentity || (await import(`../agent-launch/harness/${result.harness}.mjs`).catch(() => ({})))?.resolveLiveSessionIdentity || null
+  if (!resolver) {
+    return { identity: null, diagnostics: { failureStage: 'unsupported-harness' } }
+  }
   const deadline = timeoutMs == null ? null : Date.now() + timeoutMs
   let identity = null
   while (deadline == null || Date.now() <= deadline) {
