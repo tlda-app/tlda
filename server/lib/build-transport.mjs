@@ -29,6 +29,13 @@ const OUTPUT_TAIL_BYTES = 16 * 1024
  *
  * So: still forwarded to the server's output, exactly as before, and also kept
  * as a bounded tail that the exit handler can attach to the failure it records.
+ * ONE LIMIT, STATED RATHER THAN DISCOVERED: a process that exits the instant
+ * after it prints can lose that write, because a hard `process.exit` does not
+ * wait for a pipe to drain. Measured at one run in three while writing the test
+ * for it. So the last line before a death is kept when the worker gets that far
+ * and is not guaranteed -- which is still every line further than the nothing
+ * this replaces.
+ *
  * The signal is passed on for the same reason -- `exit 1` and SIGKILL are the
  * difference between a thrown error and the kernel reclaiming memory, and they
  * were indistinguishable from everything the reader could see.
@@ -45,6 +52,18 @@ export function createForkTransport(workerPath = WORKER) {
       tail.push(chunk)
       tailBytes += chunk.length
       while (tailBytes > OUTPUT_TAIL_BYTES && tail.length > 1) tailBytes -= tail.shift().length
+      // Dropping whole chunks cannot get under the bound when ONE chunk is
+      // already over it -- stdout arrives in pieces up to 64 KB, so a worker
+      // printing steadily delivers a single chunk four times this limit and the
+      // loop above stops with `tail.length === 1` still holding all of it.
+      // Measured: 65,526 bytes kept against a 16 KB bound, by the test written
+      // to assert the bound, which had passed on a run that chunked differently.
+      if (tailBytes > OUTPUT_TAIL_BYTES) {
+        const trimmed = tail[0].subarray(tail[0].length - OUTPUT_TAIL_BYTES)
+        tail.length = 0
+        tail.push(trimmed)
+        tailBytes = trimmed.length
+      }
     }
 
     try {

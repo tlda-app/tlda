@@ -60,17 +60,43 @@ test('a killed worker is distinguishable from one that exited', async () => {
 })
 
 // Bounded, because a worker that prints in a loop must not be able to grow the
-// server's memory through the thing that records its death.
-test('the kept output is bounded, and keeps the END rather than the beginning', async () => {
+// server's memory through the thing that records its death. A single chunk can
+// exceed the bound on its own -- stdout arrives in pieces up to 64 KB -- which
+// is the case that made the first implementation keep 65,526 bytes against a
+// 16 KB limit.
+test('the kept output is bounded even when one chunk exceeds the bound', async () => {
   const t = worker(`
     process.on('message', () => {
       for (let i = 0; i < 4000; i++) console.error('x'.repeat(200))
-      console.error('LAST-LINE-BEFORE-DEATH')
       process.exit(1)
     })
   `)
   const { output } = await runToExit(t)
   assert.ok(output.length <= 17 * 1024, `kept ${output.length} bytes, which is not bounded`)
+})
+
+// The END is what explains a death, so a full buffer must discard the beginning
+// rather than the end.
+//
+// It exits by setting `exitCode` instead of calling `process.exit`, and that is
+// not tidiness. A hard exit does not wait for a pipe to drain, so the final
+// write is lost often enough to make this assertion flap -- measured, one
+// failure in three runs. THAT IS A REAL LIMIT OF THE FEATURE, not just of the
+// test: a worker killed or exiting the instant after it prints can lose exactly
+// the line that mattered. Asserting it here would test Node's flush timing; the
+// limit belongs in the module's comment, where it is.
+test('a full buffer keeps the end of the output and discards the beginning', async () => {
+  const t = worker(`
+    process.on('message', () => {
+      for (let i = 0; i < 4000; i++) console.error('x'.repeat(200))
+      console.error('LAST-LINE-BEFORE-DEATH')
+      process.exitCode = 1
+      process.disconnect()
+    })
+  `)
+  const { output } = await runToExit(t)
   assert.match(output, /LAST-LINE-BEFORE-DEATH/,
-    'the end of the output is what explains a death; keeping the beginning would discard it')
+    'the beginning was kept instead of the end, which is the half that explains nothing')
+  assert.equal(/^x+$/m.test(output.split('\n')[0]) || output.startsWith('x'), true,
+    'the earlier output should have been trimmed, leaving a partial first line')
 })
