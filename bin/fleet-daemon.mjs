@@ -131,7 +131,7 @@ import {
   resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity,
   resolveLiveSessionIdentityUntil as resolveLiveCodexSessionIdentityUntil,
 } from '../agent-launch/harness/codex.mjs'
-import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
+import { liveIdentityResolverMap } from '../agent-launch/live-identity-resolvers.mjs'
 import {
   applyDaemonGrants,
   createPermissionLedger,
@@ -1098,23 +1098,10 @@ const agentLauncher = createAgentLauncher({
   tmux,
   tmuxArgs: TMUX_ARGS,
   tmuxSocket: TMUX_SOCKET,
-  // A pending Codex launch has no durable resume identity until its rollout
-  // exists. Resolve only the launched runtime's record; never infer identity
-  // from the globally newest rollout.
-  liveCodexSessionIdentityResolver: async ({ fleetId, sessionId, cwd, launchStartedAt, tmuxSession }) => {
-    const agent = { id: fleetId, session_id: sessionId || null, cwd, registered_at: launchStartedAt }
-    const live = await resolveLiveCodexSessionIdentity({ agent, tmuxSession, tmuxArgs: TMUX_ARGS, tmuxSocket: TMUX_SOCKET })
-    if (live?.sessionId) return live
-    return null
-  },
-  liveClaudeSessionIdentityResolver: async ({ fleetId, sessionId, cwd, launchStartedAt, tmuxSession }) => {
-    return await resolveLiveClaudeSessionIdentity({
-      agent: { id: fleetId, session_id: sessionId || null, cwd, registered_at: launchStartedAt },
-      tmuxSession,
-      tmuxArgs: TMUX_ARGS,
-      tmuxSocket: TMUX_SOCKET,
-    })
-  },
+  // Live session identity resolvers are derived inside the launcher from what
+  // harness adapters export. A pending launch has no durable resume identity
+  // until its runtime record exists: resolve only the launched runtime's
+  // record, never infer identity from the globally newest rollout.
 })
 
 const mintStore = new MintStore(path.join(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: ACTIVE_ENV })
@@ -1223,21 +1210,19 @@ async function partialMintObservedIdentity(facts, candidate) {
     cwd: binding?.cwd || facts.launchRecipe?.cwd || null,
     registered_at: facts.createdAt || null,
   }
+  // The resolver comes from what harness adapters export; no harness is named
+  // here. Adapters without the export (goose today) resolve nothing, and
+  // processOwnedOnly is accepted by every resolver signature (codex honors
+  // it; the rest ignore the extra argument).
   let live = null
-  if (harness === 'codex') {
-    live = await resolveLiveCodexSessionIdentity({
+  const liveResolver = liveIdentityResolverMap()[harness] || null
+  if (liveResolver) {
+    live = await liveResolver({
       agent,
       tmuxSession: candidate.tmuxSession,
       tmuxArgs: TMUX_ARGS,
       tmuxSocket: TMUX_SOCKET,
       processOwnedOnly: true,
-    })
-  } else if (harness === 'claude') {
-    live = await resolveLiveClaudeSessionIdentity({
-      agent,
-      tmuxSession: candidate.tmuxSession,
-      tmuxArgs: TMUX_ARGS,
-      tmuxSocket: TMUX_SOCKET,
     })
   }
   return {

@@ -147,6 +147,7 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
 // CONTRACT DIFFERENCE, deliberate: claude.mjs returns `jsonlPath`, a
 // Claude-style JSONL transcript. This returns `sessionDir` and `logPath`, and
 // `logPath` is the `cli-*.log` the process holds open -- NOT that format.
+// `logPath` is often absent -- Muse does not dependably hold the cli log open -- so nothing may depend on it; sessionId+model are the identity.
 // Whoever wires this into the launch path must establish what reads it before
 // arming an activity watcher on it; it is named differently here so the shape
 // cannot be assumed.
