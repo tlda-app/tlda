@@ -83,12 +83,48 @@ export function buildCmd(options = {}) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid environment variable: ${key}`)
     return `${key}=${sq(value)}`
   })
+  // The launch environment has to agree with the auth decision, and it did not.
+  //
+  // `prepareFleetConfig` decides from the DAEMON's environment: a key there is a
+  // deployment credential, so use it; no key means fall back to the account and
+  // symlink its auth. But the command runs under `zsh -lc`, a LOGIN shell, which
+  // sources the operator's profile -- and on a developer box that profile sets
+  // META_API_KEY. So the daemon decided "account" and the child got the key
+  // anyway, and muse prefers a key over an account login.
+  //
+  // Measured 2026-09-13: testing daemon env has no META_API_KEY, every launched
+  // muse child had one, and every fresh mint died on `402 Billing verification
+  // failed` while a perfectly good account login sat unused beside it.
+  //
+  // So unset it exactly when we decided not to use it. Two conditions, and the
+  // second was caught by an existing test rather than by me:
+  //
+  //   - not unconditionally: that was the state before API-key support landed,
+  //     and it would break the deployment case the moment a key is usable.
+  //   - fleet launches only: `prepareFleetConfig` is what makes the auth
+  //     decision, and it only runs for a fleet launch. A direct `muse` command
+  //     has no decision to agree with, so stripping the operator's own key there
+  //     would be this same defect pointing the other way.
+  const unset = fleet && !launchEnvHasApiKey(options) ? 'unset META_API_KEY; ' : ''
   const command = [
     ...assignments,
     'muse',
     ...args.map(sq),
   ].join(' ')
-  return `zsh -lc ${sq(command)}`
+  return `zsh -lc ${sq(`${unset}${command}`)}`
+}
+
+// The one place the auth decision is made, so `buildCmd` and `prepareFleetConfig`
+// cannot drift into disagreeing about it again.
+//
+// Named for what it COMPUTES, not for what it currently means. It answers "does
+// the launching process see a key", and today that process is the daemon, so it
+// coincides with "is a deployment credential in use". Those diverge the moment
+// anything other than the daemon launches muse -- the key reaching the child
+// comes from the operator's profile via the login shell, not from here. Do not
+// read it as a statement about deployment.
+export function launchEnvHasApiKey({ env = process.env, harnessOptions = {} } = {}) {
+  return Boolean({ ...env, ...(harnessOptions.env || {}) }.META_API_KEY)
 }
 
 export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, env = process.env, harnessOptions = {} }) {
@@ -98,7 +134,7 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
   const root = path.join(sourceEnv.TMPDIR || os.tmpdir(), 'tlda-muse-launch', encodeURIComponent(identity))
   const target = path.join(root, 'muse')
   const auth = path.join(sourceRoot, 'muse', 'auth.json')
-  const usesApiKey = Boolean(sourceEnv.META_API_KEY)
+  const usesApiKey = launchEnvHasApiKey({ env, harnessOptions })
   if (!usesApiKey && !fs.existsSync(auth)) throw new Error('Muse authentication is missing; set META_API_KEY in the deployment environment or run muse login using the configured XDG_CONFIG_HOME')
   const inherited = path.join(sourceRoot, 'muse', 'settings.json')
   const settings = fs.existsSync(inherited) ? JSON.parse(fs.readFileSync(inherited, 'utf8')) : { schema_version: 1 }
