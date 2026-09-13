@@ -779,6 +779,10 @@ continued to its final line and announced completion.
 steps run against steps in the script — rather than a trailing `done`, which describes only
 that the interpreter reached the end of the file.
 
+**That count is necessary and it is not enough — see entry 24.** A later walk implemented
+exactly this remedy and still printed `all steps passed` with a step red, because the verb
+its assertions ran through exited 0 whether the assertion threw or returned.
+
 ### 23. A green that came from the measurement being aimed elsewhere
 
 **The copy was not the cost. Every instrument said it was, and every one of them
@@ -838,6 +842,91 @@ mechanism's cost, and it can never establish that the mechanism is on the path.*
 Only the real path, instrumented, can do that. The synthetic number belongs in
 the argument once the real one says the phase matters — not before, and never as
 the thing that picks what to fix.
+
+### 24. An assertion that cannot fail its own script
+
+**A five-step walk printed `=== all steps passed` with step 4 red.** The script was
+written specifically to prevent that: it collected failures into a `FAILED` array and
+exited non-zero naming them — the remedy entry 22 prescribes. **The remedy could not
+fire, because the verb underneath it does not distinguish a throw from a return.**
+
+```
+tlda-dev pw eval "() => { throw new Error('DELIBERATE RED') }"   → EXIT=0
+tlda-dev pw eval "() => 'GREEN'"                                  → EXIT=0
+```
+
+`playwright-cli` reports a thrown evaluate as an `### Error` section in its tool result
+and exits 0 either way. **Every walk script here writes `throw new Error('RED: …')` as
+its assertion**, so no assertion in any of them could fail its script. Every green
+reported from a walk was a green that could not have been red.
+
+**This is entry 22 one layer down, and it defeats entry 22's fix.** Counting steps run
+against steps in the script does not help when the step itself reports success. The
+check is the counterfactual: **make the assertion fail on purpose and confirm the script
+exits non-zero** — not the step, the script.
+
+**And the sting, which is the part that outlives the bug.** The defect was fixed within
+the hour and landed on `main` as `3ec0ceef1`. **The verb still exited 0**, because
+`/opt/homebrew/bin/tlda-dev` resolves to `/Users/skip/work/tlda/cli/tlda-dev.mjs` — the
+shared checkout, which was sitting on an unrelated branch:
+
+```
+git log --oneline HEAD --grep="thrown eval"   → empty
+grep -c "### Error" cli/lib/pw.mjs            → 0
+grep -c "screenshot" cli/lib/pw.mjs           → 8   ← positive control, same file
+```
+
+**A CLI that feels like an installed binary is a symlink into whatever branch a working
+tree was last left on.** So `AGENTS.md` §"merged is not deployed" applies to our own
+instruments, in a place nobody thinks to look — and **a script that now trusts the exit
+code is worse off than one that never did**, because its author reasonably believes the
+assertion is load-bearing.
+
+### 25. A shape that is in the DOM twice, and a camera that moves neither copy
+
+**Two captures of a fleet chat pane came back as correctly-sized empty boxes**, 15,928
+and 2,003 bytes — plausible files, nothing in them. The pane's content was in the DOM
+throughout; `innerText` read it fine.
+
+**With the HUD open, a fleet shape is rendered twice**: the main-canvas copy, which
+`FleetHUD.css` hides with `visibility:hidden`, and the HUD copy, under a different
+camera. A `[data-shape-id=…]` query returns both and the first is the hidden one. So
+every measurement was taken on the invisible copy, whose rect stayed at `x≈48815`
+through `zoomToSelection` **and** an explicit `setCamera`.
+
+**`ed.setCamera` does not move a fleet pane.** Any walk step that says "zoom to the pane
+and screenshot" produces an empty box. `tlda-dev pw center chat` is the verb that moves
+them — it reported `dx −48328`, `onScreen: true` — and on first use it hung past 240s,
+lost the tab, and left the caller's own pid holding the pool lock for 252s.
+
+**Filter on `getComputedStyle(el).visibility !== 'hidden'` before measuring anything
+inside a pane.** And entry 21's `ls` after a capture is **necessary and not sufficient**:
+the file existed at a plausible size in both of these. **Only opening the frame catches
+it.**
+
+### 26. A count that goes green because people are discussing the feature
+
+**A walk counted the plain-text line a build card was supposed to replace, as the control
+that told a missing row apart from an unrendered one.** Two failures, and the second is
+the instructive one.
+
+**It could not match the thing it was counting.** The regex was `/Build (failed )?— /`;
+the real format is `Build <hash> — <project>`, with the hash between `Build` and the
+dash. **For a success card that count was pinned at 0 by construction**, so the table's
+`0/0 = the row never arrived` cell was unreachable and `0/≥1 = the renderer was not
+reached` could never be entered.
+
+**Corrected, it measured the wrong thing.** It returned 2 — and every textual hit was an
+**agent talking about the card** in the pane under test: one inside a `<code>` block in
+`.message-body`, one in `.activity-last-tool`, one in `.pretty-msg-body`. **Zero were
+card rows.** On a night when the fleet was discussing build cards in that very pane, the
+control was green regardless of the feature.
+
+**A text search cannot tell a rendered thing from a conversation about it**, and a
+feature under active discussion is exactly when someone reaches for one. **Key on
+structure — the card's class, its header, its status class — never on its text.** Same
+disease as the KaTeX `<annotation>` case in `AGENTS.md` §"A control that fails in the
+same direction as the test": the search found the input, beside the output.
 
 ## Why this is not a testing-discipline note
 
