@@ -50,8 +50,16 @@ export async function materializeBuildInstance({ name, sourceRevision, lifecycle
     fileCount = written.files
     byteCount = written.bytes
   } else {
+    // Batched for the same reason the link branch is: one subprocess per file
+    // measured ~8.5ms on testing, so the cost was the project's file count and
+    // not the edit. This branch serves non-qmd projects and had the identical
+    // defect; fixing only the branch that was measured would leave it here.
+    const blobs = await lifecycle.readRevisionFiles(
+      sourceRevision,
+      (revision.files || []).map(entry => entry.path),
+    )
     for (const entry of revision.files || []) {
-      const bytes = await lifecycle.readRevisionFile(sourceRevision, entry.path)
+      const bytes = blobs.get(entry.path) ?? null
       if (!bytes) throw new Error(`submitted revision is missing ${entry.path}`)
       const destination = join(source, entry.path)
       mkdirSync(dirname(destination), { recursive: true })

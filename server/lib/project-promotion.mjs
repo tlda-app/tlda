@@ -232,7 +232,7 @@ export async function importProjectPromotion({ artifact, sourceEnvironment, name
         const files = await imported.readManifest(revision)
         await materializeAcceptedRevision({
           revision: { id: revision, files },
-          lifecycle: { readRevisionFile: (_id, path) => imported.readRevisionFile(revision, path) },
+          lifecycle: { readRevisionFiles: (_id, paths) => imported.readRevisionFiles(revision, paths) },
           destination: join(pending, 'source'),
         })
       }
@@ -509,7 +509,7 @@ export async function importProjectPromotionStream({ stream, sourceEnvironment, 
       if (header.metadata.format === 'qmd') {
         const imported = createSourceGitStore({ gitDir: join(pending, '.source-lifecycle', 'git') })
         const files = await imported.readManifest(revision)
-        await materializeAcceptedRevision({ revision: { id: revision, files }, lifecycle: { readRevisionFile: (_id, path) => imported.readRevisionFile(revision, path) }, destination: join(pending, 'source') })
+        await materializeAcceptedRevision({ revision: { id: revision, files }, lifecycle: { readRevisionFiles: (_id, paths) => imported.readRevisionFiles(revision, paths) }, destination: join(pending, 'source') })
       }
       // The journal is MERGED, never replaced. The promotion record lives in
       // it, so a wholesale replace would delete the one thing that answers
