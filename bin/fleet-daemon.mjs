@@ -127,6 +127,7 @@ import { resolvePartialMintPermissionAuthority } from '../daemon/partial-mint-pe
 import { markAgentDead, wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
 import { compilePermissionGrant, normalizePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
+import { bindAgentRoute } from '../agent-launch/route-binding.mjs'
 import { liveIdentityResolverMap } from '../agent-launch/live-identity-resolvers.mjs'
 import { resolveIdentityUntil } from '../agent-launch/resolve-identity-until.mjs'
 import {
@@ -1139,6 +1140,44 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
   })
 }
 
+// Route publication for the mint path. `createAgentLauncher` publishes at its
+// own launcher level (`emitAgentRoute`, agent-launch.mjs); `launchMintProcess`
+// had no equivalent, so a minted agent got a name, a fleet id and a mailbox
+// with nothing routable behind it -- `chat()` reported "recipient has no daemon
+// route" and `dismiss` answered "No agent found" by name AND by fleet id.
+//
+// Skip ruled that state out, 2026-08-11 15:45:39 EDT: "it should not be
+// possible to have an addressable agent without ... daemon root."
+//
+// DELIBERATELY OUTSIDE `bindMintSeat`, and this is the part to read before
+// moving it. That function is local-only by design: `795fc7ce3` stripped
+// terminal-capability rotation out of it and a durability guard now asserts its
+// body contains no `terminalCapability|daemonApi|sendMsg`. Publishing from
+// inside it fires that guard, correctly. This sits at the composition point
+// instead -- the daemon's own wiring, where MACHINE_ID, ACTIVE_ENV and sendMsg
+// already live -- which mirrors where the other launcher publishes.
+//
+// Checked before writing it, because the guard reads like it forbids exactly
+// this: `bindMintSeat` never contained `sendMsg` at any point, and neither
+// `agent-launch/index.mjs` nor `daemon/mint-core.mjs` has ever contained
+// `agent-route` in any commit in this repository (`agent-launch.mjs`, the
+// positive control, has three). So the guard protects the terminal-capability
+// deletion, and the mint path's missing route is a gap rather than a decision.
+//
+// Called from both seat-binding sites so mint and wake cannot drift apart.
+// `facts.fleetId` is guaranteed here and is NOT available when
+// `launchMintProcess` returns -- `processState.fleet_id` is still null at that
+// point, which is why this is not at the launch call sites.
+async function bindMintSeatAndPublishRoute(facts, processFact, createdSource) {
+  await bindMintSeat(facts, processFact, createdSource)
+  if (!facts?.fleetId) return
+  await bindAgentRoute({
+    agentId: facts.fleetId,
+    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+    submit: async payload => sendMsg({ type: 'agent-route', ...payload }),
+  })
+}
+
 async function mintProcessAlive(facts) {
   const tmuxSession = facts?.processState?.tmux_session
   if (!tmuxSession) return false
@@ -1426,7 +1465,7 @@ daemonMintCore = createDaemonMintCore({
   }),
   bindSeat: async facts => {
     const processFact = facts.processState || {}
-    await bindMintSeat(facts, processFact, 'daemon-mint-join')
+    await bindMintSeatAndPublishRoute(facts, processFact, 'daemon-mint-join')
   },
 })
 
@@ -1481,7 +1520,7 @@ const wakeMint = createDaemonWakeCore({
       tmuxSocket: TMUX_SOCKET,
       exactTmuxSession: true,
     })
-    await bindMintSeat({ ...facts, processState: processFact }, processFact, 'daemon-wake')
+    await bindMintSeatAndPublishRoute({ ...facts, processState: processFact }, processFact, 'daemon-wake')
     return processFact
   },
 })
