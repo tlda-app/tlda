@@ -252,8 +252,23 @@ export function summarizeChange(patch, { excerptChars = EDIT_CARD_EXCERPT_CHARS 
     const lead = Math.floor(excerptChars / 3)
     let start = 0
     for (let i = 0; i < firstChanged; i += 1) start += parts[i].text.length
-    const from = Math.max(0, start - lead)
-    const to = from + excerptChars
+    // Snap both cuts to word boundaries. A character budget lands mid-word,
+    // which was tolerable at 240 and is common at 72 -- `regularity conditio…`
+    // reads as a rendering fault rather than as an excerpt. Neither snap may
+    // eat the mark, so `from` only moves BACK (never past the marked span's
+    // start) and `to` only moves back while it still clears the mark's end.
+    let from = Math.max(0, start - lead)
+    if (from > 0) {
+      const boundary = whole.lastIndexOf(' ', from)
+      if (boundary > 0) from = boundary + 1
+    }
+    let to = from + excerptChars
+    if (to < whole.length) {
+      let markEnd = start
+      for (let i = firstChanged; i < parts.length && parts[i].changed; i += 1) markEnd += parts[i].text.length
+      const boundary = whole.lastIndexOf(' ', to)
+      if (boundary > from && boundary >= markEnd) to = boundary
+    }
     const out = []
     let cursor = 0
     for (const part of parts) {
