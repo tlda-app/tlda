@@ -6,6 +6,7 @@ import { frameFromHudPresence } from '../wm/fleet-interaction-frame'
 import { getHudEditor } from '../wm/editor-host-bridge'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import { loadLookup, clearLookupCache, loadHtmlToc, type LookupEntry, type HtmlTocEntry } from '../synctexLookup'
+import { homeworkKeyForTocRow } from '../homeworkTocKey'
 import { pdfToCanvas } from '../synctexAnchor'
 import { ProjectContext, PanelContext } from '../PanelContext'
 import { onReloadSignal } from '../useYjsSync'
@@ -83,6 +84,7 @@ const COURSE_ITEM_BADGE: Record<CourseItemType, string> = {
 
 type HomeworkEntry = { assignmentId: string; returned: boolean }
 const EMPTY_HOMEWORK: ReadonlyMap<string, HomeworkEntry> = new Map<string, HomeworkEntry>()
+const EMPTY_PAGE_FILES: readonly string[] = []
 
 export function TocTab({ query = '' }: { query?: string }) {
   const editor = useEditor()
@@ -223,8 +225,15 @@ export function TocTab({ query = '' }: { query?: string }) {
   // assignment, so a flat Quarto book can join a TOC chapter to the student's
   // own submission without inferring either from a project name.
   const [homeworkByPage, setHomeworkByPage] = useState<ReadonlyMap<string, HomeworkEntry>>(EMPTY_HOMEWORK)
+  // The project whose table of contents this panel is showing. A book shows its
+  // own; everything else shows the mounted document's project.
+  const tocProjectName = book?.bookName ?? doc?.projectName
   useEffect(() => {
-    if (!book) return
+    // Deliberately NOT gated on `book`. It was, and that made the homework mark
+    // reachable only inside the book scaffold — which is the dead one. The
+    // course is an ordinary multi-page project, so gating on a book meant the
+    // rows a reader actually sees were never even looked up. The real gate is
+    // the classroom credential below: no `?course=`, no fetch, unchanged.
     const courseId = new URLSearchParams(window.location.search).get('course')
     if (!courseId) return
     let cancelled = false
@@ -244,7 +253,23 @@ export function TocTab({ query = '' }: { query?: string }) {
       // The book stays a book; the rows simply carry no homework mark.
       .catch(() => { if (!cancelled) setHomeworkByPage(EMPTY_HOMEWORK) })
     return () => { cancelled = true }
-  }, [book?.bookName])
+  }, [tocProjectName])
+
+  // A course TOC row carries no filename — only `level`, `page`, `title` — so
+  // the page it names has to be resolved through the project's own ordered
+  // `pageFiles`. A book row carries `targetFile` and needs none of this.
+  const [pageFiles, setPageFiles] = useState<readonly string[]>(EMPTY_PAGE_FILES)
+  useEffect(() => {
+    if (book || !tocProjectName) { setPageFiles(EMPTY_PAGE_FILES); return }
+    let cancelled = false
+    fetch(`/api/projects/${encodeURIComponent(tocProjectName)}`)
+      .then(response => response.ok ? response.json() : null)
+      .then((project: { pageFiles?: string[] } | null) => {
+        if (!cancelled) setPageFiles(project?.pageFiles ?? EMPTY_PAGE_FILES)
+      })
+      .catch(() => { if (!cancelled) setPageFiles(EMPTY_PAGE_FILES) })
+    return () => { cancelled = true }
+  }, [book, tocProjectName])
 
   const memberItemType = useMemo(() => {
     const types = new Map<string, CourseItemType>()
@@ -525,7 +550,7 @@ export function TocTab({ query = '' }: { query?: string }) {
   const useHtml = headings.length === 0 && tocItems !== null
 
   // Unified render for both TeX and HTML TOC entries
-  let items: Array<{ level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string }> = useHtml
+  let items: Array<{ level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string; page?: number }> = useHtml
     ? tocItems!.map(h => ({
         level: h.level,
         // `aggregateBookToc` titles a chapter after its member's own top
@@ -539,6 +564,7 @@ export function TocTab({ query = '' }: { query?: string }) {
         nav: () => handleHtmlNav(h.page, h.anchor, h.targetFile, h.variant),
         center: () => handleHtmlNav(h.page, h.anchor, h.targetFile, h.variant),
         targetFile: h.targetFile,
+        page: h.page,
       }))
     : headings.map(h => ({
         level: h.level,
@@ -583,7 +609,7 @@ export function TocTab({ query = '' }: { query?: string }) {
     )
   }
 
-  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string }, nextLevel: TocLevel | TocLevel[]) {
+  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string; page?: number }, nextLevel: TocLevel | TocLevel[]) {
     const isCollapsed = !normalizedQuery && (collapsed?.has(i) ?? false)
     const next = items[i + 1]
     const childLevels = Array.isArray(nextLevel) ? nextLevel : [nextLevel]
@@ -591,7 +617,12 @@ export function TocTab({ query = '' }: { query?: string }) {
     const isHot = h.level === 'chapter' && h.targetFile != null && h.targetFile === hotKey
     const isCurrent = h.level === 'chapter' && h.targetFile != null && h.targetFile === activeMemberKey
     const itemType = h.level === 'chapter' && h.targetFile ? memberItemType.get(h.targetFile) : undefined
-    const homework = h.level === 'chapter' && h.targetFile ? homeworkByPage.get(h.targetFile) : undefined
+    // A book row keys on its member; a course row keys on the page file its
+    // 1-based `page` names. `homeworkKeyForTocRow` holds that distinction and
+    // the offset, because reading it 0-based resolves a homework row to the
+    // SOLUTIONS page beside it rather than to nothing.
+    const homeworkKey = homeworkKeyForTocRow(h, pageFiles)
+    const homework = homeworkKey ? homeworkByPage.get(homeworkKey) : undefined
     return (
       <div key={i} className={`toc-item ${h.level}${isCurrent ? ' toc-item-current' : ''}`}>
         {hasChildren ? (
