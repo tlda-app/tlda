@@ -2,7 +2,7 @@
  * Fleet tools module — imported by the unified MCP server (index.mjs).
  * Exports: getFleetTools(), handleFleetTool(), initFleet()
  */
-import { execSync, execFileSync, exec } from 'child_process';
+import { execSync, execFileSync, exec, execFile } from 'child_process';
 import crypto from 'node:crypto';
 import fs from 'fs';
 import http from 'http';
@@ -1457,6 +1457,88 @@ function tmuxSendText(sessionName, text, settleMs = 0) {
     process.stderr.write(`[fleet-harness-nudge] send-keys failed for ${sessionName}: ${e.message}\n`);
     return false;
   }
+}
+
+// Muse loses an Enter issued before the typed text has landed: measured
+// 2026-09-13, 1/1 lost with no wait, 5/5 accepted once the text was confirmed
+// visible, landing observed between 0.4s and 0.8s. Sleeping past the slowest
+// landing anyone has sampled is a guess about a distribution from five points,
+// and it blocks the MCP thread while it guesses. So this waits for the text to
+// appear, then waits for it to leave -- two facts read off the pane instead of
+// one number.
+//
+// Only muse needs it. Codex was measured on a live idle pane the same night --
+// text visible at 991ms, Enter accepted at BOTH 400ms and 1200ms -- so codex
+// queues input rather than dropping it, and claude consumes slowly but in
+// order. Neither has the failure this exists to catch; both keep their settle.
+//
+// Both waits are bounded and both failures throw. `deliverChannelNotice`'s
+// caller renders a throw as `channel-error: <message>` and a false as a bare
+// `channel-declined`, so throwing is what carries the reason off this machine.
+// A dropped notification has to be loud -- the silent version IS the defect.
+const MUSE_TYPE_TIMEOUT_MS = 5000;
+const MUSE_SUBMIT_TIMEOUT_MS = 5000;
+const MUSE_POLL_INTERVAL_MS = 150;
+
+function tmuxCapturePane(sessionName) {
+  return new Promise((resolve, reject) => {
+    execFile('tmux', ['capture-pane', '-t', sessionName, '-p', '-S', '-100'], { timeout: 5000 }, (err, stdout) => {
+      if (err) reject(new Error(`capture-pane failed for ${sessionName}: ${err.message}`));
+      else resolve(String(stdout || ''));
+    });
+  });
+}
+
+// The compose line is the last line carrying muse's prompt glyph. Submitted
+// text scrolls above it as transcript, so "is our text still on THIS line"
+// is what distinguishes a lost Enter from an accepted one -- a substring
+// search over the whole pane cannot, because a submitted line stays on screen.
+function musePromptLine(paneText) {
+  const lines = paneText.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].includes('❯')) return lines[i];
+  }
+  return null;
+}
+
+// A narrow pane wraps a long line, so the whole notification may never sit on
+// one row. The leading glyph makes even a short prefix distinctive.
+function museProbe(line) {
+  return line.slice(0, 32);
+}
+
+async function waitForMusePrompt(sessionName, timeoutMs, predicate) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const prompt = musePromptLine(await tmuxCapturePane(sessionName));
+    if (prompt !== null && predicate(prompt)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, MUSE_POLL_INTERVAL_MS));
+  }
+}
+
+async function tmuxSubmitTextVerified(sessionName, text) {
+  const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
+  if (!line) return false;
+  const probe = museProbe(line);
+  execFileSync('tmux', ['send-keys', '-t', sessionName, '--', line], { timeout: 5000 });
+  if (!await waitForMusePrompt(sessionName, MUSE_TYPE_TIMEOUT_MS, prompt => prompt.includes(probe))) {
+    throw new Error(`typed text never reached the prompt in ${sessionName}; not sending Enter blindly`);
+  }
+  execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
+  if (!await waitForMusePrompt(sessionName, MUSE_SUBMIT_TIMEOUT_MS, prompt => !prompt.includes(probe))) {
+    throw new Error(`notification still sitting in the prompt in ${sessionName} after Enter; refusing to report it delivered`);
+  }
+  return true;
+}
+
+function submitNotificationIntoMusePane(content) {
+  const sess = process.env.FLEET_TMUX_SESSION;
+  if (!sess) {
+    process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for terminal notification\n');
+    return false;
+  }
+  return tmuxSubmitTextVerified(sess, content);
 }
 
 async function notifyOverClaudeChannel(content, meta = {}) {
@@ -6005,16 +6087,10 @@ export async function deliverChannelNotice(content, meta = {}) {
       return notifyOverClaudeChannel(content, meta);
     case 'codex':
       return typeNotificationIntoPane(content, 400);
-    // Measured on muse panes 2026-09-13: an Enter issued with no settle is lost
-    // (1/1); once the text has landed the Enter is accepted (5/5), with landing
-    // observed between 0.4s and 0.8s. 400 -- codex's number -- sits at the
-    // bottom of that range, so it would submit before the text landed some of
-    // the time, and a dropped notification is silent: the text stays in the
-    // pane looking like a prompt someone is composing at. 1500 is a little
-    // under 2x the slowest landing observed, with the margin sized for the tail
-    // five samples cannot see, on a box that reaches load averages in the 40s.
+    // Muse is the one harness that drops an Enter sent before its text lands,
+    // so it confirms instead of sleeping. See `tmuxSubmitTextVerified`.
     case 'muse':
-      return typeNotificationIntoPane(content, 1500);
+      return submitNotificationIntoMusePane(content);
     case 'goose':
       return typeNotificationIntoPane(content, 0);
     default:
