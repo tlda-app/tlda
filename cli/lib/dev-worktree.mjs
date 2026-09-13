@@ -429,7 +429,27 @@ export function previewServerEntry(worktreeDir, sandbox) {
     : { serverScript: join(worktreeDir, 'server', 'unified-server.mjs'), traceEnv: {} }
 }
 
-const SERVER_READY_MS = 30_000
+function parsePositiveInt(value, fallback) {
+  const n = Number(value)
+  return Number.isInteger(n) && n > 0 ? n : fallback
+}
+
+/**
+ * How long to wait for a preview server to answer /api/health.
+ *
+ * Measured 2026-09-13 on a loaded box: the server reached `resolve-config` at
+ * 30.9s and the wrapper shut it down at 30s, cleanly, reporting failure. Six
+ * attempts in one evening, every one of them a HEALTHY server killed 900ms
+ * short. The same start succeeded at load 13 and failed at load 29.
+ *
+ * The neighbours make 30s the anomaly rather than merely tight: a daemon is
+ * allowed 120s to start and a pooled browser 180s.
+ *
+ * Overridable rather than a larger constant, because a hardcoded 90 is the
+ * same defect with a bigger number -- the next person meets it at load 60.
+ * Same idiom as the timeouts in `pw.mjs`.
+ */
+const SERVER_READY_MS = parsePositiveInt(process.env.TLDA_SERVER_READY_MS, 120_000)
 const SERVER_POLL_MS = 500
 
 const monotonic = () => performance.now()
