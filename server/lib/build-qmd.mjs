@@ -13,7 +13,7 @@
  * new rendering path inside an existing one.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, rmSync, lstatSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, renameSync, rmSync, lstatSync } from 'fs'
 import { dirname, join, relative } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -763,6 +763,88 @@ function qmdManifest(project, pageInfo, renderedFormat) {
   })
 }
 
+// Quarto's `_freeze` is the executed output of every code chunk, keyed by the
+// md5 of its source document. It is the difference between a build that
+// re-runs R for two hours and one that replays stored results.
+//
+// It cannot simply live in `output/`, because `output/` is doing three jobs at
+// once: it is the Quarto project root, it is the published tree served over
+// `/docs/`, and it is the promotion payload walked file-by-file. That
+// conflation is why `retainNativeTldaRender` exists at all — the render root
+// pulls in the whole copied source tree, which the other two must not carry.
+//
+// So `_freeze` lives BESIDE `output/` between builds and is staged in and out
+// around the render. It is never a member of the published tree, so it is
+// never promoted and never served, and `retainNativeTldaRender` keeps doing
+// exactly what it was written to do rather than growing an exemption.
+//
+// This is the SECOND thing to need that treatment — `.quarto/xref`, `idx` and
+// `cites` are the first, seeded and published by the same lists. A third would
+// be the signal that the sweep is the wrong shape rather than that each of
+// these is a special case.
+//
+// DELETE THIS PAIR when the build workspace is wired. `advanceBuildWorkspace`
+// (`build-workspace.mjs`, added in 121c73dcf, not yet called from the build)
+// replaces the per-edit instance with a long-lived per-project worktree, and
+// its `clean -fdx -e .quarto -e _freeze -e build-cache -e .biber-par-cache`
+// keeps the freeze by construction. At that point `stageFreezeIntoRender` and
+// `retainFreezeOutsideRender` are dead code and should go, rather than being
+// maintained beside the thing that made them unnecessary.
+export const PERSISTENT_FREEZE_DIR = '_freeze'
+
+const persistentFreezePath = outDir => join(dirname(outDir), PERSISTENT_FREEZE_DIR)
+
+/**
+ * Overlay the persisted freeze onto the render directory, after the source
+ * copy so it WINS over whatever the revision carried.
+ *
+ * Precedence matters and this is the direction that pays: the records the
+ * server computed last build are current for the chapters he just edited,
+ * while the committed copy of those same records is stale by definition — he
+ * edited the source. Letting the revision win would discard exactly the
+ * records this exists to keep. A stale persisted record costs one wasted
+ * execution and then corrects itself, because the render writes a fresh one.
+ */
+export function stageFreezeIntoRender(outDir, addLog = () => {}) {
+  const persisted = persistentFreezePath(outDir)
+  if (!existsSync(persisted)) return false
+  const start = process.hrtime.bigint()
+  cpSync(persisted, join(outDir, PERSISTENT_FREEZE_DIR), { recursive: true, force: true })
+  rmSync(persisted, { recursive: true, force: true })
+  const ms = Math.round(Number(process.hrtime.bigint() - start) / 1e6)
+  addLog(`[qmd] staged the persisted freeze into the render in ${ms}ms`)
+  return true
+}
+
+/**
+ * Move the freeze back out of the render directory, BEFORE the publication
+ * sweep deletes everything beside the book.
+ *
+ * A rename, not a copy: both paths are inside the build instance, so this is a
+ * metadata operation on the same filesystem and costs nothing regardless of
+ * how large the tree is.
+ */
+export function retainFreezeOutsideRender(outDir, addLog = () => {}) {
+  const rendered = join(outDir, PERSISTENT_FREEZE_DIR)
+  if (!existsSync(rendered)) return false
+  const persisted = persistentFreezePath(outDir)
+  rmSync(persisted, { recursive: true, force: true })
+  mkdirSync(dirname(persisted), { recursive: true })
+  try {
+    renameSync(rendered, persisted)
+  } catch (error) {
+    // EXDEV only: a rename across devices is refused, and the fallback is the
+    // copy this exists to avoid. Reported rather than silent, because it turns
+    // a free operation into the size of the tree.
+    if (error?.code !== 'EXDEV') throw error
+    addLog(`[qmd] freeze retain fell back to a copy: ${error.code}`)
+    cpSync(rendered, persisted, { recursive: true })
+    rmSync(rendered, { recursive: true, force: true })
+  }
+  addLog('[qmd] kept the freeze beside the output, out of the published tree')
+  return true
+}
+
 export function retainNativeTldaRender(outDir, manifestPath) {
   const relativeManifest = relative(outDir, manifestPath).replace(/\\/g, '/')
   const renderedRoot = relativeManifest.split('/')[0]
@@ -830,6 +912,9 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   cpSync(srcDir, outDir, { recursive: true })
   const copyMs = Math.round(Number(process.hrtime.bigint() - copyStart) / 1e6)
   addLog(`[qmd] copied source tree to the output directory in ${copyMs}ms (${describeTreeSize(srcDir)})`)
+
+  // After the source copy, so the persisted records win over the revision's.
+  stageFreezeIntoRender(outDir, addLog)
 
   await restoreRenv(outDir, addLog)
   const nativeTldaProject = isNativeTldaProject(outDir)
@@ -943,6 +1028,8 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     // wrong document without looking broken.
     const bookToc = quartoBookToc(outDir, renderedPageInfo)
     if (!bookToc) throw new Error('[toc] tlda book rendered without book.chapters in _quarto.yml')
+    // Before the sweep, which deletes everything beside the book.
+    retainFreezeOutsideRender(outDir, addLog)
     retainNativeTldaRender(outDir, renderedProject.path)
     const bookTitleByPage = new Map(bookToc.map(entry => [entry.page, entry.title]))
     const nativePageInfo = [

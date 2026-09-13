@@ -120,7 +120,7 @@ function restoreAside(live, held) {
 // accumulate instead.
 export const PUBLISH_REPLACED_ITEMS = Object.freeze([
   'source', 'output', 'build-cache', 'build.log', 'latex.log',
-  '.quarto/xref', '.quarto/idx', '.quarto/cites',
+  '_freeze', '.quarto/xref', '.quarto/idx', '.quarto/cites',
 ])
 
 // Which of the replaced items a build instance may legitimately be missing.
@@ -143,7 +143,7 @@ export const PUBLISH_REPLACED_ITEMS = Object.freeze([
 // outage wearing the costume of a cache change.
 const OPTIONALLY_ABSENT_PUBLISHED_ITEMS = new Set([
   'build-cache', 'build.log', 'latex.log',
-  '.quarto/xref', '.quarto/idx', '.quarto/cites',
+  '_freeze', '.quarto/xref', '.quarto/idx', '.quarto/cites',
 ])
 
 const BUILD_DIAGNOSTIC_FILES = ['build.log', 'latex.log']
