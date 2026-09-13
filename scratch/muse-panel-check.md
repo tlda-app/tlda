@@ -67,19 +67,29 @@ discriminates — it asserts `mcp === true` and carries its own negative control
 for the whole mechanism. What is missing is only the end-to-end observation, not
 a check to make.
 
-## The identity fields are null, and it looks benign
+## The identity fields are null, and this is the Claude case, not a Muse gap
 
-Muse is the only harness whose pane process exposes no identity in `argv`. 111
-processes in the snapshot carry `FLEET_ID=` there; the Muse pane carries none,
-because `buildCmd` puts the assignments ahead of `muse` inside `zsh -lc`, so they
-become environment rather than argv, and the exec leaves only the binary and its
-flags. Hence the three nulls.
+The Muse pane process exposes no identity in `argv`, because `buildCmd` puts the
+assignments ahead of `muse` inside `zsh -lc`, so they become environment rather
+than argv and the exec leaves only the binary and its flags. Hence the three
+nulls.
 
-Every reader I found falls back to the ledger binding rather than the probe —
-`fleet-daemon.mjs` at the env/daemon-key resolution near lines 1195, 1257, 1258
-and 1452 each read `probe?.X || binding?.X`. The mint writes that binding, so
-attribution should hold. **I did not exhaustively trace the adoption path**, so
-treat this as located rather than cleared, and watch it during the run.
+**That is the same shape Claude has, and it is already designed for.** Of the 111
+processes in the snapshot carrying `FLEET_ID=` in argv, 53 are `node` MCP servers
+and 53 are `codex`; none are `claude`. The Claude pane process checked carries it
+nowhere in its full 800-character args. `daemon/partial-mint-runtime-recovery.mjs`
+names this outright — its case 14 comment reads *"This is the Claude case: no
+FLEET_ID in the command for the probe to read."*
+
+The adoption path handles it two ways. A ledger-derived fleet id with a coherent
+single binding carries the adoption on its own (`rebind`, `identity:fleetId`); and
+where the ledger has drifted, the fleet id is demoted but adoption still succeeds
+on the full arrangement tuple (`rebind`, `coherent-tuple`) — *"the demotion costs
+the shortcut, not the adoption."* It holds only when the ledger has drifted **and**
+`model`/`daemonKey` are also missing, and both of those come off the binding the
+mint writes.
+
+So this is **cleared, not merely located**, and Muse needs nothing here.
 
 ## The run, when the ref has moved and the testing daemon is restarted
 
