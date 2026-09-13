@@ -17,13 +17,14 @@ import {
   useEditor,
 } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useMemo, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { ProjectContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
-import { ensureViewLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
+import { ensureViewLayer, getEditorWMCore } from '../wm/editor-wm'
+import { docClipLayerId } from '../wm/shape-surface-layers'
 
 const BAR_H = 8
 
@@ -120,7 +121,7 @@ function DocClipComponent({ shape }: { shape: any }) {
     const boundsCenter = bounds.y + bounds.h / 2
     const camY = -(boundsCenter - (contentH / zoom) / 2)
     const wm = getEditorWMCore(mainEditor)
-    const layerId = `doc-clip:${shape.id}`
+    const layerId = docClipLayerId(shape.id)
     ensureViewLayer(wm, layerId, {
       parent: wm.rootLayerId,
       policy: { x: 'pin', y: 'pin', zoom: 'lock' },
@@ -130,14 +131,9 @@ function DocClipComponent({ shape }: { shape: any }) {
     return { wm, layerId, surfaceId: layerId }
   }, [mainEditor, doc, bounds, svgReady, page, w, contentH, shape.id])
 
-  const wmSurfaceRef = useRef(wmSurface)
-  wmSurfaceRef.current = wmSurface
-  useEffect(() => {
-    return () => {
-      const surface = wmSurfaceRef.current
-      if (surface) removeLayers(surface.wm, [surface.layerId])
-    }
-  }, [])
+  // No unmount cleanup, for the same reason as FleetDocViewShape: this layer
+  // is keyed by `shape.id` in the shared editor core, so its lifetime is the
+  // shape's. `installSurfaceLayerDisposal` removes it when the shape is gone.
 
   if (!mainEditor || !doc || !bounds || !svgReady) {
     return (

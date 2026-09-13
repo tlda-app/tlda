@@ -6,6 +6,7 @@ import {
 	setShapeLayerReport,
 	viewportCoordinateLayerId,
 } from './editor-wm.ts'
+import { installSurfaceLayerDisposal } from './shape-surface-layers.ts'
 import {
 	FLEET_HUD_DOCUMENT_LAYER_ID,
 	FLEET_HUD_OVERLAY_LAYER_ID,
@@ -83,6 +84,7 @@ export function installTldaShapeLayers(editor: Editor): WMCore {
 
 	wm.setShapeLayerResolver((shape) => tldaShapeLayerId(editor, shape))
 	setShapeLayerReport(editor, () => shapeLayerReport(editor))
+	installSurfaceLayerDisposal(editor, wm)
 	return wm
 }
 
