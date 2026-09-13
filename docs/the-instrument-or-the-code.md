@@ -779,6 +779,66 @@ continued to its final line and announced completion.
 steps run against steps in the script — rather than a trailing `done`, which describes only
 that the interpreter reached the end of the file.
 
+### 23. A green that came from the measurement being aimed elsewhere
+
+**The copy was not the cost. Every instrument said it was, and every one of them
+was pointed at a real thing that the build does not spend its time on.**
+
+The question was why editing one chapter of a whole-book project takes 93
+seconds, ~48 of them in a phase that logs nothing. **Reading the code produced a
+confident answer**: four whole-project copies run before anything looks at what
+changed, and in `buildQmdDocument` the tree copy is called before
+`qmdIncrementalRenderRoots` decides the render set. **That ordering is real and
+still true.**
+
+**A synthetic benchmark then confirmed it.** Copying 4000 files of 20 KB took
+11.8 s; copying the same bytes as 40 files of 2 MB took 0.3 s. **43× apart at
+equal bytes** — copies are priced per file, project file count is the cost, and
+a whole book is a large file count. Every step of that is correct.
+
+**It was the wrong subject.** When the instrumentation reached a real build, the
+copy phase measured **8 ms**, then **1 ms**, then **1 ms**. What cost was a
+different per-file operation entirely: reading each file out of git in its own
+`git cat-file blob` subprocess, ~8.5 ms each, sequentially.
+
+```
+ 49 files /   94 KB    source read  570 ms    output seed  8 ms
+800 files / 1561 KB    source read 6755 ms    output seed  1 ms
+ 49 files / 1563 KB    source read  434 ms    output seed  1 ms
+```
+
+**The conclusion survived and the cause did not.** *Cost scales with file count,
+not edit size* was right, and would have aimed a week of work at copy mechanics,
+reflink filesystems and a provisioning decision about XFS versus ext4 — **a
+question that had already been put to the person paying for it.** None of it
+would have touched the 6.7 seconds.
+
+**What made the benchmark so convincing is that it was measuring something
+true.** It was not broken, its numbers were not noise, and its ratio reproduced.
+**A synthetic benchmark answers the question you built it to ask**, and the
+question built here was *how expensive is copying a tree* — never *is copying
+where this build spends its time*. **The premise was never under test, so no
+result could disturb it.**
+
+**The refutation arrived in the same string as the finding.** `seed-output 1ms`
+and `source 6755ms` were printed in one line, so the column that exculpated the
+suspect could not be skipped on the way to the column that convicted a different
+one. **That is the only reason this took an hour rather than a week** — nothing
+about the reasoning improved, and the reasoning had been confident and wrong
+twice already.
+
+**The check is to make the instrument report the phases you are NOT accusing.**
+A timing that reports only the suspect can only ever convict it. The reason this
+was caught within the hour is that the phase line was built to report every
+phase, including the ones nobody suspected — and the exculpatory 1 ms was in the
+same string as the incriminating 6755 ms.
+
+**And the corollary for synthetic measurement generally: it can establish a
+mechanism's cost, and it can never establish that the mechanism is on the path.**
+Only the real path, instrumented, can do that. The synthetic number belongs in
+the argument once the real one says the phase matters — not before, and never as
+the thing that picks what to fix.
+
 ## Why this is not a testing-discipline note
 
 **Skip does not read this code and cannot arbitrate a claim about it** — see
