@@ -51,23 +51,36 @@ with the draw tool. Assert: the draft overlay's editor holds at least one shape.
 **3. Return marks.** Press it. Assert: the aside does not say *"the marking layer
 changed"*; the status chip reads returned.
 
-**4. The student sees it.** Open that student's own view —
-`?name=<you>&workspace=classroom-work&assignment=homework-1&student=walk-b`.
-Assert **two** things, not one:
-- the shape count in `doc-submission-homework-1-walk-b` is ≥ 1, and
-- the page shows that mark over their work rather than only a chip reading
-  `Returned`.
+**4. The mark is in the student's room.** This one needs no browser and does not
+go through the DOM — the room is readable from the server:
 
-**Count both, because they fail differently.** A chip and no shape is the
-published-nothing case; a shape and no chip is the record not written.
+```
+curl -s https://pic-preview.cormorant-matrix.ts.net/api/projects/submission-homework-1-walk-b/shapes
+```
+
+`/api/projects/<name>/shapes` lists the records in `doc-<name>`, which is exactly
+the room `ProblemMarking` publishes into and `StudentWork` mounts. **Baseline,
+measured before this walk: three records — `document`, `page`, and one
+`doc-version` sentinel shape, no drawing.** After the return there must be a
+further shape, and it must be the one that was drawn.
+
+**5. The student's own view shows it.** Open
+`?name=<you>&workspace=classroom-work&assignment=homework-1&student=walk-b` and
+assert the mark is visible over their work, not only a chip reading `Returned`.
+
+**Steps 4 and 5 fail differently and both matter.** A shape in the room with
+nothing on screen is a rendering failure; a chip with no shape is the
+published-nothing case the storyboard already hit.
 
 ## The deliberate red
 
-Before step 3, open the **same student's** view in the same session and assert
-the mark is **not** there. If a mark is visible before `Return marks` is pressed,
-the private-until-returned property is broken and that is a bigger finding than
-the walk. If that check cannot go red — if you cannot see the student's room at
-all — say so, because then step 4's count means nothing either.
+**Run step 4's curl BEFORE pressing Return marks.** The drawn shape must not be
+there. If it is, the private-until-returned property is broken, and that is a
+bigger finding than the walk.
+
+This is the control that makes step 4 mean anything: it uses the same instrument,
+against the same room, and it is required to come back without the mark. If it
+already shows one, stop — do not press Return marks to "confirm".
 
 ## Where it stops is the answer
 
