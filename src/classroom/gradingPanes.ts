@@ -4,6 +4,7 @@ import { requestManagedSurface } from '../wm/managed-surfaces.ts'
 import { createHomeworkGradingSurfaceRequest } from '../wm/homework-grading-surface.ts'
 import { tldrawForkViewportAdapter } from '../wm/tldraw-fork-viewport-adapter.ts'
 import { ensureViewLayer } from '../wm/editor-wm.ts'
+import { createCanvasClipPanelPlan } from '../wm/canvas-clip-panel.ts'
 
 // The two panes of the marking surface, as window-manager layers.
 //
@@ -25,6 +26,15 @@ export interface GradingPaneInput {
   owner: Partial<ManagedSurfaceOwner>
   source: string
 }
+
+/** The width of one pane, from the window. One derivation, used by the DOM
+ * and by each pane's camera. */
+export function gradingPanelWidth(): number {
+  return Math.max(320, Math.floor((window.innerWidth - 48) / 2))
+}
+
+/** How much of the viewport height one pane may take. */
+export const GRADING_PANE_MAX_HEIGHT_FRACTION = 0.88
 
 export function gradingViewportId(pane: GradingPane, assignmentId: string, studentId: string): string {
   return `wm:grading:${pane}:${assignmentId}:${studentId}`
@@ -64,11 +74,23 @@ export function gradingPaneRequest(pane: GradingPane, bounds: ManagedSurfaceRect
  * `editor` is tldraw's Editor; it is passed through the adapter rather than
  * used directly so the page/screen arithmetic stays tldraw's own.
  */
+/**
+ * The pane geometry the camera needs. Passed in rather than read from `window`
+ * here, because `ClassroomGradingSurface` already computes `panelWidth` for the
+ * DOM and two derivations of one number would drift apart silently.
+ */
+export interface GradingPaneViewport {
+  panelWidth: number
+  viewportHeight: number
+  maxHeightFraction: number
+}
+
 export function mountGradingPanes(
   wm: WMCore,
   editor: Parameters<typeof tldrawForkViewportAdapter>[0],
   layout: Record<GradingPane, ManagedSurfaceRect>,
   input: GradingPaneInput,
+  viewport: GradingPaneViewport,
 ) {
   const adapter = tldrawForkViewportAdapter(editor)
   const panes = (Object.keys(layout) as GradingPane[]).map(pane => {
@@ -77,9 +99,34 @@ export function mountGradingPanes(
     const request = typeof window !== 'undefined' ? requestManagedSurface(window, declaredRequest) : declaredRequest
     const viewportId = gradingViewportId(pane, input.assignmentId, input.studentId)
     const layerId = gradingLayerId(pane, input.assignmentId, input.studentId)
+    // The pane has to LOOK at its own bounds, and two obvious ways of telling
+    // it to are both wrong. Written out because each cost a crash.
+    //
+    // NOT `transform`. For a viewport-backed layer
+    //     localTransform = layer.transform + camera * trackFactor
+    // and `CanvasClipPanel` reads that sum and writes it back as the camera, so
+    // a non-zero transform is re-added every cycle: -1648, -2472, -3296. Zero
+    // is a stable fixed point, which is why this was latent until the panes
+    // were aimed at all.
+    //
+    // NOT `wm.setCamera` here. That writes through the adapter to
+    // `editor.updateViewport`, which merges with an existing viewport — and at
+    // mount there is none, so it throws "A viewport must have screenBounds and
+    // camera". `CanvasClipPanel` registers the viewport later, in an effect.
+    //
+    // So: the layer's own `camera`, set at definition. It writes nothing
+    // through. Before registration `WMCore.camera()` falls back to it, so the
+    // first paint is aimed; after registration the panel's guarded sync pushes
+    // the same value into the viewport, and `transform` stays zero, so the
+    // fixed point is the aim.
+    const plan = createCanvasClipPanelPlan({
+      bounds, panelWidth: viewport.panelWidth, viewportHeight: viewport.viewportHeight,
+      maxHeightFraction: viewport.maxHeightFraction,
+    })
     ensureViewLayer(wm, layerId, {
       parent: wm.rootLayerId,
       policy: request.cameraPolicy,
+      camera: plan.camera,
       backing: { kind: 'viewport', viewportId, editor: adapter },
     })
     return {

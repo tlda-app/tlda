@@ -4,7 +4,7 @@ import { CanvasClipPanel, syncCanvasClipPanelViewportCamera } from '../CanvasCli
 import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { useFleetIdentity } from '../fleet-data-adapter'
 import { getEditorWMCore } from '../wm/editor-wm'
-import { mountGradingPanes, type GradingPane } from './gradingPanes'
+import { mountGradingPanes, gradingPanelWidth, GRADING_PANE_MAX_HEIGHT_FRACTION, type GradingPane } from './gradingPanes'
 import { StudentAnnotationOverlay } from './StudentAnnotationOverlay'
 import { gradingDraftRoomId } from '../../shared/classroom-rooms.mjs'
 
@@ -107,6 +107,13 @@ export function ClassroomGradingSurface({
       studentId,
       owner: { userId, deviceId },
       source: 'classroom-marking',
+    }, {
+      // Built here rather than closed over from the render body: it is
+      // recomputed every render, so a shared object could not go in this
+      // effect's deps without remounting the panes continuously.
+      panelWidth: gradingPanelWidth(),
+      viewportHeight: window.innerHeight,
+      maxHeightFraction: GRADING_PANE_MAX_HEIGHT_FRACTION,
     })
     mountedPanesRef.current = panes
     setMountedPanes(panes)
@@ -124,7 +131,8 @@ export function ClassroomGradingSurface({
 
   const activePanes = userId && deviceId ? mountedPanes : null
   const paneByKind = new Map(activePanes?.map(pane => [pane.pane, pane]))
-  const panelWidth = Math.max(320, Math.floor((window.innerWidth - 48) / 2))
+  // The DOM's copy of the pane width, from the same derivation the cameras use.
+  const panelWidth = gradingPanelWidth()
 
   return (
     <div className="classroomGradingPanes" data-classroom-wm-mounted={activePanes ? 'true' : 'false'}>
@@ -145,7 +153,7 @@ export function ClassroomGradingSurface({
               mainEditor={editor}
               bounds={bounds}
               panelWidth={panelWidth}
-              maxHeightFraction={0.88}
+              maxHeightFraction={GRADING_PANE_MAX_HEIGHT_FRACTION}
               viewportId={paneViewportId(pane)}
               wmSurface={mounted?.wmSurface}
               interactionMode="pinned"
