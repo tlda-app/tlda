@@ -12,10 +12,8 @@ import { EDIT_CARD_H, EDIT_CARD_W } from '../../shared/edit-card-metrics.mjs'
 
 const CARD_GAP_X = 40
 const CARD_GAP_Y = 24
-/** How many cards stack vertically before the next column of cards starts. */
-const CARDS_PER_COLUMN = 6
 
-export { CARD_GAP_X, CARD_GAP_Y, CARDS_PER_COLUMN }
+export { CARD_GAP_X, CARD_GAP_Y }
 
 export interface BridgeEditor {
   agentId: string
@@ -43,21 +41,33 @@ export interface BridgeBuild {
   change: BridgeChange | null
 }
 
-/** Where the bridge's cards go, in the gap the widened compare opens up. */
+/**
+ * Where the bridge's cards go, in the gap the widened compare opens up.
+ *
+ * ONE COLUMN, in order. Consecutive builds are always neighbours, and that is
+ * the property the layout exists to have: §7 asks a person to perceive
+ * "repeated attempts", "corrections", and "places where later edits partially
+ * undo earlier ones", and none of those can be seen if the two cards are not
+ * next to each other.
+ *
+ * This wrapped every six cards until a photographer checked it. On a
+ * seven-build interval the revert pair was builds six and seven -- the bottom
+ * of the first column and the top of the second, about 1,460px apart
+ * diagonally -- so the one relationship in that history worth seeing was the
+ * one the layout had pulled apart. The wrap was mine and it was for
+ * compactness; the spec's own picture of a bridge is a line, not a grid.
+ */
 export function cardLayout(index: number, originX: number, originY: number) {
-  const column = Math.floor(index / CARDS_PER_COLUMN)
-  const row = index % CARDS_PER_COLUMN
   return {
-    x: originX + column * (EDIT_CARD_W + CARD_GAP_X),
-    y: originY + row * (EDIT_CARD_H + CARD_GAP_Y),
+    x: originX,
+    y: originY + index * (EDIT_CARD_H + CARD_GAP_Y),
   }
 }
 
-/** The extra width the compare column moves out by to make room for `count` cards. */
+/** The extra width the compare column moves out by to make room for cards. */
 export function bridgeGapWidth(count: number): number {
   if (count <= 0) return 0
-  const columns = Math.ceil(count / CARDS_PER_COLUMN)
-  return columns * (EDIT_CARD_W + CARD_GAP_X) + CARD_GAP_X
+  return EDIT_CARD_W + CARD_GAP_X * 2
 }
 
 /**
