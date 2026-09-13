@@ -106,9 +106,13 @@ Then, in order:
 3. **The assertion that counts:** `sessionRuntimeState('fleet-muse-panel-proof')`
    returns `mcp: true` and `probed: true`.
 4. The panel itself, in Skip's own tab, read-only over CDP via `ssh air-agent` —
-   the row present and reading as running. Never navigate or reload his tab.
+   the row present and reading as running. Before doing this, read `AGENTS.md`
+   §"A browser is a last resort, not a gate" and the `app-testing` skill
+   §"Skip's Chrome is observe-only"; both bound what you may do to that tab.
 
-A stop at any step is the result. Do not fix forward to complete the story.
+Read `AGENTS.md` §"A verification claim carries its evidence, or it is not a
+claim" before writing the result up. It governs what this run has to carry and
+what to do when a step stops.
 
 ## Left alone deliberately
 
