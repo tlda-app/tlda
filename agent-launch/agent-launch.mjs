@@ -550,6 +550,23 @@ export function createAgentLauncher({
           log.warn(`${launched.harness} spawn ${agentName} (${launched.fleetId}) has no resolved session identity yet; ledger row left pending for ingestion`)
         }
       }
+      if (liveIdentity?.sessionId && launched.fleetId) {
+        const sessionPath = liveIdentity.jsonlPath || (liveIdentity.sessionDir
+          ? path.join(liveIdentity.sessionDir, 'session.jsonl')
+          : null)
+        permissionLedger.setSessionSync(launched.fleetId, {
+          sessionId: liveIdentity.sessionId,
+          sessionKind: launched.harness,
+          sessionPath,
+          tmuxSession: launched.tmuxSession,
+          model: launched.model || liveIdentity.model,
+          machineId,
+          envName: activeEnvName,
+          daemonKey: machineId && activeEnvName ? `${machineId}:${activeEnvName}` : null,
+          cwd: resolvedCwd || liveIdentity.cwd,
+          friendlyName: launched.name || agentName,
+        })
+      }
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
       if (launched.registrationDeferred && !launched.fleetId) {
         let ledgerCleanupError = null

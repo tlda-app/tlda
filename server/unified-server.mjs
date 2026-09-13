@@ -10157,27 +10157,30 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     const serverReceivedAtMs = Date.now()
     const { agent_id, tool, arg, input } = msg
     if (!agent_id) return
-    const sourceEditActivity = recordSourceEditActivity(msg)
+    const historical = msg.historical === true
+    const sourceEditActivity = historical ? false : recordSourceEditActivity(msg)
     serverActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.SERVER_ACCEPTED, msg, 1, {
       type: 'activity-event',
       agent: agent_id,
       tool,
     })
     const activityAtMs = Date.parse(msg.ts) || serverReceivedAtMs
-    markAgentAlive(agent_id, activityAtMs, {
-      source: 'daemon-activity-event',
-      reason: 'activity extracted from harness stream',
-      atMs: activityAtMs,
-    })
+    if (!historical) {
+      markAgentAlive(agent_id, activityAtMs, {
+        source: 'daemon-activity-event',
+        reason: 'activity extracted from harness stream',
+        atMs: activityAtMs,
+      })
+    }
     const currentActivity = runtimeStatusStore.evidenceFor(agent_id)?.activity
-    if (tool && !String(tool).startsWith('_') && (currentActivity === 'thinking' || currentActivity === 'compacting')) {
+    if (!historical && tool && !String(tool).startsWith('_') && (currentActivity === 'thinking' || currentActivity === 'compacting')) {
       runtimeStatusStore.updateActivity(agent_id, currentActivity, {
         tool,
         atMs: runtimeStatusStore.evidenceFor(agent_id)?.activity_at_ms || activityAtMs,
       })
       broadcastEvent('agent-status', { agent: agent_id, status: 'awake', activity: currentActivity, tool, ts: msg.ts || new Date(activityAtMs).toISOString() })
     }
-    touchActivity(agent_id)
+    if (!historical) touchActivity(agent_id)
     if (sourceEditActivity && (msg.status === 'completed' || msg.status === 'error')) return
     if (!shouldStoreDaemonActivity(msg)) return
     try {
@@ -10195,7 +10198,7 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       await reportDaemonEventFailure(msg, 'activity-write', e)
       throw e
     }
-    await checkQualifications(agent_id, tool, arg, input)
+    if (!historical) await checkQualifications(agent_id, tool, arg, input)
     return
   }
 
