@@ -153,6 +153,41 @@ export function summarizeChange(patch, { excerptChars = 240 } = {}) {
   const hunks = hunksFromPatch(patch)
   if (hunks.length === 0) return null
 
+  // How much actually DIFFERS, per hunk, rather than how big the hunk is.
+  //
+  // A line re-emitted with one space added counts 44 words removed and 44
+  // added at line level, and one changed token at word level. Scoring by hunk
+  // size therefore ranked a whitespace fix above a deleted theorem statement
+  // in the same commit -- the card excerpted the space and the headline
+  // aggregated both, so a reader saw "rewrote ~44 words" over two lines
+  // identical to the eye. Found on a paper of his; the fourth distinct way
+  // that has happened.
+  //
+  // Above the cap the word diff is not worth its cost -- LCS is quadratic and
+  // a whole-file insertion would be gigabytes -- and it is not needed there
+  // either, since a hunk that large is never competing with a one-space fix.
+  const DIFF_WORD_CAP = 1500
+  const changedWords = (before, after) => {
+    const b = words(before)
+    const a = words(after)
+    if (!before) return { displaced: 0, added: a }
+    if (!after) return { displaced: b, added: 0 }
+    if (b > DIFF_WORD_CAP || a > DIFF_WORD_CAP) return { displaced: b, added: a }
+    const { beforeParts, afterParts } = markWordDiff(before, after)
+    const count = parts => parts.filter(part => part.changed).reduce((n, part) => n + words(part.text), 0)
+    return { displaced: count(beforeParts), added: count(afterParts) }
+  }
+
+  // Displacement first, size second.
+  //
+  // His record is explicit about the ordering: "a large pure addition is
+  // usually fine; replacing prose he already wrote is where the subtlety
+  // dies." So ANY hunk that took words of his away outranks any hunk that
+  // only added, however big the addition -- and among hunks that displaced,
+  // the one that displaced most wins. That is one comparison and it encodes
+  // the priority rather than approximating it with a single number.
+  const outranks = (a, b) => (a.displaced !== b.displaced ? a.displaced > b.displaced : a.added > b.added)
+
   let addedWords = 0
   let removedWords = 0
   let best = null
@@ -173,26 +208,21 @@ export function summarizeChange(patch, { excerptChars = 240 } = {}) {
       const rawAfter = hunk.added.map(rawOf).filter(Boolean).join(' ')
       if (rawBefore !== rawAfter) { before = rawBefore; after = rawAfter }
     }
-    addedWords += words(after)
-    removedWords += words(before)
-    // The biggest rewrite, not the biggest hunk: a hunk that only adds is not
-    // the one a person needs to see first, whatever its size.
-    const weight = Math.min(words(before), words(after))
-    if (before && after && (!best || weight > best.weight)) {
+    // Counts are of words that actually DIFFER, so the headline and the
+    // excerpt describe the same event. Counting whole lines said "rewrote ~44
+    // words" of a line re-emitted with one space added, over an excerpt
+    // showing that space -- a number that disagrees with what is on screen
+    // reads as the highlighting being broken.
+    const weight = changedWords(before, after)
+    addedWords += weight.added
+    removedWords += weight.displaced
+    // EVERY hunk competes, including pure deletions and pure additions. The
+    // previous rule required both sides to be non-empty, so a deletion could
+    // never be the excerpt however large -- which is how a removed theorem
+    // statement lost to a space.
+    if ((before || after) && (!best || outranks(weight, best.weight))) {
       best = { weight, file: hunk.file, before, after }
     }
-  }
-
-  // Nothing was rewritten, so show the largest thing that did happen.
-  if (!best) {
-    const widest = hunks
-      .map(hunk => ({
-        file: hunk.file,
-        before: hunk.removed.map(proseOf).filter(Boolean).join(' '),
-        after: hunk.added.map(proseOf).filter(Boolean).join(' '),
-      }))
-      .sort((a, b) => words(b.before) + words(b.after) - words(a.before) - words(a.after))[0]
-    best = widest ? { ...widest, weight: 0 } : null
   }
 
   const kind = removedWords === 0 ? 'addition'
