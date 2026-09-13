@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { activeEnvName, repoRoot } from '../identity.mjs'
 import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 import { SYSTEM_MARKER } from '../../shared/terminal-system-markers.mjs'
+import { museSessionIdFromPath, resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -135,11 +136,12 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
 
 // Where Muse records the session a running process owns.
 //
-// The three resolvers differ only in this, and Muse's is the tightest of them:
-// Claude's bounds candidate transcripts by launch timestamp, while a live Muse
-// process holds `.session.lock` OPEN inside its own session directory, so the
-// id is read off a held descriptor rather than inferred. Two Muse agents
-// launched in the same second are still unambiguous.
+// RETRACTED, and recorded because it was written here as fact: an earlier
+// version of this comment claimed Muse had "the tightest mapping of the
+// three". It did not -- it was the shared open-fd technique reimplemented by
+// hand, and codex has had that since a June spike. The resolution now goes
+// through `resolveTranscript`, whose PRIMARY path is exactly this: the file
+// the runtime pid holds open that the adapter recognises.
 //
 // `model` and `cwd` come off the observed argv rather than a second store,
 // because `buildArgs` puts `--model` and `--workspace` there.
@@ -152,7 +154,6 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
 // arming an activity watcher on it; it is named differently here so the shape
 // cannot be assumed.
 const MUSE_RUNTIME = /(?:^|\s|[/\\])muse(?:-bin-[\w.-]+)?(?:\.exe)?(?:\s|$)/
-const SESSION_DIR = /(\/\S*\/sessions\/\d{4}\/\d{2}\/\d{2}\/([0-9a-fA-F-]{36}))\//
 
 function argFlag(args, flag) {
   const m = String(args).match(new RegExp(`(?:^|\\s)${flag}[= ](?:"([^"]+)"|'([^']+)'|(\\S+))`))
@@ -201,30 +202,19 @@ export async function resolveLiveSessionIdentity({ tmuxSession, tmuxArgs = [], t
   } catch { return null }
   const runtime = ownedRuntimePid(panePids, psText)
   if (!runtime) return null
-  let lsofText
-  try {
-    ;({ stdout: lsofText } = await run('lsof', ['-p', runtime.pid], { timeout: 5000, encoding: 'utf8' }))
-  } catch { return null }
-  let sessionDir = null
-  let sessionId = null
-  let logPath = null
-  for (const line of lsofText.split('\n')) {
-    const dir = line.match(SESSION_DIR)
-    if (!dir) continue
-    if (!sessionId && line.endsWith('/.session.lock')) {
-      sessionDir = dir[1]
-      sessionId = dir[2]
-    }
-    if (!logPath && /\/cli-[0-9a-fA-F-]+\.log$/.test(line)) logPath = line.slice(line.indexOf(dir[1]))
-  }
-  // The held lock is the identity. Without it there is no session to name, and
-  // this returns null rather than guessing from the directory's newest entry --
-  // a missing identity has to stay missing.
+  // `processOwnedOnly` because a missing identity has to stay missing: the
+  // adapter's launch-window fallback would pick the newest runtime json under
+  // a shared root, which is a guess, and this resolver has never guessed.
+  const open = await resolveTranscript({
+    pid: runtime.pid,
+    kind: 'muse',
+    processOwnedOnly: true,
+    ...(_deps.findOpenTranscript ? { findOpenTranscript: _deps.findOpenTranscript } : {}),
+  })
+  const sessionId = museSessionIdFromPath(open)
   if (!sessionId) return null
   return {
     sessionId,
-    sessionDir,
-    logPath,
     model: argFlag(runtime.args, '--model'),
     cwd: argFlag(runtime.args, '--workspace'),
   }

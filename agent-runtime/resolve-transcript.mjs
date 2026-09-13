@@ -212,6 +212,49 @@ const codexAdapter = {
 }
 
 // ---------------------------------------------------------------------------
+// Adapter: Muse
+// ---------------------------------------------------------------------------
+// A live muse process holds ~/.local/share/muse/runtime/muse/sessions/<uuid>.json
+// open for writing -- one per session, and the FILENAME IS THE SESSION ID, the
+// same shape as Claude's. So PRIMARY resolves it off a held descriptor and the
+// launch-window fallback never runs.
+//
+// It has to be that file rather than the transcript. Measured 2026-09-13 on
+// pid 18206 (muse-bin-1.1.1-R2514.1): the process's writable fds are
+// `.session.lock`, `cron.db{,-shm,-wal}`, a tracing log and this runtime json.
+// `session.jsonl` -- the actual transcript -- is held open ZERO times, because
+// muse append-closes it per write.
+//
+// Which is why matching `session.jsonl` here would be wrong rather than merely
+// slower: PRIMARY could never hit, every resolution would fall to
+// `findByLaunchWindow`, and that scans one shared date-partitioned root
+// holding 219 transcripts with 7 written in the last ten minutes. It cannot
+// tell three concurrently-live agents apart -- the same misrouting the codex
+// adapter's own comment warns about.
+const MUSE_RUNTIME_SESSIONS = '/.local/share/muse/runtime/muse/sessions/'
+
+const museAdapter = {
+  label: 'muse',
+  isTranscriptPath(p) {
+    return p.includes(MUSE_RUNTIME_SESSIONS) && p.endsWith('.json')
+  },
+  findByLaunchWindow({ launchTs }) {
+    // Unreachable while the process is alive, since PRIMARY resolves off the
+    // held fd. Kept honest rather than clever: newest runtime session json
+    // after launch, which is the best a dead process can support.
+    const root = join(HOME, '.local', 'share', 'muse', 'runtime', 'muse', 'sessions')
+    return newestUnder([root], (p) => p.endsWith('.json'), launchTs)
+  },
+}
+
+// The id is the basename, so nothing has to regex the path apart.
+export function museSessionIdFromPath(p) {
+  if (!p) return null
+  const base = p.slice(p.lastIndexOf('/') + 1)
+  return base.endsWith('.json') ? base.slice(0, -'.json'.length) : null
+}
+
+// ---------------------------------------------------------------------------
 // Kind dispatch
 // ---------------------------------------------------------------------------
 // `kind` comes from the daemon's process classification (it already does isClaude /
@@ -220,6 +263,7 @@ const codexAdapter = {
 const ADAPTERS = {
   claude: claudeAdapter,
   codex: codexAdapter,
+  muse: museAdapter,
   // goose: gooseAdapter,  // (future — goose transcripts live in sqlite, not a jsonl file; see lib/goose-activity.mjs)
 }
 
@@ -251,4 +295,4 @@ export async function resolveTranscript({
   return fallback && acceptTranscript(fallback) ? fallback : null // FALLBACK
 }
 
-export { claudeAdapter, codexAdapter, codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, codexRolloutIsTopLevel, codexRolloutMatchesLaunch, findOpenTranscriptFd }
+export { claudeAdapter, codexAdapter, museAdapter, codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, codexRolloutIsTopLevel, codexRolloutMatchesLaunch, findOpenTranscriptFd }
