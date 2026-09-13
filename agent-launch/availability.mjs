@@ -138,7 +138,10 @@ export async function probeSpawnAvailability({ cwd = null, env = process.env, no
   ])
   const codexAuth = codexPath ? hasCodexAuth(deps.codexAuthFile) : failResult('binary-missing')
   const museConfigHome = listModels(config).models.find(model => model.kind === 'muse')?.harnessOptions?.env?.XDG_CONFIG_HOME || env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
-  const museAuth = musePath ? hasMuseAuth(deps.museAuthFile || path.join(museConfigHome, 'muse', 'auth.json')) : failResult('binary-missing')
+  const museApiKey = musePath ? await loginShellEnv('META_API_KEY', runner) : ''
+  const museAuth = musePath
+    ? (museApiKey ? okResult({ source: 'META_API_KEY' }) : hasMuseAuth(deps.museAuthFile || path.join(museConfigHome, 'muse', 'auth.json')))
+    : failResult('binary-missing')
   const cursor = await cursorStatus(cursorPath, runner)
   const cursorAvailable = !!(cursor.binary?.ok && cursor.authenticated?.ok)
   const harnesses = {

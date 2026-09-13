@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, readlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { HARNESS } from '../../shared/harness.ts'
@@ -48,17 +48,17 @@ test('native resume retains the bare session identity without inventing exec fla
   assert.deepEqual(buildArgs({ ...base, headless: true, freshSessionId: id }).slice(-2), ['--session-id', id])
 })
 
-test('launch uses native account auth and enforces the current fleet gate', () => {
+test('launch accepts deployment API auth but rejects credentials in model configuration', () => {
   const cmd = buildCmd({ ...base, prompt: "don't run `id` or $(id)", env: { OPENROUTER_API_KEY: 'secret-test-value' } })
   assert.ok(!cmd.includes('OPENROUTER_API_KEY'))
-  assert.ok(cmd.includes('unset META_API_KEY'))
+  assert.ok(!cmd.includes('unset META_API_KEY'))
   assert.ok(!cmd.includes('secret-test-value'))
   assert.ok(!cmd.includes('--yolo'))
   assert.ok(!cmd.includes('--no-foreign-personal-context'))
   if (!capabilities.fleetReady) {
     assert.throws(() => buildCmd({ ...base, fleetId: 'fleet:example' }), /not yet verified/)
   }
-  assert.throws(() => buildCmd({ ...base, harnessOptions: { env: { META_API_KEY: 'secret-test-value' } } }), /muse login/)
+  assert.throws(() => buildCmd({ ...base, harnessOptions: { env: { META_API_KEY: 'secret-test-value' } } }), /deployment environment/)
 })
 
 test('model selection uses the existing daemon model schema and enforces harness ownership', () => {
@@ -80,7 +80,7 @@ test('the generated shell command delivers literal arguments to the executable',
     encoding: 'utf8', env: { ...process.env, META_API_KEY: 'stale-provider-key', OPENROUTER_API_KEY: 'test-credential' },
   }))
   assert.deepEqual(result.args, buildArgs(options))
-  assert.equal(result.credentialPresent, false)
+  assert.equal(result.credentialPresent, true)
 })
 
 test('fleet MCP configuration isolates identity and references native auth without copying it', t => {
@@ -112,6 +112,19 @@ test('fleet MCP configuration isolates identity and references native auth witho
     assert.ok(cmd.includes('local:first'))
     assert.ok(!cmd.includes('not-a-real-credential'))
   }
+})
+
+test('fleet MCP configuration uses deployment API auth without requiring or linking account auth', t => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'muse-fleet-api-test-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const sourceRoot = path.join(dir, 'source')
+  mkdirSync(path.join(sourceRoot, 'muse'), { recursive: true })
+  const env = { XDG_CONFIG_HOME: sourceRoot, TMPDIR: dir, META_API_KEY: 'deployment-secret', TLDA_ENV: 'testing' }
+  const prepared = prepareFleetConfig({ localAgentId: 'local:api', env })
+  assert.equal(prepared.XDG_CONFIG_HOME, path.join(dir, 'tlda-muse-launch', 'local%3Aapi'))
+  assert.equal(existsSync(path.join(prepared.XDG_CONFIG_HOME, 'muse', 'auth.json')), false)
+  const settingsText = readFileSync(path.join(prepared.XDG_CONFIG_HOME, 'muse', 'settings.json'), 'utf8')
+  assert.ok(!settingsText.includes('deployment-secret'))
 })
 
 test('runtime detection recognizes Muse binary and its MCP child', () => {
@@ -260,4 +273,16 @@ test('an unidentifiable pane resolves to null rather than a guess', async () => 
     tmuxSession: 'fleet-a',
     _deps: { execFile: stubExec({ panePids: '4242', ps: `  4242     1 ${MUSE_ARGS}\n  4243  4242 ${MUSE_ARGS}\n` }), ...found },
   }), null, 'two owned runtimes mean the pane is not evidence about which session is this agent')
+})
+
+test('availability accepts deployment API authentication without an account auth file', async () => {
+  const config = { modelSpecs: { muse: { alias: 'muse', id: model, harness: 'muse' } } }
+  const run = async (_command, args) => {
+    if (args[1] === 'command -v muse') return { ok: true, stdout: '/example/muse' }
+    if (args[1]?.includes('META_API_KEY')) return { ok: true, stdout: 'deployment-secret' }
+    return { ok: false, stdout: '' }
+  }
+  const result = await probeSpawnAvailability({ env: { META_API_KEY: 'deployment-secret' }, deps: { config, run } })
+  assert.equal(result.harnesses.muse.available, true)
+  assert.equal(result.harnesses.muse.authenticated.source, 'META_API_KEY')
 })

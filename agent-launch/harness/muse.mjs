@@ -76,7 +76,7 @@ export function buildCmd(options = {}) {
   const args = buildArgs({ ...options, prompt: options.prompt ?? (fleet && options.includePrompt !== false && !options.resumeId ? loginPrompt() : undefined) })
   const launchEnv = { ...(options.harnessOptions?.env || {}) }
   for (const key of ['META_API_KEY', 'OPENROUTER_API_KEY']) {
-    if (Object.hasOwn(launchEnv, key)) throw new Error('Use muse login for native Meta account authentication, not launch configuration credentials')
+    if (Object.hasOwn(launchEnv, key)) throw new Error('Provider credentials must come from the deployment environment, not daemon model configuration')
   }
   if (fleet) Object.assign(launchEnv, prepareFleetConfig(options))
   const assignments = Object.entries(launchEnv).map(([key, value]) => {
@@ -88,7 +88,7 @@ export function buildCmd(options = {}) {
     'muse',
     ...args.map(sq),
   ].join(' ')
-  return `zsh -lc ${sq(`unset META_API_KEY; ${command}`)}`
+  return `zsh -lc ${sq(command)}`
 }
 
 export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, env = process.env, harnessOptions = {} }) {
@@ -98,7 +98,8 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
   const root = path.join(sourceEnv.TMPDIR || os.tmpdir(), 'tlda-muse-launch', encodeURIComponent(identity))
   const target = path.join(root, 'muse')
   const auth = path.join(sourceRoot, 'muse', 'auth.json')
-  if (!fs.existsSync(auth)) throw new Error('Muse native account login is missing; run muse login using the configured XDG_CONFIG_HOME')
+  const usesApiKey = Boolean(sourceEnv.META_API_KEY)
+  if (!usesApiKey && !fs.existsSync(auth)) throw new Error('Muse authentication is missing; set META_API_KEY in the deployment environment or run muse login using the configured XDG_CONFIG_HOME')
   const inherited = path.join(sourceRoot, 'muse', 'settings.json')
   const settings = fs.existsSync(inherited) ? JSON.parse(fs.readFileSync(inherited, 'utf8')) : { schema_version: 1 }
   settings.provider = 'meta'
@@ -130,8 +131,10 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
   }
   fs.mkdirSync(target, { recursive: true, mode: 0o700 })
   fs.writeFileSync(path.join(target, 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
-  const authLink = path.join(target, 'auth.json')
-  if (!fs.existsSync(authLink)) fs.symlinkSync(auth, authLink)
+  if (!usesApiKey) {
+    const authLink = path.join(target, 'auth.json')
+    if (!fs.existsSync(authLink)) fs.symlinkSync(auth, authLink)
+  }
   return { ...mcpEnv, XDG_CONFIG_HOME: root }
 }
 

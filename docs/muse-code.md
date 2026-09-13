@@ -1,4 +1,4 @@
-# Muse Code adapter: native Meta account authentication
+# Muse Code adapter: native Meta authentication
 
 The experimental adapter runs the native Muse Code CLI with Muse-owned tools,
 sessions, permissions, subagents, and worktrees. It does not run Muse as a Goose
@@ -24,11 +24,16 @@ help before using a different release. The official documentation is at
 [Meta's developer site](https://dev.meta.ai/docs/muse-code/configuration).
 
 The [settings example](../config/muse/settings.json) selects the native Meta
-provider and `muse-spark-1.3-contributor`. Muse uses its own model catalog and
-account authentication from `muse login`. Run login with the same
-`XDG_CONFIG_HOME` as the launched process. The adapter unsets `META_API_KEY` so
-an inherited provider key cannot override that account login. It does not map
-an OpenRouter credential or configure a proxy. The fleet model default is unchanged.
+provider and `muse-spark-1.3-contributor`. For usage billing, set
+`META_API_KEY` in the deployment environment that starts the daemon; Muse gives
+that key priority over account login. Consequently, any key present in the
+daemon's login-shell environment selects usage billing for every Muse launch.
+The adapter inherits the deployment key
+without copying it into generated settings or accepting it in public daemon
+configuration. Without a deployment key, Muse falls back to account
+authentication from `muse login`; run login with the same `XDG_CONFIG_HOME` as
+the launched process. The adapter does not map an OpenRouter credential or
+configure a proxy. The fleet model default is unchanged.
 
 Copy the example to a deployment-owned configuration root outside the repository,
 under `muse/settings.json`, or use the user's existing native configuration.
@@ -51,7 +56,8 @@ For direct execution, pass an explicit model, workspace, and prompt. Set
 `harnessOptions.required` and `harnessOptions.preferences`, as individual argv
 tokens; the adapter does not add `--yolo`, a sandbox override, or a personal-rule
 policy. Configuration environment values belong in `harnessOptions.env`.
-Account credentials remain in Muse's native auth store outside the repository.
+Credentials remain in the deployment environment or Muse's native auth store
+outside the repository.
 
 Fleet configuration preparation creates a per-agent settings directory under
 the system temporary directory. Its TLDA stdio server receives the normal
