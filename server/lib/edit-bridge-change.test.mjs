@@ -8,6 +8,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { summarizeChange, hunksFromPatch } from './edit-bridge-change.mjs'
+import { EDIT_CARD_W } from '../../shared/edit-card-metrics.mjs'
 
 const patch = (body) => `diff --git a/main.md b/main.md\n--- a/main.md\n+++ b/main.md\n${body}`
 
@@ -193,4 +194,56 @@ test('counts describe the same event the excerpt shows', () => {
   ))
   assert.ok(change.removedWords <= 2, `reports what differs, got ${change.removedWords}`)
   assert.ok(change.addedWords <= 2, `reports what differs, got ${change.addedWords}`)
+})
+
+test('the marked span survives the card clipping it to two lines', () => {
+  // The fifth distinct cause of "two lines that look identical", and the first
+  // that was not in this module at all. Real data, build 029dadc: the server
+  // produced a 100-character excerpt whose marked token began at character 82
+  // -- correct, centred, marked. The card then clipped it a SECOND time with
+  // `-webkit-line-clamp: 2`, and the mark was below the cut. The trailing
+  // ellipsis in the photograph was the CSS clamp, not anything this module
+  // wrote: the mark was right in the data, in the excerpt, and off the card.
+  //
+  // So this asserts against the CARD's capacity, derived from `EDIT_CARD_W`,
+  // and NOT against `EDIT_CARD_EXCERPT_CHARS`. A bound that moves with the
+  // budget under test cannot catch the budget being wrong -- written the
+  // circular way first, it stayed green at the old 240.
+  const USABLE_PX = EDIT_CARD_W - 6 - 6 - 6 - 2   // card padding, diff padding, rule
+  const CHAR_PX = 6                                // 10px monospace, advance ~0.6em
+  const COLS = Math.floor(USABLE_PX / CHAR_PX)     // 40
+  const CLAMP_LINES = 2                            // -webkit-line-clamp: 2
+
+  // Greedy word wrap, which is what the browser does to this text.
+  const visibleThroughClamp = (text) => {
+    const lines = []
+    let line = ''
+    for (const word of text.split(' ')) {
+      if (!line) { line = word; continue }
+      if ((line + ' ' + word).length <= COLS) line += ' ' + word
+      else { lines.push(line); line = word }
+    }
+    if (line) lines.push(line)
+    return lines.slice(0, CLAMP_LINES).join(' ')
+  }
+
+  const before = 'weight scale; the treatment-specific statement follows from the specialization above.%Computation'
+  const change = summarizeChange(patch(
+    '@@ -3,1 +3,1 @@\n' +
+    `-${before}\n` +
+    `+${before.replace('above.%', 'above. %')}\n`,
+  ))
+
+  for (const side of ['before', 'after']) {
+    const marked = change.excerpt[`${side}Parts`].filter(p => p.changed).map(p => p.text)
+    assert.ok(marked.length > 0, `${side}: the change is marked at all`)
+    const shown = visibleThroughClamp(change.excerpt[side])
+    for (const span of marked) {
+      assert.ok(
+        shown.includes(span.trim()),
+        `${side}: the marked span ${JSON.stringify(span)} is clipped off the card. ` +
+        `Two lines at ${COLS} cols show ${JSON.stringify(shown)}`,
+      )
+    }
+  }
 })

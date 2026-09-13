@@ -117,10 +117,17 @@
 }
 
 /* A replacement displaced writing that was already there; an addition did not.
-   That distinction is the one worth seeing without reading the words. */
+   That distinction is the one worth seeing without reading the words.
+
+   All three carry it in COLOUR, at one weight. Addition used to carry it in
+   `opacity: 0.7; font-weight: 500` instead, which said the same thing by being
+   harder to read — and this is the one feature whose whole bar is whether he
+   can tell at a glance, so the headline that means "nothing of yours was
+   touched" was the faintest thing on the card. Green says benign without
+   costing legibility. */
 .edit-card-change--replacement .edit-card-change-headline { color: var(--warn, #a8732b); }
 .edit-card-change--deletion    .edit-card-change-headline { color: var(--danger, #a33); }
-.edit-card-change--addition    .edit-card-change-headline { opacity: 0.7; font-weight: 500; }
+.edit-card-change--addition    .edit-card-change-headline { color: var(--ok, #3d7a5a); }
 
 .edit-card-diff {
   display: flex;
