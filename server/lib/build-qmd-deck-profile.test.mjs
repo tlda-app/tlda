@@ -88,6 +88,70 @@ test('a deck pairs with its chapter by stem, and stands alone otherwise', () => 
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
+// Chapters and decks in separate directories, which is the layout the course is
+// being reorganised into. Pairing by substituting `-slides.qmd` for `.qmd` in the
+// deck's PATH assumes they share a directory, so under this layout every deck
+// comes back unpaired -- and an unpaired deck groups under itself, which detaches
+// it from its chapter's map. The build succeeds and every deck is in the wrong
+// place, so nothing reports it.
+test('a deck pairs with its chapter when they are in different directories', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-deck-split-'))
+  try {
+    mkdirSync(join(root, 'chapters'), { recursive: true })
+    mkdirSync(join(root, 'decks'), { recursive: true })
+    writeFileSync(join(root, '_quarto.yml'), [
+      'project:', '  type: tlda', 'book:', '  chapters:',
+      '    - chapters/chapter-normal-approximation.qmd', '',
+    ].join('\n'))
+    writeFileSync(join(root, '_quarto-slides.yml'), [
+      'project:', '  type: default', '  render:', '    - decks/*-slides.qmd', 'book: null', '',
+    ].join('\n'))
+    for (const file of [
+      'chapters/chapter-normal-approximation.qmd',
+      'decks/chapter-normal-approximation-slides.qmd',
+      'decks/Lab1-slides.qmd',
+    ]) writeFileSync(join(root, file), '# doc\n')
+
+    assert.deepEqual(qmdDeckChapterPairs(root), [
+      // the chapter it belongs to is one directory over, and it still belongs to it
+      { deck: 'decks/Lab1-slides.qmd', chapter: null },
+      {
+        deck: 'decks/chapter-normal-approximation-slides.qmd',
+        chapter: 'chapters/chapter-normal-approximation.qmd',
+      },
+    ])
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+// Two chapters can share a stem once directories are in play, and there is no
+// correct way to choose between them. Leaving the deck unpaired is recoverable
+// and visible; putting it on the wrong chapter's map is neither.
+test('a deck whose stem matches two chapters is refused rather than guessed', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-deck-ambiguous-'))
+  try {
+    mkdirSync(join(root, 'part-one'), { recursive: true })
+    mkdirSync(join(root, 'part-two'), { recursive: true })
+    mkdirSync(join(root, 'decks'), { recursive: true })
+    writeFileSync(join(root, '_quarto.yml'), [
+      'project:', '  type: tlda', 'book:', '  chapters:',
+      '    - part-one/estimation.qmd', '    - part-two/estimation.qmd', '',
+    ].join('\n'))
+    writeFileSync(join(root, '_quarto-slides.yml'), [
+      'project:', '  type: default', '  render:', '    - decks/*-slides.qmd', 'book: null', '',
+    ].join('\n'))
+    for (const file of [
+      'part-one/estimation.qmd', 'part-two/estimation.qmd', 'decks/estimation-slides.qmd',
+    ]) writeFileSync(join(root, file), '# doc\n')
+
+    const said = []
+    assert.deepEqual(qmdDeckChapterPairs(root, line => said.push(line)), [
+      { deck: 'decks/estimation-slides.qmd', chapter: null },
+    ])
+    assert.match(said.join('\n'), /more than one chapter is named estimation\.qmd/,
+      'an ambiguous pairing must say why it was refused')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
 test('a deck render is moved into the book tree with its sidecar', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-deck-publish-'))
   try {

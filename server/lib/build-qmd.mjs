@@ -14,7 +14,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, renameSync, rmSync, lstatSync } from 'fs'
-import { dirname, join, relative } from 'path'
+import { basename, dirname, join, relative } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
@@ -640,12 +640,39 @@ export function qmdDeckRenderRoots(dir, addLog = () => {}) {
  * and only when that chapter is a declared book chapter. A deck that matches
  * nothing is not forced onto some chapter's map: it stands on its own, which
  * is what makes this rule safe to apply without renaming anyone's files.
+ *
+ * THE MATCH IS ON THE STEM, NOT ON THE PATH, and that distinction is the whole
+ * of this function. Substituting `-slides.qmd` for `.qmd` in the deck's path
+ * assumes a deck sits in the same directory as its chapter -- true while both
+ * live in one folder, and false the moment decks and chapters are separated,
+ * which is a layout decision rather than a fact about the pairing. The chapter
+ * list already says which documents are chapters, so it is the thing to search.
+ *
+ * The consequence of getting it wrong is not an error. An unpaired deck groups
+ * under itself, so it detaches from its chapter's map and stands alone -- a
+ * build that succeeds and quietly puts every deck in the wrong place.
+ *
+ * AMBIGUITY IS REFUSED RATHER THAN GUESSED. Two chapters in different
+ * directories can share a stem, and there is no correct way to choose between
+ * them. Such a deck is left unpaired and says so, which is recoverable; putting
+ * it on the wrong chapter's map is not.
  */
 export function qmdDeckChapterPairs(outDir, addLog = () => {}) {
-  const chapters = new Set(quartoBookRoots(outDir))
+  const byStem = new Map()
+  for (const chapter of quartoBookRoots(outDir)) {
+    const stem = basename(chapter).replace(/\.qmd$/i, '')
+    byStem.set(stem, byStem.has(stem) ? null : chapter)
+  }
   return qmdDeckRenderRoots(outDir, addLog).map((deck) => {
-    const chapter = deck.replace(/-slides\.qmd$/i, '.qmd')
-    return { deck, chapter: chapter !== deck && chapters.has(chapter) ? chapter : null }
+    const stem = basename(deck).replace(/-slides\.qmd$/i, '')
+    if (`${stem}.qmd` === basename(deck)) return { deck, chapter: null }
+    if (!byStem.has(stem)) return { deck, chapter: null }
+    const chapter = byStem.get(stem)
+    if (chapter === null) {
+      addLog(`[qmd] ${deck}: more than one chapter is named ${stem}.qmd, so it is not paired with any of them`)
+      return { deck, chapter: null }
+    }
+    return { deck, chapter }
   })
 }
 
