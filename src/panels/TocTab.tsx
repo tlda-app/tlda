@@ -258,18 +258,26 @@ export function TocTab({ query = '' }: { query?: string }) {
   // A course TOC row carries no filename — only `level`, `page`, `title` — so
   // the page it names has to be resolved through the project's own ordered
   // `pageFiles`. A book row carries `targetFile` and needs none of this.
-  const [pageFiles, setPageFiles] = useState<readonly string[]>(EMPTY_PAGE_FILES)
+  // Carries the project it was fetched for, so a list is never read against a
+  // different project than it came from. That matters more here than it looks:
+  // a row resolved against the wrong project's `pageFiles` does not fail, it
+  // names some other document.
+  const [fetchedPageFiles, setFetchedPageFiles] = useState<{ project: string; files: readonly string[] } | null>(null)
   useEffect(() => {
-    if (book || !tocProjectName) { setPageFiles(EMPTY_PAGE_FILES); return }
+    if (book || !tocProjectName) return
     let cancelled = false
-    fetch(`/api/projects/${encodeURIComponent(tocProjectName)}`)
+    const project = tocProjectName
+    fetch(`/api/projects/${encodeURIComponent(project)}`)
       .then(response => response.ok ? response.json() : null)
-      .then((project: { pageFiles?: string[] } | null) => {
-        if (!cancelled) setPageFiles(project?.pageFiles ?? EMPTY_PAGE_FILES)
+      .then((record: { pageFiles?: string[] } | null) => {
+        if (!cancelled) setFetchedPageFiles({ project, files: record?.pageFiles ?? EMPTY_PAGE_FILES })
       })
-      .catch(() => { if (!cancelled) setPageFiles(EMPTY_PAGE_FILES) })
+      .catch(() => { if (!cancelled) setFetchedPageFiles({ project, files: EMPTY_PAGE_FILES }) })
     return () => { cancelled = true }
   }, [book, tocProjectName])
+  const pageFiles = !book && fetchedPageFiles && fetchedPageFiles.project === tocProjectName
+    ? fetchedPageFiles.files
+    : EMPTY_PAGE_FILES
 
   const memberItemType = useMemo(() => {
     const types = new Map<string, CourseItemType>()
