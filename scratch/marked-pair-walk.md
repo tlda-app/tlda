@@ -59,10 +59,17 @@ curl -s https://pic-preview.cormorant-matrix.ts.net/api/projects/submission-home
 ```
 
 `/api/projects/<name>/shapes` lists the records in `doc-<name>`, which is exactly
-the room `ProblemMarking` publishes into and `StudentWork` mounts. **Baseline,
-measured before this walk: three records — `document`, `page`, and one
-`doc-version` sentinel shape, no drawing.** After the return there must be a
-further shape, and it must be the one that was drawn.
+the room `ProblemMarking` publishes into and `StudentWork` mounts.
+
+**Do not count records. Identify the drawn shape.** A count is contaminated by
+the act of looking: opening that room in a browser adds a presence record, a
+`wm-project-layer-model` and an `html-page` shape — three records that appeared
+during a run where nothing was drawn or returned. So the assertion is that a
+record of the drawn shape's own type (`draw`) exists, carrying the geometry that
+was drawn, and that it was **not** in the before-listing.
+
+The before-listing is the red below, and it is the same instrument, so the two
+are comparable record by record rather than by size.
 
 **5. The student's own view shows it.** Open
 `?name=<you>&workspace=classroom-work&assignment=homework-1&student=walk-b` and
