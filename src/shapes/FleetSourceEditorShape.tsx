@@ -1006,10 +1006,17 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       setSourceHasConflictMarkers(hasConflictMarkers(nextFullText))
       sourceWindowRef.current = sourceWindowForText(nextFullText, sourceWindowRef.current.targetLine)
       setStatus('synced')
-      // `building` was the old route's word for it. The accept names what it
-      // actually ran instead, and a build is one of the named effects — read the
-      // gone field and this line silently stops ever saying "build queued".
-      setStatusText(payload?.postAcceptEffects?.includes('build') ? 'Synced; build queued' : 'Synced')
+      // This said 'Synced; build queued' when `postAcceptEffects` named a build,
+      // and it could not since `f6d0f9089` "Delete parallel server source
+      // authority" (2026-08-20) removed the route that returned the field. Two
+      // consumers, no producer — so the condition was always false and the
+      // person editing was told 'Synced' whether or not a build followed.
+      //
+      // Its own comment predicted this exactly, which is why it is deleted
+      // rather than left: a branch that cannot be true reads as a thing that
+      // reports, and the next person to wonder whether their save built will
+      // trust it the way three of us trusted the CLI's equivalent.
+      setStatusText('Synced')
     } catch (err: any) {
       // The sequence guard decides whether this response may touch the BUFFER.
       // It must not decide whether the person is told the save failed.

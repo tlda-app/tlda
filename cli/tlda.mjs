@@ -367,17 +367,25 @@ function printSubmittedRevision(submission) {
 function printPushBuildStatus(result, unchangedMessage = 'No changes detected.') {
   if (result.unchanged) {
     console.log(dim(unchangedMessage))
-  } else if (result.postAcceptEffects?.includes('build')) {
-    // The old route answered `building`, an intention. The accept answers
-    // `postAcceptEffects`, the list of what actually ran, and `build` is one of
-    // its names. Reading the old field here is not a display bug that shows
-    // something wrong -- it is `undefined`, so this falls to the else and
-    // `tlda push` silently stops ever saying "Build triggered", reporting the
-    // less informative of two true strings with no error anywhere.
-    console.log(green('Build triggered.'))
-  } else {
-    console.log(green('Source pushed; viewer rebuilds on demand.'))
+    return
   }
+  // THERE USED TO BE A "Build triggered." BRANCH HERE AND IT COULD NOT FIRE.
+  // It read `result.postAcceptEffects`, which the accept route returned as
+  // `postAcceptEffects: ran` until `f6d0f9089` "Delete parallel server source
+  // authority" (2026-08-20) took that route out. Nothing has produced the field
+  // since -- two consumers, no producer -- so the branch was dead and this
+  // message was the only one a push could ever print.
+  //
+  // Its own comment predicted exactly that, and the prediction sat above the
+  // dead branch for three weeks while three people spent an hour tonight
+  // asking a question this output cannot answer.
+  //
+  // So it is deleted rather than left looking like a thing that reports. What
+  // replaces it claims only what is known here: the source was submitted. A
+  // build follows when the revision changed something, and `tlda build` forces
+  // one when it did not -- which is the same advice the unchanged branch gives.
+  console.log(green('Source submitted. A build follows if this revision changed anything;'))
+  console.log(green('`tlda build` forces one otherwise.'))
 }
 
 export function retryableCliOperationError(error) {
