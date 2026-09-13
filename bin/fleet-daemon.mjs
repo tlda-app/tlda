@@ -127,11 +127,8 @@ import { resolvePartialMintPermissionAuthority } from '../daemon/partial-mint-pe
 import { markAgentDead, wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
 import { compilePermissionGrant, normalizePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
-import {
-  resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity,
-  resolveLiveSessionIdentityUntil as resolveLiveCodexSessionIdentityUntil,
-} from '../agent-launch/harness/codex.mjs'
 import { liveIdentityResolverMap } from '../agent-launch/live-identity-resolvers.mjs'
+import { resolveIdentityUntil } from '../agent-launch/resolve-identity-until.mjs'
 import {
   applyDaemonGrants,
   createPermissionLedger,
@@ -1370,13 +1367,20 @@ daemonMintCore = createDaemonMintCore({
       tmuxSocket: TMUX_SOCKET,
     })
     const recorded = stripCompiledPermissionSet(processFact)
-    if (processFact.session_id || processFact.harness !== 'codex') return recorded
-    // A fresh Codex process can be alive before it opens its rollout. Persist
-    // the process and grant now; transcript discovery completes the join later.
-    // In particular, do not put the global session-tree fallback on the mint's
-    // commit path: under machine load that synchronous walk held process_state
-    // and the permission grant unwritten for minutes after the agent logged in.
-    void resolveLiveCodexSessionIdentityUntil({
+    // Derived, not a harness name. This read `processFact.harness !== 'codex'`,
+    // so muse returned here: no discovery, no recordSession(), facts.sessionId
+    // stayed null, and mint-core deferred the route forever. The same file
+    // already derives this way a hundred lines up.
+    const deferredIdentityResolver = liveIdentityResolverMap()[processFact.harness] || null
+    if (processFact.session_id || !deferredIdentityResolver) return recorded
+    // A fresh Codex or Muse process can be alive before it opens the file that
+    // names its session. Persist the process and grant now; discovery completes
+    // the join later. In particular, do not put the global session-tree
+    // fallback on the mint's commit path: under machine load that synchronous
+    // walk held process_state and the permission grant unwritten for minutes
+    // after the agent logged in.
+    void resolveIdentityUntil({
+      resolve: deferredIdentityResolver,
       agent: {
         id: processFact.fleet_id || params.fleet_id || null,
         friendly_name: processFact.name || params.name || null,
@@ -1674,12 +1678,20 @@ async function rpcMint(params = {}) {
 async function rpcWake(params = {}) {
   const identifier = params.mint_id || params.mintId || params.fleet_id || params.fleetId || params.name
   const facts = mintStore.resolve(identifier)
+  // Recovery for an agent that never joined. Was codex-only, which meant a
+  // muse agent that missed discovery at mint time could never get it back --
+  // waking it did not repair the route. Every muse agent minted before this
+  // was therefore a permanent write-off rather than a retry.
+  const wakeIdentityResolver = facts?.processState?.harness
+    ? liveIdentityResolverMap()[facts.processState.harness] || null
+    : null
   if (
-    facts?.processState?.harness === 'codex'
+    wakeIdentityResolver
     && !facts.joinedAt
     && await mintProcessAlive(facts)
   ) {
-    const live = await resolveLiveCodexSessionIdentityUntil({
+    const live = await resolveIdentityUntil({
+      resolve: wakeIdentityResolver,
       agent: {
         id: facts.fleetId || null,
         friendly_name: facts.friendlyName || null,
