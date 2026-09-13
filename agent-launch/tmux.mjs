@@ -5,6 +5,7 @@ import path from 'path'
 import { promisify } from 'util'
 import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import { composerState as paneComposerState, dialogAwaitingKeypress, kickoffMarker } from '../agent-runtime/status-classifier.mjs'
+import { parseProcessTree, walkSubtree } from './process-tree.mjs'
 
 const execFileP = promisify(execFile)
 const AGENT_NICE_INCREMENT = 5
@@ -58,22 +59,10 @@ export async function uniqueSessionName(base, { tmuxSocket = process.env.TMUX_SO
 }
 
 export function runtimeStateFromProcessList(panePids, psText) {
-  const children = new Map()
-  const argsByPid = new Map()
-  for (const line of psText.split('\n')) {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
-    if (!m) continue
-    const [, pid, ppid, args] = m
-    if (!children.has(ppid)) children.set(ppid, [])
-    children.get(ppid).push(pid)
-    argsByPid.set(pid, args)
-  }
-  const stack = [...panePids]
-  const seen = new Set()
-  while (stack.length) {
-    const pid = stack.pop()
-    if (seen.has(pid)) continue
-    seen.add(pid)
+  const { children, argsByPid } = parseProcessTree(psText)
+  // FIRST match in traversal order, not a uniqueness requirement -- unlike the
+  // harness resolvers, which share the walk but demand exactly one.
+  for (const pid of walkSubtree(panePids, children)) {
     const args = argsByPid.get(pid) || ''
     if (/(?:^|\s|[/\\])(claude|codex|goose|muse(?:-bin-[\w.-]+)?)(?:\.exe)?(?:\s|$)/.test(args)
       || /(?:^|\s|[/\\])node(?:\.exe)?(?:\s|$).*?\.mjs\b/.test(args)) {
@@ -86,20 +75,10 @@ export function runtimeStateFromProcessList(panePids, psText) {
       const daemonKey = envValue('FLEET_DAEMON_KEY')
       const fleetId = envValue('FLEET_ID')
       const envName = envValue('TLDA_ENV')
-      const descendants = [...(children.get(pid) || [])]
-      const descendantSeen = new Set()
-      let mcp = false
-      while (descendants.length) {
-        const child = descendants.pop()
-        if (descendantSeen.has(child)) continue
-        descendantSeen.add(child)
-        const childArgs = argsByPid.get(child) || ''
-        if (/mcp-server[/\\](?:index|fleet-server)\.mjs|(?:^|[/\\])tlda-mcp(?:\s|$)/.test(childArgs)) mcp = true
-        descendants.push(...(children.get(child) || []))
-      }
+      const mcp = walkSubtree(children.get(pid) || [], children)
+        .some(child => /mcp-server[/\\](?:index|fleet-server)\.mjs|(?:^|[/\\])tlda-mcp(?:\s|$)/.test(argsByPid.get(child) || ''))
       return { runtime: true, mcp, daemonKey, fleetId, envName }
     }
-    stack.push(...(children.get(pid) || []))
   }
   return { runtime: false, mcp: false, daemonKey: null, fleetId: null, envName: null }
 }
