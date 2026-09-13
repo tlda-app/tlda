@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { activeEnvName, repoRoot } from '../identity.mjs'
 import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 import { SYSTEM_MARKER } from '../../shared/terminal-system-markers.mjs'
-import { museSessionIdFromPath, resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
+import { museSessionIdFromPath, museTranscriptPathForSession, resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -146,13 +146,14 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
 // `model` and `cwd` come off the observed argv rather than a second store,
 // because `buildArgs` puts `--model` and `--workspace` there.
 //
-// CONTRACT DIFFERENCE, deliberate: claude.mjs returns `jsonlPath`, a
-// Claude-style JSONL transcript. This returns `sessionDir` and `logPath`, and
-// `logPath` is the `cli-*.log` the process holds open -- NOT that format.
-// `logPath` is often absent -- Muse does not dependably hold the cli log open -- so nothing may depend on it; sessionId+model are the identity.
-// Whoever wires this into the launch path must establish what reads it before
-// arming an activity watcher on it; it is named differently here so the shape
-// cannot be assumed.
+// Returns `jsonlPath` like claude.mjs does, but it is DERIVED rather than
+// observed: muse holds no descriptor on its transcript, so the adapter binds
+// the identity file and the transcript path is computed from the id.
+//
+// This comment used to describe `sessionDir` and `logPath`. Both were dropped
+// once a grep showed nothing read them -- a grep that was scoped to this
+// branch and missed a consumer on `muse-activity-ingest`, which is why
+// `jsonlPath` is here.
 const MUSE_RUNTIME = /(?:^|\s|[/\\])muse(?:-bin-[\w.-]+)?(?:\.exe)?(?:\s|$)/
 
 function argFlag(args, flag) {
@@ -215,6 +216,11 @@ export async function resolveLiveSessionIdentity({ tmuxSession, tmuxArgs = [], t
   if (!sessionId) return null
   return {
     sessionId,
+    // The transcript, not the identity file the adapter bound. These are two
+    // different files on muse; see `museTranscriptPathForSession`. Named
+    // `jsonlPath` to match claude.mjs, because that is the field anything
+    // tailing a session's activity already reads.
+    jsonlPath: (_deps.transcriptPath || museTranscriptPathForSession)(sessionId),
     model: argFlag(runtime.args, '--model'),
     cwd: argFlag(runtime.args, '--workspace'),
   }

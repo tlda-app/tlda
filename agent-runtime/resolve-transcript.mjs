@@ -247,6 +247,44 @@ const museAdapter = {
   },
 }
 
+// Muse is the one runtime whose IDENTITY file and TRANSCRIPT are different
+// files, so resolving one does not give you the other:
+//
+//   identity   runtime/muse/sessions/<uuid>.json           held open
+//   transcript sessions/<yyyy>/<mm>/<dd>/<uuid>/session.jsonl   never held open
+//
+// Claude and codex collapse these -- the open jsonl IS the transcript and its
+// filename IS the id -- which is why `resolveTranscript` has one return value
+// and why muse needs this second step. Anything tailing muse activity wants
+// the transcript; the adapter can only bind the identity file.
+//
+// The date partition is not recoverable from the uuid, so the day directories
+// are scanned for it. Bounded: three levels of a few dozen entries.
+//
+// Returns the path when the SESSION DIRECTORY exists, whether or not
+// `session.jsonl` is there yet -- a session that has not written its first
+// turn still has a transcript path, and a consumer tailing it wants the name
+// before the bytes. Null only when no such session directory exists.
+export function museTranscriptPathForSession(sessionId, { root = join(HOME, '.local', 'share', 'muse', 'sessions') } = {}) {
+  if (!sessionId) return null
+  const entries = (dir) => {
+    try { return readdirSync(dir, { withFileTypes: true }).filter(e => e.isDirectory()) } catch { return [] }
+  }
+  for (const year of entries(root)) {
+    for (const month of entries(join(root, year.name))) {
+      for (const day of entries(join(root, year.name, month.name))) {
+        const dir = join(root, year.name, month.name, day.name, sessionId)
+        try {
+          if (statSync(dir).isDirectory()) return join(dir, 'session.jsonl')
+        } catch {
+          // Not this day's partition; keep scanning rather than guessing.
+        }
+      }
+    }
+  }
+  return null
+}
+
 // The id is the basename, so nothing has to regex the path apart.
 export function museSessionIdFromPath(p) {
   if (!p) return null
