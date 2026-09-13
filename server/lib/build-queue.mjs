@@ -173,12 +173,28 @@ export function createBuildQueue({
       }).catch(error => logError(job.name, error))
     }
 
-    async function onExit(code) {
+    async function onExit(code, signal, output) {
       if (stallTimer) clearInterval(stallTimer)
       await relays
       if (!running.delete(row.id)) return
       activeCount = Math.max(0, activeCount - 1)
-      if (!workerFailure && !cancelled && code) workerFailure = new Error(`build worker for ${job.name} exited with code ${code}`)
+      if (!workerFailure && !cancelled && (code || signal)) {
+        // A worker that died WITHOUT reporting leaves this as the only account,
+        // and on its own it says nothing: "exited with code 1" is what the
+        // observer saw, not what happened. The worker's own last output is the
+        // explanation, and it otherwise goes only to a process log that rotates
+        // in minutes -- on 2026-09-13 the cause of one such exit was already
+        // unrecoverable eight minutes later.
+        //
+        // The signal matters as much as the code: a thrown error and the kernel
+        // reclaiming memory both arrive here, and they are indistinguishable
+        // without it.
+        const how = signal ? `killed by ${signal}` : `exited with code ${code}`
+        const lastWords = output?.trim()
+        workerFailure = new Error(lastWords
+          ? `build worker for ${job.name} ${how}. Its last output:\n${lastWords}`
+          : `build worker for ${job.name} ${how}, and produced no output to explain it`)
+      }
       const completion = transition(async () => {
         await settle(
           row,
