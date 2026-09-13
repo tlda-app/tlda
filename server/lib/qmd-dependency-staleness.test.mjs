@@ -19,6 +19,7 @@ function book() {
     '    - chapters/includes-shared.qmd',
     '    - chapters/sources-a-script.qmd',
     '    - chapters/depends-on-nothing.qmd',
+    '    - chapters/includes-a-sourcer.qmd',
     '',
   ].join('\n'))
   writeFileSync(join(root, 'index.qmd'), '# i\n')
@@ -29,6 +30,15 @@ function book() {
     '# b', '', '```{r}', "source('../shared-code/estimators.R')", '```', '',
   ].join('\n'))
   writeFileSync(join(root, 'chapters/depends-on-nothing.qmd'), '# c\n')
+  // The third route, and the one the course actually uses most: the chapter
+  // includes a file, and the `source(...)` lives inside THAT file. Modelled on
+  // chapters/ca-income.qmd, which ten declared chapters include and which
+  // sources ../shared-code/income.R.
+  writeFileSync(join(root, 'shared-code/income.R'), 'INCOME <- 1\n')
+  writeFileSync(join(root, 'chapters/uses-income.qmd'), [
+    '## income', '', '```{r}', "source('../shared-code/income.R')", '```', '',
+  ].join('\n'))
+  writeFileSync(join(root, 'chapters/includes-a-sourcer.qmd'), '# d\n\n{{< include uses-income.qmd >}}\n')
   return root
 }
 
@@ -104,5 +114,35 @@ test('clearing a stale document removes the record that would have been thawed',
     }
 
     assert.equal(existsSync(record), false, 'the stale record survived, so the old results still thaw')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+// The route the first fix missed. `chunkSourcedFiles` was applied to the root
+// document only, so a `source(...)` written inside an included file was
+// invisible and the script had no dependents at all. Measured on the real
+// course before this was written: shared-code/income.R marked 0 chapters stale
+// while ten declared chapters reach it through chapters/ca-income.qmd -- and
+// income.R is the file repaired to stop it calling a census API at render time,
+// so that repair propagated to nothing.
+test('a document that includes a file that sources a changed script is stale', () => {
+  const root = book()
+  try {
+    assert.deepEqual(
+      qmdDocumentsStaleByDependency(root, ['shared-code/income.R']),
+      ['chapters/includes-a-sourcer.qmd'],
+    )
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+// And the negative for the same route, because a scan that walks the whole
+// closure is the one most likely to over-mark.
+test('the include-hop scan does not make unrelated chapters stale', () => {
+  const root = book()
+  try {
+    const stale = qmdDocumentsStaleByDependency(root, ['shared-code/income.R'])
+    assert.equal(stale.includes('chapters/sources-a-script.qmd'), false)
+    assert.equal(stale.includes('chapters/includes-shared.qmd'), false)
+    assert.equal(stale.includes('chapters/depends-on-nothing.qmd'), false)
+    assert.equal(stale.includes('index.qmd'), false)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
