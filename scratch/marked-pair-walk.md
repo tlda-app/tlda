@@ -49,20 +49,27 @@ The error message carries the shape's id, so the failing run names what to
 remove. **If the crash survives with no docview shape in the room, that is a
 finding and the walk stops there.**
 
-## Frame 0: is a mark in the room visible to the student at all?
+## Frame 0 is withdrawn, and here is why, so nobody rebuilds it
 
-**Independent of everything below, and it needs no marking canvas.** A `draw`
-shape was written into `submission-homework-1-walk-b`'s room through the server
-API — `shape:isolation-probe-mark`, red, four points, at x 120 y 200. It is not a
-returned mark and did not come from the marking surface; it is there to answer
-one question.
+I wrote a `draw` shape into the student's room through the server API to ask
+whether a mark that reaches the room reaches the student. **It was invalid** —
+this schema's draw segments carry `path`, a delta-encoded base64 string, and mine
+carried `points`. The record was rejected inside `Store.put`, **and the rejection
+took the whole room's load with it: zero shapes, so the student's own submitted
+work did not render either.**
 
-Open `?name=<you>&workspace=classroom-work&assignment=homework-1&student=walk-b`
-and look for a red squiggle over the work.
+**The camera caught it because the student's work was missing too** — a check with
+no positive control would have reported *"a mark in the room is not visible to the
+student"*, which is false and would have gone up as a defect in the publish model.
 
-**Visible** → a mark that reaches the room reaches the student, and item 2
-reduces to the publish step. **Not visible** → that is a bigger finding than the
-crash, because nothing in the code filters that room by author or by state.
+**The shape is deleted and the room is back to its three records.** Frame 0 is not
+coming back in this form: a mark written by hand is a manufactured subject, and
+the faithful instrument is a mark the app actually drew. The walk below tests the
+real path.
+
+**One thing worth someone's attention, and I caused the condition rather than
+finding it:** a single malformed record does not get skipped — it stops every
+shape in that room from loading.
 
 ## The frames
 
