@@ -1068,6 +1068,28 @@ function forward(verb, rest) {
   return pw([verb, ...rest], { stdio: 'inherit' }).status ?? 0
 }
 
+// `eval`, with the exit code the thrown error deserves.
+//
+// playwright-cli reports an evaluate that threw as an `### Error` section in its
+// tool result and EXITS 0 -- measured 2026-09-12 on a live tab: a function
+// returning a value printed `### Result` and exited 0, and one throwing printed
+// `### Error` with the stack and also exited 0. So every walk script in this
+// repo was writing `throw new Error('RED: ...')` as its assertion and getting a
+// pass, which makes a green run evidence of nothing.
+//
+// The status is read from the output rather than fixed upstream because the
+// evaluate lives in vendored playwright-core. `### Error` is matched at the
+// start of a line so a page's own text containing those words cannot fail a run.
+function forwardEval(rest) {
+  const result = pw(['eval', ...rest], { encoding: 'utf8' })
+  const out = result.stdout || ''
+  if (out) process.stdout.write(out)
+  if (result.stderr) process.stderr.write(result.stderr)
+  const status = result.status ?? 0
+  if (status !== 0) return status
+  return /^### Error\b/m.test(out) ? 1 : 0
+}
+
 function forwardConsole(rest) {
   const parsed = parseConsoleArgs(rest)
   if (parsed.error) {
@@ -1461,7 +1483,7 @@ export async function cmdPw(args, repoRoot) {
       const region = (rest[0] || 'doc').toLowerCase()
       const ev = CENTER_EVALS[region]
       if (!ev) { console.error(`center: unknown region "${region}" (use: ${CENTER_REGIONS})`); code = 2 }
-      else code = forward('eval', [ev])
+      else code = forwardEval([ev])
     } else if (verb === 'setup') {
       try {
         code = forward('goto', rewriteGoto([pwSetupUrl(rest)]))
@@ -1482,6 +1504,8 @@ export async function cmdPw(args, repoRoot) {
       code = forward('snapshot', rewritten.args)
     } else if (verb === 'console') {
       code = forwardConsole(rest)
+    } else if (verb === 'eval') {
+      code = forwardEval(rest)
     } else {
       code = forward(verb, rest)
     }
