@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, readlinkSy
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { HARNESS } from '../../shared/harness.ts'
-import { buildArgs, buildCmd, capabilities, prepareFleetConfig, resolveModelSelection, resumeId } from './muse.mjs'
+import { buildArgs, buildCmd, capabilities, prepareFleetConfig, resolveLiveSessionIdentity, resolveModelSelection, resumeId } from './muse.mjs'
 import { runtimeStateFromProcessList } from '../tmux.mjs'
 import { probeSpawnAvailability } from '../availability.mjs'
 import { readDaemonConfig, withDaemonModelAliases } from '../permission-ledger.mjs'
@@ -132,4 +132,58 @@ test('availability checks the model-configured native account root', async t => 
   const result = await probeSpawnAvailability(options)
   assert.equal(result.harnesses.muse.available, true)
   assert.equal(result.harnesses.muse.models[0].id, model)
+})
+
+// The identity mapping, which is the part that required discovery: a live Muse
+// process holds `.session.lock` open inside its own session directory. These
+// stub tmux/ps/lsof rather than the filesystem, because the held descriptor --
+// not the file's existence -- is what identifies the session.
+const SESSION = '01a098db-fbba-7e22-8cb3-dc38bf5bdbf7'
+const SDIR = `/Users/x/.local/share/muse/sessions/2026/09/12/${SESSION}`
+const MUSE_ARGS = `/Users/x/.local/bin/muse-bin-1.1.1-R2514.1 --model ${model} --workspace /Users/x/work/tlda --reasoning-effort high --yolo`
+
+function stubExec({ panePids = '4242', ps = null, lsof = null } = {}) {
+  return async (command, args) => {
+    if (command === 'tmux') return { stdout: `${panePids}\n` }
+    if (command === 'ps') return { stdout: ps ?? `  4242     1 ${MUSE_ARGS}\n` }
+    if (command === 'lsof') {
+      if (lsof !== null) return { stdout: lsof }
+      return { stdout: [
+        `muse-bin 4242 x  txt  REG  1,16  0  1 ${SDIR}/.session.lock`,
+        `muse-bin 4242 x   5w  REG  1,16  0  2 ${SDIR}/cli-adeb03c6-fb4b-492c-8e77-1f061f06d021.log`,
+      ].join('\n') }
+    }
+    throw new Error(`unexpected command ${command}`)
+  }
+}
+
+test('a live session is identified by the lock the process holds, with model and cwd off its argv', async () => {
+  const identity = await resolveLiveSessionIdentity({ tmuxSession: 'fleet-a', _deps: { execFile: stubExec() } })
+  assert.equal(identity.sessionId, SESSION)
+  assert.equal(identity.sessionDir, SDIR)
+  assert.equal(identity.logPath, `${SDIR}/cli-adeb03c6-fb4b-492c-8e77-1f061f06d021.log`)
+  assert.equal(identity.model, model)
+  assert.equal(identity.cwd, '/Users/x/work/tlda')
+})
+
+test('no held lock is no identity, even with the session directory in the open files', async () => {
+  // The log is open and names the directory; only the lock is absent. This is
+  // the case that must not be answered by reading the directory instead.
+  const identity = await resolveLiveSessionIdentity({
+    tmuxSession: 'fleet-a',
+    _deps: { execFile: stubExec({ lsof: `muse-bin 4242 x 5w REG 1,16 0 2 ${SDIR}/cli-adeb03c6.log` }) },
+  })
+  assert.equal(identity, null)
+})
+
+test('an unidentifiable pane resolves to null rather than a guess', async () => {
+  assert.equal(await resolveLiveSessionIdentity({}), null, 'no tmux session')
+  assert.equal(await resolveLiveSessionIdentity({
+    tmuxSession: 'fleet-a',
+    _deps: { execFile: stubExec({ ps: '  4242     1 claude --resume abc\n' }) },
+  }), null, 'another harness in the pane is not a Muse session')
+  assert.equal(await resolveLiveSessionIdentity({
+    tmuxSession: 'fleet-a',
+    _deps: { execFile: stubExec({ panePids: '4242', ps: `  4242     1 ${MUSE_ARGS}\n  4243  4242 ${MUSE_ARGS}\n` }) },
+  }), null, 'two owned runtimes mean the pane is not evidence about which session is this agent')
 })

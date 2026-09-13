@@ -2,8 +2,13 @@ import { resolveModelSpec } from '../models.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { activeEnvName, repoRoot } from '../identity.mjs'
+import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 import { SYSTEM_MARKER } from '../../shared/terminal-system-markers.mjs'
+
+const execFileP = promisify(execFile)
 
 export const loginPrompt = () => `${SYSTEM_MARKER} Call mcp__tlda__login exactly once, then mcp__tlda__inbox exactly once. Stop after those results or the first error. Do not call any other tools.`
 
@@ -126,4 +131,100 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
   const authLink = path.join(target, 'auth.json')
   if (!fs.existsSync(authLink)) fs.symlinkSync(auth, authLink)
   return { ...mcpEnv, XDG_CONFIG_HOME: root }
+}
+
+// Where Muse records the session a running process owns.
+//
+// The three resolvers differ only in this, and Muse's is the tightest of them:
+// Claude's bounds candidate transcripts by launch timestamp, while a live Muse
+// process holds `.session.lock` OPEN inside its own session directory, so the
+// id is read off a held descriptor rather than inferred. Two Muse agents
+// launched in the same second are still unambiguous.
+//
+// `model` and `cwd` come off the observed argv rather than a second store,
+// because `buildArgs` puts `--model` and `--workspace` there.
+//
+// CONTRACT DIFFERENCE, deliberate: claude.mjs returns `jsonlPath`, a
+// Claude-style JSONL transcript. This returns `sessionDir` and `logPath`, and
+// `logPath` is the `cli-*.log` the process holds open -- NOT that format.
+// Whoever wires this into the launch path must establish what reads it before
+// arming an activity watcher on it; it is named differently here so the shape
+// cannot be assumed.
+const MUSE_RUNTIME = /(?:^|\s|[/\\])muse(?:-bin-[\w.-]+)?(?:\.exe)?(?:\s|$)/
+const SESSION_DIR = /(\/\S*\/sessions\/\d{4}\/\d{2}\/\d{2}\/([0-9a-fA-F-]{36}))\//
+
+function argFlag(args, flag) {
+  const m = String(args).match(new RegExp(`(?:^|\\s)${flag}[= ](?:"([^"]+)"|'([^']+)'|(\\S+))`))
+  return m ? (m[1] || m[2] || m[3] || null) : null
+}
+
+function ownedRuntimePid(panePids, psText) {
+  const children = new Map()
+  const argsByPid = new Map()
+  for (const line of psText.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!match) continue
+    const [, pid, ppid, args] = match
+    if (!children.has(ppid)) children.set(ppid, [])
+    children.get(ppid).push(pid)
+    argsByPid.set(pid, args)
+  }
+  const stack = [...panePids]
+  const seen = new Set()
+  const owned = []
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    if (MUSE_RUNTIME.test(argsByPid.get(pid) || '')) owned.push(pid)
+    stack.push(...(children.get(pid) || []))
+  }
+  // Exactly one, for the reason claude.mjs requires it: two owned runtimes mean
+  // the pane is not evidence about which session belongs to this agent.
+  return owned.length === 1 ? { pid: owned[0], args: argsByPid.get(owned[0]) || '' } : null
+}
+
+export async function resolveLiveSessionIdentity({ tmuxSession, tmuxArgs = [], tmuxSocket = null, _deps = {} } = {}) {
+  const run = _deps.execFile || execFileP
+  if (!tmuxSession) return null
+  const prefix = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
+  let panePids
+  try {
+    const { stdout } = await run('tmux', [...prefix, 'list-panes', '-t', exactTmuxWindowTarget(tmuxSession), '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' })
+    panePids = stdout.trim().split('\n').filter(Boolean)
+  } catch { return null }
+  if (!panePids.length) return null
+  let psText
+  try {
+    ;({ stdout: psText } = await run('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
+  } catch { return null }
+  const runtime = ownedRuntimePid(panePids, psText)
+  if (!runtime) return null
+  let lsofText
+  try {
+    ;({ stdout: lsofText } = await run('lsof', ['-p', runtime.pid], { timeout: 5000, encoding: 'utf8' }))
+  } catch { return null }
+  let sessionDir = null
+  let sessionId = null
+  let logPath = null
+  for (const line of lsofText.split('\n')) {
+    const dir = line.match(SESSION_DIR)
+    if (!dir) continue
+    if (!sessionId && line.endsWith('/.session.lock')) {
+      sessionDir = dir[1]
+      sessionId = dir[2]
+    }
+    if (!logPath && /\/cli-[0-9a-fA-F-]+\.log$/.test(line)) logPath = line.slice(line.indexOf(dir[1]))
+  }
+  // The held lock is the identity. Without it there is no session to name, and
+  // this returns null rather than guessing from the directory's newest entry --
+  // a missing identity has to stay missing.
+  if (!sessionId) return null
+  return {
+    sessionId,
+    sessionDir,
+    logPath,
+    model: argFlag(runtime.args, '--model'),
+    cwd: argFlag(runtime.args, '--workspace'),
+  }
 }
