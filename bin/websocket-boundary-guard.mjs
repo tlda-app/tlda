@@ -249,6 +249,15 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'An unknown Codex tool arriving over /ws/fleet and rendering without a handler for it. Endpoint: /ws/fleet.',
   },
+  'server/lib/region-transfer-card-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'A region transfer draws its diff from the tool RESULT rather than the call arguments, so the card '
+      + 'exists only if the result survives MCP dispatch -> harness extraction -> daemon websocket -> server -> '
+      + 'fleet store -> subscription -> convertChatEvent -> renderer DOM. Routing it through the transport '
+      + 'library would test the library instead of the wire, which is the one thing it exists to check. Same '
+      + 'harness as unknown-codex-tool-wire.test.mjs above. Endpoint: /ws/fleet.',
+  },
   // --- exceptions: protocols the fleet transport does not carry ------------
   'src/voice.mjs': {
     count: 2,
