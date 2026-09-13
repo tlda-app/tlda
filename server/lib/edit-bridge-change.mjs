@@ -199,7 +199,43 @@ export function summarizeChange(patch, { excerptChars = 240 } = {}) {
     : addedWords === 0 ? 'deletion'
       : 'replacement'
 
-  const clip = text => (text.length > excerptChars ? `${text.slice(0, excerptChars).trimEnd()}…` : text)
+  // Clip AROUND the change, not from the start.
+  //
+  // Clipping the first N characters and marking afterwards shows a person the
+  // opening of a passage whose difference is at character 500 -- two identical
+  // windows and no marks, which is the same failure as not marking at all.
+  // Measured on a paper of his: a three-line correction where the excerpt was
+  // byte-identical on both sides because the edit was past the cut.
+  // A side with nothing marked still says when it was cut: an excerpt that
+  // ends mid-sentence with no ellipsis reads as the whole passage.
+  const head = (whole, parts) => whole.length > excerptChars
+    ? { text: `${whole.slice(0, excerptChars).trimEnd()}…`, parts: [] }
+    : { text: whole, parts }
+  const clipParts = (parts, whole) => {
+    if (!parts.length) return head(whole, [])
+    const firstChanged = parts.findIndex(part => part.changed)
+    if (firstChanged === -1) return head(whole, parts)
+    // Keep about a third of the budget as lead-in, so the marked span sits in
+    // its sentence rather than at the very start.
+    const lead = Math.floor(excerptChars / 3)
+    let start = 0
+    for (let i = 0; i < firstChanged; i += 1) start += parts[i].text.length
+    const from = Math.max(0, start - lead)
+    const to = from + excerptChars
+    const out = []
+    let cursor = 0
+    for (const part of parts) {
+      const partStart = cursor
+      const partEnd = cursor + part.text.length
+      cursor = partEnd
+      if (partEnd <= from || partStart >= to) continue
+      out.push({ text: part.text.slice(Math.max(0, from - partStart), Math.min(part.text.length, to - partStart)), changed: part.changed })
+    }
+    const text = (from > 0 ? '…' : '') + out.map(part => part.text).join('') + (to < whole.length ? '…' : '')
+    if (from > 0) out.unshift({ text: '…', changed: false })
+    if (to < whole.length) out.push({ text: '…', changed: false })
+    return { text, parts: out }
+  }
 
   return {
     kind,
@@ -208,11 +244,19 @@ export function summarizeChange(patch, { excerptChars = 240 } = {}) {
     // Only meaningful for a replacement, and the reason the distinction exists.
     rewordedWords: kind === 'replacement' ? Math.min(addedWords, removedWords) : 0,
     excerpt: best ? (() => {
-      const before = clip(best.before)
-      const after = clip(best.after)
-      // Marked AFTER clipping, so the marks line up with the text the card
-      // actually shows rather than with a passage it truncated.
-      return { file: best.file, before, after, ...markWordDiff(before, after) }
+      // Marked on the WHOLE passage first, then clipped around the first mark:
+      // the window has to be chosen by where the change is, and that is not
+      // known until the diff has run.
+      const { beforeParts, afterParts } = markWordDiff(best.before, best.after)
+      const before = clipParts(beforeParts, best.before)
+      const after = clipParts(afterParts, best.after)
+      return {
+        file: best.file,
+        before: before.text,
+        after: after.text,
+        beforeParts: before.parts,
+        afterParts: after.parts,
+      }
     })() : null,
     hunkCount: hunks.length,
   }
