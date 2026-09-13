@@ -5997,7 +5997,7 @@ function channelEventId(msg, data) {
   return data?.id || data?.event_id || data?.metadata?.sourceEventId || data?.metadata?.sourceTaskId || null;
 }
 
-async function deliverChannelNotice(content, meta = {}) {
+export async function deliverChannelNotice(content, meta = {}) {
   if (!content) return false;
   const kind = harnessKindFromEnv();
   switch (kind) {
@@ -6005,6 +6005,16 @@ async function deliverChannelNotice(content, meta = {}) {
       return notifyOverClaudeChannel(content, meta);
     case 'codex':
       return typeNotificationIntoPane(content, 400);
+    // Measured on muse panes 2026-09-13: an Enter issued with no settle is lost
+    // (1/1); once the text has landed the Enter is accepted (5/5), with landing
+    // observed between 0.4s and 0.8s. 400 -- codex's number -- sits at the
+    // bottom of that range, so it would submit before the text landed some of
+    // the time, and a dropped notification is silent: the text stays in the
+    // pane looking like a prompt someone is composing at. 1500 is a little
+    // under 2x the slowest landing observed, with the margin sized for the tail
+    // five samples cannot see, on a box that reaches load averages in the 40s.
+    case 'muse':
+      return typeNotificationIntoPane(content, 1500);
     case 'goose':
       return typeNotificationIntoPane(content, 0);
     default:
