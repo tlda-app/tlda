@@ -71,6 +71,54 @@ IDs are supported by headless `--session-id` and MSP `session/start`; the
 verified TUI help does not expose that flag. Headless resume is rejected because
 `exec` has no verified resume option. No parallel transcript store is created.
 
+## How a session identity is established, per harness
+
+There are three cases here, not two, and the next person will assume two.
+
+| harness | how its session id is obtained | post-launch discovery |
+|---|---|---|
+| claude | minted by us at launch and handed to the CLI as `--session-id` | not needed |
+| codex | discovered after the process is running | runs |
+| muse | discovered after the process is running | runs |
+
+**Muse cannot take claude's route.** Its TUI has no `--session-id`; exact
+caller-specified ids are supported only by headless `exec` and MSP
+`session/start`, which the adapter already guards (see "Adapter contract"
+above). So discovery is the only option for it.
+
+The launch path decides this in `identityIsDiscoveredAfterLaunch`
+([index.mjs](../agent-launch/index.mjs)), from two derived facts — whether we
+minted an id (`freshSessionId`, which is claude's) and whether the harness's
+adapter exports a resolver (`liveIdentityResolverMap`). **Both conditions are
+load-bearing:** claude *has* a resolver, so a check on the resolver alone
+would switch discovery on for it.
+
+Muse's identity file and its transcript are also different files, which no
+other harness does — see `museTranscriptPathForSession` in
+[resolve-transcript.mjs](../agent-runtime/resolve-transcript.mjs).
+
+### The detection, which is the reusable part
+
+This gate read `requestedKind === 'codex'` and so excluded muse: the session
+was never resolved, `facts.sessionId` stayed null, and the route was never
+published. It survived a pass that had already replaced harness-name checks
+with a derived map everywhere else.
+
+**It survived because "never called" and "called and returned null" are
+indistinguishable from the outside** — no exception, no warning, an empty
+result either way, and a resolver that works perfectly when invoked by hand.
+What separated them was **elapsed time**: a muse mint returning in 6.7s
+against a 20-second poll deadline had not called the resolver at all. Had it
+been called and failed, the mint would have taken 20s.
+
+**The wider point is about the enumeration, not the count.** The earlier pass
+was reported as covering the harness-name gates, and the site it missed is the
+one that decides whether the others ever run. An enumeration is a claim and
+needs a control like any measurement: establish the set from the system —
+grep the tree for the comparison, not the list you were handed — rather than
+trusting that a previous sweep was complete. The same shape will exist
+somewhere else.
+
 ## Native capability evidence
 
 Except for the explicitly native Meta MCP result, these observations use the
