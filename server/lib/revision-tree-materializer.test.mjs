@@ -10,7 +10,15 @@ function fixture(files) {
   const rows = files.map(([path, mode, content]) => ({ path, mode, content: Buffer.from(content) }))
   return {
     revision: { id: 'a'.repeat(40), files: rows.map(({ path, mode }) => ({ path, mode })) },
-    lifecycle: { async readRevisionFile(_id, path) { return rows.find(row => row.path === path)?.content || null } },
+    // Matches the real store's contract: many blobs per call, a Map back, null
+    // for a path the tree does not hold. Only the fixture changed here -- every
+    // assertion below is the one written against the per-file implementation,
+    // which is the point: they are the specification of what must not change.
+    lifecycle: {
+      async readRevisionFiles(_id, paths) {
+        return new Map(paths.map(path => [path, rows.find(row => row.path === path)?.content || null]))
+      },
+    },
   }
 }
 

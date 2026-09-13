@@ -105,6 +105,23 @@ export function createSourceLifecycleStore({ root, project = 'project', onStatus
       if (!id) return null
       try { return await (await gitRepository()).readRevisionFile(id, path) } catch { return null }
     },
+    /**
+     * Many blobs from one revision, in one spawn. The store has always had
+     * this; the lifecycle did not expose it, so every caller that held a
+     * lifecycle rather than a store paid a subprocess per file.
+     *
+     * Measured on testing 2026-09-12, building the same 1.5MB of source:
+     * 49 files took 434ms and 800 files took 6755ms. Same bytes, 15.6x apart
+     * -- the cost is the file COUNT, at ~8.5ms of subprocess per file, and a
+     * whole-book project is a large file count on every edit.
+     *
+     * Returns a Map of path -> Buffer, with null for a path the tree does not
+     * hold. Absence is an ordinary answer here, as it is in the store.
+     */
+    async readRevisionFiles(id, paths) {
+      if (!id) return new Map()
+      try { return await (await gitRepository()).readRevisionFiles(id, paths) } catch { return new Map() }
+    },
     async readCurrentFile(path) {
       const git = await gitRepository()
       const head = await git.head(project)

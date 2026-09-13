@@ -26,13 +26,34 @@ export async function materializeAcceptedRevision({ revision, lifecycle, destina
   let fileCount = 0
   let byteCount = 0
 
+  // ONE spawn for every blob, rather than one per file.
+  //
+  // Measured on testing 2026-09-12, materialising the same 1.5MB of source:
+  // 49 files took 434ms, 800 files took 6755ms. Same bytes, 15.6x apart. The
+  // per-file `git cat-file blob` subprocess was ~8.5ms and the file COUNT was
+  // the whole cost, which is why a whole-book project made every edit slower
+  // however small the edit -- the thing this repository promised it would not
+  // do.
+  //
+  // Every admitted blob is read, including any a link happens to shadow. The
+  // walk below visits nearly all of them anyway, and one spawn for a superset
+  // beats two passes to compute an exact set.
+  const blobs = await lifecycle.readRevisionFiles(
+    revision.id,
+    [...entries].filter(([, entry]) => entry.mode !== '160000').map(([path]) => path),
+  )
+  // A batched read that silently yields `undefined` for a path would write an
+  // empty file where content belongs, so absence is resolved to null here and
+  // the existing `if (!bytes) throw` below catches it exactly as it always did.
+  const readBlob = path => blobs.get(path) ?? null
+
   async function materialize(targetPath, outputPath, stack = []) {
     const target = admittedPath(targetPath)
     if (stack.includes(target)) throw new Error(`source link cycle: ${[...stack, target].join(' -> ')}`)
     const entry = entries.get(target)
     if (entry) {
       if (entry.mode === '120000') {
-        const bytes = await lifecycle.readRevisionFile(revision.id, target)
+        const bytes = readBlob(target)
         if (!bytes) throw new Error(`accepted revision is missing ${target}`)
         const link = bytes.toString('utf8').replace(/\\/g, '/')
         if (link.startsWith('/')) throw new Error(`source link has external target: ${target}`)
@@ -42,7 +63,7 @@ export async function materializeAcceptedRevision({ revision, lifecycle, destina
       if (entry.mode !== '100644' && entry.mode !== '100755') {
         throw new Error(`source member is not a regular file: ${target}`)
       }
-      const bytes = await lifecycle.readRevisionFile(revision.id, target)
+      const bytes = readBlob(target)
       if (!bytes) throw new Error(`accepted revision is missing ${target}`)
       await mkdir(dirname(outputPath), { recursive: true })
       await writeFile(outputPath, bytes, { mode: modeFor(entry) })

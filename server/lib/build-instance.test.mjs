@@ -56,8 +56,14 @@ test('materializes tracked symbolic links as admitted regular files', async () =
           { path: '_quarto_book.yml', mode: '100644' },
         ] }
       },
-      async readRevisionFile(_revision, path) {
-        return Buffer.from(path === '_quarto.yml' ? '_quarto_book.yml' : 'project:\n  type: book\n')
+      // The real store reads many blobs per call and returns a Map; these
+      // stand-ins follow it. Only the fixtures changed -- the assertions are
+      // the ones written against the per-file implementation.
+      async readRevisionFiles(_revision, paths) {
+        return new Map(paths.map(path => [
+          path,
+          Buffer.from(path === '_quarto.yml' ? '_quarto_book.yml' : 'project:\n  type: book\n'),
+        ]))
       },
     }
     instance = await materializeBuildInstance({
@@ -85,7 +91,7 @@ test('can seed prior rendered output without mixing it into source', async () =>
     writeFileSync(join(live, 'output', 'chapter.html'), 'prior render')
     const lifecycle = {
       async readRevision() { return { files: [{ path: 'chapter.qmd', mode: '100644' }] } },
-      async readRevisionFile() { return Buffer.from('# changed chapter') },
+      async readRevisionFiles(_revision, paths) { return new Map(paths.map(p => [p, Buffer.from('# changed chapter')])) },
     }
     instance = await materializeBuildInstance({
       name: 'course', sourceRevision: 'revision', lifecycle,
