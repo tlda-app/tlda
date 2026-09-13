@@ -686,24 +686,31 @@ export async function listVersionRange(name, from, to) {
   // `-U1` keeps one line of context. Zero context makes a pure insertion
   // indistinguishable from a replacement at the hunk boundary; more context
   // puts unchanged prose into the excerpt a person reads.
+  // `-p` alone, NOT with `--name-only`. `--name-only` SUPPRESSES the patch --
+  // measured on a real range: zero `diff --git` lines with it, eight without,
+  // so every build summarised to "no textual change" while the history plainly
+  // had changes in it. The file list comes out of the patch's own headers
+  // instead, which is one source for both rather than two that can disagree.
   const { stdout } = await execAsync(
-    `git log --reverse --name-only -p -U1 --format="%x1e%H %at %s%x1f" "${from}..${to}"`,
+    `git log --reverse -p -U1 --format="%x1e%H %at %s%x1f" "${from}..${to}"`,
     { cwd: repoDir, timeout: 30000, maxBuffer: 64 * 1024 * 1024 },
   )
 
   return stdout.split('\x1e').filter(chunk => chunk.trim()).map(chunk => {
     const [header, body = ''] = chunk.split('\x1f')
     const [hash, unixTime, ...msgParts] = header.trim().split(' ')
-    // The name list comes first, then the patch. `diff --git` is the boundary,
-    // and a commit that changed nothing textual simply has no patch.
     const diffAt = body.indexOf('diff --git')
-    const nameBlock = diffAt === -1 ? body : body.slice(0, diffAt)
+    const patch = diffAt === -1 ? '' : body.slice(diffAt)
+    // Files named by the patch itself. A commit that changed nothing textual
+    // has no patch and therefore no files, which is the same answer the name
+    // list gave and one fewer thing that can disagree with the change summary.
+    const files = [...patch.matchAll(/^diff --git a\/.+ b\/(.+)$/gm)].map(match => match[1])
     return {
       hash,
       timestamp: parseInt(unixTime, 10) * 1000,
       message: msgParts.join(' '),
-      files: nameBlock.split('\n').map(line => line.trim()).filter(Boolean),
-      patch: diffAt === -1 ? '' : body.slice(diffAt),
+      files: [...new Set(files)],
+      patch,
     }
   }).filter(v => v.message !== 'init')
 }
