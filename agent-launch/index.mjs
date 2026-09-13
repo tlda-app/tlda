@@ -26,7 +26,21 @@ import * as codex from './harness/codex.mjs'
 import * as goose from './harness/goose.mjs'
 import * as muse from './harness/muse.mjs'
 import * as bot from './harness/bot.mjs'
+import { liveIdentityResolverMap } from './live-identity-resolvers.mjs'
 import { randomUUID } from 'node:crypto'
+
+// Whether this launch must DISCOVER its session id after the process starts,
+// rather than already knowing it. Exported so the decision can be tested
+// without driving a whole launch -- it had no coverage at all, which is how a
+// harness-name gate survived here after six others were derived away.
+export function identityIsDiscoveredAfterLaunch({ requestedKind, freshSessionId, resolvers }) {
+  // We minted one: nothing to discover. This is claude, via --session-id.
+  if (freshSessionId) return false
+  // Nobody can resolve one: discovery would poll to its deadline and find
+  // nothing. This is goose, and any adapter that has not exported a resolver.
+  return Boolean(resolvers?.[requestedKind])
+}
+
 import { assertCodexKickoffDelivered, recordKickoffFailure } from './launch-result.mjs'
 
 export class SpawnError extends Error {
@@ -629,7 +643,33 @@ async function spawnFresh(params) {
     const launchedRoute = { localAgentId, fleetId, tmuxSession, harness: requestedKind, model, resumeId: freshSessionId }
     let identityResolutionPromise
     try {
-      identityResolutionPromise = requestedKind === 'codex' && registration?.serverUp && params.startFreshIdentityPolling
+      // Post-launch identity discovery, for harnesses whose session id is not
+      // knowable until the process is running. Two derived conditions, never a
+      // harness name:
+      //
+      //   we minted no id for it  -- `freshSessionId` is claude's, handed to
+      //                              the CLI as --session-id, so claude's
+      //                              identity is settled before it starts
+      //   its adapter resolves one -- `liveIdentityResolverMap`, the same
+      //                              derivation `agent-launch.mjs` uses
+      //
+      // This site read `requestedKind === 'codex'`, which excluded muse: its
+      // session was never resolved, so `facts.sessionId` stayed null, so
+      // mint-core returned early and the binding never wrote `daemonKey`. Six
+      // other harness-name gates had already been derived away; this is the one
+      // that decides whether they ever run.
+      //
+      // IT FAILED INVISIBLY, and that is the part to remember. "Never called"
+      // and "called and returned null" are indistinguishable from outside --
+      // no exception, no warning, an empty result either way. What separated
+      // them was ELAPSED TIME: a muse mint returning in 6.7s against a 20s
+      // poll deadline had not called the resolver at all.
+      const wantsDiscovery = identityIsDiscoveredAfterLaunch({
+        requestedKind,
+        freshSessionId,
+        resolvers: (deps.liveIdentityResolverMap || liveIdentityResolverMap)(),
+      })
+      identityResolutionPromise = wantsDiscovery && registration?.serverUp && params.startFreshIdentityPolling
         ? Promise.resolve(params.startFreshIdentityPolling(launchedRoute))
         : Promise.resolve(null)
     } catch (error) {
