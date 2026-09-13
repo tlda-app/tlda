@@ -102,7 +102,28 @@ found on his real writing and none reproducible on a synthetic fixture:
   with a 240-character excerpt taken from the start; the window is now centred
   on the first marked span
 
-**If it happens a fourth way, that frame is the deliverable, not a fix.**
+**It happened a fifth way, and the fifth was not in this module at all.**
+
+- **the card clipped what the server had already clipped** — the server
+  budgeted 240 characters and `-webkit-line-clamp: 2` on a 260px card shows
+  about 80. For build `029dadc` the marked token began at character 82: marked
+  correctly, inside the excerpt, below the cut. The `…` in the photograph was
+  the CSS clamp, not anything the server wrote.
+
+  **The reported cause was "the excerpt window is not centred on the marked
+  span", and that was already done** — `44aa1f561`. Acting on it would have
+  re-landed existing behaviour and changed nothing. What settled it was pulling
+  the payload off the running sandbox instead of reasoning from the frame:
+  `beforeParts` carried `{"text":"above.%Computation","changed":true}` and the
+  excerpt had no trailing ellipsis.
+
+  Fixed in `6d9eafcec`: `EDIT_CARD_EXCERPT_CHARS` lives beside `EDIT_CARD_W`
+  with the arithmetic written out, and the server imports it. **The clamp stays
+  as the net; the budget is what stops it firing.**
+
+**If it happens a sixth way, that frame is the deliverable, not a fix. And
+before fixing, read the payload** — twice now the visible symptom has had a
+cause one layer away from where it was reported.
 
 ## 3. Left unbuilt from his spec
 
