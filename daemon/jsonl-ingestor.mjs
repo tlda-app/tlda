@@ -978,7 +978,7 @@ export function createJsonlIngestor({
         continue
       }
 
-      const sessionId = sessionIdForJsonlPath(resolvedPath, agent)
+      const sessionId = sessionIdForJsonlPath(resolvedPath, agent, harness.kind)
       let nativeSubagent = null
       try {
         nativeSubagent = await resolveNativeSubagent(resolvedPath, sessionId)
@@ -1808,6 +1808,8 @@ export function createJsonlIngestor({
   }
 }
 
-export function sessionIdForJsonlPath(jsonlPath, agent = null) {
-  return agent?.session_id || path.basename(jsonlPath, '.jsonl')
+export function sessionIdForJsonlPath(jsonlPath, agent = null, harnessKind = null) {
+  if (agent?.session_id) return agent.session_id
+  if (harnessKind === 'muse') return path.basename(path.dirname(jsonlPath))
+  return path.basename(jsonlPath, '.jsonl')
 }

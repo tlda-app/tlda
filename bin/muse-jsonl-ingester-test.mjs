@@ -48,13 +48,21 @@ test('the JSONL child sends Muse tool records through the shared activity extrac
   })
 })
 
-test('a Muse session tail keeps the resolver identity instead of the common filename', () => {
+test('a Muse session tail keys identity from its session directory, never the common filename', () => {
   const sessionId = '01900000-0000-7000-8000-000000000001'
   assert.equal(
     sessionIdForJsonlPath('/Users/example/.local/share/muse/sessions/2026/09/13/01900000-0000-7000-8000-000000000001/session.jsonl', {
       session_id: sessionId,
     }),
     sessionId,
+  )
+  assert.equal(
+    sessionIdForJsonlPath('/Users/example/.local/share/muse/sessions/2026/09/13/01900000-0000-7000-8000-000000000001/session.jsonl', null, 'muse'),
+    sessionId,
+  )
+  assert.notEqual(
+    sessionIdForJsonlPath('/Users/example/.local/share/muse/sessions/2026/09/13/01900000-0000-7000-8000-000000000001/session.jsonl', null, 'muse'),
+    'session',
   )
 })
 
