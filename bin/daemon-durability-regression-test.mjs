@@ -262,6 +262,38 @@ test('agent-route daemon outbox errors surface as visible warnings', () => {
   assert.match(daemonSource, /error,\n\s+permanent: msg\.permanent === true/)
 })
 
+// The mint path publishes a route, and does it OUTSIDE bindMintSeat.
+//
+// `createAgentLauncher` publishes at its launcher level; `launchMintProcess`
+// published nowhere, so a minted agent was addressable and unreachable --
+// `chat()` said "no daemon route" and `dismiss` said "No agent found" by name
+// AND by fleet id. Skip ruled that state out on 2026-08-11.
+//
+// Source assertions because bin/fleet-daemon.mjs exports nothing and starts a
+// daemon on import -- the same reason the checks around this one are written
+// this way. They pin placement and wiring, not behaviour; the behaviour proof
+// is a live mint plus a working `dismiss`.
+test('the mint seat path publishes an agent route, from outside bindMintSeat', () => {
+  const publisher = daemonSource.match(/async function bindMintSeatAndPublishRoute\([\s\S]*?\n\}/)?.[0] || ''
+  assert.ok(publisher, 'bindMintSeatAndPublishRoute must exist')
+  assert.match(publisher, /await bindMintSeat\(facts, processFact, createdSource\)/)
+  assert.match(publisher, /bindAgentRoute\(/)
+  assert.match(publisher, /agentId: facts\.fleetId/)
+  assert.match(publisher, /daemonKey: `\$\{MACHINE_ID\}:\$\{ACTIVE_ENV\}`/)
+  assert.match(publisher, /type: 'agent-route'/)
+
+  // Both seat-binding sites go through it, so mint and wake cannot drift into
+  // one publishing and the other not -- which is the shape that left the
+  // existing agents unrecoverable in the first place.
+  assert.match(daemonSource, /bindMintSeatAndPublishRoute\(facts, processFact, 'daemon-mint-join'\)/)
+  assert.match(daemonSource, /bindMintSeatAndPublishRoute\(\{ \.\.\.facts, processState: processFact \}, processFact, 'daemon-wake'\)/)
+
+  // And nothing calls bindMintSeat directly any more, which would bind a seat
+  // and publish no route -- the exact state being fixed.
+  const directCalls = (daemonSource.match(/(?<!AndPublishRoute)\bawait bindMintSeat\(/g) || []).length
+  assert.equal(directCalls, 1, 'only bindMintSeatAndPublishRoute may call bindMintSeat')
+})
+
 test('CLI mint records the daemon-owned local process', () => {
   const bindMintSeatSource = daemonSource.match(/async function bindMintSeat\([\s\S]*?\n\}/)?.[0] || ''
   assert.match(bindMintSeatSource, /permissionLedger\.setSessionSync\(facts\.fleetId/)
