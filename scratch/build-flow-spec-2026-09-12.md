@@ -41,8 +41,12 @@ students have.** On the page itself and in the table of contents — a sync stat
 in the build-pill area rather than a banner that shouts. Not disruptive, and not
 absent.
 
-**That indicator compares against the published student site**, because that is
-where students are. An indicator that compared the dev box to the preview box
+**The indicators appear on both the dev and the preview boxes** — so the question
+*is this what students have?* is answerable from the box you are editing on,
+without going to the preview to find out.
+
+**And on both boxes the comparison is against the published student site**,
+because that is where students are. An indicator that compared dev to preview
 would report health today and still leave the site advertising chapters it does
 not serve.
 
