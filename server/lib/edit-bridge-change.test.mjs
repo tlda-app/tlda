@@ -164,3 +164,33 @@ test('a change beyond the clip window is still what the excerpt shows', () => {
   assert.match(change.excerpt.after, /efficient/)
   assert.ok(change.excerpt.afterParts.some(p => p.changed && /efficient/.test(p.text)))
 })
+
+test('a deleted passage outranks a whitespace fix in the same commit', () => {
+  // Measured on a paper of his: hunk A removed a theorem statement outright,
+  // hunk B re-emitted a line with one space added. The excerpt showed the
+  // space, because a pure deletion was excluded from being the excerpt at all
+  // and the headline aggregated both -- "rewrote ~44 words" over two lines
+  // identical to the eye. Fourth distinct cause of that appearance.
+  const change = summarizeChange(patch(
+    '@@ -10,1 +10,0 @@\n' +
+    '-Under the overlap assumption, suppose the density is bounded, the estimator is weakly regular, and a nonparametric model exists.\n' +
+    '@@ -40,1 +40,1 @@\n' +
+    '-the treatment-specific statement follows from the specialization above.%Computation\n' +
+    '+the treatment-specific statement follows from the specialization above. %Computation\n',
+  ))
+  assert.match(change.excerpt.before, /Under the overlap assumption/, 'the deletion is what the card shows')
+  assert.ok(!change.excerpt.before.includes('%Computation'), 'not the whitespace hunk')
+})
+
+test('counts describe the same event the excerpt shows', () => {
+  // A line re-emitted with one space added is 12 words each side at line
+  // level and one changed token at word level. Reporting the former over an
+  // excerpt showing the latter reads as broken highlighting.
+  const change = summarizeChange(patch(
+    '@@ -3,1 +3,1 @@\n' +
+    '-the treatment-specific statement follows from the specialization above.%Computation\n' +
+    '+the treatment-specific statement follows from the specialization above. %Computation\n',
+  ))
+  assert.ok(change.removedWords <= 2, `reports what differs, got ${change.removedWords}`)
+  assert.ok(change.addedWords <= 2, `reports what differs, got ${change.addedWords}`)
+})
