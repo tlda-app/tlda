@@ -53,6 +53,31 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'buildMaxConcurrency',
   'buildPriority',
   'buildStallTimeoutMs',
+  // Where this deployment's builds RUN. Absent — the normal case — means they
+  // run here, forked by the server, which is what every deployment did before
+  // this key existed. Present, it names a machine that renders instead:
+  // `{ url, token, git: { url, daemonId, token } }`. The git credential is the
+  // executor's own and should be a read-only one; it fetches revisions and must
+  // not be able to move a head (see server/lib/git-http.mjs).
+  //
+  // It is a deployment setting rather than an environment variable because
+  // which machine renders is a property of a deployment, and an unset
+  // environment variable fails by silently building somewhere else — the
+  // failure mode `deepgramBridgeUrl` is here to avoid.
+  //
+  // DEPLOYING THIS KEY IS COORDINATED, and the allowlist below is why. It is
+  // CLOSED: an unknown top-level key throws, so a `server.yaml` carrying
+  // `buildExecutor` is a HARD STARTUP FAILURE for anything running from a tree
+  // that predates this line — not a degradation, not an ignored setting. And it
+  // is not only the server: `cli/tlda.mjs` and `cli/lib/dev-worktree.mjs` also
+  // call `loadServerConfig()`, so a CLI on the box from an older checkout dies
+  // the same way.
+  //
+  // So the schema lands everywhere that reads `server.yaml` BEFORE the key
+  // appears in one. This is the independent-deploy rule in `AGENTS.md` pointed
+  // the additive way round; the three-stage recipe there covers removing a
+  // field, and adding one has the opposite order.
+  'buildExecutor',
   // The subscription slots every agent is minted with, and how loud each one
   // starts. Read by the server at mint. It belongs here rather than in
   // daemon.yaml because the server is not allowed to read daemon.yaml, and

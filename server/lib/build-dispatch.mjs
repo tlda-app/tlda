@@ -18,10 +18,10 @@ import { cp, rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
-import { updateProject, getProjectsDir, listProjects, aggregateBookToc, sourceLifecycleStore, projectDir, deleteProject } from './project-store.mjs'
+import { updateProject, getProjectsDir, listProjects, aggregateBookToc, sourceLifecycleStore, projectDir, deleteProject, readProject } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { loadServerConfig } from '../../shared/config.mjs'
-import { ForkTransport } from './build-transport.mjs'
+import { ForkTransport, createRemoteTransport } from './build-transport.mjs'
 import { createBuildQueue } from './build-queue.mjs'
 import { BuildQueueStore } from './build-queue-store.mjs'
 import { listProposalRefs } from './git-proposals.mjs'
@@ -56,6 +56,58 @@ async function regenerateBookTocs(name) {
 }
 
 const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, regenerateBookTocs, reportBuildFailure }
+
+/**
+ * Which RPC arguments name the project and the revision a build is FOR.
+ *
+ * The relay has always taken these from the worker and acted on them. Under
+ * `fork` that was safe by construction -- the worker is the server's own child,
+ * started with this job and nothing else -- so nothing compared them to the job,
+ * and the compare-and-swap in `publishBuildInstance` checks the worker's
+ * revision against the published HEAD, which is a different question.
+ *
+ * A remote transport turns that into a boundary. The process on the other end is
+ * not the server's child; with a persistent workspace it can hold a revision the
+ * job never named, and "what the worker says it built" and "what this job is"
+ * become two values that can disagree. So they are compared here, once, for
+ * every method that carries them.
+ *
+ * `broadcastSignal` and the shape writes are deliberately absent: their first
+ * argument is a ROOM (`doc-<name>`), not a project, and a check written as
+ * though it were a project would be a check that cannot do what it says.
+ */
+const JOB_BOUND_RPC_ARGUMENTS = Object.freeze({
+  publishBuildInstance: { name: 0, revision: 1 },
+  publishBuildDiagnostics: { name: 0 },
+  recordBuildResult: { name: 0, revision: 1 },
+  reportBuildFailure: { name: 0, revision: 2 },
+})
+
+function assertRpcBelongsToJob(message, job) {
+  const bound = JOB_BOUND_RPC_ARGUMENTS[message?.m]
+  if (!bound) return
+  const args = message.a || []
+  // Compared without an `undefined` escape, and that absence is the check.
+  // An argument that is simply MISSING arrives as `undefined`, and a guard that
+  // skipped `undefined` would let `a: []` walk past it untouched while catching
+  // `a: [null]` — because `null !== undefined`. That asymmetry is invisible at
+  // the call site, and this file already records the same surprise in the other
+  // direction: "IPC is JSON, so an omitted set arrives as `null` rather than
+  // `undefined`". An absent name is not this job's name, so it throws.
+  //
+  // The degenerate case is safe rather than excluded: a job with no
+  // `sourceRevision` compares `undefined` to `undefined`, which is equal, so
+  // nothing fires.
+  const claimedName = args[bound.name]
+  if (claimedName !== job.name) {
+    throw new Error(`build worker for ${job.name} sent ${message.m} for ${claimedName}; a build may only act on its own project`)
+  }
+  if (bound.revision === undefined) return
+  const claimedRevision = args[bound.revision]
+  if (claimedRevision !== job.sourceRevision) {
+    throw new Error(`build worker for ${job.name} sent ${message.m} for revision ${claimedRevision}; this build is ${job.sourceRevision}`)
+  }
+}
 const publicationLocks = new Map()
 
 async function notifyPublishedHead(notifyHeadChanged, name, sourceRevision, logError = console.error) {
@@ -442,6 +494,9 @@ export function createDispatcherWithOptions(transport, options = {}) {
         return null
       }
       if (message?.t !== 'rpc') return null
+      // Before any of them, so one check covers the methods below rather than
+      // each of them carrying its own half of it.
+      assertRpcBelongsToJob(message, job)
       if (message.m === 'recordRevisionPhase') return null
       if (message.m === 'recordBuildResult') {
         const [name, sourceRevision, _acceptSeq, state, result] = message.a || []
@@ -486,10 +541,37 @@ export function setBuildHeadNotifier(notifier) {
   headNotifier = typeof notifier === 'function' ? notifier : null
 }
 
+/**
+ * Which machine this deployment's builds run on.
+ *
+ * Absent `buildExecutor` is the normal case and the historical one: the server
+ * forks its own worker. Configured, the same build runs on the named machine
+ * through a transport that carries the same envelopes — so everything below
+ * this line, including the publication and its compare-and-swap, is unchanged
+ * and still happens here.
+ *
+ * Announced rather than silent. A deployment that renders somewhere else is the
+ * first thing a reader needs when a build behaves unexpectedly, and it is
+ * otherwise invisible in every log the build itself writes.
+ */
+function buildTransportFor(config) {
+  const executor = config.buildExecutor
+  if (!executor?.url) return ForkTransport
+  console.log(`[build] builds for this deployment run on ${executor.url}, not on this machine`)
+  return createRemoteTransport({
+    executorUrl: executor.url,
+    token: executor.token,
+    git: executor.git,
+    stagingRoot: join(getProjectsDir(), '.build-instances'),
+    readProject,
+    publishedHead: async name => (await (await sourceLifecycleStore(name)).gitRepository()).head(name),
+  })
+}
+
 export function initBuildDispatcher() {
   if (activeDispatcher) return activeDispatcher
   const config = loadServerConfig()
-  activeDispatcher = createDispatcherWithOptions(ForkTransport, {
+  activeDispatcher = createDispatcherWithOptions(buildTransportFor(config), {
     maxConcurrency: config.buildMaxConcurrency,
     priority: config.buildPriority,
     stallTimeoutMs: config.buildStallTimeoutMs,
