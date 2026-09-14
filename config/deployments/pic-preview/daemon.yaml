@@ -24,6 +24,18 @@ environments:
       # `fly secrets`. It is bound to *.cormorant-matrix.ts.net, which is why
       # this box's tailnet name must stay inside that domain.
       licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
+    # Source environment for build->preview delivery. getServerUrl(env)
+    # resolves through the DESTINATION's config, so preview needs its promotion source
+    # by name; every entry must be complete, because a partial one throws.
+    #
+    # The origin is NOT in this file. `scripts/install-private-environment-url.mjs`
+    # substitutes TLDA_PROMOTION_SOURCE_URL for the sentinel at boot, and
+    # requires it exactly twice --- the same pattern pic already uses for its
+    # own source. licenseKey is "" because a source entry renders nothing.
+    testing:
+      database: __TLDA_PROMOTION_SOURCE_URL__
+      store: __TLDA_PROMOTION_SOURCE_URL__
+      licenseKey: ""
 
 taskDoc:
   globalDir: /app/server/persist/fleet-task-doc
