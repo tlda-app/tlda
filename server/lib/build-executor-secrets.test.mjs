@@ -25,7 +25,13 @@ import { initProjectStore, closeProjectStore } from './project-store.mjs'
 // `buildTransportFor` derives the transport's staging root from the project
 // store, which is incidental to credential resolution but must exist for the
 // call to complete.
-initProjectStore(mkdtempSync(join(tmpdir(), 'executor-secrets-')))
+//
+// AWAITED, and it was not. `initProjectStore` is async; called bare it returns a
+// promise nobody consumes, and these tests passed anyway — because the part they
+// depend on, `projectsDir`, is set synchronously before the rest of the setup
+// runs. So the suite was green while its own fixture was half-built, which is
+// the failure the async-cascade guard exists to catch and which caught this.
+await initProjectStore(mkdtempSync(join(tmpdir(), 'executor-secrets-')))
 test.after(async () => { await closeProjectStore() })
 
 const CONFIG_SECRET = 'config-token-that-must-not-win'
