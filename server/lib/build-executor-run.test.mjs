@@ -1,14 +1,14 @@
 /**
  * The build executor's git token must not reach a log.
  *
- * This reproduces the incident rather than a model of it: the executor fetched
- * from a remote whose path had a doubled segment, the server answered 404, and
- * the rejection `run` composed carried the credential into the deployment's log
- * in the clear.
+ * The executor fetched from a remote whose path had a doubled segment, and the
+ * rejection `run` composed carried the credential into the deployment's log in
+ * the clear.
  *
- * So the test stands up a server that 404s, fetches through the real `run` with
- * a known token in the URL, and asserts the token appears nowhere in what is
- * thrown. Removing `redactUrlCredentials` from `run` turns it red.
+ * Under test is the composition of the error, not the server's routing: the
+ * credential is in the argv whatever the far side answered. The 404 below
+ * forces a failure; it is not what the live server returned. Removing
+ * `redactUrlCredentials` from `run` turns this red.
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -19,7 +19,7 @@ import { run, redactUrlCredentials } from './build-executor-run.mjs'
 
 const TOKEN = 'tok-live-value-that-must-never-be-logged'
 
-/** A server that answers every request the way the mistyped path was answered. */
+/** A server that refuses everything, so the fetch below is certain to fail. */
 function notFoundServer() {
   return new Promise(resolve => {
     const server = createServer((_req, res) => { res.writeHead(404).end('not found') })
@@ -30,7 +30,7 @@ function notFoundServer() {
 test('the credential in a failing fetch does not reach the thrown error', async () => {
   const { server, port } = await notFoundServer()
   try {
-    // The doubled `/git/git/` is the incident's own URL shape.
+    // The doubled `/git/git/` is the URL shape the incident produced.
     const remote = `http://build-executor:${TOKEN}@127.0.0.1:${port}/git/git/a-project`
     const error = await run('git', ['ls-remote', remote]).then(
       () => null,
