@@ -19,7 +19,7 @@ function equal(actual: unknown, expected: unknown, label: string) {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, got ${String(actual)}`)
 }
 
-const SHAPE = { id: 'shape:page-0', props: { h: 1000, source: 'chapter.qmd' } }
+const SHAPE = { id: 'shape:page-0', props: { h: 1000, source: 'chapter.qmd', url: '/docs/p/chapter.html' } }
 const BOUNDS = { x: 0, y: 0, w: 800, h: 1000 }
 
 function element(opts: { rendered: boolean; offsetTop?: number }) {
@@ -119,5 +119,48 @@ registerIframe(docWith(element({ rendered: true, offsetTop: 400 })), '')
 const unknown = htmlSourceLineCanvasPosition(SHAPE, BOUNDS, 29)
 equal(unknown && (unknown as { anchored: boolean }).anchored, true, 'unreadable url does not block resolution')
 
+// 9. SAME BASENAME, DIFFERENT DIRECTORY must mismatch. A basename-tolerant
+//    check would accept another chapter's page and resolve against the wrong
+//    document — the chief's named control for this guard.
+registerIframe(docWith(element({ rendered: true })), '/docs/p/other-dir/chapter.html')
+equal(
+  htmlSourceLineCanvasPosition(SHAPE, BOUNDS, 29),
+  null,
+  'same basename in a different directory mismatches',
+)
+
+// 10. MARKDOWN MAPPING — served `index.html` from source `main.md`. Measured on
+//     this machine: of 25 real source→served pairs, 21 do NOT follow
+//     source-with-the-extension-swapped, and this is the commonest of them. A
+//     source-derived check refuses to resolve here, which is why identity is
+//     compared against the shape's served url instead.
+{
+  const md = { id: 'shape:md-0', props: { h: 1000, source: 'main.md', url: '/docs/p/index.html' } }
+  htmlIframeElements.set(md.id, {
+    contentDocument: docWith(element({ rendered: true, offsetTop: 400 })),
+    clientHeight: 1000,
+    src: '/docs/p/index.html',
+    contentWindow: { scrollY: 0, location: { href: '/docs/p/index.html' } },
+  } as unknown as HTMLIFrameElement)
+  const r = htmlSourceLineCanvasPosition(md, BOUNDS, 29)
+  equal(r && (r as { anchored: boolean }).anchored, true, 'markdown index.html/main.md still resolves')
+  htmlIframeElements.delete(md.id)
+}
+
+// 11. DECK SLIDE MAPPING — served `slides-slide-0.html` from source
+//     `slides.qmd`. The other measured divergence class.
+{
+  const deck = { id: 'shape:deck-0', props: { h: 1000, source: 'slides.qmd', url: '/docs/p/slides-slide-0.html' } }
+  htmlIframeElements.set(deck.id, {
+    contentDocument: docWith(element({ rendered: true, offsetTop: 400 })),
+    clientHeight: 1000,
+    src: '/docs/p/slides-slide-0.html',
+    contentWindow: { scrollY: 0, location: { href: '/docs/p/slides-slide-0.html' } },
+  } as unknown as HTMLIFrameElement)
+  const r = htmlSourceLineCanvasPosition(deck, BOUNDS, 29)
+  equal(r && (r as { anchored: boolean }).anchored, true, 'deck slide slides-slide-0.html/slides.qmd still resolves')
+  htmlIframeElements.delete(deck.id)
+}
+
 htmlIframeElements.delete(SHAPE.id)
-console.log('htmlSourceAnchorResolve: 8 cases pass')
+console.log('htmlSourceAnchorResolve: 11 cases pass')
