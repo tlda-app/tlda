@@ -281,6 +281,20 @@ const ALLOWED = {
       'fleet operation stream and must not replay durable outbox messages through ' +
       'the fleet request-response transport.',
   },
+  'server/lib/build-transport.mjs': {
+    count: 1,
+    category: 'exception',
+    reason:
+      'The build executor protocol, server to a machine that renders. It carries the ' +
+      'worker envelopes that already exist between the server and a forked build ' +
+      'worker -- heartbeat, report, rpc/rpc-result, done -- over a wire instead of ' +
+      'over IPC, and nothing else. The remote end is deliberately NOT a fleet member: ' +
+      'it holds no identity, no inbox and no community authority, and the whole point ' +
+      'of the boundary is that a build executor cannot act on the fleet. Routing this ' +
+      'through the fleet transport would give an executor the one thing the design ' +
+      'exists to deny it. The socket is the injected `connect` default, so tests ' +
+      'substitute their own and this construction is the production path only.',
+  },
 
   // --- product: reaching around the library. This is the number. -----------
   'src/fleet/fleet-data.mjs': {
