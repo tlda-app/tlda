@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import type { Editor } from 'tldraw'
 import { SvgDocumentEditor } from '../SvgDocument'
+import { useContentAnchoredMarks } from './useContentAnchoredMarks'
 import { createHtmlDocumentFromPageInfo } from '../svgDocumentLoader'
 import type { SvgDocument } from '../loaders/types'
 import { classroomApi, type Assignment, type Submission } from './api'
@@ -59,6 +61,24 @@ export function StudentWork() {
   const [document, setDocument] = useState<SvgDocument | null>(null)
   const [error, setError] = useState('')
   const [loaded, setLoaded] = useState(false)
+  // The returned marks live in this same room, so this view resolves their
+  // anchors itself. It never records one — nothing is drawn here — and it never
+  // writes a position back, so a student's collapse state stays their own.
+  const [workEditor, setWorkEditor] = useState<Editor | null>(null)
+  // This view's own document container.
+  //
+  // A page shape mounts once per viewport, and `CanvasClipPanel` has call sites
+  // beyond the grading panes — `FleetHUD` and `AnnotationViewer` among them — so
+  // a second mount of this same page can exist while a student is reading. The
+  // mounts disagree about which solutions are open, and a mark has one opacity,
+  // so this view must say which copy is its own instead of taking whichever the
+  // registry last wrote.
+  // `getContainer()` rather than a wrapper element: this editor fills its parent,
+  // and adding a bare <div> around it is a layout change nobody asked for. The
+  // container is the instance's own root and needs no new DOM.
+  useContentAnchoredMarks(workEditor, workEditor, {
+    governingRoot: () => workEditor?.getContainer() ?? null,
+  })
   const [uploading, setUploading] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -161,7 +181,13 @@ export function StudentWork() {
   const returned = submission.feedback
 
   return <>
-    {document && <SvgDocumentEditor key={submission.contentRef} document={document} roomId={`doc-${submission.contentRef}`} />}
+    {document && <SvgDocumentEditor
+      key={submission.contentRef}
+      document={document}
+      roomId={`doc-${submission.contentRef}`}
+      onEditorMount={setWorkEditor}
+      onEditorRelease={released => setWorkEditor(current => (current === released ? null : current))}
+    />}
     <aside className="markingLifecycle" aria-label={publicStudentId ? 'Public student submission' : 'Your submission'}>
       {publicStudentId && <span>Public submission: {publicStudentId}</span>}
       <span>Submitted {new Date(submission.submittedAt).toLocaleString()}</span>
