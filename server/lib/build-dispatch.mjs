@@ -554,14 +554,41 @@ export function setBuildHeadNotifier(notifier) {
  * first thing a reader needs when a build behaves unexpectedly, and it is
  * otherwise invisible in every log the build itself writes.
  */
-function buildTransportFor(config) {
+export function buildTransportFor(config, makeRemote = createRemoteTransport) {
   const executor = config.buildExecutor
   if (!executor?.url) return ForkTransport
   console.log(`[build] builds for this deployment run on ${executor.url}, not on this machine`)
-  return createRemoteTransport({
+
+  // The two tokens come from the environment, and under
+  // `tokensFromEnvironmentOnly` they come from NOWHERE ELSE.
+  //
+  // Same shape as `server/lib/auth.mjs` does for TLDA_TOKEN_READ/RW, and for the
+  // same reason: `config/deployments/` is tracked and public, so a token written
+  // there is a committed credential. `AGENTS.md` forbids it and the deployment
+  // file this key lives in says so about itself.
+  //
+  // The `null` rather than a fallback is the load-bearing part. A hosted box
+  // declares that its secrets come from its secret store; letting a config field
+  // win there would mean a committed token silently outranking the deployed one,
+  // which is the state that reads as configured and behaves as something else.
+  const envTokensOnly = !!config.tokensFromEnvironmentOnly
+  const token = process.env.TLDA_BUILD_EXECUTOR_TOKEN || (envTokensOnly ? null : executor.token)
+  const gitToken = process.env.TLDA_BUILD_EXECUTOR_GIT_TOKEN || (envTokensOnly ? null : executor.git?.token)
+
+  // Named, never valued. A config token that is being ignored is worth saying —
+  // somebody wrote it expecting it to work — but printing it would put the
+  // secret in the log the warning exists to make readable.
+  if (envTokensOnly && executor.token) {
+    console.warn('[build] buildExecutor.token in server.yaml is ignored under tokensFromEnvironmentOnly; TLDA_BUILD_EXECUTOR_TOKEN is authoritative')
+  }
+  if (envTokensOnly && executor.git?.token) {
+    console.warn('[build] buildExecutor.git.token in server.yaml is ignored under tokensFromEnvironmentOnly; TLDA_BUILD_EXECUTOR_GIT_TOKEN is authoritative')
+  }
+
+  return makeRemote({
     executorUrl: executor.url,
-    token: executor.token,
-    git: executor.git,
+    token,
+    git: executor.git ? { ...executor.git, token: gitToken } : executor.git,
     stagingRoot: join(getProjectsDir(), '.build-instances'),
     readProject,
     publishedHead: async name => (await (await sourceLifecycleStore(name)).gitRepository()).head(name),
