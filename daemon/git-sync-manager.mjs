@@ -7,6 +7,7 @@ import { createGitProjectSync, safeRefPart } from './git-project-sync.mjs'
 import { createRemoteGitBridge } from './remote-git-bridge.mjs'
 import { historySeedRef } from '../shared/history-seed-ref.mjs'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
+import { redactProcessError } from '../shared/redact-url-credentials.mjs'
 
 const defaultExecFile = promisify(execFileCb)
 const watchSourceTree = (root, onChange) => fs.watch(root, { recursive: true, persistent: true }, onChange)
@@ -26,8 +27,22 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile = defaultExecFile, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {}, onSyncRecovered = async () => {}, onRemotePublishFailed = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile: rawExecFile = defaultExecFile, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {}, onSyncRecovered = async () => {}, onRemotePublishFailed = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
+
+  // The project remote carries this daemon's token as URL userinfo, and it is
+  // passed to git as an ordinary argument -- so every failing git call here
+  // produces an error naming the command, token included, and those messages
+  // are logged and sent on as daemon warnings.
+  //
+  // Wrapped at this seam rather than at the one call site that was found,
+  // because which git command fails is not the point: any of them that is
+  // handed the remote leaks the same way, and a per-call-site fix is a list
+  // that the next call site is not on.
+  const execFile = async (...args) => {
+    try { return await rawExecFile(...args) } catch (error) { throw redactProcessError(error) }
+  }
+
   const runtimes = new Map()
   const starts = new Map()
 
