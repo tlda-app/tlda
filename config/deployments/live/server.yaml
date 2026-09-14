@@ -35,38 +35,6 @@ uploadDir: /app/server/persist/uploads
 # to stdout. Do not kill a healthy course build during that quiet interval.
 buildStallTimeoutMs: 3600000
 
-# Where this deployment's builds RUN. Absent means here, forked by the server,
-# which is what every deployment did before this key existed. Present, it names
-# the machine that renders instead -- pic-dev, whose stated purpose is that
-# building class content is disruptive enough to need its own box.
-#
-# BOTH ADDRESSES ARE 6PN, AND THAT IS NOT AN ARBITRARY CHOICE. Tailscale runs
-# `--tun=userspace-networking` on these machines, so it creates no interface and
-# one Fly app cannot route to another's 100.x address: measured, testing cannot
-# resolve pic-dev's MagicDNS name or ping its tailnet IP. `.internal` is how
-# these apps already reach each other -- `deepgramBridgeUrl` above is the same
-# move -- and it resolves from each box to the address `fly ssh` connects to.
-#
-# The git URL is HTTP rather than HTTPS because TLS terminates at the Fly edge;
-# measured from pic-dev, `http://tldraw-sync-skip.internal:5176/api/health`
-# answers 200 and the https form does not answer at all. Both legs are plaintext
-# over a private network, which is the same posture the executor's own socket
-# has: confidentiality is the link's.
-#
-# NO TOKENS HERE. This file is tracked and public, and the two credentials come
-# from TLDA_BUILD_EXECUTOR_TOKEN and TLDA_BUILD_EXECUTOR_GIT_TOKEN -- which
-# `tokensFromEnvironmentOnly` above makes authoritative, so a token written here
-# would be ignored as well as committed.
-#
-# `daemonId` is the username half of the git route's basic auth and is a label;
-# the token is what the route classifies by level.
-#
-# AND THE EXECUTOR IS FETCH-ONLY BY ITS CODE, NOT BY ITS CREDENTIAL HERE. The
-# route always gates by level, but this environment classifies ANY credential as
-# `rw` -- measured: a credential is required (no auth is refused 401), its value
-# is not checked (an invalid one fetches), and receive-pack is not refused. So
-# least privilege is NOT enforced on this box, and the only thing keeping this
-# process to fetching is that `bin/build-executor.mjs` has no write path.
 buildExecutor:
   url: ws://tlda-pic-dev.internal:7711
   git:
