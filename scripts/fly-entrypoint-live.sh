@@ -154,7 +154,19 @@ fi
 # machine wants its own process group and its own health check; this is the
 # transitional form for a box that serves and renders at once.
 if [ -n "${TLDA_BUILD_EXECUTOR_ENABLE:-}" ]; then
-  echo "[entrypoint] build executor enabled; starting supervised on port ${TLDA_BUILD_EXECUTOR_PORT:-7711}"
+  # Bind the Fly private (6PN) address, resolved here rather than written down.
+  #
+  # Not the tailnet: tailscale runs `--tun=userspace-networking` on these
+  # machines, so it creates no interface and another Fly app cannot route to a
+  # 100.x address at all -- measured, testing could not ping pic-dev's tailnet
+  # IP or resolve its MagicDNS name. 6PN is how these apps already reach each
+  # other; `deepgramBridgeUrl: ws://tlda-voice.internal:8180` is the same move.
+  #
+  # And not a hostname: `tlda-pic-dev` does not resolve ON tlda-pic-dev, whose
+  # hostname is its machine id. Binding to it fails at listen(), which under the
+  # supervisor below is an unbounded restart of a process that cannot come up.
+  export TLDA_BUILD_EXECUTOR_HOST="${TLDA_BUILD_EXECUTOR_HOST:-${FLY_PRIVATE_IP:-}}"
+  echo "[entrypoint] build executor enabled; starting supervised on [${TLDA_BUILD_EXECUTOR_HOST:-every interface}]:${TLDA_BUILD_EXECUTOR_PORT:-7711}"
   (
     while true; do
       node /app/bin/build-executor.mjs
