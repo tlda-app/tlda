@@ -86,6 +86,45 @@ export function buildSentinelShape(cur, patch) {
 }
 
 /**
+ * Add or clear a warning of ONE category, preserving every other warning.
+ *
+ * The merge runs inside the writer's own transaction, against the shape that
+ * transaction holds. Computing it outside means read, decide, then write
+ * against a sentinel that may have moved in between -- and a read that fails
+ * degrades to "no warnings", which erases the render's own. Neither is
+ * reachable from in here.
+ *
+ * `acceptSeq` is required because it is what scopes the write: the staleness
+ * rule below drops a patch belonging to a build older than the sentinel's, so
+ * a late warning cannot land on a newer build. Without it there is no such
+ * protection and nothing is written at all.
+ */
+export async function writeSentinelWarning(docName, { acceptSeq, category, warning = null }, io = { upsertShape }) {
+  if (!Number.isInteger(acceptSeq) || !category) return { skipped: true, reason: 'unscoped' }
+  let skipped = false
+  await io.upsertShape(docName, DOC_VERSION_SENTINEL_ID, (cur) => {
+    let existing = []
+    try {
+      const parsed = JSON.parse(cur?.props?.warningsJson || '[]')
+      if (Array.isArray(parsed)) existing = parsed
+    } catch {
+      // Unparseable warnings are not a reason to refuse the new one; the
+      // alternative is dropping it because an older write was malformed.
+      existing = []
+    }
+    const kept = existing.filter(w => w?.category !== category)
+    const next = warning ? [...kept, warning] : kept
+    const result = buildSentinelShape(cur, {
+      acceptSeq,
+      warningsJson: next.length ? JSON.stringify(next) : '',
+    })
+    skipped = result.skipped
+    return result.shape
+  })
+  return { skipped }
+}
+
+/**
  * Single writer-of-record for the doc-version sentinel.
  *
  * It preserves stable status fields unless the patch explicitly changes them

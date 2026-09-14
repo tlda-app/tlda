@@ -110,9 +110,9 @@ function assertRpcBelongsToJob(message, job) {
 }
 const publicationLocks = new Map()
 
-async function notifyPublishedHead(notifyHeadChanged, name, sourceRevision, logError = console.error) {
+async function notifyPublishedHead(notifyHeadChanged, name, sourceRevision, acceptSeq = null, logError = console.error) {
   try {
-    await notifyHeadChanged?.(name, sourceRevision)
+    await notifyHeadChanged?.(name, sourceRevision, acceptSeq)
   } catch (error) {
     logError(`[build:${name}] published ${sourceRevision}, but notifying the source room failed: ${error?.message || error}`)
   }
@@ -519,7 +519,11 @@ export function createDispatcherWithOptions(transport, options = {}) {
           pName, pRevision, pAcceptSeq, pInstance, pReports, pReplaced || PUBLISH_REPLACED_ITEMS, sinks)
         if (!result.published) throw new Error(`stale build ${job.sourceRevision} cannot publish over ${result.currentHead || 'no head'}`)
         await queue.publishedHeadChanged(name, job.sourceRevision)
-        await notifyPublishedHead(options.notifyHeadChanged, name, job.sourceRevision)
+        // `job.acceptSeq`, not the wire's `pAcceptSeq`, for the same reason this
+        // line already prefers `job.sourceRevision`: the server's own record is
+        // authoritative. A missing or malformed wire value would leave the
+        // delivery's warning layer silently unscoped and therefore off.
+        await notifyPublishedHead(options.notifyHeadChanged, name, job.sourceRevision, job.acceptSeq)
         return result
       }
       const sink = sinks[message.m]

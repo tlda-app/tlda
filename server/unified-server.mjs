@@ -53,7 +53,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { createHash, randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, getRwToken, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
+import { CONFIG_DIR, DEFAULT_PORT, getActiveEnvName, getFleetServerUrl, getRwToken, getServerUrl, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { createFleetFrameStallTracker, resolveStallMs } from './lib/fleet-frame-stalls.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
@@ -91,6 +91,8 @@ import projectRoutes from './routes/projects.mjs'
 import { classroomPrincipal, createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
 import { ClassroomStore } from './lib/classroom-store.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
+import { writeSentinel, writeSentinelWarning } from './lib/sentinel.mjs'
+import { createPreviewDelivery } from './lib/preview-delivery.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
 import { classroomRoomAccess } from '../shared/classroom-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
@@ -488,7 +490,7 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 // Daemon connections — keyed by machine_id:env_name. Each value is the live WS
 // for that daemon config lane. Used for RPC routing and agent updates.
 const daemonConnections = new Map()         // machine_id:env_name -> ws
-setBuildHeadNotifier(async (project, revision) => {
+setBuildHeadNotifier(async (project, revision, acceptSeq = null) => {
   await sourceRoomDaemon.headChanged(project, revision)
   const message = JSON.stringify({ type: 'head-changed', project, revision })
   for (const ws of daemonConnections.values()) {
@@ -497,7 +499,39 @@ setBuildHeadNotifier(async (project, revision) => {
       // The disconnected daemon receives the same head on its next hello.
     }
   }
+  // NOT awaited. This notifier runs inside the worker's `publishBuildInstance`
+  // RPC, which the worker abandons after PARENT_RPC_TIMEOUT_MS (240s) and then
+  // reports as a build failure. Awaiting a slow or unreachable destination here
+  // would turn a render that succeeded into a build that failed. Delivery
+  // reports its own problems and never rejects.
+  void previewDelivery.deliver(project, revision, acceptSeq)
 })
+
+/**
+ * Deliver a published revision to the environment that mirrors it.
+ *
+ * Driven by the post-publish notifier: an event that already fires when a
+ * revision becomes the published head. Nothing polls and nothing is held
+ * between builds.
+ *
+ * `previewDelivery` maps project name to destination environment, so this acts
+ * on the projects a deployment names rather than on every build it runs.
+ *
+ * Not exactly-once: a repeat is possible and harmless. Promotion verifies the
+ * bundle head against the revision requested and reports `promoted: false`
+ * when the destination already holds that render, so a repeat writes nothing.
+ *
+ * The route, not the CLI: `tlda project promote` prints its refusal and exits
+ * zero, so a caller reading its status would record a delivery that did not
+ * happen.
+ */
+const previewDelivery = createPreviewDelivery({
+  loadServerConfig,
+  resolveEnvironmentOrigin: getServerUrl,
+  activeEnvironment: getActiveEnvName,
+  writeSentinelWarning,
+})
+
 const SOURCE_BINDING_REGISTRY_PATH = process.env.TLDA_SOURCE_BINDING_REGISTRY_PATH
   || join(CONFIG_DIR, 'server-source-bindings.json')
 
