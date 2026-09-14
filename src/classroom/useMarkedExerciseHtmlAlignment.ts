@@ -137,7 +137,7 @@ export function pairMarkedExerciseCallouts(studentDocument: Document, solutionDo
 // Neither present means an ordinary document: do nothing at all.
 function markedExerciseContext(): 'problems' | 'compare' | null {
   const params = new URLSearchParams(window.location.search)
-  if (params.get('workspace') === 'classroom-problems') return 'problems'
+  if (params.get('workspace') === 'classroom-problems' || params.get('workspace') === 'classroom-work') return 'problems'
   if (params.get('compareDoc')) return 'compare'
   return null
 }
