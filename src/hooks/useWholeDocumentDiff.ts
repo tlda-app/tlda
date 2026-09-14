@@ -26,6 +26,7 @@ export function useWholeDocumentDiff(
     if (!visible || !activeHash || !columnX || pageCount < 1) {
       clear()
       setLoading(false)
+      setError(null)
       return
     }
 
