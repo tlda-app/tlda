@@ -30,12 +30,8 @@ import { injectQuartoOutputProvenance } from './quarto-output-provenance.mjs'
 
 const execFileAsync = promisify(execFile)
 
-// A .qmd render can run R, Python, or Julia chunks. Skip, 2026-07-31, on the
-// cost: "I know a quarto render, especially if it's doing significant R shit,
-// is gonna be significant computationally ... that's just how the format
-// works." Generous on purpose — a timeout here presents as a broken document
-// rather than a slow one, which is the more expensive failure to diagnose.
-const RENDER_TIMEOUT_MS = 15 * 60 * 1000
+// The fifteen-minute limit remains for package restoration.
+const RENV_RESTORE_TIMEOUT_MS = 15 * 60 * 1000
 
 const DEFAULT_WIDTH = 800
 const DEFAULT_HEIGHT = 1200
@@ -167,7 +163,7 @@ async function restoreRenv(outDir, addLog) {
     result = await execFileAsync(
       rscript,
       ['-e', 'renv::restore(prompt = FALSE)'],
-      { cwd: outDir, timeout: RENDER_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
+      { cwd: outDir, timeout: RENV_RESTORE_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
     )
   } catch (e) {
     // Same reasoning as the render: renv names the package it could not get on
@@ -339,10 +335,14 @@ async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject =
     // a large render runs for minutes with quarto narrating to a buffer nobody
     // reads until it finishes. Streaming it is what tells the build queue this
     // is a slow build rather than a stalled one.
+    //
+    // No wall-clock limit. The queue checks worker liveness, and its clock is
+    // refreshed by any worker message including heartbeats, so a hung renderer
+    // can retain its slot while the worker keeps heartbeating.
     const running = execFileAsync(
       quarto,
       ['render', ...target, ...profileArgs],
-      { cwd: outDir, timeout: RENDER_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
+      { cwd: outDir, maxBuffer: 32 * 1024 * 1024 },
     )
     const detachOutput = streamChildOutput(running.child, project || mainFile)
     try {
