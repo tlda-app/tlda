@@ -14,6 +14,24 @@ primary_region = "sjc"
   TLDA_DEPLOYMENT = "pic-dev"
   TS_HOSTNAME = "tlda-pic-dev"
 
+  # This box renders for another deployment as well as serving its own. The
+  # entrypoint starts a supervised `bin/build-executor.mjs` only where this is
+  # set, so the behaviour is opted into here rather than inferred from the
+  # deployment's name.
+  #
+  # Transitional: the comment at the top of this file says class builds belong
+  # off the serving box, and this is that box taking the builds for `testing`
+  # too. A dedicated build machine would carry the executor alone.
+  TLDA_BUILD_EXECUTOR_ENABLE = "1"
+
+  # Bound to the tailnet interface rather than every interface. The executor is
+  # plaintext with a bearer token, so its confidentiality is the link's; the
+  # tailnet is the link it is reached over and the only one it should answer on.
+  TLDA_BUILD_EXECUTOR_HOST = "tlda-pic-dev"
+
+  # TLDA_BUILD_EXECUTOR_TOKEN is a SECRET, not an env entry — `fly secrets set`.
+  # The executor refuses to start without it rather than running unauthenticated.
+
 [[vm]]
   size = "performance-2x"
   # Testing has already OOM-killed under concurrent class builds at 4 GB.

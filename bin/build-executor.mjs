@@ -40,6 +40,16 @@
  *   TLDA_BUILD_EXECUTOR_TOKEN   shared secret the transport presents
  *   TLDA_BUILD_EXECUTOR_ROOT    workspace root (default ~/.cache/tlda-build-executor)
  *   TLDA_BUILD_EXECUTOR_PORT    default 7711
+ *   TLDA_BUILD_EXECUTOR_HOST    interface to bind (default: every interface)
+ *
+ * THE BIND ADDRESS IS A DEPLOYMENT PROPERTY, WHICH IS WHY IT IS SETTABLE AND
+ * WHY ITS DEFAULT IS THE PERMISSIVE ONE. This process has no transport security
+ * of its own: it is plaintext with a bearer token, so its confidentiality is
+ * entirely the link's. Across a tailnet that is the accepted posture; on a
+ * machine that also joins arbitrary networks it is not, and there the host must
+ * be pinned. Defaulting to loopback instead would break the only thing this
+ * process exists to do -- be reached from another machine -- so the default
+ * stays open and the deployment narrows it.
  */
 
 import { createServer } from 'node:http'
@@ -55,6 +65,7 @@ import { tarDirectory, EXECUTOR_PATH_ARGUMENTS, EXECUTOR_PROTOCOL_VERSION } from
 const TOKEN = process.env.TLDA_BUILD_EXECUTOR_TOKEN || ''
 const ROOT = process.env.TLDA_BUILD_EXECUTOR_ROOT || join(homedir(), '.cache', 'tlda-build-executor')
 const PORT = Number(process.env.TLDA_BUILD_EXECUTOR_PORT || 7711)
+const HOST = process.env.TLDA_BUILD_EXECUTOR_HOST || ''
 
 if (!TOKEN) {
   console.error('[build-executor] TLDA_BUILD_EXECUTOR_TOKEN is required; refusing to run an unauthenticated executor')
@@ -307,6 +318,7 @@ wss.on('connection', socket => {
   })
 })
 
-httpServer.listen(PORT, () => {
-  console.log(`[build-executor] listening on ${PORT}, workspace root ${ROOT}`)
+const listenArgs = HOST ? [PORT, HOST] : [PORT]
+httpServer.listen(...listenArgs, () => {
+  console.log(`[build-executor] listening on ${HOST || 'every interface'}:${PORT}, workspace root ${ROOT}`)
 })

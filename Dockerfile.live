@@ -298,6 +298,20 @@ COPY bin/git-proposal-hook.mjs ./bin/git-proposal-hook.mjs
 # the call site shipped and this file did not.
 COPY bin/build-session-history-index.mjs ./bin/build-session-history-index.mjs
 
+# Build executor: the process a deployment runs when it is a machine that
+# RENDERS for another deployment rather than for itself. It is started by
+# `scripts/fly-entrypoint-live.sh` only where TLDA_BUILD_EXECUTOR_ENABLE is set,
+# so this line ships a file most images never run.
+#
+# It ships anyway, and by name, for the reason the two lines above exist: this
+# image copies `bin/` FILE BY FILE, so a call site can land while its binary
+# does not. The commit that introduced the executor deployed to two boxes, both
+# reported the sha and healthy, and `/app/bin/` held three files that did not
+# include it -- the prototype had only ever run from an rsynced checkout, where
+# the file simply existed. Packaging is not covered by the diff, the tests, or a
+# machine-to-machine proof.
+COPY bin/build-executor.mjs ./bin/build-executor.mjs
+
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), the deployment's tldraw license
 # allows self-hosting — so SPA + API + WS become ONE same-origin server, dropping
