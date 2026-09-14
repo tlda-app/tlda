@@ -199,6 +199,20 @@ export function ClassroomGradingSurface({
               interactionMode="pinned"
               unboundedPanning
               shapePredicate={shape => belongsToPane(editor, shape, shapeId)}
+              // Keep this pane's document and its iframe mounted while the
+              // measured size arrives.
+              //
+              // `canCull` keeps a shape mounted within three of its OWN heights
+              // of the camera, so a shape still carrying the height the build
+              // declared has a margin sized by that declared height. A pane
+              // aimed further down the document than that margin reaches culls
+              // it — and a culled shape has no iframe, so the measured height
+              // that would widen the margin never arrives.
+              //
+              // `disableCulling` covers both: tldraw stops culling the shape,
+              // and `VisibilityViewportProvider` keeps its iframe mounted.
+              disableCulling
+
               onEditorMount={pane === 'official-solution' ? markSolutionViewportReady : markSubmissionViewportReady}
               onCamera={pane === 'student-submission' ? setSubmissionCamera : undefined}
               cameraOverride={pane === 'student-submission' ? problemCamera : null}
