@@ -53,7 +53,6 @@
  */
 
 import { createServer } from 'node:http'
-import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -61,6 +60,7 @@ import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import { createForkTransport } from '../server/lib/build-transport.mjs'
 import { tarDirectory, EXECUTOR_PATH_ARGUMENTS, EXECUTOR_PROTOCOL_VERSION } from '../server/lib/build-executor-protocol.mjs'
+import { run } from '../server/lib/build-executor-run.mjs'
 
 const TOKEN = process.env.TLDA_BUILD_EXECUTOR_TOKEN || ''
 const ROOT = process.env.TLDA_BUILD_EXECUTOR_ROOT || join(homedir(), '.cache', 'tlda-build-executor')
@@ -81,21 +81,6 @@ const CACHED_ITEMS = ['output', 'build-cache', '.biber-par-cache', '_freeze', '.
 const SEED_MARKER = '.executor-seed.json'
 
 const instances = new Map()
-
-function run(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options })
-    const out = []
-    const err = []
-    child.stdout?.on('data', c => out.push(c))
-    child.stderr?.on('data', c => err.push(c))
-    child.on('error', reject)
-    child.on('close', code => {
-      if (code === 0) resolve(Buffer.concat(out).toString('utf8'))
-      else reject(new Error(`${command} ${args.join(' ')} exited ${code}: ${Buffer.concat(err).toString('utf8').trim()}`))
-    })
-  })
-}
 
 function readSeedMarker(projectWorkspace) {
   const path = join(projectWorkspace, SEED_MARKER)
