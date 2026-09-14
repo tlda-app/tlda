@@ -648,6 +648,29 @@ router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
  *
  * Uses synctex reverse lookup → latexdiff → forward lookup → creates highlight shapes.
  */
+/**
+ * Where to read a project's CURRENT source for a synctex hit.
+ *
+ * A synctex records the absolute path of each input AT BUILD TIME. Builds run
+ * in an ephemeral instance directory, so that path is usually gone by the time
+ * anyone asks for a diff. Measured on the deployed box:
+ *
+ *   Cannot read current source: ENOENT: no such file or directory,
+ *   open '/tmp/tlda-build-instance-QMhD52/build-card-proof/source/main.tex'
+ *
+ * which the user saw as `Show diff` turning into `Diff failed`.
+ *
+ * So the absolute path is used only when it really is inside this project's
+ * source directory; otherwise the file is found where the project actually
+ * keeps it. This is the same fallback the historical `git show` side has
+ * always used -- it was computed for the current side too and then not
+ * applied to the read.
+ */
+export function resolveCurrentSourcePath(hitFileAbsolute, srcDir, mainFile) {
+  if (hitFileAbsolute && hitFileAbsolute.startsWith(srcDir)) return hitFileAbsolute
+  return join(srcDir, mainFile || 'main.tex')
+}
+
 router.post('/diff-region', requireRead, async (req, res) => {
   const { name } = req.params
   const { hash7, page, pdfYMin, pdfYMax, columnX = 848, shadowYOffset = 0, triggerId = '' } = req.body ?? {}
@@ -687,10 +710,15 @@ router.post('/diff-region', requireRead, async (req, res) => {
     ? hitFileAbsolute.slice(srcDir.length + 1)
     : (project.mainFile || 'main.tex')
 
-  // 2. Read FULL current source file
+  // 2. Read FULL current source file.
+  //
+  // Resolved rather than taken from the synctex: that path is absolute and
+  // recorded at build time, so on a build that ran in an instance directory it
+  // no longer exists. See `resolveCurrentSourcePath`.
+  const currentSourcePath = resolveCurrentSourcePath(hitFileAbsolute, srcDir, project.mainFile)
   let currentLines
   try {
-    currentLines = (await readFile(hitFileAbsolute, 'utf8')).split('\n')
+    currentLines = (await readFile(currentSourcePath, 'utf8')).split('\n')
   } catch (e) {
     return res.status(500).json({ error: `Cannot read current source: ${e.message}` })
   }
