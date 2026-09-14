@@ -15,7 +15,7 @@ import { appendToken, canPresent, isPresentPermissionKnown, subscribeCanPresent 
 import { isClassroomDocumentWorkspace } from '../classroom/classroomDocumentWorkspace'
 import { createMeasuredGeometryWriter } from '../measuredGeometryWrite'
 import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
-import { htmlIframeElements } from '../htmlIframeRegistry'
+import { htmlIframeElements, noteHtmlIframeLoaded, disposeHtmlIframeLoadWaiters } from '../htmlIframeRegistry'
 import { recordPlaceDeparture } from '../placeStack'
 import {
   installHtmlNavigationHistory,
@@ -47,6 +47,9 @@ export function getHtmlHeadingY(shapeId: string, anchor: string): number | undef
 export function cleanupHtmlShapeData(shapeId: string) {
   htmlHeadingPositions.delete(shapeId)
   htmlIframeElements.delete(shapeId)
+  // The shape is gone, so no reload of it can ever complete. Release the
+  // waiters rather than leave them pending on a document that will not arrive.
+  disposeHtmlIframeLoadWaiters(shapeId)
   htmlScrollyRegions.delete(shapeId)
   clearHtmlTextSelection(shapeId)
 }
@@ -610,7 +613,10 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const handleIframeLoad = useCallback(() => {
     const iframe = iframeRef.current
     if (!iframe?.contentWindow) return
-    htmlIframeElements.set(shape.id, iframe)
+    // Registers the element AND releases anyone waiting for this document — the
+    // reload path needs to know its own navigation finished, not merely that
+    // some load happened.
+    noteHtmlIframeLoaded(shape.id, iframe)
     readPageInert(iframe)
     iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
     // Bind any rgl WebGL figures in this deck to the shared orientation props.

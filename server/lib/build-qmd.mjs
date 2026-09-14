@@ -27,6 +27,7 @@ import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
 import { findTldaManifests, readTldaManifest } from './tlda-manifest.mjs'
 import { injectQuartoOutputProvenance } from './quarto-output-provenance.mjs'
+import { markQuartoSourceLines } from './quarto-source-lines.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -1094,7 +1095,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
       const sourceFile = page.source.file
       const source = readFileSync(join(outDir, sourceFile), 'utf8')
       const withProvenance = injectQuartoOutputProvenance(readFileSync(path, 'utf8'), source, sourceFile)
-      writeFileSync(path, stampFigureUrls(withProvenance))
+      writeFileSync(path, stampFigureUrls(markQuartoSourceLines(withProvenance, source)))
     }
     // Every deck the profile declares that HAS a render — the ones built just
     // now, and the ones the seeded output already carried. Deriving the set
@@ -1194,10 +1195,10 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     const hasAlternates = declaredOutputFiles.length > 1
     for (const outputFile of outputFiles) {
       const renderedPath = join(outDir, outputFile)
-      const rendered = stampFigureUrls(injectQuartoOutputProvenance(
-        readFileSync(renderedPath, 'utf8'),
-        readFileSync(join(outDir, root), 'utf8'),
-        root,
+      const rootSource = readFileSync(join(outDir, root), 'utf8')
+      const rendered = stampFigureUrls(markQuartoSourceLines(
+        injectQuartoOutputProvenance(readFileSync(renderedPath, 'utf8'), rootSource, root),
+        rootSource,
       ))
       writeFileSync(renderedPath, rendered)
 
