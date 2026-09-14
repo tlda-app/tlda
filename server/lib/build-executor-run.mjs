@@ -21,9 +21,6 @@ import { spawn } from 'node:child_process'
 
 import { redactUrlCredentials } from '../../shared/redact-url-credentials.mjs'
 
-// Re-exported because this module's own regression reads it from here.
-export { redactUrlCredentials }
-
 export function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options })

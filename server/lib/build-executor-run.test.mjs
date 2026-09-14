@@ -15,7 +15,8 @@ import test from 'node:test'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 
-import { run, redactUrlCredentials } from './build-executor-run.mjs'
+import { run } from './build-executor-run.mjs'
+import { redactUrlCredentials } from '../../shared/redact-url-credentials.mjs'
 
 const TOKEN = 'tok-live-value-that-must-never-be-logged'
 

@@ -33,7 +33,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   // The project remote carries this daemon's token as URL userinfo, and it is
   // passed to git as an ordinary argument -- so every failing git call here
   // produces an error naming the command, token included, and those messages
-  // are logged and sent on as daemon warnings.
+  // are logged.
   //
   // Wrapped at this seam rather than at the one call site that was found,
   // because which git command fails is not the point: any of them that is
