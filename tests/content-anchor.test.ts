@@ -591,3 +591,36 @@ test('each document decides its own badge, and an open mount does not suppress a
   )
   assert.ok(noted.every(entry => entry.panel.includes('collapse')))
 })
+
+/**
+ * An iframe that is still loading has a documentElement and no body.
+ *
+ * Enumerating mounts from the DOM reaches documents mid-load; the single
+ * registry document never was one. The old guard took
+ * `max(body?.scrollWidth, documentElement.scrollWidth)`, so a body-less document
+ * with a sized documentElement passed as a usable context — and the first thing
+ * the caller does is `observer.observe(doc.body)`, which threw
+ * `parameter 1 is not of type 'Node'` and took ClassroomGradingSurface to its
+ * error boundary. The whole marking surface showed "Something went wrong".
+ */
+test('a document with no body yields no context, however wide its documentElement', () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>')
+  const doc = dom.window.document
+  // Exactly the shape of a loading iframe: documentElement reports a width, and
+  // there is no body.
+  Object.defineProperty(doc.documentElement, 'scrollWidth', { value: 1200, configurable: true })
+  Object.defineProperty(doc, 'body', { value: null, configurable: true })
+
+  const g = globalThis as any
+  const prior = g.document
+  g.document = dom.window.document
+  try {
+    htmlIframeElements.set('shape:loading', { contentDocument: doc } as any)
+    const { all, governing } = anchorContexts({ id: 'shape:loading', x: 0, y: 0, props: { w: 800 } })
+    assert.equal(governing, null, 'no body means no usable context')
+    assert.equal(all.length, 0, 'and it is not offered for badge work either')
+  } finally {
+    htmlIframeElements.delete('shape:loading')
+    g.document = prior
+  }
+})

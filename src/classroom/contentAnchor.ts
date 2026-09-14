@@ -221,15 +221,24 @@ function contextForDocument(
   shape: { x: number; y: number; props: { w: number } },
   doc: Document | null | undefined,
 ): AnchorContext | null {
-  if (!doc) return null
+  // A body, not just a document. Every consumer needs one — the MutationObserver
+  // observes it, badges are appended inside it, anchors are resolved through it —
+  // and an iframe that is still loading has a `documentElement` with no `body`.
+  //
+  // This only became reachable when mounts started being enumerated from the DOM:
+  // before, the single registry document was always a loaded one. Measured as a
+  // crash, not deduced — `observe(null)` threw `parameter 1 is not of type 'Node'`
+  // and took the whole grading surface to its error boundary.
+  if (!doc?.body) return null
   // A width of zero means the document has not laid out yet, which is a
   // different thing from a narrow document. Falling back to a default here
   // produced a plausible scale from a page that had no geometry, and an anchor
   // recorded in that window would be wrong in a way nothing later corrects.
-  const documentWidth = Math.max(
-    doc.body?.scrollWidth || 0,
-    doc.documentElement?.scrollWidth || 0,
-  )
+  //
+  // `documentElement` is deliberately NOT part of this maximum any more: it
+  // reports a width for a document whose body has not arrived, which is exactly
+  // the case the guard above now rejects.
+  const documentWidth = doc.body.scrollWidth || 0
   if (documentWidth <= 0) return null
   return {
     doc,
