@@ -12,11 +12,10 @@
  * argument, and interpolating the argv put a live token into the deployment's
  * logs in plaintext.
  *
- * Measured on the failure that did it -- a 404 from a mistyped remote path --
- * and on a connection failure: git redacts the userinfo from its own stderr, so
- * the argv this process composes is the only copy. Only the argv is redacted
- * here, because redacting stderr would claim a defence nothing has shown to be
- * needed.
+ * Measured on a 404 and on a connection failure: git redacts the userinfo from
+ * its own stderr, so the argv this process composes is the only copy. Only the
+ * argv is redacted here, because redacting stderr would claim a defence nothing
+ * has shown to be needed.
  */
 import { spawn } from 'node:child_process'
 
