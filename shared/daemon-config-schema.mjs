@@ -53,6 +53,13 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'buildMaxConcurrency',
   'buildPriority',
   'buildStallTimeoutMs',
+  // Which published projects are delivered, and to which environment:
+  // `{ '<project>': '<environment>' }`. Absent -- the normal case -- means
+  // nothing is delivered and publication behaves as it always has.
+  //
+  // Ships BEFORE any server.yaml names it: this list is closed, so a config
+  // carrying the key is a hard startup failure on a tree that predates it.
+  'previewDelivery',
   // Where this deployment's builds RUN. Absent — the normal case — means they
   // run here, forked by the server, which is what every deployment did before
   // this key existed. Present, it names a machine that renders instead:
