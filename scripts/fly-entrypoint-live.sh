@@ -135,6 +135,36 @@ if [ -f "$HIST_DB" ] && [ ! -f "$MERGED_FLAG" ]; then
   fi
 fi
 
+# Build executor, only where a deployment has opted in.
+#
+# OPT-IN BY INTENT, NOT BY IDENTITY. The condition is TLDA_BUILD_EXECUTOR_ENABLE
+# rather than `TLDA_DEPLOYMENT = pic-dev`, so a box renders for others because
+# someone said it should and not because of what it is called. Every image ships
+# this block; only a deployment that sets the variable runs it.
+#
+# SUPERVISED, BECAUSE THE ALTERNATIVE FAILS SILENTLY. The server is this
+# container's PID 1 and its health is what the machine reports. An unsupervised
+# executor that dies would leave the box healthy while every build sent to it
+# fails -- promptly rather than hanging (the transport surfaces ECONNREFUSED in
+# ~60ms, measured), but with nothing on this side saying why. The loop restarts
+# it and names each exit, so "builds started failing at 04:12" has an entry to
+# match rather than a silence.
+#
+# It is NOT a process supervisor and should not grow into one. A dedicated build
+# machine wants its own process group and its own health check; this is the
+# transitional form for a box that serves and renders at once.
+if [ -n "${TLDA_BUILD_EXECUTOR_ENABLE:-}" ]; then
+  echo "[entrypoint] build executor enabled; starting supervised on port ${TLDA_BUILD_EXECUTOR_PORT:-7711}"
+  (
+    while true; do
+      node /app/bin/build-executor.mjs
+      status=$?
+      echo "[entrypoint] build-executor exited with status ${status}; restarting in 2s"
+      sleep 2
+    done
+  ) &
+fi
+
 cd /app/server
 # --import tsx lets the server import TypeScript library modules directly (no build
 # artifact) — the algo-refactor splits server logic into .ts modules. tsx loads
