@@ -64,7 +64,7 @@ done
 echo "[entrypoint] installing committed config for deployment '$TLDA_DEPLOYMENT'"
 cp "$DEPLOYMENT_DIR/server.yaml" /root/.config/tlda/server.yaml
 cp "$DEPLOYMENT_DIR/daemon.yaml" /root/.config/tlda/daemon.yaml
-node /app/scripts/install-private-environment-url.mjs /root/.config/tlda/daemon.yaml
+node /app/scripts/install-private-environment-url.mjs /root/.config/tlda/daemon.yaml /root/.config/tlda/server.yaml
 
 # Static files this deployment serves in place of the ones in dist/ — the icon
 # set and the web manifest, so the class sites carry their own mark rather than
