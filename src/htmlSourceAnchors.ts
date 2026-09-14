@@ -59,6 +59,44 @@ function boundsValue(bounds: any, key: 'x' | 'y' | 'w' | 'h') {
   return Number(bounds.h ?? bounds.height ?? 0)
 }
 
+/**
+ * Whether the document in the frame is the one this shape is anchored to.
+ *
+ * A frame can be showing something else: these documents carry links to other
+ * chapters and to external pages, nothing intercepts an ordinary in-frame
+ * navigation, and `props.url` is not updated when one happens — so the shape
+ * still names its own file while the frame displays another.
+ *
+ * That matters because "an iframe and a document exist" was the whole check.
+ * A remap against a navigated-away frame reads a REAL document, misses the
+ * marker in it, and persists `missing-line-anchor` over a good anchor — the
+ * same destruction the transient guards fix, reached by another road.
+ *
+ * **Unknown is not mismatch.** When the URL cannot be read or the file cannot
+ * be turned into a path, this answers `true`. A guard that cannot tell must not
+ * block: answering `false` on uncertainty would unanchor everything while
+ * looking like caution.
+ */
+function documentMatchesSource(url: string, sourceFile: string): boolean {
+  const path = String(url || '').split('#', 1)[0].split('?', 1)[0]
+  // The source is authored (.qmd, .md); the frame holds the rendered .html.
+  const target = String(sourceFile || '')
+    .replace(/^\.?\//, '')
+    .replace(/\.(qmd|md|markdown)$/i, '.html')
+  if (!path || !target) return true
+  const basename = target.replace(/^.*\//, '')
+  return path.endsWith('/' + target) || path.endsWith('/' + basename)
+}
+
+/** The document the frame actually holds; `src` when its location is unreadable. */
+function loadedDocumentUrl(iframe: HTMLIFrameElement): string {
+  try {
+    return iframe.contentWindow?.location?.href || iframe.src || ''
+  } catch {
+    return iframe.src || ''
+  }
+}
+
 function htmlAnchorContext(
   shape: { id: string; props?: { h?: number; source?: string } },
   bounds: any,
@@ -70,6 +108,14 @@ function htmlAnchorContext(
   const iframe = htmlIframeElements.get(shapeId)
   const doc = iframe?.contentDocument
   if (!iframe || !doc) {
+    return {
+      ok: false as const,
+      anchor: unanchoredHtmlAnchor('missing-iframe', file, shapeId),
+    }
+  }
+
+  // Reading the wrong document is not an answer about this one.
+  if (!documentMatchesSource(loadedDocumentUrl(iframe), file)) {
     return {
       ok: false as const,
       anchor: unanchoredHtmlAnchor('missing-iframe', file, shapeId),

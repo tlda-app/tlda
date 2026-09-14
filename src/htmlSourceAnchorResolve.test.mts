@@ -29,11 +29,12 @@ function element(opts: { rendered: boolean; offsetTop?: number }) {
   }
 }
 
-function registerIframe(doc: unknown | null) {
+function registerIframe(doc: unknown | null, href = '/docs/p/chapter.html') {
   htmlIframeElements.set(SHAPE.id, {
     contentDocument: doc,
     clientHeight: 1000,
-    contentWindow: { scrollY: 0 },
+    src: href,
+    contentWindow: { scrollY: 0, location: { href } },
   } as unknown as HTMLIFrameElement)
 }
 
@@ -92,5 +93,31 @@ const ok = htmlSourceLineCanvasPosition(SHAPE, BOUNDS, 29)
 equal(ok && (ok as { anchored: boolean }).anchored, true, 'a laid-out block resolves')
 equal(ok && (ok as { canvasY: number }).canvasY, 400, 'canvasY follows offsetTop at scale 1')
 
+// 6. THE FRAME HOLDS A DIFFERENT DOCUMENT. Nothing intercepts an ordinary
+//    in-frame navigation and `props.url` is not updated by one, so the shape
+//    still names chapter.qmd while the frame shows another page. Reading a real
+//    document that is not this one and persisting the miss is the same
+//    destruction as the transient case, by another road.
+registerIframe(docWith(null), '/docs/p/some-other-chapter.html')
+equal(
+  htmlSourceLineCanvasPosition(SHAPE, BOUNDS, 29),
+  null,
+  'navigated-away frame yields null rather than discarding the anchor',
+)
+
+// 7. CONTROL for 6, and the one that matters most: the MATCHING document must
+//    still resolve. A guard that answers "mismatch" for everything would pass
+//    case 6 while silently unanchoring the entire product.
+registerIframe(docWith(element({ rendered: true, offsetTop: 400 })), '/docs/p/chapter.html')
+const matched = htmlSourceLineCanvasPosition(SHAPE, BOUNDS, 29)
+equal(matched && (matched as { anchored: boolean }).anchored, true, 'matching document still resolves')
+equal(matched && (matched as { canvasY: number }).canvasY, 400, 'matching document resolves to the right place')
+
+// 8. UNKNOWN IS NOT MISMATCH — an unreadable location must not block. Answering
+//    "mismatch" on uncertainty would unanchor everything while looking careful.
+registerIframe(docWith(element({ rendered: true, offsetTop: 400 })), '')
+const unknown = htmlSourceLineCanvasPosition(SHAPE, BOUNDS, 29)
+equal(unknown && (unknown as { anchored: boolean }).anchored, true, 'unreadable url does not block resolution')
+
 htmlIframeElements.delete(SHAPE.id)
-console.log('htmlSourceAnchorResolve: 5 cases pass')
+console.log('htmlSourceAnchorResolve: 8 cases pass')
