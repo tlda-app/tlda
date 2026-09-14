@@ -125,7 +125,7 @@ export function GradebookWorkspace() {
 
   // An instructor opens a submission to mark it. A student opens their own work,
   // which is a different surface and the only one they may reach.
-  const open = (assignmentId: string, studentId: string, contentRef: string) => {
+  const open = (assignmentId: string, studentId: string) => {
     const next = new URLSearchParams(window.location.search)
     next.delete('course')
     if (isStudent) {
@@ -133,13 +133,14 @@ export function GradebookWorkspace() {
       next.set('assignment', assignmentId)
       return `?${next}`
     }
-    next.delete('workspace')
-    next.set('project', contentRef)
-    next.set('markingCourse', courseId)
-    next.set('markingAssignment', assignmentId)
-    next.set('markingStudent', studentId)
-    const assignment = data.assignments.find(item => item.id === assignmentId)
-    if (assignment?.solutionsDocKey) next.set('compareDoc', assignment.solutionsDocKey)
+    next.delete('project')
+    next.delete('compareDoc')
+    next.delete('markingCourse')
+    next.delete('markingAssignment')
+    next.delete('markingStudent')
+    next.set('workspace', 'classroom-problems')
+    next.set('assignment', assignmentId)
+    next.set('student', studentId)
     return `?${next}`
   }
 
@@ -166,7 +167,7 @@ export function GradebookWorkspace() {
             <td>{cell?.submittedAt ? new Date(cell.submittedAt).toLocaleString() : '—'}</td>
             <td><span className="statusChip">{cellLabel(cell?.state || 'not-submitted')}</span></td>
             <td>{cell?.contentRef
-              ? <a href={open(assignment.id, mine.id, cell.contentRef)}>Open your work</a>
+              ? <a href={open(assignment.id, mine.id)}>Open your work</a>
               : <a href={`?workspace=classroom-work&assignment=${encodeURIComponent(assignment.id)}`}>Hand it in</a>}</td>
           </tr>
         })}</tbody>
@@ -210,12 +211,12 @@ export function GradebookWorkspace() {
         <td>{cell.submittedAt ? new Date(cell.submittedAt).toLocaleString() : 'Recorded'}</td>
         <td><span className="statusChip">{cellLabel(cell.state)}</span></td>
         <td><span className={`classroomBuildStatus build-${cell.buildStatus || 'unknown'}`}>{cell.buildStatus || 'unknown'}</span>{cell.buildAt && <><br/><small>{new Date(cell.buildAt).toLocaleString()}</small></>}</td>
-        <td><a href={open(cell.assignmentId, student.id, cell.contentRef!)}>Open submitted work</a></td>
+        <td><a href={open(cell.assignmentId, student.id)}>Open submitted work</a></td>
       </tr>)}</tbody>
     </table>
     <h2>Roster</h2>
     <table className="classroomTable"><thead><tr><th>Student</th>{data.assignments.map(a => <th key={a.id}>{a.title}<br/><small>Due {new Date(a.dueAt).toLocaleString()}</small></th>)}<th>File emailed work</th><th>Access<br/><small>Send when they cannot get in</small></th></tr></thead>
-      <tbody>{data.rows.map(row => <tr key={row.id}><th>{row.displayName}{row.universityLogin && <><br/><small>{row.universityLogin}</small></>}</th>{row.assignments.map(cell => <td key={cell.assignmentId} className={`state-${cell.state}`}>{cell.state === 'not-submitted' || !cell.contentRef ? cellLabel('not-submitted') : <a href={open(cell.assignmentId,row.id,cell.contentRef)}>{cellLabel(cell.state)}<br/><small>{cell.submittedAt && new Date(cell.submittedAt).toLocaleString()}</small></a>}</td>)}<SubmissionUploadCell courseId={courseId} studentId={row.id} assignments={data.assignments} onUploaded={refresh} /><RepairLinkCell courseId={courseId} studentId={row.id} project={classProject} /></tr>)}</tbody>
+      <tbody>{data.rows.map(row => <tr key={row.id}><th>{row.displayName}{row.universityLogin && <><br/><small>{row.universityLogin}</small></>}</th>{row.assignments.map(cell => <td key={cell.assignmentId} className={`state-${cell.state}`}>{cell.state === 'not-submitted' || !cell.contentRef ? cellLabel('not-submitted') : <a href={open(cell.assignmentId,row.id)}>{cellLabel(cell.state)}<br/><small>{cell.submittedAt && new Date(cell.submittedAt).toLocaleString()}</small></a>}</td>)}<SubmissionUploadCell courseId={courseId} studentId={row.id} assignments={data.assignments} onUploaded={refresh} /><RepairLinkCell courseId={courseId} studentId={row.id} project={classProject} /></tr>)}</tbody>
     </table>
   </main>
 }

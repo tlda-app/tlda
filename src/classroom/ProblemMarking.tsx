@@ -4,9 +4,9 @@ import { createHtmlDocumentFromPageInfo } from '../svgDocumentLoader'
 import type { SvgDocument } from '../loaders/types'
 import type { Editor } from 'tldraw'
 import { classroomApi, type ProblemsView } from './api'
-import { FRAME_PAIR_EVENT } from './marking'
 import { layerStore, moveShapesToLayer, sameFrame } from './moveBetweenLayers'
 import { releaseHeldEnd, resolveReturnEnds } from './returnEnds'
+import { collapseMarkedExerciseSolutions } from './useMarkedExerciseHtmlAlignment'
 import './ClassroomWorkspace.css'
 
 // The assignment as Skip marks it: "that would just be the homework assignment
@@ -58,14 +58,24 @@ export function ProblemMarking() {
   useEffect(() => { setReturned('') }, [problemIndex, studentIndex])
 
   useEffect(() => {
-    classroomApi.problems(assignmentId).then(setView).catch(e => setError(e.message))
+    classroomApi.problems(assignmentId).then(nextView => {
+      const requested = new URLSearchParams(window.location.search)
+      const requestedProblem = requested.get('problem')
+      const nextProblemIndex = Math.max(0, nextView.problems.findIndex(problem => problem.problemId === requestedProblem))
+      const requestedStudent = requested.get('student')
+      const nextStudentIndex = Math.max(0, nextView.problems[nextProblemIndex]?.answers.findIndex(answer => answer.studentId === requestedStudent) ?? 0)
+      setProblemIndex(nextProblemIndex)
+      setStudentIndex(nextStudentIndex)
+      setView(nextView)
+    }).catch(e => setError(e.message))
   }, [assignmentId])
 
   const problem = view?.problems[problemIndex]
   const answer = problem?.answers[studentIndex]
 
-  // Pair his solution with this student's answer. Same shape the compare view
-  // already builds, so the two panes line up the way they do everywhere else.
+  // Load both sources into the editor. The HTML alignment hook places each
+  // solution callout beside its matching student answer and hides the source
+  // solution page.
   //
   // Keyed on the two document keys, NOT on the `view` and `answer` objects.
   //
@@ -111,6 +121,7 @@ export function ProblemMarking() {
   // matching solution level with it.
   useEffect(() => {
     if (!document || !problem || !answer?.anchor) return
+    collapseMarkedExerciseSolutions()
     const shapeId = document.pages[0]?.shapeId
     if (!shapeId) return
     // After the editor has mounted the page; the same message the table of
@@ -125,9 +136,6 @@ export function ProblemMarking() {
     const headingAnchor = problem.problemId.replace(/^ans-/, '')
     const timer = setTimeout(() => {
       window.postMessage({ type: 'tlda-navigate', anchor: headingAnchor, shapeId }, '*')
-      // Navigation centres the one shape it was given, which pushes his
-      // solution off the right edge. Frame the pair once it has landed.
-      setTimeout(() => window.dispatchEvent(new CustomEvent(FRAME_PAIR_EVENT)), 400)
     }, 200)
     return () => clearTimeout(timer)
   }, [document, problem, answer])

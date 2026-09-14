@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useValue, type Editor, type TLShape, type TLShapeId } from 'tldraw'
 import { CanvasClipPanel, syncCanvasClipPanelViewportCamera } from '../CanvasClipPanel'
 import { getDeviceId } from '../fleet/fleet-data.mjs'
@@ -67,6 +67,7 @@ export function ClassroomGradingSurface({
   const readyViewports = useRef<Set<GradingPane>>(new Set())
   const mountedPanesRef = useRef<ReturnType<typeof mountGradingPanes> | null>(null)
   const [mountedPanes, setMountedPanes] = useState<ReturnType<typeof mountGradingPanes> | null>(null)
+  const [problemTop, setProblemTop] = useState<number | null>(null)
 
   const submissionBounds = useValue(
     `classroom-submission-bounds:${submissionShapeId}`,
@@ -127,12 +128,34 @@ export function ClassroomGradingSurface({
     [markViewportReady],
   )
 
+  useEffect(() => {
+    setProblemTop(null)
+    let interval = 0
+    const findProblem = () => {
+      const target = Array.from(window.document.querySelectorAll<HTMLIFrameElement>(`[data-shape-id="${submissionShapeId}"] iframe`))
+        .map(frame => frame.contentDocument?.getElementById(problemId))
+        .find((candidate): candidate is HTMLElement => !!candidate)
+      if (!target) return
+      setProblemTop(target.getBoundingClientRect().top)
+      window.clearInterval(interval)
+    }
+    interval = window.setInterval(findProblem, 250)
+    findProblem()
+    return () => window.clearInterval(interval)
+  }, [problemId, submissionShapeId])
+
   if (!submissionBounds || !solutionBounds) return null
 
   const activePanes = userId && deviceId ? mountedPanes : null
   const paneByKind = new Map(activePanes?.map(pane => [pane.pane, pane]))
   // The DOM's copy of the pane width, from the same derivation the cameras use.
   const panelWidth = gradingPanelWidth()
+
+  const problemCamera = problemTop == null ? null : {
+    x: -submissionBounds.x,
+    y: -(submissionBounds.y + problemTop - 80 / (panelWidth / submissionBounds.w)),
+    z: panelWidth / submissionBounds.w,
+  }
 
   return (
     <div className="classroomGradingPanes" data-classroom-wm-mounted={activePanes ? 'true' : 'false'}>
@@ -161,6 +184,7 @@ export function ClassroomGradingSurface({
               shapePredicate={shape => belongsToPane(editor, shape, shapeId)}
               onEditorMount={pane === 'official-solution' ? markSolutionViewportReady : markSubmissionViewportReady}
               onCamera={pane === 'student-submission' ? setSubmissionCamera : undefined}
+              cameraOverride={pane === 'student-submission' ? problemCamera : null}
               canvasOverlay={pane === 'student-submission' && submissionCamera ? (
                 // The instructor's private marking layer, over the student's
                 // work and nothing else.
