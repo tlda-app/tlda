@@ -121,3 +121,25 @@ test('revert-then-write publishes what a plain re-issue would not', async () => 
   assert.ok(emitted > 0, 'the authorized value reaches the user channel')
   assert.equal(pageName(store), 'h24361', 'and the record ends at the measured value')
 })
+
+/**
+ * The boundary the fixtures rest on, pinned rather than cited.
+ *
+ * Both files build records with `PageRecordType.create`, which does NOT validate
+ * — it merges defaults and returns. What makes a fixture trustworthy is that
+ * `store.put` runs the schema. That was true when this was written, and a
+ * comment saying so would rot silently if it ever stopped being true, leaving
+ * every fixture quietly asserted into place again.
+ *
+ * Supplying an invalid record is the one place here that needs a cast: a
+ * validator test has to pass input the type system exists to forbid, so the cast
+ * IS the subject rather than a way around one.
+ */
+test('store.put rejects a malformed record, which is what makes the fixtures worth anything', () => {
+  const store = createTLStore({ shapeUtils: defaultShapeUtils })
+  const malformed = { ...PageRecordType.create({ id: PAGE, name: 'x', index: ZERO_INDEX_KEY }), name: 42 }
+  assert.throws(
+    () => store.put([malformed as unknown as ReturnType<typeof PageRecordType.create>]),
+    'a page whose name is not a string does not reach the store',
+  )
+})

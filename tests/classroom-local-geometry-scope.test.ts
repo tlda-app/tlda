@@ -30,6 +30,21 @@ const { createMeasuredGeometryWriter } = await import('../src/measuredGeometryWr
  * authorized resolution have to keep working — and the way to get that wrong is
  * to move the store before the parked write runs, because it re-checks its own
  * gate against the store and then publishes nothing.
+ *
+ * WHICH TEST PROTECTS WHAT, because it is easy to assume wrongly:
+ *
+ *   boundary            the ONLY test that goes red if the predicate widens.
+ *                       Demonstrated by widening it to a document-less
+ *                       workspace: this one fails, the other three pass.
+ *   ORDINARY            park-then-publish still works where the fallback
+ *                       does not run.
+ *   local-write-first   the MECHANISM by which the unscoped repair broke
+ *                       publication. World-invariant: it passes under both
+ *                       the scoped and unscoped repair, because it pins how
+ *                       the breakage happens, not whether it is present.
+ *
+ * A reader deciding what protects them from a scoping regression should look at
+ * the boundary test. The other two describe the world the boundary exists in.
  */
 
 test('the boundary is the three document-bearing classroom workspaces', () => {
@@ -129,4 +144,26 @@ test('CLASSROOM: the permission never becomes known, so only the local path can 
     store.update(PAGE, page => ({ ...page, name: 'measured' }))
   })
   assert.equal(pageName(store), 'measured', 'the local fallback renders it')
+})
+
+/**
+ * The boundary the fixtures rest on, pinned rather than cited.
+ *
+ * Both files build records with `PageRecordType.create`, which does NOT validate
+ * — it merges defaults and returns. What makes a fixture trustworthy is that
+ * `store.put` runs the schema. That was true when this was written, and a
+ * comment saying so would rot silently if it ever stopped being true, leaving
+ * every fixture quietly asserted into place again.
+ *
+ * Supplying an invalid record is the one place here that needs a cast: a
+ * validator test has to pass input the type system exists to forbid, so the cast
+ * IS the subject rather than a way around one.
+ */
+test('store.put rejects a malformed record, which is what makes the fixtures worth anything', () => {
+  const store = createTLStore({ shapeUtils: defaultShapeUtils })
+  const malformed = { ...PageRecordType.create({ id: PAGE, name: 'x', index: ZERO_INDEX_KEY }), name: 42 }
+  assert.throws(
+    () => store.put([malformed as unknown as ReturnType<typeof PageRecordType.create>]),
+    'a page whose name is not a string does not reach the store',
+  )
 })
