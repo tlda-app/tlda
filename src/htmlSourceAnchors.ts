@@ -21,6 +21,36 @@ function unanchoredHtmlAnchor(
   return { anchored: false, reason, file, page: 0, shapeId }
 }
 
+/**
+ * Where a rendered block says which source line it came from.
+ *
+ * `id="line-N"` is what tlda's own markdown renderer emits. Quarto renders its
+ * own HTML and emits nothing, so `server/lib/quarto-source-lines.mjs` marks its
+ * blocks with `data-source-line` at build time — the attribute `htmlSelection`
+ * already reads. Both spellings are the same fact, so both are read here.
+ */
+const SOURCE_LINE_SELECTOR = '[id^="line-"], [data-source-line]'
+
+function sourceLineOfElement(el: HTMLElement): number | null {
+  const raw = el.id.match(/^line-(\d+)$/)?.[1] ?? el.getAttribute('data-source-line')
+  const line = raw == null ? NaN : Number(raw)
+  return Number.isFinite(line) && line > 0 ? Math.floor(line) : null
+}
+
+/**
+ * Whether the element occupies space on the page right now.
+ *
+ * A Quarto callout can render collapsed, and a collapsed block reports
+ * `offsetTop` 0 — measured on a real chapter, one marked paragraph from line 819
+ * sat at 0 while the block above it was at 19819. Sorted by position that block
+ * becomes the FIRST anchor in the document, so an annotation dropped at the top
+ * of the chapter anchors to a line near the end. Markdown never hit this because
+ * its renderer emits no collapsible blocks.
+ */
+function isRendered(el: HTMLElement): boolean {
+  return el.getClientRects().length > 0
+}
+
 function boundsValue(bounds: any, key: 'x' | 'y' | 'w' | 'h') {
   if (!bounds) return 0
   if (key === 'x') return Number(bounds.x ?? bounds.minX ?? 0)
@@ -66,11 +96,10 @@ export function htmlSourceLineAnchorAtCanvasY(
   const iframeY = context.iframeH && context.pageH ? localY * (context.iframeH / context.pageH) : localY
   const targetY = iframeY + context.scrollY
 
-  const anchors = Array.from(context.doc.querySelectorAll<HTMLElement>('[id^="line-"]'))
+  const anchors = Array.from(context.doc.querySelectorAll<HTMLElement>(SOURCE_LINE_SELECTOR))
     .map((el) => {
-      const match = el.id.match(/^line-(\d+)$/)
-      const line = match ? Number(match[1]) : NaN
-      if (!Number.isFinite(line)) return null
+      const line = sourceLineOfElement(el)
+      if (line == null || !isRendered(el)) return null
       return { line, top: el.offsetTop }
     })
     .filter((entry): entry is { line: number; top: number } => !!entry)
@@ -95,17 +124,36 @@ export function htmlSourceLineCanvasPosition(
 ): (Extract<HtmlSourceLineAnchor, { anchored: true }> & { canvasY: number }) | Exclude<HtmlSourceLineAnchor, { anchored: true }> | null {
   const context = htmlAnchorContext(shape, bounds)
   if (!context) return null
-  if (!context.ok) return context.anchor
+  // `null` means "cannot answer right now", and the caller must treat it that
+  // way: `remapAnnotations` skips a null without writing, where an unanchored
+  // value is PERSISTED into the note's meta and never reconsidered — it filters
+  // to `sourceAnchor.anchored !== false`. So returning an unanchored value for a
+  // transient condition does not report a failure, it destroys the anchor.
+  //
+  // Measured: a remap running while the iframe was mid-refresh turned a good
+  // `{anchored: true, line: 29}` into `{anchored: false, reason:
+  // 'missing-iframe'}`, permanently, on one reload.
+  if (!context.ok) return null
 
   const sourceLine = Math.max(1, Math.floor(Number(line)))
   if (!Number.isFinite(sourceLine)) {
     return unanchoredHtmlAnchor('unresolved', context.file, context.shapeId)
   }
 
-  const el = context.doc.getElementById(`line-${sourceLine}`) as HTMLElement | null
+  const el = (context.doc.getElementById(`line-${sourceLine}`)
+    || context.doc.querySelector(`[data-source-line="${sourceLine}"]`)) as HTMLElement | null
+
+  // The line is genuinely gone from the render — the source moved on. That is a
+  // real answer about the source and it is kept.
   if (!el) {
     return unanchoredHtmlAnchor('missing-line-anchor', context.file, context.shapeId)
   }
+
+  // The block exists but has no layout box: collapsed inside a callout, or the
+  // document has not finished laying out. Both are states the anchor outlives,
+  // so hold the position rather than answer — the anchor stays valid and
+  // resolves once the block is laid out again.
+  if (!isRendered(el)) return null
 
   const localY = (el.offsetTop - context.scrollY) * (context.pageH / (context.iframeH || context.pageH || 1))
   return {

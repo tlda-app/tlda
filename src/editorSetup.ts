@@ -19,7 +19,7 @@ import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { getViewerId } from './useYjsSync'
 import { htmlPageReloadUrl } from './html-page-navigation-helpers'
-import { htmlIframeElements } from './htmlIframeRegistry'
+import { watchHtmlPageReload, remapOnLateHtmlLoad, cancelHtmlReloadWatches, type HtmlReloadWatch } from './htmlReloadWatch'
 import { FORMATS_WITH_OWN_PAGE_INFO, HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 import { resolveAnnotationSourceAnchor, type AnnotationSourceAnchor } from './annotationSourceAnchor'
 import { fetchCachedSvgPage } from './pageSvgCache'
@@ -361,28 +361,13 @@ function putHtmlPageShapeRecord(editor: Editor, shape: HtmlPageShapeRecord) {
   editor.store.put([shape as unknown as Parameters<Editor['store']['put']>[0][number]])
 }
 
-function waitForHtmlPageReload(shapeId: string): Promise<void> | null {
-  const iframe = htmlIframeElements.get(shapeId)
-  if (!iframe) return null
-  return new Promise(resolve => {
-    let done = false
-    const finish = () => {
-      if (done) return
-      done = true
-      clearTimeout(timer)
-      iframe.removeEventListener('load', finish)
-      resolve()
-    }
-    const timer = setTimeout(finish, 1500)
-    iframe.addEventListener('load', finish, { once: true })
-  })
-}
 
 async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<ReloadResult> {
   const timestamp = Date.now()
 
   const pageShapeIds = new Set(document.pages.map(page => page.shapeId))
   const reloads: Promise<void>[] = []
+  const watches: HtmlReloadWatch[] = []
   let refreshed = 0
   const records: unknown[] = editor.store.allRecords()
   for (const record of records) {
@@ -395,21 +380,57 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
     const currentUrl = shape.props.url
     if (!currentUrl) continue
 
-    const reload = waitForHtmlPageReload(shape.id)
-    if (reload) reloads.push(reload)
+    // Subscribe to the document we are about to request, BEFORE requesting it.
+    // Both halves matter: after the mutation the load can fire unobserved, and
+    // keying on the url is what stops an earlier navigation's load from
+    // satisfying this wait.
+    const nextUrl = htmlPageReloadUrl(currentUrl, timestamp)
+    const watch = watchHtmlPageReload(shape.id, nextUrl)
+    watches.push(watch)
+    reloads.push(watch.bounded)
     putHtmlPageShapeRecord(editor, {
       ...shape,
       props: {
         ...shape.props,
-        url: htmlPageReloadUrl(currentUrl, timestamp),
+        url: nextUrl,
       },
     })
     refreshed += 1
   }
 
   console.log(`[Reload] Refreshed ${refreshed} html-page iframe(s)`)
+
+  // Tie THIS reload's waits to the editor's own lifetime. Shape-deletion cleanup
+  // is not enough: an editor can be torn down without its shapes being removed
+  // one by one, and then a frame that never loads leaves its wait outstanding
+  // for ever. Cancelling the watch objects rather than everything under a shape
+  // id is deliberate — a second editor may hold its own wait on the same shape.
+  const cancelWatches = () => cancelHtmlReloadWatches(watches)
+  editor.disposables.add(cancelWatches)
+  const releaseCancel = () => { editor.disposables.delete(cancelWatches) }
+
   if (reloads.length > 0) await Promise.allSettled(reloads)
+
+  // The editor can go during the bound. The late continuation is guarded, but
+  // this first remap runs before any of that, so it needs the same check.
+  if (editor.isDisposed) {
+    cancelWatches()
+    releaseCancel()
+    return { failedPages: [] }
+  }
+
   const remapResult = await remapAnnotations(editor, document)
+  // Any frame that had not loaded by the bound still gets its remap when it
+  // does. Deliberately not awaited: the reload result should not wait on a
+  // document that may never arrive.
+  const late = remapOnLateHtmlLoad(
+    watches,
+    () => { void remapAnnotations(editor, document) },
+    () => !editor.isDisposed,
+  )
+  // Stop holding the editor's disposable once every wait has settled, so a long
+  // session does not accumulate one per reload.
+  void Promise.allSettled(late).then(releaseCancel)
   return { failedPages: [], remapResult }
 }
 
