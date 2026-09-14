@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { scanTexDependencyClosure } from '../shared/tex-deps.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { documentRootsIn } from '../shared/document-roots.mjs'
+import { redactProcessError } from '../shared/redact-url-credentials.mjs'
 import { isQuartoRenderOutput, isSourceFilePath } from '../shared/source-manifest.mjs'
 
 const execFile = promisify(execFileCb)
@@ -99,9 +100,24 @@ export function createGitProjectSync({
   }
   setDocumentRoots(documentRoots)
 
+  // `remote` is a URL, not the name `tlda`: the sync manager passes the project
+  // remote it built, and that carries the daemon's token as URL userinfo. So
+  // `push` and `fetch` below take a credential as an ordinary argument, and a
+  // failing child process names the command it ran -- in `message`, `cmd` and
+  // `stack` alike. `fetchHead` rethrows such an error and the manager logs it.
+  //
+  // The manager wraps its own `execFile`; this module has a different one, so
+  // that wrapper does not reach here. Redacting at this helper rather than at
+  // `push` and `fetch` for the same reason it was done there: whichever git
+  // call is handed the remote leaks identically, and a per-call-site fix is a
+  // list the next call site is not on.
   async function git(args, options = {}) {
-    if (runGit) return runGit(args, options)
-    return execFile('git', args, { cwd: sourceDir, encoding: 'utf8', timeout: 120000, maxBuffer: 64 * 1024 * 1024, ...options })
+    try {
+      if (runGit) return await runGit(args, options)
+      return await execFile('git', args, { cwd: sourceDir, encoding: 'utf8', timeout: 120000, maxBuffer: 64 * 1024 * 1024, ...options })
+    } catch (error) {
+      throw redactProcessError(error)
+    }
   }
 
   async function rev(ref) {
