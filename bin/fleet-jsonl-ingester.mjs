@@ -267,7 +267,8 @@ export function searchEntriesFromHarnessRecord(agentId, sessionId, harnessKind, 
 
 export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminalChat, backfillSearch }, record) {
   const outputs = []
-  const identity = extractIdentityFromRecord(record)
+  const museMarker = harnessKind === 'muse' ? museLoginMarkerFromRecord(record) : null
+  const identity = museMarker ? { marker: museMarker } : extractIdentityFromRecord(record)
   if (identity) outputs.push({ type: 'identity', identity })
   const ev = parseRecordForHarness(harnessKind, record)
   if (ev) {
