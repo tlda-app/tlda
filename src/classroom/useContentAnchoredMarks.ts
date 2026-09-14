@@ -208,6 +208,68 @@ export function awaitPendingMounts(
   return added
 }
 
+/**
+ * Install a mutation observer on every mount that has one and does not yet.
+ *
+ * Extracted so the reject -> ready -> observed path can be driven without React:
+ * a mount that `anchorContexts` rejected installs nothing, and the SAME mount
+ * installs one once its document is usable. A test that only counts `load`
+ * listeners cannot see that second half, and the second half is the repair.
+ */
+export function observeMounts(
+  contexts: AnchorContext[],
+  observers: Map<Document, MutationObserver>,
+  onMutation: (records: MutationRecord[]) => void,
+): Document[] {
+  const installed: Document[] = []
+  for (const context of contexts) {
+    if (observers.has(context.doc)) continue
+    const view = context.doc.defaultView as any
+    if (!view?.MutationObserver || !context.doc.body) continue
+    // Watch any structural or style change, not just `.collapse` classes.
+    //
+    // Filtering to collapsibles was measurably too narrow: content inserted
+    // between a mark's two anchors moved it 260px and nothing re-placed, because
+    // an insertion is not a class change. The same hole covers MathJax finishing
+    // its typeset, images and fonts loading, and anything else that settles after
+    // first paint — and this page runs MathJax.
+    const observer = new view.MutationObserver(onMutation)
+    observer.observe(context.doc.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+    })
+    observers.set(context.doc, observer)
+    installed.push(context.doc)
+  }
+  return installed
+}
+
+/**
+ * Keep the waiting set equal to what is actually pending.
+ *
+ * A frame stops being pending two ways that are not `load`: it is removed from
+ * the DOM when its pane swaps, or it becomes usable and is picked up by a
+ * `tlda-resize` pass first. Either way its listener would otherwise sit there
+ * until the hook itself tore down, holding a reference to a frame nobody renders.
+ */
+export function reconcilePendingMounts(
+  pending: HTMLIFrameElement[],
+  awaiting: Map<HTMLIFrameElement, () => void>,
+  onReady: () => void,
+): { added: number; released: number } {
+  const wanted = new Set(pending)
+  let released = 0
+  for (const [frame, handler] of awaiting) {
+    if (wanted.has(frame)) continue
+    frame.removeEventListener('load', handler)
+    awaiting.delete(frame)
+    released++
+  }
+  return { added: awaitPendingMounts(pending, awaiting, onReady), released }
+}
+
 type AnchoredMeta = {
   contentAnchor?: SpanAnchor
   /**
@@ -554,39 +616,25 @@ export function useContentAnchoredMarks(
       // Every document currently mounted for any page, so retired ones can be
       // told apart from new ones.
       const live = new Set<Document>()
+      // Frames that exist but are not usable yet, collected across every page so
+      // the waiting set can be reconciled once against the whole truth.
+      const pending: HTMLIFrameElement[] = []
       for (const page of editor.getCurrentPageShapes() as any[]) {
         if (page.type !== 'html-page') continue
         // Observe EVERY mount. Watching only the registry's copy meant a reader
         // could expand a solution in their own pane and nothing re-placed, because
         // the mutation happened in a document nobody was listening to.
         const mounted = anchorContexts(page, governingRoot ? governingRoot() : undefined)
-        // Not ready is not the same as gone: pick it up when its document loads.
-        awaitPendingMounts(mounted.pending, awaiting, attach)
-        for (const context of mounted.all) {
-        live.add(context.doc)
-        if (observers.has(context.doc)) continue
-        const view = context.doc.defaultView
-        if (!view) continue
-        // Watch any structural or style change, not just `.collapse` classes.
-        //
-        // Filtering to collapsibles was measurably too narrow: content inserted
-        // between a mark's two anchors moved it 260px and nothing re-placed,
-        // because an insertion is not a class change. The same hole covers
-        // MathJax finishing its typeset, images and fonts loading, and anything
-        // else that settles after first paint — and this page runs MathJax.
-        const observer = new view.MutationObserver(records => {
+        for (const frame of mounted.pending) pending.push(frame)
+        for (const context of mounted.all) live.add(context.doc)
+        observeMounts(mounted.all, observers, records => {
           if (!isOwnBadgeWrite(records)) schedule()
         })
-        observer.observe(context.doc.body, {
-          subtree: true,
-          childList: true,
-          attributes: true,
-          attributeFilter: ['class', 'style'],
-        })
-        observers.set(context.doc, observer)
-        }
       }
 
+      // Not ready is not the same as gone: wait for each one's own `load`, and
+      // drop listeners for frames that stopped being pending by any other route.
+      reconcilePendingMounts(pending, awaiting, attach)
       pruneRetiredObservers(observers, live)
 
       placeAll()

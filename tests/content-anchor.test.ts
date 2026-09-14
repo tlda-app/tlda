@@ -111,7 +111,7 @@ test('an unresolvable key is null rather than a wrong element', () => {
 // `[...added, ...removed].every(isBadge)` was vacuously true and swallowed the
 // `.collapse` class change this hook exists to react to.
 
-import { awaitPendingMounts, collectHiddenPanels, createFrameScheduler, pruneRetiredObservers, isOwnBadgeWrite } from '../src/classroom/useContentAnchoredMarks'
+import { awaitPendingMounts, observeMounts, reconcilePendingMounts, collectHiddenPanels, createFrameScheduler, pruneRetiredObservers, isOwnBadgeWrite } from '../src/classroom/useContentAnchoredMarks'
 
 const BADGE = 'data-tlda-feedback-badge'
 
@@ -663,4 +663,94 @@ test('a not-ready mount is picked up on its own load, once, and not before', () 
   assert.equal(awaitPendingMounts([a], awaiting, () => { ready++ }), 1)
   a.dispatchEvent(new dom.window.Event('load'))
   assert.equal(ready, 3)
+})
+
+/**
+ * The path the repair actually has to walk: REJECTED while loading, then READY,
+ * then an observer really installed on that same document.
+ *
+ * The earlier transition test proves listener bookkeeping and stops there — both
+ * of its frames already had bodies and readiness was a counter. This drives the
+ * real functions: `anchorContexts` rejecting a body-less mount, and
+ * `observeMounts` installing a live MutationObserver once it is usable. It fails
+ * if the reattachment is dropped, which is the whole point of it.
+ */
+const pendingMount = () => {
+  const outer = new JSDOM('<!doctype html><body><section data-shape-id="shape:page-0"></section></body>')
+  const g = globalThis as any
+  const prior = g.document
+  g.document = outer.window.document
+  const host = outer.window.document.querySelector('section')!
+  const frame = outer.window.document.createElement('iframe')
+  host.appendChild(frame)
+  const doc = (frame as any).contentDocument as Document
+  return { outer, frame, doc, restore: () => { g.document = prior } }
+}
+
+test('a mount rejected while loading is OBSERVED once it is ready — the reattachment', () => {
+  const fixture = pendingMount()
+  try {
+    const shape = { id: 'shape:page-0', x: 0, y: 0, props: { w: 800 } }
+    const observers = new Map<Document, MutationObserver>()
+    const awaiting = new Map<any, () => void>()
+    let mutations = 0
+    const onMutation = () => { mutations++ }
+
+    // STILL LOADING: no body. Exactly the state that threw `observe(null)`.
+    Object.defineProperty(fixture.doc, 'body', { value: null, configurable: true })
+    const first = anchorContexts(shape)
+    assert.equal(first.all.length, 0, 'a body-less mount yields no usable context')
+    assert.equal(first.pending.length, 1, 'and is reported as pending, not dropped')
+    assert.equal(
+      observeMounts(first.all, observers, onMutation).length, 0,
+      'so nothing is observed — and nothing throws, which is the crash fix',
+    )
+
+    // The waiter is armed on that frame, and its handler is what re-runs attach.
+    let reattached = 0
+    const attach = () => {
+      const again = anchorContexts(shape)
+      reconcilePendingMounts(again.pending, awaiting, attach)
+      reattached += observeMounts(again.all, observers, onMutation).length
+    }
+    reconcilePendingMounts(first.pending, awaiting, attach)
+    assert.equal(awaiting.size, 1, 'waiting on that frame')
+
+    // READY: the document gets its body and a width, then fires its own load.
+    delete (fixture.doc as any).body
+    fixture.doc.documentElement.appendChild(fixture.doc.createElement('body'))
+    Object.defineProperty(fixture.doc.body, 'scrollWidth', { value: 800, configurable: true })
+    fixture.frame.dispatchEvent(new fixture.outer.window.Event('load'))
+
+    assert.equal(reattached, 1, 'the SAME mount is now observed — omit this and the test fails')
+    assert.equal(observers.has(fixture.doc), true)
+    assert.equal(awaiting.size, 0, 'and it stops being awaited')
+
+    // The observer is live, not merely constructed: a real mutation reaches it.
+    fixture.doc.body.appendChild(fixture.doc.createElement('p'))
+    return new Promise<void>(resolve => setTimeout(() => {
+      assert.ok(mutations > 0, 'mutations in the reattached document are delivered')
+      resolve()
+    }, 20))
+  } finally { fixture.restore() }
+})
+
+test('a pending frame that goes away releases its waiter, without waiting for load', () => {
+  const fixture = pendingMount()
+  try {
+    const awaiting = new Map<any, () => void>()
+    let ready = 0
+    reconcilePendingMounts([fixture.frame], awaiting, () => { ready++ })
+    assert.equal(awaiting.size, 1)
+
+    // The pane swaps its iframe, or a tlda-resize pass picked the mount up first:
+    // either way it is no longer pending, and its listener must not sit there
+    // holding a frame nobody renders until the hook tears down.
+    const { released } = reconcilePendingMounts([], awaiting, () => { ready++ })
+    assert.equal(released, 1)
+    assert.equal(awaiting.size, 0)
+
+    fixture.frame.dispatchEvent(new fixture.outer.window.Event('load'))
+    assert.equal(ready, 0, 'and the removed listener does not fire afterwards')
+  } finally { fixture.restore() }
 })
