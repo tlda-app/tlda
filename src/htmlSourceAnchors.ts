@@ -60,32 +60,53 @@ function boundsValue(bounds: any, key: 'x' | 'y' | 'w' | 'h') {
 }
 
 /**
- * Whether the document in the frame is the one this shape is anchored to.
+ * Whether the document in the frame is the one this shape shows.
  *
- * A frame can be showing something else: these documents carry links to other
- * chapters and to external pages, nothing intercepts an ordinary in-frame
- * navigation, and `props.url` is not updated when one happens — so the shape
- * still names its own file while the frame displays another.
+ * A frame can be showing something else: these documents link to other chapters
+ * and to external pages, nothing intercepts an ordinary in-frame navigation, and
+ * `props.url` is not updated when one happens. "An iframe and a document exist"
+ * was the whole check, so a remap against a navigated-away frame read a REAL
+ * document, missed the marker in it, and persisted `missing-line-anchor` over a
+ * good anchor.
  *
- * That matters because "an iframe and a document exist" was the whole check.
- * A remap against a navigated-away frame reads a REAL document, misses the
- * marker in it, and persists `missing-line-anchor` over a good anchor — the
- * same destruction the transient guards fix, reached by another road.
+ * **Compared against the shape's own served URL, not its source file.** Deriving
+ * the served path from the source by swapping the extension is wrong, and
+ * measurably so: of 25 real source→served pairs on this machine, **21 do not
+ * follow that rule at all** —
  *
- * **Unknown is not mismatch.** When the URL cannot be read or the file cannot
- * be turned into a path, this answers `true`. A guard that cannot tell must not
- * block: answering `false` on uncertainty would unanchor everything while
- * looking like caution.
+ *     served index.html            source main.md      (markdown projects)
+ *     served slides-slide-0.html   source slides.qmd   (a deck, split per slide)
+ *
+ * — and **0** needed a basename fallback. A source-derived check would therefore
+ * have refused to resolve on markdown documents and slide decks, which is a far
+ * larger class than the navigated-away case it was added for. `props.url` is the
+ * served document, so comparing paths asks the identity question directly and
+ * needs no mapping rule.
+ *
+ * Paths only: the reload adds `_tldaReload` and the render appends `_tldaShape`,
+ * so query and fragment are not part of identity.
+ *
+ * **Unknown is not mismatch.** With no readable URL on either side this answers
+ * `true`. An incorrect mismatch does not destroy anchor state — it returns
+ * `null`, which preserves — but it does prevent resolution, so a guard that
+ * cannot tell should not block.
  */
-function documentMatchesSource(url: string, sourceFile: string): boolean {
-  const path = String(url || '').split('#', 1)[0].split('?', 1)[0]
-  // The source is authored (.qmd, .md); the frame holds the rendered .html.
-  const target = String(sourceFile || '')
-    .replace(/^\.?\//, '')
-    .replace(/\.(qmd|md|markdown)$/i, '.html')
-  if (!path || !target) return true
-  const basename = target.replace(/^.*\//, '')
-  return path.endsWith('/' + target) || path.endsWith('/' + basename)
+function sameDocumentPath(a: string, b: string): boolean {
+  const bare = (url: string) => String(url || '').split('#', 1)[0].split('?', 1)[0]
+  const rawLeft = bare(a)
+  const rawRight = bare(b)
+  // Checked BEFORE parsing: `new URL('', base)` yields pathname '/', so an empty
+  // url would otherwise become a concrete path and mismatch every real one —
+  // turning "I cannot tell" into "definitely different".
+  if (!rawLeft || !rawRight) return true
+  const path = (url: string) => {
+    try {
+      return new URL(url, 'https://html-page.invalid').pathname
+    } catch {
+      return url
+    }
+  }
+  return path(rawLeft) === path(rawRight)
 }
 
 /** The document the frame actually holds; `src` when its location is unreadable. */
@@ -98,7 +119,7 @@ function loadedDocumentUrl(iframe: HTMLIFrameElement): string {
 }
 
 function htmlAnchorContext(
-  shape: { id: string; props?: { h?: number; source?: string } },
+  shape: { id: string; props?: { h?: number; source?: string; url?: string } },
   bounds: any,
 ) {
   const file = normalizeSourceFile(shape?.props?.source || '')
@@ -115,7 +136,7 @@ function htmlAnchorContext(
   }
 
   // Reading the wrong document is not an answer about this one.
-  if (!documentMatchesSource(loadedDocumentUrl(iframe), file)) {
+  if (!sameDocumentPath(loadedDocumentUrl(iframe), shape?.props?.url || '')) {
     return {
       ok: false as const,
       anchor: unanchoredHtmlAnchor('missing-iframe', file, shapeId),
