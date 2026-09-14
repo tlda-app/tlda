@@ -66,3 +66,15 @@ buildExecutor:
 # bare `5` is an error, not a default in some unit you have to guess.
 notifications:
   ackTimeout: 5s
+
+# Which project is mirrored where: an exact project name -> the destination
+# environment, which getServerUrl() must resolve from this box's daemon.yaml.
+# A project absent from the map is never delivered.
+#
+# NOT SET HERE. Real project names are deployment-owned. The deployment supplies
+# the map in TLDA_PREVIEW_DELIVERY as a JSON object of project -> environment,
+# which scripts/install-private-environment-url.mjs installs at boot; unset means
+# no mapping. Declaring the key here as well is refused: one setting has one
+# source of authority, and the installer will not add a second.
+#
+# example shape:  {"<project-name>": "pic-preview"}
