@@ -111,7 +111,7 @@ test('an unresolvable key is null rather than a wrong element', () => {
 // `[...added, ...removed].every(isBadge)` was vacuously true and swallowed the
 // `.collapse` class change this hook exists to react to.
 
-import { collectHiddenPanels, createFrameScheduler, pruneRetiredObservers, isOwnBadgeWrite } from '../src/classroom/useContentAnchoredMarks'
+import { awaitPendingMounts, collectHiddenPanels, createFrameScheduler, pruneRetiredObservers, isOwnBadgeWrite } from '../src/classroom/useContentAnchoredMarks'
 
 const BADGE = 'data-tlda-feedback-badge'
 
@@ -623,4 +623,44 @@ test('a document with no body yields no context, however wide its documentElemen
     htmlIframeElements.delete('shape:loading')
     g.document = prior
   }
+})
+
+/**
+ * The ready transition: a mount skipped while loading must be picked up when it
+ * loads, and only then.
+ *
+ * Skipping a not-yet-ready iframe stops the crash. On its own it would be a
+ * different bug — that mount is where a reader will be looking a moment later,
+ * and nothing would ever place its marks or badge its solutions. `load` is the
+ * document's own notification, so this is a wait, not a poll.
+ */
+test('a not-ready mount is picked up on its own load, once, and not before', () => {
+  const dom = new JSDOM('<!doctype html><body><iframe id="a"></iframe><iframe id="b"></iframe></body>')
+  const a = dom.window.document.getElementById('a') as any
+  const b = dom.window.document.getElementById('b') as any
+  const awaiting = new Map<any, () => void>()
+  let ready = 0
+
+  assert.equal(awaitPendingMounts([a, b], awaiting, () => { ready++ }), 2)
+  assert.equal(ready, 0, 'nothing fires merely from waiting')
+
+  // A repeated pass must not stack a second listener on the same frame.
+  assert.equal(awaitPendingMounts([a, b], awaiting, () => { ready++ }), 0, 'no duplicates')
+
+  a.dispatchEvent(new dom.window.Event('load'))
+  assert.equal(ready, 1, 'the frame that loaded reports once')
+  assert.equal(awaiting.has(a), false, 'and stops being awaited')
+  assert.equal(awaiting.has(b), true, 'while the other keeps waiting')
+
+  b.dispatchEvent(new dom.window.Event('load'))
+  assert.equal(ready, 2)
+
+  // `once` — a second load from the same frame must not re-fire a removed handler.
+  a.dispatchEvent(new dom.window.Event('load'))
+  assert.equal(ready, 2, 'the listener was one-shot')
+
+  // And it can be re-armed deliberately, which is what a replaced iframe needs.
+  assert.equal(awaitPendingMounts([a], awaiting, () => { ready++ }), 1)
+  a.dispatchEvent(new dom.window.Event('load'))
+  assert.equal(ready, 3)
 })

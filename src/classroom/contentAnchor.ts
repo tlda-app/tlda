@@ -155,6 +155,13 @@ export type MountedContexts = {
    * context, which is the single-view behaviour that predates this.
    */
   governing: AnchorContext | null
+  /**
+   * Mounts that exist but are not usable yet — an iframe whose body has not
+   * arrived. Returned rather than silently dropped so the caller can wait for
+   * each one's own `load` and pick it up then. Skipping a mount forever is not
+   * the same as skipping it now.
+   */
+  pending: HTMLIFrameElement[]
 }
 
 export function anchorContexts(
@@ -169,11 +176,12 @@ export function anchorContexts(
   if (registered && !frames.includes(registered)) frames.push(registered)
 
   const all: AnchorContext[] = []
+  const pending: HTMLIFrameElement[] = []
   const seen = new Set<Document>()
   let governing: AnchorContext | null = null
   for (const frame of frames) {
     const context = contextForDocument(shape, frame.contentDocument)
-    if (!context) continue
+    if (!context) { pending.push(frame); continue }
     // The governing mount is SELECTED, never sorted-to-the-front: a sort puts a
     // match first only when one exists, so with no match the first element is
     // simply an arbitrary mount wearing the governing slot.
@@ -202,7 +210,7 @@ export function anchorContexts(
     // arbitrary-mount defect wearing a fallback.
     governing = contextForDocument(shape, htmlIframeElements.get(id)?.contentDocument)
   }
-  return { all, governing }
+  return { all, governing, pending }
 }
 
 /**
@@ -235,10 +243,15 @@ function contextForDocument(
   // produced a plausible scale from a page that had no geometry, and an anchor
   // recorded in that window would be wrong in a way nothing later corrects.
   //
-  // `documentElement` is deliberately NOT part of this maximum any more: it
-  // reports a width for a document whose body has not arrived, which is exactly
-  // the case the guard above now rejects.
-  const documentWidth = doc.body.scrollWidth || 0
+  // The maximum is UNCHANGED. Narrowing it to the body alone would have been a
+  // second, unrequested change riding on a crash fix: a laid-out document whose
+  // body reports 0 — an empty or shrink-wrapped body — would have lost its
+  // context and its marks would have stopped being placed, silently. The body's
+  // ABSENCE is what threw, and absence is what the guard above now handles.
+  const documentWidth = Math.max(
+    doc.body.scrollWidth || 0,
+    doc.documentElement?.scrollWidth || 0,
+  )
   if (documentWidth <= 0) return null
   return {
     doc,

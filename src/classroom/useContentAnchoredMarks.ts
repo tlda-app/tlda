@@ -179,6 +179,35 @@ export function collectHiddenPanels(
   }
 }
 
+/**
+ * Wait for mounts that are not ready yet, on their own `load`.
+ *
+ * A mount whose body has not arrived cannot be observed — `observe(null)` throws
+ * and takes the whole surface to its error boundary. Skipping it is right for
+ * this pass and wrong forever: that iframe is where a reader will be looking a
+ * moment later, and its marks would never be placed and its solutions never
+ * badged.
+ *
+ * `load` is the document's own readiness notification, so this waits rather than
+ * polls. One listener per frame, `once`, tracked so repeated passes do not stack
+ * duplicates, and returned so teardown can remove any that never fired.
+ */
+export function awaitPendingMounts(
+  frames: HTMLIFrameElement[],
+  awaiting: Map<HTMLIFrameElement, () => void>,
+  onReady: () => void,
+): number {
+  let added = 0
+  for (const frame of frames) {
+    if (awaiting.has(frame)) continue
+    const handler = () => { awaiting.delete(frame); onReady() }
+    frame.addEventListener('load', handler, { once: true })
+    awaiting.set(frame, handler)
+    added++
+  }
+  return added
+}
+
 type AnchoredMeta = {
   contentAnchor?: SpanAnchor
   /**
@@ -352,6 +381,8 @@ export function useContentAnchoredMarks(
     // Declared before `placeAll` because badge reconciliation reads it: the
     // documents being watched, NOT the documents some mark happens to point at.
     const observers = new Map<Document, MutationObserver>()
+    // Frames that exist but are not ready, each waiting on its own `load`.
+    const awaiting = new Map<HTMLIFrameElement, () => void>()
     // Bound to the OUTER window, which outlives every mount.
     const scheduler = createFrameScheduler(window)
 
@@ -528,7 +559,10 @@ export function useContentAnchoredMarks(
         // Observe EVERY mount. Watching only the registry's copy meant a reader
         // could expand a solution in their own pane and nothing re-placed, because
         // the mutation happened in a document nobody was listening to.
-        for (const context of anchorContexts(page, governingRoot ? governingRoot() : undefined).all) {
+        const mounted = anchorContexts(page, governingRoot ? governingRoot() : undefined)
+        // Not ready is not the same as gone: pick it up when its document loads.
+        awaitPendingMounts(mounted.pending, awaiting, attach)
+        for (const context of mounted.all) {
         live.add(context.doc)
         if (observers.has(context.doc)) continue
         const view = context.doc.defaultView
@@ -589,6 +623,8 @@ export function useContentAnchoredMarks(
       unsubscribe()
       window.removeEventListener('message', onMessage)
       scheduler.cancel()
+      for (const [frame, handler] of awaiting) frame.removeEventListener('load', handler)
+      awaiting.clear()
       for (const [doc, observer] of observers) {
         observer.disconnect()
         // Take our badges back out. The document can outlive this hook — the
