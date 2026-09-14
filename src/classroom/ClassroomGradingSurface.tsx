@@ -68,6 +68,7 @@ export function ClassroomGradingSurface({
   const mountedPanesRef = useRef<ReturnType<typeof mountGradingPanes> | null>(null)
   const [mountedPanes, setMountedPanes] = useState<ReturnType<typeof mountGradingPanes> | null>(null)
   const [problemTop, setProblemTop] = useState<number | null>(null)
+  const [paired, setPaired] = useState(false)
 
   const submissionBounds = useValue(
     `classroom-submission-bounds:${submissionShapeId}`,
@@ -128,6 +129,22 @@ export function ClassroomGradingSurface({
     [markViewportReady],
   )
 
+  // The pane's width has to agree with the column it sits in. `gradingPanelWidth`
+  // is half the window, which is right for the two-pane layout; the paired layout
+  // is one column, so the pane is the full inset width.
+  //
+  // `37eb2e3b0` made that change alongside the single-column CSS. Main has since
+  // refactored its literal into `gradingPanelWidth()`, which still returns the
+  // two-column half, so carrying the CSS without this restores the layout but not
+  // the width it was written for.
+  useEffect(() => {
+    const read = () => setPaired(window.document.body.dataset.tldaMarkedExercisePaired === 'true')
+    read()
+    const observer = new MutationObserver(read)
+    observer.observe(window.document.body, { attributes: true, attributeFilter: ['data-tlda-marked-exercise-paired'] })
+    return () => observer.disconnect()
+  }, [])
+
   useEffect(() => {
     setProblemTop(null)
     let interval = 0
@@ -149,7 +166,7 @@ export function ClassroomGradingSurface({
   const activePanes = userId && deviceId ? mountedPanes : null
   const paneByKind = new Map(activePanes?.map(pane => [pane.pane, pane]))
   // The DOM's copy of the pane width, from the same derivation the cameras use.
-  const panelWidth = gradingPanelWidth()
+  const panelWidth = paired ? Math.max(320, Math.floor(window.innerWidth - 32)) : gradingPanelWidth()
 
   const problemCamera = problemTop == null ? null : {
     x: -submissionBounds.x,
