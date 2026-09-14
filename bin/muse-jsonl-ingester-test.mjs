@@ -48,6 +48,32 @@ test('the JSONL child sends Muse tool records through the shared activity extrac
   })
 })
 
+test('the JSONL child emits the login identity from a live Muse tool result', () => {
+  const marker = {
+    type: 'tlda-login-marker',
+    version: 1,
+    fleet_id: 'fleet:muse-test',
+    harness_kind: 'muse',
+    daemon_key: 'mini:testing',
+  }
+  const record = {
+    recorded_at: 1789273076000000,
+    payload_type: 'runtime.session',
+    payload: {
+      kind: 'run',
+      event: {
+        kind: 'tool_result_batch_committed',
+        results: [{ text: `TLDA_LOGIN_MARKER ${JSON.stringify(marker)}\nLogged in fleet:muse-test.` }],
+      },
+    },
+  }
+
+  assert.deepEqual(
+    extractRecordOutputs(opts, record).find(output => output.type === 'identity'),
+    { type: 'identity', identity: { marker } },
+  )
+})
+
 test('a Muse session tail keys identity from its session directory, never the common filename', () => {
   const sessionId = '01900000-0000-7000-8000-000000000001'
   assert.equal(

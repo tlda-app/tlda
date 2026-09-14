@@ -873,8 +873,11 @@ export function createJsonlIngestor({
 
   let _initialJsonlDiscovery = true
   let _forceJsonlDiscovery = false
-  function knownJsonlPaths() {
+  function knownJsonlPaths(agentList = []) {
     const paths = new Set()
+    for (const agent of agentList || []) {
+      if (agent?.session_path) paths.add(path.resolve(agent.session_path))
+    }
     const cursorIds = new Set(Object.keys(cursors))
     for (const root of transcriptRoots()) {
       for (const jsonlPath of findCursorJsonlPathsUnder(root, (_initialJsonlDiscovery || _forceJsonlDiscovery) ? null : cursorIds)) {
@@ -967,7 +970,7 @@ export function createJsonlIngestor({
 
     retainJsonlRootWatchers()
 
-    jsonlLoop: for (const jsonlPath of requestedPaths || knownJsonlPaths()) {
+    jsonlLoop: for (const jsonlPath of requestedPaths || knownJsonlPaths(agentList)) {
       const resolvedPath = path.resolve(jsonlPath)
       const agent = agentsByPath.get(resolvedPath) || null
       let harness
@@ -1109,6 +1112,19 @@ export function createJsonlIngestor({
         continue
       }
       if (jsonlOwnershipState(cursors[sessionId], daemonKey) === 'ignore') continue
+      if (agent && harness.kind === 'muse' && jsonlOwnershipState(cursors[sessionId], daemonKey) === 'unknown') {
+        const entry = cursors[sessionId] || (cursors[sessionId] = {})
+        entry.owner = {
+          state: 'mine',
+          daemon_key: agent.daemon_key || daemonKey || null,
+          fleet_id: agent.id,
+          decided_at: new Date().toISOString(),
+        }
+        scheduleCursorSave()
+      }
+      if (agent && jsonlOwnershipState(cursors[sessionId], daemonKey) === 'mine') {
+        agentPaths.set(agent.id, resolvedPath)
+      }
       const inode = stat.ino
       const stored = cursors[sessionId]
       let offset

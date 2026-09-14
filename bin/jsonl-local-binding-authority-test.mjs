@@ -47,16 +47,16 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, recordMintMarker = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null, sendMsgWithReply = async () => ({}), liveSessions = ['fleet-jsonl-owner'] } = {}) {
+function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, recordMintMarker = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', outsideTranscriptRoot = false, initialFileContent = null, jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null, sendMsgWithReply = async () => ({}), liveSessions = ['fleet-jsonl-owner'] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
-  const projectDir = join(projectsDir, '-Users-skip-work-tlda')
+  const projectDir = outsideTranscriptRoot ? join(dir, 'muse-session') : join(projectsDir, '-Users-skip-work-tlda')
   const jsonlPath = join(projectDir, jsonlFileName)
   mkdirSync(projectDir, { recursive: true })
-  writeFileSync(jsonlPath, kind === 'claude'
+  writeFileSync(jsonlPath, initialFileContent ?? (kind === 'claude'
     ? '{"message":{"content":[{"type":"text","text":"Logged in fleet:jsonlown.\\nYour name: \\"jsonl-owner\\""}]}}\n'
-    : '', { flag: 'w' })
+    : ''), { flag: 'w' })
   if (initialCursors) {
     mkdirSync(configDir, { recursive: true })
     const inode = statSync(jsonlPath).ino
@@ -114,6 +114,13 @@ function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFac
           usesClaudeSessionIds: true,
         },
       },
+      muse: {
+        activity: {
+          kind: 'muse',
+          terminalChat: false,
+          backfillSearch: false,
+        },
+      },
     },
     jsonlTranscriptRoots: [projectsDir],
     permissionLedger,
@@ -166,6 +173,39 @@ function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFac
       ingestor.shutdown()
       rmSync(dir, { recursive: true, force: true })
     },
+  }
+}
+
+{
+  const harness = createHarness({
+    kind: 'muse',
+    jsonlFileName: 'session.jsonl',
+    outsideTranscriptRoot: true,
+    initialFileContent: '{}\n',
+    initialCursors: { 'muse-session': { offset: 3 } },
+  })
+  try {
+    harness.setRows([{
+      id: 'fleet:jsonl-owner',
+      ...fullBinding({
+        sessionId: 'muse-session',
+        sessionKind: 'muse',
+        sessionPath: harness.jsonlPath,
+      }),
+    }])
+    await harness.sync('bound-muse-session-outside-roots')
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
+    assert.ok(watch)
+    assert.equal(watch.startOffset, 3)
+    assert.equal(watch.agentId, 'fleet:jsonl-owner')
+    assert.equal(watch.jsonlPath, harness.jsonlPath)
+    assert.equal(harness.sentToServer.some(message =>
+      message.type === 'activity-health'
+      && message.agent_id === 'fleet:jsonl-owner'
+      && message.state === 'ok'
+    ), true)
+  } finally {
+    harness.cleanup()
   }
 }
 
