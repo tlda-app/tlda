@@ -6,6 +6,7 @@ import { useFleetIdentity } from '../fleet-data-adapter'
 import { getEditorWMCore } from '../wm/editor-wm'
 import { mountGradingPanes, gradingPanelWidth, GRADING_PANE_MAX_HEIGHT_FRACTION, type GradingPane } from './gradingPanes'
 import { StudentAnnotationOverlay } from './StudentAnnotationOverlay'
+import { useContentAnchoredMarks } from './useContentAnchoredMarks'
 import { gradingDraftRoomId } from '../../shared/classroom-rooms.mjs'
 
 export interface ClassroomGradingSurfaceProps {
@@ -61,9 +62,33 @@ export function ClassroomGradingSurface({
   // so the main editor's camera would put the marks somewhere else.
   const [submissionCamera, setSubmissionCamera] = useState<{ x: number; y: number; z: number } | null>(null)
   const draftEditorRef = useRef<Editor | null>(null)
+  // The same editor as the ref, in state, because anchoring is an effect and an
+  // effect cannot see a ref being assigned. The ref stays the identity the
+  // release guard above compares against.
+  const [anchoringEditor, setAnchoringEditor] = useState<Editor | null>(null)
   const { id: userId } = useFleetIdentity()
   const deviceId = getDeviceId()
   const wm = useMemo(() => getEditorWMCore(editor), [editor])
+  // Bound by the student-submission <section> below; declared before the hook
+  // that reads it.
+  const submissionPaneRef = useRef<HTMLElement | null>(null)
+  // A mark belongs to the student's work, not to the page it happens to sit on.
+  // This is the side that MAKES marks, so it is the side that records an anchor.
+  //
+  // The submission page mounts once per pane and once in the main editor, and
+  // those copies disagree about which solutions are open. A mark has one opacity,
+  // so one view has to govern — and it is this one: the pane the instructor marks
+  // in. Named here rather than guessed inside `anchorContexts`, which has no
+  // business knowing what a grading pane is.
+  //
+  // THIS instance's pane, held as a ref, not found by a global selector: a
+  // document-wide query would answer with some other surface's pane if two were
+  // ever mounted, and would silently pick one of them.
+  useContentAnchoredMarks(editor, anchoringEditor, {
+    anchorOnCreate: true,
+    pageShapeId: submissionShapeId,
+    governingRoot: () => submissionPaneRef.current,
+  })
   const readyViewports = useRef<Set<GradingPane>>(new Set())
   const mountedPanesRef = useRef<ReturnType<typeof mountGradingPanes> | null>(null)
   const [mountedPanes, setMountedPanes] = useState<ReturnType<typeof mountGradingPanes> | null>(null)
@@ -188,7 +213,14 @@ export function ClassroomGradingSurface({
         const paneViewportId = (kind: GradingPane) =>
           paneByKind.get(kind)?.viewportId ?? `wm:grading:${kind}:${assignmentId}:${studentId}`
         return (
-          <section key={pane} className="classroomGradingPane" data-grading-pane={pane}>
+          <section
+            key={pane}
+            className="classroomGradingPane"
+            data-grading-pane={pane}
+            ref={pane === 'student-submission'
+              ? (node => { submissionPaneRef.current = node })
+              : undefined}
+          >
             <CanvasClipPanel
               mainEditor={editor}
               bounds={bounds}
@@ -250,6 +282,7 @@ export function ClassroomGradingSurface({
                   }}
                   onEditorMount={draftEditor => {
                     draftEditorRef.current = draftEditor
+                    setAnchoringEditor(draftEditor)
                     onDraftEditor?.(draftEditor, submissionRoomId)
                   }}
                   onEditorRelease={draftEditor => {
@@ -258,6 +291,7 @@ export function ClassroomGradingSurface({
                     // unconditional clear would drop the live one.
                     if (draftEditorRef.current !== draftEditor) return
                     draftEditorRef.current = null
+                    setAnchoringEditor(current => (current === draftEditor ? null : current))
                     onDraftEditor?.(null, submissionRoomId)
                   }}
                 />
