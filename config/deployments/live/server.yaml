@@ -38,7 +38,7 @@ buildStallTimeoutMs: 3600000
 buildExecutor:
   url: ws://tlda-pic-dev.internal:7711
   git:
-    url: http://tldraw-sync-skip.internal:5176/git
+    url: http://tldraw-sync-skip.internal:5176
     daemonId: build-executor
 
 # How long the server waits for an agent's MCP to acknowledge a notification
