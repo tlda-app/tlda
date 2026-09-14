@@ -12,6 +12,7 @@ import {
 import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken, canPresent, isPresentPermissionKnown, subscribeCanPresent } from '../authToken'
+import { isClassroomDocumentWorkspace } from '../classroom/classroomDocumentWorkspace'
 import { createMeasuredGeometryWriter } from '../measuredGeometryWrite'
 import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
 import { htmlIframeElements } from '../htmlIframeRegistry'
@@ -1177,7 +1178,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const documentW = isSlideShape ? null : htmlPageDocumentWidth(iframeRef.current)
         const newW = documentW ? Math.max(current.props.w, documentW) : current.props.w
         if (Math.abs(newH - current.props.h) > 5 || Math.abs(newW - current.props.w) > 5) {
-          measuredGeometryWriterRef.current.report({
+          const wrote = measuredGeometryWriterRef.current.report({
             permissionKnown: isPresentPermissionKnown(),
             mayWrite: canPresent(),
           }, () => {
@@ -1191,6 +1192,26 @@ function HtmlPageComponent({ shape }: { shape: any }) {
               props: { ...s.props, w: newW, h: newH },
             }))
           })
+          // Only where viewer auth is deliberately never initialized and a
+          // document is on screen. There the permission can never become known,
+          // so the write above is parked forever and the page would be cropped
+          // to whatever height the build declared.
+          //
+          // Everywhere else this does not run at all: the deferral and its
+          // authorized resolution keep working exactly as they do today, which
+          // is why there is nothing here to re-publish later.
+          //
+          // `mergeRemoteChanges` is how this codebase keeps a record off the
+          // wire, so the room is left holding the declared height and each
+          // client measures its own.
+          if (!wrote && isClassroomDocumentWorkspace()) {
+            editor.store.mergeRemoteChanges(() => {
+              editor.store.update(shape.id, (s: any) => ({
+                ...s,
+                props: { ...s.props, w: newW, h: newH },
+              }))
+            })
+          }
           if (isSlideShape) {
             const slideShapes = editor.getCurrentPageShapes()
               .filter((s: any) => s.type === 'html-page' && (s.props?.url?.includes('_tldaDeck=1') || s.props?.url?.includes('_tldaH=')))
