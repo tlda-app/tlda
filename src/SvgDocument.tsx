@@ -141,7 +141,6 @@ import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
 import { useMarkedExerciseHtmlAlignment } from './classroom/useMarkedExerciseHtmlAlignment'
-import { installFramePairBridge } from './classroom/marking'
 import { ClassroomConnectorOverlay } from './classroom/ClassroomConnectorOverlay'
 import { ClassroomGradingSurface, type ClassroomGradingSurfaceProps } from './classroom/ClassroomGradingSurface'
 
@@ -585,18 +584,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   }, [document, editorMounted])
 
   useMarkedExerciseHtmlAlignment(editorRef, document, editorMounted)
-  // Framing the pair needs the editor, and the control that triggers it lives
-  // outside this component; the bridge is a window event, as elsewhere.
-  useEffect(() => {
-    const editor = editorRef.current
-    if (!editorMounted || !editor) return
-    // Both panes of the compare view, so framing can bring the pair back on
-    // screen after a navigation has centred one of them.
-    const pairShapeIds = document.pages.slice(0, 2).map(page => page.shapeId)
-    if (pairShapeIds.length !== 2) return
-    return installFramePairBridge(editor, pairShapeIds)
-  }, [document, editorMounted])
-
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
   useDividerDiff(editorRef, projectName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)

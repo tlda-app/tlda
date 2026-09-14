@@ -136,6 +136,7 @@ interface CanvasClipPanelProps {
    * changes when it is absent.
    */
   onCamera?: (camera: { x: number; y: number; z: number }) => void
+  cameraOverride?: { x: number; y: number; z: number } | null
   /**
    * A layer composited over this panel's canvas, inside the canvas box.
    *
@@ -169,6 +170,7 @@ export function CanvasClipPanel({
   shapePredicate: hostShapePredicate,
   viewportId: externalViewportId,
   onCamera,
+  cameraOverride,
   canvasOverlay,
   children,
 }: CanvasClipPanelProps) {
@@ -313,7 +315,11 @@ export function CanvasClipPanel({
     stableCameraRef.current = next
     return next
   })()
-  const camera = syncedCamera ?? interactiveCamera ?? plannedCamera
+  const camera = cameraOverride ?? syncedCamera ?? interactiveCamera ?? plannedCamera
+
+  useEffect(() => {
+    applyViewportCameraToDom(canvasRef.current, camera)
+  }, [camera.x, camera.y, camera.z])
 
   // Hand the effective camera to whoever composites a layer over this panel.
   // Keyed on the three numbers rather than the object, because `plannedCamera`

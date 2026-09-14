@@ -22,6 +22,11 @@
 .markingLifecycle button { min-height: 32px; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 6px; background: transparent; color: inherit; padding: 4px 9px; }
 .classroomGradingPanes { position: fixed; z-index: 450; inset: 52px 16px 16px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; pointer-events: none; }
 .classroomGradingPane { min-width: 0; pointer-events: auto; }
+/* Collapse to one pane only once the callouts have actually been placed in the
+   student's document. Until then the official-solution pane is the only copy of
+   the solution on screen, so the grading view stays main's two-pane layout. */
+[data-tlda-marked-exercise-paired="true"] .classroomGradingPanes { grid-template-columns: minmax(0, 1fr); gap: 0; }
+[data-tlda-marked-exercise-paired="true"] .classroomGradingPane[data-grading-pane="official-solution"] { position: absolute; width: 1px; height: 1px; visibility: hidden; pointer-events: none; }
 .classroomGradingPane .clip-panel { max-width: 100%; background: Canvas; }
 .tl-container.classroom-grading-editor > span > .tl-canvas { visibility: hidden; pointer-events: none; }
 .classroomError { color: #9a3c32; }
