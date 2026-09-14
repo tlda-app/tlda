@@ -24,10 +24,12 @@ primary_region = "sjc"
   # too. A dedicated build machine would carry the executor alone.
   TLDA_BUILD_EXECUTOR_ENABLE = "1"
 
-  # Bound to the tailnet interface rather than every interface. The executor is
-  # plaintext with a bearer token, so its confidentiality is the link's; the
-  # tailnet is the link it is reached over and the only one it should answer on.
-  TLDA_BUILD_EXECUTOR_HOST = "tlda-pic-dev"
+  # NO TLDA_BUILD_EXECUTOR_HOST here, deliberately. The entrypoint defaults it to
+  # $FLY_PRIVATE_IP, which is resolved on the machine rather than written down:
+  # a literal would be a private address in tracked config, and the name that
+  # reads as obvious -- "tlda-pic-dev" -- does not resolve ON the box at all, so
+  # binding to it would fail at listen() and leave the supervisor restarting a
+  # process that can never come up.
 
   # TLDA_BUILD_EXECUTOR_TOKEN is a SECRET, not an env entry — `fly secrets set`.
   # The executor refuses to start without it rather than running unauthenticated.
