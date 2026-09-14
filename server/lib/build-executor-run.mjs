@@ -19,19 +19,10 @@
  */
 import { spawn } from 'node:child_process'
 
-const URL_USERINFO = /([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^\s/?#@]*)@/g
+import { redactUrlCredentials } from '../../shared/redact-url-credentials.mjs'
 
-/** Replace the secret half of any URL userinfo, leaving the rest readable. */
-export function redactUrlCredentials(text) {
-  return String(text).replace(URL_USERINFO, (_match, scheme, userinfo) => {
-    const colon = userinfo.indexOf(':')
-    // With a username the token is the password half, and keeping the username
-    // is what lets the message still say which identity was refused. With no
-    // colon the single field IS the credential (`https://TOKEN@host` is an
-    // ordinary git form), so all of it goes.
-    return colon === -1 ? `${scheme}***@` : `${scheme}${userinfo.slice(0, colon)}:***@`
-  })
-}
+// Re-exported because this module's own regression reads it from here.
+export { redactUrlCredentials }
 
 export function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
