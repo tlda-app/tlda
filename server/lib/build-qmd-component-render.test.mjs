@@ -124,3 +124,55 @@ test('a direct chapter edit rebuilds that chapter into the book', { timeout: 900
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('a first build renders only the declared chapter root', { timeout: 900_000, skip: RENDER_CONTROL_SKIP }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-declared-root-'))
+  const project = 'declared-root-fixture'
+  try {
+    await initProjectStore(join(root, 'projects'))
+    createProject({ name: project, mainFile: CHAPTER, format: 'qmd', documentRoots: [CHAPTER] })
+
+    const src = sourceDir(project)
+    mkdirSync(join(src, '_extensions'), { recursive: true })
+    cpSync(EXTENSION, join(src, '_extensions', 'tlda'), { recursive: true })
+    mkdirSync(join(src, 'lectures'), { recursive: true })
+    mkdirSync(join(src, 'assets'), { recursive: true })
+    writeFileSync(join(src, '_quarto.yml'), [
+      'project:',
+      '  type: tlda',
+      'book:',
+      '  title: "Declared Root Fixture"',
+      '  chapters:',
+      '    - index.qmd',
+      `    - ${CHAPTER}`,
+      '',
+    ].join('\n'))
+    writeFileSync(join(src, 'index.qmd'), '# Introduction\n\nThis page is outside the declared roots.\n')
+    writeFileSync(join(src, 'assets', 'proof.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>\n')
+    writeFileSync(join(src, CHAPTER), '# Calibration\n\nOnly this chapter is published.\n\n![](../assets/proof.svg)\n')
+
+    const log = []
+    await buildQmdDocument(project, (line) => log.push(String(line)), { changedFiles: [CHAPTER] })
+
+    const out = outputDir(project)
+    assert.equal(existsSync(join(out, '_book', CHAPTER_HTML)), true)
+    assert.equal(existsSync(join(out, '_book', 'assets', 'proof.svg')), true)
+    assert.equal(existsSync(join(out, CHAPTER)), false)
+    assert.equal(existsSync(join(out, '_quarto.yml')), false)
+    assert.equal(existsSync(join(out, '_extensions')), false)
+    assert.equal(existsSync(join(out, '.quarto')), false)
+    assert.equal(existsSync(join(out, '_freeze')), false)
+    const pageInfo = JSON.parse(readFileSync(join(out, 'page-info.json'), 'utf8'))
+    assert.deepEqual(pageInfo.map((page) => page.file), [`_book/${CHAPTER_HTML}`])
+    assert.match(log.join('\n'), new RegExp(`^\\[qmd\\] quarto render ${CHAPTER}$`, 'm'))
+    assert.match(readFileSync(join(src, '_quarto.yml'), 'utf8'), /- index\.qmd/)
+
+    writeFileSync(join(src, CHAPTER), '# Calibration\n\nThe second edit reached the page.\n\n![](../assets/proof.svg)\n')
+    await buildQmdDocument(project, (line) => log.push(String(line)), { changedFiles: [CHAPTER] })
+    assert.match(readFileSync(join(out, '_book', CHAPTER_HTML), 'utf8'), /The second edit reached the page\./)
+    assert.equal(log.filter((line) => line === `[qmd] quarto render ${CHAPTER}`).length, 2)
+  } finally {
+    await closeProjectStore().catch(() => {})
+    rmSync(root, { recursive: true, force: true })
+  }
+})
