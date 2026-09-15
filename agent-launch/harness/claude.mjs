@@ -82,8 +82,33 @@ export function buildCmd({
   const effectiveHarnessOptions = harnessOptions && Object.keys(harnessOptions).length
     ? harnessOptions
     : resolveHarnessLaunchOptions({ config, harness: 'claude', model })
+  const launchEnv = { ...(effectiveHarnessOptions.env || {}) }
+  // Meta-routed Claude launches (model id `muse-*`) authenticate exactly the
+  // way the muse harness does: the credential comes from the deployment
+  // environment, never from model configuration, and a fleet launch agrees
+  // with that decision against whatever a login shell would inject — every
+  // pane runs under `zsh -lc`, which sources the operator profile. Scoped to
+  // Meta-routed models so Anthropic-routed launches behave byte-identically.
+  const fleet = !!(fleetId || localAgentId)
+  const metaRouted = /^muse-/i.test(String(model || ''))
+  let shellPrefix = ''
+  if (metaRouted) {
+    for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'META_API_KEY']) {
+      if (Object.hasOwn(launchEnv, key)) throw new Error('Provider credentials must come from the deployment environment, not daemon model configuration')
+    }
+    const deploymentKey = typeof env.META_API_KEY === 'string' && env.META_API_KEY ? env.META_API_KEY : ''
+    if (fleet) {
+      if (!deploymentKey) throw new Error('Muse authentication is missing for Claude-routed launch; set META_API_KEY in the deployment environment')
+      launchEnv.ANTHROPIC_AUTH_TOKEN = deploymentKey
+      // The deployment key is the auth decision; the operator's own
+      // Anthropic credentials must not ride along through the login shell.
+      shellPrefix = 'unset ANTHROPIC_API_KEY; unset CLAUDE_CODE_OAUTH_TOKEN; '
+    } else if (deploymentKey) {
+      launchEnv.ANTHROPIC_AUTH_TOKEN = deploymentKey
+    }
+  }
   const parts = [
-    ...Object.entries(effectiveHarnessOptions.env || {}).map(([key, value]) => `${key}=${sq(value)}`),
+    ...Object.entries(launchEnv).map(([key, value]) => `${key}=${sq(value)}`),
     ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
     ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),
     ...(localAgentId ? [`FLEET_MINT_ID=${sq(localAgentId)}`] : []),
@@ -151,7 +176,7 @@ export function buildCmd({
   // above, exactly like the codex sandbox flag. The fence (region-set lease) is the
   // security; the classifier flag is the operator's configured choice.
   if (includePrompt) parts.push(sq(loginPrompt()))
-  return parts.join(' ')
+  return `${shellPrefix}${parts.join(' ')}`
 }
 
 function sqEnv(entry) {
