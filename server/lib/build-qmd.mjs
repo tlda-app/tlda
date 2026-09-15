@@ -1036,7 +1036,18 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
     }
   }
 
-  const incrementalRoots = nativeTldaProject ? qmdIncrementalRenderRoots(outDir, changedFiles) : null
+  const bookRoots = nativeTldaProject ? quartoBookRoots(outDir) : []
+  // A qmd project whose one configured document is a book component other
+  // than the book's own entrypoint is a standalone view of that component.
+  // Compare the two configured entrypoints directly: filenames do not define
+  // the behavior, and multi-root projects retain the existing book build.
+  const scopedNativeProject = nativeTldaProject
+    && mainFiles.length === 1
+    && bookRoots.includes(mainFile)
+    && mainFile !== bookRoots[0]
+  const incrementalRoots = nativeTldaProject && !scopedNativeProject
+    ? qmdIncrementalRenderRoots(outDir, changedFiles)
+    : null
   const deckPairs = nativeTldaProject ? qmdDeckChapterPairs(outDir, addLog) : []
   const deckRoots = new Set(deckPairs.map(({ deck }) => deck))
   const chapterRoots = incrementalRoots?.filter((root) => !deckRoots.has(root)) || null
@@ -1045,7 +1056,12 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   // a private copy of the last complete output. Publication still swaps a
   // complete output tree. Shared inputs and uncertain changes render the whole
   // project because their dependency fan-out is not confined to one chapter.
-  if (nativeTldaProject && incrementalRoots) {
+  if (scopedNativeProject) {
+    for (const root of mainFiles) {
+      clearQmdFreeze(outDir, root)
+      await renderInOutput(quarto, outDir, root, addLog, { project: name })
+    }
+  } else if (nativeTldaProject && incrementalRoots) {
     for (const root of chapterRoots) {
       // freeze:auto stores the rendered markdown as well as executed chunks.
       // Reusing it after a direct source edit can complete successfully while
@@ -1079,12 +1095,14 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   // is a separate document from its chapter; pairing controls placement, not
   // rebuild scope. A whole-project build renders every declared deck because
   // publication swaps the tree wholesale.
-  const decksToRender = incrementalRoots
-    ? deckPairs.filter(({ deck }) => incrementalDecks.includes(deck))
-    : deckPairs
+  const decksToRender = scopedNativeProject
+    ? []
+    : incrementalRoots
+      ? deckPairs.filter(({ deck }) => incrementalDecks.includes(deck))
+      : deckPairs
   const failedDecks = await renderDeckSet(quarto, outDir, decksToRender.map(({ deck }) => deck), addLog, { project: name })
 
-  if (nativeTldaProject) {
+  if (nativeTldaProject && !scopedNativeProject) {
     const renderedProject = readTldaManifest(outDir)
     if (!renderedProject) {
       throw new Error('tlda Quarto project rendered without producing tlda-manifest.json')
@@ -1221,6 +1239,10 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
         })
       }
     }
+  }
+  if (scopedNativeProject) {
+    retainFreezeOutsideRender(outDir, addLog)
+    retainNativeTldaRender(outDir, join(outDir, pageInfo[0].file))
   }
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
   const chapterPages = pageInfo.filter((entry) => entry.variant !== 'slides')
