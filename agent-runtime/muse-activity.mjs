@@ -83,6 +83,22 @@ export function createMuseRecordParser() {
       if (event.kind === 'assistant_message_committed' && event.text) {
         return { type: 'assistant', timestamp: ts, blocks: [{ type: 'text', text: event.text }] }
       }
+      if (event.kind === 'tool_result_batch_committed') {
+        // Result text is what result-built cards (screenshots, diffs) and
+        // pretty-print bodies are made of; the muse parser used to drop it,
+        // so those cards could never fire for muse. Emit one tool_result
+        // block per id-bearing result — the extractor's noise and pretty
+        // gates decide what Skip sees, and id-less results would be dropped
+        // downstream anyway. Observed across 836 results in the wild:
+        // {text, tool_call_id, tool_call_index} with no image parts;
+        // revisit if image-bearing results appear.
+        const blocks = []
+        for (const result of event.results || []) {
+          if (!result?.tool_call_id) continue
+          blocks.push({ type: 'tool_result', id: result.tool_call_id, text: result.text ?? '', is_error: false })
+        }
+        return blocks.length ? { type: 'user', timestamp: ts, blocks } : null
+      }
       return null
     }
 
