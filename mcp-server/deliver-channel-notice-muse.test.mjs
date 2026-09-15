@@ -223,6 +223,66 @@ test('a notification reaches a pane that renders typed input late', { skip: skip
   }
 })
 
+// A pane that drops the FIRST Enter but accepts the next is today's live
+// failure: text typed fine onto an idle prompt, one Enter lost, notice dead
+// in the compose line while the agent idles. The submitter must press Enter
+// again while its own text is still there instead of failing after one shot.
+const DROP_FIRST_ENTER_PANE = `
+process.stdin.setRawMode(true)
+let buf = ''
+let rendered = false
+let pending = null
+let enters = 0
+process.stdout.write('❯ ')
+process.stdin.on('data', d => {
+  for (const ch of d.toString('utf8')) {
+    if (ch === '\\r' || ch === '\\n') {
+      enters++
+      if (!rendered || enters < 2) continue
+      process.stdout.write('\\r\\n${PANE_MARKER}' + buf + '\\r\\n❯ ')
+      buf = ''
+      rendered = false
+    } else {
+      buf += ch
+      if (!rendered && !pending) {
+        pending = setTimeout(() => { process.stdout.write(buf); rendered = true; pending = null }, 200)
+      }
+    }
+  }
+})
+setTimeout(() => process.exit(0), 30000)
+`
+
+function startDropFirstEnterPane(name) {
+  const script = join(mkdtempSync(join(tmpdir(), 'muse-drop-enter-pane-')), 'pane.mjs')
+  writeFileSync(script, DROP_FIRST_ENTER_PANE)
+  execFileSync('tmux', ['new-session', '-d', '-s', name, 'sh', '-c', `stty -echo; exec ${process.execPath} ${script}`], { timeout: 5000 })
+  execFileSync('sleep', ['0.5'])
+}
+
+test('a dropped first Enter is retried, not reported failed', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-retry-${process.pid}`
+  startDropFirstEnterPane(session)
+  const previousHarness = process.env.FLEET_HARNESS
+  const previousSession = process.env.FLEET_TMUX_SESSION
+  process.env.FLEET_HARNESS = 'muse'
+  process.env.FLEET_TMUX_SESSION = session
+
+  try {
+    const delivered = await deliverChannelNotice(NOTICE, { event_type: 'chat' })
+    assert.equal(delivered, true)
+
+    const pane = capture(session)
+    assert.match(pane, new RegExp(`${PANE_MARKER}.*muse channel notice`))
+  } finally {
+    if (previousHarness === undefined) delete process.env.FLEET_HARNESS
+    else process.env.FLEET_HARNESS = previousHarness
+    if (previousSession === undefined) delete process.env.FLEET_TMUX_SESSION
+    else process.env.FLEET_TMUX_SESSION = previousSession
+    killPane(session)
+  }
+})
+
 // A pane that never accepts the Enter must FAIL, loudly, rather than be
 // reported delivered. `cat` holds the prompt glyph but consumes the line
 // without ever clearing it from the compose line, which is what a lost Enter
