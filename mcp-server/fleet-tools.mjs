@@ -1479,6 +1479,12 @@ function tmuxSendText(sessionName, text, settleMs = 0) {
 const MUSE_TYPE_TIMEOUT_MS = 5000;
 const MUSE_SUBMIT_TIMEOUT_MS = 5000;
 const MUSE_POLL_INTERVAL_MS = 150;
+// How many Enters to press while our own text is still sitting on the prompt.
+// The TUI drops an Enter that lands while it is busy (or just loses one on
+// an idle prompt, as measured); each press is verified, and pressing stops
+// the moment the text leaves the prompt -- never into an empty or foreign
+// prompt, so a retry can delay but never mis-submit.
+const MUSE_SUBMIT_ATTEMPTS = 3;
 
 function tmuxCapturePane(sessionName) {
   return new Promise((resolve, reject) => {
@@ -1525,11 +1531,12 @@ async function tmuxSubmitTextVerified(sessionName, text) {
   if (!await waitForMusePrompt(sessionName, MUSE_TYPE_TIMEOUT_MS, prompt => prompt.includes(probe))) {
     throw new Error(`typed text never reached the prompt in ${sessionName}; not sending Enter blindly`);
   }
-  execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
-  if (!await waitForMusePrompt(sessionName, MUSE_SUBMIT_TIMEOUT_MS, prompt => !prompt.includes(probe))) {
-    throw new Error(`notification still sitting in the prompt in ${sessionName} after Enter; refusing to report it delivered`);
+  for (let attempt = 1; ; attempt++) {
+    execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
+    if (await waitForMusePrompt(sessionName, MUSE_SUBMIT_TIMEOUT_MS, prompt => !prompt.includes(probe))) return true;
+    if (attempt >= MUSE_SUBMIT_ATTEMPTS) break;
   }
-  return true;
+  throw new Error(`notification still sitting in the prompt in ${sessionName} after ${MUSE_SUBMIT_ATTEMPTS} Enters; refusing to report it delivered`);
 }
 
 function submitNotificationIntoMusePane(content) {
