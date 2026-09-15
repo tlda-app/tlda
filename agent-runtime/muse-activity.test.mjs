@@ -68,6 +68,24 @@ test('an unpaired terminal record is not mislabeled as an unknown tool', () => {
   })), null)
 })
 
+test('result batches emit tool_result blocks keyed by call id', () => {
+  const parse = createMuseRecordParser()
+  const out = parse(record('runtime.session', {
+    kind: 'run',
+    event: {
+      kind: 'tool_result_batch_committed',
+      results: [
+        { tool_call_id: 'call-9', tool_call_index: 0, text: 'file contents here' },
+        { tool_call_index: 1, text: 'orphan without id' },
+      ],
+    },
+  }))
+  assert.equal(out.type, 'user')
+  assert.deepEqual(out.blocks, [
+    { type: 'tool_result', id: 'call-9', text: 'file contents here', is_error: false },
+  ])
+})
+
 test('historical ownership requires a committed Muse login result', () => {
   const marker = 'TLDA_LOGIN_MARKER {"type":"tlda-login-marker","version":1,"fleet_id":"fleet:historical","harness_kind":"muse"}'
   assert.equal(museLoginMarkerFromRecord(record('runtime.user_intent.accepted', {
