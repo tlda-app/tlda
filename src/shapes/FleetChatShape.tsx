@@ -36,7 +36,7 @@ import { renderActivityGroup, renderThreadRows, scheduleTimeLabel, waitingElapse
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { initVoice, setVoiceTarget, clearVoiceTarget, completeMessageSend, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording, onRecordingChange, dumpVoiceTarget } from '../voice.mjs'
+import { initVoice, setVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording, onRecordingChange, dumpVoiceTarget } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, oldestBufferedEventTimestamp, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, sendKey, getLastEventId, convertChatEvent } from '../fleet/fleet-data.mjs'
 // Deliberately NOT calling forgetPanel() on unmount: a panel's tail state
@@ -81,6 +81,7 @@ import { agentDisplayLabel, agentExactName, createFleetShape, isFleetShapeForOwn
 import { usePillDrag, type FleetPillDropData } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer, type VoiceTargetHandle } from './ChatComposer'
+import { ComposerField } from './ComposerField'
 import { PersistentCornerButtonSlider } from '../CornerButtonSlider'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
@@ -494,8 +495,7 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
   // edge, re-measured each frame so it tracks the panel as the canvas pans/zooms.
   const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null)
   useEffect(() => {
-    let raf = 0
-    const measure = () => {
+    const remeasure = () => {
       const el = anchorRef.current
       if (el) {
         const r = el.getBoundingClientRect()
@@ -503,10 +503,32 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
           ? prev
           : { left: r.left, top: r.bottom, width: r.width })
       }
+    }
+    let raf = 0
+    const measure = () => {
+      remeasure()
       raf = requestAnimationFrame(measure)
     }
     raf = requestAnimationFrame(measure)
-    return () => cancelAnimationFrame(raf)
+    // Raising the on-screen keyboard shifts visualViewport without moving the
+    // anchor element's layout box, so a rAF-only loop observes the pane drag a
+    // frame late (or never, while the keyboard animates). Re-pin synchronously
+    // on every viewport signal so the portaled pane stays under the input area
+    // with the keyboard raised. This is what lets the terminal field converge
+    // on the recording-gated keyboard policy without reopening the b591e9e42
+    // pane-drag bug.
+    const vv = (window as any)?.visualViewport as VisualViewport | undefined
+    vv?.addEventListener('resize', remeasure)
+    vv?.addEventListener('scroll', remeasure)
+    window.addEventListener('resize', remeasure)
+    window.addEventListener('scroll', remeasure, true)
+    return () => {
+      cancelAnimationFrame(raf)
+      vv?.removeEventListener('resize', remeasure)
+      vv?.removeEventListener('scroll', remeasure)
+      window.removeEventListener('resize', remeasure)
+      window.removeEventListener('scroll', remeasure, true)
+    }
   }, [anchorRef])
   const containerRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -731,55 +753,9 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
   }
 
   const shortId = agentId.replace('fleet:', '')
-
-  const submitCurrent = (submittedText?: string) => {
-    const el = inputRef.current
-    if (!el) return false
-    const text = el.value
-    submitInput(text)
-    el.value = ''
-    completeMessageSend(submittedText ?? text)
-    return true
-  }
-
-  // Make this field the active voice target — dictation flows in, and saying
-  // "send" runs the command in the terminal pane (mirrors the chat textarea's
-  // setVoiceTarget wiring, but with a terminal-specific send).
-  const registerVoice = (el: HTMLTextAreaElement) => {
-    setVoiceTarget(el, {
-      getSendTargets: () => [agentId],
-      getAgentNames: () => ({ [agentId]: agentName || shortId }),
-      getTargetKind: () => 'terminal',
-      submitCurrent,
-    })
-  }
-
-  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    stopEventPropagation(e as any)
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      submitCurrent()
-    } else if (e.key === 'c' && e.ctrlKey) {
-      e.preventDefault()
-      sendInput('\x03')
-      if (inputRef.current) inputRef.current.value = ''
-    } else if (e.key === 'd' && e.ctrlKey) {
-      e.preventDefault()
-      sendInput('\x04')
-    } else if (e.key === 'Tab') {
-      e.preventDefault()
-      sendInput('\t')
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      sendInput('\x1b[A')
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      sendInput('\x1b[B')
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      sendInput('\x1b')
-    }
-  }
+  // Unsent terminal text is scoped per agent so pinning a second agent's pane
+  // does not offer the first one's half-typed command.
+  const terminalDraftKey = `terminal:${agentId}`
 
   const handleResizePointerDown = (e: React.PointerEvent) => {
     stopEventPropagation(e)
@@ -849,28 +825,31 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
           {terminalInputAllowed && (
             <>
               <span className="fleet-terminal-hover-prompt">$</span>
-              <textarea
-                ref={inputRef}
+              {/* Shared ComposerField with the terminal key policy: the same
+                textarea + voice registration + recording-gated touch keyboard
+                + draft persistence + sent-history as the chat composer. The
+                pane stays anchored above via the visualViewport-tracked anchor
+                (see above), so the converged keyboard no longer drags it.
+                Transport stays PTY (submitInput), Tab/Ctrl-C/Ctrl-D/Escape
+                still send control bytes, and arrows now walk sent-history. */}
+              <ComposerField
+                sendTargets={[agentId]}
+                agentNames={{ [agentId]: agentName || shortId }}
+                onSend={(text) => { submitInput(text); return true }}
+                onTerminalControl={(data) => sendInput(data)}
+                inputRef={inputRef}
                 className="fleet-terminal-hover-input"
-                rows={1}
-                onKeyDown={handleInputKeyDown}
-                onKeyUp={(e) => stopEventPropagation(e as any)}
-                onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
-                onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
-                onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = '' }}
                 // The pane can now be pinned by a terminal-card notification for an
                 // agent this panel is not addressing, so it has to say whose
                 // terminal this is. Carried in the existing placeholder — which
                 // already reported connection state — rather than a new header.
                 placeholder={status === 'connected' ? `${agentName} — type or speak a command…` : status === 'error' ? `${agentName} — terminal unavailable, reconnecting…` : `${agentName} — connecting…`}
-                // Suppress the iOS soft keyboard on touch (same as the main composer
-                // ChatComposer.tsx + math notes): the field is voice/dictation-first,
-                // and raising the on-screen keyboard shifts visualViewport, which
-                // drags this portaled hover pane out of place (Skip: "the onscreen
-                // keyboard drags the terminal hover somewhere else").
-                inputMode={_isTouchDevice ? 'none' : undefined}
-                spellCheck={false}
-                autoComplete="off"
+                isTouchDevice={_isTouchDevice}
+                draftKey={terminalDraftKey}
+                keyPolicy="terminal"
+                voiceKind="terminal"
+                submitViaVoiceFinal={false}
+                clearVoiceOnBlur
                 style={{
                   width: '100%',
                   background: 'transparent',
