@@ -68,8 +68,11 @@ import {
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
   getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
   getOutboxInflightDeadlineMs, getOutboxFlushByteBudget,
-  getFleetServerUrl, getServerUrl, getActiveEnvName,
+  getFleetServerUrl, getServerUrl, getActiveEnvName, getRuntimeRoot,
 } from '../shared/config.mjs'
+import {
+  checkRuntimeRoot, readCheckoutSha, runtimeStampLine,
+} from '../shared/runtime-root.mjs'
 import { terminalInputAllowedFromConfig } from '../shared/terminal-input-policy.mjs'
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
