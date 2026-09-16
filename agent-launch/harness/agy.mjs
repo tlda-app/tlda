@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
-import { activeEnvName, gitAuthorEnv, repoRoot } from '../identity.mjs'
+import { activeEnvName, gitAuthorEnv } from '../identity.mjs'
 import { resolveAgyModel, resolveAgyModelSelection } from '../models.mjs'
 import { kickoffPrompt as codexKickoffPrompt } from './codex.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
@@ -15,9 +15,10 @@ const execFileP = promisify(execFile)
 // The agy CLI keeps its auth token profile under the operator's HOME
 // (~/.gemini). An isolated HOME signs the session out (measured: the TUI
 // shows "You are currently not signed in" and offers Google OAuth), so the
-// harness always launches with the real HOME and wires per-agent state
-// through the workspace-local MCP config instead (XDG/HOME isolation, the
-// muse pattern, does not apply here).
+// harness always launches with the real HOME (XDG/HOME isolation, the muse
+// pattern, does not apply here). Per-agent identity rides the process
+// environment instead: the MCP server child inherits agy's FLEET_*,
+// measured on a live spawn.
 const AGY_RUNTIME = /(?:^|\s|[/\\])agy(?:\.exe)?(?:\s|$)/
 
 export const capabilities = Object.freeze({
@@ -68,6 +69,24 @@ export function kickoffPrompt(name) {
   return codexKickoffPrompt(name)
 }
 
+// The standby rendezvous. agy's MCP tools arrive ~15s after startup while
+// the --prompt-interactive turn fires at ~5s, so a bare kickoff burns its
+// first turn on recon (measured: `which tlda || find / ...`, then stuck on
+// a permission prompt). The prefix below sequences instead of contradicting:
+// turn 1 ends as a fast harmless STANDBY42 reply, and the harness wakes the
+// agent with a short follow-up once the tools are up. Framed as "do nothing"
+// the model reads it as an injection against the kickoff and ignores it
+// (measured); framed as step 1 of 2 it complies (measured).
+export const AGY_STANDBY_MARKER = 'STANDBY42'
+const AGY_STANDBY_PREFIX = 'Your tlda MCP tools arrive about 30 seconds after startup. Step 1, do it now: reply with exactly STANDBY42 and nothing else. Your actual task arrives as my next message; do not act on it until then. --- '
+export function standbyKickoffPrompt(name) {
+  return `${AGY_STANDBY_PREFIX}${kickoffPrompt(name)}`
+}
+// Short follow-up the rendezvous injects once the tools are up. Short on
+// purpose: agy's composer digests ~20 chars/sec and Enter never submits a
+// long single line (both measured), so the wake must stay small.
+export const AGY_WAKE_LOGIN_TEXT = 'Your tlda tools are loaded. Call login() now, then follow your kickoff.'
+
 function fleetEnvEntries({ fleetId, localAgentId, tmuxSession, name, config, env }) {
   const entries = []
   if (fleetId) entries.push(`FLEET_ID=${sq(fleetId)}`)
@@ -84,60 +103,59 @@ function fleetEnvEntries({ fleetId, localAgentId, tmuxSession, name, config, env
   return { entries, configName }
 }
 
-function mcpEnvObject({ fleetId, localAgentId, tmuxSession, name, config, env, harnessOptions = {} }) {
-  const out = { ...(harnessOptions.env || {}) }
-  if (fleetId) out.FLEET_ID = fleetId
-  if (localAgentId) {
-    out.FLEET_LOCAL_ID = localAgentId
-    out.FLEET_MINT_ID = localAgentId
-  }
-  out.FLEET_TMUX_SESSION = tmuxSession
-  out.FLEET_HARNESS = 'agy'
-  if (name) out.FLEET_NAME = name
-  if (env.TLDA_MACHINE_ID) out.TLDA_MACHINE_ID = env.TLDA_MACHINE_ID
-  const configName = activeEnvName(config, env)
-  if (configName) out.TLDA_ENV = configName
-  if (env.TLDA_MACHINE_ID && configName) out.FLEET_DAEMON_KEY = `${env.TLDA_MACHINE_ID}:${configName}`
-  for (const [key, value] of passthroughConfigEnv(env)) out[key] = value
-  return out
-}
-
-// Per-agent tlda MCP wiring. agy has no --mcp-config flag (claude) and no
-// -c config override (codex); `agy mcp add` writes the GLOBAL config, which
-// cannot carry per-agent identity. The supported per-agent path is the
-// workspace-local config (<cwd>/.agents/mcp_config.json), which agy merges
-// over global. Merge, never overwrite: preserve operators' own servers and
-// only set the `tlda` key. Concurrent agents in one workspace share this
-// file (last writer wins the tlda entry); fleet seats normally have distinct
-// checkouts, and the limitation is reported, not hidden.
-export function prepareWorkspaceMcp({ cwd, fleetId, localAgentId, tmuxSession, name, config = {}, env = process.env, harnessOptions = {} } = {}) {
-  if (!cwd) throw new Error('agy workspace MCP config requires cwd')
+// Workspace trust pre-seed, the codex ensureProjectTrusted precedent: agy
+// asks "Do you trust the contents of this project?" on first launch per
+// cwd, and the answer persists in ~/.gemini/antigravity-cli/settings.json
+// under `trustedWorkspaces` (measured: exact paths, no parent-dir
+// inheritance). Pre-writing the cwd keeps the trust dialog out of the mint
+// path. Merge, never overwrite: preserve operators' own settings and only
+// append the project path.
+export function ensureAgyProjectTrusted(cwd, home = os.homedir()) {
+  if (!cwd) return false
   const project = fs.realpathSync(cwd)
-  const dir = path.join(project, '.agents')
-  const file = path.join(dir, 'mcp_config.json')
+  const file = path.join(home, '.gemini', 'antigravity-cli', 'settings.json')
   let parsed = {}
   try {
     const text = fs.readFileSync(file, 'utf8')
     parsed = text.trim() ? JSON.parse(text) : {}
   } catch (e) {
-    if (e.code !== 'ENOENT') throw new Error(`agy refuses to overwrite unreadable workspace MCP config at ${file}: ${e.message}`)
+    if (e.code === 'ENOENT') parsed = {}
+    else throw new Error(`agy refuses to overwrite unreadable settings at ${file}: ${e.message}`)
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`agy refuses to overwrite non-object workspace MCP config at ${file}`)
+    throw new Error(`agy refuses to overwrite non-object settings at ${file}`)
   }
-  const servers = parsed.mcpServers && typeof parsed.mcpServers === 'object' && !Array.isArray(parsed.mcpServers)
-    ? { ...parsed.mcpServers }
-    : {}
-  servers.tlda = {
-    command: process.execPath,
-    args: [path.join(repoRoot(), 'mcp-server', 'index.mjs')],
-    env: mcpEnvObject({ fleetId, localAgentId, tmuxSession, name, config, env, harnessOptions }),
+  const trusted = parsed.trustedWorkspaces
+  if (trusted !== undefined && !Array.isArray(trusted)) {
+    throw new Error(`agy refuses to overwrite non-array trustedWorkspaces at ${file}`)
   }
-  fs.mkdirSync(dir, { recursive: true })
+  const list = trusted ? [...trusted] : []
+  if (list.includes(project)) return false
+  list.push(project)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.tmp-${process.pid}`
-  fs.writeFileSync(tmp, `${JSON.stringify({ ...parsed, mcpServers: servers }, null, 2)}\n`)
+  fs.writeFileSync(tmp, `${JSON.stringify({ ...parsed, trustedWorkspaces: list }, null, 2)}\n`)
   fs.renameSync(tmp, file)
-  return file
+  return true
+}
+
+// Bare `agy` fails lookup inside the fenced shell (measured: the first
+// lookup misses while an immediate retry hits, so mints die before agy ever
+// runs). Resolve here, in the unsandboxed spawner, and embed the absolute
+// path so the child never searches. A missing binary throws now, with the
+// searched PATH in the message, instead of dying as a bare session.
+function resolveAgyBinary({ pathValue }) {
+  for (const dir of String(pathValue || '').split(path.delimiter)) {
+    if (!dir) continue
+    const candidate = path.join(dir, 'agy')
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
+    } catch {
+      // Not executable here; keep searching.
+    }
+  }
+  throw new Error(`agy binary not found on PATH (${pathValue || '(empty)'})`)
 }
 
 export function buildCmd({
@@ -149,6 +167,7 @@ export function buildCmd({
   cwd,
   effort,
   resumeId: resume = null,
+  includePrompt = true,
   dnsAlias = null,
   env = process.env,
   config = {},
@@ -166,11 +185,20 @@ export function buildCmd({
     parts.push(`TLDA_NODE_DNS_ALIAS_HOST=${sq(dnsAlias.host)}`)
     parts.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
-  parts.push('agy')
+  const childPath = harnessOptions?.env?.PATH ?? env?.PATH ?? process.env.PATH ?? ''
+  parts.push(sq(resolveAgyBinary({ pathValue: childPath })))
   if (model) parts.push(`--model ${sq(model)}`)
   if (effort) parts.push(`--effort ${sq(effort)}`)
   if (cwd) parts.push(`--add-dir ${sq(fs.realpathSync(cwd))}`)
   if (resume) parts.push(`--conversation ${sq(resume)}`)
+  // The kickoff rides --prompt-interactive, never the composer: pasted text
+  // digests at ~20 chars/sec and Enter submits no long single line (both
+  // measured), so paste-and-submit cannot deliver it. The standby wrapper
+  // keeps turn 1 harmless until the MCP tools arrive; the rendezvous wakes
+  // the agent after. On resume the same turn replays into the old
+  // conversation (measured: --conversation + --prompt-interactive combine),
+  // which is what drives the resumed agent to log back in.
+  if (includePrompt) parts.push('--prompt-interactive', sq(standbyKickoffPrompt(name)))
   appendLaunchFlags(parts, harnessOptions)
   return parts.join(' ')
 }

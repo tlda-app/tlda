@@ -110,6 +110,7 @@ import { createAgentRouteResolver } from '../daemon/agent-route.mjs'
 import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
+import { createAgySupervisor } from '../daemon/agy-supervisor.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
@@ -1012,6 +1013,7 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
 }
 
 let gooseSupervisor
+let agySupervisor
 const alivenessCache = new Map()
 
 const agentStatus = createAgentStatus({
@@ -1093,6 +1095,12 @@ gooseSupervisor = createGooseSupervisor({
   bufferActivity,
   isNoise: base => ACTIVITY_NOISE.has(base),
   sendText: gooseKickSend,
+})
+agySupervisor = createAgySupervisor({
+  log,
+  getAgents: () => agents,
+  bufferActivity,
+  isNoise: base => ACTIVITY_NOISE.has(base),
 })
 
 const agentLauncher = createAgentLauncher({
@@ -2231,6 +2239,7 @@ async function handleServerMessage(msg, wsAttemptId) {
     jsonlIngestor.startMuseHistoricalBackfill()
     jsonlIngestor.retryPendingNativeSubagents()
     gooseSupervisor.startActivityPolling()
+    agySupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
     log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_ENV} projects=${projects.length} watchers=started`)
     return

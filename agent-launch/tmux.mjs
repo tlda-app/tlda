@@ -5,6 +5,7 @@ import path from 'path'
 import { promisify } from 'util'
 import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import { AGY_APPROVAL_RE, AGY_TRUST_DIALOG_RE, composerState as paneComposerState, dialogAwaitingKeypress, kickoffMarker } from '../agent-runtime/status-classifier.mjs'
+import { AGY_STANDBY_MARKER, AGY_WAKE_LOGIN_TEXT } from './harness/agy.mjs'
 import { parseProcessTree, walkSubtree } from './process-tree.mjs'
 
 const execFileP = promisify(execFile)
@@ -319,7 +320,13 @@ export async function submitParkedKickoff(session, harnessKind, prompt, {
       return { observed: true, observedAt, pane, parked: true, submitted: true, paneAfter: after }
     }
   }
-  // Still parked. The kickoff stays where it is: this is the one place that
+  // Still parked. Enter-only on purpose: Meta+Enter was tried as the agy
+  // fallback and measured dead (one success in six attempts on identical
+  // input, unreproducible after). A long single line parked in agy's
+  // composer is unsubmittable from here; the spawn path never parks one
+  // (the kickoff rides --prompt-interactive), so this is the wake path
+  // looking at short text or at a failure it reports honestly.
+  // The kickoff stays where it is: this is the one place that
   // must NOT clear the composer, because nothing else holds the text and
   // clearing it would destroy the only copy of what the agent was asked to do.
   return { observed: true, observedAt, pane, parked: true, submitted: false, paneAfter: await read().catch(() => null) }
@@ -517,8 +524,9 @@ export async function injectClaudePrompt(session, prompt, {
 
 // agy shows a workspace trust dialog on first launch per cwd ("Do you trust
 // the contents of this project?", default-highlight Yes). Confirming it is
-// safe to automate: the cwd is the daemon's own launch choice, and there is
-// no config pre-trust (codex's trust_level file) to write instead. Approval
+// safe to automate: the cwd is the daemon's own launch choice. Pre-trust
+// (ensureAgyProjectTrusted) usually already covered the cwd, so this is the
+// race net, not the path. Approval
 // dialogs ("Run this command?", "Allow access to this file?") are NEVER
 // confirmed here; they surface as blockedByDialog for a human or a bypass
 // flag configured by the operator.
@@ -657,10 +665,121 @@ export async function injectAgyPrompt(session, prompt, {
     // approval check above runs first on every pass.
     await tmuxExec(tmuxSocket, 'send-keys', '-t', target, 'Enter').catch(() => {})
   }
-  // Out of budget with our text in the composer. Unlike the codex injector
+  // Out of budget with our text in the composer. Enter-only on purpose:
+  // Meta+Enter was tried as the fallback and measured dead (one success in
+  // six attempts on identical input, unreproducible after). This injector
+  // only ever carries short text now -- the rendezvous wake and the notify
+  // path -- and short text submits on Enter; a long single line is
+  // unsubmittable from the composer, which is why the kickoff rides
+  // --prompt-interactive instead of coming through here.
+  // Unlike the codex injector
   // this does not withdraw it: no verified composer-clear key exists for agy,
   // and destroying the only copy of the kickoff is worse than leaving it
   // parked where the wake path's submitParkedKickoff can see and resubmit it.
   note('submit-timeout', submitted || shown)
   return false
+}
+
+// The agy kickoff rendezvous: what the spawn paths call INSTEAD of pasting
+// the kickoff. The kickoff already rode --prompt-interactive, so turn 1 is
+// the standby reply; this waits for that turn to end (STANDBY42 in the
+// transcript, idle composer) AND for the MCP server child to exist, sleeps
+// past the handshake/injection margin, then injects the short login wake.
+// Both waits run in one poll loop because they overlap in time (~15-25s
+// each); sequential waits would blow the 60s server login deadline. Same
+// (session, { tmuxSocket, report }) shape as the injector it replaces at
+// the spawn sites, same true/false contract, richer stages.
+export async function rendezvousAgyKickoff(session, {
+  timeoutMs = 150_000,
+  mcpSettleMs = 12_000,
+  tmuxSocket = process.env.TMUX_SOCKET || null,
+  tmuxExec = tmux,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  report = null,
+  runtimeState = sessionRuntimeState,
+  injectShort = (target, text, opts) => injectAgyPrompt(target, text, opts),
+} = {}) {
+  const deadline = Date.now() + timeoutMs
+  const target = exactTmuxTarget(session)
+  const read = async () => String((await tmuxExec(tmuxSocket, 'capture-pane', '-t', target, '-p')).stdout || '')
+  const standbyState = (pane = '') => paneComposerState('agy', pane, AGY_STANDBY_MARKER)
+  let lastPane = ''
+  const note = (stage, pane) => {
+    if (!report || typeof report !== 'object') return
+    report.stage = stage
+    report.pane = String(pane || '').slice(-2000)
+  }
+  let standbyDone = false
+  let mcpDone = false
+  let runtimePolls = 0
+  while (Date.now() < deadline) {
+    let pane
+    try {
+      pane = await read()
+      lastPane = pane
+    } catch {
+      await sleep(1000)
+      continue
+    }
+    if (agyApprovalBlocking(pane)) {
+      note('approval-blocked', pane)
+      return false
+    }
+    if (agyTrustConfirmable(pane)) {
+      await tmuxExec(tmuxSocket, 'send-keys', '-t', target, 'Enter').catch(() => {})
+      await sleep(1000)
+      continue
+    }
+    if (!standbyDone) {
+      const state = standbyState(pane)
+      // STANDBY42 in the transcript AND an idle composer: the marker alone
+      // also matches mid-turn (the -i prompt echoes it), and the composer
+      // alone goes idle on boot before the turn starts.
+      if (pane.includes(AGY_STANDBY_MARKER) && state.promptIndex >= 0 && !state.busyAfter) {
+        standbyDone = true
+        note('standby', pane)
+      }
+    }
+    // The process probe costs a ps fork; the pane read above is the fast
+    // loop, this rides every fifth pass.
+    if (!mcpDone && runtimePolls++ % 5 === 0) {
+      try {
+        if ((await runtimeState(session, { tmuxSocket }))?.mcp) {
+          mcpDone = true
+          note('mcp-ready', pane)
+        }
+      } catch {
+        // A failed look is not absence; keep polling.
+      }
+    }
+    if (standbyDone && mcpDone) break
+    await sleep(1000)
+  }
+  if (!standbyDone || !mcpDone) {
+    note(!standbyDone ? 'standby-timeout' : 'mcp-timeout', lastPane)
+    return false
+  }
+  // mcp:true leads usable tools by the node boot plus handshake (~9s
+  // measured); the standby turn usually covers it, the margin covers the
+  // rest. Waking into tools that are not there yet burns the wake.
+  await sleep(mcpSettleMs)
+  const remaining = deadline - Date.now()
+  if (remaining <= 0) {
+    note('wake-timeout', lastPane)
+    return false
+  }
+  const wakeReport = {}
+  const woken = await injectShort(session, AGY_WAKE_LOGIN_TEXT, {
+    timeoutMs: Math.min(remaining, 60_000),
+    tmuxSocket,
+    tmuxExec,
+    sleep,
+    report: wakeReport,
+  })
+  if (!woken) {
+    note(wakeReport.stage ? `wake-${wakeReport.stage}` : 'wake-failed', wakeReport.pane || lastPane)
+    return false
+  }
+  note('woken', wakeReport.pane || lastPane)
+  return true
 }

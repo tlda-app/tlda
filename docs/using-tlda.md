@@ -593,6 +593,12 @@ the next spawn. A malformed base or project configuration makes the next mint
 fail. Use the profiles advertised by `tlda agent` instead of hard-coding their
 names.
 
+Minting agy agents needs one entry on the machine outside this file: agy
+loads MCP servers from its global config only, so `tlda` must be registered
+there (`agy mcp add tlda <node> <checkout>/mcp-server/index.mjs`). No
+per-agent values go in that entry; the agent's identity reaches its MCP
+server through the environment the daemon launches agy with.
+
 Regions name sets of paths. Profiles separately choose which regions an agent
 may read and write. Grants assign a profile to an identity:
 
