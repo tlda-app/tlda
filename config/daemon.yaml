@@ -23,11 +23,12 @@ models:
       description: Muse Spark via Claude Code (Meta Model API)
       options:
         effort:
-          default: high
+          default: max
           values:
             low: {}
             medium: {}
             high: {}
+            max: {}
     muse-meta:
       id: muse-spark-1.3-contributor
       harness:
@@ -40,11 +41,12 @@ models:
       level: 1
       options:
         effort:
-          default: high
+          default: max
           values:
             low: {}
             medium: {}
             high: {}
+            max: {}
     opus:
       id: opus
       harness:

@@ -62,4 +62,6 @@ test('muse alias resolves to the claude harness with the meta model id', () => {
   const { spec } = resolveModelSelection('muse', { config })
   assert.equal(spec.harness, 'claude')
   assert.equal(spec.id, META_MODEL)
+  assert.equal(spec.options.effort.default, 'max')
+  assert.ok(Object.hasOwn(spec.options.effort.values, 'max'))
 })
