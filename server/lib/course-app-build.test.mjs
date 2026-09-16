@@ -60,6 +60,14 @@ test('an unlinked matching deck is not released', () => {
   assert.deepEqual(deriveCourseAppSpec(root, 'index.qmd').decks, [])
 })
 
+test('a linked deck is recognized outside a decks directory', () => {
+  const root = fixture()
+  mkdirSync(join(root, 'lectures'))
+  writeFileSync(join(root, 'lectures/one-slides.qmd'), 'slides')
+  writeFileSync(join(root, 'index.qmd'), '[Slides](lectures/one-slides.qmd)')
+  assert.deepEqual(deriveCourseAppSpec(root, 'index.qmd').decks, ['lectures/one-slides.qmd'])
+})
+
 test('explicitly linked assets survive as relative app-site paths', () => {
   const root = fixture()
   const output = join(root, 'app-output')

@@ -34,7 +34,7 @@ function writeRender(renderedDir) {
   const pages = rows.map(([source, file, title]) => ({ file, title, source: { file: source }, ...(source.startsWith('decks/') ? { variant: 'slides' } : {}) }))
   for (const page of pages) {
     mkdirSync(join(renderedDir, dirname(page.file)), { recursive: true })
-    writeFileSync(join(renderedDir, page.file), `<h1>${page.title}</h1>`)
+    writeFileSync(join(renderedDir, page.file), `<link rel="next" href="./unreleased.html"><h1>${page.title}</h1><nav><a href="./unreleased.html"><span>Unreleased</span></a></nav>`)
     mkdirSync(join(renderedDir, dirname(page.source.file)), { recursive: true })
     writeFileSync(join(renderedDir, page.source.file), page.source.file)
   }
@@ -81,6 +81,9 @@ test('one render feeds matching static and app publication trees', async () => {
   assert.equal(existsSync(join(output, 'app/book/chapters/unreleased.html')), false)
   assert.equal(existsSync(join(output, 'static/book/chapters/unreleased.qmd')), false)
   assert.equal(existsSync(join(output, 'app/chapters/unreleased.qmd')), false)
+  assert.doesNotMatch(readFileSync(join(output, 'static/book/chapters/one.html'), 'utf8'), /href="\.\/unreleased\.html"/)
+  assert.doesNotMatch(readFileSync(join(output, 'app/book/chapters/one.html'), 'utf8'), /href="\.\/unreleased\.html"/)
+  assert.match(readFileSync(join(output, 'static/book/chapters/one.html'), 'utf8'), /<span>Unreleased<\/span>/)
   assert.deepEqual(publicationMetadata(output).static, publicationMetadata(output).app)
 })
 
