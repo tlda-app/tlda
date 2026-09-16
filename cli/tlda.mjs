@@ -29,6 +29,7 @@ import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selec
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
 import { assertOwnerCapableLaunchdManager, transitionLaunchdJob } from './lib/config-apply-transition.mjs'
+import { declaredLaunchdEnvNames, formatMissingLaunchdEnvWarning, renderEnvironmentPlist, resolveLaunchdEnv } from './lib/config-apply-env.mjs'
 import { botServicePaths as declaredBotServicePaths, parseBotMintId, resolveBotScript } from '../shared/bot-declaration.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import { rotateBeforeOpen } from '../shared/rotating-log.mjs'
@@ -239,7 +240,7 @@ const COMMAND_HELP = {
   daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service. Stop refuses because unloading the job from an agent shell strands it; use restart or uninstall.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model <provider-model>] [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         With no model or kind, uses the configured default model. --model names\n         a provider model directly; --kind then defaults to codex. Run in a\n         terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Non-interactive calls report the local tmux\n         session and local mint id; they do not claim a fleet-recipient binding.',
   'repo-doctor': 'tlda project repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
-  config:  'tlda config [init | apply | mcp-setup | setup | auth | set <key> <value> | get [key]]\n\n  init       Create the config files a fresh install needs (daemon.yaml, server.yaml)\n             pointing at this machine. Only writes files that are missing; an\n             existing config is never merged into or overwritten.\n  apply      Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n             --dry-run       show the plan without writing plists or running launchctl.\n             --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  mcp-setup  Write .mcp.json in the current directory for tlda and fleet tools.\n  setup      Run one-time local setup tasks, such as editor URL handlers.\n  auth       Manage access tokens.\n  set        Manage CLI preferences.\n  get        Show CLI preferences.',
+  config:  'tlda config [init | apply | mcp-setup | setup | auth | set <key> <value> | get [key]]\n\n  init       Create the config files a fresh install needs (daemon.yaml, server.yaml)\n             pointing at this machine. Only writes files that are missing; an\n             existing config is never merged into or overwritten.\n  apply      Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n             --dry-run       show the plan without writing plists or running launchctl.\n             --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n             File changes take effect through unload/load (`tlda config apply`);\n             `launchctl kickstart` only restarts the loaded definition and never reloads the file.\n  mcp-setup  Write .mcp.json in the current directory for tlda and fleet tools.\n  setup      Run one-time local setup tasks, such as editor URL handlers.\n  auth       Manage access tokens.\n  set        Manage CLI preferences.\n  get        Show CLI preferences.',
 }
 
 COMMAND_HELP.classroom += '\n\n  Identity options:\n    --instructor-preferred-name  Required. Course-owned classroom display name.\n    --instructor-pronouns        Optional free-text pronouns; pass an empty value to clear.'
@@ -1488,7 +1489,7 @@ function daemonPathEnv() {
   ].join(':')
 }
 
-function daemonEnvironmentEntries({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null } = {}) {
+function daemonEnvironmentEntries({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null, extraEnv = [] } = {}) {
   const entries = [
     ['PATH', daemonPathEnv()],
     ['NODE_OPTIONS', `--require=${FLEET_DAEMON_DNS_ALIAS_PRELOAD}`],
@@ -1500,16 +1501,15 @@ function daemonEnvironmentEntries({ configDir = null, envName = DAEMON_WORLD_NAM
     entries.push(['TLDA_DAEMON_CONFIG_DIR', configDir])
   }
   if (processTitle) entries.push(['TLDA_DAEMON_PROCESS_TITLE', processTitle])
+  for (const [key, value] of extraEnv) entries.push([key, String(value)])
   return entries
 }
 
-function daemonEnvironmentPlist({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null } = {}) {
-  return daemonEnvironmentEntries({ configDir, envName, processTitle })
-    .map(([key, value]) => `        <key>${plistEscape(key)}</key>\n        <string>${plistEscape(value)}</string>`)
-    .join('\n')
+function daemonEnvironmentPlist({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null, extraEnv = [] } = {}) {
+  return renderEnvironmentPlist(daemonEnvironmentEntries({ configDir, envName, processTitle, extraEnv }))
 }
 
-function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, envName = DAEMON_WORLD_NAME, cliPath = null, processTitle = null } = {}) {
+function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, envName = DAEMON_WORLD_NAME, cliPath = null, processTitle = null, extraEnv = [] } = {}) {
   const command = `exec /opt/homebrew/bin/node --import tsx ${JSON.stringify(FLEET_DAEMON_SCRIPT)}`
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1529,7 +1529,7 @@ function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON
     <string>Background</string>
     <key>EnvironmentVariables</key>
     <dict>
-${daemonEnvironmentPlist({ configDir, envName, processTitle })}
+${daemonEnvironmentPlist({ configDir, envName, processTitle, extraEnv })}
     </dict>
     <key>KeepAlive</key>
     <true/>
@@ -1723,17 +1723,26 @@ function daemonConfigSuffix(configName) {
   return configName === 'default' ? '' : `.${String(configName).replace(/[^a-zA-Z0-9._-]+/g, '-')}`
 }
 
-function daemonJobForEnvName(envName) {
+function daemonJobForEnvName(envName, daemonConfig = null) {
   const suffix = daemonConfigSuffix(envName)
   const label = `com.tlda.fleet-daemon${suffix}`
   const logFile = join(CONFIG_DIR, `fleet-daemon${suffix}.log`)
   const plist = labelPlistPath(label)
+  // Declared operator env rides the generated content: values come from this
+  // process's own environment, so the same config plus the same environment
+  // renders the same plist. Undeclared extras already on disk are dropped by
+  // construction — the generator owns the whole file.
+  const generated = daemonEnvironmentEntries({ envName })
+  const { entries: extraEnv } = resolveLaunchdEnv(declaredLaunchdEnvNames(daemonConfig), {
+    env: process.env,
+    reserved: generated.map(([key]) => key),
+  })
   return {
     kind: 'daemon',
     name: envName,
     label,
     plist,
-    content: daemonPlistContent({ label, logFile, envName }),
+    content: daemonPlistContent({ label, logFile, envName, extraEnv }),
   }
 }
 
@@ -1851,7 +1860,7 @@ function serverJobIfInstalled() {
 function desiredLaunchdJobs() {
   const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
   const envNames = Object.keys(daemonConfig.environments?.values || {}).sort()
-  const jobs = envNames.map(name => daemonJobForEnvName(name))
+  const jobs = envNames.map(name => daemonJobForEnvName(name, daemonConfig))
   if (managedBotUnits().length) jobs.push(botManagerJob())
   const serverJob = serverJobIfInstalled()
   if (serverJob) jobs.push(serverJob)
@@ -2012,6 +2021,15 @@ async function cmdConfigApply() {
   const dryRun = hasFlag('dry-run')
   const only = getFlag('only')
   const desired = desiredLaunchdJobs()
+  // Declared-but-missing vars warn visibly (one line each, names only) and the
+  // apply continues: the plist simply omits them, so a half-configured
+  // operator shell cannot wedge every job. Warns on dry runs too — that is
+  // when the operator is checking what an apply would do.
+  {
+    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    const { missing } = resolveLaunchdEnv(declaredLaunchdEnvNames(daemonConfig), { env: process.env })
+    for (const name of missing) console.error(red(formatMissingLaunchdEnvWarning([name])))
+  }
   const existing = await existingManagedLaunchdJobs()
   const plan = planLaunchdApply({ desiredJobs: desired, existingJobs: existing })
 

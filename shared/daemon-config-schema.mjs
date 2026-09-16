@@ -30,6 +30,12 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'outboxInflightDeadlineSeconds',
   // Read by getOutboxFlushByteBudget().
   'outboxFlushByteBudget',
+  // Names (only names — never values) of operator-owned environment variables
+  // `tlda config apply` renders into fleet-daemon launchd plists, with values
+  // read from the applying process's own environment. Declared here so the
+  // declaration is public and convergent while every value stays out of the
+  // file (see config/environment-variables.md §2: secrets stay env vars).
+  'launchdEnv',
   'terminalInputAllowed',
   // Named subscription sets, in the `{ default, values }` form `models:` and
   // `environments:` use. Additive only — an agent's reachability comes from the
@@ -178,7 +184,30 @@ export function validateDaemonConfigTopLevel(root, label = 'daemon config') {
     throw new Error(`${label}: "terminalInputAllowed" must be a boolean`)
   }
   validateDaemonSubscriptions(config.subscriptions, label)
+  validateLaunchdEnv(config.launchdEnv, label)
   return config
+}
+
+// Names-only declaration of operator-owned env vars for fleet-daemon launchd
+// plists. Fail-loud like everything else in this file: a misspelled,
+// duplicated, or non-string entry is a declaration nobody is applying, and
+// this subsystem's whole failure mode is silence.
+export function validateLaunchdEnv(block, label = 'daemon config') {
+  if (block === undefined) return []
+  if (!Array.isArray(block)) {
+    throw new Error(`${label}: "launchdEnv" must be a list of environment variable names`)
+  }
+  const seen = new Set()
+  for (const name of block) {
+    if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`${label}: "launchdEnv" entries must look like ENV_VAR_NAMES (got ${JSON.stringify(name)})`)
+    }
+    if (seen.has(name)) {
+      throw new Error(`${label}: "launchdEnv" declares "${name}" twice`)
+    }
+    seen.add(name)
+  }
+  return [...seen]
 }
 
 // Same `{ default, values }` contract `models:` is held to, and the same errors,
