@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -35,9 +35,25 @@ function writeRender(renderedDir) {
   for (const page of pages) {
     mkdirSync(join(renderedDir, dirname(page.file)), { recursive: true })
     writeFileSync(join(renderedDir, page.file), `<h1>${page.title}</h1>`)
+    mkdirSync(join(renderedDir, dirname(page.source.file)), { recursive: true })
+    writeFileSync(join(renderedDir, page.source.file), page.source.file)
   }
   writeFileSync(join(renderedDir, 'page-info.json'), JSON.stringify(pages))
   writeFileSync(join(renderedDir, 'toc.json'), JSON.stringify(pages.map((page, i) => ({ title: page.title, level: 'chapter', page: i + 1 }))))
+}
+
+async function assembleStatic({ courseDir, renderedDir, outputDir }) {
+  mkdirSync(outputDir, { recursive: true })
+  cpSync(join(renderedDir, '_book'), join(outputDir, 'book'), { recursive: true })
+  mkdirSync(join(outputDir, 'book/homework/handouts'), { recursive: true })
+  cpSync(join(courseDir, 'homework/handouts/hw-handout.zip'), join(outputDir, 'book/homework/handouts/hw-handout.zip'))
+  writeFileSync(join(outputDir, 'index.html'), [
+    '<a href="book/index.html">Course</a>',
+    '<a href="book/chapters/one.html">Chapter</a>',
+    '<a href="book/decks/one-slides.html">Slides</a>',
+    '<a href="book/homework/hw.html">Homework</a>',
+    '<a href="book/homework/handouts/hw-handout.zip">Download</a>',
+  ].join('\n'))
 }
 
 test('one render feeds matching static and app publication trees', async () => {
@@ -51,17 +67,20 @@ test('one render feeds matching static and app publication trees', async () => {
       renders += 1
       writeRender(renderedDir)
     },
+    assembleStatic,
   })
   assert.equal(renders, 1)
   assert.equal(existsSync(join(output, 'index.html')), true)
   assert.match(readFileSync(join(output, 'index.html'), 'utf8'), /url=\/static\//)
-  assert.match(readFileSync(join(output, 'static/index.html'), 'utf8'), /_book\/index\.html/)
-  assert.equal(existsSync(join(output, 'static/_book/chapters/one.html')), true)
-  assert.equal(existsSync(join(output, 'app/_book/chapters/one.html')), true)
-  assert.equal(existsSync(join(output, 'static/_book/decks/one-slides.html')), true)
-  assert.equal(existsSync(join(output, 'app/_book/decks/one-slides.html')), true)
-  assert.equal(existsSync(join(output, 'static/_book/chapters/unreleased.html')), false)
-  assert.equal(existsSync(join(output, 'app/_book/chapters/unreleased.html')), false)
+  assert.match(readFileSync(join(output, 'static/index.html'), 'utf8'), /book\/index\.html/)
+  assert.equal(existsSync(join(output, 'static/book/chapters/one.html')), true)
+  assert.equal(existsSync(join(output, 'app/book/chapters/one.html')), true)
+  assert.equal(existsSync(join(output, 'static/book/decks/one-slides.html')), true)
+  assert.equal(existsSync(join(output, 'app/book/decks/one-slides.html')), true)
+  assert.equal(existsSync(join(output, 'static/book/chapters/unreleased.html')), false)
+  assert.equal(existsSync(join(output, 'app/book/chapters/unreleased.html')), false)
+  assert.equal(existsSync(join(output, 'static/book/chapters/unreleased.qmd')), false)
+  assert.equal(existsSync(join(output, 'app/chapters/unreleased.qmd')), false)
   assert.deepEqual(publicationMetadata(output).static, publicationMetadata(output).app)
 })
 
@@ -72,6 +91,7 @@ test('identical inputs produce identical publication metadata without cleanup', 
     indexFile: 'index.md',
     outputDir: output,
     render: async renderedDir => writeRender(renderedDir),
+    assembleStatic,
   })
   await run()
   const first = JSON.stringify(publicationMetadata(output))
@@ -79,17 +99,17 @@ test('identical inputs produce identical publication metadata without cleanup', 
   assert.equal(JSON.stringify(publicationMetadata(output)), first)
 })
 
-test('publication output cannot erase course source or the shared render', () => {
+test('publication output cannot erase course source or the shared render', async () => {
   const { course } = fixture()
   const rendered = join(dirname(course), 'rendered')
   writeRender(rendered)
-  assert.throws(
-    () => assembleCoursePublication(course, 'index.md', rendered, course),
+  await assert.rejects(
+    () => assembleCoursePublication(course, 'index.md', rendered, course, assembleStatic),
     /must be separate/,
   )
   assert.equal(existsSync(join(course, 'index.md')), true)
-  assert.throws(
-    () => assembleCoursePublication(course, 'index.md', rendered, rendered),
+  await assert.rejects(
+    () => assembleCoursePublication(course, 'index.md', rendered, rendered, assembleStatic),
     /must be separate/,
   )
   assert.equal(existsSync(join(rendered, 'page-info.json')), true)
