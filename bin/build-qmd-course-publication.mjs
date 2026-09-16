@@ -63,7 +63,11 @@ const result = await buildCoursePublication({
       '--book-dir', join(renderedDir, '_book'),
       '--artifact-root', renderedDir,
       '--site-dir', outputDir,
-    ], { cwd: dirname(staticBuilder), maxBuffer: 16 * 1024 * 1024 })
+    ], {
+      cwd: dirname(staticBuilder),
+      env: { ...process.env, PYTHONPATH: join(dirname(staticBuilder), 'python') },
+      maxBuffer: 16 * 1024 * 1024,
+    })
   },
 })
 const appPages = JSON.parse(readFileSync(`${outputDir}/app/page-info.json`, 'utf8'))
