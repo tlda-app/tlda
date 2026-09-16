@@ -5888,13 +5888,13 @@ function _sendWSOnce(type, params = {}, opts = {}) {
 // request deadline/idle timeout.
 async function sendFleetRequestAttempt(type, params = {}, opts = {}) {
   const nativeBinding = activeNativeBinding();
-  if (nativeBinding?.child_agent_id) {
+  if (nativeBinding?.child_agent_id && shouldUseToolEnvForFleetRequest(type)) {
     return sendOneShotWS(_activeToolEnv || activeEnvName(), type, params, {
       ...opts,
       authenticateAgentId: nativeBinding.child_agent_id,
     });
   }
-  if (_activeToolEnv) return sendOneShotWS(_activeToolEnv, type, params, opts);
+  if (_activeToolEnv && shouldUseToolEnvForFleetRequest(type)) return sendOneShotWS(_activeToolEnv, type, params, opts);
   const startedAt = Date.now();
   const deadlineMs = Number.isFinite(opts.deadlineMs)
     ? opts.deadlineMs
@@ -6098,6 +6098,10 @@ export function __setFleetTransportForTest(transport) {
     ...(transport?.ephemeral ? { ephemeral: transport.ephemeral } : {}),
     ...(transport?.durable ? { durable: transport.durable } : {}),
   };
+}
+
+export function shouldUseToolEnvForFleetRequest(type) {
+  return type !== 'channel-notification-ack';
 }
 
 let _channelHasOpened = false;
