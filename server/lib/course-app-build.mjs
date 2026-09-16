@@ -110,7 +110,7 @@ export function copyCourseAppAssets(courseDir, outputDir, spec) {
 }
 
 /** Compile an already-built TLDA project into the released course app tree. */
-export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir) {
+export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir, suppliedSpec = null) {
   const sourceRoot = resolve(courseDir)
   const builtRoot = resolve(builtDir)
   const outputRoot = resolve(outputDir)
@@ -119,7 +119,7 @@ export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir)
       inside(sourceRoot, outputRoot) || inside(builtRoot, outputRoot)) {
     throw new Error('course app output must be separate from the course source and TLDA build')
   }
-  const spec = deriveCourseAppSpec(courseDir, indexFile)
+  const spec = suppliedSpec || deriveCourseAppSpec(courseDir, indexFile)
   const pageInfoPath = join(builtDir, 'page-info.json')
   if (!existsSync(pageInfoPath)) throw new Error(`built TLDA output has no page-info.json: ${builtDir}`)
   const allPages = JSON.parse(readFileSync(pageInfoPath, 'utf8'))

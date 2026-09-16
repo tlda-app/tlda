@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { deriveCourseAppSpec } from './course-app-build.mjs'
 import { assembleCoursePublication, buildCoursePublication, publicationMetadata } from './course-publication-build.mjs'
 
 function fixture() {
@@ -85,6 +86,27 @@ test('one render feeds matching static and app publication trees', async () => {
   assert.doesNotMatch(readFileSync(join(output, 'app/book/chapters/one.html'), 'utf8'), /href="\.\/unreleased\.html"/)
   assert.match(readFileSync(join(output, 'static/book/chapters/one.html'), 'utf8'), /<span>Unreleased<\/span>/)
   assert.deepEqual(publicationMetadata(output).static, publicationMetadata(output).app)
+})
+
+test('source publication spec survives a generated landing page that hides future links', async () => {
+  const { course, output } = fixture()
+  const appSpec = deriveCourseAppSpec(course, 'index.md')
+  const assembleDatedStatic = async args => {
+    await assembleStatic(args)
+    writeFileSync(join(args.outputDir, 'index.html'), '<a href="book/index.html">Course</a>')
+  }
+  await buildCoursePublication({
+    courseDir: course,
+    indexFile: 'index.md',
+    outputDir: output,
+    appSpec,
+    render: async renderedDir => writeRender(renderedDir),
+    assembleStatic: assembleDatedStatic,
+  })
+  assert.equal(existsSync(join(output, 'static/book/chapters/one.html')), true)
+  assert.equal(existsSync(join(output, 'static/book/decks/one-slides.html')), true)
+  assert.equal(existsSync(join(output, 'app/book/chapters/one.html')), true)
+  assert.equal(existsSync(join(output, 'app/book/decks/one-slides.html')), true)
 })
 
 test('identical inputs produce identical publication metadata without cleanup', async () => {

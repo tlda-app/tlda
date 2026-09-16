@@ -100,6 +100,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
         courseDir: srcDir,
         indexFile,
         outputDir: outDir,
+        appSpec: spec,
         render: renderedDir => buildIncrementalQmd({
           sourceDir: srcDir,
           outputDir: renderedDir,

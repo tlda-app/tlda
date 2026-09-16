@@ -65,7 +65,7 @@ function unwrapLinksToMissingFiles(root, files) {
   }
 }
 
-export async function assembleCoursePublication(courseDir, indexFile, renderedDir, outputDir, assembleStatic) {
+export async function assembleCoursePublication(courseDir, indexFile, renderedDir, outputDir, assembleStatic, appSpec = null) {
   if (typeof assembleStatic !== 'function') throw new Error('course publication requires the existing static compiler')
   const root = resolve(outputDir)
   if (pathsOverlap(root, courseDir) || pathsOverlap(root, renderedDir)) {
@@ -80,7 +80,7 @@ export async function assembleCoursePublication(courseDir, indexFile, renderedDi
   if (!existsSync(join(staticDir, 'index.html'))) {
     throw new Error('static compiler produced no index.html')
   }
-  const app = assembleCourseAppSite(courseDir, join(staticDir, 'index.html'), renderedDir, appDir)
+  const app = assembleCourseAppSite(courseDir, join(staticDir, 'index.html'), renderedDir, appDir, appSpec)
   moveAppBook(appDir, app)
   pruneStatic(staticDir, renderedDir, app)
   const pageFiles = app.pages.map(page => page.file)
@@ -92,7 +92,7 @@ export async function assembleCoursePublication(courseDir, indexFile, renderedDi
   return { app, staticDir, appDir }
 }
 
-export async function buildCoursePublication({ courseDir, indexFile, outputDir, render, assembleStatic }) {
+export async function buildCoursePublication({ courseDir, indexFile, outputDir, render, assembleStatic, appSpec = null }) {
   if (typeof render !== 'function') throw new Error('buildCoursePublication requires one render function')
   const outputParent = dirname(resolve(outputDir))
   mkdirSync(outputParent, { recursive: true })
@@ -102,7 +102,7 @@ export async function buildCoursePublication({ courseDir, indexFile, outputDir, 
     if (!existsSync(join(renderedDir, 'page-info.json'))) {
       throw new Error('the shared Quarto/TLDA render produced no page-info.json')
     }
-    return await assembleCoursePublication(courseDir, indexFile, renderedDir, outputDir, assembleStatic)
+    return await assembleCoursePublication(courseDir, indexFile, renderedDir, outputDir, assembleStatic, appSpec)
   } finally {
     rmSync(renderedDir, { recursive: true, force: true })
   }
