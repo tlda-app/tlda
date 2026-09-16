@@ -33,7 +33,7 @@ import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { createDocumentManifest } from './document-manifest.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
-import { findTldaManifests, manifestTitleFromHtml, readTldaManifest } from './tlda-manifest.mjs'
+import { findTldaManifests, readTldaManifest } from './tlda-manifest.mjs'
 import { injectQuartoOutputProvenance } from './quarto-output-provenance.mjs'
 import { markQuartoSourceLines } from './quarto-source-lines.mjs'
 
@@ -1277,11 +1277,6 @@ export async function buildIncrementalQmd({
       const source = readFileSync(join(outDir, sourceFile), 'utf8')
       const withProvenance = injectQuartoOutputProvenance(readFileSync(path, 'utf8'), source, sourceFile)
       writeFileSync(path, stampFigureUrls(markQuartoSourceLines(withProvenance, source), figureStamp))
-      // Titles come from the rendered page itself, never from manifest
-      // strings alone: a manifest once carried the sidebar's first chapter
-      // span onto nine pages, duplicating one label across the TOC.
-      const renderedTitle = manifestTitleFromHtml(withProvenance, page.file)
-      if (renderedTitle) page.title = renderedTitle
     }
     // Every deck the profile declares that HAS a render — the ones built just
     // now, and the ones the seeded output already carried. Deriving the set
