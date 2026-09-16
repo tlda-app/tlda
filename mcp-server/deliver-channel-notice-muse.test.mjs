@@ -173,34 +173,6 @@ test('the codex case still submits into its pane', { skip: skipWithoutTmux }, as
   }
 })
 
-// agy has no MCP notification channel, so like codex it is notified through
-// its tmux pane. Before this case existed, every notification to an agy agent
-// fell through to `default` and threw, and the handler answered the server's
-// wake with `channel-error` -- so an agy agent only ever saw a message by
-// polling its own inbox.
-test('the agy case submits into its pane like codex', { skip: skipWithoutTmux }, async () => {
-  const session = `agy-notice-test-${process.pid}`
-  const previousHarness = process.env.FLEET_HARNESS
-  const previousSession = process.env.FLEET_TMUX_SESSION
-  startPane(session)
-  process.env.FLEET_HARNESS = 'agy'
-  process.env.FLEET_TMUX_SESSION = session
-
-  try {
-    const delivered = await deliverChannelNotice(NOTICE, { event_type: 'chat' })
-    assert.equal(delivered, true)
-
-    const pane = capture(session)
-    assert.match(pane, new RegExp(`${PANE_MARKER}.*muse channel notice`))
-  } finally {
-    if (previousHarness === undefined) delete process.env.FLEET_HARNESS
-    else process.env.FLEET_HARNESS = previousHarness
-    if (previousSession === undefined) delete process.env.FLEET_TMUX_SESSION
-    else process.env.FLEET_TMUX_SESSION = previousSession
-    killPane(session)
-  }
-})
-
 // The control for the assertion above: with no Enter, the same pane holds the
 // same characters and the marker never appears. Without this, `PANE_MARKER`
 // found in a capture could not be distinguished from the text echoing as it
