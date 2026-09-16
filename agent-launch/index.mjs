@@ -433,14 +433,15 @@ export async function launchMintProcess(params) {
     })
   }
   if (requestedKind === 'agy') {
+    const kickoffReport = {}
     const delivered = await (params._deps?.injectAgyPrompt || injectAgyPrompt)(
       tmuxSession,
       agy.kickoffPrompt(name),
-      { tmuxSocket: params.tmuxSocket },
+      { tmuxSocket: params.tmuxSocket, report: kickoffReport },
     )
     assertAgyKickoffDelivered(delivered, tmuxSession, {
       crashLogPath: params.crashLogPath,
-      detail: { name, mint_id: mintId, fleet_id: fleetId, path: 'mint' },
+      detail: { name, mint_id: mintId, fleet_id: fleetId, path: 'mint', stage: kickoffReport.stage || null, paneTail: kickoffReport.pane || null },
     })
   }
   return {
@@ -1128,10 +1129,12 @@ async function spawnRespawn(params) {
     }
   }
   if (requestedKind === 'agy') {
-    const injected = await (deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
+    const kickoffReport = {}
+    const injected = await (deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket, report: kickoffReport })
     if (!injected) {
-      recordKickoffFailure(tmuxSession, params.crashLogPath, { name: friendlyName, fleet_id: fleetId, path: 'respawn' }, 'agy-kickoff-not-delivered')
-      throw new SpawnError('launch-failed', `agy prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
+      const detail = { name: friendlyName, fleet_id: fleetId, path: 'respawn', stage: kickoffReport.stage || null, paneTail: kickoffReport.pane || null }
+      recordKickoffFailure(tmuxSession, params.crashLogPath, detail, 'agy-kickoff-not-delivered')
+      throw new SpawnError('launch-failed', `agy prompt injection did not reach ${tmuxSession}${detail.stage ? ` (stage: ${detail.stage})` : ''}`, { fleetId, tmuxSession, stage: detail.stage, paneTail: detail.paneTail })
     }
   } else if (requestedKind === 'claude' && resumeId) {
     await injectClaudePrompt(tmuxSession, claude.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
@@ -1256,10 +1259,12 @@ async function spawnRefresh(params) {
     }
   }
   if (requestedKind === 'agy') {
-    const injected = await (deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
+    const kickoffReport = {}
+    const injected = await (deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket, report: kickoffReport })
     if (!injected) {
-      recordKickoffFailure(tmuxSession, params.crashLogPath, { name: friendlyName, fleet_id: fleetId, path: 'refresh' }, 'agy-kickoff-not-delivered')
-      throw new SpawnError('launch-failed', `agy prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
+      const detail = { name: friendlyName, fleet_id: fleetId, path: 'refresh', stage: kickoffReport.stage || null, paneTail: kickoffReport.pane || null }
+      recordKickoffFailure(tmuxSession, params.crashLogPath, detail, 'agy-kickoff-not-delivered')
+      throw new SpawnError('launch-failed', `agy prompt injection did not reach ${tmuxSession}${detail.stage ? ` (stage: ${detail.stage})` : ''}`, { fleetId, tmuxSession, stage: detail.stage, paneTail: detail.paneTail })
     }
   }
   return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, refreshed: true }

@@ -208,6 +208,77 @@ test('agy injection that cannot confirm leaves the parked text for wake recovery
   assert.equal(typeof delivered, 'boolean')
 })
 
+test('agy injection reports approval-blocked with the dialog pane', async () => {
+  const prompt = 'Do something needing approval.'
+  const dialog = `> ${prompt}\n\nRun this command?\n> 1. Yes, run command\nesc to cancel`
+  const tmuxExec = async (_socket, command) => {
+    if (command === 'capture-pane') return { stdout: dialog }
+    return { stdout: '' }
+  }
+  const report = {}
+  const delivered = await injectAgyPrompt('fleet-agent', prompt, { timeoutMs: 1500, tmuxExec, sleep: async () => {}, report })
+  assert.equal(delivered, false)
+  assert.equal(report.stage, 'approval-blocked')
+  assert.ok(report.pane.includes('Run this command?'))
+})
+
+test('agy injection reports settle-timeout when the TUI never boots', async () => {
+  const shell = 'skip@mini work % source /tmp/tlda-launch-1.sh'
+  const tmuxExec = async (_socket, command) => {
+    if (command === 'capture-pane') return { stdout: shell }
+    return { stdout: '' }
+  }
+  const report = {}
+  const delivered = await injectAgyPrompt('fleet-agent', 'Reply with exactly: E2E-PING.', { timeoutMs: 300, tmuxExec, sleep: async () => {}, report })
+  assert.equal(delivered, false)
+  assert.equal(report.stage, 'settle-timeout')
+  assert.ok(report.pane.includes('tlda-launch-1.sh'))
+})
+
+test('agy injection reports submit-timeout with the parked pane', async () => {
+  const prompt = 'Call mcp__tlda__login exactly once, then inbox.'
+  let composer = ''
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: `Header\n> ${composer}\n${'─'.repeat(5)}\n? for shortcuts` }
+    if (typeof args.at(-1) === 'string' && args.at(-1) !== 'Enter') composer = args.at(-1)
+    return { stdout: '' }
+  }
+  const report = {}
+  const delivered = await injectAgyPrompt('fleet-agent', prompt, { timeoutMs: 1200, tmuxExec, sleep: async () => {}, report })
+  assert.equal(delivered, false)
+  assert.equal(report.stage, 'submit-timeout')
+  assert.ok(report.pane.includes('exactly once'))
+})
+
+test('agy injection reports submitted on success', async () => {
+  const prompt = 'Reply with exactly: E2E-PING and nothing else.'
+  const idle = `Header\n>\n${'─'.repeat(5)}\n? for shortcuts`
+  const full = `Header\n> ${prompt}\n${'─'.repeat(5)}\n? for shortcuts`
+  const working = `${full}\n\n▸ Thought for 1s, 5 tokens\nesc to cancel`
+  const panes = [idle, full, working, working]
+  let reads = 0
+  const tmuxExec = async (_socket, command) => {
+    if (command === 'capture-pane') return { stdout: panes[Math.min(reads++, panes.length - 1)] }
+    return { stdout: '' }
+  }
+  const report = {}
+  const delivered = await injectAgyPrompt('fleet-agent', prompt, { timeoutMs: 8000, tmuxExec, sleep: async () => {}, report })
+  assert.equal(delivered, true)
+  assert.equal(report.stage, 'submitted')
+})
+
+test('agy injection bounds the reported pane', async () => {
+  const big = `skip@mini work % ${'x'.repeat(3000)}`
+  const tmuxExec = async (_socket, command) => {
+    if (command === 'capture-pane') return { stdout: big }
+    return { stdout: '' }
+  }
+  const report = {}
+  const delivered = await injectAgyPrompt('fleet-agent', 'hi', { timeoutMs: 300, tmuxExec, sleep: async () => {}, report })
+  assert.equal(delivered, false)
+  assert.equal(report.pane.length, 2000)
+})
+
 test('live session identity resolves from process plus conversation store', async t => {
   const sqlite = await import('node:sqlite')
   const dir = mkdtempSync(path.join(tmpdir(), 'agy-identity-test-'))
