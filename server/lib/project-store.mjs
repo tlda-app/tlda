@@ -162,7 +162,7 @@ function formatForNewProject(mainFile, format) {
 
 export function createProject({ name, title, mainFile, format = null, members, documentRoots = null }) {
   const dir = join(projectsDir, name)
-  if (projectStoreReservations.has(name) || existsSync(dir)) {
+  if (projectStoreReservations.has(name) || existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
   }
 

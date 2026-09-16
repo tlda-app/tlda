@@ -90,6 +90,25 @@ test('deleteProject clears its manifest through replace(project, [])', async () 
   }
 })
 
+test('createProject preserves files written before project metadata exists', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-project-preexisting-files-'))
+  const root = join(tempRoot, 'projects')
+  try {
+    await initProjectStore(root)
+    const recordings = join(root, 'course', 'recordings')
+    mkdirSync(recordings, { recursive: true })
+    writeFileSync(join(recordings, 'lecture.json'), '{"id":"lecture"}\n')
+
+    createProject({ name: 'course', title: 'Course', mainFile: 'index.qmd', format: 'qmd' })
+
+    assert.equal((await readProject('course')).mainFile, 'index.qmd')
+    assert.equal(readFileSync(join(recordings, 'lecture.json'), 'utf8'), '{"id":"lecture"}\n')
+  } finally {
+    await closeProjectStore()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('project metadata reads and updates run through the project files worker', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-project-metadata-worker-'))
   const root = join(tempRoot, 'projects')
