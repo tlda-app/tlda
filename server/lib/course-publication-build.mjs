@@ -39,6 +39,32 @@ function pruneStatic(staticDir, renderedDir, app) {
   }
 }
 
+function unwrapLinksToMissingFiles(root, files) {
+  const anchor = /<a\b[^>]*\bhref=(['"])([^'"]+)\1[^>]*>([\s\S]*?)<\/a>/gi
+  const link = /<link\b[^>]*\bhref=(['"])([^'"]+)\1[^>]*>/gi
+  for (const file of files) {
+    const path = join(root, file)
+    if (!existsSync(path)) continue
+    const html = readFileSync(path, 'utf8')
+    const pointsToMissingFile = rawHref => {
+      const href = rawHref.split(/[?#]/, 1)[0]
+      if (!href || href.startsWith('/') || href.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(href)) return false
+      let decoded
+      try {
+        decoded = decodeURIComponent(href)
+      } catch {
+        return false
+      }
+      const target = resolve(dirname(path), decoded)
+      return pathsOverlap(root, target) && !existsSync(target)
+    }
+    const cleaned = html
+      .replace(anchor, (whole, _quote, rawHref, contents) => pointsToMissingFile(rawHref) ? contents : whole)
+      .replace(link, (whole, _quote, rawHref) => pointsToMissingFile(rawHref) ? '' : whole)
+    if (cleaned !== html) writeFileSync(path, cleaned)
+  }
+}
+
 export async function assembleCoursePublication(courseDir, indexFile, renderedDir, outputDir, assembleStatic) {
   if (typeof assembleStatic !== 'function') throw new Error('course publication requires the existing static compiler')
   const root = resolve(outputDir)
@@ -57,6 +83,9 @@ export async function assembleCoursePublication(courseDir, indexFile, renderedDi
   const app = assembleCourseAppSite(courseDir, join(staticDir, 'index.html'), renderedDir, appDir)
   moveAppBook(appDir, app)
   pruneStatic(staticDir, renderedDir, app)
+  const pageFiles = app.pages.map(page => page.file)
+  unwrapLinksToMissingFiles(staticDir, ['index.html', ...pageFiles])
+  unwrapLinksToMissingFiles(appDir, pageFiles)
   writeFileSync(join(staticDir, 'page-info.json'), `${JSON.stringify(app.pages, null, 2)}\n`)
   writeFileSync(join(staticDir, 'toc.json'), readFileSync(join(appDir, 'toc.json')))
   writeFileSync(join(root, 'index.html'), ROOT_REDIRECT)
