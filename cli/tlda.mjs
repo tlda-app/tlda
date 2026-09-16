@@ -1480,6 +1480,7 @@ function daemonLaunchdDomain() {
 
 function daemonPathEnv() {
   return [
+    join(homedir(), '.local', 'bin'),
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/usr/bin',
