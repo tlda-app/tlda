@@ -57,9 +57,9 @@ test('anthropic-routed launches behave exactly as before', () => {
   assert.ok(!cmd.includes('Muse authentication'))
 })
 
-test('muse-claude alias resolves to the claude harness with the meta model id', () => {
+test('muse alias resolves to the claude harness with the meta model id', () => {
   const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
-  const { spec } = resolveModelSelection('muse-claude', { config })
+  const { spec } = resolveModelSelection('muse', { config })
   assert.equal(spec.harness, 'claude')
   assert.equal(spec.id, META_MODEL)
 })
