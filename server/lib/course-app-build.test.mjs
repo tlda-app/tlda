@@ -73,6 +73,7 @@ test('already-built TLDA output is selected, ordered, and repeatable from the in
     mkdirSync(join(built, dirname(page.file)), { recursive: true })
     writeFileSync(join(built, page.file), `<h1>${page.title}</h1>`)
   }
+  writeFileSync(join(built, '_book/runtime-frame.html'), 'renderer dependency')
   writeFileSync(join(built, 'page-info.json'), JSON.stringify(pages))
   writeFileSync(join(built, 'toc.json'), JSON.stringify(pages.map((page, i) => ({ title: page.title, level: 'chapter', page: i + 1 }))))
 
@@ -82,6 +83,7 @@ test('already-built TLDA output is selected, ordered, and repeatable from the in
   ])
   assert.equal(existsSync(join(output, '_book/chapters/unreleased.html')), false)
   assert.equal(existsSync(join(output, '_book/chapters/one.html')), true)
+  assert.equal(existsSync(join(output, '_book/runtime-frame.html')), true)
   const snapshot = readFileSync(join(output, 'page-info.json'), 'utf8')
   assembleCourseAppSite(root, 'index.qmd', built, output)
   assert.equal(readFileSync(join(output, 'page-info.json'), 'utf8'), snapshot)

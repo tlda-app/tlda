@@ -1,5 +1,5 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 // Images are page dependencies that Quarto already owns.  They are not
 // publication entries: in particular, the real syllabus shows students the
@@ -86,15 +86,6 @@ export function copyCourseAppAssets(courseDir, outputDir, spec) {
   }
 }
 
-function walkFiles(root, rel = '', files = []) {
-  for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
-    const child = rel ? `${rel}/${entry.name}` : entry.name
-    if (entry.isDirectory()) walkFiles(root, child, files)
-    else if (entry.isFile()) files.push(child)
-  }
-  return files
-}
-
 /** Compile an already-built TLDA project into the released course app tree. */
 export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir) {
   const sourceRoot = resolve(courseDir)
@@ -123,12 +114,11 @@ export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir)
   mkdirSync(dirname(outputDir), { recursive: true })
   cpSync(builtDir, outputDir, { recursive: true })
   const selectedFiles = new Set(pages.map(page => page.file))
-  for (const rel of walkFiles(outputDir)) {
-    if (extname(rel).toLowerCase() === '.html' && !selectedFiles.has(rel)) {
-      rmSync(join(outputDir, rel), { force: true })
-      const support = join(outputDir, rel.replace(/\.html$/i, '_files'))
-      if (existsSync(support) && statSync(support).isDirectory()) rmSync(support, { recursive: true, force: true })
-    }
+  for (const page of allPages) {
+    if (selectedFiles.has(page.file)) continue
+    rmSync(join(outputDir, page.file), { force: true })
+    const support = join(outputDir, page.file.replace(/\.html$/i, '_files'))
+    if (existsSync(support) && statSync(support).isDirectory()) rmSync(support, { recursive: true, force: true })
   }
 
   const oldIndexByFile = new Map(allPages.map((page, index) => [page.file, index + 1]))
