@@ -57,21 +57,14 @@ test('anthropic-routed launches behave exactly as before', () => {
   assert.ok(!cmd.includes('Muse authentication'))
 })
 
-test('muse alias resolves to the claude harness with the meta model id', () => {
+test('muse alias resolves to Claude through OpenRouter', () => {
   const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
   const { spec } = resolveModelSelection('muse', { config })
   assert.equal(spec.harness, 'claude')
-  assert.equal(spec.id, META_MODEL)
-  assert.equal(spec.options.effort.default, 'max')
-  assert.ok(Object.hasOwn(spec.options.effort.values, 'max'))
-})
-
-test('muse-or alias resolves to Claude through OpenRouter without changing muse', () => {
-  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
-  const { spec } = resolveModelSelection('muse-or', { config })
-  assert.equal(spec.harness, 'claude')
   assert.equal(spec.id, 'meta/muse-spark-1.3-contributor')
   assert.equal(spec.harnessOptions.env.ANTHROPIC_BASE_URL, 'https://openrouter.ai/api')
+  assert.equal(spec.options.effort.default, 'max')
+  assert.ok(Object.hasOwn(spec.options.effort.values, 'max'))
 
   const cmd = buildCmd({
     model: spec.id,
@@ -86,9 +79,9 @@ test('muse-or alias resolves to Claude through OpenRouter without changing muse'
   assert.ok(cmd.includes(`--model 'meta/muse-spark-1.3-contributor'`))
 })
 
-test('fleet muse-or launch requires the OpenRouter deployment key', () => {
+test('fleet muse launch requires the OpenRouter deployment key', () => {
   const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
-  const { spec } = resolveModelSelection('muse-or', { config })
+  const { spec } = resolveModelSelection('muse', { config })
   assert.throws(
     () => buildCmd({ model: spec.id, tmuxSession: 'fleet-test-session', fleetId: 'fleet:example', harnessOptions: spec.harnessOptions, env: { META_API_KEY: 'wrong-provider-key' } }),
     /set OPENROUTER_API_KEY/,
