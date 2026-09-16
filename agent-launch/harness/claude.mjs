@@ -91,20 +91,21 @@ export function buildCmd({
   // Meta-routed models so Anthropic-routed launches behave byte-identically.
   const fleet = !!(fleetId || localAgentId)
   const openRouterRouted = /^https:\/\/openrouter\.ai\/api\/?$/i.test(String(launchEnv.ANTHROPIC_BASE_URL || ''))
-  const metaRouted = !openRouterRouted && /^muse-/i.test(String(model || ''))
+  const deepSeekRouted = /^https:\/\/api\.deepseek\.com\/anthropic\/?$/i.test(String(launchEnv.ANTHROPIC_BASE_URL || ''))
+  const metaRouted = !openRouterRouted && !deepSeekRouted && /^muse-/i.test(String(model || ''))
   let shellPrefix = ''
-  if (metaRouted || openRouterRouted) {
-    for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'META_API_KEY', 'OPENROUTER_API_KEY']) {
+  if (metaRouted || openRouterRouted || deepSeekRouted) {
+    for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'META_API_KEY', 'OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY']) {
       if (Object.hasOwn(launchEnv, key)) throw new Error('Provider credentials must come from the deployment environment, not daemon model configuration')
     }
-    const providerKey = openRouterRouted ? 'OPENROUTER_API_KEY' : 'META_API_KEY'
+    const providerKey = openRouterRouted ? 'OPENROUTER_API_KEY' : (deepSeekRouted ? 'DEEPSEEK_API_KEY' : 'META_API_KEY')
     const deploymentKey = typeof env[providerKey] === 'string' && env[providerKey] ? env[providerKey] : ''
     if (fleet) {
       if (!deploymentKey) throw new Error(`Muse authentication is missing for Claude-routed launch; set ${providerKey} in the deployment environment`)
       launchEnv.ANTHROPIC_AUTH_TOKEN = deploymentKey
       // The deployment key is the auth decision; the operator's own
       // Anthropic credentials must not ride along through the login shell.
-      shellPrefix = openRouterRouted
+      shellPrefix = openRouterRouted || deepSeekRouted
         ? 'unset ANTHROPIC_API_KEY; unset CLAUDE_CODE_OAUTH_TOKEN; unset META_API_KEY; '
         : 'unset ANTHROPIC_API_KEY; unset CLAUDE_CODE_OAUTH_TOKEN; '
     } else if (deploymentKey) {

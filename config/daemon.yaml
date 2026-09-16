@@ -74,6 +74,34 @@ models:
             medium: {}
             high: {}
             max: {}
+    deepseek:
+      id: deepseek-flash[1m]
+      harness:
+        kind: claude
+        required:
+          - "--dangerously-load-development-channels server:tlda"
+        preferences: []
+        controls: true
+        env:
+          ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+          ANTHROPIC_MODEL: deepseek-flash[1m]
+          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-flash[1m]
+          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-flash[1m]
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-flash[1m]
+          CLAUDE_CODE_SUBAGENT_MODEL: deepseek-flash[1m]
+          CLAUDE_CODE_EFFORT_LEVEL: max
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "786432"
+      group: deepseek
+      level: 1
+      description: DeepSeek V4.1 Flash via Claude Code
+      options:
+        effort:
+          default: max
+          values:
+            low: {}
+            medium: {}
+            high: {}
+            max: {}
     opus:
       id: opus
       harness:

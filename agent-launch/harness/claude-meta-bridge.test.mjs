@@ -94,3 +94,21 @@ test('fleet muse-or launch requires the OpenRouter deployment key', () => {
     /set OPENROUTER_API_KEY/,
   )
 })
+
+test('deepseek alias routes through Claude with the deployment key and max effort', () => {
+  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
+  const { spec } = resolveModelSelection('deepseek', { config })
+  assert.equal(spec.harness, 'claude')
+  assert.equal(spec.id, 'deepseek-flash[1m]')
+  assert.equal(spec.options.effort.default, 'max')
+  const cmd = buildCmd({
+    model: spec.id,
+    tmuxSession: 'fleet-test-session',
+    fleetId: 'fleet:example',
+    harnessOptions: spec.harnessOptions,
+    env: { DEEPSEEK_API_KEY: 'deepseek-deployment-secret', META_API_KEY: 'stale-meta-key' },
+  })
+  assert.ok(cmd.includes(`ANTHROPIC_AUTH_TOKEN='deepseek-deployment-secret'`))
+  assert.ok(!cmd.includes('stale-meta-key'))
+  assert.ok(cmd.includes(`--model 'deepseek-flash[1m]'`))
+})
