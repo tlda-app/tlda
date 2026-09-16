@@ -61,7 +61,6 @@ const result = await buildCoursePublication({
       staticBuilder,
       '--course-dir', courseDir,
       '--book-dir', join(renderedDir, '_book'),
-      '--artifact-root', renderedDir,
       '--site-dir', outputDir,
     ], {
       cwd: dirname(staticBuilder),
