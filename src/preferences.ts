@@ -119,6 +119,10 @@ const DEFAULTS = {
   // The labelled TOC controls remain the discoverable default. Compact mode
   // keeps the same controls and actions, but presents their glyphs in one row.
   'toc-controls-compact': false as boolean,
+  // Open the document panel from the explicit ToC button by default. Desktop
+  // readers who prefer the former always-present hover strip can opt back into
+  // it; phone, touch, and slides surfaces remain button-driven regardless.
+  'toc-button-mode': true as boolean,
   // Provenance/cascade surfacing mode. off = no surfacing (also hides the ribbon
   // hover tooltip). hover = ephemeral tooltip; panel = docked side panel; inline =
   // click-to-pin card. Default hover preserves today's behavior; off/panel/inline opt in.

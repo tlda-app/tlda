@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 
 const prefsTabSource = readFileSync(new URL('../src/panels/PrefsTab.tsx', import.meta.url), 'utf8')
 const tocTabSource = readFileSync(new URL('../src/panels/TocTab.tsx', import.meta.url), 'utf8')
+const documentPanelSource = readFileSync(new URL('../src/DocumentPanel.tsx', import.meta.url), 'utf8')
 const documentPanelCss = readFileSync(new URL('../src/DocumentPanel.css', import.meta.url), 'utf8')
 const preferencesSource = readFileSync(new URL('../src/preferences.ts', import.meta.url), 'utf8')
 
@@ -27,6 +28,13 @@ test('TOC compact controls setting is live and keeps labelled mode as the defaul
   assert.match(preferencesSource, /'toc-controls-compact': false as boolean/)
   assert.match(prefsTabSource, /checked=\{prefs\.tocControlsCompact\}[\s\S]*setPref\('toc-controls-compact', e\.target\.checked\)/)
   assert.match(tocTabSource, /useSyncExternalStore\(subscribePref, \(\) => getPref\('toc-controls-compact'\)\)/)
+})
+
+test('TOC button mode is live and defaults on while constrained surfaces stay button-driven', () => {
+  assert.match(preferencesSource, /'toc-button-mode': true as boolean/)
+  assert.match(prefsTabSource, /checked=\{prefs\.tocButtonMode\}[\s\S]*setPref\('toc-button-mode', e\.target\.checked\)/)
+  assert.match(documentPanelSource, /useSyncExternalStore\(subscribePref, \(\) => getPref\('toc-button-mode'\)\)/)
+  assert.match(documentPanelSource, /buttonMode \|\| doc\?\.format === 'slides' \|\| isPhone \|\| IS_TOUCH_DEVICE/)
 })
 
 test('TOC keeps its established control order and can compact the state controls', () => {
