@@ -45,6 +45,18 @@ test('build maps effort and model to agy flags without embedding prompt text', (
   assert.ok(!cmd.includes('inbox'), 'the kickoff travels by injection, never argv')
 })
 
+test('build passes bare family ids so effort keys select real variants', () => {
+  // agy rejects a suffixed --model that conflicts with --effort; aliases use
+  // bare family ids with the flag selecting the variant.
+  for (const [model, efforts] of [['gemini-3.1-pro', ['low', 'high']], ['gemini-3.8-flash', ['low', 'medium', 'high']]]) {
+    for (const effort of efforts) {
+      const cmd = buildCmd({ model, cwd: tmpdir(), effort })
+      assert.ok(cmd.includes(`--model '${model}'`))
+      assert.ok(cmd.includes(`--effort '${effort}'`))
+    }
+  }
+})
+
 test('the generated shell command delivers literal arguments to the executable', t => {
   const dir = mkdtempSync(path.join(tmpdir(), 'agy-adapter-test-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
