@@ -1,0 +1,96 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+
+import { assembleCoursePublication, buildCoursePublication, publicationMetadata } from './course-publication-build.mjs'
+
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), 'course-publication-'))
+  const course = join(root, 'course')
+  const output = join(root, 'publication')
+  for (const dir of ['chapters', 'decks', 'homework/handouts']) mkdirSync(join(course, dir), { recursive: true })
+  writeFileSync(join(course, 'index.md'), [
+    '[Chapter](chapters/one.qmd)',
+    '[Slides](decks/one-slides.qmd)',
+    '[Homework](homework/hw.html)',
+    '[Download](homework/handouts/hw-handout.zip)',
+  ].join('\n'))
+  for (const rel of ['chapters/one.qmd', 'decks/one-slides.qmd', 'homework/hw.qmd', 'homework/handouts/hw-handout.zip']) {
+    writeFileSync(join(course, rel), rel)
+  }
+  return { root, course, output }
+}
+
+function writeRender(renderedDir) {
+  const rows = [
+    ['chapters/unreleased.qmd', '_book/chapters/unreleased.html', 'Unreleased'],
+    ['index.md', '_book/index.html', 'Course'],
+    ['decks/one-slides.qmd', '_book/decks/one-slides.html', 'One — Slides'],
+    ['chapters/one.qmd', '_book/chapters/one.html', 'One'],
+    ['homework/hw.qmd', '_book/homework/hw.html', 'Homework'],
+  ]
+  const pages = rows.map(([source, file, title]) => ({ file, title, source: { file: source }, ...(source.startsWith('decks/') ? { variant: 'slides' } : {}) }))
+  for (const page of pages) {
+    mkdirSync(join(renderedDir, dirname(page.file)), { recursive: true })
+    writeFileSync(join(renderedDir, page.file), `<h1>${page.title}</h1>`)
+  }
+  writeFileSync(join(renderedDir, 'page-info.json'), JSON.stringify(pages))
+  writeFileSync(join(renderedDir, 'toc.json'), JSON.stringify(pages.map((page, i) => ({ title: page.title, level: 'chapter', page: i + 1 }))))
+}
+
+test('one render feeds matching static and app publication trees', async () => {
+  const { course, output } = fixture()
+  let renders = 0
+  await buildCoursePublication({
+    courseDir: course,
+    indexFile: 'index.md',
+    outputDir: output,
+    render: async renderedDir => {
+      renders += 1
+      writeRender(renderedDir)
+    },
+  })
+  assert.equal(renders, 1)
+  assert.equal(existsSync(join(output, 'index.html')), true)
+  assert.match(readFileSync(join(output, 'index.html'), 'utf8'), /url=\/static\//)
+  assert.match(readFileSync(join(output, 'static/index.html'), 'utf8'), /_book\/index\.html/)
+  assert.equal(existsSync(join(output, 'static/_book/chapters/one.html')), true)
+  assert.equal(existsSync(join(output, 'app/_book/chapters/one.html')), true)
+  assert.equal(existsSync(join(output, 'static/_book/decks/one-slides.html')), true)
+  assert.equal(existsSync(join(output, 'app/_book/decks/one-slides.html')), true)
+  assert.equal(existsSync(join(output, 'static/_book/chapters/unreleased.html')), false)
+  assert.equal(existsSync(join(output, 'app/_book/chapters/unreleased.html')), false)
+  assert.deepEqual(publicationMetadata(output).static, publicationMetadata(output).app)
+})
+
+test('identical inputs produce identical publication metadata without cleanup', async () => {
+  const { course, output } = fixture()
+  const run = () => buildCoursePublication({
+    courseDir: course,
+    indexFile: 'index.md',
+    outputDir: output,
+    render: async renderedDir => writeRender(renderedDir),
+  })
+  await run()
+  const first = JSON.stringify(publicationMetadata(output))
+  await run()
+  assert.equal(JSON.stringify(publicationMetadata(output)), first)
+})
+
+test('publication output cannot erase course source or the shared render', () => {
+  const { course } = fixture()
+  const rendered = join(dirname(course), 'rendered')
+  writeRender(rendered)
+  assert.throws(
+    () => assembleCoursePublication(course, 'index.md', rendered, course),
+    /must be separate/,
+  )
+  assert.equal(existsSync(join(course, 'index.md')), true)
+  assert.throws(
+    () => assembleCoursePublication(course, 'index.md', rendered, rendered),
+    /must be separate/,
+  )
+  assert.equal(existsSync(join(rendered, 'page-info.json')), true)
+})
