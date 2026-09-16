@@ -260,3 +260,26 @@ test('the same queued kickoff without a dialog is submitted', async () => {
   assert.equal(result.submitted, true)
   assert.deepEqual(sent, ['Enter'])
 })
+
+test('an agy kickoff that ignores Enter is reported parked, never Meta+Entered', async () => {
+  // Meta+Enter was tried as the fallback and measured dead, so the wake
+  // path stays Enter-only and reports the parked failure honestly.
+  const prompt = 'Call mcp__tlda__login exactly once, then inbox.'
+  const sent = []
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: `Header\n> ${prompt}\n${'─'.repeat(5)}\n? for shortcuts` }
+    sent.push(args.at(-1))
+    return { stdout: '' }
+  }
+
+  const result = await submitParkedKickoff('fleet-agent', 'agy', prompt, {
+    tmuxExec,
+    sleep: async () => {},
+    confirmMs: 300,
+  })
+
+  assert.equal(result.parked, true)
+  assert.equal(result.submitted, false)
+  assert.ok(sent.includes('Enter'))
+  assert.ok(!sent.includes('M-Enter'), 'no dead fallback key is ever sent')
+})

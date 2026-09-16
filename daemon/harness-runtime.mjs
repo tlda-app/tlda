@@ -109,6 +109,17 @@ export function createHarnessRuntime({
         terminalChat: false,
       },
     },
+    agy: {
+      kind: 'agy',
+      processRe: /(?:^|\s|[/\\])agy(?:\.exe)?(?:\s|$)/,
+      activity: {
+        kind: 'agy',
+        source: 'sqlite',
+        usesClaudeSessionIds: false,
+        backfillSearch: false,
+        terminalChat: false,
+      },
+    },
     bot: {
       kind: 'bot',
       processRe: /(?:^|\s|[/\\])node(?:\.exe)?(?:\s|$).*?\.mjs\b/,

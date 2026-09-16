@@ -9,7 +9,7 @@ import path from 'node:path'
 import { normalizeSpawnModelKwargs } from './models.mjs'
 import { getMachineId } from '../shared/config.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsMintShell, wsReserveShell } from './register.mjs'
-import { injectAgyPrompt, injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, sessionRuntimeState, spawnTmux, submitParkedKickoff, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
+import { injectClaudePrompt, injectCodexPrompt, rendezvousAgyKickoff, sessionHasRuntime, sessionRuntimeState, spawnTmux, submitParkedKickoff, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
 import { resolveLaunchPolicy, permissionMetadata } from './permissions.mjs'
 import { resolveCodexResumeHandle } from '../agent-runtime/codex-resume-resolver.mjs'
@@ -257,11 +257,12 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
     })
     sendKeys = true
   } else if (requestedKind === 'agy') {
-    // agy has no trust pre-seed and no prompt-embedding flag; the workspace
-    // MCP file carries per-agent identity (written here, the
-    // ensureProjectTrusted precedent) and the kickoff is injected into the
-    // TUI like codex, with the trust dialog confirmed at inject time.
-    agy.prepareWorkspaceMcp({ cwd, fleetId, localAgentId, tmuxSession, name, config, env, harnessOptions })
+    // Trust pre-seed (the codex ensureProjectTrusted precedent) keeps the
+    // dialog out of the mint path; the kickoff rides --prompt-interactive
+    // because paste-and-submit cannot deliver it (measured: ~20 chars/sec
+    // digestion, Enter submits no long single line). Per-agent MCP identity
+    // needs no file: the MCP child inherits agy's FLEET_* (measured).
+    agy.ensureAgyProjectTrusted(cwd, env.HOME || os.homedir())
     cmd = agy.buildCmd({
       fleetId,
       localAgentId,
@@ -273,6 +274,7 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
       api,
       dnsAlias,
       resumeId,
+      includePrompt,
       config,
       env,
       harnessOptions,
@@ -434,9 +436,8 @@ export async function launchMintProcess(params) {
   }
   if (requestedKind === 'agy') {
     const kickoffReport = {}
-    const delivered = await (params._deps?.injectAgyPrompt || injectAgyPrompt)(
+    const delivered = await (params._deps?.rendezvousAgyKickoff || rendezvousAgyKickoff)(
       tmuxSession,
-      agy.kickoffPrompt(name),
       { tmuxSocket: params.tmuxSocket, report: kickoffReport },
     )
     assertAgyKickoffDelivered(delivered, tmuxSession, {
@@ -715,7 +716,7 @@ async function spawnFresh(params) {
       promptDeliveryPromise = requestedKind === 'codex'
         ? Promise.resolve((deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
         : requestedKind === 'agy'
-          ? Promise.resolve((deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
+          ? Promise.resolve((deps.rendezvousAgyKickoff || rendezvousAgyKickoff)(tmuxSession, { tmuxSocket: params.tmuxSocket }))
           : Promise.resolve(true)
     } catch (error) {
       promptDeliveryPromise = Promise.reject(error)
@@ -1130,11 +1131,11 @@ async function spawnRespawn(params) {
   }
   if (requestedKind === 'agy') {
     const kickoffReport = {}
-    const injected = await (deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket, report: kickoffReport })
+    const injected = await (deps.rendezvousAgyKickoff || rendezvousAgyKickoff)(tmuxSession, { tmuxSocket: params.tmuxSocket, report: kickoffReport })
     if (!injected) {
       const detail = { name: friendlyName, fleet_id: fleetId, path: 'respawn', stage: kickoffReport.stage || null, paneTail: kickoffReport.pane || null }
       recordKickoffFailure(tmuxSession, params.crashLogPath, detail, 'agy-kickoff-not-delivered')
-      throw new SpawnError('launch-failed', `agy prompt injection did not reach ${tmuxSession}${detail.stage ? ` (stage: ${detail.stage})` : ''}`, { fleetId, tmuxSession, stage: detail.stage, paneTail: detail.paneTail })
+      throw new SpawnError('launch-failed', `agy kickoff rendezvous did not complete in ${tmuxSession}${detail.stage ? ` (stage: ${detail.stage})` : ''}`, { fleetId, tmuxSession, stage: detail.stage, paneTail: detail.paneTail })
     }
   } else if (requestedKind === 'claude' && resumeId) {
     await injectClaudePrompt(tmuxSession, claude.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
@@ -1260,11 +1261,11 @@ async function spawnRefresh(params) {
   }
   if (requestedKind === 'agy') {
     const kickoffReport = {}
-    const injected = await (deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket, report: kickoffReport })
+    const injected = await (deps.rendezvousAgyKickoff || rendezvousAgyKickoff)(tmuxSession, { tmuxSocket: params.tmuxSocket, report: kickoffReport })
     if (!injected) {
       const detail = { name: friendlyName, fleet_id: fleetId, path: 'refresh', stage: kickoffReport.stage || null, paneTail: kickoffReport.pane || null }
       recordKickoffFailure(tmuxSession, params.crashLogPath, detail, 'agy-kickoff-not-delivered')
-      throw new SpawnError('launch-failed', `agy prompt injection did not reach ${tmuxSession}${detail.stage ? ` (stage: ${detail.stage})` : ''}`, { fleetId, tmuxSession, stage: detail.stage, paneTail: detail.paneTail })
+      throw new SpawnError('launch-failed', `agy kickoff rendezvous did not complete in ${tmuxSession}${detail.stage ? ` (stage: ${detail.stage})` : ''}`, { fleetId, tmuxSession, stage: detail.stage, paneTail: detail.paneTail })
     }
   }
   return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, refreshed: true }
@@ -1440,7 +1441,7 @@ export async function launchDoctorYolo(params = {}) {
     const promptDeliveryPromise = requestedKind === 'codex'
       ? Promise.resolve((deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
       : requestedKind === 'agy'
-        ? Promise.resolve((deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
+        ? Promise.resolve((deps.rendezvousAgyKickoff || rendezvousAgyKickoff)(tmuxSession, { tmuxSocket: params.tmuxSocket }))
         : Promise.resolve(true)
     const registrationPromise = (async () => {
       const serverUp = await (deps.ensureServer || ensureServer)({ api })

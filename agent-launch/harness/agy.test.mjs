@@ -4,8 +4,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { buildCmd, kickoffPrompt, prepareWorkspaceMcp, resolveLiveSessionIdentity, resolveModelSelection, resumeId } from './agy.mjs'
-import { injectAgyPrompt } from '../tmux.mjs'
+import { AGY_STANDBY_MARKER, AGY_WAKE_LOGIN_TEXT, buildCmd, ensureAgyProjectTrusted, kickoffPrompt, resolveLiveSessionIdentity, resolveModelSelection, resumeId, standbyKickoffPrompt } from './agy.mjs'
+import { injectAgyPrompt, rendezvousAgyKickoff } from '../tmux.mjs'
 import { composerState } from '../../agent-runtime/status-classifier.mjs'
 import { probeSpawnAvailability } from '../availability.mjs'
 
@@ -37,12 +37,24 @@ test('the kickoff carries the fleet login contract', () => {
   assert.ok(kickoff.includes('inbox'), 'kickoff tells the agent to check its inbox')
 })
 
-test('build maps effort and model to agy flags without embedding prompt text', () => {
+test('build embeds the standby kickoff via --prompt-interactive', () => {
   const cmd = buildCmd({ model: AGY_MODEL, cwd: tmpdir(), effort: 'high', harnessOptions: { required: ['--dangerously-skip-permissions'] } })
   assert.ok(cmd.includes(`--model '${AGY_MODEL}'`))
   assert.ok(cmd.includes(`--effort 'high'`))
   assert.ok(cmd.includes('--dangerously-skip-permissions'))
-  assert.ok(!cmd.includes('inbox'), 'the kickoff travels by injection, never argv')
+  // Paste-and-submit cannot deliver the kickoff (measured: ~20 chars/sec
+  // digestion, Enter submits no long single line), so it rides argv.
+  assert.ok(cmd.includes('--prompt-interactive'))
+  assert.ok(cmd.includes('STANDBY42'), 'turn 1 is the harmless standby reply')
+  assert.ok(cmd.includes('inbox'), 'the shared kickoff contract travels with it')
+  assert.ok(!buildCmd({ model: AGY_MODEL, cwd: tmpdir(), includePrompt: false }).includes('--prompt-interactive'))
+})
+
+test('the standby kickoff wraps the shared contract without forking it', () => {
+  const standby = standbyKickoffPrompt('test-agent')
+  assert.ok(standby.includes(AGY_STANDBY_MARKER))
+  assert.ok(standby.endsWith(kickoffPrompt('test-agent')), 'the shared text rides intact, prefix only')
+  assert.ok(AGY_WAKE_LOGIN_TEXT.length < 200, 'the wake stays short enough to submit')
 })
 
 test('build passes bare family ids so effort keys select real variants', () => {
@@ -55,6 +67,21 @@ test('build passes bare family ids so effort keys select real variants', () => {
       assert.ok(cmd.includes(`--effort '${effort}'`))
     }
   }
+})
+
+test('build resolves the agy binary to an absolute path', t => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'agy-bin-test-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(path.join(dir, 'agy'), '#!/bin/sh\necho agy-stub\n', { mode: 0o700 })
+  const cmd = buildCmd({ model: AGY_MODEL, cwd: tmpdir(), env: { ...process.env, PATH: dir } })
+  assert.ok(cmd.includes(`'${path.join(dir, 'agy')}'`), 'the child never searches PATH')
+})
+
+test('build throws a named error when agy is missing from PATH', () => {
+  assert.throws(
+    () => buildCmd({ model: AGY_MODEL, cwd: tmpdir(), env: { ...process.env, PATH: '/nonexistent-agy-dir-xyz' } }),
+    /agy binary not found on PATH/,
+  )
 })
 
 test('the generated shell command delivers literal arguments to the executable', t => {
@@ -70,24 +97,28 @@ test('the generated shell command delivers literal arguments to the executable',
   assert.equal(result[result.indexOf('--model') + 1], model)
 })
 
-test('workspace MCP merge preserves other servers and refuses to clobber', t => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'agy-mcp-test-'))
+test('trust pre-seed merges into settings and refuses to clobber', t => {
+  const home = mkdtempSync(path.join(tmpdir(), 'agy-home-test-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const dir = mkdtempSync(path.join(tmpdir(), 'agy-trust-test-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
-  const agents = path.join(dir, '.agents')
-  mkdirSync(agents, { recursive: true })
-  writeFileSync(path.join(agents, 'mcp_config.json'), JSON.stringify({ mcpServers: { other: { command: '/bin/true' } } }))
-  const file = prepareWorkspaceMcp({ cwd: dir, fleetId: 'fleet:1', localAgentId: 'local:1', tmuxSession: 's', name: 'n' })
-  const parsed = JSON.parse(readFileSync(file, 'utf8'))
-  assert.equal(parsed.mcpServers.other.command, '/bin/true')
-  assert.equal(parsed.mcpServers.tlda.env.FLEET_ID, 'fleet:1')
-  assert.equal(parsed.mcpServers.tlda.env.FLEET_TMUX_SESSION, 's')
-  assert.equal(parsed.mcpServers.tlda.env.FLEET_HARNESS, 'agy')
-  assert.ok(parsed.mcpServers.tlda.args[0].endsWith('mcp-server/index.mjs'))
+  const settingsDir = path.join(home, '.gemini', 'antigravity-cli')
+  mkdirSync(settingsDir, { recursive: true })
+  const settings = path.join(settingsDir, 'settings.json')
+  writeFileSync(settings, JSON.stringify({ trustedWorkspaces: ['/elsewhere'], other: { keep: true } }))
+  assert.equal(ensureAgyProjectTrusted(dir, home), true)
+  const parsed = JSON.parse(readFileSync(settings, 'utf8'))
+  assert.ok(parsed.trustedWorkspaces.includes(realpathSync(dir)))
+  assert.ok(parsed.trustedWorkspaces.includes('/elsewhere'))
+  assert.deepEqual(parsed.other, { keep: true })
+  assert.equal(ensureAgyProjectTrusted(dir, home), false, 'second seed is a no-op')
 
-  writeFileSync(path.join(agents, 'mcp_config.json'), '{not json')
-  assert.throws(() => prepareWorkspaceMcp({ cwd: dir, tmuxSession: 's' }), /refuses to overwrite unreadable/)
-  writeFileSync(path.join(agents, 'mcp_config.json'), '["array"]')
-  assert.throws(() => prepareWorkspaceMcp({ cwd: dir, tmuxSession: 's' }), /non-object/)
+  writeFileSync(settings, '{not json')
+  assert.throws(() => ensureAgyProjectTrusted(dir, home), /refuses to overwrite unreadable/)
+  writeFileSync(settings, '["array"]')
+  assert.throws(() => ensureAgyProjectTrusted(dir, home), /non-object/)
+  writeFileSync(settings, JSON.stringify({ trustedWorkspaces: 'yes' }))
+  assert.throws(() => ensureAgyProjectTrusted(dir, home), /non-array trustedWorkspaces/)
 })
 
 test('agy composer state tells parked, submitted, and working apart', () => {
@@ -277,6 +308,126 @@ test('agy injection bounds the reported pane', async () => {
   const delivered = await injectAgyPrompt('fleet-agent', 'hi', { timeoutMs: 300, tmuxExec, sleep: async () => {}, report })
   assert.equal(delivered, false)
   assert.equal(report.pane.length, 2000)
+})
+
+test('agy injection has no Meta+Enter fallback: parked long text fails honestly', async () => {
+  const prompt = 'Reply with exactly: E2E-PING and nothing else.'
+  const idle = `Header\n>\n${'─'.repeat(5)}\n? for shortcuts`
+  const parked = `Header\n> ${prompt}\n${'─'.repeat(5)}\n? for shortcuts`
+  let reads = 0
+  const sent = []
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') {
+      reads += 1
+      if (reads === 1) return { stdout: idle }
+      return { stdout: parked }
+    }
+    sent.push(args.at(-1))
+    return { stdout: '' }
+  }
+  // Meta+Enter was tried as the fallback and measured dead (one success in
+  // six attempts on identical input), so it must never be sent.
+  const report = {}
+  const delivered = await injectAgyPrompt('fleet-agent', prompt, { timeoutMs: 600, tmuxExec, sleep: async () => {}, report })
+  assert.equal(delivered, false)
+  assert.equal(report.stage, 'submit-timeout')
+  assert.ok(!sent.includes('M-Enter'), 'no dead fallback key is ever sent')
+})
+
+test('rendezvous waits for standby plus MCP, then wakes short', async () => {
+  const standbyPane = `> Your tlda MCP tools arrive about 30 seconds\nafter startup.\n\n  STANDBY42\n${'─'.repeat(5)}\n>\n${'─'.repeat(5)}\n? for shortcuts`
+  const reads = []
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') {
+      reads.push(1)
+      return { stdout: reads.length < 3 ? 'skip@mini % source launch.sh' : standbyPane }
+    }
+    return { stdout: '' }
+  }
+  let runtimeCalls = 0
+  const runtimeState = async () => ({ mcp: ++runtimeCalls >= 2 })
+  const wakes = []
+  const injectShort = async (session, text, opts) => {
+    wakes.push(text)
+    opts.report.stage = 'submitted'
+    opts.report.pane = 'working'
+    return true
+  }
+  const report = {}
+  const delivered = await rendezvousAgyKickoff('fleet-agent', {
+    timeoutMs: 10000, mcpSettleMs: 5, tmuxExec, sleep: async () => {}, report, runtimeState, injectShort,
+  })
+  assert.equal(delivered, true)
+  assert.equal(report.stage, 'woken')
+  assert.deepEqual(wakes, [AGY_WAKE_LOGIN_TEXT])
+})
+
+test('rendezvous reports which half never arrived', async () => {
+  const standbyPane = `> prompt\n\n  STANDBY42\n${'─'.repeat(5)}\n>\n${'─'.repeat(5)}\n? for shortcuts`
+  const noMarker = `Header\n>\n${'─'.repeat(5)}\n? for shortcuts`
+  const paneExec = (stdout) => async (_socket, command) => {
+    if (command === 'capture-pane') return { stdout }
+    return { stdout: '' }
+  }
+  const neverMcp = async () => ({ mcp: false })
+  const instantMcp = async () => ({ mcp: true })
+  const noWake = async () => { throw new Error('wake must not fire') }
+  const standbyReport = {}
+  assert.equal(await rendezvousAgyKickoff('s', {
+    timeoutMs: 300, mcpSettleMs: 1, tmuxExec: paneExec(noMarker), sleep: async () => {},
+    report: standbyReport, runtimeState: instantMcp, injectShort: noWake,
+  }), false)
+  assert.equal(standbyReport.stage, 'standby-timeout')
+  const mcpReport = {}
+  assert.equal(await rendezvousAgyKickoff('s', {
+    timeoutMs: 300, mcpSettleMs: 1, tmuxExec: paneExec(standbyPane), sleep: async () => {},
+    report: mcpReport, runtimeState: neverMcp, injectShort: noWake,
+  }), false)
+  assert.equal(mcpReport.stage, 'mcp-timeout')
+})
+
+test('rendezvous confirms a raced trust dialog and refuses approvals', async () => {
+  const trust = 'Accessing workspace:\n\nDo you trust the contents of this project?\n\n> Yes, I trust this folder\n  No, exit'
+  const standbyPane = `> prompt\n\n  STANDBY42\n${'─'.repeat(5)}\n>\n${'─'.repeat(5)}\n? for shortcuts`
+  let reads = 0
+  const sent = []
+  const tmuxExec = async (_socket, command, ...args) => {
+    if (command === 'capture-pane') return { stdout: ++reads <= 2 ? trust : standbyPane }
+    sent.push(args.at(-1))
+    return { stdout: '' }
+  }
+  const report = {}
+  const delivered = await rendezvousAgyKickoff('s', {
+    timeoutMs: 5000, mcpSettleMs: 1, tmuxExec, sleep: async () => {}, report,
+    runtimeState: async () => ({ mcp: true }),
+    injectShort: async (_s, _t, opts) => { opts.report.stage = 'submitted'; return true },
+  })
+  assert.equal(delivered, true)
+  assert.ok(sent.includes('Enter'), 'the raced trust dialog was confirmed')
+
+  const dialog = `> text\n\nRun this command?\n> 1. Yes, run command\nesc to cancel`
+  const blockedReport = {}
+  assert.equal(await rendezvousAgyKickoff('s', {
+    timeoutMs: 5000, mcpSettleMs: 1,
+    tmuxExec: async (_socket, command) => command === 'capture-pane' ? { stdout: dialog } : { stdout: '' },
+    sleep: async () => {}, report: blockedReport,
+    runtimeState: async () => ({ mcp: true }), injectShort: async () => true,
+  }), false)
+  assert.equal(blockedReport.stage, 'approval-blocked')
+})
+
+test('rendezvous names the wake stage on wake failure', async () => {
+  const standbyPane = `> prompt\n\n  STANDBY42\n${'─'.repeat(5)}\n>\n${'─'.repeat(5)}\n? for shortcuts`
+  const report = {}
+  const delivered = await rendezvousAgyKickoff('s', {
+    timeoutMs: 5000, mcpSettleMs: 1,
+    tmuxExec: async (_socket, command) => command === 'capture-pane' ? { stdout: standbyPane } : { stdout: '' },
+    sleep: async () => {}, report,
+    runtimeState: async () => ({ mcp: true }),
+    injectShort: async (_s, _t, opts) => { opts.report.stage = 'submit-timeout'; opts.report.pane = 'parked'; return false },
+  })
+  assert.equal(delivered, false)
+  assert.equal(report.stage, 'wake-submit-timeout')
 })
 
 test('live session identity resolves from process plus conversation store', async t => {

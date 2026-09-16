@@ -1467,10 +1467,12 @@ function tmuxSendText(sessionName, text, settleMs = 0) {
 // appear, then waits for it to leave -- two facts read off the pane instead of
 // one number.
 //
-// Only muse needs it. Codex was measured on a live idle pane the same night --
+// Muse and agy need it. Codex was measured on a live idle pane the same night --
 // text visible at 991ms, Enter accepted at BOTH 400ms and 1200ms -- so codex
 // queues input rather than dropping it, and claude consumes slowly but in
 // order. Neither has the failure this exists to catch; both keep their settle.
+// agy is the worse muse: pasted text digests at ~20 chars/sec (measured),
+// so an Enter at a fixed settle always lands mid-digestion and is lost.
 //
 // Both waits are bounded and both failures throw. `deliverChannelNotice`'s
 // caller renders a throw as `channel-error: <message>` and a false as a bare
@@ -1546,6 +1548,84 @@ function submitNotificationIntoMusePane(content) {
     return false;
   }
   return tmuxSubmitTextVerified(sess, content);
+}
+
+const AGY_NOTIFY_TYPE_TIMEOUT_MS = 30000;
+const AGY_NOTIFY_SUBMIT_TIMEOUT_MS = 15000;
+const AGY_NOTIFY_POLL_INTERVAL_MS = 500;
+const AGY_NOTIFY_SUBMIT_ATTEMPTS = 3;
+// A long single line parked in agy's composer is unsubmittable (measured:
+// neither Enter nor Meta+Enter submits 855 chars, settled or digesting),
+// so a notification past this length cannot be delivered by typing. Fail
+// fast and loud rather than parking it; notifications are short by
+// construction (120-char preview plus wrapper).
+const AGY_NOTIFY_MAX_CHARS = 400;
+
+// agy's composer is the last `>`-led line; submitted text scrolls above it
+// as `>`-led transcript, so the probe must be read off THIS line, not the
+// whole pane (the muse rule, same reason).
+function agyComposerLine(paneText) {
+  const lines = String(paneText || '').split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*>/.test(lines[i])) return lines[i];
+  }
+  return null;
+}
+
+// agy mid-turn shows `esc to cancel` where the idle composer shows the
+// shortcuts line. A submitted notification either leaves the composer or
+// starts a turn; either counts, because both mean the Enter landed.
+function agyTurnRunning(paneText) {
+  return String(paneText || '').includes('esc to cancel');
+}
+
+function agyProbe(line) {
+  return line.slice(0, 32);
+}
+
+async function waitForAgyPane(sessionName, timeoutMs, predicate) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const pane = await tmuxCapturePane(sessionName);
+    if (predicate(pane)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, AGY_NOTIFY_POLL_INTERVAL_MS));
+  }
+}
+
+async function tmuxSubmitTextVerifiedAgy(sessionName, text) {
+  const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
+  if (!line) return false;
+  if (line.length > AGY_NOTIFY_MAX_CHARS) {
+    throw new Error(`refusing to notify ${sessionName} with ${line.length} chars: long single lines are unsubmittable in agy's composer`);
+  }
+  const probe = agyProbe(line);
+  // Literal (-l): notifications carry emoji and quotes the shell must not see.
+  execFileSync('tmux', ['send-keys', '-t', sessionName, '-l', line], { timeout: 5000 });
+  if (!await waitForAgyPane(sessionName, AGY_NOTIFY_TYPE_TIMEOUT_MS, pane => {
+    const composer = agyComposerLine(pane);
+    return composer !== null && composer.includes(probe);
+  })) {
+    throw new Error(`typed text never reached the prompt in ${sessionName}; not sending Enter blindly`);
+  }
+  for (let attempt = 1; ; attempt++) {
+    execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
+    if (await waitForAgyPane(sessionName, AGY_NOTIFY_SUBMIT_TIMEOUT_MS, pane => {
+      const composer = agyComposerLine(pane);
+      return agyTurnRunning(pane) || (composer !== null && !composer.includes(probe));
+    })) return true;
+    if (attempt >= AGY_NOTIFY_SUBMIT_ATTEMPTS) break;
+  }
+  throw new Error(`notification still sitting in the prompt in ${sessionName} after ${AGY_NOTIFY_SUBMIT_ATTEMPTS} Enters; refusing to report it delivered`);
+}
+
+function submitNotificationIntoAgyPane(content) {
+  const sess = process.env.FLEET_TMUX_SESSION;
+  if (!sess) {
+    process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for terminal notification\n');
+    return false;
+  }
+  return tmuxSubmitTextVerifiedAgy(sess, content);
 }
 
 async function notifyOverClaudeChannel(content, meta = {}) {
@@ -6100,6 +6180,8 @@ export async function deliverChannelNotice(content, meta = {}) {
       return submitNotificationIntoMusePane(content);
     case 'goose':
       return typeNotificationIntoPane(content, 0);
+    case 'agy':
+      return submitNotificationIntoAgyPane(content);
     default:
       throw new Error(`Unhandled harness kind: ${kind}`);
   }
