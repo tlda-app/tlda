@@ -32,7 +32,9 @@ const DOCVIEW = { id: 'shape:fleet-docview-photographer-c87ef20d', type: 'fleet-
 /** Enough Editor for the disposal: it registers one side effect and nothing else. */
 function stubEditor() {
 	const handlers: Array<(shape: { id: string; type: string }) => void> = []
+	const shapes = new Map<string, { id: string; type: string }>([[DOCVIEW.id, DOCVIEW]])
 	const editor = {
+		getShape: (id: string) => shapes.get(id),
 		sideEffects: {
 			registerAfterDeleteHandler: (_t: string, fn: (shape: { id: string; type: string }) => void) => {
 				handlers.push(fn)
@@ -40,8 +42,18 @@ function stubEditor() {
 			},
 		},
 	} as unknown as Editor
-	return { editor, deleteShape: (shape: { id: string; type: string }) => handlers.forEach(fn => fn(shape)), handlers }
+	return {
+		editor,
+		deleteShape: (shape: { id: string; type: string }) => {
+			shapes.delete(shape.id)
+			handlers.forEach(fn => fn(shape))
+		},
+		restoreShape: (shape: { id: string; type: string }) => shapes.set(shape.id, shape),
+		handlers,
+	}
 }
+
+const nextTask = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
 /** What each renderer of the shape does on mount. `ensureViewLayer` is idempotent. */
 function mountRenderer(wm: ReturnType<typeof createWMCore>, layerId: string) {
@@ -52,7 +64,7 @@ function mountRenderer(wm: ReturnType<typeof createWMCore>, layerId: string) {
 	})
 }
 
-test('both renderers of one shape share a single layer', () => {
+test('both renderers of one shape share a single layer', async () => {
 	// The property the fix rests on: the main canvas and the fleet HUD each
 	// mount this shape and each ensure its layer, and that is ONE layer, so
 	// neither renderer is creating something of its own to clean up. It goes
@@ -71,10 +83,12 @@ test('both renderers of one shape share a single layer', () => {
 
 	// And one delete accounts for all of it.
 	deleteShape(DOCVIEW)
+	assert.doesNotThrow(() => wm.transform(layerId), 'a stale renderer may finish the deletion frame')
+	await nextTask()
 	assert.equal(wm.layerCount(), before)
 })
 
-test('deleting the shape removes its layer', () => {
+test('deleting the shape removes its layer after mounted renderers yield', async () => {
 	const wm = createWMCore({ rootLayerId: 'screen' })
 	const { editor, deleteShape } = stubEditor()
 	installSurfaceLayerDisposal(editor, wm)
@@ -83,10 +97,12 @@ test('deleting the shape removes its layer', () => {
 	mountRenderer(wm, layerId)
 	assert.equal(wm.hasLayer(layerId), true)
 	deleteShape(DOCVIEW)
+	assert.equal(wm.hasLayer(layerId), true)
+	await nextTask()
 	assert.equal(wm.hasLayer(layerId), false)
 })
 
-test('a doc-clip shape is disposed the same way', () => {
+test('a doc-clip shape is disposed the same way', async () => {
 	const wm = createWMCore({ rootLayerId: 'screen' })
 	const { editor, deleteShape } = stubEditor()
 	installSurfaceLayerDisposal(editor, wm)
@@ -95,7 +111,21 @@ test('a doc-clip shape is disposed the same way', () => {
 
 	mountRenderer(wm, layerId)
 	deleteShape(clip)
+	await nextTask()
 	assert.equal(wm.hasLayer(layerId), false)
+})
+
+test('restoring a shape before deferred disposal preserves its layer', async () => {
+	const wm = createWMCore({ rootLayerId: 'screen' })
+	const { editor, deleteShape, restoreShape } = stubEditor()
+	installSurfaceLayerDisposal(editor, wm)
+	const layerId = fleetDocviewLayerId(DOCVIEW.id)
+	mountRenderer(wm, layerId)
+
+	deleteShape(DOCVIEW)
+	restoreShape(DOCVIEW)
+	await nextTask()
+	assert.equal(wm.hasLayer(layerId), true)
 })
 
 test('deleting a shape that owns no surface layer disturbs nothing', () => {

@@ -9,15 +9,18 @@
  * renderer that ensures the layer and the disposal that removes it must agree
  * on the string or the removal silently misses.
  *
- * **The removal belongs to shape deletion, not component unmount.** The fleet
- * HUD is a second viewport over the same store, so one shape mounts *twice*
+ * **The removal belongs to shape deletion, after mounted renderers yield.**
+ * The fleet HUD is a second viewport over the same store, so one shape mounts *twice*
  * against the same core with the same layer id. Removing the layer in each
  * renderer's unmount therefore deleted it out from under the other renderer:
  * `Layer "fleet-docview:…" is not defined`. That cleanup was correct while
  * every surface had its own core and became wrong the moment `c6cb4d66a`
  * consolidated them into one — nothing revisited it then.
  *
- * Two renderers of one shape are not two owners. Nothing counts them.
+ * Two renderers of one shape are not two owners. Nothing counts them. The
+ * after-delete callback runs before React has necessarily unmounted those
+ * renderers, so removal is deferred to the next task. An undo or recreation
+ * in that interval cancels disposal.
  *
  * This is a separate module from `tlda-shape-layers.ts` only so it can be
  * exercised without the client bundle: that module reaches `fleet-ownership`
@@ -56,6 +59,10 @@ export function installSurfaceLayerDisposal(editor: Editor, wm: WMCore) {
 	installed.add(editor)
 	editor.sideEffects.registerAfterDeleteHandler('shape', (shape) => {
 		const layerId = surfaceLayerIdOfShape(shape)
-		if (layerId) removeLayers(wm, [layerId])
+		if (!layerId) return
+		setTimeout(() => {
+			if (editor.getShape(shape.id)) return
+			removeLayers(wm, [layerId])
+		}, 0)
 	})
 }
