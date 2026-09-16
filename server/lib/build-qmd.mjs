@@ -104,7 +104,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
           sourceDir: srcDir,
           outputDir: renderedDir,
           changedFiles: null,
-          mainFiles: qmdDocumentRootPaths(project),
+          mainFiles: [...spec.documents, ...spec.decks],
           name,
           log: addLog,
           projectMeta: project,
