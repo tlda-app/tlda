@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 // publication entries: in particular, the real syllabus shows students the
 // literal example `![](my-photo.png)`, which must not become a required file.
 const MARKDOWN_LINK = /(?<!!)\[[^\]]*\]\(([^)]+)\)/g
+const HTML_LINK = /\bhref=["']([^"']+)["']/gi
 
 function cleanTarget(raw) {
   const target = raw.trim().replace(/^<|>$/g, '').split(/[?#]/, 1)[0]
@@ -44,19 +45,41 @@ function addUnique(values, value) {
  */
 export function deriveCourseAppSpec(courseDir, indexFile) {
   const root = resolve(courseDir)
-  const indexPath = resolve(root, indexFile)
-  if (!inside(root, indexPath) || !existsSync(indexPath)) {
-    throw new Error(`course index is not a file inside the course checkout: ${indexFile}`)
+  const indexPath = isAbsolute(indexFile) ? resolve(indexFile) : resolve(root, indexFile)
+  const generatedHtml = indexPath.endsWith('.html') && !inside(root, indexPath)
+  if (!existsSync(indexPath) || (!generatedHtml && !inside(root, indexPath))) {
+    throw new Error(`course index is not an available publication input: ${indexFile}`)
   }
-  const indexRoot = relative(root, indexPath).replace(/\\/g, '/')
+  const generatedRoot = ['index.qmd', 'index.md'].find(candidate => existsSync(join(root, candidate)))
+  const indexRoot = generatedHtml ? generatedRoot : relative(root, indexPath).replace(/\\/g, '/')
+  if (!indexRoot) throw new Error(`${root}: course checkout has no index.qmd or index.md`)
   const documents = [indexRoot]
   const decks = []
   const assets = []
   const links = []
   const text = readFileSync(indexPath, 'utf8')
-  for (const match of text.matchAll(MARKDOWN_LINK)) {
+  const matches = generatedHtml ? text.matchAll(HTML_LINK) : text.matchAll(MARKDOWN_LINK)
+  for (const match of matches) {
     const cleaned = cleanTarget(match[1])
     if (!cleaned) continue
+    if (generatedHtml) {
+      const published = cleaned.replace(/^\.\//, '')
+      if (!published.startsWith('book/')) continue
+      const target = published.slice('book/'.length)
+      if (target === 'index.html') continue
+      const source = sourceForRenderedTarget(root, target)
+      if (source) {
+        links.push(target)
+        if (source.startsWith('decks/') && source.endsWith('-slides.qmd')) addUnique(decks, source)
+        else addUnique(documents, source)
+      } else if (existsSync(join(root, target))) {
+        links.push(target)
+        addUnique(assets, target)
+      } else {
+        throw new Error(`${indexPath}: published link has no course input: ${published}`)
+      }
+      continue
+    }
     const absolute = resolve(dirname(indexPath), cleaned)
     if (!inside(root, absolute)) throw new Error(`${indexRoot}: link escapes course checkout: ${cleaned}`)
     const target = relative(root, absolute).replace(/\\/g, '/')
@@ -117,6 +140,8 @@ export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir)
   for (const page of allPages) {
     if (selectedFiles.has(page.file)) continue
     rmSync(join(outputDir, page.file), { force: true })
+    const source = page?.source?.file
+    if (source) rmSync(join(outputDir, source), { force: true })
     const support = join(outputDir, page.file.replace(/\.html$/i, '_files'))
     if (existsSync(support) && statSync(support).isDirectory()) rmSync(support, { recursive: true, force: true })
   }

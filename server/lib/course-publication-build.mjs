@@ -1,15 +1,9 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 import { assembleCourseAppSite } from './course-app-build.mjs'
 
 const ROOT_REDIRECT = '<!doctype html>\n<meta charset="utf-8">\n<meta http-equiv="refresh" content="0; url=/static/">\n<link rel="canonical" href="/static/">\n'
-
-function staticLanding(pageInfo) {
-  const first = pageInfo[0]?.file
-  if (!first) throw new Error('released course has no static landing page')
-  return `<!doctype html>\n<meta charset="utf-8">\n<meta http-equiv="refresh" content="0; url=${first}">\n<link rel="canonical" href="${first}">\n`
-}
 
 function pathsOverlap(a, b) {
   const left = `${resolve(a)}/`
@@ -17,7 +11,36 @@ function pathsOverlap(a, b) {
   return left.startsWith(right) || right.startsWith(left)
 }
 
-export function assembleCoursePublication(courseDir, indexFile, renderedDir, outputDir) {
+function moveAppBook(appDir, app) {
+  const oldBook = join(appDir, '_book')
+  const newBook = join(appDir, 'book')
+  if (!existsSync(oldBook)) throw new Error('app compiler produced no _book directory')
+  renameSync(oldBook, newBook)
+  for (const asset of app.spec.assets) {
+    const source = join(appDir, asset)
+    const destination = join(newBook, asset)
+    if (!existsSync(source)) continue
+    mkdirSync(dirname(destination), { recursive: true })
+    renameSync(source, destination)
+  }
+  app.pages = app.pages.map(page => ({ ...page, file: page.file.replace(/^_book\//, 'book/') }))
+  writeFileSync(join(appDir, 'page-info.json'), `${JSON.stringify(app.pages, null, 2)}\n`)
+}
+
+function pruneStatic(staticDir, renderedDir, app) {
+  const allPages = JSON.parse(readFileSync(join(renderedDir, 'page-info.json'), 'utf8'))
+  const selected = new Set(app.pages.map(page => page.file))
+  for (const page of allPages) {
+    const file = page.file.replace(/^_book\//, 'book/')
+    if (selected.has(file)) continue
+    rmSync(join(staticDir, file), { force: true })
+    rmSync(join(staticDir, file.replace(/\.html$/i, '_files')), { recursive: true, force: true })
+    if (page?.source?.file) rmSync(join(staticDir, 'book', page.source.file), { force: true })
+  }
+}
+
+export async function assembleCoursePublication(courseDir, indexFile, renderedDir, outputDir, assembleStatic) {
+  if (typeof assembleStatic !== 'function') throw new Error('course publication requires the existing static compiler')
   const root = resolve(outputDir)
   if (pathsOverlap(root, courseDir) || pathsOverlap(root, renderedDir)) {
     throw new Error('publication output must be separate from the course source and shared render')
@@ -27,16 +50,20 @@ export function assembleCoursePublication(courseDir, indexFile, renderedDir, out
   rmSync(root, { recursive: true, force: true })
   mkdirSync(root, { recursive: true })
 
-  const app = assembleCourseAppSite(courseDir, indexFile, renderedDir, appDir)
-  cpSync(appDir, staticDir, { recursive: true })
-  // The static representation opens the same rendered Quarto page directly;
-  // the app representation consumes page-info.json on the TLDA canvas.
-  writeFileSync(join(staticDir, 'index.html'), staticLanding(app.pages))
+  await assembleStatic({ courseDir, renderedDir, outputDir: staticDir })
+  if (!existsSync(join(staticDir, 'index.html'))) {
+    throw new Error('static compiler produced no index.html')
+  }
+  const app = assembleCourseAppSite(courseDir, join(staticDir, 'index.html'), renderedDir, appDir)
+  moveAppBook(appDir, app)
+  pruneStatic(staticDir, renderedDir, app)
+  writeFileSync(join(staticDir, 'page-info.json'), `${JSON.stringify(app.pages, null, 2)}\n`)
+  writeFileSync(join(staticDir, 'toc.json'), readFileSync(join(appDir, 'toc.json')))
   writeFileSync(join(root, 'index.html'), ROOT_REDIRECT)
   return { app, staticDir, appDir }
 }
 
-export async function buildCoursePublication({ courseDir, indexFile, outputDir, render }) {
+export async function buildCoursePublication({ courseDir, indexFile, outputDir, render, assembleStatic }) {
   if (typeof render !== 'function') throw new Error('buildCoursePublication requires one render function')
   const outputParent = dirname(resolve(outputDir))
   mkdirSync(outputParent, { recursive: true })
@@ -46,7 +73,7 @@ export async function buildCoursePublication({ courseDir, indexFile, outputDir, 
     if (!existsSync(join(renderedDir, 'page-info.json'))) {
       throw new Error('the shared Quarto/TLDA render produced no page-info.json')
     }
-    return assembleCoursePublication(courseDir, indexFile, renderedDir, outputDir)
+    return await assembleCoursePublication(courseDir, indexFile, renderedDir, outputDir, assembleStatic)
   } finally {
     rmSync(renderedDir, { recursive: true, force: true })
   }
