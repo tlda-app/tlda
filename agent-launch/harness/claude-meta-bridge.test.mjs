@@ -65,3 +65,32 @@ test('muse alias resolves to the claude harness with the meta model id', () => {
   assert.equal(spec.options.effort.default, 'max')
   assert.ok(Object.hasOwn(spec.options.effort.values, 'max'))
 })
+
+test('muse-or alias resolves to Claude through OpenRouter without changing muse', () => {
+  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
+  const { spec } = resolveModelSelection('muse-or', { config })
+  assert.equal(spec.harness, 'claude')
+  assert.equal(spec.id, 'meta/muse-spark-1.3-contributor')
+  assert.equal(spec.harnessOptions.env.ANTHROPIC_BASE_URL, 'https://openrouter.ai/api')
+
+  const cmd = buildCmd({
+    model: spec.id,
+    tmuxSession: 'fleet-test-session',
+    fleetId: 'fleet:example',
+    harnessOptions: spec.harnessOptions,
+    env: { OPENROUTER_API_KEY: 'openrouter-deployment-secret', META_API_KEY: 'stale-meta-key' },
+  })
+  assert.ok(cmd.includes(`ANTHROPIC_AUTH_TOKEN='openrouter-deployment-secret'`))
+  assert.ok(cmd.startsWith('unset ANTHROPIC_API_KEY; unset CLAUDE_CODE_OAUTH_TOKEN; unset META_API_KEY; '))
+  assert.ok(!cmd.includes('stale-meta-key'))
+  assert.ok(cmd.includes(`--model 'meta/muse-spark-1.3-contributor'`))
+})
+
+test('fleet muse-or launch requires the OpenRouter deployment key', () => {
+  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
+  const { spec } = resolveModelSelection('muse-or', { config })
+  assert.throws(
+    () => buildCmd({ model: spec.id, tmuxSession: 'fleet-test-session', fleetId: 'fleet:example', harnessOptions: spec.harnessOptions, env: { META_API_KEY: 'wrong-provider-key' } }),
+    /set OPENROUTER_API_KEY/,
+  )
+})
