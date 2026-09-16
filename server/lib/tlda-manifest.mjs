@@ -4,6 +4,34 @@ import { dirname, isAbsolute, join, relative, resolve } from 'path'
 const DEFAULT_WIDTH = 800
 const DEFAULT_HEIGHT = 1200
 
+function manifestTextContent(html) {
+  // Visible structure (chapter numbers included) is preserved: the app TOC
+  // must match the static book TOC, and the panel adds no numbering itself.
+  return String(html || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * A page's own title from its rendered bytes: Quarto's title-block heading
+ * first, then the document title tag, then the file name. Navigation chrome
+ * (sidebar/breadcrumb spans) must never win over page content — matching a
+ * nav span once labeled nine pages with the first chapter's title.
+ */
+export function manifestTitleFromHtml(html, file) {
+  const source = String(html || '')
+  const titleHeading = source.match(/<h1[^>]*\bclass=["'][^"']*\btitle\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i)?.[1]
+  const documentTitle = source.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+  return manifestTextContent(titleHeading || documentTitle || String(file || '').replace(/\.html$/i, ''))
+}
+
 function normalizedRelativePath(value, field) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`Invalid tlda-manifest.json: ${field} must be a non-empty relative path`)
@@ -87,4 +115,3 @@ export function readTldaManifest(root) {
   }
   return { path, pageInfo }
 }
-

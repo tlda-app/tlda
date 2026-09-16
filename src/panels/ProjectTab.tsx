@@ -7,14 +7,11 @@ import {
   SPATIAL_MAP_ZOOM,
   clearSavedSpatialMapView,
   currentSpatialDocument,
-  placeSpatialDocument,
   getSavedSpatialMapView,
   openSpatialDocument,
   saveSpatialMapView,
   spatialWorldBounds,
   spatialWorldDocuments,
-  spatialDocumentIdentity,
-  spatialDocumentShapeId,
   spatialMapActivationSource,
   zoomToSpatialWorld,
 } from '../spatialDocumentWorld'
@@ -34,7 +31,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
   )
   const zoom = useValue('project-tab-zoom', () => editor.getZoomLevel(), [editor])
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([])
-  const [selectedOutputFile, setSelectedOutputFile] = useState<string | null>(null)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   useEffect(() => {
     if (!project?.projectName) return
     let active = true
@@ -47,9 +44,41 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     return () => { active = false }
   }, [project?.projectName])
   const normalizedQuery = query.trim().toLowerCase()
-  const visibleProjectDocuments = projectDocuments.filter(document =>
-    !normalizedQuery || document.title.toLowerCase().includes(normalizedQuery)
-  )
+  // Every row IS an existing map node and opens by node id: selecting a
+  // document must never rewrite its shape URL or title, which is what the
+  // unplaced-document path does (and must keep doing only for genuinely
+  // unplaced documents). The payload only orders rows in server order and
+  // never supplies titles — the placed display title is what the user reads,
+  // and payload stems would replace it with a basename.
+  const payloadOrder = new Map<string, number>()
+  for (const [index, document] of projectDocuments.entries()) {
+    payloadOrder.set(document.outputFile, index)
+    const unprefixed = document.outputFile.replace(/^_book\//, '')
+    payloadOrder.set(unprefixed, index)
+    payloadOrder.set(`_book/${unprefixed}`, index)
+  }
+  const orderOf = (path?: string) => {
+    if (!path) return Number.MAX_SAFE_INTEGER
+    const unprefixed = path.replace(/^_book\//, '')
+    return payloadOrder.get(path) ?? payloadOrder.get(unprefixed) ?? payloadOrder.get(`_book/${unprefixed}`) ?? Number.MAX_SAFE_INTEGER
+  }
+  type ProjectRow = { key: string; title: string; nodeId: string }
+  const mapRows: ProjectRow[] = []
+  for (const node of nodes) {
+    if (node.documentRef.kind !== 'primary' && node.documentRef.kind !== 'materialized' && node.documentRef.kind !== 'shared') continue
+    if (node.documentRef.kind !== 'primary' && !node.documentRef.path) continue
+    mapRows.push({ key: node.id, title: node.title, nodeId: node.id })
+  }
+  const visibleProjectRows = mapRows
+    .filter(row => !normalizedQuery || row.title.toLowerCase().includes(normalizedQuery))
+    .sort((a, b) => {
+      const aNode = nodes.find(n => n.id === a.nodeId)
+      const bNode = nodes.find(n => n.id === b.nodeId)
+      const aPrimary = aNode?.documentRef.kind === 'primary'
+      const bPrimary = bNode?.documentRef.kind === 'primary'
+      if (aPrimary !== bPrimary) return aPrimary ? -1 : 1
+      return orderOf(aNode?.documentRef.path) - orderOf(bNode?.documentRef.path)
+    })
 
   const toggleMap = useCallback(() => {
     const saved = getSavedSpatialMapView(editor)
@@ -86,96 +115,6 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     )
   }, [editor, nodes, project?.projectName])
 
-  const activateUnplaced = useCallback(async (document: ProjectDocument) => {
-    if (!project?.projectName) return
-    setSelectedOutputFile(document.outputFile)
-    if (document.format === 'svg') {
-      const targetName = document.outputFile.replace(/-page-1\.svg$/i, '')
-      let pageOffset = 0
-      for (const target of project.targets || []) {
-        if (target.name === targetName) {
-          const page = project.pages[pageOffset]
-          if (!page) return
-          editor.centerOnPoint({
-            x: page.bounds.x + page.bounds.width / 2,
-            y: page.bounds.y + page.bounds.height / 2,
-          }, { animation: { duration: 300 } })
-          return
-        }
-        pageOffset += target.pages
-      }
-      return
-    }
-    const placed = nodes.find(node => node.documentRef.path === document.outputFile)
-    if (placed) {
-      const expectedUrl = `/docs/${encodeURIComponent(project.projectName)}/${document.outputFile}`
-      const shape = placed.shape
-      const currentUrl = (shape?.props as { url?: string } | undefined)?.url
-      if (shape && (currentUrl !== expectedUrl || shape.meta.spatialWorldTitle !== document.title)) {
-        const wasLocked = !!shape.isLocked
-        if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
-        editor.updateShape({
-          id: shape.id,
-          type: shape.type,
-          props: { ...shape.props, url: expectedUrl },
-          meta: {
-            ...shape.meta,
-            spatialWorldTitle: document.title,
-            materializedDoc: project.projectName,
-            materializedFile: document.outputFile,
-          },
-        } as never)
-        if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: true })
-      }
-      activate(placed.id)
-      return
-    }
-    const source = currentSpatialDocument(editor, nodes)
-    if (!source) return
-    const url = `/docs/${encodeURIComponent(project.projectName)}/${document.outputFile}`
-    const identity = spatialDocumentIdentity(document.title, url, {
-      materializedFile: document.outputFile,
-    })
-    const shapeId = spatialDocumentShapeId(identity)
-    const existing = editor.getShape(shapeId)
-    if (!existing) {
-      const point = editor.getViewportPageBounds().center
-      const bounds = placeSpatialDocument(editor, identity, source, { w: 800, h: 1200 }, point)
-      editor.createShape({
-        id: shapeId,
-        type: document.format === 'svg' ? 'svg-page' : 'html-page',
-        x: bounds.x,
-        y: bounds.y,
-        isLocked: true,
-        props: {
-          w: 800,
-          h: 1200,
-          url,
-          ...(document.format === 'svg' ? { pageIndex: 0 } : {}),
-        },
-        meta: {
-          spatialWorldDocument: true,
-          spatialWorldIdentity: identity,
-          spatialWorldTitle: document.title,
-          materializedDoc: project.projectName,
-          materializedFile: document.outputFile,
-        },
-      } as never)
-    }
-    const target = spatialWorldDocuments(editor, project.projectName, project.title)
-      .find(node => node.id === shapeId)
-    if (!target) return
-    recordPlaceDeparture(editor)
-    suppressFleetHudCameraTracking()
-    openSpatialDocument(
-      editor,
-      source,
-      target,
-      editor.getCamera(),
-      readingPositionStore(project.projectName),
-    )
-  }, [activate, editor, nodes, project?.projectName, project?.title])
-
   return (
     <div className="doc-panel-content project-tab">
       <ProjectMapViewport
@@ -184,15 +123,18 @@ export function ProjectTab({ query = '' }: { query?: string }) {
         returning={zoom <= SPATIAL_MAP_ZOOM && !!getSavedSpatialMapView(editor)}
         onNavigate={toggleMap}
       />
-      {visibleProjectDocuments.length === 0 && <div className="panel-empty">No documents found</div>}
-      {visibleProjectDocuments.map(document => (
+      {visibleProjectRows.length === 0 && <div className="panel-empty">No documents found</div>}
+      {visibleProjectRows.map(row => (
         <button
           type="button"
-          key={document.sourceFile}
-          className={`project-document-row${selectedOutputFile === document.outputFile ? ' active' : ''}`}
-          onClick={() => void activateUnplaced(document)}
+          key={row.key}
+          className={`project-document-row${selectedNodeId === row.nodeId ? ' active' : ''}`}
+          onClick={() => {
+            setSelectedNodeId(row.nodeId)
+            activate(row.nodeId)
+          }}
         >
-          {document.title}
+          {row.title}
         </button>
       ))}
     </div>
