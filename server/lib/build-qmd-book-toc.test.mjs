@@ -14,9 +14,9 @@ test('the assembled book TOC includes every chapter and deck once', () => {
     { title: 'References', level: 'chapter', page: 3 },
   ]
   const decks = [
-    { title: 'Sampling', group: 'lectures/sampling.qmd' },
-    { title: 'Welcome', group: 'index.qmd' },
-    { title: 'Extra', group: 'lectures/extra.qmd' },
+    { title: 'Sampling', map: 'lectures/sampling.qmd' },
+    { title: 'Welcome', map: 'index.qmd' },
+    { title: 'Extra', map: 'lectures/extra.qmd' },
   ]
   assert.deepEqual(assembleQuartoBookToc(bookToc, chapters, decks), [
     { title: 'Welcome', level: 'part', page: 1 },

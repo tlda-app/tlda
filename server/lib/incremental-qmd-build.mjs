@@ -368,14 +368,12 @@ export function qmdMissingDeclaredOutputFiles(outDir, sourceFile) {
  * The page-info entry for a deck built from a .qmd root.
  *
  * One entry, not one per slide. `deck.slides` carries the address space the
- * window manager lays out; `variant`/`group` are what pair a deck with its
- * chapter as alternate renderings of one source, and both are unchanged by
- * there now being a single entry — nothing downstream keys on slide count.
+ * window manager lays out. Pairing with a chapter belongs to the book builder,
+ * which adds `map`; a deck entry on its own is not a comparison group.
  */
 export function qmdDeckPageInfo(root, deck, variant) {
   return {
     ...deck,
-    group: root,
     ...(variant && { variant }),
     source: { type: 'project-source', format: 'qmd', file: root },
   }
@@ -512,9 +510,9 @@ export function assembleQuartoBookToc(bookToc, chapterPages, deckPages) {
   const deckByChapter = new Map()
   for (let i = 0; i < deckPages.length; i++) {
     const deck = deckPages[i]
-    const entries = deckByChapter.get(deck.group) || []
+    const entries = deckByChapter.get(deck.map) || []
     entries.push({ title: `${deck.title} — Slides`, level: 'section', page: chapterPages.length + i + 1 })
-    deckByChapter.set(deck.group, entries)
+    deckByChapter.set(deck.map, entries)
   }
   const toc = []
   const attachedDecks = new Set()
@@ -1313,17 +1311,18 @@ export async function buildIncrementalQmd({
         addLog(`[qmd] ${deck}: rendered without reveal slides, not published as a deck`)
         continue
       }
-      // `group` is the CHAPTER's root, which is what puts a deck on its
-      // chapter's map; `source.file` stays the deck's own root, because that is
-      // the file an edit to this document lands in. An unpaired deck groups
-      // under itself and stands alone.
-      deckPages.push({ ...qmdDeckPageInfo(deck, info, 'slides'), group: chapter || deck })
+      // `map` is the CHAPTER's root, which puts a deck in the same spatial
+      // world without turning it into a side-by-side comparison group;
+      // `source.file` stays the deck's own root, because that is the file an
+      // edit to this document lands in. An unpaired deck maps under itself and
+      // stands alone.
+      deckPages.push({ ...qmdDeckPageInfo(deck, info, 'slides'), map: chapter || deck })
     }
-    // `group` on the chapter too, not only on decks. It is the map layer's sole
-    // key, by agreement with that half: an entry with no `group` keeps its
+    // `map` on the chapter too, not only on decks. It is the map layer's key:
+    // an entry with no `map` keeps its
     // positional page, so keying on `source.file` instead would have re-keyed
     // every markdown project, whose column builder emits `source.file` as well.
-    // A chapter groups under itself, which is the spec's model — one map per
+    // A chapter maps under itself, which is the spec's model — one map per
     // chapter — and is what a paired deck joins by naming the same root.
     //
     // Chapters stay contiguous and in manifest order, decks after all of them:
@@ -1340,7 +1339,7 @@ export async function buildIncrementalQmd({
       ...renderedPageInfo.map((page, i) => ({
         ...page,
         title: bookTitleByPage.get(i + 1) || page.title,
-        group: page.source.file,
+        map: page.source.file,
       })),
       ...deckPages.map(page => ({ ...page, title: `${page.title} — Slides` })),
     ]

@@ -21,21 +21,21 @@ after(() => {
 
 /**
  * project > map > doc. A map is one TLDraw page; a doc is a place on it. The
- * builder says which chapter a doc belongs to via `group`, and that is the only
- * thing the map layer reads.
+ * builder says which chapter a doc belongs to via `map`; `group` remains the
+ * separate side-by-side comparison primitive.
  */
 
-const chapter = (file: string, group?: string, extra: Partial<HtmlPageEntry> = {}): HtmlPageEntry => ({
+const chapter = (file: string, map?: string, extra: Partial<HtmlPageEntry> = {}): HtmlPageEntry => ({
   file: `${file}.html`,
   width: 800,
   height: 1200,
   title: file,
-  ...(group ? { group } : {}),
+  ...(map ? { map } : {}),
   source: { type: 'project-source', format: 'qmd', file: `${file}.qmd` },
   ...extra,
 })
 
-test('a chapter and its deck are two docs on one map', () => {
+test('a chapter and its deck are independent docs on one map', () => {
   const document = createHtmlDocumentFromPageInfo('course', '/docs/course/', [
     chapter('ch-sampling', 'ch-sampling.qmd', { variant: 'chapter' }),
     chapter('ch-sampling-slides', 'ch-sampling.qmd', { variant: 'slides' }),
@@ -43,12 +43,24 @@ test('a chapter and its deck are two docs on one map', () => {
 
   assert.equal(document.pages.length, 2)
   assert.equal(document.pages[0].tldrawPageId, document.pages[1].tldrawPageId)
-  // Side by side, which is what the chapter/deck pairing has always looked like.
   assert.equal(document.pages[0].bounds.x, 0)
-  assert.ok(document.pages[1].bounds.x > 0)
+  assert.ok(document.pages[1].bounds.x - document.pages[0].bounds.w >= 90_000)
+  assert.match(document.pages[1].src, /[?&]_tldaDeck=1&view=scroll$/)
+  assert.equal(document.pages[1].meta?.spatialWorldDocument, true)
 })
 
-test('a map is named after its chapter, never after the group id', () => {
+test('group still means side-by-side comparison', () => {
+  const document = createHtmlDocumentFromPageInfo('comparison', '/docs/comparison/', [
+    chapter('paper', undefined, { group: 'versions' }),
+    chapter('paper-old', undefined, { group: 'versions' }),
+  ])
+
+  assert.equal(document.pages[1].tldrawPageId, document.pages[0].tldrawPageId)
+  assert.equal(document.pages[1].bounds.x, document.pages[0].bounds.w + 24)
+  assert.equal(document.pages[1].meta, undefined)
+})
+
+test('a map is named after its chapter, never after the map key', () => {
   const document = createHtmlDocumentFromPageInfo('course', '/docs/course/', [
     chapter('intro', 'lectures/chapter-sampling.qmd', { title: 'Sampling', variant: 'chapter' }),
     chapter('deck', 'lectures/chapter-sampling.qmd', { title: 'Sampling — slides', variant: 'slides' }),
@@ -109,9 +121,9 @@ test('a deck belonging to no chapter gets its own map in the book', () => {
   assert.deepEqual(view.map(page => page.file), ['ch.html', 'standalone-slides.html'])
 })
 
-test('a document whose entries carry no group keeps its positional page ids', () => {
+test('a document whose entries carry no map keeps its positional page ids', () => {
   // The whole of "nothing changes for any non-book project": no builder outside
-  // the book path emits `group`, so every one of them lands here.
+  // the book path emits `map`, so every one of them lands here.
   const document = createHtmlDocumentFromPageInfo('notes', '/docs/notes/', [
     chapter('one'),
     chapter('two'),

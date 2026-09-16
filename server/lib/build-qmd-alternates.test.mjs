@@ -79,9 +79,10 @@ test('the deck entry carries the slides variant without changing its source auth
     format: 'qmd',
     file: 'lectures/Lab1-prose.qmd',
   })
-  // Pairing a deck with its chapter is `variant` + `group`, and neither has ever
-  // keyed on how many entries the deck produced. One entry pairs as 31 did.
-  assert.equal(entry.group, 'lectures/Lab1-prose.qmd')
+  // The book builder adds map membership. A deck entry by itself is not a
+  // side-by-side comparison group.
+  assert.equal(entry.map, undefined)
+  assert.equal(entry.group, undefined)
   assert.equal(entry.slides.length, 2)
 })
 

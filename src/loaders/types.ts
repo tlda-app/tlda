@@ -46,6 +46,7 @@ export interface SvgPage {
   textData?: PageTextData | null
   tldrawPageId?: string  // TLDraw page ID for multipage HTML docs
   tldrawPageName?: string  // Display name for the TLDraw page
+  meta?: Record<string, unknown>
   targetBasePath?: string  // per-page basePath for multi-target docs
   pageInTarget?: number    // 1-based page number within the target
   targetName?: string      // which target this page belongs to
