@@ -236,7 +236,7 @@ exec /opt/homebrew/bin/node --import tsx "${expectedScript}"
 }
 working directory = ${expectedRoot}
 environment = {
-PATH => /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+PATH => ${join(applyFixture, '.local', 'bin')}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 TLDA_ENV => stable
 NODE_OPTIONS => --require=/Users/you/worktrees/land-tonight/shared/node-dns-alias.cjs
 }
