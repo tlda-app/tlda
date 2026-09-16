@@ -6174,6 +6174,10 @@ export async function deliverChannelNotice(content, meta = {}) {
       return notifyOverClaudeChannel(content, meta);
     case 'codex':
       return typeNotificationIntoPane(content, 400);
+    // agy has no MCP notification channel, so like codex it is notified by
+    // typing into its tmux pane. Never route it over an MCP socket channel.
+    case 'agy':
+      return typeNotificationIntoPane(content, 400);
     // Muse is the one harness that drops an Enter sent before its text lands,
     // so it confirms instead of sleeping. See `tmuxSubmitTextVerified`.
     case 'muse':
