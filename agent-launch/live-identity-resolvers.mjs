@@ -1,3 +1,4 @@
+import * as agy from './harness/agy.mjs'
 import * as bot from './harness/bot.mjs'
 import * as claude from './harness/claude.mjs'
 import * as codex from './harness/codex.mjs'
@@ -8,7 +9,7 @@ import * as muse from './harness/muse.mjs'
 // list. A harness with no resolveLiveSessionIdentity (goose today) is simply
 // absent; it works as soon as its adapter exports the function, with no edit
 // here or at any call site.
-const ADAPTERS = { bot, claude, codex, goose, muse }
+const ADAPTERS = { agy, bot, claude, codex, goose, muse }
 
 export function liveIdentityResolverMap(adapters = ADAPTERS) {
   const map = {}

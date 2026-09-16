@@ -50,6 +50,9 @@ export function harnessStateWriteRoots(env = process.env) {
   const roots = []
   addPathAndContents(roots, env?.CODEX_HOME || path.join(os.homedir(), '.codex'))
   addPathAndContents(roots, env?.CLAUDE_HOME || path.join(os.homedir(), '.claude'))
+  // agy records conversations, summaries, presence, and MCP state under
+  // ~/.gemini on every turn; without a write root the fence breaks the agent.
+  addPathAndContents(roots, path.join(os.homedir(), '.gemini'))
   addScratchpadRoots(roots, env)
   addPathAndContents(roots, env?.TMPDIR || os.tmpdir())
   return [...new Set(roots)].sort()

@@ -142,6 +142,10 @@ export function resolveCodexModelSelection(model, options = {}) {
   return resolveHarnessModel('codex', model, options)
 }
 
+export function resolveAgyModelSelection(model, options = {}) {
+  return resolveHarnessModel('agy', model, options)
+}
+
 export function resolveClaudeModel(model, options = {}) {
   return resolveClaudeModelSelection(model, options).model
 }
@@ -156,6 +160,10 @@ export function gooseModelVerified(model, options = {}) {
 
 export function resolveCodexModel(model, options = {}) {
   return resolveCodexModelSelection(model, options).model
+}
+
+export function resolveAgyModel(model, options = {}) {
+  return resolveAgyModelSelection(model, options).model
 }
 
 export function listModels(config = {}) {

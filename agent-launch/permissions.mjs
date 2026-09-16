@@ -128,11 +128,9 @@ export function resolveHarnessLaunchOptions({ harness, harnessOptions = null } =
   const flags = [...row.required, ...row.preferences]
   const kind = String(harness || '').trim().toLowerCase()
   const hasYolo = flags.some(isYoloFlag)
-  const nativeControls = kind === 'claude'
+  const nativeControls = kind === 'claude' || kind === 'codex' || kind === 'agy'
     ? !hasYolo
-    : kind === 'codex'
-      ? !hasYolo
-      : row.controls && !hasYolo
+    : row.controls && !hasYolo
   return {
     ...row,
     yolo: hasYolo,

@@ -18,18 +18,18 @@ import path from 'path'
 // place to look. Best-effort by construction: a launch is already failing here,
 // and a diagnostic that can raise its own error would replace that failure with
 // a worse one.
-export function recordKickoffFailure(tmuxSession, crashLogPath, detail = {}) {
+export function recordKickoffFailure(tmuxSession, crashLogPath, detail = {}, event = 'codex-kickoff-not-delivered') {
   if (!crashLogPath) return false
   try {
     fs.mkdirSync(path.dirname(crashLogPath), { recursive: true })
     const line = JSON.stringify({
       t: new Date().toISOString(),
-      event: 'codex-kickoff-not-delivered',
+      event,
       tmux_session: tmuxSession || null,
       pid: process.pid,
       ...detail,
     })
-    fs.appendFileSync(crashLogPath, `\n=== codex kickoff not delivered ${new Date().toISOString()} session=${tmuxSession} ===\n${line}\n`)
+    fs.appendFileSync(crashLogPath, `\n=== ${event} ${new Date().toISOString()} session=${tmuxSession} ===\n${line}\n`)
     return true
   } catch {
     return false
@@ -40,6 +40,17 @@ export function assertCodexKickoffDelivered(delivered, tmuxSession, { crashLogPa
   if (delivered) return
   recordKickoffFailure(tmuxSession, crashLogPath, detail)
   const error = new Error(`Codex fleet kickoff was not delivered in tmux session ${tmuxSession}`)
+  error.name = 'SpawnError'
+  error.code = 'launch-failed'
+  error.reason = 'launch-failed'
+  error.detail = { tmuxSession }
+  throw error
+}
+
+export function assertAgyKickoffDelivered(delivered, tmuxSession, { crashLogPath = null, detail = {} } = {}) {
+  if (delivered) return
+  recordKickoffFailure(tmuxSession, crashLogPath, detail, 'agy-kickoff-not-delivered')
+  const error = new Error(`agy fleet kickoff was not delivered in tmux session ${tmuxSession}`)
   error.name = 'SpawnError'
   error.code = 'launch-failed'
   error.reason = 'launch-failed'

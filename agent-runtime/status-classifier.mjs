@@ -67,7 +67,30 @@ function lastLines(s, n) {
 // state to thread back next scan.
 //   prevState / now : used only by the goose classifier (freeze tracking)
 // Returns { thinking, compacting, approval, approvalFp, state }.
+// agy turn signals, measured against the live TUI 2026-09-16. The footer
+// carries `esc to cancel` (lowercase) while a turn is live -- working or
+// awaiting approval -- and `? for shortcuts` when idle. Thought/tool lines
+// (`▸ Thought for 2s, 290 tokens`, `● Bash(...)`) persist in the transcript,
+// so they must NOT count as thinking; only the live footer does. Approval
+// dialogs ask `Run this command?` / `Allow access to this file?` with
+// numbered options; the workspace trust dialog asks `Do you trust the
+// contents of this project?` and is NOT an approval (the injector confirms
+// it, the guard below never auto-confirms an approval).
+const AGY_LIVE_FOOTER_RE = /esc to cancel/
+export const AGY_APPROVAL_RE = /Run this command\?|Allow access to this file\?|Requesting permission for:/
+export const AGY_TRUST_DIALOG_RE = /Do you trust the contents of this project\?/
 export function classifyPane(harnessKind, pane, prevState = null, now = 0) {
+  if (harnessKind === 'agy') {
+    const tail = lastLines(pane, 12)
+    const approval = AGY_APPROVAL_RE.test(tail)
+    return {
+      thinking: !approval && AGY_LIVE_FOOTER_RE.test(lastLines(pane, 5)),
+      compacting: false,
+      approval,
+      approvalFp: approval ? tail.slice(-100) : null,
+      state: null,
+    }
+  }
   if (harnessKind === 'goose') {
     // resolveGooseStatus escalates a frozen-but-spinning goose to 'stuck', so a
     // wedged goose reads thinking:false (turn really ended) instead of a spinner
@@ -99,9 +122,9 @@ export function classifyPane(harnessKind, pane, prevState = null, now = 0) {
 }
 
 // Which character starts the harness's composer line. Codex draws `›`, Claude
-// draws `❯`; goose has no composer we drive, so it has no entry rather than a
-// guessed one.
-const COMPOSER_PROMPT = Object.freeze({ codex: '›', claude: '❯' })
+// draws `❯`, agy draws `>`; goose has no composer we drive, so it has no
+// entry rather than a guessed one.
+const COMPOSER_PROMPT = Object.freeze({ codex: '›', claude: '❯', agy: '>' })
 
 const BUSY_MARKERS = Object.freeze([
   'Working', 'Transmuting', 'Thinking', 'esc to interrupt', 'ESC to interrupt',
@@ -196,7 +219,7 @@ export function stripGhostSpans(text = '') {
 // since been reverted**, so stripping no longer eats it and the raw-pane rule is
 // now belt-and-braces rather than load-bearing. Kept, because the filter above
 // may grow again and this check must not depend on what it currently removes.
-const DIALOG_KEYPRESS_RE = /Enter to confirm|Esc to cancel|❯\s*\d\.\s|Press enter to continue/
+const DIALOG_KEYPRESS_RE = /Enter to confirm|Esc to cancel|❯\s*\d\.\s|Press enter to continue|Run this command\?|Allow access to this file\?/
 export function dialogAwaitingKeypress(pane = '', tailLines = 25) {
   const tail = String(pane).split('\n').slice(-tailLines).join('\n')
   return DIALOG_KEYPRESS_RE.test(tail.replace(ANSI_RE, ''))
@@ -210,6 +233,7 @@ export function composerState(harnessKind, pane = '', marker = '', { escapes = f
     ? String(pane).split('\n').map(stripGhostSpans).join('\n')
     : String(pane)
   const lines = source.split('\n')
+  if (harnessKind === 'agy') return agyComposerState(lines, marker, absent)
   const promptIndex = harnessKind === 'codex'
     ? lines.findLastIndex((line) => line.trimStart().startsWith(prompt))
     : lines.findLastIndex((line) => line.includes(prompt))
@@ -219,6 +243,26 @@ export function composerState(harnessKind, pane = '', marker = '', { escapes = f
     containsMarker: !!marker && lines[promptIndex].includes(marker),
     busyAfter: lines.slice(promptIndex + 1).some((line) =>
       BUSY_MARKERS.some((busy) => line.includes(busy))),
+  }
+}
+
+// agy keeps submitted prompts in scrollback as `> text` lines, so "the last
+// `>` line holds our text" is true both parked AND submitted. The difference
+// is what follows it: a parked kickoff sits in the live composer (only the
+// ── rule and the `? for shortcuts` idle footer below it), while a submitted
+// one has turn output (`▸ Thought…`, `● Tool(…)`, response text) below it.
+// A live turn -- working or awaiting approval -- carries `esc to cancel` in
+// the tail. Approval/option lines (`> 1. Yes, …`) never carry our marker.
+function agyComposerState(lines, marker, absent) {
+  const promptIndex = lines.findLastIndex((line) => line.trimStart().startsWith('>'))
+  if (promptIndex < 0) return absent
+  const after = lines.slice(promptIndex + 1)
+  const afterText = after.join('\n')
+  const produced = after.some((line) => line.includes('▸ Thought') || line.trimStart().startsWith('●'))
+  return {
+    promptIndex,
+    containsMarker: !!marker && lines[promptIndex].includes(marker) && !produced,
+    busyAfter: AGY_LIVE_FOOTER_RE.test(afterText),
   }
 }
 
