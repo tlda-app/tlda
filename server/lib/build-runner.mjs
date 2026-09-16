@@ -136,131 +136,18 @@ export function setBuildReporter(r) { _reporter = r || _directReporter }
 export function getBuildReporter() { return _reporter }
 
 /**
- * Where a running build's output goes, line by line, WHILE it runs.
- *
- * Deliberately not a method on the reporter above. That reporter STAGES its
- * calls in the worker and ships them in one lump at the end, which is correct
- * for what it carries -- shape writes and project patches that must not land
- * before the build is published -- and exactly wrong for output, whose whole
- * value is arriving during.
- *
- * This is also the build queue's liveness signal, and that is why it is a
- * stream rather than a heartbeat: a tick tells you a process exists, output
- * tells you what it is doing, and TeX already narrates every pass. It was being
- * buffered by `exec` and read only after the command finished.
- *
- * Null by default so a direct in-process build stays silent as before.
+ * Build-output streaming and child-failure reporting live in the shared
+ * incremental engine now (`incremental-qmd-build.mjs`), which owns their only
+ * render callers. Re-exported here so the worker and existing importers keep
+ * their import path.
  */
-let _outputSink = null
-export function setBuildOutputSink(fn) { _outputSink = typeof fn === 'function' ? fn : null }
-export function getBuildOutputSink() { return _outputSink }
-
-/**
- * Feed a command's output to the sink at most once a second.
- *
- * Throttled because a large render emits a great deal of text and the fix for
- * builds locking up must not become an IPC flood. The most recent line is the
- * informative one, so the throttle keeps that and counts what it dropped rather
- * than queueing.
- *
- * Returns a detach function; callers attach it to a child process's stdio.
- */
-export function streamChildOutput(child, name, { intervalMs = 1000, now = Date.now } = {}) {
-  if (!child || !_outputSink) return () => {}
-  let lastLine = ''
-  let dropped = 0
-  let lastSent = 0
-  const flush = force => {
-    if (!lastLine) return
-    const at = now()
-    if (!force && at - lastSent < intervalMs) return
-    lastSent = at
-    const line = lastLine
-    const skipped = dropped
-    lastLine = ''
-    dropped = 0
-    try { _outputSink(name, line, skipped) } catch { /* output must never fail a build */ }
-  }
-  const onData = chunk => {
-    // Keep the last NON-EMPTY line: TeX pads its output with blank lines and a
-    // blank final line would report the build as silent while it is working.
-    const lines = String(chunk).split('\n').map(l => l.trimEnd()).filter(Boolean)
-    if (!lines.length) return
-    if (lastLine) dropped += 1
-    dropped += lines.length - 1
-    lastLine = lines[lines.length - 1]
-    flush(false)
-  }
-  child.stdout?.on('data', onData)
-  child.stderr?.on('data', onData)
-  return () => {
-    flush(true)
-    child.stdout?.off?.('data', onData)
-    child.stderr?.off?.('data', onData)
-  }
-}
-
-/**
- * How a child process ended, in a sentence, when it ended badly.
- *
- * A build that dies has to say why. Every failure site here used to report
- * `e.stderr || e.stdout || e.message`, and that ordering is the bug: when a
- * process is KILLED it writes no error, so `stderr` is empty, and the fallback
- * reports `stdout` — which is the program's ordinary progress output. The
- * failure then reads as though the last thing printed caused it, and the one
- * field that actually says what happened, `signal`, is thrown away.
- *
- * Measured on 2026-09-12 against the real shapes:
- *
- *   SIGKILL         signal SIGKILL, stderr '', stdout 'working\n'  -> reported "working"
- *   maxBuffer       code ERR_CHILD_PROCESS_STDIO_MAXBUFFER, stdout truncated
- *                                                                 -> reported the first 1KB of progress
- *   plain exit 1    code 1, stderr '', stdout 'WARN: ...'          -> reported the WARN
- *
- * In all three the reported cause was normal output. A course build died four
- * times that day naming no cause, and two people spent hours on a theory the
- * evidence could neither support nor refute, because nothing on any surface
- * distinguished "killed" from "exited with an error it printed".
- *
- * This never returns an empty string: not knowing why is itself worth saying.
- */
-export function describeChildFailure(error) {
-  if (!error) return 'failed for an unrecorded reason'
-  if (error.signal) {
-    // A signal the process did not ask for means something outside it decided
-    // to stop it. Naming the usual suspect is the difference between a reader
-    // knowing where to look and guessing, which is what this whole helper is for.
-    const hint = error.signal === 'SIGKILL' ? ' — the OS stopped it, commonly for memory' : ''
-    return `killed by ${error.signal}${hint}`
-  }
-  if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-    return 'produced more output than the build was willing to buffer, so it was stopped mid-run'
-  }
-  // `killed` without a signal is how the promisified timeout surfaces.
-  if (error.killed) return 'was stopped for running past its time limit'
-  if (typeof error.code === 'number') return `exited with status ${error.code}`
-  if (typeof error.code === 'string') return `failed with ${error.code}`
-  return String(error.message || 'failed for an unrecorded reason').trim()
-}
-
-/**
- * The failure message for a child process: how it ended, then what it printed.
- *
- * Order matters. How it ended goes FIRST and is never omitted, because it is
- * the part that is missing today; the output follows as context and is labelled
- * as output so nobody reads a progress line as a diagnosis again.
- */
-export function childFailureDetail(error, { maxOutputChars = 4000 } = {}) {
-  const how = describeChildFailure(error)
-  const printed = String(error?.stderr || error?.stdout || '').trim()
-  if (!printed) return `${how}, and printed nothing`
-  const tail = printed.length > maxOutputChars
-    // The end is where a renderer says what went wrong; the beginning is where
-    // it says hello.
-    ? `…\n${printed.slice(-maxOutputChars)}`
-    : printed
-  return `${how}. Its last output was:\n${tail}`
-}
+export {
+  setBuildOutputSink,
+  getBuildOutputSink,
+  streamChildOutput,
+  describeChildFailure,
+  childFailureDetail,
+} from './incremental-qmd-build.mjs'
 
 export function assertLatexBuildHasNoErrors(errors) {
   if (errors.length > 0) {
