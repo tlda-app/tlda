@@ -7,16 +7,48 @@ const PAIR_CLASS = 'tlda-marked-exercise-callout-pair'
 const STYLE_ID = 'tlda-marked-exercise-callout-style'
 const HANDLE_ID = createShapeId('marked-exercise-alignment-handle')
 const HANDLE_GAP = 12
+const originalAnswerState = new WeakMap<HTMLElement, { className: string; ariaLabel: string | null }>()
 
-export function collapseMarkedExerciseSolutions() {
-  for (const frame of window.document.querySelectorAll<HTMLIFrameElement>('iframe')) {
-    for (const solution of frame.contentDocument?.querySelectorAll<HTMLElement>('[aria-label^="Instructor solution for "]') ?? []) {
-      solution.querySelector<HTMLElement>('.callout-collapse')?.classList.remove('show')
-      const toggle = solution.querySelector<HTMLElement>('.callout-header')
-      toggle?.classList.add('collapsed')
-      toggle?.setAttribute('aria-expanded', 'false')
-    }
+function presentAnswerAsCallout(answer: HTMLElement, exerciseId: string) {
+  if (originalAnswerState.has(answer)) return
+  originalAnswerState.set(answer, {
+    className: answer.className,
+    ariaLabel: answer.getAttribute('aria-label'),
+  })
+
+  const header = answer.ownerDocument.createElement('div')
+  header.className = 'callout-header d-flex align-content-center'
+  header.dataset.tldaStudentAnswerHeader = 'true'
+
+  const title = answer.ownerDocument.createElement('div')
+  title.className = 'callout-title-container flex-fill'
+  title.textContent = 'Student answer'
+  header.append(title)
+
+  const body = answer.ownerDocument.createElement('div')
+  body.className = 'callout-body-container callout-body'
+  body.dataset.tldaStudentAnswerBody = 'true'
+  body.append(...answer.childNodes)
+
+  answer.classList.add('callout', 'callout-note', 'callout-style-default', 'callout-titled')
+  answer.setAttribute('aria-label', `Student answer for ${exerciseId}`)
+  answer.append(header, body)
+}
+
+function restoreAnswer(answer: HTMLElement) {
+  const original = originalAnswerState.get(answer)
+  if (!original) return
+  const header = answer.querySelector<HTMLElement>(':scope > [data-tlda-student-answer-header="true"]')
+  const body = answer.querySelector<HTMLElement>(':scope > [data-tlda-student-answer-body="true"]')
+  if (body) {
+    while (body.firstChild) answer.insertBefore(body.firstChild, header ?? body)
+    body.remove()
   }
+  header?.remove()
+  answer.className = original.className
+  if (original.ariaLabel === null) answer.removeAttribute('aria-label')
+  else answer.setAttribute('aria-label', original.ariaLabel)
+  originalAnswerState.delete(answer)
 }
 
 function precedingExerciseId(solution: HTMLElement, solutionDocument: Document): string | null {
@@ -49,11 +81,11 @@ export function pairMarkedExerciseCallouts(studentDocument: Document, solutionDo
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         gap: 1rem;
-        align-items: start;
+        align-items: stretch;
         margin-block: 1rem;
       }
       .${PAIR_CLASS} > .callout,
-      .${PAIR_CLASS} > .callout-answer { margin-block: 0; min-width: 0; }
+      .${PAIR_CLASS} > .callout-answer { height: 100%; margin-block: 0; min-width: 0; }
     `
     studentDocument.head.append(style)
   }
@@ -61,7 +93,10 @@ export function pairMarkedExerciseCallouts(studentDocument: Document, solutionDo
   for (const pair of studentDocument.querySelectorAll<HTMLElement>(`.${PAIR_CLASS}`)) {
     if (!selectedExerciseId || pair.dataset.tldaExercise === selectedExerciseId) continue
     const answer = pair.querySelector<HTMLElement>('[aria-label^="Student answer for "]')
-    if (answer) pair.parentNode?.insertBefore(answer, pair)
+    if (answer) {
+      restoreAnswer(answer)
+      pair.parentNode?.insertBefore(answer, pair)
+    }
     pair.remove()
   }
   for (const solution of solutionDocument.querySelectorAll<HTMLElement>('.callout.callout-solution')) {
@@ -78,14 +113,16 @@ export function pairMarkedExerciseCallouts(studentDocument: Document, solutionDo
         element.removeAttribute('data-bs-toggle')
         element.removeAttribute('data-bs-target')
         element.removeAttribute('aria-controls')
-        element.setAttribute('aria-expanded', 'false')
-        element.classList.add('collapsed')
+        element.setAttribute('aria-expanded', 'true')
+        element.classList.remove('collapsed')
       })
     displayedSolution.querySelectorAll<HTMLElement>('.callout-collapse').forEach(element => {
-      element.classList.remove('show')
+      element.classList.add('show')
     })
     const toggle = displayedSolution.querySelector<HTMLElement>('.callout-header')
     const collapsible = displayedSolution.querySelector<HTMLElement>('.callout-collapse')
+    toggle?.classList.remove('collapsed')
+    toggle?.setAttribute('aria-expanded', 'true')
     toggle?.addEventListener('click', () => {
       const open = collapsible?.classList.toggle('show') ?? false
       toggle.classList.toggle('collapsed', !open)
@@ -99,7 +136,7 @@ export function pairMarkedExerciseCallouts(studentDocument: Document, solutionDo
     const pair = studentDocument.createElement('div')
     pair.className = PAIR_CLASS
     pair.dataset.tldaExercise = exerciseId
-    answer.setAttribute('aria-label', `Student answer for ${exerciseId}`)
+    presentAnswerAsCallout(answer, exerciseId)
     answer.parentNode?.insertBefore(pair, answer)
     pair.append(answer, displayedSolution)
   }

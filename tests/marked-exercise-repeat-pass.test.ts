@@ -29,7 +29,7 @@ after(() => {
 
 const STUDENT = `
   <div id="exr-a">question a</div>
-  <div id="ans-exr-a">the student's answer to a</div>
+  <div id="ans-exr-a" class="callout-answer"><p>the student's answer to a</p></div>
   <div id="exr-b">question b</div>
   <div id="ans-exr-b">the student's answer to b</div>
 `
@@ -38,7 +38,7 @@ const STUDENT = `
 const SOLUTIONS = `
   <div id="exr-a">question a</div>
   <div class="callout callout-solution">
-    <div class="callout-header"></div>
+    <div class="callout-header collapsed" aria-expanded="false"></div>
     <div class="callout-collapse">the instructor's solution to a</div>
   </div>
   <div id="exr-b">question b</div>
@@ -58,6 +58,22 @@ test('a repeat pass over an already-paired document still reports the pairing', 
   assert.equal(pair('exr-a'), 1, 'the repeat pass adds nothing but the pairing is still there')
 })
 
+test('the paired answer is a visible callout and the matching solution starts expanded', () => {
+  const { student, solutions } = documents()
+  pairMarkedExerciseCallouts(student, solutions, 'https://example.com/s.html', 'exr-a')
+
+  const pair = student.querySelector<HTMLElement>('.tlda-marked-exercise-callout-pair')
+  const answer = pair?.querySelector<HTMLElement>('#ans-exr-a')
+  const solution = pair?.querySelector<HTMLElement>('[aria-label="Instructor solution for exr-a"]')
+  assert.ok(pair)
+  assert.equal(answer?.classList.contains('callout'), true)
+  assert.equal(answer?.querySelector('.callout-title-container')?.textContent, 'Student answer')
+  assert.equal(answer?.querySelector('.callout-body-container p')?.textContent, "the student's answer to a")
+  assert.equal(solution?.querySelector('.callout-collapse')?.classList.contains('show'), true)
+  assert.equal(solution?.querySelector('.callout-header')?.getAttribute('aria-expanded'), 'true')
+  assert.equal(solution?.querySelector('.callout-header')?.classList.contains('collapsed'), false)
+})
+
 test('the marking journey, matched to matched to unmatched and back', () => {
   const { student, solutions } = documents()
   const pair = (id: string) => pairMarkedExerciseCallouts(student, solutions, 'https://example.com/s.html', id)
@@ -70,9 +86,16 @@ test('the marking journey, matched to matched to unmatched and back', () => {
 
 test('leaving an exercise takes its pair apart and leaves the answer in place', () => {
   const { student, solutions } = documents()
+  const original = student.getElementById('ans-exr-a')!
+  const originalHtml = original.innerHTML
+  const originalClass = original.className
   pairMarkedExerciseCallouts(student, solutions, 'https://example.com/s.html', 'exr-a')
   pairMarkedExerciseCallouts(student, solutions, 'https://example.com/s.html', 'exr-b')
 
   assert.equal(student.querySelectorAll('.tlda-marked-exercise-callout-pair').length, 0)
-  assert.ok(student.getElementById('ans-exr-a'), "the student's answer survives unpairing")
+  const restored = student.getElementById('ans-exr-a')
+  assert.equal(restored, original, "the student's answer node survives unpairing")
+  assert.equal(restored?.innerHTML, originalHtml)
+  assert.equal(restored?.className, originalClass)
+  assert.equal(restored?.hasAttribute('aria-label'), false)
 })

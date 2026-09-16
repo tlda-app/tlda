@@ -6,7 +6,6 @@ import type { Editor } from 'tldraw'
 import { classroomApi, type ProblemsView } from './api'
 import { layerStore, moveShapesToLayer, sameFrame } from './moveBetweenLayers'
 import { releaseHeldEnd, resolveReturnEnds } from './returnEnds'
-import { collapseMarkedExerciseSolutions } from './useMarkedExerciseHtmlAlignment'
 import './ClassroomWorkspace.css'
 
 // The assignment as Skip marks it: "that would just be the homework assignment
@@ -121,7 +120,6 @@ export function ProblemMarking() {
   // matching solution level with it.
   useEffect(() => {
     if (!document || !problem || !answer?.anchor) return
-    collapseMarkedExerciseSolutions()
     const shapeId = document.pages[0]?.shapeId
     if (!shapeId) return
     // After the editor has mounted the page; the same message the table of
