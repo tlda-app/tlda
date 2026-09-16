@@ -538,12 +538,19 @@ export async function injectAgyPrompt(session, prompt, {
   tmuxSocket = process.env.TMUX_SOCKET || null,
   tmuxExec = tmux,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  report = null,
 } = {}) {
   const deadline = Date.now() + timeoutMs
   const promptMarker = kickoffMarker(prompt)
   const composerState = (pane = '') => paneComposerState('agy', pane, promptMarker)
   const target = exactTmuxTarget(session)
   const read = async () => String((await tmuxExec(tmuxSocket, 'capture-pane', '-t', target, '-p')).stdout || '')
+  let lastPane = ''
+  const note = (stage, pane) => {
+    if (!report || typeof report !== 'object') return
+    report.stage = stage
+    report.pane = String(pane || '').slice(-2000)
+  }
   // Settle startup: confirm the workspace trust dialog when it is up, refuse
   // approval dialogs, and wait for the idle composer. The trust answer is the
   // only keystroke this function ever aims at a dialog. Readiness is POSITIVE
@@ -556,11 +563,15 @@ export async function injectAgyPrompt(session, prompt, {
     let pane
     try {
       pane = await read()
+      lastPane = pane
     } catch {
       await sleep(1000)
       continue
     }
-    if (agyApprovalBlocking(pane)) return false
+    if (agyApprovalBlocking(pane)) {
+      note('approval-blocked', pane)
+      return false
+    }
     if (agyTrustConfirmable(pane)) {
       await tmuxExec(tmuxSocket, 'send-keys', '-t', target, 'Enter').catch(() => {})
       await sleep(1000)
@@ -575,7 +586,10 @@ export async function injectAgyPrompt(session, prompt, {
     }
     break
   }
-  if (Date.now() >= deadline) return false
+  if (Date.now() >= deadline) {
+    note('settle-timeout', lastPane)
+    return false
+  }
   // Paste literally in chunks (shell never sees the text) and submit with a
   // plain Enter -- measured 4/4 across idle and post-response states, and the
   // hostile prompt (quotes, vars, backticks, backslashes, Unicode, long)
@@ -600,26 +614,44 @@ export async function injectAgyPrompt(session, prompt, {
     } catch {
       continue
     }
-    if (agyApprovalBlocking(shown)) return false
+    if (agyApprovalBlocking(shown)) {
+      note('approval-blocked', shown)
+      return false
+    }
     if (composerState(shown).containsMarker || composerState(shown).busyAfter) break
   }
-  if (agyApprovalBlocking(shown)) return false
+  if (agyApprovalBlocking(shown)) {
+    note('approval-blocked', shown)
+    return false
+  }
   // Still not visibly parked and no turn started: a repaste would duplicate
   // the prompt, so report failure instead.
-  if (!composerState(shown).containsMarker && !composerState(shown).busyAfter) return false
+  if (!composerState(shown).containsMarker && !composerState(shown).busyAfter) {
+    note('paint-timeout', shown)
+    return false
+  }
   await tmuxExec(tmuxSocket, 'send-keys', '-t', target, 'Enter')
+  let submitted = ''
   while (Date.now() < deadline) {
     await sleep(500)
-    let submitted
     try {
       submitted = await read()
     } catch {
       continue
     }
-    if (agyApprovalBlocking(submitted)) return false
+    if (agyApprovalBlocking(submitted)) {
+      note('approval-blocked', submitted)
+      return false
+    }
     const state = composerState(submitted)
-    if (state.busyAfter) return true
-    if (state.promptIndex >= 0 && !state.containsMarker) return true
+    if (state.busyAfter) {
+      note('submitted', submitted)
+      return true
+    }
+    if (state.promptIndex >= 0 && !state.containsMarker) {
+      note('submitted', submitted)
+      return true
+    }
     // Still parked: Enter on an empty composer is a no-op once submitted, so
     // the retry is safe to repeat. It is NOT sent blindly at dialogs: the
     // approval check above runs first on every pass.
@@ -629,5 +661,6 @@ export async function injectAgyPrompt(session, prompt, {
   // this does not withdraw it: no verified composer-clear key exists for agy,
   // and destroying the only copy of the kickoff is worse than leaving it
   // parked where the wake path's submitParkedKickoff can see and resubmit it.
+  note('submit-timeout', submitted || shown)
   return false
 }

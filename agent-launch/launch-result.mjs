@@ -50,10 +50,11 @@ export function assertCodexKickoffDelivered(delivered, tmuxSession, { crashLogPa
 export function assertAgyKickoffDelivered(delivered, tmuxSession, { crashLogPath = null, detail = {} } = {}) {
   if (delivered) return
   recordKickoffFailure(tmuxSession, crashLogPath, detail, 'agy-kickoff-not-delivered')
-  const error = new Error(`agy fleet kickoff was not delivered in tmux session ${tmuxSession}`)
+  const stage = typeof detail?.stage === 'string' && detail.stage ? ` (stage: ${detail.stage})` : ''
+  const error = new Error(`agy fleet kickoff was not delivered in tmux session ${tmuxSession}${stage}`)
   error.name = 'SpawnError'
   error.code = 'launch-failed'
   error.reason = 'launch-failed'
-  error.detail = { tmuxSession }
+  error.detail = { tmuxSession, ...detail }
   throw error
 }
