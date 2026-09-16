@@ -117,7 +117,8 @@ test('a deck edit renders only the deck and keeps its chapter unchanged', { time
     assert.ok(deckEntry, `expected a slides entry, got ${JSON.stringify(pageInfo.map((e) => e.file))}`)
     // What the map layer keys on: the deck sits on its CHAPTER's map, while
     // still naming its own source file as the document an edit lands in.
-    assert.equal(deckEntry.group, CHAPTER)
+    assert.equal(deckEntry.map, CHAPTER)
+    assert.equal(deckEntry.group, undefined)
     assert.equal(deckEntry.source.file, DECK)
     assert.equal(deckEntry.file, `_book/${DECK_HTML}`)
     assert.ok(deckEntry.slides.length > 0, 'a deck entry carries its slides as its address space')
@@ -129,7 +130,8 @@ test('a deck edit renders only the deck and keeps its chapter unchanged', { time
     // key its paired deck names, and is how the two land together.
     const chapterEntry = pageInfo.find((entry) => entry.source?.file === CHAPTER && entry.variant !== 'slides')
     assert.ok(chapterEntry, 'the chapter must still have its own entry')
-    assert.equal(chapterEntry.group, CHAPTER)
+    assert.equal(chapterEntry.map, CHAPTER)
+    assert.equal(chapterEntry.group, undefined)
     assert.deepEqual(
       pageInfo.filter((entry) => entry.variant !== 'slides').map((entry) => entry.source.file),
       ['index.qmd', CHAPTER],

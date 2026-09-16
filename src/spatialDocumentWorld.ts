@@ -423,7 +423,9 @@ export function spatialWorldDocuments(
   primaryTitle = projectName,
 ): SpatialDocumentNode[] {
   const pages = editor.getCurrentPageShapes().filter(rawDocumentPage)
-  const primaryPages = pages.filter(shape => !shape.meta?.temporaryMarkdownColumn)
+  const primaryPages = pages.filter(shape =>
+    !shape.meta?.temporaryMarkdownColumn && !shape.meta?.spatialWorldDocument
+  )
   const nodes: SpatialDocumentNode[] = []
   if (primaryPages.length > 0) {
     const bounds = primaryPages.map(shapeBounds)

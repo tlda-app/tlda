@@ -13,6 +13,7 @@ export interface HtmlPageEntry {
   height: number
   title?: string
   tocLevel?: string
+  map?: string
   group?: string
   groupIndex?: number
   slideIndex?: number
@@ -32,6 +33,10 @@ const tabSpacing = 24  // horizontal gap between side-by-side tabs
 
 function pageUrl(info: HtmlPageEntry, basePath: string): string {
   const url = info.url || basePath + info.file
+  if (info.variant === 'slides' && info.slideIndex == null) {
+    const separator = url.includes('?') ? '&' : '?'
+    return `${url}${separator}_tldaDeck=1&view=scroll`
+  }
   if (info.slideIndex == null) return url
   const separator = url.includes('?') ? '&' : '?'
   return `${url}${separator}_tldaH=${info.indexh ?? info.slideIndex}&_tldaV=${info.indexv ?? 0}`
@@ -63,20 +68,20 @@ export async function loadHtmlDocument(
 /**
  * The map an entry belongs to, or null for one map of its own.
  *
- * A map is one TLDraw page holding one chapter's docs — the prose chapter and,
- * where one exists, its deck. `group` is the builder's statement of which
- * chapter an entry belongs to, and it is the ONLY thing read here: pairing a
+ * A map is one TLDraw page holding one chapter's documents — the prose chapter
+ * and, where one exists, its deck. `map` is the builder's statement of which
+ * chapter an entry belongs to. Pairing a
  * deck with a chapter is the builder's decision (it knows the book's render
  * lists and the `<chapter>-slides.qmd` stem rule), and re-deriving it from
  * paths in the viewer would be a second answer that can disagree with the
  * first.
  *
- * An entry with no `group` gets a map of its own, keyed by position exactly as
- * before — which is every entry of every format that does not emit `group`, so
- * a non-book project's TLDraw page ids are unchanged by the map layer.
+ * A historical `group` still makes a shared map for side-by-side comparisons.
+ * An entry with neither `map` nor `group` gets a map of its own, keyed by
+ * position exactly as before.
  */
 function mapKeyOf(info: HtmlPageEntry): string | null {
-  return info.group || null
+  return info.map || info.group || null
 }
 
 /** A readable, stable TLDraw page id for a map key. */
@@ -154,12 +159,18 @@ export function createHtmlDocumentFromPageInfo(
     const pageName = named.info.title
       || named.info.file.replace(/\.html$/, '').replace(/-/g, ' ')
 
-    // Several docs on one map sit side by side, which is what the chapter/deck
-    // pairing has always looked like.
+    // A group is a side-by-side comparison. A book map is different: its deck
+    // is an independent document in the same world, far enough away to be a
+    // separate place rather than a neighbouring tile.
     let left = 0
     for (const { info, index } of map.entries) {
-      placements.set(index, { tlPageId, pageName, left })
-      left += info.width + tabSpacing
+      const independent = !!info.map && info.variant === 'slides'
+      placements.set(index, {
+        tlPageId,
+        pageName,
+        left: independent ? left + 90_000 : left,
+      })
+      left += info.width + (independent ? 90_000 : tabSpacing)
     }
     if (map.entries.length > 1) {
       console.log(`  Map "${pageName}": ${map.entries.length} docs`)
@@ -184,6 +195,13 @@ export function createHtmlDocumentFromPageInfo(
       height: info.height,
       tldrawPageId: placement.tlPageId,
       tldrawPageName: placement.pageName,
+      meta: info.map && info.variant === 'slides'
+        ? {
+            spatialWorldDocument: true,
+            spatialWorldTitle: info.title || info.file.replace(/\.html$/, ''),
+            materializedFile: info.file,
+          }
+        : undefined,
       source: info.source,
     })
   }

@@ -19,6 +19,7 @@ type HtmlPageShape = {
   y: number
   isLocked?: boolean
   props: { w: number; h: number; url?: string; source?: string }
+  meta?: Record<string, unknown>
 } & Record<string, unknown>
 
 function isHtmlPageShape(shape: unknown): shape is HtmlPageShape {
@@ -33,6 +34,7 @@ type HtmlPageShapePartial = {
   y: number
   isLocked: boolean
   props: { w: number; h: number; url: string; source?: string }
+  meta?: Record<string, unknown>
 }
 
 function createHtmlPageShape(editor: Editor, shape: HtmlPageShapePartial) {
@@ -285,6 +287,7 @@ export function createHtmlShapes(
         x: page.bounds.x,
         y: page.bounds.y,
         isLocked: true,
+        ...(page.meta ? { meta: page.meta } : {}),
         props: {
           w: page.bounds.w,
           h: page.bounds.h,
@@ -320,6 +323,7 @@ export function createHtmlShapes(
       x: page.bounds.x,
       y: page.bounds.y,
       isLocked: true,
+      meta: page.meta ? { ...(existing.meta || {}), ...page.meta } : existing.meta,
       props: {
         ...existing.props,
         w: page.bounds.w,
