@@ -59,7 +59,7 @@ test('explicitly linked assets survive as relative app-site paths', () => {
 test('already-built TLDA output is selected, ordered, and repeatable from the index', () => {
   const root = fixture()
   const built = join(root, 'tlda-output')
-  const output = join(root, 'app-site')
+  const output = join(mkdtempSync(join(tmpdir(), 'course-app-output-')), 'app-site')
   mkdirSync(join(built, '_book/chapters'), { recursive: true })
   mkdirSync(join(built, '_book/decks'), { recursive: true })
   const pages = [
