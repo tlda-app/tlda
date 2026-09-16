@@ -4,7 +4,7 @@ import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
 import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
-import { composerState as paneComposerState, dialogAwaitingKeypress, kickoffMarker } from '../agent-runtime/status-classifier.mjs'
+import { AGY_APPROVAL_RE, AGY_TRUST_DIALOG_RE, composerState as paneComposerState, dialogAwaitingKeypress, kickoffMarker } from '../agent-runtime/status-classifier.mjs'
 import { parseProcessTree, walkSubtree } from './process-tree.mjs'
 
 const execFileP = promisify(execFile)
@@ -64,7 +64,7 @@ export function runtimeStateFromProcessList(panePids, psText) {
   // harness resolvers, which share the walk but demand exactly one.
   for (const pid of walkSubtree(panePids, children)) {
     const args = argsByPid.get(pid) || ''
-    if (/(?:^|\s|[/\\])(claude|codex|goose|muse(?:-bin-[\w.-]+)?)(?:\.exe)?(?:\s|$)/.test(args)
+    if (/(?:^|\s|[/\\])(agy|claude|codex|goose|muse(?:-bin-[\w.-]+)?)(?:\.exe)?(?:\s|$)/.test(args)
       || /(?:^|\s|[/\\])node(?:\.exe)?(?:\s|$).*?\.mjs\b/.test(args)) {
       const envValue = name => {
         const match = args.match(
@@ -512,5 +512,122 @@ export async function injectClaudePrompt(session, prompt, {
     }
     await sleep(1000)
   }
+  return false
+}
+
+// agy shows a workspace trust dialog on first launch per cwd ("Do you trust
+// the contents of this project?", default-highlight Yes). Confirming it is
+// safe to automate: the cwd is the daemon's own launch choice, and there is
+// no config pre-trust (codex's trust_level file) to write instead. Approval
+// dialogs ("Run this command?", "Allow access to this file?") are NEVER
+// confirmed here; they surface as blockedByDialog for a human or a bypass
+// flag configured by the operator.
+function agyTrustConfirmable(pane = '') {
+  if (!AGY_TRUST_DIALOG_RE.test(pane)) return false
+  if (AGY_APPROVAL_RE.test(pane)) return false
+  return pane.split('\n').some((line) =>
+    line.trimStart().startsWith('>') && line.includes('Yes, I trust this folder'))
+}
+
+function agyApprovalBlocking(pane = '') {
+  return AGY_APPROVAL_RE.test(pane)
+}
+
+export async function injectAgyPrompt(session, prompt, {
+  timeoutMs = 60_000,
+  tmuxSocket = process.env.TMUX_SOCKET || null,
+  tmuxExec = tmux,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  const deadline = Date.now() + timeoutMs
+  const promptMarker = kickoffMarker(prompt)
+  const composerState = (pane = '') => paneComposerState('agy', pane, promptMarker)
+  const target = exactTmuxTarget(session)
+  const read = async () => String((await tmuxExec(tmuxSocket, 'capture-pane', '-t', target, '-p')).stdout || '')
+  // Settle startup: confirm the workspace trust dialog when it is up, refuse
+  // approval dialogs, and wait for the idle composer. The trust answer is the
+  // only keystroke this function ever aims at a dialog. Readiness is POSITIVE
+  // (a `>` composer line with no trust question and no live turn), never the
+  // absence of a dialog: right after spawn the pane holds the launch shell,
+  // which has neither, and pasting there types the prompt as a shell command.
+  // Measured: the first e2e pasted E2E-PING into zsh while agy was still
+  // booting, then sat unconfirmed at the trust dialog it never waited for.
+  while (Date.now() < deadline) {
+    let pane
+    try {
+      pane = await read()
+    } catch {
+      await sleep(1000)
+      continue
+    }
+    if (agyApprovalBlocking(pane)) return false
+    if (agyTrustConfirmable(pane)) {
+      await tmuxExec(tmuxSocket, 'send-keys', '-t', target, 'Enter').catch(() => {})
+      await sleep(1000)
+      continue
+    }
+    const state = composerState(pane)
+    // Busy (a turn already running) means someone else is driving; do not
+    // pile on. No composer line yet means the TUI is still booting; wait.
+    if (state.busyAfter || state.promptIndex < 0) {
+      await sleep(1000)
+      continue
+    }
+    break
+  }
+  if (Date.now() >= deadline) return false
+  // Paste literally in chunks (shell never sees the text) and submit with a
+  // plain Enter -- measured 4/4 across idle and post-response states, and the
+  // hostile prompt (quotes, vars, backticks, backslashes, Unicode, long)
+  // arrived intact. No pre-clear: agy's C-u behavior is unverified, and a
+  // blind control key is worse than appending; launch paths inject into a
+  // fresh composer, and a non-empty composer holding foreign text fails the
+  // marker check below rather than submitting someone else's words.
+  for (let offset = 0; offset < prompt.length; offset += 800) {
+    await tmuxExec(tmuxSocket, 'send-keys', '-t', target, '-l', prompt.slice(offset, offset + 800))
+    await sleep(25)
+  }
+  // The keystrokes land instantly but the TUI paints asynchronously: 500ms
+  // after a paste the composer can show a PREFIX of the text (measured: 18
+  // of 46 chars), which reads as "not parked". Poll for the paint to catch
+  // up; only the single paste above ever happens, so waiting cannot duplicate.
+  let shown = ''
+  const paintDeadline = Date.now() + 8000
+  while (Date.now() < deadline && Date.now() < paintDeadline) {
+    await sleep(500)
+    try {
+      shown = await read()
+    } catch {
+      continue
+    }
+    if (agyApprovalBlocking(shown)) return false
+    if (composerState(shown).containsMarker || composerState(shown).busyAfter) break
+  }
+  if (agyApprovalBlocking(shown)) return false
+  // Still not visibly parked and no turn started: a repaste would duplicate
+  // the prompt, so report failure instead.
+  if (!composerState(shown).containsMarker && !composerState(shown).busyAfter) return false
+  await tmuxExec(tmuxSocket, 'send-keys', '-t', target, 'Enter')
+  while (Date.now() < deadline) {
+    await sleep(500)
+    let submitted
+    try {
+      submitted = await read()
+    } catch {
+      continue
+    }
+    if (agyApprovalBlocking(submitted)) return false
+    const state = composerState(submitted)
+    if (state.busyAfter) return true
+    if (state.promptIndex >= 0 && !state.containsMarker) return true
+    // Still parked: Enter on an empty composer is a no-op once submitted, so
+    // the retry is safe to repeat. It is NOT sent blindly at dialogs: the
+    // approval check above runs first on every pass.
+    await tmuxExec(tmuxSocket, 'send-keys', '-t', target, 'Enter').catch(() => {})
+  }
+  // Out of budget with our text in the composer. Unlike the codex injector
+  // this does not withdraw it: no verified composer-clear key exists for agy,
+  // and destroying the only copy of the kickoff is worse than leaving it
+  // parked where the wake path's submitParkedKickoff can see and resubmit it.
   return false
 }

@@ -9,7 +9,7 @@ import path from 'node:path'
 import { normalizeSpawnModelKwargs } from './models.mjs'
 import { getMachineId } from '../shared/config.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsMintShell, wsReserveShell } from './register.mjs'
-import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, sessionRuntimeState, spawnTmux, submitParkedKickoff, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
+import { injectAgyPrompt, injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, sessionRuntimeState, spawnTmux, submitParkedKickoff, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
 import { resolveLaunchPolicy, permissionMetadata } from './permissions.mjs'
 import { resolveCodexResumeHandle } from '../agent-runtime/codex-resume-resolver.mjs'
@@ -21,6 +21,7 @@ import {
   scanCodexRolloutIdentity,
   stripSyntheticTail,
 } from './resume.mjs'
+import * as agy from './harness/agy.mjs'
 import * as claude from './harness/claude.mjs'
 import * as codex from './harness/codex.mjs'
 import * as goose from './harness/goose.mjs'
@@ -41,7 +42,7 @@ export function identityIsDiscoveredAfterLaunch({ requestedKind, freshSessionId,
   return Boolean(resolvers?.[requestedKind])
 }
 
-import { assertCodexKickoffDelivered, recordKickoffFailure } from './launch-result.mjs'
+import { assertAgyKickoffDelivered, assertCodexKickoffDelivered, recordKickoffFailure } from './launch-result.mjs'
 
 export class SpawnError extends Error {
   constructor(reason, message, detail = {}) {
@@ -95,7 +96,7 @@ const BOT_MODEL_SPEC = {
   verified: true,
 }
 
-const ADAPTERS = { claude, codex, goose, muse, bot }
+const ADAPTERS = { agy, claude, codex, goose, muse, bot }
 
 function metadataOf(agent) {
   const meta = agent?.metadata || {}
@@ -255,6 +256,28 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
       harnessOptions,
     })
     sendKeys = true
+  } else if (requestedKind === 'agy') {
+    // agy has no trust pre-seed and no prompt-embedding flag; the workspace
+    // MCP file carries per-agent identity (written here, the
+    // ensureProjectTrusted precedent) and the kickoff is injected into the
+    // TUI like codex, with the trust dialog confirmed at inject time.
+    agy.prepareWorkspaceMcp({ cwd, fleetId, localAgentId, tmuxSession, name, config, env, harnessOptions })
+    cmd = agy.buildCmd({
+      fleetId,
+      localAgentId,
+      tmuxSession,
+      model,
+      name,
+      cwd,
+      effort,
+      api,
+      dnsAlias,
+      resumeId,
+      config,
+      env,
+      harnessOptions,
+    })
+    sendKeys = true
   } else {
     cmd = adapter.buildCmd({
       cwd,
@@ -405,6 +428,17 @@ export async function launchMintProcess(params) {
       { tmuxSocket: params.tmuxSocket },
     )
     assertCodexKickoffDelivered(delivered, tmuxSession, {
+      crashLogPath: params.crashLogPath,
+      detail: { name, mint_id: mintId, fleet_id: fleetId, path: 'mint' },
+    })
+  }
+  if (requestedKind === 'agy') {
+    const delivered = await (params._deps?.injectAgyPrompt || injectAgyPrompt)(
+      tmuxSession,
+      agy.kickoffPrompt(name),
+      { tmuxSocket: params.tmuxSocket },
+    )
+    assertAgyKickoffDelivered(delivered, tmuxSession, {
       crashLogPath: params.crashLogPath,
       detail: { name, mint_id: mintId, fleet_id: fleetId, path: 'mint' },
     })
@@ -679,7 +713,9 @@ async function spawnFresh(params) {
     try {
       promptDeliveryPromise = requestedKind === 'codex'
         ? Promise.resolve((deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
-        : Promise.resolve(true)
+        : requestedKind === 'agy'
+          ? Promise.resolve((deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
+          : Promise.resolve(true)
     } catch (error) {
       promptDeliveryPromise = Promise.reject(error)
     }
@@ -1090,6 +1126,13 @@ async function spawnRespawn(params) {
       recordKickoffFailure(tmuxSession, params.crashLogPath, { name: friendlyName, fleet_id: fleetId, path: 'respawn' })
       throw new SpawnError('launch-failed', `codex prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
     }
+  }
+  if (requestedKind === 'agy') {
+    const injected = await (deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
+    if (!injected) {
+      recordKickoffFailure(tmuxSession, params.crashLogPath, { name: friendlyName, fleet_id: fleetId, path: 'respawn' }, 'agy-kickoff-not-delivered')
+      throw new SpawnError('launch-failed', `agy prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
+    }
   } else if (requestedKind === 'claude' && resumeId) {
     await injectClaudePrompt(tmuxSession, claude.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
   }
@@ -1212,6 +1255,13 @@ async function spawnRefresh(params) {
       throw new SpawnError('launch-failed', `codex prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
     }
   }
+  if (requestedKind === 'agy') {
+    const injected = await (deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
+    if (!injected) {
+      recordKickoffFailure(tmuxSession, params.crashLogPath, { name: friendlyName, fleet_id: fleetId, path: 'refresh' }, 'agy-kickoff-not-delivered')
+      throw new SpawnError('launch-failed', `agy prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
+    }
+  }
   return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, refreshed: true }
 }
 
@@ -1322,7 +1372,9 @@ export async function launchDoctorYolo(params = {}) {
     enforceFence: false,
     harnessOptions: requestedKind === 'codex'
       ? { required: ['--dangerously-bypass-approvals-and-sandbox'], preferences: [] }
-      : {},
+      : requestedKind === 'agy'
+        ? { required: ['--dangerously-skip-permissions'], preferences: [] }
+        : {},
     config,
     // The launched process's route home. Every harness emits FLEET_DAEMON_KEY
     // from TLDA_MACHINE_ID + TLDA_ENV, and the server writes an agent's route
@@ -1382,7 +1434,9 @@ export async function launchDoctorYolo(params = {}) {
     if (!launched) throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
     const promptDeliveryPromise = requestedKind === 'codex'
       ? Promise.resolve((deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
-      : Promise.resolve(true)
+      : requestedKind === 'agy'
+        ? Promise.resolve((deps.injectAgyPrompt || injectAgyPrompt)(tmuxSession, agy.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
+        : Promise.resolve(true)
     const registrationPromise = (async () => {
       const serverUp = await (deps.ensureServer || ensureServer)({ api })
       if (!serverUp) throw new Error(`server unavailable at ${api}`)

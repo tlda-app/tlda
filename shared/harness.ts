@@ -1,4 +1,4 @@
-export type Kind = 'claude' | 'codex' | 'goose' | 'muse'
+export type Kind = 'agy' | 'claude' | 'codex' | 'goose' | 'muse'
 
 export interface HarnessOps {
   kind: Kind
@@ -22,6 +22,13 @@ function normalize(value: unknown): string {
 }
 
 export const HARNESS: Record<Kind, HarnessOps> = {
+  agy: {
+    kind: 'agy',
+    educationGate: true,
+    requiresClaudeSession: false,
+    filtersSkillSections: true,
+    skillsDir: '~/.gemini/antigravity-cli/skills',
+  },
   muse: {
     kind: 'muse',
     educationGate: true,

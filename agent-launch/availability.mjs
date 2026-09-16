@@ -125,18 +125,29 @@ export async function probeSpawnAvailability({ cwd = null, env = process.env, no
   const runner = {
     run: deps.run || ((command, args, opts = {}) => run(command, args, { ...opts, env })),
   }
-  const [claudePath, codexPath, goosePath, cursorPath, musePath] = await Promise.all([
+  const [claudePath, codexPath, goosePath, cursorPath, musePath, agyPath] = await Promise.all([
     commandPath('claude', runner),
     commandPath('codex', runner),
     commandPath('goose', runner),
     commandPath(CURSOR_AGENT_COMMAND, runner),
     commandPath('muse', runner),
+    commandPath('agy', runner),
   ])
   const [claudeAuth, gooseAuth] = await Promise.all([
     claudePath ? hasClaudeAuth(runner) : Promise.resolve(failResult('binary-missing')),
     goosePath ? hasGooseAuth(runner) : Promise.resolve(failResult('binary-missing')),
   ])
   const codexAuth = codexPath ? hasCodexAuth(deps.codexAuthFile) : failResult('binary-missing')
+  // agy keeps its token profile under the operator HOME with no documented
+  // offline-readable marker, so auth is proven by doing: `agy models` exits 0
+  // signed in (silent keyring) and nonzero otherwise. A timeout or failure is
+  // auth-unknown, never not-authenticated -- the probe cannot tell offline
+  // from signed out.
+  const agyAuth = agyPath
+    ? await runner.run(agyPath, ['models'], { timeoutMs: 15000 }).then(
+      r => r.ok ? okResult({ source: 'agy models' }) : failResult('auth-unknown', (r.stderr || r.stdout || r.error || '').trim().slice(0, 200) || null),
+    )
+    : failResult('binary-missing')
   const museConfigHome = listModels(config).models.find(model => model.kind === 'muse')?.harnessOptions?.env?.XDG_CONFIG_HOME || env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
   const museApiKey = musePath ? await loginShellEnv('META_API_KEY', runner) : ''
   const museAuth = musePath
@@ -145,6 +156,13 @@ export async function probeSpawnAvailability({ cwd = null, env = process.env, no
   const cursor = await cursorStatus(cursorPath, runner)
   const cursorAvailable = !!(cursor.binary?.ok && cursor.authenticated?.ok)
   const harnesses = {
+    agy: {
+      kind: 'agy',
+      binary: agyPath ? okResult({ path: agyPath }) : failResult('binary-missing'),
+      authenticated: agyAuth,
+      available: !!(agyPath && agyAuth.ok),
+      models: modelRows('agy', config),
+    },
     muse: {
       kind: 'muse',
       binary: musePath ? okResult({ path: musePath }) : failResult('binary-missing'),
