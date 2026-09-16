@@ -412,19 +412,26 @@ export function validateStrictEnvironments(environments, label = 'daemon.yaml en
   if (!isRecord(environments.values)) {
     throw new Error(`${label}.values must be an object of named environment entries`)
   }
-  const allowed = new Set(STRICT_SERVER_FIELDS)
+  const allowed = new Set([...STRICT_SERVER_FIELDS, 'runtimeRoot'])
   for (const [name, raw] of Object.entries(environments.values)) {
     if (!isRecord(raw)) {
       throw new Error(`tlda environment "${name}" must be an object in ${label}.values`)
     }
     const extra = Object.keys(raw).filter(key => !allowed.has(key))
     if (extra.length) {
-      throw new Error(`tlda environment "${name}" supports only ${STRICT_SERVER_FIELDS.join(', ')}; unknown key(s): ${extra.join(', ')}`)
+      throw new Error(`tlda environment "${name}" supports only ${[...allowed].join(', ')}; unknown key(s): ${extra.join(', ')}`)
     }
     for (const field of STRICT_SERVER_FIELDS) {
       if (typeof raw[field] !== 'string') {
         throw new Error(`tlda environment "${name}": "${field}" must be a string in ${label}.${name} — declare database, store, and licenseKey explicitly (no url/database-as-store/top-level-license fallback).`)
       }
+    }
+    // Optional: where this environment's local runtime lives. Absent means the
+    // tree the process was loaded from (module location) — the standing
+    // behavior non-developer boxes keep. When declared it must be absolute;
+    // the daemon refuses to start from anywhere else.
+    if (raw.runtimeRoot !== undefined && !isAbsoluteRoot(raw.runtimeRoot)) {
+      throw new Error(`tlda environment "${name}": "runtimeRoot" must be an absolute path in ${label}.${name}, got ${JSON.stringify(raw.runtimeRoot)}`)
     }
   }
   return environments.values

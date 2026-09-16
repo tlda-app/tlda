@@ -531,6 +531,78 @@ standing between a bare `fly deploy` and shipping a stale client, and it should
 stay until something else refuses first. With `fly.toml` deleted, something
 else now does.**
 
+## Local-runtime-only testing pushes
+
+Testing's local runtime — daemon, MCP server, agent launcher, session hooks —
+is one unit. It follows deployed `main` unless the explicit override is active.
+No worktree or symlink may become runtime authority: launchd points at one
+stable runtime checkout and contains no ref-selection logic; the receive
+machinery owns selecting, resetting, restarting, and verifying the revision.
+
+When the reviewed candidate must reach the testing runtime without deploying
+Fly (e.g. a daemon/MCP-only change), push the runtime ref explicitly:
+
+```bash
+git push -o local-runtime-only /Users/you/work/deploy/testing HEAD:refs/heads/daemon
+```
+
+What happens:
+
+- pre-receive validates the tree (conflict markers, `node --check`, server
+  imports) exactly as for `main`, but skips the canonical-main check, the Fly
+  build/deploy, and the serving verification. Fly keeps serving `main`.
+- post-receive fetches the `daemon` ref into the managed runtime checkout,
+  resets it `--hard`, restarts the daemon, and polls the daemon log for its
+  `tlda-runtime sha=<full-sha>` boot stamp — the loaded-SHA verification. A
+  deployed sha is not a loaded module.
+- The override is recorded in `deploy-state/runtime-sha`. The
+  `last-successful-sha` server-deployment record is untouched.
+
+State transitions:
+
+| event | Fly serves | runtime runs | refs |
+|---|---|---|---|
+| ordinary `main` push | new main | new main | `main` moved; `daemon` deleted if present |
+| `-o local-runtime-only` push to `daemon` | unchanged | override SHA | `daemon` set; `main` untouched |
+| next ordinary `main` push | new main | new main, override cleared | `daemon` deleted |
+
+Reunification: the next ordinary push to `main` deletes `refs/heads/daemon`
+and clears the override marker. Server and runtime are one revision again.
+
+Rollback: if the override SHA misbehaves, push `main` again — post-receive
+resets the checkout, restarts, and clears the override. To abandon the
+override without a new push:
+
+```bash
+git --git-dir=/Users/you/work/deploy/testing update-ref -d refs/heads/daemon
+```
+
+then push `main` normally.
+
+Rejected combinations (fail closed):
+
+- `daemon` ref without `-o local-runtime-only` — an undeclared runtime move.
+- `main` (or any other ref) carrying `-o local-runtime-only`.
+- `daemon` ref on any repo but testing.
+- deleting `refs/heads/daemon` directly.
+
+Setup (once per testing deploy repo, outside git):
+
+```bash
+git --git-dir=/Users/you/work/deploy/testing config receive.advertisePushOptions true
+```
+
+Without it the pusher gets `fatal: the receiving end does not support push
+options` and nothing reaches the hook.
+
+Per-environment runtime roots: `daemon.yaml` declares
+`environments.<env>.runtimeRoot` — where that environment's runtime lives. The
+testing developer daemon declares its managed checkout; every daemon/MCP/
+launcher/hook path for that environment resolves from it. Absent means the tree
+the process loaded from (module location): non-developer boxes keep their
+installed runtime, untouched by any testing override. The daemon refuses to
+start when loaded from anywhere but its declared root.
+
 ## A guarded remote does not stop anyone going around it
 
 On 2026-09-03 `tlda-pic` — the student-facing box, which **had** a working

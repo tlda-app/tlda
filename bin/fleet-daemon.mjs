@@ -2407,6 +2407,23 @@ log.info(`  machine_id  = ${MACHINE_ID}`)
 log.info(`  env_name    = ${ACTIVE_ENV}`)
 log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
+// The local runtime is one tree: daemon, MCP server, launcher, and hooks all
+// load from the checkout this process started from. When daemon.yaml declares
+// environments.<env>.runtimeRoot, starting from anywhere else is the hidden
+// second-runtime bug — refuse, naming both trees. Undeclared environments keep
+// the standing module-location behavior (installed boxes are untouched).
+{
+  const actualRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const { runtimeRoot, declared } = getRuntimeRoot(ACTIVE_ENV, actualRoot)
+  const verdict = checkRuntimeRoot({ declared, configuredRoot: runtimeRoot, actualRoot })
+  if (!verdict.ok) {
+    log.error(verdict.message)
+    process.exit(1)
+  }
+  const sha = readCheckoutSha(actualRoot)
+  log.info(`  runtime     = ${actualRoot}${declared ? ' (declared)' : ''}`)
+  log.info(runtimeStampLine({ sha, root: actualRoot, env: ACTIVE_ENV }))
+}
 startHeartbeat()
 // Bots are independent, launchd-owned services (bots.yaml) — the daemon no
 // longer starts a bot-supervisor.

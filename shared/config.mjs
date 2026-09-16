@@ -496,6 +496,25 @@ export function getActiveEnvName(envName = null) {
 }
 
 /**
+ * Where an environment's local runtime lives.
+ *
+ * Returns `{ runtimeRoot, declared }`. A declared `environments.<env>.runtimeRoot`
+ * is what the daemon must be running from; absent (or no readable daemon.yaml,
+ * e.g. a fresh install or the Fly server) falls back to `fallbackRoot` — the
+ * tree the process was loaded from — with `declared: false`, which is the
+ * standing behavior non-developer boxes keep. Never throws.
+ */
+export function getRuntimeRoot(envName = null, fallbackRoot = null) {
+  try {
+    const root = loadDaemonYaml()
+    const { name } = resolveStrictEnvironmentAuthority(root, envName)
+    return resolveRuntimeRootForEnv(root.environments.values, name, fallbackRoot)
+  } catch {
+    return { runtimeRoot: fallbackRoot, declared: false }
+  }
+}
+
+/**
  * RW token resolution. Used by agents, daemon, CLI — anything that writes.
  * TLDA_TOKEN env → config.tokenRw → config.token → null
  */
