@@ -33,6 +33,21 @@ test('course app spec comes from index links and real course counterparts', () =
   assert.equal(spec.links.includes('https://example.com/nope'), false)
 })
 
+test('generated static index is the release authority for the app tree', () => {
+  const root = fixture()
+  const publication = join(mkdtempSync(join(tmpdir(), 'course-release-index-')), 'index.html')
+  writeFileSync(publication, [
+    '<a href="book/chapters/one.html">Chapter</a>',
+    '<a href="book/decks/one-slides.html">Slides</a>',
+    '<a href="book/homework/hw.html">Homework</a>',
+    '<a href="book/homework/handouts/hw-handout.zip">Download</a>',
+  ].join('\n'))
+  const spec = deriveCourseAppSpec(root, publication)
+  assert.deepEqual(spec.documents, ['index.qmd', 'chapters/one.qmd', 'homework/hw.qmd'])
+  assert.deepEqual(spec.decks, ['decks/one-slides.qmd'])
+  assert.deepEqual(spec.assets, ['homework/handouts/hw-handout.zip'])
+})
+
 test('a missing local publication target fails with the evidence inline', () => {
   const root = fixture()
   writeFileSync(join(root, 'index.qmd'), '[Missing](chapters/not-there.qmd)')
@@ -72,6 +87,8 @@ test('already-built TLDA output is selected, ordered, and repeatable from the in
   for (const page of pages) {
     mkdirSync(join(built, dirname(page.file)), { recursive: true })
     writeFileSync(join(built, page.file), `<h1>${page.title}</h1>`)
+    mkdirSync(join(built, dirname(page.source.file)), { recursive: true })
+    writeFileSync(join(built, page.source.file), page.source.file)
   }
   writeFileSync(join(built, '_book/runtime-frame.html'), 'renderer dependency')
   writeFileSync(join(built, 'page-info.json'), JSON.stringify(pages))
@@ -82,7 +99,9 @@ test('already-built TLDA output is selected, ordered, and repeatable from the in
     'index.qmd', 'chapters/one.qmd', 'homework/hw.qmd', 'decks/one-slides.qmd',
   ])
   assert.equal(existsSync(join(output, '_book/chapters/unreleased.html')), false)
+  assert.equal(existsSync(join(output, 'chapters/unreleased.qmd')), false)
   assert.equal(existsSync(join(output, '_book/chapters/one.html')), true)
+  assert.equal(existsSync(join(output, 'chapters/one.qmd')), true)
   assert.equal(existsSync(join(output, '_book/runtime-frame.html')), true)
   const snapshot = readFileSync(join(output, 'page-info.json'), 'utf8')
   assembleCourseAppSite(root, 'index.qmd', built, output)
