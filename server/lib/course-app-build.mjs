@@ -70,7 +70,7 @@ export function deriveCourseAppSpec(courseDir, indexFile) {
       const source = sourceForRenderedTarget(root, target)
       if (source) {
         links.push(target)
-        if (source.startsWith('decks/') && source.endsWith('-slides.qmd')) addUnique(decks, source)
+        if (source.endsWith('-slides.qmd')) addUnique(decks, source)
         else addUnique(documents, source)
       } else if (existsSync(join(root, target))) {
         links.push(target)
@@ -86,7 +86,7 @@ export function deriveCourseAppSpec(courseDir, indexFile) {
     links.push(target)
     let source = target.endsWith('.qmd') ? target : sourceForRenderedTarget(root, target)
     if (source && existsSync(join(root, source))) {
-      if (source.startsWith('decks/') && source.endsWith('-slides.qmd')) {
+      if (source.endsWith('-slides.qmd')) {
         addUnique(decks, source)
       } else {
         addUnique(documents, source)
