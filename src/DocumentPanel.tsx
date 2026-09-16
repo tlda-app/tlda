@@ -17,6 +17,7 @@ import { isPhoneViewport } from './phoneViewport'
 import { log } from './logger'
 import { isClassroomSurface } from './classroom/classroomSurface'
 import { documentPanelShowsProject } from './classroom/classroomUiPolicy'
+import { getPref, subscribePref } from './preferences'
 
 import './DocumentPanel.css'
 import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
@@ -669,7 +670,8 @@ export function PhoneOverlay() {
   const [tab, setTab] = useState<Tab>('document')
   const [query, setQuery] = useState('')
   const isPhone = usePhoneSizedViewport()
-  const showButtonToc = doc?.format === 'slides' || isPhone || IS_TOUCH_DEVICE
+  const buttonMode = useSyncExternalStore(subscribePref, () => getPref('toc-button-mode'))
+  const showButtonToc = buttonMode || doc?.format === 'slides' || isPhone || IS_TOUCH_DEVICE
   useVisualViewportControlAnchor(showButtonToc)
   useEffect(() => {
     if (!isPhone) return
