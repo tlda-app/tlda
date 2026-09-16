@@ -2970,6 +2970,13 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       ].join('\n') }], isError: true };
     }
     if (!nativeBinding) BASE_AGENT_ID = loggedInAgentId;
+    // The channel may have opened before this identity landed (a fresh mint
+    // has no FLEET_ID yet): onOpen then ran with a null id and the socket
+    // stayed anonymous, so pushes find no socket while requests work. If the
+    // channel is up but registered under a different id, register it now.
+    if (!nativeBinding && _channelRWS?.connected && _channelLoginId !== loggedInAgentId) {
+      sendChannelLogin();
+    }
     await flushFleetTransport({ limit: 100 }).catch(e => {
       process.stderr.write(`[fleet-transport] login flush failed: ${e.message}\n`);
     });
@@ -6094,6 +6101,12 @@ export function __setFleetTransportForTest(transport) {
 }
 
 let _channelHasOpened = false;
+// The agent id the channel last registered under. A fresh mint opens its
+// channel before it has an identity (no FLEET_ID yet), so onOpen runs with a
+// null id and the socket stays anonymous forever: outgoing requests carry
+// their own id and work, but server-initiated pushes find no socket. The
+// login tool repairs this below once the identity lands.
+let _channelLoginId = null;
 // Whether the harness has ever sent this MCP a request, and whether a channel
 // open is still waiting on that to announce its backlog. See `noteClientRequest`.
 let _clientHasRequested = false;
@@ -6380,6 +6393,40 @@ async function handleChannelMessage(msg) {
   }
 }
 
+// Register this channel's socket under the current agent id. Called from
+// onOpen and from the login tool (which repairs a channel that opened before
+// the identity landed). Sending twice for one id is coalesced by key.
+function sendChannelLogin() {
+  const loginAgentId = activeAgentId();
+  if (!loginAgentId) return null;
+  const route = loginRouteFields();
+  const loginBody = {
+    agent_id: loginAgentId,
+    local_agent_id: process.env.FLEET_LOCAL_ID || undefined,
+    tmux_session: route.detectedTmux || undefined,
+    cwd: route.cwd || undefined,
+    project: route.project,
+    machine_id: route.machineId,
+    env_name: route.envName,
+    daemon_key: route.daemonKey || undefined,
+    metadata: { kind: harnessFromEnv().kind },
+  };
+  // In a try: `durable()` resolves the coalesce entry SYNCHRONOUSLY, so a
+  // throw here escapes into ResilientWS's 'open' listener, which has no
+  // catch — the socket is left open and unregistered and the stderr line
+  // below never runs. Report it and let the flush retry instead.
+  let loginPromise = null;
+  try {
+    loginPromise = mcpFleetTransport.durable('login', loginBody, {
+      coalesceKey: channelLoginCoalesceKey(loginAgentId, loginBody),
+    });
+    _channelLoginId = loginAgentId;
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] login send refused for ${loginAgentId}: ${e.message}\n`);
+  }
+  return loginPromise;
+}
+
 function startChannelWS({ bootstrap = false } = {}) {
   if (!activeAgentId() && !bootstrap) return;
   if (_channelRWS) return;
@@ -6408,31 +6455,7 @@ function startChannelWS({ bootstrap = false } = {}) {
         else _flushPendingOnClient = true;
       }
       if (!activeAgentId()) return;
-      const route = loginRouteFields();
-      const loginBody = {
-        agent_id: activeAgentId(),
-        local_agent_id: process.env.FLEET_LOCAL_ID || undefined,
-        tmux_session: route.detectedTmux || undefined,
-        cwd: route.cwd || undefined,
-        project: route.project,
-        machine_id: route.machineId,
-        env_name: route.envName,
-        daemon_key: route.daemonKey || undefined,
-        metadata: { kind: harnessFromEnv().kind },
-      };
-      const loginAgentId = activeAgentId();
-      // In a try: `durable()` resolves the coalesce entry SYNCHRONOUSLY, so a
-      // throw here escapes into ResilientWS's 'open' listener, which has no
-      // catch — the socket is left open and unregistered and the stderr line
-      // below never runs. Report it and let the flush retry instead.
-      let loginPromise = null;
-      try {
-        loginPromise = mcpFleetTransport.durable('login', loginBody, {
-          coalesceKey: channelLoginCoalesceKey(loginAgentId, loginBody),
-        });
-      } catch (e) {
-        process.stderr.write(`[fleet-channel] login send refused for ${loginAgentId}: ${e.message}\n`);
-      }
+      const loginPromise = sendChannelLogin();
       loginPromise
         ?.then(() => flushFleetTransport({ limit: 100 }))
         ?.catch(e => process.stderr.write(`[fleet-channel] re-login/flush failed: ${e.message}\n`));
