@@ -1521,7 +1521,7 @@ function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
-        <string>-fc</string>
+        <string>-lc</string>
         <string>${plistEscape(command)}</string>
     </array>
     <key>WorkingDirectory</key>
