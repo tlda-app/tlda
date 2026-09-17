@@ -90,6 +90,8 @@ test('one render feeds matching static and app publication trees', async () => {
 
 test('source publication spec survives a generated landing page that hides future links', async () => {
   const { course, output } = fixture()
+  writeFileSync(join(course, 'chapters/dormant.qmd'), 'not in the current Quarto book')
+  writeFileSync(join(course, 'index.md'), `${readFileSync(join(course, 'index.md'), 'utf8')}\n[Dormant](chapters/dormant.qmd)\n`)
   const appSpec = deriveCourseAppSpec(course, 'index.md')
   const assembleDatedStatic = async args => {
     await assembleStatic(args)
@@ -107,6 +109,8 @@ test('source publication spec survives a generated landing page that hides futur
   assert.equal(existsSync(join(output, 'static/book/decks/one-slides.html')), true)
   assert.equal(existsSync(join(output, 'app/book/chapters/one.html')), true)
   assert.equal(existsSync(join(output, 'app/book/decks/one-slides.html')), true)
+  assert.equal(existsSync(join(output, 'static/book/chapters/dormant.html')), false)
+  assert.equal(existsSync(join(output, 'app/book/chapters/dormant.html')), false)
 })
 
 test('identical inputs produce identical publication metadata without cleanup', async () => {

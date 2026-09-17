@@ -119,16 +119,28 @@ export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir,
       inside(sourceRoot, outputRoot) || inside(builtRoot, outputRoot)) {
     throw new Error('course app output must be separate from the course source and TLDA build')
   }
-  const spec = suppliedSpec || deriveCourseAppSpec(courseDir, indexFile)
   const pageInfoPath = join(builtDir, 'page-info.json')
   if (!existsSync(pageInfoPath)) throw new Error(`built TLDA output has no page-info.json: ${builtDir}`)
   const allPages = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
-  const wantedSources = [...spec.documents, ...spec.decks]
   const bySource = new Map()
   for (const page of allPages) {
     const source = page?.source?.file
     if (source && !bySource.has(source)) bySource.set(source, page)
   }
+  const releasedSpec = deriveCourseAppSpec(courseDir, indexFile)
+  const renderedSourceEntries = values => suppliedSpec
+    ? values.filter(source => bySource.has(source))
+    : []
+  const spec = suppliedSpec
+    ? {
+        ...releasedSpec,
+        documents: [...new Set([...releasedSpec.documents, ...renderedSourceEntries(suppliedSpec.documents)])],
+        decks: [...new Set([...releasedSpec.decks, ...renderedSourceEntries(suppliedSpec.decks)])],
+        assets: [...new Set([...releasedSpec.assets, ...suppliedSpec.assets])],
+        links: [...new Set([...releasedSpec.links, ...suppliedSpec.links])],
+      }
+    : releasedSpec
+  const wantedSources = [...spec.documents, ...spec.decks]
   const missing = wantedSources.filter(source => !bySource.has(source))
   if (missing.length) throw new Error(`released course input is absent from the TLDA build: ${missing.join(', ')}`)
   const pages = wantedSources.map(source => bySource.get(source))
