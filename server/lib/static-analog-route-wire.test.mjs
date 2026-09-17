@@ -129,6 +129,53 @@ test('no source path gives the front door', async () => {
   )
 })
 
+test('the published app path opens the TLDA shell, not the copied course HTML', async () => {
+  await withServer(
+    projectsDir => {
+      const output = seedProject(projectsDir, PROJECT, PAGE_INFO)
+      const appPage = join(output, 'app', 'book', 'chapters', 'chapter-sampling-with-replacement.html')
+      mkdirSync(join(appPage, '..'), { recursive: true })
+      writeFileSync(appPage, '<html><body>copied Quarto page</body></html>')
+    },
+    async port => {
+      const res = await get(port, `/docs/${PROJECT}/app/book/chapters/chapter-sampling-with-replacement.html`)
+      assert.equal(res.status, 200, `got ${res.status}: ${res.body.slice(0, 200)}`)
+      assert.match(res.body, /<div id="root"><\/div>/)
+      assert.doesNotMatch(res.body, /copied Quarto page/)
+      assert.match(res.body, /window\.__TLDA_CONFIG__/)
+
+      const iframe = await get(port, `/docs/${PROJECT}/app/book/chapters/chapter-sampling-with-replacement.html?_tldaShape=shape%3Apage`)
+      assert.equal(iframe.status, 200)
+      assert.match(iframe.body, /copied Quarto page/)
+    },
+  )
+})
+
+test('the static published page offers the same-location TLDA path', async () => {
+  const staticPageInfo = [{
+    file: 'static/book/chapters/chapter-sampling-with-replacement.html',
+    title: 'Sampling with Replacement',
+    format: 'qmd',
+    source: { type: 'project-source', format: 'qmd', file: CHAPTER_SOURCE },
+  }]
+  await withServer(
+    projectsDir => {
+      const output = seedProject(projectsDir, PROJECT, staticPageInfo)
+      writeFileSync(join(projectsDir, PROJECT, 'project.json'), JSON.stringify({
+        name: PROJECT, title: PROJECT, mainFile: 'index.qmd', format: 'qmd', pages: 1, buildStatus: 'success',
+      }))
+      const page = join(output, staticPageInfo[0].file)
+      mkdirSync(join(page, '..'), { recursive: true })
+      writeFileSync(page, '<html><body><main>static course page</main></body></html>')
+    },
+    async port => {
+      const res = await get(port, `/docs/${PROJECT}/static/book/chapters/chapter-sampling-with-replacement.html`)
+      assert.equal(res.status, 200)
+      assert.match(res.body, new RegExp(`href="/docs/${PROJECT}/app/book/chapters/chapter-sampling-with-replacement\\.html"`))
+    },
+  )
+})
+
 // THE CONTROL. Every assertion above is a 302, and a route that redirected
 // unconditionally would pass all of them. These two are the cases that must NOT
 // redirect, and they are why the green above means something.

@@ -5052,6 +5052,37 @@ app.get('/static/:project{/*sourcePath}', requireRead, async (req, res) => {
   res.redirect(302, `/docs/${encodeURIComponent(name)}/${entry.file.split('/').map(encodeURIComponent).join('/')}`)
 })
 
+// On preview/live Fly hosts, a published course's `/app/...` address is the
+// real TLDA reader. The corresponding HTML remains in the artifact because the
+// reader loads it into canvas iframes; `_tldaShape` distinguishes those iframe
+// requests from a person entering the app URL directly.
+app.get('/docs/:project/app{/*coursePath}', requireRead, async (req, res, next) => {
+  if (req.query?._tldaShape != null) return next()
+  if (req.params.coursePath?.length && !req.path.endsWith('/') && !req.path.endsWith('.html')) return next()
+  const name = docsProjectName(req.params.project)
+  const gated = await runDocsAccessCheck(req, res, name)
+  if (gated) return gated === 'sent' ? undefined : next(gated)
+
+  const indexPath = join(__dirname, '..', 'dist', 'index.html')
+  if (!existsSync(indexPath)) return res.status(404).send('Viewer not built. Run: npm run build')
+  const cfgScript = `<script>window.__TLDA_CONFIG__=${JSON.stringify(resolveConfig())}</script>`
+  const rawHtml = readFileSync(indexPath, 'utf8').replace(/\s*<script>window\.__TLDA_CONFIG__=.*?<\/script>\s*/gs, '\n')
+  const html = rawHtml.includes('<script type="module"')
+    ? rawHtml.replace('<script type="module"', `${cfgScript}\n    <script type="module"`)
+    : rawHtml.replace('</head>', `${cfgScript}\n</head>`)
+  res.set('Cache-Control', 'no-cache')
+  res.set('Document-Policy', 'js-profiling')
+  res.type('html').send(html)
+})
+
+function injectCoursePresentationSwitch(html, project, servedFilePath) {
+  if (!servedFilePath.startsWith('static/')) return html
+  const location = servedFilePath.slice('static/'.length)
+  const href = `/docs/${encodeURIComponent(project)}/app/${location.split('/').map(encodeURIComponent).join('/')}`
+  const control = `<a class="tlda-presentation-switch" href="${href}" style="position:fixed;top:12px;left:12px;z-index:10000">TLDA</a>`
+  return html.includes('</body>') ? html.replace('</body>', `${control}</body>`) : `${html}${control}`
+}
+
 // Serve sub-resources of html-format projects without auth (CSS, JS, fonts from site_libs)
 // These are Quarto framework files loaded by iframes that can't pass auth headers
 app.use('/docs', async (req, res, next) => {
@@ -5448,7 +5479,7 @@ app.use('/docs', (req, res, next) => {
             // Slides format: inject the reveal.js bridge script
             const html = await fs.promises.readFile(projectPath, 'utf8')
             const injected = injectSlidesBridge(html)
-            res.type('html').send(injected)
+            res.type('html').send(injectCoursePresentationSwitch(injected, name, servedFilePath))
             return
           }
           if (shownAs === 'markdown') {
@@ -5480,7 +5511,7 @@ app.use('/docs', (req, res, next) => {
             }
 
             const injected = injectChapterTitle(html, chapterTitle, prev, next)
-            res.type('html').send(injected)
+            res.type('html').send(injectCoursePresentationSwitch(injected, name, servedFilePath))
             return
           }
           // A .qmd that rendered to a scrolling page wants exactly the html
@@ -5537,7 +5568,7 @@ app.use('/docs', (req, res, next) => {
               }
             } catch (e) { console.warn(`[server] TOC/chapter title parsing failed for ${name}: ${e.message}`) }
             const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage, { prev: navPrev, next: navNext }, await ownWorkUrlFor(req, filePath))
-            res.type('html').send(injected)
+            res.type('html').send(injectCoursePresentationSwitch(injected, name, servedFilePath))
             return
           }
         }

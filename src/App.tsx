@@ -28,6 +28,7 @@ import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
+import { presentationRoute } from './presentationRoute'
 // @ts-ignore — vanilla JS module
 import { buildFleetAgentFilter } from '../shared/filter-semantics.mjs'
 // @ts-ignore — vanilla JS module
@@ -224,15 +225,18 @@ let loadGeneration = 0
 let loadAbort: AbortController | null = null
 
 // Parse initial camera from URL params (?cx=...&cy=...&cz=...&page=...)
-function parseInitialCamera(): { x: number; y: number; z: number; page?: string } | undefined {
+function parseInitialCamera(): { x: number; y: number; z: number; page?: string; sourcePath?: string; hasPosition?: boolean } | undefined {
   const params = new URLSearchParams(window.location.search)
   const cx = params.get('cx'), cy = params.get('cy'), cz = params.get('cz')
-  if (cx == null && cy == null && cz == null) return undefined
+  const routed = presentationRoute(window.location.pathname)
+  if (cx == null && cy == null && cz == null && !params.get('page') && !routed?.location) return undefined
   return {
     x: cx ? parseFloat(cx) : 0,
     y: cy ? parseFloat(cy) : 0,
     z: cz ? parseFloat(cz) : 1,
     page: params.get('page') || undefined,
+    sourcePath: routed?.location || undefined,
+    hasPosition: cx != null || cy != null || cz != null,
   }
 }
 
@@ -285,7 +289,7 @@ function DocumentApp() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const projectName = params.get('project')
+    const projectName = params.get('project') || presentationRoute(window.location.pathname)?.project
 
     if (projectName) {
       const roomId = `doc-${projectName}`

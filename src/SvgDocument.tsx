@@ -12,7 +12,7 @@ import {
   defaultTldrawOptions,
   HighlightShapeUtil,
 } from 'tldraw'
-import type { TLComponents, Editor, TLShapeId } from 'tldraw'
+import type { TLComponents, Editor, TLPageId, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { probe } from './perf-probe'
 import { installLivePerfProbe } from './livePerfProbe'
@@ -98,6 +98,7 @@ import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } f
 import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
+import { presentationLocationMatchesPage, presentationPath, presentationRoute } from './presentationRoute'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
@@ -325,7 +326,7 @@ export const INLINE_ASSETS = {
 interface SvgDocumentEditorProps {
   document: SvgDocument
   roomId: string
-  initialCamera?: { x: number; y: number; z: number; page?: string }
+  initialCamera?: { x: number; y: number; z: number; page?: string; sourcePath?: string; hasPosition?: boolean }
   classroomMarking?: boolean
   classroomGrading?: Omit<ClassroomGradingSurfaceProps, 'editor' | 'submissionShapeId' | 'solutionShapeId'>
   /** Hide this room's annotations, leaving the document. The book's layer, switched off. */
@@ -351,6 +352,36 @@ interface SvgDocumentEditorProps {
  * Updates after each build.
  */
 const MAX_VISIBLE_VERSIONS = 5
+
+function PresentationModeSwitch({ document }: { document: SvgDocument }) {
+  const editor = useEditor()
+  const route = presentationRoute(window.location.pathname)
+  const [pageId, setPageId] = useState(() => editor?.getCurrentPageId())
+
+  useEffect(() => {
+    if (!editor) return
+    const read = () => setPageId(editor.getCurrentPageId())
+    read()
+    return editor.store.listen(read, { scope: 'session', source: 'all' })
+  }, [editor])
+
+  if (!route || route.mode !== 'app') return null
+  const page = document.pages.find(candidate => candidate.tldrawPageId === pageId)
+  const pagePath = page?.src ? new URL(page.src, window.location.origin).pathname : ''
+  const docsPrefix = `/docs/${encodeURIComponent(route.project)}/app/`
+  const location = route.prefix === 'docs' && pagePath.startsWith(docsPrefix)
+    ? decodeURIComponent(pagePath.slice(docsPrefix.length))
+    : page?.source?.file || route.location
+  return (
+    <a
+      href={presentationPath('static', route.project, location, route.prefix)}
+      style={{ position: 'fixed', top: 12, left: 12, zIndex: 10000 }}
+      className="presentation-mode-switch"
+    >
+      Static
+    </a>
+  )
+}
 
 function VersionStamp({ document }: { document: SvgDocument }) {
   const projectName = document.name
@@ -1181,6 +1212,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         />
       )}
       <div className="build-pills-row">
+        <PresentationModeSwitch document={document} />
         {storeWithStatus.status === 'synced-remote' && storeWithStatus.connectionStatus === 'offline' && (
           <span className="sync-offline-badge" title="Connection lost — signals and sync paused">⚡ offline</span>
         )}
@@ -1496,12 +1528,21 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
               }
               if (initialCamera) {
                 // URL camera params override session restore
-                if (initialCamera.page) {
+                if (initialCamera.sourcePath) {
+                  const sourcePage = document.pages.find(page => presentationLocationMatchesPage(
+                    initialCamera.sourcePath!,
+                    page.source?.file,
+                    page.src,
+                  ))
+                  if (sourcePage?.tldrawPageId) editor.setCurrentPage(sourcePage.tldrawPageId as TLPageId)
+                } else if (initialCamera.page) {
                   const pages = editor.getPages()
                   const target = pages.find(p => p.name === initialCamera.page || p.id === initialCamera.page)
                   if (target) editor.setCurrentPage(target.id as any)
                 }
-                editor.setCamera({ x: initialCamera.x, y: initialCamera.y, z: initialCamera.z })
+                if (initialCamera.hasPosition) {
+                  editor.setCamera({ x: initialCamera.x, y: initialCamera.y, z: initialCamera.z })
+                }
               } else if (session?.camera && !isPresentation) {
                 editor.setCamera(session.camera)
               }
