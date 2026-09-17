@@ -129,7 +129,7 @@ import { sanitizeSessionName } from '../agent-launch/identity.mjs'
 import { resolvePartialMintRuntime } from '../daemon/partial-mint-runtime-recovery.mjs'
 import { resolvePartialMintPermissionAuthority } from '../daemon/partial-mint-permission-authority.mjs'
 import { markAgentDead, wsMintShell } from '../agent-launch/register.mjs'
-import { resolveModelSpec } from '../agent-launch/models.mjs'
+import { resolveLaunchModelSpec } from '../agent-launch/models.mjs'
 import { compilePermissionGrant, normalizePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
 import { bindAgentRoute } from '../agent-launch/route-binding.mjs'
 import { liveIdentityResolverMap } from '../agent-launch/live-identity-resolvers.mjs'
@@ -1547,7 +1547,7 @@ async function rpcMint(params = {}) {
   const explicitKind = String(params.kind || '').trim().toLowerCase()
   const modelSpec = explicitKind === 'bot'
     ? BOT_MODEL_SPEC
-    : resolveModelSpec(params.model, { config: spawnConfig })
+    : resolveLaunchModelSpec(params.model, { config: spawnConfig })
   const requester = params.requester || { id: 'localhost', human: true }
   const spawnerGrant = permissionLedger.get(requester.id) || permissionLedger.grantFor(requester)
   const defaultProfile = daemonConfig?.default || null
@@ -1658,7 +1658,7 @@ async function rpcMint(params = {}) {
         // same settings rather than starting the bot unconfigured.
         botEnv: params.botEnv || params.bot_env || null,
         cwd,
-        effort: params.effort,
+        effort: params.effort ?? modelSpec.normalizedOptions?.effort ?? null,
         mode: params.mode,
         permissionRequest: params.permissionRequest,
         permissionGrant: grant.permissionGrant,

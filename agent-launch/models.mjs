@@ -73,6 +73,21 @@ export function resolveModelSpec(model, { config = {} } = {}) {
   throw new Error(`unknown daemon model "${requested}"${known ? `; configured aliases: ${known}` : '; no daemon models are configured'}`)
 }
 
+// A daemon model alias carries option defaults (e.g. opus → effort medium),
+// but `resolveModelSpec` returns the raw spec, so the defaults never reach a
+// caller that stops there. `rpcMint` was that caller: the recipe stored
+// `effort: undefined`, the seat request sent no effort, and launchMintProcess
+// emitted a command with no --effort. Resolve through here wherever the
+// resolved alias feeds a launch, so the configured default survives.
+export function resolveLaunchModelSpec(model, { config = {}, allowDefaultModel = true } = {}) {
+  const normalized = normalizeSpawnModelKwargs({ model }, { config, allowDefaultModel })
+  return {
+    ...normalized.spec,
+    normalizedOptions: normalized.options,
+    normalizedModelRequest: normalized,
+  }
+}
+
 export function normalizeSpawnModelKwargs(kwargs = {}, { config = {}, allowDefaultModel = true } = {}) {
   const source = kwargs && typeof kwargs === 'object' && !Array.isArray(kwargs) ? kwargs : {}
   const model = String(source.model || '').trim() || (allowDefaultModel ? defaultModelAlias(config) : '')
