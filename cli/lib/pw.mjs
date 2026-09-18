@@ -39,6 +39,7 @@ import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { getServerUrl } from '../../shared/config.mjs'
 import { acquireLease, releaseLease, releaseLeases } from './resource-leases.mjs'
+import { materializePoolBrowserConfig } from './pw-browser-config.mjs'
 
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
@@ -813,14 +814,22 @@ export function poolBrowserConfigPath(repoRoot, { workspace = PW_CWD, cwd = proc
   }
   return null
 }
+// Finding a config only works where somebody already put one, and `.playwright/`
+// is gitignored, so no tree is guaranteed to have it. When no candidate root
+// does, write one from the tracked options in pw-browser-config.mjs rather than
+// launching bare. An existing config is found above and never touched.
 export function openArgs(repoRoot, opts = {}) {
   const args = ['open', '--browser', 'chromium', '--headed', '--persistent']
+  const warn = opts.warn || ((m) => console.error(m))
+  const workspace = opts.workspace === undefined ? PW_CWD : opts.workspace
   const cfg = poolBrowserConfigPath(repoRoot, opts)
+    || materializePoolBrowserConfig(workspace || repoRoot, { repoRoot, warn })
   if (cfg) args.push('--config', cfg)
   else {
-    console.error(
-      `pw: WARN no .playwright/cli.config.json under workspace, cwd, or code root — ` +
-      `launching WITHOUT --no-sandbox/--disable-gpu/--ignore-certificate-errors`
+    warn(
+      `pw: WARN no .playwright/cli.config.json under workspace, cwd, or code root ` +
+      `and none could be written — launching WITHOUT ` +
+      `--no-sandbox/--disable-gpu/--ignore-certificate-errors`
     )
   }
   return args
