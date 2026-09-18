@@ -44,8 +44,24 @@ function proxyTargets(hasTls: boolean) {
     }
   }
 
-  const localHttp = `${hasTls ? 'https' : 'http'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`
-  const localWs = `${hasTls ? 'wss' : 'ws'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`
+  // Where the proxy sends traffic, which is NOT always where the client is told
+  // the backend is.
+  //
+  // A deployed tlda serves the app and `/docs/` from one origin, so a document's
+  // iframe is same-origin with the page and a feature may read into it —
+  // `useMarkedExerciseHtmlAlignment` and the local layer both do. Under vite the
+  // injected config names the backend absolutely, so the iframe lands on the
+  // backend's origin while the app sits on vite's: `contentDocument` is null and
+  // every such feature is untestable, in a way that looks like the feature
+  // failing rather than the harness differing.
+  //
+  // Pointing VITE_SERVER_HOST/PORT at the vite front restores the shared origin,
+  // and this is the knob that then says where the proxy should actually go.
+  // Without it the two settings are one value and the front would proxy to
+  // itself.
+  const proxyPort = process.env.TLDA_VITE_PROXY_PORT || process.env.VITE_SERVER_PORT || 5176
+  const localHttp = `${hasTls ? 'https' : 'http'}://localhost:${proxyPort}`
+  const localWs = `${hasTls ? 'wss' : 'ws'}://localhost:${proxyPort}`
   return {
     databaseHttp: localHttp,
     databaseWs: localWs,
