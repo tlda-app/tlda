@@ -10,6 +10,7 @@ import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
 import crypto from 'node:crypto'
 import { createRequire } from 'node:module'
+import { gradingDraftRoomId, gradingReturnedRoomId } from '../../shared/classroom-rooms.mjs'
 
 const require = createRequire(import.meta.url)
 const QRCode = require('qrcode-terminal/vendor/QRCode')
@@ -275,7 +276,7 @@ async function submissionBuild(contentRef) {
   return { buildStatus: lifecycle.status, buildAt: project.lastBuildSuccess || project.lastBuild || null }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveLinkAccessToken = configuredReadToken, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null, resolveSubmissionBuild = submissionBuild } = {}) {
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveLinkAccessToken = configuredReadToken, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null, copyRoomStore = null, resolveSubmissionBuild = submissionBuild } = {}) {
   const router = Router()
   router.get('/courses/:courseId/manifest.webmanifest', (req, res) => {
     if (!resolveManifestAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
@@ -707,8 +708,19 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     }
   })
 
-  router.post('/assignments/:assignmentId/submissions/:studentId/return', instructor, (req, res) => {
+  router.post('/assignments/:assignmentId/submissions/:studentId/return', instructor, async (req, res) => {
     try {
+      const problemId = String(req.body?.problemId || '')
+      const submission = store.getSubmission(req.params.assignmentId, req.params.studentId, { includeDrafts: true })
+      if (!submission) return res.status(404).json({ error: 'Submission not found' })
+      if (problemId) {
+        if (typeof copyRoomStore !== 'function') throw new Error('local-layer store copy is not configured')
+        const submissionRoomId = `doc-${submission.contentRef}`
+        await copyRoomStore(
+          gradingDraftRoomId(submissionRoomId, problemId),
+          gradingReturnedRoomId(submissionRoomId, problemId),
+        )
+      }
       res.json(store.returnFeedback(req.params.assignmentId, req.params.studentId))
     } catch (error) {
       if (!missingSubmission(error)) throw error

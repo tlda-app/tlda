@@ -94,8 +94,8 @@ import { ClassroomStore } from './lib/classroom-store.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { writeSentinel, writeSentinelWarning } from './lib/sentinel.mjs'
 import { createPreviewDelivery } from './lib/preview-delivery.mjs'
-import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
-import { classroomRoomAccess, gradingDraftRoomTarget } from '../shared/classroom-rooms.mjs'
+import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape, replaceRoomSnapshot } from './lib/sync-rooms.mjs'
+import { classroomRoomAccess, gradingLayerRoomTarget } from '../shared/classroom-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { agentSpansCover, intersectAgentSpans, isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
@@ -5585,6 +5585,10 @@ app.use('/api/projects', projectRoutes)
 app.use('/api/classroom', createClassroomRouter({
   store: classroomStore,
   submitSubmissionSource: (project, payload) => sourceRoomDaemon.submitFiles(project, payload),
+  copyRoomStore: async (sourceRoomId, destinationRoomId) => {
+    const source = await getOrCreateRoom(sourceRoomId)
+    replaceRoomSnapshot(destinationRoomId, source.getCurrentSnapshot())
+  },
 }))
 
 // Handwriting recognition (MyScript proxy)
@@ -5933,8 +5937,8 @@ server.on('upgrade', async (req, socket, head) => {
     // refused 403 and the encoded one was accepted, on the same room. This is
     // the same trap `docsProjectName` was written for, one path over.
     const decodedRoom = docsProjectName(docName)
-    const draftTarget = gradingDraftRoomTarget(decodedRoom)
-    const submissionRoom = draftTarget?.submissionRoomId ?? decodedRoom
+    const gradingTarget = gradingLayerRoomTarget(decodedRoom)
+    const submissionRoom = gradingTarget?.submissionRoomId ?? decodedRoom
     const submission = classroomStore
       ? (classroomStore.submissionDocumentOwner(submissionRoom)
         || classroomStore.submissionDocumentOwner(submissionRoom.replace(/^doc-/, '')))

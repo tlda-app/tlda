@@ -315,7 +315,7 @@ export function CanvasClipPanel({
     stableCameraRef.current = next
     return next
   })()
-  const camera = cameraOverride ?? syncedCamera ?? interactiveCamera ?? plannedCamera
+  const camera = interactiveCamera ?? cameraOverride ?? syncedCamera ?? plannedCamera
 
   useEffect(() => {
     applyViewportCameraToDom(canvasRef.current, camera)
@@ -333,6 +333,10 @@ export function CanvasClipPanel({
     setInteractiveCamera(null)
     setSyncedCamera(null)
   }, [plannedCamera])
+
+  useEffect(() => {
+    setInteractiveCamera(null)
+  }, [cameraOverride?.x, cameraOverride?.y, cameraOverride?.z])
 
   useEffect(() => {
     if (!wmSurface) return

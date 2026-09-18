@@ -21,6 +21,7 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
   store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z' })
 
   const builds = []
+  const roomCopies = []
   let buildError = null
   const app = express()
   app.use(express.json())
@@ -49,6 +50,7 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
       if (buildError) setImmediate(() => updateProject(contentRef, { buildStatus: 'error' }))
       return { status: 200, body: { ok: true } }
     },
+    copyRoomStore: async (source, destination) => { roomCopies.push({ source, destination }) },
   }))
   const server = await new Promise(resolve => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening))
@@ -169,9 +171,17 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
     })
     assert.equal(feedback.status, 201)
     assert.equal((await request('/assignments/hw1/submissions/ada/grade', 'instructor', { method: 'POST' })).status, 200)
-    const returned = await request('/assignments/hw1/submissions/ada/return', 'instructor', { method: 'POST' })
+    const returned = await request('/assignments/hw1/submissions/ada/return', 'instructor', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ problemId: 'ans-exr-one' }),
+    })
     assert.equal(returned.status, 200)
     assert.equal((await returned.json()).gradingStatus, 'returned')
+    assert.deepEqual(roomCopies, [{
+      source: 'doc-submission-hw1-ada::problem::ans-exr-one::grading-draft::',
+      destination: 'doc-submission-hw1-ada::problem::ans-exr-one::grading-returned::',
+    }])
 
     const mine = await request('/assignments/hw1/mine', 'ada')
     assert.equal(mine.status, 200)

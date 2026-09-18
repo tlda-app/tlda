@@ -6,6 +6,7 @@
 
 const STUDENT_ROOM_MARKER = '::student::'
 const GRADING_DRAFT_ROOM_MARKER = '::grading-draft::'
+const GRADING_RETURNED_ROOM_MARKER = '::grading-returned::'
 // Which problem's marks. It goes in the STEM, before the grading-draft marker,
 // never after it: `isGradingDraftRoom` asks `endsWith`, and the refusal in
 // `classroomRoomAccess` is ordered above the branch that grants a submission's
@@ -52,21 +53,46 @@ export function gradingDraftRoomId(submissionRoomId, problemId) {
   return `${submissionRoomId}${PROBLEM_ROOM_MARKER}${problemId}${GRADING_DRAFT_ROOM_MARKER}`
 }
 
+/**
+ * The same marks once returned: the copy the student may read.
+ *
+ * A room of its own rather than a flag on the draft, because the draft is
+ * refused to the student by room name and that refusal is what withholds an
+ * unfinished mark. Returning copies the store across; the draft stays private
+ * so marking after a return is not visible until it is returned again.
+ */
+export function gradingReturnedRoomId(submissionRoomId, problemId) {
+  return `${submissionRoomId}${PROBLEM_ROOM_MARKER}${problemId}${GRADING_RETURNED_ROOM_MARKER}`
+}
+
 /** Whether this room is an instructor's marking layer. */
 export function isGradingDraftRoom(roomId) {
   return String(roomId).endsWith(GRADING_DRAFT_ROOM_MARKER)
 }
 
-/** The submission room and problem named by a grading pane, or null. */
-export function gradingDraftRoomTarget(roomId) {
+/**
+ * The submission room and problem named by a grading pane, or null.
+ *
+ * Both scopes, and which one it was: the caller needs the submission to ask who
+ * owns it, and `returned` to tell a private draft from the copy the student may
+ * read.
+ */
+export function gradingLayerRoomTarget(roomId) {
   const value = String(roomId)
-  if (!isGradingDraftRoom(value)) return null
-  const withoutScope = value.slice(0, -GRADING_DRAFT_ROOM_MARKER.length)
-  const at = withoutScope.lastIndexOf(PROBLEM_ROOM_MARKER)
+  const marker = value.endsWith(GRADING_DRAFT_ROOM_MARKER)
+    ? GRADING_DRAFT_ROOM_MARKER
+    : value.endsWith(GRADING_RETURNED_ROOM_MARKER)
+      ? GRADING_RETURNED_ROOM_MARKER
+      : null
+  if (!marker) return null
+  const stem = value.slice(0, -marker.length)
+  const at = stem.lastIndexOf(PROBLEM_ROOM_MARKER)
   if (at < 0) return null
-  const submissionRoomId = withoutScope.slice(0, at)
-  const problemId = withoutScope.slice(at + PROBLEM_ROOM_MARKER.length)
-  return submissionRoomId && problemId ? { submissionRoomId, problemId } : null
+  const submissionRoomId = stem.slice(0, at)
+  const problemId = stem.slice(at + PROBLEM_ROOM_MARKER.length)
+  return submissionRoomId && problemId
+    ? { submissionRoomId, problemId, returned: marker === GRADING_RETURNED_ROOM_MARKER }
+    : null
 }
 
 /**
@@ -108,7 +134,14 @@ export function classroomRoomAccess({
   // grants the owner 'write', and a draft room is named after their submission
   // room, so any resolver that recognised the stem would hand the student the
   // very marks being withheld from them. Ordering is the guard, not the parse.
-  if (isGradingDraftRoom(roomId)) {
+  //
+  // Unconditional, including after a return. Returning copies the draft into the
+  // returned room below; the draft itself is never what the student reads. Let a
+  // return open the draft instead and marking resumed afterwards is live to the
+  // student the moment it is drawn, because nothing would close it again.
+  if (isGradingDraftRoom(roomId)) return 'deny'
+
+  if (gradingLayerRoomTarget(roomId)?.returned) {
     return submissionReturned && studentId === submissionOwnerId ? 'read' : 'deny'
   }
 

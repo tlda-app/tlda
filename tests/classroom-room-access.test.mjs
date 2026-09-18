@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import {
   classroomRoomAccess,
   gradingDraftRoomId,
-  gradingDraftRoomTarget,
+  gradingLayerRoomTarget,
+  gradingReturnedRoomId,
   studentOverlayRoomId,
   studentOverlayRoomOwner,
 } from '../shared/classroom-rooms.mjs'
@@ -108,6 +109,31 @@ test('nothing changes for a room that is not a submission', () => {
 // path can withhold a mark, because the panes write to one shared store.
 
 const GRADING_DRAFT = gradingDraftRoomId(SUBMISSION_ROOM, 'ans-exr-die-histogram')
+const GRADING_RETURNED = gradingReturnedRoomId(SUBMISSION_ROOM, 'ans-exr-die-histogram')
+
+test('the student local layer is fixed to self and read-only after return', () => {
+  assert.equal(classroomRoomAccess({
+    roomId: GRADING_RETURNED,
+    tokenLevel: 'read',
+    studentId: 'qtm285:ada',
+    submissionOwnerId: 'qtm285:ada',
+    submissionReturned: true,
+  }), 'read')
+  assert.equal(classroomRoomAccess({
+    roomId: GRADING_RETURNED,
+    tokenLevel: 'read',
+    studentId: 'qtm285:bo',
+    submissionOwnerId: 'qtm285:ada',
+    submissionReturned: true,
+  }), 'deny')
+  assert.equal(classroomRoomAccess({
+    roomId: GRADING_RETURNED,
+    tokenLevel: 'read',
+    studentId: 'qtm285:ada',
+    submissionOwnerId: 'qtm285:ada',
+    submissionReturned: false,
+  }), 'deny')
+})
 
 test('the marking layer is refused to the student whose submission it hangs off', () => {
   // The one that matters. The draft room is named after Ada's submission room,
@@ -118,14 +144,18 @@ test('the marking layer is refused to the student whose submission it hangs off'
   }), 'deny')
 })
 
-test('a returned marking layer is read-only for the student whose solution it annotates', () => {
+test('returning does not open the draft room itself', () => {
+  // The draft is the instructor's, before and after a return: returning copies
+  // it into the returned room, and that copy is what Ada reads (above). Were the
+  // draft to open instead, it would never close, so marking she is not meant to
+  // see yet would reach her as it is drawn — with no second return to gate it.
   assert.equal(classroomRoomAccess({
     roomId: GRADING_DRAFT,
     tokenLevel: 'read',
     studentId: 'qtm285:ada',
     submissionOwnerId: 'qtm285:ada',
     submissionReturned: true,
-  }), 'read')
+  }), 'deny')
 })
 
 test('a returned marking layer still refuses classmates and anonymous readers', () => {
@@ -145,9 +175,15 @@ test('a returned marking layer still refuses classmates and anonymous readers', 
 })
 
 test('the grading room names its submission and problem without rebasing either', () => {
-  assert.deepEqual(gradingDraftRoomTarget(GRADING_DRAFT), {
+  assert.deepEqual(gradingLayerRoomTarget(GRADING_DRAFT), {
     submissionRoomId: SUBMISSION_ROOM,
     problemId: 'ans-exr-die-histogram',
+    returned: false,
+  })
+  assert.deepEqual(gradingLayerRoomTarget(GRADING_RETURNED), {
+    submissionRoomId: SUBMISSION_ROOM,
+    problemId: 'ans-exr-die-histogram',
+    returned: true,
   })
 })
 

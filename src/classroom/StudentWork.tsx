@@ -7,6 +7,8 @@ import type { SvgDocument } from '../loaders/types'
 import { classroomApi, type Assignment, type Submission } from './api'
 import { submissionLabel } from './markingLabels'
 import { readClassroomToken } from './classroomToken'
+import { StudentAnnotationOverlay } from './StudentAnnotationOverlay'
+import { gradingReturnedRoomId } from '../../shared/classroom-rooms.mjs'
 import './ClassroomWorkspace.css'
 
 // What a student sees of their own work.
@@ -181,13 +183,26 @@ export function StudentWork() {
   const returned = submission.feedback
 
   return <>
-    {document && <SvgDocumentEditor
-      key={submission.contentRef}
-      document={document}
-      roomId={`doc-${submission.contentRef}`}
-      onEditorMount={setWorkEditor}
-      onEditorRelease={released => setWorkEditor(current => (current === released ? null : current))}
-    />}
+    {document && <>
+      <SvgDocumentEditor
+        key={submission.contentRef}
+        document={document}
+        roomId={`doc-${submission.contentRef}`}
+        onEditorMount={setWorkEditor}
+        onEditorRelease={released => setWorkEditor(current => (current === released ? null : current))}
+      />
+      {submission.gradingStatus === 'returned' && (submission.answerIds ?? []).map(problemId => (
+        <StudentAnnotationOverlay
+          key={gradingReturnedRoomId(`doc-${submission.contentRef}`, problemId)}
+          bookRoomId={`doc-${submission.contentRef}`}
+          studentId={submission.studentId}
+          bookEditor={workEditor}
+          visible
+          isWriteTarget={false}
+          roomId={gradingReturnedRoomId(`doc-${submission.contentRef}`, problemId)}
+        />
+      ))}
+    </>}
     <aside className="markingLifecycle" aria-label={publicStudentId ? 'Public student submission' : 'Your submission'}>
       {publicStudentId && <span>Public submission: {publicStudentId}</span>}
       <span>Submitted {new Date(submission.submittedAt).toLocaleString()}</span>

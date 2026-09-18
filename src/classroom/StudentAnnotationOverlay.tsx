@@ -121,16 +121,6 @@ interface StudentAnnotationOverlayProps {
    * behaves exactly as before.
    */
   camera?: { x: number; y: number; z: number }
-  /**
-   * Where a gesture this layer swallowed should go, in explicit-camera mode.
-   *
-   * Over the book, the effect below carries the camera back into `bookEditor`,
-   * because the book owns it. Over a grading pane it must not: `bookEditor`
-   * there is the main document editor the panes are *derived from*, so writing
-   * the pane's camera into it moves both panes and feeds back. The receiver
-   * hands the camera to the pane's own viewport instead.
-   */
-  onCameraChange?: (camera: { x: number; y: number; z: number }) => void
   /** Limit the transparent canvas to one rectangle in its containing editor. */
   bounds?: { left: number; top: number; width: number; height: number }
 }
@@ -145,7 +135,6 @@ export function StudentAnnotationOverlay({
   onEditorRelease,
   roomId: explicitRoomId,
   camera: explicitCamera,
-  onCameraChange,
   bounds,
 }: StudentAnnotationOverlayProps) {
   const overlayRootRef = useRef<HTMLDivElement>(null)
@@ -238,18 +227,12 @@ export function StudentAnnotationOverlay({
     })
   }, [bookEditor, overlayEditor, isWriteTarget, cameraIsExternal])
 
-  // Explicit-camera mode: carry the gesture to whoever owns the camera.
-  //
-  // Same reasoning as the book case — tldraw has already turned the gesture
-  // into a camera on this editor, so it is carried rather than re-derived — only
-  // the destination differs. The receiver decides what that camera means; this
-  // layer never writes the main editor.
-  useEffect(() => {
-    if (!cameraIsExternal || !overlayEditor || !isWriteTarget || !onCameraChange) return
-    return mirror('carry overlay camera to the owning surface', () => overlayEditor.getCamera(), () => {
-      onCameraChange(overlayEditor.getCamera())
-    })
-  }, [cameraIsExternal, overlayEditor, isWriteTarget, onCameraChange])
+  // Explicit-camera mode carries nothing back. The surface underneath owns its
+  // camera and the follow effect above hands it to this layer; a gesture this
+  // layer took while capturing is dropped rather than written anywhere. Writing
+  // it into the owning pane fought the pane's own input over one camera — the
+  // scroll/zoom stutter — and writing it into `bookEditor` is worse: the panes
+  // are derived from that editor, so it moves both of them and feeds back here.
 
   // Follow the book's tool selection, whatever it is.
   //

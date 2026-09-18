@@ -4,8 +4,7 @@ import { createHtmlDocumentFromPageInfo } from '../svgDocumentLoader'
 import type { SvgDocument } from '../loaders/types'
 import type { Editor } from 'tldraw'
 import { classroomApi, type ProblemsView } from './api'
-import { layerStore, moveShapesToLayer, sameFrame } from './moveBetweenLayers'
-import { releaseHeldEnd, resolveReturnEnds } from './returnEnds'
+import { gradingDraftRoomId } from '../../shared/classroom-rooms.mjs'
 import './ClassroomWorkspace.css'
 
 // The assignment as Skip marks it: "that would just be the homework assignment
@@ -50,7 +49,6 @@ export function ProblemMarking() {
   // The room travels with each editor because "still mounted" is not the
   // question — "still THIS student's" is. Flicking students during the request
   // would otherwise record Ada's return and publish onto Bo's work.
-  const submissionEditorRef = useRef<{ editor: Editor; roomId: string } | null>(null)
   const draftEditorRef = useRef<{ editor: Editor; roomId: string } | null>(null)
 
 
@@ -173,7 +171,7 @@ export function ProblemMarking() {
     // The room this return is FOR, snapshotted before anything can move. Every
     // check below compares against this rather than against whatever the screen
     // shows by the time the server answers.
-    const intendedRoomId = `doc-${answer.contentRef}`
+    const intendedRoomId = gradingDraftRoomId(`doc-${answer.contentRef}`, problem.problemId)
 
     // Refuse before recording anything if the marking surface is not there.
     //
@@ -193,11 +191,7 @@ export function ProblemMarking() {
     // So: never mounted is refused here and nothing is written; changed
     // mid-flight is still handled there. Both, because they are not the same
     // failure.
-    if (!resolveReturnEnds({
-      draft: draftEditorRef.current,
-      destination: submissionEditorRef.current,
-      intendedRoomId,
-    })) {
+    if (!draftEditorRef.current || draftEditorRef.current.roomId !== intendedRoomId) {
       setError('The marking surface is not loaded, so there is nothing to return. Nothing was recorded.')
       return
     }
@@ -205,7 +199,7 @@ export function ProblemMarking() {
     try {
       setError('')
       setReturning(true)
-      const submission = await classroomApi.returnFeedback(assignmentId, answer.studentId)
+      const submission = await classroomApi.returnFeedback(assignmentId, answer.studentId, problem.problemId)
       // Which half got as far as durable state, so the failure message can say
       // so truthfully rather than reporting "the return is recorded" when the
       // server call is the thing that threw.
@@ -219,56 +213,7 @@ export function ProblemMarking() {
             : candidateAnswer),
         })),
       } : current)
-      // Publish the marks only after the server has recorded the return.
-      //
-      // The two halves cannot commit together: the record is a row in the
-      // classroom store, the marks are shapes in a sync room, and there is no
-      // transaction across them. The orderings are not symmetric, so this is a
-      // choice rather than an accident — server first FAILS CLOSED. If the move
-      // then fails, the record says returned and the marks are still private:
-      // a label ahead of itself, and nothing the student should not see. Moving
-      // first inverts exactly that, publishing the marks with no durable record
-      // that they were published, which is the thing being controlled.
-      //
-      // So the incomplete state is recoverable rather than reconciled: `Return`
-      // stays actionable at any status, the draft room still holds the marks,
-      // and pressing it again finishes the move. `moveShapesToLayer` is
-      // create -> verify -> delete, so a destination that did not take them
-      // throws having deleted nothing; and once they have landed the draft is
-      // empty, so a retry moves nothing rather than duplicating.
-      //
-      // Every shape in the draft room is a mark, because this room is only ever
-      // mounted by the annotation overlay, which never renders the document.
-      // That is a property of how the room is constructed here, not of draft
-      // rooms in general — mount a document into one and this stops holding.
-      // Both ends, read now rather than captured earlier, and both required to
-      // still belong to the room this return was started for. The destination
-      // can be replaced just as the draft layer can, so checking only one end
-      // would leave the other stale.
-      const ends = resolveReturnEnds({
-        draft: draftEditorRef.current,
-        destination: submissionEditorRef.current,
-        intendedRoomId,
-      })
-      if (!ends) {
-        // Fail closed. The server half is recorded; the marks stay private and
-        // unpublished, which is recoverable by pressing Return again on the
-        // right student. Publishing here would put these marks on whoever is
-        // on screen now.
-        throw new Error('The marking layer changed while the return was in flight, so nothing was published.')
-      }
-      const draftEditor = ends.draft
-      const submissionEditor = ends.destination
-      const ids = draftEditor.getCurrentPageShapes().map(shape => shape.id)
-      // `sameFrame`, and stated rather than defaulted to, because the module
-      // makes it a required argument precisely so nobody assumes the identity
-      // silently: the draft layer is composited over the submission pane and
-      // follows that pane's camera, so a page point means the same thing in
-      // both. If the draft layer ever stops being pinned to the pane, this is
-      // the line that has to change, and `layerFrameConversion` is what it
-      // becomes.
-      const moved = moveShapesToLayer(layerStore(draftEditor), layerStore(submissionEditor), ids, sameFrame)
-      setReturned(moved.length ? `returned ${moved.length}` : 'nothing to return')
+      setReturned('returned')
     } catch (e) {
       // Say which half happened. Once the server has recorded it the student can
       // already see any written feedback, so "return failed" would be false: it
@@ -308,19 +253,6 @@ export function ProblemMarking() {
           // Bound to the room it was mounted for, in this render's closure —
           // which is the room that editor actually syncs, whatever the screen
           // has moved on to since.
-          onEditorMount={editor => {
-            // Only register; never clear here. `onEditorMount(null)` fires on
-            // teardown without saying WHICH editor went, and a remount runs the
-            // old teardown after the replacement registered — so clearing on it
-            // erases the live destination. The room guard cannot catch that,
-            // because the old and new editors are in the same room.
-            if (editor) submissionEditorRef.current = { editor, roomId: `doc-${answer?.contentRef}` }
-          }}
-          // Clear only if it is still the one we hold. Same rule the draft layer
-          // already uses, for the same measured ordering.
-          onEditorRelease={editor => {
-            submissionEditorRef.current = releaseHeldEnd(submissionEditorRef.current, editor)
-          }}
           classroomMarking
           classroomGrading={{
             assignmentId,

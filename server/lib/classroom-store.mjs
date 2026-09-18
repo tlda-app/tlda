@@ -412,13 +412,14 @@ export class ClassroomStore {
 
   getSubmission(assignmentId, studentId, { includeDrafts = false } = {}) {
     const row = this.db.prepare(`SELECT assignment_id AS assignmentId,student_id AS studentId,content_ref AS contentRef,
-      submitted_at AS submittedAt,grading_status AS gradingStatus,graded_at AS gradedAt,returned_at AS returnedAt
+      submitted_at AS submittedAt,grading_status AS gradingStatus,graded_at AS gradedAt,returned_at AS returnedAt,
+      answer_ids AS answerIds
       FROM submissions WHERE assignment_id=? AND student_id=?`).get(assignmentId, studentId)
     if (!row) return null
     const marks = this.db.prepare(`SELECT id,title,text,attached,visibility,created_at AS createdAt,returned_at AS returnedAt
       FROM feedback_marks WHERE assignment_id=? AND student_id=? ${includeDrafts ? '' : "AND visibility='returned'"} ORDER BY created_at`)
       .all(assignmentId, studentId).map(mark => ({ ...mark, attached: !!mark.attached }))
-    return { ...row, feedback: marks }
+    return { ...row, answerIds: row.answerIds ? JSON.parse(row.answerIds) : [], feedback: marks }
   }
 
   // `studentId` narrows the same query to one person rather than being a second

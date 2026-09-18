@@ -14,7 +14,7 @@ export interface CourseStatus { course: { id: string; title: string }; assignmen
 export interface FeedbackMark { id: string; title: string; text: string; attached: boolean; visibility: 'instructor-draft' | 'returned' }
 export interface ProblemAnswer { studentId: string; displayName: string; layerScope: StudentLayerScope; contentRef: string; gradingStatus: GradingStatus; anchor: string | null }
 export interface ProblemsView { assignment: Assignment; problems: { problemId: string; answers: ProblemAnswer[] }[] }
-export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[] }
+export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[]; answerIds?: string[] }
 export interface RegisteredStudent { student: { id: string; courseId: string; displayName: string; preferredName?: string; pronouns?: string | null; layerScope: StudentLayerScope }; enrollmentToken: string }
 export interface DeviceTransfer { transferUrl: string; qrSvg: string; expiresAt: string }
 export interface RepairLink { student: { id: string; displayName: string }; repairUrl: string; qrSvg: string; expiresAt: string }
@@ -87,5 +87,7 @@ export const classroomApi = {
   submission: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}`),
   feedback: (assignmentId: string, studentId: string, body: { title: string; text: string; attached?: boolean }) => request<{ id: string }>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/feedback`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   grade: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/grade`, { method: 'POST' }),
-  returnFeedback: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/return`, { method: 'POST' }),
+  returnFeedback: (assignmentId: string, studentId: string, problemId?: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/return`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(problemId ? { problemId } : {}),
+  }),
 }

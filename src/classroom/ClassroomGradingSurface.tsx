@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useValue, type Editor, type TLShape, type TLShapeId } from 'tldraw'
-import { CanvasClipPanel, syncCanvasClipPanelViewportCamera } from '../CanvasClipPanel'
+import { CanvasClipPanel } from '../CanvasClipPanel'
 import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { useFleetIdentity } from '../fleet-data-adapter'
 import { getEditorWMCore } from '../wm/editor-wm'
@@ -94,6 +94,10 @@ export function ClassroomGradingSurface({
   const [mountedPanes, setMountedPanes] = useState<ReturnType<typeof mountGradingPanes> | null>(null)
   const [problemTop, setProblemTop] = useState<number | null>(null)
   const [paired, setPaired] = useState(false)
+
+  useEffect(() => {
+    setSubmissionCamera(null)
+  }, [problemId, studentId])
 
   const submissionBounds = useValue(
     `classroom-submission-bounds:${submissionShapeId}`,
@@ -220,6 +224,15 @@ export function ClassroomGradingSurface({
             ref={pane === 'student-submission'
               ? (node => { submissionPaneRef.current = node })
               : undefined}
+            onWheelCapture={pane === 'student-submission' ? event => {
+              if (!submissionCamera) return
+              event.stopPropagation()
+              setSubmissionCamera(camera => camera ? {
+                ...camera,
+                x: camera.x - event.deltaX / camera.z,
+                y: camera.y - event.deltaY / camera.z,
+              } : camera)
+            } : undefined}
           >
             <CanvasClipPanel
               mainEditor={editor}
@@ -229,7 +242,10 @@ export function ClassroomGradingSurface({
               viewportId={paneViewportId(pane)}
               wmSurface={mounted?.wmSurface}
               interactionMode="pinned"
+              readOnly
+              panInteraction
               unboundedPanning
+              requestedShapeIds={[shapeId]}
               shapePredicate={shape => belongsToPane(editor, shape, shapeId)}
               // Keep this pane's document and its iframe mounted while the
               // measured size arrives.
@@ -247,7 +263,7 @@ export function ClassroomGradingSurface({
 
               onEditorMount={pane === 'official-solution' ? markSolutionViewportReady : markSubmissionViewportReady}
               onCamera={pane === 'student-submission' ? setSubmissionCamera : undefined}
-              cameraOverride={pane === 'student-submission' ? problemCamera : null}
+              cameraOverride={pane === 'student-submission' ? (submissionCamera ?? problemCamera) : null}
               canvasOverlay={pane === 'student-submission' && submissionCamera ? (
                 // The instructor's private marking layer, over the student's
                 // work and nothing else.
@@ -266,7 +282,13 @@ export function ClassroomGradingSurface({
                 // active — `markingCapture.ts` — so pointer, selection, scroll
                 // and pan reach the pane underneath the rest of the time. Skip
                 // settled that: capture while drawing, otherwise pass through.
+                // Keyed on the draft room: flicking students swaps the store behind
+                // the glass, so the overlay must remount rather than reconcile —
+                // a prop-swapped canvas keeps the old room's editor live behind
+                // the new room's sync, and `returnEnds` plus the overlay registry
+                // already handle teardown/mount ordering.
                 <StudentAnnotationOverlay
+                  key={gradingDraftRoomId(submissionRoomId, problemId)}
                   bookRoomId={submissionRoomId}
                   studentId={studentId}
                   bookEditor={editor}
@@ -274,16 +296,14 @@ export function ClassroomGradingSurface({
                   isWriteTarget
                   roomId={gradingDraftRoomId(submissionRoomId, problemId)}
                   camera={submissionCamera}
-                  // A gesture taken by this layer drives the PANE, never the
-                  // main editor: the panes are derived from that editor, so
-                  // writing it would move both of them and feed back here.
-                  onCameraChange={nextCamera => {
-                    syncCanvasClipPanelViewportCamera(paneViewportId('student-submission'), nextCamera)
-                  }}
+                  // No onCameraChange: the pane owns its camera and the overlay
+                  // follows it through `camera` above. Writing the overlay's
+                  // camera back into the pane made two owners fight over one
+                  // camera — the scroll/zoom stutter on this surface.
                   onEditorMount={draftEditor => {
                     draftEditorRef.current = draftEditor
                     setAnchoringEditor(draftEditor)
-                    onDraftEditor?.(draftEditor, submissionRoomId)
+                    onDraftEditor?.(draftEditor, gradingDraftRoomId(submissionRoomId, problemId))
                   }}
                   onEditorRelease={draftEditor => {
                     // Only if it is still the one we hold: a remount can release
@@ -292,7 +312,7 @@ export function ClassroomGradingSurface({
                     if (draftEditorRef.current !== draftEditor) return
                     draftEditorRef.current = null
                     setAnchoringEditor(current => (current === draftEditor ? null : current))
-                    onDraftEditor?.(null, submissionRoomId)
+                    onDraftEditor?.(null, gradingDraftRoomId(submissionRoomId, problemId))
                   }}
                 />
               ) : undefined}
