@@ -344,7 +344,10 @@ function renderedActivity(record) {
   assert.equal(activity.length, 1)
   assert.equal(activity[0].tool, 'tlda/thread')
   assert.deepEqual(activity[0].input, { agent: 'chiefdoc', types: ['chat'] })
-  assert.equal(activity[0].prettyResult, 'INBOX RESULT')
+  // Not built at all. A thread card is a semantic operation — it re-reads the
+  // messages from the store at render time — so carrying the result only to drop
+  // it at normalization below was work with no reader at either end.
+  assert.equal(activity[0].prettyResult, undefined)
   assert.equal(activity[0].status, 'completed')
   assert.equal(activity[0].correlationId, 'exec-214495b5')
   const normalized = normalizeDaemonActivityEvent(activity[0], { serverReceivedAtMs: 1, serverBroadcastQueuedAtMs: 2 })

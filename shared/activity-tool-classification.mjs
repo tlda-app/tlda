@@ -31,17 +31,24 @@ export const ACTIVITY_NOISE = new Set([
   'ToolSearch',
 ])
 
+/**
+ * Tools whose result is carried to the browser so a card can be built from it.
+ *
+ * `thread` and `search` are deliberately absent. They are semantic operations:
+ * `semanticOperationKind()` in `src/fleet/activity-render.mjs` routes them to
+ * `renderSemanticOperationResult`, which is passed an empty string and re-reads
+ * the messages from the database instead. Their carried body was therefore
+ * built, truncated, queued, sent over the websocket and stored, and then
+ * discarded unread at render.
+ *
+ * Membership costs a copy of the tool's output on the wire for every call, so
+ * add a tool here only when something renders that copy.
+ */
 export const PRETTY_PRINT_TOOLS = new Set([
   'mcp__tlda__inbox',
-  'mcp__tlda__search',
-  'mcp__tlda__thread',
   'tlda/inbox',
   'tlda__inbox',
-  'tlda__search',
-  'tlda__thread',
   'inbox',
-  'search',
-  'thread',
   'ScheduleWakeup',
   'mcp__tlda__screenshot',
   'tlda__screenshot',
