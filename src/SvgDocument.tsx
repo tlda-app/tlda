@@ -142,6 +142,7 @@ import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
 import { useMarkedExerciseHtmlAlignment } from './classroom/useMarkedExerciseHtmlAlignment'
+import { useSolutionChapterMarking } from './classroom/useSolutionChapterMarking'
 import { ClassroomConnectorOverlay } from './classroom/ClassroomConnectorOverlay'
 import { ClassroomGradingSurface, type ClassroomGradingSurfaceProps } from './classroom/ClassroomGradingSurface'
 
@@ -615,6 +616,9 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   }, [document, editorMounted])
 
   useMarkedExerciseHtmlAlignment(editorRef, document, editorMounted)
+  // The solution chapter's own marking affordance: arrows for an instructor,
+  // nothing at all for anybody else.
+  useSolutionChapterMarking(document, editorMounted)
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
   useDividerDiff(editorRef, projectName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)
