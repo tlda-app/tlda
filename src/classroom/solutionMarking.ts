@@ -66,6 +66,14 @@ function installStyle(doc: Document) {
       position: absolute;
       left: 100%;
       top: 0;
+      /*
+       * The answer arrives as a callout and callouts carry a top margin, which
+       * pushes its border box below the point it is positioned at — measured at
+       * 21px, and the whole of the tops-aligned failure. Zeroed here rather than
+       * compensated for in the offset, because this element is the copy we place
+       * and its margin means nothing where we put it.
+       */
+      margin-block-start: 0;
       margin-left: 1.5rem;
       width: 100%;
       max-width: 32rem;
@@ -80,6 +88,12 @@ function installStyle(doc: Document) {
       max-width: calc(100% - 1rem);
       height: auto;
       margin-inline: 0.5rem;
+    }
+    .${PAIR_CLASS} > .${ANSWER_CLASS} > .${ANSWER_CLASS}-header {
+      font-weight: 600;
+      padding: 0.35rem 0.6rem;
+      border-bottom: 1px solid currentColor;
+      opacity: 0.85;
     }
     .${ARROWS_CLASS} {
       display: inline-flex;
@@ -146,7 +160,7 @@ function unpair(solution: HTMLElement) {
  * be a second thing that could disagree with the chapter, and the instructor is
  * marking the real page.
  */
-function pair(solution: HTMLElement, answer: HTMLElement, doc: Document) {
+function pair(solution: HTMLElement, answer: HTMLElement, displayName: string, doc: Document) {
   let wrapper = solution.closest<HTMLElement>(`.${PAIR_CLASS}`)
   if (!wrapper) {
     wrapper = doc.createElement('div')
@@ -156,7 +170,26 @@ function pair(solution: HTMLElement, answer: HTMLElement, doc: Document) {
   }
   wrapper.querySelector(`.${ANSWER_CLASS}`)?.remove()
   answer.classList.add(ANSWER_CLASS)
+  // Whose work this is, said on the answer itself rather than only in the
+  // pager. He is marking one student among forty and the name has to be beside
+  // the work while he reads it, not in a control he looked at a moment ago.
+  // Built here rather than trusted from the student's document, which is
+  // somebody else's HTML and says nothing about who handed it in.
+  const header = doc.createElement('div')
+  header.className = `${ANSWER_CLASS}-header`
+  header.textContent = displayName
+  answer.prepend(header)
   wrapper.append(answer)
+  // Align the answer's top with the SOLUTION's top, not the wrapper's.
+  //
+  // The answer is positioned against the wrapper, whose top is the solution's
+  // margin box — so `top: 0` lands above the solution's border box by whatever
+  // margin the chapter gives it, measured at 21px here. Zeroing that margin
+  // would align them by moving the solution, which shifts the chapter while he
+  // marks; the chapter staying exactly itself is the constraint. So the offset
+  // is measured and applied to the answer instead, and nothing about the
+  // chapter's own layout changes.
+  answer.style.top = `${solution.offsetTop}px`
 }
 
 /**
@@ -215,7 +248,7 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
       // still the current one is allowed to land, or a slow student's work
       // appears beside the solution after he has already moved past them.
       if (shown !== index) return
-      if (element) pair(solution, element, doc)
+      if (element) pair(solution, element, current.displayName, doc)
       else unpair(solution)
       options.onShow?.(exerciseId, current)
     }

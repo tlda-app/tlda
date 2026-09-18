@@ -90,6 +90,7 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
   useEffect(() => {
     if (!document || document.format !== 'html' || !editorMounted) return
     let cancelled = false
+    let stop: (() => void) | null = null
     const removers: Array<() => void> = []
 
     void (async () => {
@@ -121,16 +122,35 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
 
       // Each rendered page is its own document inside an iframe, so the arrows
       // are installed per frame rather than once for the shape.
-      for (const frame of Array.from(window.document.querySelectorAll<HTMLIFrameElement>('iframe'))) {
-        const frameDocument = frame.contentDocument
-        if (!frameDocument?.querySelector('.callout-solution')) continue
-        const installed = installSolutionMarking(frameDocument, { answersFor: answersForFrame(frameDocument) })
-        if (installed.installed) removers.push(installed.remove)
+      //
+      // Asked repeatedly rather than once, because a frame's document arrives
+      // after this effect runs and there is no event here that says when. A
+      // single pass finds nothing, installs nothing, and never looks again —
+      // which is a race that passes whenever the page happens to be warm and
+      // fails whenever it is not. `installSolutionMarking` skips a callout that
+      // already carries arrows, so running it repeatedly is idempotent.
+      const installed = new WeakSet<Document>()
+      const install = () => {
+        for (const frame of Array.from(window.document.querySelectorAll<HTMLIFrameElement>('iframe'))) {
+          const frameDocument = frame.contentDocument
+          if (!frameDocument || installed.has(frameDocument)) continue
+          if (!frameDocument.querySelector('.callout-solution')) continue
+          const result = installSolutionMarking(frameDocument, { answersFor: answersForFrame(frameDocument) })
+          if (!result.installed) continue
+          installed.add(frameDocument)
+          removers.push(result.remove)
+        }
       }
+      install()
+      const observer = new MutationObserver(install)
+      observer.observe(window.document.body, { childList: true, subtree: true })
+      const interval = window.setInterval(install, 250)
+      stop = () => { observer.disconnect(); window.clearInterval(interval) }
     })()
 
     return () => {
       cancelled = true
+      stop?.()
       for (const remove of removers) remove()
     }
   }, [document, editorMounted])

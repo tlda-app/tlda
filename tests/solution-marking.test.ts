@@ -158,3 +158,22 @@ test('a slow answer that lands after he has paged on does not appear', async () 
   assert.match(shown!.textContent!, /bo/, 'the student he is on, not the one he paged past')
   assert.equal(doc.querySelectorAll('.tlda-marking-answer').length, 1, 'and only one of them')
 })
+
+test("the answer carries the student's name on itself, not only in the pager", async () => {
+  // He is marking one student among forty. The name has to be beside the work
+  // while he reads it, not in a control he glanced at a moment ago.
+  const doc = chapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const forward = doc.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')[1]
+
+  forward.click()
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  const header = doc.querySelector('.tlda-marking-answer > .tlda-marking-answer-header')
+  assert.equal(header?.textContent, 'ana')
+  // And it moves with the paging rather than sticking to the first student.
+  forward.click()
+  await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(doc.querySelector('.tlda-marking-answer > .tlda-marking-answer-header')?.textContent, 'bo')
+  assert.equal(doc.querySelectorAll('.tlda-marking-answer-header').length, 1, 'one name, not an accumulating pile')
+})
