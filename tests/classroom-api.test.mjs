@@ -212,6 +212,9 @@ test('a student transfers their enrollment to one new device without exposing or
     const redeemed = await response.json()
     assert.equal(redeemed.student.id, 'ada')
     assert.notEqual(redeemed.enrollmentToken, 'ada-secret')
+    assert.match(response.headers.get('set-cookie') || '', /tlda_classroom_token=/)
+    assert.match(response.headers.get('set-cookie') || '', /HttpOnly/)
+    assert.match(response.headers.get('set-cookie') || '', /SameSite=Lax/)
     assert.equal(f.store.studentForToken('ada-secret').id, 'ada', 'the first device was logged out')
     assert.equal(f.store.studentForToken(redeemed.enrollmentToken).id, 'ada')
 

@@ -86,14 +86,16 @@ test('the owner is found from the submission record, not from the name', () => {
   })
 })
 
-test('the enrolment token reaches the principal on the URL as well as the header', () => {
+test('the enrolment token reaches the principal on the URL, header, or redeemed-device cookie', () => {
   withStore(store => {
     const asHeader = { headers: { 'x-tlda-student-token': 'tok-ada' }, query: {} }
     const asQuery = { headers: {}, query: { classroomToken: 'tok-ada' } }
+    const asCookie = { headers: { cookie: 'other=value; tlda_classroom_token=tok-ada' }, query: {} }
     // `read` rather than the real token check: this asserts which carrier is
     // read, not what the bearer token was.
     assert.equal(classroomPrincipal(asHeader, store, 'read').studentId, OWNER)
     assert.equal(classroomPrincipal(asQuery, store, 'read').studentId, OWNER)
+    assert.equal(classroomPrincipal(asCookie, store, 'read').studentId, OWNER)
     assert.equal(classroomPrincipal({ headers: {}, query: {} }, store, 'read'), null)
     // On an ungated class box every ordinary request has rw capability, but a
     // classroom token must still identify its student or `/mine` is impossible.

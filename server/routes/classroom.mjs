@@ -133,7 +133,18 @@ async function walkSubmissionFiles(dir, base = dir) {
  * source, two carriers.
  */
 function studentToken(req) {
-  return req.headers['x-tlda-student-token'] || req.query?.classroomToken || null
+  const cookie = String(req.headers?.cookie || '')
+    .split(';')
+    .map(part => part.trim())
+    .find(part => part.startsWith('tlda_classroom_token='))
+  const cookieToken = cookie ? decodeURIComponent(cookie.slice('tlda_classroom_token='.length)) : null
+  return req.headers['x-tlda-student-token'] || req.query?.classroomToken || cookieToken || null
+}
+
+function rememberStudentToken(req, res, token) {
+  const secure = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https'
+  const flags = `HttpOnly; SameSite=Lax; Path=/; Max-Age=${30 * 86400}${secure ? '; Secure' : ''}`
+  res.append('Set-Cookie', `tlda_classroom_token=${encodeURIComponent(token)}; ${flags}`)
 }
 
 export function classroomPrincipal(req, store, level = validateToken(extractToken(req)), gatingEnabled = isTokenGatingEnabled()) {
@@ -294,6 +305,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     const enrollmentToken = crypto.randomBytes(32).toString('hex')
     try {
       const student = store.registerStudent({ courseId: req.params.courseId, preferredName, pronouns, universityLogin, enrollmentToken })
+      rememberStudentToken(req, res, enrollmentToken)
       return res.status(201).json({ student, enrollmentToken })
     } catch (error) {
       if (String(error?.code || '').startsWith('SQLITE_CONSTRAINT')) return res.status(409).json({ error: 'That university login is already registered for this course' })
@@ -309,6 +321,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     if (result.status === 'invalid') return res.status(404).json({ error: 'Transfer link is invalid for this class' })
     if (result.status === 'expired') return res.status(410).json({ error: 'Transfer link has expired' })
     if (result.status === 'used') return res.status(409).json({ error: 'Transfer link has already been used' })
+    rememberStudentToken(req, res, enrollmentToken)
     return res.json({ student: result.student, enrollmentToken })
   })
   router.use((req, res, next) => {
