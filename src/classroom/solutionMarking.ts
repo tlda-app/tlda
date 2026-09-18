@@ -223,8 +223,12 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
   for (const solution of solutions) {
     const exerciseId = exerciseIdForSolution(solution, doc)
     if (!exerciseId) continue
+    // The iframe can be observed once while Quarto is still finishing the
+    // callout header and again after it exists. The owner is the solution, not
+    // whichever host happened to exist on that pass; otherwise one pager lands
+    // on the bare callout and a second lands in its eventual header.
+    if (solution.querySelector(`.${ARROWS_CLASS}`)) continue
     const host = arrowHost(solution)
-    if (host.querySelector(`.${ARROWS_CLASS}`)) continue
 
     // Position zero is "no student's answer", which is where every callout
     // starts and what `back` from the first student returns to.

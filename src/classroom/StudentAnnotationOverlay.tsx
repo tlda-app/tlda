@@ -1,5 +1,5 @@
 import { useMemo, useEffect, useState, type CSSProperties } from 'react'
-import { Tldraw, react, useValue, type Editor } from 'tldraw'
+import { Tldraw, Vec, react, useValue, type Editor } from 'tldraw'
 import { useSync } from '@tldraw/sync'
 import { STORE_WS, LICENSE_KEY } from '../activeConfig'
 import { appendToken } from '../authToken'
@@ -283,6 +283,25 @@ export function StudentAnnotationOverlay({
       data-capturing={capturing ? 'true' : 'false'}
       data-tool={currentToolId}
       data-visible={visible ? 'true' : 'false'}
+      onWheelCapture={event => {
+        if (!cameraIsExternal || !capturing || !bookEditor) return
+        // A bounded marking layer is the current canvas layer, not a modal
+        // surface. It owns pen pointers while drawing but wheel/trackpad input
+        // still belongs to the document camera underneath it.
+        event.preventDefault()
+        event.stopPropagation()
+        bookEditor.dispatch({
+          type: 'wheel',
+          name: 'wheel',
+          delta: new Vec(-event.deltaX, -event.deltaY, 0),
+          point: new Vec(event.clientX, event.clientY),
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          accelKey: event.ctrlKey || event.metaKey,
+        })
+      }}
       style={bounds ? ({
         position: 'fixed',
         inset: 'auto',

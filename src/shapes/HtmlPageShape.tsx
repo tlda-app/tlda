@@ -422,6 +422,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const docLinkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const measuredGeometryWriterRef = useRef(createMeasuredGeometryWriter())
+  const markingDocumentWidthRef = useRef<number | null>(null)
 
   const detachRglSyncRef = useRef<(() => void) | null>(null)
 
@@ -1181,8 +1182,18 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const isSlideShape = current.props.url?.includes('_tldaH=')
         const minH = isSlideShape ? current.props.h : 200
         const newH = Math.max(minH, 200, Math.round(e.data.height))
+        const hasMarkingPager = Boolean(iframeRef.current?.contentDocument?.querySelector('.tlda-marking-arrows'))
+        if (hasMarkingPager && markingDocumentWidthRef.current === null) {
+          // The answer is deliberately outside the chapter column. Remember
+          // the chapter's width before that overflow is reported so opening a
+          // student pane cannot resize the page and reflow every paragraph.
+          markingDocumentWidthRef.current = current.props.w
+        } else if (!hasMarkingPager) {
+          markingDocumentWidthRef.current = null
+        }
         const documentW = isSlideShape ? null : htmlPageDocumentWidth(iframeRef.current)
-        const newW = documentW ? Math.max(current.props.w, documentW) : current.props.w
+        const newW = markingDocumentWidthRef.current
+          ?? (documentW ? Math.max(current.props.w, documentW) : current.props.w)
         if (Math.abs(newH - current.props.h) > 5 || Math.abs(newW - current.props.w) > 5) {
           const wrote = measuredGeometryWriterRef.current.report({
             permissionKnown: isPresentPermissionKnown(),

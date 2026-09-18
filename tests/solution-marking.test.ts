@@ -73,6 +73,22 @@ test('arrows arrive on every solution, and start at no answer with no pair', () 
   assert.equal(doc.querySelector<HTMLButtonElement>('.tlda-marking-arrows button')?.disabled, true, 'back is dead at zero')
 })
 
+test('a late callout header does not acquire a second pager', () => {
+  const jsdom = new JSDOM('<!doctype html><html><head></head><body><div id="exr-a"></div><div class="callout-solution">solution</div></body></html>')
+  windows.push(jsdom)
+  const doc = jsdom.window.document
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana']) })
+  const solution = doc.querySelector<HTMLElement>('.callout-solution')!
+  const header = doc.createElement('div')
+  header.className = 'callout-header'
+  solution.prepend(header)
+
+  const second = installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana']) })
+
+  assert.equal(second.installed, 0)
+  assert.equal(solution.querySelectorAll('.tlda-marking-arrows').length, 1)
+})
+
 test('paging forward pairs one answer with its own solution, and back removes it again', async () => {
   const doc = chapter()
   installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
