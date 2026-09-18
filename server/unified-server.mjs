@@ -5014,7 +5014,12 @@ app.get('/static/:project{/*sourcePath}', requireRead, async (req, res) => {
       available: pageInfo.map(page => page?.source?.file).filter(Boolean),
     })
   }
-  res.redirect(302, `/docs/${encodeURIComponent(name)}/${entry.file.split('/').map(encodeURIComponent).join('/')}`)
+  // A published course records every page as `app/book/…`, and `/docs/<project>/app/…`
+  // serves the TLDA reader shell by design. The same render from the same run is
+  // mirrored at `static/book/…`, so the door rewrites there — otherwise the
+  // fallback for the app being broken lands on the app.
+  const servedFile = String(entry.file).replace(/^app\//, 'static/')
+  res.redirect(302, `/docs/${encodeURIComponent(name)}/${servedFile.split('/').map(encodeURIComponent).join('/')}`)
 })
 
 // On preview/live Fly hosts, a published course's `/app/...` address is the
@@ -5040,18 +5045,20 @@ app.get('/docs/:project/app{/*coursePath}', requireRead, async (req, res, next) 
   res.type('html').send(html)
 })
 
-function injectCoursePresentationSwitch(html, project, servedFilePath) {
-  if (!servedFilePath.startsWith('static/')) return html
-  const location = servedFilePath.slice('static/'.length)
-  const href = `/docs/${encodeURIComponent(project)}/app/${location.split('/').map(encodeURIComponent).join('/')}`
-  const control = `<a class="tlda-presentation-switch" href="${href}" style="position:fixed;top:12px;left:12px;z-index:10000">TLDA</a>`
-  // The LAST `</body>`: a Reveal deck carries an earlier one inside the
-  // RevealNotes speaker-view template string, so splicing the anchor at the
-  // first puts raw double quotes inside a double-quoted JS string literal.
-  const bodyClose = html.lastIndexOf('</body>')
-  if (bodyClose === -1) return `${html}${control}`
-  return html.slice(0, bodyClose) + control + html.slice(bodyClose)
-}
+// The `static/` tree is the published site — the bytes GitHub Pages will serve,
+// previewed for when there is no canvas. `app/` exists to be loaded into the
+// canvas, and every serve-time injector below assumes that canvas parent: the
+// html bridge strips Quarto nav, hides the first h1, kills every link's default
+// navigation and posts to a parent that is not there; the slides bridge disables
+// Reveal's own keyboard/controls/touch/wheel; the serve-time title card and its
+// prev/next footer post `tlda-navigate` nowhere. gh.io has none of that, so the
+// preview must have none of it either — including the TLDA anchor, whose href
+// names a `/docs/…/app/…` address that exists only on preview. A splice into the
+// served bundle is what killed the Bootstrap deck (first-`</body>` splice inside
+// the RevealNotes template string; `80776def2` moved it to the last, removing
+// the instance but not the class). So `static/` pages go out as the build wrote
+// them: no bridge, no title, no anchor.
+const isPublishedStaticPage = (servedFilePath) => servedFilePath.startsWith('static/')
 
 // Serve sub-resources of html-format projects without auth (CSS, JS, fonts from site_libs)
 // These are Quarto framework files loaded by iframes that can't pass auth headers
@@ -5446,10 +5453,14 @@ app.use('/docs', (req, res, next) => {
           // difference between the reveal bridge and the html one.
           const shownAs = viewFormat(project)
           if (shownAs === 'slides') {
-            // Slides format: inject the reveal.js bridge script
+            // Slides format: inject the reveal.js bridge script — unless this is
+            // the published static tree, which goes out as the build wrote it.
+            if (isPublishedStaticPage(servedFilePath)) {
+              return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
+            }
             const html = await fs.promises.readFile(projectPath, 'utf8')
             const injected = injectSlidesBridge(html)
-            res.type('html').send(injectCoursePresentationSwitch(injected, name, servedFilePath))
+            res.type('html').send(injected)
             return
           }
           if (shownAs === 'markdown') {
@@ -5480,8 +5491,11 @@ app.use('/docs', (req, res, next) => {
               break  // use first book found
             }
 
+            if (isPublishedStaticPage(servedFilePath)) {
+              return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
+            }
             const injected = injectChapterTitle(html, chapterTitle, prev, next)
-            res.type('html').send(injectCoursePresentationSwitch(injected, name, servedFilePath))
+            res.type('html').send(injected)
             return
           }
           // A .qmd that rendered to a scrolling page wants exactly the html
@@ -5537,8 +5551,11 @@ app.use('/docs', (req, res, next) => {
                 }
               }
             } catch (e) { console.warn(`[server] TOC/chapter title parsing failed for ${name}: ${e.message}`) }
+            if (isPublishedStaticPage(servedFilePath)) {
+              return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
+            }
             const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage, { prev: navPrev, next: navNext }, await ownWorkUrlFor(req, filePath))
-            res.type('html').send(injectCoursePresentationSwitch(injected, name, servedFilePath))
+            res.type('html').send(injected)
             return
           }
         }

@@ -151,13 +151,19 @@ test('the published app path opens the TLDA shell, not the copied course HTML', 
   )
 })
 
-test('the static published page offers the same-location TLDA path', async () => {
+// REMOVED with the TLDA switch it asserted: the `static/` tree is the published
+// site, and the switch's href named a `/docs/…/app/…` address that exists only on
+// preview — the least faithful thing on the page. See the ruling in the delivery
+// thread (01:07 AM): bridge, slides bridge, chapter title, and switch all come
+// off `static/`. Replaced by the fidelity test below.
+test('the static published page goes out as the build wrote it', async () => {
   const staticPageInfo = [{
     file: 'static/book/chapters/chapter-sampling-with-replacement.html',
     title: 'Sampling with Replacement',
     format: 'qmd',
     source: { type: 'project-source', format: 'qmd', file: CHAPTER_SOURCE },
   }]
+  const built = '<html><head><title>Sampling</title></head><body><main>static course page</main></body></html>'
   await withServer(
     projectsDir => {
       const output = seedProject(projectsDir, PROJECT, staticPageInfo)
@@ -166,12 +172,72 @@ test('the static published page offers the same-location TLDA path', async () =>
       }))
       const page = join(output, staticPageInfo[0].file)
       mkdirSync(join(page, '..'), { recursive: true })
-      writeFileSync(page, '<html><body><main>static course page</main></body></html>')
+      writeFileSync(page, built)
     },
     async port => {
       const res = await get(port, `/docs/${PROJECT}/static/book/chapters/chapter-sampling-with-replacement.html`)
       assert.equal(res.status, 200)
-      assert.match(res.body, new RegExp(`href="/docs/${PROJECT}/app/book/chapters/chapter-sampling-with-replacement\\.html"`))
+      assert.equal(res.body, built, 'static/ must serve the build bytes untouched — no bridge, no title, no TLDA anchor')
+    },
+  )
+})
+
+test('the static published deck goes out without the slides bridge', async () => {
+  // Same gate, separate branch: a deck under `static/` must keep its native
+  // Reveal behavior, not the canvas-driven bridge that disables it.
+  const deckPageInfo = [{
+    file: 'static/book/decks/chapter-bootstrap-slides.html',
+    title: 'Bootstrap slides',
+    format: 'qmd',
+    source: { type: 'project-source', format: 'qmd', file: 'decks/chapter-bootstrap-slides.qmd' },
+  }]
+  const built = '<html><head><title>Slides</title></head><body><div class="reveal"><div class="slides"></div></div></body></html>'
+  await withServer(
+    projectsDir => {
+      const output = seedProject(projectsDir, PROJECT, deckPageInfo)
+      writeFileSync(join(projectsDir, PROJECT, 'project.json'), JSON.stringify({
+        name: PROJECT, title: PROJECT, mainFile: 'decks/chapter-bootstrap-slides.qmd',
+        format: 'qmd', renderedFormat: 'slides', pages: 1, buildStatus: 'success',
+      }))
+      const page = join(output, deckPageInfo[0].file)
+      mkdirSync(join(page, '..'), { recursive: true })
+      writeFileSync(page, built)
+    },
+    async port => {
+      const res = await get(port, `/docs/${PROJECT}/static/book/decks/chapter-bootstrap-slides.html`)
+      assert.equal(res.status, 200)
+      assert.equal(res.body, built, 'a static/ deck must parse as the build wrote it — no slides bridge splice')
+    },
+  )
+})
+
+test('a published course door reaches the static page, not the app shell', async () => {
+  // A published course records every page as `app/book/…` in the top-level
+  // page-info.json. `/docs/<project>/app/…` serves the TLDA reader shell by
+  // design, so a `/static/` redirect that replays the recorded path verbatim
+  // lands the reader on the shell — the door must rewrite to the `static/`
+  // mirror, which is the same render from the same run.
+  const publishedPageInfo = [
+    { file: 'app/book/chapters/chapter-bootstrap.html', title: 'Bootstrap', format: 'qmd', source: { type: 'project-source', format: 'qmd', file: 'chapters/chapter-bootstrap.qmd' } },
+    { file: 'app/book/decks/chapter-bootstrap-slides.html', title: 'Bootstrap slides', format: 'qmd', source: { type: 'project-source', format: 'qmd', file: 'decks/chapter-bootstrap-slides.qmd' } },
+    { file: 'app/book/homework/homework-calibration-solutions.html', title: 'Calibration', format: 'qmd', source: { type: 'project-source', format: 'qmd', file: 'homework/homework-calibration.qmd' } },
+  ]
+  await withServer(
+    projectsDir => seedProject(projectsDir, PROJECT, publishedPageInfo),
+    async port => {
+      for (const [source, page] of [
+        ['chapters/chapter-bootstrap.qmd', 'static/book/chapters/chapter-bootstrap.html'],
+        ['decks/chapter-bootstrap-slides.qmd', 'static/book/decks/chapter-bootstrap-slides.html'],
+        ['homework/homework-calibration.qmd', 'static/book/homework/homework-calibration-solutions.html'],
+      ]) {
+        const res = await get(port, `/static/${PROJECT}/${source}`)
+        assert.equal(res.status, 302, `expected a redirect, got ${res.status}: ${res.body.slice(0, 200)}`)
+        assert.equal(res.location, `/docs/${PROJECT}/${page}`)
+      }
+      // The front door takes pageInfo[0], which is an app/ path here too.
+      const front = await get(port, `/static/${PROJECT}`)
+      assert.equal(front.status, 302)
+      assert.equal(front.location, `/docs/${PROJECT}/static/book/chapters/chapter-bootstrap.html`)
     },
   )
 })
