@@ -1,4 +1,5 @@
 import { parseDurationMs } from './inbox-attention.mjs'
+import { isAbsoluteRoot } from './runtime-root.mjs'
 
 function isRecord(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value)
