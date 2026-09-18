@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { assembleCourseAppSite, copyCourseAppAssets, deriveCourseAppSpec } from './course-app-build.mjs'
+import { deriveCourseBookSpec } from './course-book-spec.mjs'
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'course-app-build-'))
@@ -54,10 +55,14 @@ test('a missing local publication target fails with the evidence inline', () => 
   assert.throws(() => deriveCourseAppSpec(root, 'index.qmd'), /local publication link has no course input: chapters\/not-there\.qmd/)
 })
 
-test('an unlinked matching deck is not released', () => {
+test('membership comes from the authored declarations, not the index links', () => {
   const root = fixture()
+  writeFileSync(join(root, '_quarto.yml'), 'project:\n  type: tlda\nbook:\n  title: Course\n  chapters:\n    - index.qmd\n    - chapters/one.qmd\n    - homework/hw.qmd\n')
+  writeFileSync(join(root, '_quarto-slides.yml'), 'project:\n  type: default\n  render:\n    - decks/one-slides.qmd\n')
   writeFileSync(join(root, 'index.qmd'), '[Chapter](chapters/one.qmd)')
-  assert.deepEqual(deriveCourseAppSpec(root, 'index.qmd').decks, [])
+  const spec = deriveCourseBookSpec(root)
+  assert.deepEqual(spec.documents, ['index.qmd', 'chapters/one.qmd', 'homework/hw.qmd'])
+  assert.deepEqual(spec.decks, ['decks/one-slides.qmd'])
 })
 
 test('a linked deck is recognized outside a decks directory', () => {
@@ -79,14 +84,16 @@ test('explicitly linked assets survive as relative app-site paths', () => {
   assert.equal(readFileSync(join(output, relativeAsset), 'utf8'), relativeAsset)
 })
 
-test('already-built TLDA output is selected, ordered, and repeatable from the index', () => {
+test('already-built TLDA output is selected, ordered, and repeatable from the declarations', () => {
   const root = fixture()
+  writeFileSync(join(root, '_quarto.yml'), 'project:\n  type: tlda\nbook:\n  title: Course\n  chapters:\n    - index.qmd\n    - chapters/one.qmd\n    - homework/hw.qmd\n')
+  writeFileSync(join(root, '_quarto-slides.yml'), 'project:\n  type: default\n  render:\n    - decks/one-slides.qmd\n')
   const built = join(root, 'tlda-output')
   const output = join(mkdtempSync(join(tmpdir(), 'course-app-output-')), 'app-site')
   mkdirSync(join(built, '_book/chapters'), { recursive: true })
   mkdirSync(join(built, '_book/decks'), { recursive: true })
   const pages = [
-    ['chapters/unreleased.qmd', '_book/chapters/unreleased.html', 'Unreleased'],
+    ['chapters/dormant.qmd', '_book/chapters/dormant.html', 'Dormant'],
     ['index.qmd', '_book/index.html', 'Course'],
     ['decks/one-slides.qmd', '_book/decks/one-slides.html', 'One — Slides'],
     ['chapters/one.qmd', '_book/chapters/one.html', 'One'],
@@ -106,8 +113,8 @@ test('already-built TLDA output is selected, ordered, and repeatable from the in
   assert.deepEqual(first.pages.map(page => page.source.file), [
     'index.qmd', 'chapters/one.qmd', 'homework/hw.qmd', 'decks/one-slides.qmd',
   ])
-  assert.equal(existsSync(join(output, '_book/chapters/unreleased.html')), false)
-  assert.equal(existsSync(join(output, 'chapters/unreleased.qmd')), false)
+  assert.equal(existsSync(join(output, '_book/chapters/dormant.html')), false)
+  assert.equal(existsSync(join(output, 'chapters/dormant.qmd')), false)
   assert.equal(existsSync(join(output, '_book/chapters/one.html')), true)
   assert.equal(existsSync(join(output, 'chapters/one.qmd')), true)
   assert.equal(existsSync(join(output, '_book/runtime-frame.html')), true)

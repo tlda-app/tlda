@@ -26,6 +26,7 @@ import {
 } from './incremental-qmd-build.mjs'
 import { buildCoursePublication } from './course-publication-build.mjs'
 import { deriveCourseAppSpec } from './course-app-build.mjs'
+import { deriveCourseBookSpec } from './course-book-spec.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
 
@@ -95,6 +96,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
   if (publicationGenerator) {
     const indexFile = project.mainFile || 'index.qmd'
     const spec = deriveCourseAppSpec(srcDir, indexFile)
+    const membership = deriveCourseBookSpec(srcDir)
     return withCoursePublicationGenerator(publicationGenerator, async ({ builder, python }) => {
       const result = await buildCoursePublication({
         courseDir: srcDir,
@@ -105,7 +107,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
           sourceDir: srcDir,
           outputDir: renderedDir,
           changedFiles: null,
-          mainFiles: [...spec.documents, ...spec.decks],
+          mainFiles: [...membership.documents, ...membership.decks],
           name,
           log: addLog,
           projectMeta: project,
@@ -135,7 +137,7 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
         renderedFormat: 'html',
         lastBuild: new Date().toISOString(),
       })
-      addLog(`[qmd] ${name}: published one course render as static/ and app/ (${spec.documents.length} documents, ${spec.decks.length} decks)`)
+      addLog(`[qmd] ${name}: published one course render as static/ and app/ (${membership.documents.length} documents, ${membership.decks.length} decks)`)
       return { manifest: qmdManifest(project, pages, 'html'), regenerateBookTocs: true }
     })
   }

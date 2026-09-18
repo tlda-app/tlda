@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 
 import { buildCoursePublication } from '../server/lib/course-publication-build.mjs'
 import { deriveCourseAppSpec } from '../server/lib/course-app-build.mjs'
+import { deriveCourseBookSpec } from '../server/lib/course-book-spec.mjs'
 import { buildIncrementalQmd, quartoBookRoots } from '../server/lib/incremental-qmd-build.mjs'
 
 function usage() {
@@ -43,11 +44,15 @@ const result = await buildCoursePublication({
   render: async renderedDir => {
     renderCount += 1
     const roots = quartoBookRoots(courseDir)
+    const membership = deriveCourseBookSpec(courseDir)
+    const mainFiles = roots.length
+      ? [...membership.documents, ...membership.decks]
+      : [spec.index]
     await buildIncrementalQmd({
       sourceDir: courseDir,
       outputDir: renderedDir,
       changedFiles: null,
-      mainFiles: roots.length ? roots : [spec.index],
+      mainFiles,
       name: 'course-publication',
       log: line => console.log(line),
       ...(args['figure-stamp'] !== undefined ? { figureStamp: Number(args['figure-stamp']) } : {}),

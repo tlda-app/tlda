@@ -1,6 +1,8 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
+import { deriveCourseBookSpec } from './course-book-spec.mjs'
+
 // Images are page dependencies that Quarto already owns.  They are not
 // publication entries: in particular, the real syllabus shows students the
 // literal example `![](my-photo.png)`, which must not become a required file.
@@ -36,12 +38,11 @@ function addUnique(values, value) {
 }
 
 /**
- * Derive the app builder's internal specification from the course's own
- * publication index.  A local qmd link is a document root; a local rendered
- * html link resolves back to its qmd source when that source exists; zip and
- * other local links remain publication assets. Decks enter only through links
- * authored in the index. A nearby file with a matching name is not release
- * authority.
+ * Derive the course app's announcement inputs from the course's own
+ * publication index.  A local qmd link resolves back to its qmd source when
+ * that source exists; zip and other local links remain publication assets.
+ * This spec carries announcement — assets, page links — never membership:
+ * which documents and decks publish comes from `deriveCourseBookSpec`.
  */
 export function deriveCourseAppSpec(courseDir, indexFile) {
   const root = resolve(courseDir)
@@ -127,19 +128,24 @@ export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir,
     const source = page?.source?.file
     if (source && !bySource.has(source)) bySource.set(source, page)
   }
+  const membership = deriveCourseBookSpec(courseDir)
   const releasedSpec = deriveCourseAppSpec(courseDir, indexFile)
+  const membershipSources = new Set([...membership.documents, ...membership.decks])
+  const membershipEntries = values => values.filter(source => membershipSources.has(source) && bySource.has(source))
   const renderedSourceEntries = values => suppliedSpec
     ? values.filter(source => bySource.has(source))
     : []
-  const spec = suppliedSpec
-    ? {
-        ...releasedSpec,
-        documents: [...new Set([...releasedSpec.documents, ...renderedSourceEntries(suppliedSpec.documents)])],
-        decks: [...new Set([...releasedSpec.decks, ...renderedSourceEntries(suppliedSpec.decks)])],
-        assets: [...new Set([...releasedSpec.assets, ...suppliedSpec.assets])],
-        links: [...new Set([...releasedSpec.links, ...suppliedSpec.links])],
-      }
-    : releasedSpec
+  const spec = {
+    ...releasedSpec,
+    documents: [...new Set([...membershipEntries(membership.documents), ...(suppliedSpec ? renderedSourceEntries(suppliedSpec.documents) : [])])],
+    decks: [...new Set([...membershipEntries(membership.decks), ...(suppliedSpec ? renderedSourceEntries(suppliedSpec.decks) : [])])],
+    assets: suppliedSpec
+      ? [...new Set([...releasedSpec.assets, ...suppliedSpec.assets])]
+      : releasedSpec.assets,
+    links: suppliedSpec
+      ? [...new Set([...releasedSpec.links, ...suppliedSpec.links])]
+      : releasedSpec.links,
+  }
   const wantedSources = [...spec.documents, ...spec.decks]
   const missing = wantedSources.filter(source => !bySource.has(source))
   if (missing.length) throw new Error(`released course input is absent from the TLDA build: ${missing.join(', ')}`)

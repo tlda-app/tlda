@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { dirname, join, resolve } from 'node:path'
 
 import { assembleCourseAppSite } from './course-app-build.mjs'
+import { deriveCourseBookSpec } from './course-book-spec.mjs'
 
 const ROOT_REDIRECT = '<!doctype html>\n<meta charset="utf-8">\n<meta http-equiv="refresh" content="0; url=/static/">\n<link rel="canonical" href="/static/">\n'
 
@@ -76,7 +77,7 @@ export async function assembleCoursePublication(courseDir, indexFile, renderedDi
   rmSync(root, { recursive: true, force: true })
   mkdirSync(root, { recursive: true })
 
-  await assembleStatic({ courseDir, renderedDir, outputDir: staticDir })
+  await assembleStatic({ courseDir, renderedDir, outputDir: staticDir, membership: deriveCourseBookSpec(courseDir) })
   if (!existsSync(join(staticDir, 'index.html'))) {
     throw new Error('static compiler produced no index.html')
   }

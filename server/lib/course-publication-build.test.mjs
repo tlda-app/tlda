@@ -4,7 +4,6 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { deriveCourseAppSpec } from './course-app-build.mjs'
 import { assembleCoursePublication, buildCoursePublication, publicationMetadata } from './course-publication-build.mjs'
 
 function fixture() {
@@ -21,12 +20,14 @@ function fixture() {
   for (const rel of ['chapters/one.qmd', 'decks/one-slides.qmd', 'homework/hw.qmd', 'homework/handouts/hw-handout.zip']) {
     writeFileSync(join(course, rel), rel)
   }
+  writeFileSync(join(course, '_quarto.yml'), 'project:\n  type: tlda\nbook:\n  title: Course\n  chapters:\n    - index.md\n    - chapters/one.qmd\n    - homework/hw.qmd\n')
+  writeFileSync(join(course, '_quarto-slides.yml'), 'project:\n  type: default\n  render:\n    - decks/one-slides.qmd\n')
   return { root, course, output }
 }
 
 function writeRender(renderedDir) {
   const rows = [
-    ['chapters/unreleased.qmd', '_book/chapters/unreleased.html', 'Unreleased'],
+    ['chapters/dormant.qmd', '_book/chapters/dormant.html', 'Dormant'],
     ['index.md', '_book/index.html', 'Course'],
     ['decks/one-slides.qmd', '_book/decks/one-slides.html', 'One — Slides'],
     ['chapters/one.qmd', '_book/chapters/one.html', 'One'],
@@ -35,7 +36,7 @@ function writeRender(renderedDir) {
   const pages = rows.map(([source, file, title]) => ({ file, title, source: { file: source }, ...(source.startsWith('decks/') ? { variant: 'slides' } : {}) }))
   for (const page of pages) {
     mkdirSync(join(renderedDir, dirname(page.file)), { recursive: true })
-    writeFileSync(join(renderedDir, page.file), `<link rel="next" href="./unreleased.html"><h1>${page.title}</h1><nav><a href="./unreleased.html"><span>Unreleased</span></a></nav>`)
+    writeFileSync(join(renderedDir, page.file), `<link rel="next" href="./dormant.html"><h1>${page.title}</h1><nav><a href="./dormant.html"><span>Dormant</span></a></nav>`)
     mkdirSync(join(renderedDir, dirname(page.source.file)), { recursive: true })
     writeFileSync(join(renderedDir, page.source.file), page.source.file)
   }
@@ -73,26 +74,23 @@ test('one render feeds matching static and app publication trees', async () => {
   assert.equal(renders, 1)
   assert.equal(existsSync(join(output, 'index.html')), true)
   assert.match(readFileSync(join(output, 'index.html'), 'utf8'), /url=\/static\//)
-  assert.match(readFileSync(join(output, 'static/index.html'), 'utf8'), /book\/index\.html/)
+  assert.match(readFileSync(join(output, 'static/index.html'), 'utf8'), /book\/chapters\/one\.html/)
   assert.equal(existsSync(join(output, 'static/book/chapters/one.html')), true)
   assert.equal(existsSync(join(output, 'app/book/chapters/one.html')), true)
   assert.equal(existsSync(join(output, 'static/book/decks/one-slides.html')), true)
   assert.equal(existsSync(join(output, 'app/book/decks/one-slides.html')), true)
-  assert.equal(existsSync(join(output, 'static/book/chapters/unreleased.html')), false)
-  assert.equal(existsSync(join(output, 'app/book/chapters/unreleased.html')), false)
-  assert.equal(existsSync(join(output, 'static/book/chapters/unreleased.qmd')), false)
-  assert.equal(existsSync(join(output, 'app/chapters/unreleased.qmd')), false)
-  assert.doesNotMatch(readFileSync(join(output, 'static/book/chapters/one.html'), 'utf8'), /href="\.\/unreleased\.html"/)
-  assert.doesNotMatch(readFileSync(join(output, 'app/book/chapters/one.html'), 'utf8'), /href="\.\/unreleased\.html"/)
-  assert.match(readFileSync(join(output, 'static/book/chapters/one.html'), 'utf8'), /<span>Unreleased<\/span>/)
+  assert.equal(existsSync(join(output, 'static/book/chapters/dormant.html')), false)
+  assert.equal(existsSync(join(output, 'app/book/chapters/dormant.html')), false)
+  assert.equal(existsSync(join(output, 'static/book/chapters/dormant.qmd')), false)
+  assert.equal(existsSync(join(output, 'app/chapters/dormant.qmd')), false)
+  assert.doesNotMatch(readFileSync(join(output, 'static/book/chapters/one.html'), 'utf8'), /href="\.\/dormant\.html"/)
+  assert.doesNotMatch(readFileSync(join(output, 'app/book/chapters/one.html'), 'utf8'), /href="\.\/dormant\.html"/)
+  assert.match(readFileSync(join(output, 'static/book/chapters/one.html'), 'utf8'), /<span>Dormant<\/span>/)
   assert.deepEqual(publicationMetadata(output).static, publicationMetadata(output).app)
 })
 
-test('source publication spec survives a generated landing page that hides future links', async () => {
+test('a generated landing page that hides declared documents still publishes them', async () => {
   const { course, output } = fixture()
-  writeFileSync(join(course, 'chapters/dormant.qmd'), 'not in the current Quarto book')
-  writeFileSync(join(course, 'index.md'), `${readFileSync(join(course, 'index.md'), 'utf8')}\n[Dormant](chapters/dormant.qmd)\n`)
-  const appSpec = deriveCourseAppSpec(course, 'index.md')
   const assembleDatedStatic = async args => {
     await assembleStatic(args)
     writeFileSync(join(args.outputDir, 'index.html'), '<a href="book/index.html">Course</a>')
@@ -101,7 +99,6 @@ test('source publication spec survives a generated landing page that hides futur
     courseDir: course,
     indexFile: 'index.md',
     outputDir: output,
-    appSpec,
     render: async renderedDir => writeRender(renderedDir),
     assembleStatic: assembleDatedStatic,
   })
