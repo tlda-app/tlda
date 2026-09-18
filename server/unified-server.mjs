@@ -116,7 +116,12 @@ import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-mo
 import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { writeCandidateClip } from './lib/recording-publication.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
-import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
+import { rejectMatchingWsRequests } from '../shared/fleet-transport.mjs'
+import {
+  createDaemonRpcSender,
+  launchRpcOptions,
+  spawnMailboxExpiryLine,
+} from './lib/spawn-launch-rpc.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 import { parsePermissionMode, permissionModeKeypresses } from '../agent-runtime/status-classifier.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -124,7 +129,7 @@ import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shar
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
-import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
+import { daemonAddress } from '../shared/agent-move-target.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
@@ -919,7 +924,6 @@ const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this
 // Pending RPCs awaiting a daemon `rpc-reply`. Keyed by RPC id.
 // Each entry is the shared ws-request-policy shape plus { machine_id, env_name }.
 const pendingRpcs = new Map()
-let _rpcSeq = 0
 const DAEMON_RPC_RECONNECT_GRACE_MS = Number(process.env.TLDA_DAEMON_RPC_RECONNECT_GRACE_MS || 15_000)
 const pendingRpcFailureTimers = new Map()
 
@@ -1261,68 +1265,18 @@ function matchApprovalResponse(text) {
  * binds that id to the operation and canonical payload, then replays the result
  * without repeating the side effect. The caller's deadline remains authoritative.
  */
-class NoDaemonError extends Error {
-  constructor(machineId, envName) {
-    super(`No fleet-daemon connected for ${describeAgentAddress(machineId, envName)}`)
-    this.code = 'NO_DAEMON'
-    this.machineId = machineId
-    this.envName = envName
-  }
-}
+const daemonRpcSender = createDaemonRpcSender({
+  daemonConnections,
+  daemonWelcomeSeenAt,
+  pendingRpcs,
+  waitForDaemonReady: (key, deadlineMs) => waitForDaemonReady(key, deadlineMs),
+  isTransientRpcError: e => isTransientRpcError(e),
+  logSpawnDaemonMiss: (key, context, detail) => logSpawnDaemonMiss(key, context, detail),
+  reconnectGraceMs: DAEMON_RPC_RECONNECT_GRACE_MS,
+})
 
-async function sendDaemonRpcAttempt(machineId, op, params = {}, opts = {}) {
-  let targetMachine = machineId
-  let envName = params.daemon_env_name
-  if (!envName && typeof machineId === 'string' && machineId.includes(':')) {
-    const parts = machineId.split(':')
-    targetMachine = parts[0]
-    envName = parts[1]
-  }
-  if (!machineId || !envName) return Promise.reject(new NoDaemonError(machineId || '(unknown)', envName || '(unknown)'))
-  const key = daemonAddress(targetMachine, envName)
-  let dws = daemonConnections.get(key)
-  if (!dws || dws.readyState !== 1) {
-    if (op === 'spawn' && daemonWelcomeSeenAt.has(key) && opts.waitForReconnect !== false) {
-      try {
-        await waitForDaemonReady(key, DAEMON_RPC_RECONNECT_GRACE_MS)
-        dws = daemonConnections.get(key)
-      } catch {
-        // Reconnect grace expired; fall through to the normal NoDaemonError path.
-      }
-    }
-  }
-  if (!dws || dws.readyState !== 1) {
-    if (op === 'spawn') logSpawnDaemonMiss(key, 'sendDaemonRpcAttempt(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
-    return Promise.reject(new NoDaemonError(targetMachine, envName))
-  }
-  const id = opts.requestId || `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
-  // Per-attempt deadline is a caller-passed param (event-based default): control ops
-  // wrapped in sendDaemonDurable pass a short per-attempt timeout so a stale-but-"open"
-  // WS is abandoned quickly and retried on the fresh reconnect, rather than blocking
-  // the full 10s each time.
-  const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : null
-  const promise = startWsRequest({
-    pending: pendingRpcs,
-    id,
-    type: `rpc:${op}`,
-    deadlineMs: timeoutMs,
-    makeDeadlineError: () => new Error(`RPC timeout after ${timeoutMs}ms (op=${op}, daemon=${key})`),
-    send: () => {
-      try {
-        dws.send(JSON.stringify({ type: 'rpc', id, op, ...params }))
-        return true
-      } catch (e) {
-        pendingRpcs.get(id)?.reject(e)
-        return true
-      }
-    },
-  })
-  const entry = pendingRpcs.get(id)
-  if (entry) {
-    entry.machine_id = targetMachine
-    entry.env_name = envName
-  }
-  return promise
+function sendDaemonRpcAttempt(machineId, op, params = {}, opts = {}) {
+  return daemonRpcSender.attempt(machineId, op, params, opts)
 }
 
 function rpcErrorMessage(error) {
@@ -1409,15 +1363,6 @@ function waitForDaemonReady(daemonKey, deadlineMs = null) {
   })
 }
 
-function rpcDaemonKey(machineId, params = {}) {
-  if (params.daemon_env_name) return daemonAddress(machineId, params.daemon_env_name)
-  if (typeof machineId === 'string' && machineId.includes(':')) {
-    const [m, e] = machineId.split(':')
-    return daemonAddress(m, e)
-  }
-  return machineId
-}
-
 function isTransientRpcError(err) {
   if (err?.code === 'NO_DAEMON') return true
   if (err?.code === 'RPC_DEADLINE') return true
@@ -1427,45 +1372,9 @@ function isTransientRpcError(err) {
 
 // Event-based retry across reconnect for idempotent control ops. Retries only on
 // transient (reconnect-class) failures; op-level errors propagate immediately.
-async function sendDaemonRpcDurableAttempt(machineId, op, params = {}, {
-  totalDeadlineMs = null,
-  attemptTimeoutMs = null,
-  requestId = null,
-} = {}) {
-  const key = rpcDaemonKey(machineId, params)
-  const stableRequestId = requestId || `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
-  const start = Date.now()
-  let lastErr = null
-  while (true) {
-    const remaining = Number.isFinite(totalDeadlineMs) ? totalDeadlineMs - (Date.now() - start) : null
-    if (remaining !== null && remaining <= 0) break
-    const dws = daemonConnections.get(key)
-    if (!dws || dws.readyState !== 1) {
-      try { await waitForDaemonReady(key, remaining) } catch (e) { lastErr = e; break }
-    }
-    try {
-      return await sendDaemonRpcAttempt(machineId, op, params, {
-        requestId: stableRequestId,
-        timeoutMs: Number.isFinite(attemptTimeoutMs)
-          ? (remaining === null ? attemptTimeoutMs : Math.min(attemptTimeoutMs, Math.max(1, remaining)))
-          : null,
-      })
-    } catch (e) {
-      lastErr = e
-      if (!isTransientRpcError(e)) throw e
-      // A stale-but-"open" WS would re-hit the same dead socket; wait for a fresh
-      // ready daemon (the close handler evicts the dead WS, the new hello notifies).
-      const left = Number.isFinite(totalDeadlineMs) ? totalDeadlineMs - (Date.now() - start) : null
-      if (left !== null && left <= 0) break
-      try { await waitForDaemonReady(key, left) } catch (we) { lastErr = we; break }
-    }
-  }
-  // Exhausting the retry budget is not a verdict either -- nothing refused the
-  // op, we stopped waiting. Carry a code so callers can tell that apart from a
-  // daemon-reported failure, the same way NoDaemonError does.
-  const exhausted = new Error(`RPC ${op} to ${key} gave no response within ${totalDeadlineMs}ms`)
-  exhausted.code = 'RPC_DEADLINE'
-  throw lastErr || exhausted
+// The loop itself lives in server/lib/spawn-launch-rpc.mjs so a test can drive it.
+function sendDaemonRpcDurableAttempt(machineId, op, params = {}, opts = {}) {
+  return daemonRpcSender.durable(machineId, op, params, opts)
 }
 
 const serverDaemonTransport = createFleetOperationTransport({
@@ -2031,6 +1940,16 @@ const mailboxLibrarian = new MailboxLibrarian({
     // failure out of a timeout and disrupts that agent for nothing. Whether a
     // spawn is genuinely stuck belongs on a live status surface, not a chat push.
     // (Skip 7/22)
+    //
+    // That ruling stands: this still does not fail the spawn, retract its task, or
+    // push anything at the requester. It writes one line, because "not a failure"
+    // is not the same as "not worth recording" -- and this expiry was the last
+    // point at which the server still held the facts. It is the one moment where
+    // the process knows the name, the reserved agent id, the daemon it asked, and
+    // how long it has been waiting; after it returns, nothing carries them and a
+    // spawn that never came up is indistinguishable from one nobody requested.
+    // hw3-writer expired through here leaving no trace at all.
+    console.error(spawnMailboxExpiryLine(entry, Date.now()))
   },
 })
 const _contextState = new Map()    // agentId → { percent, inputTokens }
@@ -2927,7 +2846,7 @@ async function performSpawnRelay(caller, msg) {
       let result
       try {
         const operation = pendingAgentId ? 'mint' : (resolved.respawn ? 'wake' : 'spawn')
-        result = await sendDaemonDurable(machineId, operation, spawnRequest)
+        result = await sendDaemonDurable(machineId, operation, spawnRequest, launchRpcOptions())
         if (isIndeterminateSpawnOutcome(result)) {
           result = {
             ok: false,
