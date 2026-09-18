@@ -1,0 +1,25 @@
+# pnpm settings. As of pnpm 12 the "pnpm" field in package.json is ignored, so
+# overrides and build-script approvals live here.
+
+# @tldraw/editor is pinned to our fork. tldraw@5.2.0 declares a plain 5.2.0
+# dependency on it, so without this override pnpm gives tldraw the registry
+# build and fork-only exports (TldrawViewport) disappear, failing the client
+# build at src/CanvasClipPanel.tsx. npm only worked by accident: it hoisted the
+# fork to the top level and tldraw resolved upward to it.
+overrides:
+  '@tldraw/editor': 'git+https://github.com/tlda-app/tldraw-fork.git#b8ae2f885e3311129e788f67c4bbdacc8f2aef19'
+
+# That override resolves to a git repository, and pnpm refuses git-resolved
+# packages in subdependency position by default. tldraw depends on
+# @tldraw/editor, so the override necessarily lands there. The fork is ours and
+# pinned to an exact commit above.
+blockExoticSubdeps: false
+
+# Packages allowed to run install scripts, written by `pnpm approve-builds`.
+# Same set npm's allow-scripts gates. The key is allowBuilds; setting
+# onlyBuiltDependencies is read into config but does not grant the approval.
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  node-pty: true
+  protobufjs: true
