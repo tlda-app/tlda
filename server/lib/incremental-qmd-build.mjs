@@ -166,6 +166,8 @@ const RENV_RESTORE_TIMEOUT_MS = 15 * 60 * 1000
 const DEFAULT_WIDTH = 800
 const DEFAULT_HEIGHT = 1200
 
+const QUARTO_INSTALL_CANDIDATES = ['/Applications/quarto/bin/quarto', '/usr/local/bin/quarto', '/opt/homebrew/bin/quarto']
+
 /**
  * Resolve the quarto binary, or throw naming the install command.
  *
@@ -182,9 +184,25 @@ async function resolveQuarto() {
     // single throw below is the only way this function fails.
     .catch(() => '')
   if (found) return found
-  throw new Error(
-    'quarto is not on PATH — a .qmd project cannot be built without it. Install it with `brew install --cask quarto`.',
-  )
+  throw new Error(`quarto is not on PATH — a .qmd project cannot be built without it. ${quartoAbsenceDetail()}`)
+}
+
+/**
+ * Say which absence this is. Resolution stays PATH-only, as above; this only
+ * reports what the process already knows, because the two cases have different
+ * remedies and "install it" is wrong advice on a machine that already has it.
+ *
+ * Seen 2026-09-18: quarto 1.9.38 installed at /Applications/quarto/bin/quarto,
+ * absent from the launchd PATH, so every .qmd build failed and the message sent
+ * the reader to reinstall software that was already there.
+ */
+export function quartoAbsenceDetail(candidates = QUARTO_INSTALL_CANDIDATES, path = process.env.PATH) {
+  const installed = candidates.find(candidate => existsSync(candidate))
+  if (installed) {
+    return `It is installed at ${installed} but not on this process's PATH (${path || '(empty)'}), `
+      + 'so whatever launched this server gave it no login environment. Put that directory on PATH at launch.'
+  }
+  return 'Install it with `brew install --cask quarto`.'
 }
 
 /** Resolve Rscript the same way, for the same reason. */

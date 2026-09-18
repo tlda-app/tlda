@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   buildIncrementalQmd,
+  quartoAbsenceDetail,
   qmdIncrementalRenderRoots,
   quartoBookRoots,
   writeSourceScopeFile,
@@ -156,5 +157,28 @@ test('incremental rebuild changes the edited chapter only; manifest and TOC iden
     }
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a missing quarto says which absence it is, so the remedy fits the machine', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'quarto-absence-'))
+  const installed = join(dir, 'quarto')
+  try {
+    // Installed but off PATH: the case that cost an agent a full diagnosis on
+    // 2026-09-18, where the old message told them to install what they had.
+    writeFileSync(installed, '#!/bin/sh\nexit 0\n')
+    const present = quartoAbsenceDetail([installed], '/usr/bin:/bin')
+    assert.match(present, /installed at/, 'must name where it found quarto')
+    assert.match(present, /not on this process's PATH/, 'must say PATH is the problem')
+    assert.match(present, /\/usr\/bin:\/bin/, 'must quote the PATH it actually searched')
+    assert.doesNotMatch(present, /brew install/, 'must not tell them to install what is already there')
+
+    // Counterfactual: with nothing installed the install advice is the right answer,
+    // so this test can fail in both directions rather than only one.
+    const absent = quartoAbsenceDetail([join(dir, 'nothing-here')], '/usr/bin:/bin')
+    assert.match(absent, /brew install --cask quarto/, 'a genuinely absent quarto still gets install advice')
+    assert.doesNotMatch(absent, /installed at/, 'must not claim an install it did not find')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
