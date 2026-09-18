@@ -26,7 +26,7 @@ import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { usePillDrag, type FleetPillDropData } from './FleetAgentsShape'
 import { registerWMDropTarget, type WMDropPayload } from '../wm/drop-targets'
 // @ts-ignore — vanilla JS module
-import { inboxTaskTransfer, projectOwnedFleetTasks } from './fleet-task-inbox.mjs'
+import { inboxNoteTask, inboxTaskTransfer, projectOwnedFleetTasks } from './fleet-task-inbox.mjs'
 // FleetTaskDetail still has its own composer: a task's reply box is not a chat
 // thread, and nothing about it changed.
 import { ChatComposer } from './ChatComposer'
@@ -536,6 +536,21 @@ function FleetInboxInner({ shape }: { shape: any }) {
     }))
   }, [myId, myName])
 
+  // A sticky row becomes a task row: one button, assigned to whoever pressed it.
+  // Same durable delegate path assignment already uses, minus a task_id, which
+  // is what makes it a create rather than a transfer.
+  const captureNote = useCallback((note: DocNote) => {
+    if (!myId) return Promise.resolve()
+    return fleetDurable('delegate', inboxNoteTask(note, myId))
+      .catch((error: unknown) => {
+        log.error('fleet-inbox', 'note capture failed', {
+          noteId: note.id,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        throw error
+      })
+  }, [myId])
+
   // Tasks group — a live projection of the understanding-ribbon's stale spans.
   // Reading the ribbon shape inside useValue keeps this reactive: re-approving a
   // span un-stales it (the ribbon shape updates), so its task auto-resolves with
@@ -871,6 +886,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             timeItems={timeItems}
             fleetTasks={ownedFleetTasks}
             onAssignTask={assignTask}
+            onCaptureNote={captureNote}
             threads={visibleThreads}
             directNodes={visibleDirectNodes}
             cascadeNodes={visibleCascadeNodes}
@@ -1002,12 +1018,31 @@ function NodeRow({ task, onApprove, onOpen }: {
   )
 }
 
-function NoteRow({ n, onOpen }: { n: DocNote; onOpen?: () => void }) {
+function NoteRow({ n, onOpen, onCapture }: { n: DocNote; onOpen?: () => void; onCapture?: (note: DocNote) => Promise<unknown> }) {
+  const [captured, setCaptured] = useState<'idle' | 'busy' | 'done' | 'failed'>('idle')
+  const capture = useCallback((e: React.PointerEvent) => {
+    stopEventPropagation(e)
+    if (!onCapture || captured === 'busy' || captured === 'done') return
+    setCaptured('busy')
+    onCapture(n).then(() => setCaptured('done'), () => setCaptured('failed'))
+  }, [onCapture, n, captured])
   return (
     <div className="fleet-inbox-note" onPointerUp={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
       <div className="fleet-inbox-note-row">
         <span className="fleet-inbox-note-dot" style={n.color ? { color: n.color } : undefined}>●</span>
         <span className="fleet-inbox-note-text">{n.preview || '(empty note)'}</span>
+        {onCapture ? (
+          <button
+            type="button"
+            className="fleet-inbox-note-capture"
+            data-state={captured}
+            disabled={captured === 'busy' || captured === 'done'}
+            title={captured === 'done' ? 'Task created' : captured === 'failed' ? 'Could not create the task — press to retry' : 'Make a task from this note, assigned to you'}
+            onPointerUp={capture}
+          >
+            {captured === 'done' ? '✓' : '📋'}
+          </button>
+        ) : null}
       </div>
       <div className="fleet-inbox-note-sub">open{n.line != null ? ` · line ${n.line}` : ''}{n.file ? ` · ${n.file}` : ''}</div>
     </div>
@@ -1065,6 +1100,7 @@ interface InboxListProps {
   timeItems: InboxItem[]
   fleetTasks: OwnedFleetTask[]
   onAssignTask: (task: OwnedFleetTask, agent: string) => void
+  onCaptureNote: (note: DocNote) => Promise<unknown>
   threads: Thread[]
   directNodes: NodeTask[]
   cascadeNodes: NodeTask[]
@@ -1078,7 +1114,7 @@ interface InboxListProps {
 }
 
 function InboxList(props: InboxListProps) {
-  const { sortMode, timeItems, fleetTasks, onAssignTask, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onOpenMarkdownTag, onOpenItem, onStartDrag } = props
+  const { sortMode, timeItems, fleetTasks, onAssignTask, onCaptureNote, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onOpenMarkdownTag, onOpenItem, onStartDrag } = props
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
 
@@ -1088,7 +1124,7 @@ function InboxList(props: InboxListProps) {
     if (it.kind === 'fleet-task') return <FleetTaskRow key={it.key} task={it.task} onAssign={onAssignTask} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} onOpen={() => onOpenItem(it.key)} />
-    if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onOpen={() => onOpenItem(it.key)} />
+    if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onOpen={() => onOpenItem(it.key)} onCapture={onCaptureNote} />
     return <MessageRow key={it.key} t={it.thread} onOpen={onOpen} onOpenMarkdownTag={onOpenMarkdownTag} onStartDrag={onStartDrag} />
   }
 
@@ -1119,7 +1155,7 @@ function InboxList(props: InboxListProps) {
           {notes.length > 0 && (
             <div className="fleet-inbox-notes">
               <div className="fleet-inbox-group-label">Notes</div>
-              {notes.map((n) => <NoteRow key={n.id} n={n} onOpen={() => onOpenItem(`note:${n.id}`)} />)}
+              {notes.map((n) => <NoteRow key={n.id} n={n} onOpen={() => onOpenItem(`note:${n.id}`)} onCapture={onCaptureNote} />)}
             </div>
           )}
           {threads.length > 0 && (

@@ -21,3 +21,21 @@ export function inboxTaskTransfer(task, agent, myId, myName) {
     message: `Assigned from the inbox by ${myName || myId}.`,
   }
 }
+
+// One button turns a sticky row into a task row. No task_id means create, and
+// the task is assigned to whoever pressed it, so it appears in that person's
+// own inbox in the row group directly above the notes.
+export function inboxNoteTask(note, myId) {
+  const preview = String(note?.preview || '').trim()
+  const title = preview || '(empty note)'
+  const where = [
+    note?.file ? String(note.file) : null,
+    note?.line != null ? `line ${note.line}` : null,
+  ].filter(Boolean).join(' · ')
+  return {
+    from: myId,
+    agent: myId,
+    description: title.length > 60 ? `${title.slice(0, 59)}…` : title,
+    message: where ? `${title}\n\nFrom a sticky note — ${where}.` : `${title}\n\nFrom a sticky note.`,
+  }
+}

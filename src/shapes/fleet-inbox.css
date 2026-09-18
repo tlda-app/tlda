@@ -542,6 +542,40 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+/* Make a task from this note. Quiet: invisible until the row is hovered, and
+   it stays visible once pressed so the ✓ is readable without hovering. */
+.fleet-inbox-note-capture {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.fleet-inbox-note:hover .fleet-inbox-note-capture,
+.fleet-inbox-note-capture:focus-visible {
+  opacity: var(--ui-tone-rest);
+}
+.fleet-inbox-note:hover .fleet-inbox-note-capture:hover {
+  opacity: 1;
+}
+.fleet-inbox-note-capture[data-state='done'] {
+  opacity: var(--ui-tone-rest);
+  cursor: default;
+}
+.fleet-inbox-note-capture[data-state='busy'] {
+  opacity: var(--ui-tone-rest);
+  cursor: progress;
+}
+.fleet-inbox-note-capture[data-state='failed'] {
+  opacity: 1;
 }
 .fleet-inbox-note-sub {
   font-size: 10px;
