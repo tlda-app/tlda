@@ -14,12 +14,20 @@
 // to come back. That is what makes a lag-triggered dump possible at all — the
 // interesting frames are already captured by the time we notice the stall.
 //
+// The window ROLL was a different matter, and for a while it was this file's
+// largest contribution to the stalls it reports: rolling used to stop the
+// profiler and start it again, and starting it walks every compiled function in
+// the isolate on the JS thread. `startWindow` at 5,363ms of self time was the
+// heaviest frame in the daemon's own lag reports. `profile-window-rotator.mjs`
+// now owns the roll and keeps a profile open across it.
+//
 // Shape: one continuous profile, chopped into short rolling windows so memory
 // stays bounded. Two windows are retained, so a stall that lands near a window
 // boundary is still fully covered. On a stall we cut the current window, slice
 // the samples to the stall interval, and write a ranked self-time report.
 
 import { Session } from 'node:inspector'
+import { createProfileWindowRotator } from './profile-window-rotator.mjs'
 import { mkdirSync, existsSync } from 'node:fs'
 import { writeFile, appendFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -109,19 +117,21 @@ export function createLagProfiler({ dir, log = console, now = () => Date.now() }
     session.post(method, params, (err, result) => (err ? reject(err) : resolve(result)))
   })
 
-  async function startWindow() {
-    await post('Profiler.start')
-    windowStartedAtMs = now()
+  const rotator = createProfileWindowRotator({ session, post, now })
+
+  function startWindow() {
+    rotator.open()
+    windowStartedAtMs = rotator.currentWindowStartedAtMs()
     stats.windows += 1
   }
 
   // Ends the current window and immediately opens the next one, so coverage is
   // continuous. Returns the profile that just closed.
   async function cutWindow() {
-    const { profile } = await post('Profiler.stop')
-    const closed = { profile, startedAtMs: windowStartedAtMs, endedAtMs: now() }
+    const closed = await rotator.rotate()
+    windowStartedAtMs = rotator.currentWindowStartedAtMs()
+    stats.windows += 1
     previousWindow = closed
-    await startWindow()
     return closed
   }
 
@@ -212,7 +222,7 @@ export function createLagProfiler({ dir, log = console, now = () => Date.now() }
     session.connect()
     await post('Profiler.enable')
     await post('Profiler.setSamplingInterval', { interval: SAMPLING_INTERVAL_US })
-    await startWindow()
+    startWindow()
     running = true
 
     windowTimer = setInterval(() => { void rollWindow() }, WINDOW_MS)
@@ -227,7 +237,7 @@ export function createLagProfiler({ dir, log = console, now = () => Date.now() }
     running = false
     clearInterval(windowTimer)
     clearTimeout(tickTimer)
-    await post('Profiler.stop')
+    await rotator.close()
     await post('Profiler.disable')
     session.disconnect()
   }

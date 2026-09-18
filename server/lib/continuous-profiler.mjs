@@ -15,6 +15,11 @@
 // inside a stall are recorded as they happen and only the disk write waits for
 // the loop.
 //
+// That is true of SAMPLING and was false of the window roll, which used to stop
+// the profiler and start it again. Starting it is what costs: see
+// `profile-window-rotator.mjs`, which now owns the roll and keeps a profile open
+// across it. The sampler is started once and never turned off.
+//
 // Distinct from `lag-profiler.mjs`, which keeps a slice around an event-loop
 // stall and discards the rest. That one is supplemental; this one is the profile.
 
@@ -22,6 +27,7 @@ import { Session } from 'node:inspector'
 import { mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { createProfileWindowRotator } from './profile-window-rotator.mjs'
 
 const FILE_PREFIX = 'profile-'
 const FILE_SUFFIX = '.cpuprofile'
@@ -55,6 +61,8 @@ export function createContinuousProfiler({
     session.post(method, params, (err, result) => (err ? reject(err) : resolve(result)))
   })
 
+  const rotator = createProfileWindowRotator({ session, post, now })
+
   // Oldest first, so trimming is a slice off the front. The timestamp in the
   // name sorts lexicographically because it is ISO with `:` and `.` replaced.
   function retainedFiles() {
@@ -73,9 +81,10 @@ export function createContinuousProfiler({
   }
 
   async function cutWindow() {
-    const { profile } = await post('Profiler.stop')
-    // Restart before writing, so coverage is continuous across the disk write.
-    if (running) await post('Profiler.start')
+    // Coverage is continuous across the disk write because the next window is
+    // already open before this one closes — the rotator never leaves the
+    // profiler off, which is what used to make this call expensive.
+    const { profile } = await rotator.rotate()
     stats.windows += 1
 
     const at = new Date(now()).toISOString().replace(/[:.]/g, '-')
@@ -115,7 +124,7 @@ export function createContinuousProfiler({
     session.connect()
     await post('Profiler.enable')
     await post('Profiler.setSamplingInterval', { interval: samplingIntervalUs })
-    await post('Profiler.start')
+    rotator.open()
     running = true
 
     windowTimer = setInterval(() => { void rollWindow() }, windowMs)
@@ -128,7 +137,7 @@ export function createContinuousProfiler({
     if (!running) throw new Error('continuous profiler is not running')
     running = false
     clearInterval(windowTimer)
-    await post('Profiler.stop')
+    await rotator.close()
     await post('Profiler.disable')
     session.disconnect()
   }
