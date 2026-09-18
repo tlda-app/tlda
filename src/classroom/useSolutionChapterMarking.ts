@@ -17,6 +17,7 @@ import { classroomApi, type Assignment, type ProblemAnswer } from './api'
 import { installSolutionMarking, type MarkableAnswer } from './solutionMarking'
 import type { SvgDocument } from '../loaders/types'
 import type { ActiveMarkingPair } from './MarkingInkOverlay'
+import { appendToken } from '../authToken'
 
 /**
  * Whether one of this document's pages is the assignment's book page.
@@ -41,12 +42,12 @@ function documentIsAssignmentPage(document: SvgDocument, assignment: Assignment)
 
 /** The rendered page of one student's handed-in work. */
 async function submissionPageUrl(contentRef: string): Promise<string | null> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(contentRef)}`)
+  const response = await fetch(appendToken(`/api/projects/${encodeURIComponent(contentRef)}`))
   if (!response.ok) return null
   const project = await response.json() as { pageFiles?: string[] }
   const page = project.pageFiles?.[0]
   if (!page) return null
-  return `/docs/${encodeURIComponent(contentRef)}/${page.split('/').map(encodeURIComponent).join('/')}`
+  return appendToken(`/docs/${encodeURIComponent(contentRef)}/${page.split('/').map(encodeURIComponent).join('/')}`)
 }
 
 /**
@@ -97,7 +98,7 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
 
     void (async () => {
       const identity = await classroomApi.me().catch(() => null)
-      if (cancelled || identity?.role !== 'instructor') return
+      if (cancelled || !identity) return
 
       const { assignments } = await classroomApi.assignments(identity.courseId).catch(() => ({ assignments: [] as Assignment[] }))
       const assignment = assignments.find(candidate => documentIsAssignmentPage(document, candidate))
@@ -106,12 +107,25 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
       if (cancelled || !assignment) return
 
       let problems: Awaited<ReturnType<typeof classroomApi.problems>> | null = null
+      const ownSubmission = identity.role === 'student'
+        ? await classroomApi.mySubmission(assignment.id).catch(() => null)
+        : null
+      if (identity.role === 'student' && ownSubmission?.gradingStatus !== 'returned') return
 
       // One factory per frame, so an answer is imported into the document that
       // actually holds the solution it will sit beside. Built per frame rather
       // than looked up inside `load`, because "which document is this" is known
       // at install time and guessing it later is how the wrong page gets edited.
       const answersForFrame = (frameDocument: Document) => async (exerciseId: string): Promise<MarkableAnswer[]> => {
+        if (identity.role === 'student') {
+          if (!ownSubmission) return []
+          return [{
+            studentId: identity.studentId,
+            displayName: identity.displayName ?? identity.preferredName,
+            contentRef: ownSubmission.contentRef,
+            load: () => loadAnswer(ownSubmission.contentRef, exerciseId, frameDocument),
+          }]
+        }
         problems ??= await classroomApi.problems(assignment.id)
         const problem = problems.problems.find(candidate => candidate.problemId === `ans-${exerciseId}`)
         if (!problem) return []
@@ -138,11 +152,21 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
           const frameDocument = frame.contentDocument
           if (!frameDocument || installed.has(frameDocument)) continue
           if (!frameDocument.querySelector('.callout-solution')) continue
+          if (identity.role === 'student') {
+            for (const toggle of frameDocument.querySelectorAll('.tlda-own-work-toggle')) toggle.remove()
+          }
           const result = installSolutionMarking(frameDocument, {
             answersFor: answersForFrame(frameDocument),
             onShow: (exerciseId, answer, wrapper) => {
               setActivePair(current => {
-                if (answer && wrapper) return { exerciseId, studentId: answer.studentId, contentRef: answer.contentRef, wrapper }
+                if (answer && wrapper) return {
+                  exerciseId,
+                  studentId: answer.studentId,
+                  contentRef: answer.contentRef,
+                  assignmentId: assignment.id,
+                  viewerRole: identity.role,
+                  wrapper,
+                }
                 return current?.exerciseId === exerciseId && current.wrapper.ownerDocument === frameDocument
                   ? null
                   : current

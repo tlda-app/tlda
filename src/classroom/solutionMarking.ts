@@ -91,11 +91,26 @@ function installStyle(doc: Document) {
       margin-inline: 0.5rem;
     }
     .${PAIR_CLASS} > .${ANSWER_CLASS} > .${ANSWER_CLASS}-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
       font-weight: 600;
       padding: 0.35rem 0.6rem;
       border-bottom: 1px solid currentColor;
       opacity: 0.85;
     }
+    .tlda-marking-return { margin-inline-start: auto; }
+    .tlda-marking-return button {
+      cursor: pointer;
+      border: 1px solid currentColor;
+      background: transparent;
+      color: inherit;
+      border-radius: 0.25rem;
+      padding: 0.1rem 0.45rem;
+    }
+    .tlda-marking-return button[disabled] { opacity: 0.4; cursor: default; }
+    .tlda-marking-return-status { font-size: 0.85em; font-weight: 400; }
+    .tlda-marking-return-error { color: #9a3c32; }
     .${ARROWS_CLASS} {
       display: inline-flex;
       gap: 0.25rem;

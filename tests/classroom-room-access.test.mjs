@@ -1,6 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { classroomRoomAccess, gradingDraftRoomId, studentOverlayRoomId, studentOverlayRoomOwner } from '../shared/classroom-rooms.mjs'
+import {
+  classroomRoomAccess,
+  gradingDraftRoomId,
+  gradingDraftRoomTarget,
+  studentOverlayRoomId,
+  studentOverlayRoomOwner,
+} from '../shared/classroom-rooms.mjs'
 
 // Who may enter which sync room.
 //
@@ -110,6 +116,39 @@ test('the marking layer is refused to the student whose submission it hangs off'
   assert.equal(classroomRoomAccess({
     roomId: GRADING_DRAFT, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
   }), 'deny')
+})
+
+test('a returned marking layer is read-only for the student whose solution it annotates', () => {
+  assert.equal(classroomRoomAccess({
+    roomId: GRADING_DRAFT,
+    tokenLevel: 'read',
+    studentId: 'qtm285:ada',
+    submissionOwnerId: 'qtm285:ada',
+    submissionReturned: true,
+  }), 'read')
+})
+
+test('a returned marking layer still refuses classmates and anonymous readers', () => {
+  assert.equal(classroomRoomAccess({
+    roomId: GRADING_DRAFT,
+    tokenLevel: 'read',
+    studentId: 'qtm285:bo',
+    submissionOwnerId: 'qtm285:ada',
+    submissionReturned: true,
+  }), 'deny')
+  assert.equal(classroomRoomAccess({
+    roomId: GRADING_DRAFT,
+    tokenLevel: 'read',
+    submissionOwnerId: 'qtm285:ada',
+    submissionReturned: true,
+  }), 'deny')
+})
+
+test('the grading room names its submission and problem without rebasing either', () => {
+  assert.deepEqual(gradingDraftRoomTarget(GRADING_DRAFT), {
+    submissionRoomId: SUBMISSION_ROOM,
+    problemId: 'ans-exr-die-histogram',
+  })
 })
 
 test('the marking layer is refused to a classmate and to the class read link', () => {

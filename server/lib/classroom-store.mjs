@@ -257,7 +257,8 @@ export class ClassroomStore {
    */
   submissionDocumentOwner(docKey) {
     if (!docKey) return null
-    return this.db.prepare(`SELECT s.assignment_id AS assignmentId,s.student_id AS studentId,a.course_id AS courseId
+    return this.db.prepare(`SELECT s.assignment_id AS assignmentId,s.student_id AS studentId,a.course_id AS courseId,
+      s.grading_status AS gradingStatus
       FROM submissions s JOIN assignments a ON a.id=s.assignment_id WHERE s.content_ref=?`).get(docKey) || null
   }
 

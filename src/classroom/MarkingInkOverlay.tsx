@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { react, type Editor } from 'tldraw'
+import { createPortal } from 'react-dom'
+import { react, useValue, type Editor } from 'tldraw'
 import { gradingDraftRoomId } from '../../shared/classroom-rooms.mjs'
 import { ensureViewLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
+import { classroomApi } from './api'
 import { StudentAnnotationOverlay } from './StudentAnnotationOverlay'
 import { markingInkFrame, markingInkLayerId, type MarkingInkFrame } from './markingInkFrame'
 
@@ -9,6 +11,8 @@ export interface ActiveMarkingPair {
   exerciseId: string
   studentId: string
   contentRef: string
+  assignmentId: string
+  viewerRole: 'instructor' | 'student'
   wrapper: HTMLElement
 }
 
@@ -43,6 +47,15 @@ export function MarkingInkOverlay({
   const layerId = useMemo(
     () => markingInkLayerId(pair.contentRef, pair.exerciseId),
     [pair.contentRef, pair.exerciseId],
+  )
+  const [draftEditor, setDraftEditor] = useState<Editor | null>(null)
+  const [returning, setReturning] = useState(false)
+  const pairKey = `${pair.exerciseId}:${pair.studentId}`
+  const [returnStatus, setReturnStatus] = useState<{ pairKey: string; text: string; error: boolean } | null>(null)
+  const draftShapeCount = useValue(
+    'marking draft shape count',
+    () => draftEditor?.getCurrentPageShapes().length ?? 0,
+    [draftEditor],
   )
 
   useEffect(() => {
@@ -92,16 +105,50 @@ export function MarkingInkOverlay({
   }, [editor, frame, layerId])
 
   if (!frame) return null
+  const answerHeader = pair.wrapper.querySelector<HTMLElement>('.tlda-marking-answer-header')
+  const returnMarks = async () => {
+    if (returning || pair.viewerRole !== 'instructor') return
+    try {
+      setReturning(true)
+      setReturnStatus(null)
+      await classroomApi.returnFeedback(pair.assignmentId, pair.studentId)
+      setReturnStatus({ pairKey, text: `Returned ${draftShapeCount}`, error: false })
+    } catch (error) {
+      setReturnStatus({ pairKey, text: (error as Error).message, error: true })
+    } finally {
+      setReturning(false)
+    }
+  }
+
   return (
-    <StudentAnnotationOverlay
-      bookRoomId={bookRoomId}
-      studentId={pair.studentId}
-      bookEditor={editor}
-      visible
-      isWriteTarget
-      roomId={gradingDraftRoomId(`doc-${pair.contentRef}`, `ans-${pair.exerciseId}`)}
-      camera={frame.camera}
-      bounds={frame.bounds}
-    />
+    <>
+      <StudentAnnotationOverlay
+        bookRoomId={bookRoomId}
+        studentId={pair.studentId}
+        bookEditor={editor}
+        visible
+        isWriteTarget={pair.viewerRole === 'instructor'}
+        roomId={gradingDraftRoomId(`doc-${pair.contentRef}`, `ans-${pair.exerciseId}`)}
+        camera={frame.camera}
+        bounds={frame.bounds}
+        onEditorMount={setDraftEditor}
+        onEditorRelease={released => setDraftEditor(current => current === released ? null : current)}
+      />
+      {pair.viewerRole === 'instructor' && answerHeader && createPortal(
+        <span className="tlda-marking-return">
+          {draftShapeCount > 0 && (
+            <button type="button" disabled={returning} onClick={() => void returnMarks()}>
+              {returning ? 'Returning…' : 'Return'}
+            </button>
+          )}
+          {returnStatus?.pairKey === pairKey && (
+            <span className={`tlda-marking-return-status${returnStatus.error ? ' tlda-marking-return-error' : ''}`}>
+              {returnStatus.text}
+            </span>
+          )}
+        </span>,
+        answerHeader,
+      )}
+    </>
   )
 }

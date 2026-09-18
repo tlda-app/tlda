@@ -57,6 +57,18 @@ export function isGradingDraftRoom(roomId) {
   return String(roomId).endsWith(GRADING_DRAFT_ROOM_MARKER)
 }
 
+/** The submission room and problem named by a grading pane, or null. */
+export function gradingDraftRoomTarget(roomId) {
+  const value = String(roomId)
+  if (!isGradingDraftRoom(value)) return null
+  const withoutScope = value.slice(0, -GRADING_DRAFT_ROOM_MARKER.length)
+  const at = withoutScope.lastIndexOf(PROBLEM_ROOM_MARKER)
+  if (at < 0) return null
+  const submissionRoomId = withoutScope.slice(0, at)
+  const problemId = withoutScope.slice(at + PROBLEM_ROOM_MARKER.length)
+  return submissionRoomId && problemId ? { submissionRoomId, problemId } : null
+}
+
 /**
  * What a caller may do in a room.
  *
@@ -79,7 +91,13 @@ export function isGradingDraftRoom(roomId) {
  *
  * Returns 'write' | 'read' | 'deny'.
  */
-export function classroomRoomAccess({ roomId, tokenLevel, studentId = null, submissionOwnerId = null }) {
+export function classroomRoomAccess({
+  roomId,
+  tokenLevel,
+  studentId = null,
+  submissionOwnerId = null,
+  submissionReturned = false,
+}) {
   if (tokenLevel === 'rw') return 'write'
   if (tokenLevel !== 'read') return 'deny'
 
@@ -90,7 +108,9 @@ export function classroomRoomAccess({ roomId, tokenLevel, studentId = null, subm
   // grants the owner 'write', and a draft room is named after their submission
   // room, so any resolver that recognised the stem would hand the student the
   // very marks being withheld from them. Ordering is the guard, not the parse.
-  if (isGradingDraftRoom(roomId)) return 'deny'
+  if (isGradingDraftRoom(roomId)) {
+    return submissionReturned && studentId === submissionOwnerId ? 'read' : 'deny'
+  }
 
   // Handed-in work. Theirs, exactly as their own layer is theirs; a read link
   // with no enrolment behind it is nobody and gets nothing.

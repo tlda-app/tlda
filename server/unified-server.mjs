@@ -95,7 +95,7 @@ import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRea
 import { writeSentinel, writeSentinelWarning } from './lib/sentinel.mjs'
 import { createPreviewDelivery } from './lib/preview-delivery.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
-import { classroomRoomAccess } from '../shared/classroom-rooms.mjs'
+import { classroomRoomAccess, gradingDraftRoomTarget } from '../shared/classroom-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
@@ -5932,16 +5932,20 @@ server.on('upgrade', async (req, socket, head) => {
     // Measured on the live box with the gate deployed: the literal colon was
     // refused 403 and the encoded one was accepted, on the same room. This is
     // the same trap `docsProjectName` was written for, one path over.
-    const submissionRoom = docsProjectName(docName)
-    const submissionOwnerId = classroomStore
+    const decodedRoom = docsProjectName(docName)
+    const draftTarget = gradingDraftRoomTarget(decodedRoom)
+    const submissionRoom = draftTarget?.submissionRoomId ?? decodedRoom
+    const submission = classroomStore
       ? (classroomStore.submissionDocumentOwner(submissionRoom)
-        || classroomStore.submissionDocumentOwner(submissionRoom.replace(/^doc-/, '')))?.studentId ?? null
+        || classroomStore.submissionDocumentOwner(submissionRoom.replace(/^doc-/, '')))
       : null
+    const submissionOwnerId = submission?.studentId ?? null
     const access = classroomRoomAccess({
       roomId: docName,
       tokenLevel: validateToken(extractToken(req)),
       studentId: enrolled?.id ?? null,
       submissionOwnerId,
+      submissionReturned: submission?.gradingStatus === 'returned',
     })
     if (access === 'deny') {
       console.warn(`[sync] refused "${docName}" session=${sessionId} enrolled=${enrolled?.id ?? 'none'}`)
