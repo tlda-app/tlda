@@ -22,31 +22,6 @@ export function inboxTaskTransfer(task, agent, myId, myName) {
   }
 }
 
-// The marker that makes the conversion stick. The note row leaves the notes
-// group when a task claims it, and after a reload the only thing that can say
-// which note a task came from is the task itself — so the id rides in the
-// message rather than in a new field the task wire does not have.
-const NOTE_REF = 'sticky-note:'
-
-export function noteTaskRef(noteId) {
-  return `${NOTE_REF}${noteId}`
-}
-
-/** Ids of notes already turned into one of `tasks`. */
-export function notesClaimedByTasks(tasks) {
-  const claimed = new Set()
-  for (const task of tasks || []) {
-    const text = String(task?.message || '')
-    let from = text.indexOf(NOTE_REF)
-    while (from !== -1) {
-      const id = text.slice(from + NOTE_REF.length).split(/[\s)\].,]/)[0]
-      if (id) claimed.add(id)
-      from = text.indexOf(NOTE_REF, from + NOTE_REF.length)
-    }
-  }
-  return claimed
-}
-
 // One button turns a sticky row into a task row. No task_id means create, and
 // the task is assigned to whoever pressed it, so it appears in that person's
 // own inbox in the row group directly above the notes.
@@ -61,11 +36,6 @@ export function inboxNoteTask(note, myId) {
     from: myId,
     agent: myId,
     description: title.length > 60 ? `${title.slice(0, 59)}…` : title,
-    message: [
-      title,
-      '',
-      where ? `From a sticky note — ${where}.` : 'From a sticky note.',
-      noteTaskRef(note?.id),
-    ].join('\n'),
+    message: where ? `${title}\n\nFrom a sticky note — ${where}.` : `${title}\n\nFrom a sticky note.`,
   }
 }

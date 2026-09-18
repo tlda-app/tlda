@@ -26,7 +26,7 @@ import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { usePillDrag, type FleetPillDropData } from './FleetAgentsShape'
 import { registerWMDropTarget, type WMDropPayload } from '../wm/drop-targets'
 // @ts-ignore — vanilla JS module
-import { inboxNoteTask, inboxTaskTransfer, notesClaimedByTasks, projectOwnedFleetTasks } from './fleet-task-inbox.mjs'
+import { inboxNoteTask, inboxTaskTransfer, projectOwnedFleetTasks } from './fleet-task-inbox.mjs'
 // FleetTaskDetail still has its own composer: a task's reply box is not a chat
 // thread, and nothing about it changed.
 import { ChatComposer } from './ChatComposer'
@@ -761,11 +761,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const visibleDirectNodes = proofTasks.direct
   const visibleCascadeNodes = proofTasks.cascade
   const visibleSpanTasks = proofTasks.spanTasks
-  // A note that has become a task is no longer a note row — it is the task row.
-  const visibleDocNotes = useMemo(() => {
-    const claimed = notesClaimedByTasks(ownedFleetTasks)
-    return claimed.size === 0 ? docNotes : docNotes.filter((n: DocNote) => !claimed.has(n.id))
-  }, [docNotes, ownedFleetTasks])
+  const visibleDocNotes = docNotes
 
   const activeItem = useMemo(
     () => (openItemKey ? openableItems.find((it) => it.key === openItemKey) || null : null),
@@ -1023,15 +1019,13 @@ function NodeRow({ task, onApprove, onOpen }: {
 }
 
 function NoteRow({ n, onOpen, onCapture }: { n: DocNote; onOpen?: () => void; onCapture?: (note: DocNote) => Promise<unknown> }) {
-  // No pressed state: the task row appearing in the group above IS the feedback.
-  // The ref only stops a double-press making two tasks.
-  const pressed = useRef(false)
+  const [captured, setCaptured] = useState<'idle' | 'busy' | 'done' | 'failed'>('idle')
   const capture = useCallback((e: React.PointerEvent) => {
     stopEventPropagation(e)
-    if (!onCapture || pressed.current) return
-    pressed.current = true
-    onCapture(n).catch(() => { pressed.current = false })
-  }, [onCapture, n])
+    if (!onCapture || captured === 'busy' || captured === 'done') return
+    setCaptured('busy')
+    onCapture(n).then(() => setCaptured('done'), () => setCaptured('failed'))
+  }, [onCapture, n, captured])
   return (
     <div className="fleet-inbox-note" onPointerUp={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
       <div className="fleet-inbox-note-row">
@@ -1041,10 +1035,12 @@ function NoteRow({ n, onOpen, onCapture }: { n: DocNote; onOpen?: () => void; on
           <button
             type="button"
             className="fleet-inbox-note-capture"
-            title="Make a task from this note, assigned to you"
+            data-state={captured}
+            disabled={captured === 'busy' || captured === 'done'}
+            title={captured === 'done' ? 'Task created' : captured === 'failed' ? 'Could not create the task — press to retry' : 'Make a task from this note, assigned to you'}
             onPointerUp={capture}
           >
-            📋
+            {captured === 'done' ? '✓' : '📋'}
           </button>
         ) : null}
       </div>
