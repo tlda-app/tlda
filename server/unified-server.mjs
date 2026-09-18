@@ -3711,13 +3711,47 @@ app.get('/api/build-info', async (_req, res) => {
 
 // Kill playwright Chromium processes that may be poisoning Chrome's speech service.
 // Called by voice.mjs watchdog when it detects unrecoverable mic failure.
+// SIGKILL leaves profile.exit_type=Crashed behind, so the next test-browser
+// launch replays the restore bubble — clear the flag after the kill so the
+// relaunch stays bubble-free (same helper the pw wrapper uses pre-launch).
 app.post('/api/voice/kill-playwright', async (req, res) => {
   try {
     const { execSync } = await import('child_process')
+    const { readdirSync, readFileSync, writeFileSync, existsSync } = await import('fs')
+    const { join } = await import('path')
+    const { homedir } = await import('os')
     // Kill any Chromium processes launched by playwright (identified by user-data-dir pattern)
     try { execSync('pkill -9 -f playwright_chromiumdev_profile 2>/dev/null', { timeout: 5000 }) } catch {}
     try { execSync('pkill -9 -f "remote-debugging-port.*no-startup-window" 2>/dev/null', { timeout: 5000 }) } catch {}
-    console.log('[voice] killed playwright Chromium processes')
+    let cleared = 0
+    try {
+      const daemonDir = join(homedir(), 'Library', 'Caches', 'ms-playwright', 'daemon')
+      for (const hash of readdirSync(daemonDir)) {
+        for (const entry of readdirSync(join(daemonDir, hash))) {
+          if (!entry.startsWith('ud-')) continue
+          const prefsPath = join(daemonDir, hash, entry, 'Default', 'Preferences')
+          if (!existsSync(prefsPath)) continue
+          try {
+            const prefs = JSON.parse(readFileSync(prefsPath, 'utf8'))
+            if (prefs?.profile && (prefs.profile.exit_type === 'Crashed' || prefs.profile.exited_cleanly === false)) {
+              prefs.profile.exit_type = 'Normal'
+              prefs.profile.exited_cleanly = true
+              writeFileSync(prefsPath, JSON.stringify(prefs))
+              cleared++
+            }
+          } catch (e) {
+            // Best-effort sweep across profiles owned by other sessions: one
+            // corrupt Preferences must not fail the kill that just succeeded.
+            console.error(`[voice] WARN skipping unreadable prefs ${prefsPath}: ${e.message}`)
+          }
+        }
+      }
+    } catch (e) {
+      // Best-effort sweep after a successful kill: a missing daemon dir must
+      // not turn a completed kill into a 500.
+      console.error(`[voice] WARN crash-flag sweep skipped: ${e.message}`)
+    }
+    console.log(`[voice] killed playwright Chromium processes (cleared crash flag in ${cleared} profile(s))`)
     res.json({ ok: true })
   } catch (err) {
     console.error('[voice] kill-playwright failed:', err.message)

@@ -695,6 +695,67 @@ function sessionUserDataDir() {
   return m ? m[1] : null
 }
 
+// A SIGKILLed Chrome never writes a clean exit, so its profile keeps
+// `profile.exit_type: Crashed` and every relaunch replays the "browser
+// crashed, restore?" bubble over Skip. The kill paths that do this are routine:
+// voice's kill-playwright/restart-chrome endpoints (unified-server.mjs),
+// the voice-reset URL handler (bin/tlda-url-handler.applescript), and reap
+// below. Clearing the flag while no browser holds the profile means the next
+// launch reads a clean exit and stays bubble-free. Safe to call on a live
+// profile too — Chrome rewrites Preferences on quit, and a missed clear just
+// means the bubble, not data loss.
+// Exported for tests; takes an explicit dir + logger so it stays pure.
+export function clearCrashFlag(userDataDir, { warn = () => {} } = {}) {
+  if (!userDataDir) return false
+  const prefsPath = join(userDataDir, 'Default', 'Preferences')
+  let raw
+  try {
+    raw = readFileSync(prefsPath, 'utf8')
+  } catch {
+    return false // no Preferences yet (never launched) — nothing to clear
+  }
+  let prefs
+  try {
+    prefs = JSON.parse(raw)
+  } catch (e) {
+    warn(`pw: WARN could not parse ${prefsPath}: ${e.message}`)
+    return false
+  }
+  if (!prefs || typeof prefs !== 'object') return false
+  const profile = prefs.profile
+  if (!profile || typeof profile !== 'object') return false
+  if (profile.exit_type !== 'Crashed' && profile.exited_cleanly !== false) return false
+  profile.exit_type = 'Normal'
+  profile.exited_cleanly = true
+  try {
+    writeFileSync(prefsPath, JSON.stringify(prefs))
+  } catch (e) {
+    warn(`pw: WARN could not write ${prefsPath}: ${e.message}`)
+    return false
+  }
+  return true
+}
+
+// The session's profile dir without asking the daemon: the daemon names it
+// ud-<session>-chrome under its workspace-hash dir, and CANONICAL_HASH is that
+// hash (sha1 of the canonical workspace). The daemon may be dead (exactly when
+// the crash flag needs clearing) while a zombie browser still holds the
+// profile — so by default this refuses to answer when a ud-<session>-chrome
+// process is alive, and the caller falls back to the daemon's own `list`.
+// recoverStaleSharedBrowser passes clobberLive because it just killed that
+// zombie and owns the profile.
+function sessionUserDataDirDeterministic(session = SESSION, { clobberLive = false } = {}) {
+  if (!clobberLive) {
+    try {
+      const ps = spawnSync('pgrep', ['-f', `ud-${session}-chrome`], { encoding: 'utf8' })
+      if (ps.status === 0 && (ps.stdout || '').trim()) return null
+    } catch { /* pgrep unavailable — fall through to the path check */ }
+  }
+  const hash = createHash('sha1').update(PW_CWD).digest('hex').slice(0, 16)
+  const dir = join(homedir(), 'Library', 'Caches', 'ms-playwright', 'daemon', hash, `ud-${session}-chrome`)
+  return existsSync(dir) ? dir : null
+}
+
 // Recover from the stuck state that blocks EVERY launch: a zombie shared Chrome
 // (its daemon dead, so the session reads "closed") is still alive holding the
 // profile's SingletonLock, so a fresh `open` can't take the profile and fails.
@@ -703,12 +764,15 @@ function sessionUserDataDir() {
 // orphan that's safe to kill. Kills it and clears the stale singleton locks.
 function recoverStaleSharedBrowser() {
   const udir = `ud-${SESSION}-chrome`
-  const dir = sessionUserDataDir()
+  const dir = sessionUserDataDir() || sessionUserDataDirDeterministic(SESSION, { clobberLive: true })
   console.error(`pw: launch failed — clearing orphaned "${udir}" (zombie holding the profile lock)`)
   spawnSync('pkill', ['-9', '-f', udir], { encoding: 'utf8' })
   if (dir) {
     for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
       try { rmSync(join(dir, f), { force: true }) } catch (e) { console.error(`pw: WARN could not clear ${f}: ${e.message}`) }
+    }
+    if (clearCrashFlag(dir, { warn: (m) => console.error(m) })) {
+      console.error(`pw: cleared crash flag in "${udir}" so the relaunch skips the restore bubble`)
     }
   }
   spawnSync('sleep', ['0.5'])
@@ -718,16 +782,47 @@ function recoverStaleSharedBrowser() {
 // daemon's tab-select before launch so the freshly-loaded code never raises.
 // If the launch fails on a closed session, it's almost always a zombie Chrome
 // holding the profile lock — recover and retry once before giving up.
-// The repo's playwright-cli config carries the HTTPS-ignore flags
-// (--ignore-certificate-errors + ignoreHTTPSErrors) the pooled browser needs to
-// trust the server's mkcert cert — Chromium has its own cert store and ignores
-// the macOS keychain, so without this every https://localhost goto lands on
-// chrome-error://. `open` only reads --config at launch, so it must be passed on
-// every (re)open or a fresh `acquire` silently drops the flags.
-function openArgs(repoRoot) {
+// The repo's playwright-cli config carries the flags the pooled browser needs
+// (--no-sandbox/--disable-gpu plus --ignore-certificate-errors + ignoreHTTPSErrors
+// for the mkcert cert — Chromium has its own cert store and ignores the macOS
+// keychain, so without this every https://localhost goto lands on chrome-error://).
+// `open` only reads --config at launch, so it must be passed on every (re)open or
+// a fresh `acquire` silently drops the flags.
+// The config lives with the canonical WORKSPACE, not the code root: an installed
+// `tlda-dev` resolves repoRoot to its package dir (no .playwright/ there), which
+// used to drop --config silently and Chromium died in sandbox init. Workspace
+// first, then a walk up from cwd (agents run from subdirs), then the code root.
+export function poolBrowserConfigPath(repoRoot, { workspace = PW_CWD, cwd = process.cwd() } = {}) {
+  const seen = new Set()
+  const candidates = []
+  if (workspace) candidates.push(workspace)
+  if (cwd) {
+    let dir = cwd
+    for (let i = 0; i < 32 && dir && !seen.has(dir); i++) {
+      candidates.push(dir)
+      seen.add(dir)
+      const parent = dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+  }
+  if (repoRoot) candidates.push(repoRoot)
+  for (const root of candidates) {
+    const cfg = join(root, '.playwright', 'cli.config.json')
+    if (existsSync(cfg)) return cfg
+  }
+  return null
+}
+export function openArgs(repoRoot, opts = {}) {
   const args = ['open', '--browser', 'chromium', '--headed', '--persistent']
-  const cfg = join(repoRoot, '.playwright', 'cli.config.json')
-  if (existsSync(cfg)) args.push('--config', cfg)
+  const cfg = poolBrowserConfigPath(repoRoot, opts)
+  if (cfg) args.push('--config', cfg)
+  else {
+    console.error(
+      `pw: WARN no .playwright/cli.config.json under workspace, cwd, or code root — ` +
+      `launching WITHOUT --no-sandbox/--disable-gpu/--ignore-certificate-errors`
+    )
+  }
   return args
 }
 
@@ -759,6 +854,16 @@ function ensureOpen(repoRoot) {
     )
   }
   ensureNoRaisePatch()
+  // The common no-bubble path: last shutdown was a SIGKILL (voice kill,
+  // url-handler reset, reap), so the profile still says Crashed. Clear it
+  // before launch — but ONLY when the daemon is reachable (sessionOpen() ran
+  // clean above AND `list` still yields a user-data-dir). `list` prints the
+  // dir for closed sessions too, so a null here means the daemon is wedged —
+  // and rewriting Preferences blind then risks clobbering a live browser's
+  // file. recoverStaleSharedBrowser below clears the flag on its own path,
+  // after it has killed the zombie holding the profile.
+  const preDir = sessionUserDataDir() || sessionUserDataDirDeterministic({ clobberLive: false })
+  if (preDir) clearCrashFlag(preDir, { warn: (m) => console.error(m) })
   if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status === 0) { renewSessionLease(); return true }
   recoverStaleSharedBrowser()
   if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status !== 0) {

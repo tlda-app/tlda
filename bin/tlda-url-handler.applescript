@@ -11,9 +11,15 @@ on open location theURL
 			set tabURLs to paragraphs of (do shell script "echo " & quoted form of tabJson & " | python3 -c \"import sys,json; [print(t['url']) for t in json.loads(sys.stdin.read()) if t.get('type')=='page']\" 2>/dev/null")
 		end try
 
-		-- Kill any rogue playwright
+		-- Kill any rogue playwright. SIGKILL leaves profile.exit_type=Crashed
+		-- behind, so the next test-browser launch replays the restore bubble —
+		-- clear the flag now (no live test browser holds the profile after the
+		-- kill) so the relaunch stays bubble-free.
 		try
 			do shell script "pkill -9 -f playwright_chromiumdev_profile 2>/dev/null; true"
+		end try
+		try
+			do shell script "for d in $HOME/Library/Caches/ms-playwright/daemon/*/ud-*; do p=\"$d/Default/Preferences\"; [ -f \"$p\" ] || continue; python3 -c \"import json,sys; p=sys.argv[1]; d=json.load(open(p)); pr=d.get(\\\"profile\\\",{}); (pr.__setitem__(\\\"exit_type\\\",\\\"Normal\\\"), pr.__setitem__(\\\"exited_cleanly\\\",True), open(p,\\\"w\\\").write(json.dumps(d))) if pr.get(\\\"exit_type\\\")==\\\"Crashed\\\" or pr.get(\\\"exited_cleanly\\\")==False else None\" \"$p\" 2>/dev/null; done; true"
 		end try
 
 		-- Kill ONLY our Chrome (the one with .chrome-debug user-data-dir)
