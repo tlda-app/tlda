@@ -123,22 +123,28 @@ export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir,
   const pageInfoPath = join(builtDir, 'page-info.json')
   if (!existsSync(pageInfoPath)) throw new Error(`built TLDA output has no page-info.json: ${builtDir}`)
   const allPages = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
-  const bySource = new Map()
+  // One declared source can generate several pages (a master homework's
+  // `output-file:` solutions render shares its master's source.file), so the
+  // index is source → every page from that source, never source → one page.
+  const pagesBySource = new Map()
   for (const page of allPages) {
     const source = page?.source?.file
-    if (source && !bySource.has(source)) bySource.set(source, page)
+    if (!source) continue
+    if (!pagesBySource.has(source)) pagesBySource.set(source, [])
+    pagesBySource.get(source).push(page)
   }
   const membership = deriveCourseBookSpec(courseDir)
   const announcementSpec = deriveCourseAppSpec(courseDir, indexFile)
   const membershipSources = new Set([...membership.documents, ...membership.decks])
-  const membershipEntries = values => values.filter(source => membershipSources.has(source) && bySource.has(source))
-  const renderedSourceEntries = values => suppliedSpec
-    ? values.filter(source => bySource.has(source))
+  const membershipPages = values => values.flatMap(source =>
+    membershipSources.has(source) && pagesBySource.has(source) ? pagesBySource.get(source) : [])
+  const renderedSourcePages = values => suppliedSpec
+    ? values.flatMap(source => pagesBySource.has(source) ? pagesBySource.get(source) : [])
     : []
   const spec = {
     ...announcementSpec,
-    documents: [...new Set([...membershipEntries(membership.documents), ...(suppliedSpec ? renderedSourceEntries(suppliedSpec.documents) : [])])],
-    decks: [...new Set([...membershipEntries(membership.decks), ...(suppliedSpec ? renderedSourceEntries(suppliedSpec.decks) : [])])],
+    documents: [...new Set([...membershipPages(membership.documents), ...(suppliedSpec ? renderedSourcePages(suppliedSpec.documents) : [])].map(page => page.source.file))],
+    decks: [...new Set([...membershipPages(membership.decks), ...(suppliedSpec ? renderedSourcePages(suppliedSpec.decks) : [])].map(page => page.source.file))],
     assets: suppliedSpec
       ? [...new Set([...announcementSpec.assets, ...suppliedSpec.assets])]
       : announcementSpec.assets,
@@ -147,9 +153,9 @@ export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir,
       : announcementSpec.links,
   }
   const wantedSources = [...spec.documents, ...spec.decks]
-  const missing = wantedSources.filter(source => !bySource.has(source))
+  const missing = wantedSources.filter(source => !pagesBySource.has(source))
   if (missing.length) throw new Error(`declared course input is absent from the TLDA build: ${missing.join(', ')}`)
-  const pages = wantedSources.map(source => bySource.get(source))
+  const pages = wantedSources.flatMap(source => pagesBySource.get(source))
 
   rmSync(outputDir, { recursive: true, force: true })
   mkdirSync(dirname(outputDir), { recursive: true })

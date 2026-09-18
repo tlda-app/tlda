@@ -8,6 +8,13 @@ import { qmdDeckRenderRoots, quartoBookRoots } from './incremental-qmd-build.mjs
  * `_quarto.yml` declares, plus every deck the slides profile declares. The
  * index page decides announcement only — whether a title is a link or plain
  * text. It never decides whether a declared document is built.
+ *
+ * Membership is by declared source, and a source with several generated
+ * outputs is one member with several pages: a master homework's
+ * `output-file:` solutions render (e.g. `homework-calibration.qmd` →
+ * `homework-calibration-solutions.html`) is a member through its master.
+ * Selection below must therefore match pages by their source, never assume
+ * one page per source.
  */
 export function deriveCourseBookSpec(courseDir) {
   const root = resolve(courseDir)

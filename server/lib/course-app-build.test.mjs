@@ -113,6 +113,9 @@ test('already-built TLDA output is selected, ordered, and repeatable from the de
   assert.deepEqual(first.pages.map(page => page.source.file), [
     'index.qmd', 'chapters/one.qmd', 'homework/hw.qmd', 'decks/one-slides.qmd',
   ])
+  assert.deepEqual(first.pages.map(page => page.file), [
+    '_book/index.html', '_book/chapters/one.html', '_book/homework/hw.html', '_book/decks/one-slides.html',
+  ])
   assert.equal(existsSync(join(output, '_book/chapters/dormant.html')), false)
   assert.equal(existsSync(join(output, 'chapters/dormant.qmd')), false)
   assert.equal(existsSync(join(output, '_book/chapters/one.html')), true)
@@ -121,4 +124,29 @@ test('already-built TLDA output is selected, ordered, and repeatable from the de
   const snapshot = readFileSync(join(output, 'page-info.json'), 'utf8')
   assembleCourseAppSite(root, 'index.qmd', built, output)
   assert.equal(readFileSync(join(output, 'page-info.json'), 'utf8'), snapshot)
+})
+
+test('every page a declared source generates is a member through its master', () => {
+  const root = fixture()
+  writeFileSync(join(root, '_quarto.yml'), 'project:\n  type: tlda\nbook:\n  title: Course\n  chapters:\n    - index.qmd\n    - homework/hw.qmd\n')
+  writeFileSync(join(root, '_quarto-slides.yml'), 'project:\n  type: default\n')
+  writeFileSync(join(root, 'homework/hw.qmd'), '---\ntitle: HW\noutput-file: hw-solutions.html\n---\n')
+  const built = join(mkdtempSync(join(tmpdir(), 'course-app-built-')), 'built')
+  const output = join(mkdtempSync(join(tmpdir(), 'course-app-output-')), 'app-site')
+  mkdirSync(join(built, '_book/homework'), { recursive: true })
+  const pages = [
+    ['homework/hw.qmd', '_book/homework/hw.html', 'Homework'],
+    ['homework/hw.qmd', '_book/homework/hw-solutions.html', 'Homework solutions'],
+    ['index.qmd', '_book/index.html', 'Course'],
+  ].map(([source, file, title]) => ({ file, title, source: { file: source } }))
+  for (const page of pages) {
+    mkdirSync(join(built, dirname(page.file)), { recursive: true })
+    writeFileSync(join(built, page.file), `<h1>${page.title}</h1>`)
+  }
+  writeFileSync(join(built, 'page-info.json'), JSON.stringify(pages))
+  const { pages: selected } = assembleCourseAppSite(root, 'index.qmd', built, output)
+  assert.deepEqual(selected.map(page => page.file), [
+    '_book/index.html', '_book/homework/hw.html', '_book/homework/hw-solutions.html',
+  ])
+  assert.equal(existsSync(join(output, '_book/homework/hw-solutions.html')), true)
 })
