@@ -74,6 +74,7 @@ import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { wsReserveShell } from '../agent-launch/register.mjs'
+import { resolveRuntimeRootForEnv } from '../shared/runtime-root.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import { createGitRemotes } from '../shared/git-remotes.mjs'
@@ -1490,10 +1491,23 @@ function daemonPathEnv() {
   ].join(':')
 }
 
-function daemonEnvironmentEntries({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null, extraEnv = [] } = {}) {
+// Where THIS environment's daemon runs, per `environments.<env>.runtimeRoot`.
+// Undeclared falls back to the tree the CLI itself was loaded from, which is the
+// standing behavior. Never throws: a config this cannot read must not stop
+// `tlda config apply` from writing the jobs it was already writing.
+function daemonRuntimeRootForEnv(envName) {
+  try {
+    const values = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR)).environments?.values || {}
+    return resolveRuntimeRootForEnv(values, envName, FLEET_DAEMON_MAIN_ROOT).runtimeRoot
+  } catch {
+    return FLEET_DAEMON_MAIN_ROOT
+  }
+}
+
+function daemonEnvironmentEntries({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null, extraEnv = [], runtimeRoot = FLEET_DAEMON_MAIN_ROOT } = {}) {
   const entries = [
     ['PATH', daemonPathEnv()],
-    ['NODE_OPTIONS', `--require=${FLEET_DAEMON_DNS_ALIAS_PRELOAD}`],
+    ['NODE_OPTIONS', `--require=${join(runtimeRoot, 'shared', 'node-dns-alias.cjs')}`],
   ]
   if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
   entries.push(['TLDA_ENV', envName])
@@ -1506,12 +1520,16 @@ function daemonEnvironmentEntries({ configDir = null, envName = DAEMON_WORLD_NAM
   return entries
 }
 
-function daemonEnvironmentPlist({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null, extraEnv = [] } = {}) {
-  return renderEnvironmentPlist(daemonEnvironmentEntries({ configDir, envName, processTitle, extraEnv }))
+function daemonEnvironmentPlist({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null, extraEnv = [], runtimeRoot = FLEET_DAEMON_MAIN_ROOT } = {}) {
+  return renderEnvironmentPlist(daemonEnvironmentEntries({ configDir, envName, processTitle, extraEnv, runtimeRoot }))
 }
 
 function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, envName = DAEMON_WORLD_NAME, cliPath = null, processTitle = null, extraEnv = [] } = {}) {
-  const command = `exec /opt/homebrew/bin/node --import tsx ${JSON.stringify(FLEET_DAEMON_SCRIPT)}`
+  // Script, working directory and preload must all name the same tree, or the
+  // daemon runs one environment's code under another environment's name.
+  const runtimeRoot = daemonRuntimeRootForEnv(envName)
+  const daemonScript = runtimeRoot === FLEET_DAEMON_MAIN_ROOT ? FLEET_DAEMON_SCRIPT : join(runtimeRoot, 'bin', 'fleet-daemon.mjs')
+  const command = `exec /opt/homebrew/bin/node --import tsx ${JSON.stringify(daemonScript)}`
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1525,12 +1543,12 @@ function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON
         <string>${plistEscape(command)}</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>${plistEscape(FLEET_DAEMON_MAIN_ROOT)}</string>
+    <string>${plistEscape(runtimeRoot)}</string>
     <key>ProcessType</key>
     <string>Background</string>
     <key>EnvironmentVariables</key>
     <dict>
-${daemonEnvironmentPlist({ configDir, envName, processTitle, extraEnv })}
+${daemonEnvironmentPlist({ configDir, envName, processTitle, extraEnv, runtimeRoot })}
     </dict>
     <key>KeepAlive</key>
     <true/>
@@ -2463,7 +2481,7 @@ async function writeSandboxDaemonPlist() {
   console.log(`Wrote test plist: ${plist}`)
   console.log(`  Label: ${label}`)
   console.log(`  Config dir: ${configDir}`)
-  console.log(`  WorkingDirectory: ${FLEET_DAEMON_MAIN_ROOT}`)
+  console.log(`  WorkingDirectory: ${daemonRuntimeRootForEnv(authority.envName)}`)
   console.log(`  Log: ${logFile}`)
   console.log('\nYolo acceptance commands:')
   console.log(`  launchctl bootout ${daemonLaunchdTarget(label)} 2>/dev/null || true`)
@@ -2720,7 +2738,7 @@ async function cmdFleetWatch(sub) {
     await writeDaemonPlist()
     console.log(`Installed ${FLEET_DAEMON_PLIST}`)
     console.log(`  Label: ${FLEET_DAEMON_LABEL}`)
-    console.log(`  WorkingDirectory: ${FLEET_DAEMON_MAIN_ROOT}`)
+    console.log(`  WorkingDirectory: ${daemonRuntimeRootForEnv(DAEMON_WORLD_NAME)}`)
     console.log(`  Log: ${FLEET_DAEMON_LOGFILE}`)
     console.log('\nThe fleet daemon will auto-restart on crash and start on login.')
     printLaunchdLoadInstructions(FLEET_DAEMON_LABEL, FLEET_DAEMON_PLIST, { log: console.log })
