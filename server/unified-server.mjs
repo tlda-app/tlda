@@ -5080,7 +5080,17 @@ function injectCoursePresentationSwitch(html, project, servedFilePath) {
   const location = servedFilePath.slice('static/'.length)
   const href = `/docs/${encodeURIComponent(project)}/app/${location.split('/').map(encodeURIComponent).join('/')}`
   const control = `<a class="tlda-presentation-switch" href="${href}" style="position:fixed;top:12px;left:12px;z-index:10000">TLDA</a>`
-  return html.includes('</body>') ? html.replace('</body>', `${control}</body>`) : `${html}${control}`
+  // Splice at the LAST `</body>`, not the first. A Reveal deck carries an
+  // earlier one inside the RevealNotes speaker-view template string, where
+  // upstream has `</body>\n</html>")`. Inserting the anchor there put raw
+  // double quotes inside a double-quoted JS string, so the bundle failed to
+  // parse, `RevealNotes` never defined, and `Reveal.initialize` threw — leaving
+  // every served deck without scroll, click or UI while the same file served
+  // from Pages (no injection) worked. Measured on chapter-bootstrap-slides:
+  // first `</body>` at byte 14,920,750, the document's own at 14,987,631.
+  const bodyClose = html.lastIndexOf('</body>')
+  if (bodyClose === -1) return `${html}${control}`
+  return html.slice(0, bodyClose) + control + html.slice(bodyClose)
 }
 
 // Serve sub-resources of html-format projects without auth (CSS, JS, fonts from site_libs)
