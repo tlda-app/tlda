@@ -272,7 +272,7 @@ export function ClassroomGradingSurface({
                   bookEditor={editor}
                   visible
                   isWriteTarget
-                  roomId={gradingDraftRoomId(submissionRoomId)}
+                  roomId={gradingDraftRoomId(submissionRoomId, problemId)}
                   camera={submissionCamera}
                   // A gesture taken by this layer drives the PANE, never the
                   // main editor: the panes are derived from that editor, so

@@ -6,6 +6,14 @@
 
 const STUDENT_ROOM_MARKER = '::student::'
 const GRADING_DRAFT_ROOM_MARKER = '::grading-draft::'
+// Which problem's marks. It goes in the STEM, before the grading-draft marker,
+// never after it: `isGradingDraftRoom` asks `endsWith`, and the refusal in
+// `classroomRoomAccess` is ordered above the branch that grants a submission's
+// owner write. Append the problem after the marker and that refusal stops
+// matching, the request falls through, and the student whose work is being
+// marked is handed the instructor's private marks — with nothing looking
+// broken. The marker stays terminal so the guard keeps holding.
+const PROBLEM_ROOM_MARKER = '::problem::'
 
 /** A student's own layer over a book: a coordinate on a book you already named. */
 export function studentOverlayRoomId(bookRoomId, studentId) {
@@ -40,8 +48,8 @@ export function studentOverlayRoomOwner(roomId) {
  * student to the next changes the draft layer with the submission and marks for
  * two students can never share a room.
  */
-export function gradingDraftRoomId(submissionRoomId) {
-  return `${submissionRoomId}${GRADING_DRAFT_ROOM_MARKER}`
+export function gradingDraftRoomId(submissionRoomId, problemId) {
+  return `${submissionRoomId}${PROBLEM_ROOM_MARKER}${problemId}${GRADING_DRAFT_ROOM_MARKER}`
 }
 
 /** Whether this room is an instructor's marking layer. */

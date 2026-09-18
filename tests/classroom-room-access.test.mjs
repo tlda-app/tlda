@@ -101,7 +101,7 @@ test('nothing changes for a room that is not a submission', () => {
 // grading draft is a room the student cannot enter. Nothing else in the marking
 // path can withhold a mark, because the panes write to one shared store.
 
-const GRADING_DRAFT = gradingDraftRoomId(SUBMISSION_ROOM)
+const GRADING_DRAFT = gradingDraftRoomId(SUBMISSION_ROOM, 'ans-exr-die-histogram')
 
 test('the marking layer is refused to the student whose submission it hangs off', () => {
   // The one that matters. The draft room is named after Ada's submission room,
@@ -132,4 +132,30 @@ test('naming a draft layer does not narrow the submission room it hangs off', ()
     roomId: SUBMISSION_ROOM, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
   }), 'write')
   assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read' }), 'read')
+})
+
+test("a student is refused their own submission's per-problem marking layer", () => {
+  // The one that has to fail if the problem id ever moves after the marker.
+  //
+  // `isGradingDraftRoom` asks `endsWith`, and the refusal it drives is ordered
+  // ABOVE the branch that grants a submission's owner write. Put the problem on
+  // the end and the refusal stops matching, the request falls through, and the
+  // student whose work is being marked is handed the instructor's marks. So
+  // this asserts the ACCESS DECISION for the owner, not the shape of the id:
+  // a formatting assertion would still pass with the door open.
+  const perProblem = gradingDraftRoomId(SUBMISSION_ROOM, 'ans-exr-die-histogram')
+  assert.equal(classroomRoomAccess({
+    roomId: perProblem, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
+  }), 'deny')
+
+  // Two problems on one submission are two rooms, so marks cannot bleed between
+  // them, and both are refused the same way.
+  const other = gradingDraftRoomId(SUBMISSION_ROOM, 'ans-exr-count-n1')
+  assert.notEqual(other, perProblem)
+  assert.equal(classroomRoomAccess({
+    roomId: other, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
+  }), 'deny')
+
+  // And the instructor can still write them, or the refusal above is just a lock.
+  assert.equal(classroomRoomAccess({ roomId: perProblem, tokenLevel: 'rw' }), 'write')
 })
