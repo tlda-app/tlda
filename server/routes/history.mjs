@@ -671,7 +671,7 @@ export function resolveCurrentSourcePath(hitFileAbsolute, srcDir, mainFile) {
   return join(srcDir, mainFile || 'main.tex')
 }
 
-router.post('/diff-region', requireRead, async (req, res) => {
+router.post('/diff-region', requireRw, async (req, res) => {
   const { name } = req.params
   const { hash7, page, pdfYMin, pdfYMax, columnX = 848, shadowYOffset = 0, triggerId = '' } = req.body ?? {}
 

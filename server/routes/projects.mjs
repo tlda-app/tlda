@@ -1971,7 +1971,7 @@ router.post('/:name/source-cursor', requireRead, async (req, res) => {
 })
 
 // POST /:name/highlight — text-based highlight using synctex data
-router.post('/:name/highlight', requireRead, async (req, res) => {
+router.post('/:name/highlight', requireRw, async (req, res) => {
   const name = req.params.name
   const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Not found' })
