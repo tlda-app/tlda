@@ -36,6 +36,7 @@ const STYLE_ID = 'tlda-marking-style'
 export interface MarkableAnswer {
   studentId: string
   displayName: string
+  contentRef: string
   /** Resolves the answer element, in the chapter's document. Null if it has none. */
   load: () => Promise<HTMLElement | null>
 }
@@ -48,7 +49,7 @@ export interface SolutionMarkingOptions {
    */
   answersFor: (exerciseId: string) => Promise<MarkableAnswer[]>
   /** Called whenever the shown student changes, including back to nobody. */
-  onShow?: (exerciseId: string, answer: MarkableAnswer | null) => void
+  onShow?: (exerciseId: string, answer: MarkableAnswer | null, pair: HTMLElement | null) => void
 }
 
 function installStyle(doc: Document) {
@@ -239,7 +240,7 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
       forward.disabled = answers !== null && index >= answers.length - 1
       if (!current) {
         unpair(solution)
-        options.onShow?.(exerciseId, null)
+        options.onShow?.(exerciseId, null, null)
         return
       }
       const shown = index
@@ -250,7 +251,7 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
       if (shown !== index) return
       if (element) pair(solution, element, current.displayName, doc)
       else unpair(solution)
-      options.onShow?.(exerciseId, current)
+      options.onShow?.(exerciseId, current, solution.closest<HTMLElement>(`.${PAIR_CLASS}`))
     }
 
     const step = async (delta: number) => {

@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useState } from 'react'
+import { useMemo, useEffect, useState, type CSSProperties } from 'react'
 import { Tldraw, react, useValue, type Editor } from 'tldraw'
 import { useSync } from '@tldraw/sync'
 import { STORE_WS, LICENSE_KEY } from '../activeConfig'
@@ -127,6 +127,8 @@ interface StudentAnnotationOverlayProps {
    * hands the camera to the pane's own viewport instead.
    */
   onCameraChange?: (camera: { x: number; y: number; z: number }) => void
+  /** Limit the transparent canvas to one rectangle in its containing editor. */
+  bounds?: { left: number; top: number; width: number; height: number }
 }
 
 export function StudentAnnotationOverlay({
@@ -140,6 +142,7 @@ export function StudentAnnotationOverlay({
   roomId: explicitRoomId,
   camera: explicitCamera,
   onCameraChange,
+  bounds,
 }: StudentAnnotationOverlayProps) {
   // Whether the camera is owned outside this component. A boolean, not the
   // camera itself, so the effects below do not resubscribe on every pan.
@@ -280,6 +283,14 @@ export function StudentAnnotationOverlay({
       data-capturing={capturing ? 'true' : 'false'}
       data-tool={currentToolId}
       data-visible={visible ? 'true' : 'false'}
+      style={bounds ? ({
+        position: 'fixed',
+        inset: 'auto',
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      } satisfies CSSProperties) : undefined}
     >
       <Tldraw
         store={store}

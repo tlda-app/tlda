@@ -43,6 +43,7 @@ function answersFor(doc: Document, names: string[]): (id: string) => Promise<Mar
   return async () => names.map(name => ({
     studentId: name,
     displayName: name,
+    contentRef: `submission-${name}`,
     // Loaded when that student is shown, which is what the arrows do.
     load: async () => {
       const element = doc.createElement('div')
@@ -136,6 +137,7 @@ test('a slow answer that lands after he has paged on does not appear', async () 
     answersFor: async () => ['ana', 'bo'].map(name => ({
       studentId: name,
       displayName: name,
+      contentRef: `submission-${name}`,
       load: async () => {
         await new Promise(resolve => setTimeout(resolve, delays[name]))
         const element = doc.createElement('div')

@@ -12,10 +12,11 @@
  * is homework because an assignment says so and for no other reason. That is
  * the same rule `assignmentForBookPage` follows on the server.
  */
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { classroomApi, type Assignment, type ProblemAnswer } from './api'
 import { installSolutionMarking, type MarkableAnswer } from './solutionMarking'
 import type { SvgDocument } from '../loaders/types'
+import type { ActiveMarkingPair } from './MarkingInkOverlay'
 
 /**
  * Whether one of this document's pages is the assignment's book page.
@@ -87,6 +88,7 @@ function answerOrder(answers: ProblemAnswer[]): ProblemAnswer[] {
  * was found. A chapter must never be left holding marking chrome.
  */
 export function useSolutionChapterMarking(document: SvgDocument | null, editorMounted: number) {
+  const [activePair, setActivePair] = useState<ActiveMarkingPair | null>(null)
   useEffect(() => {
     if (!document || document.format !== 'html' || !editorMounted) return
     let cancelled = false
@@ -116,6 +118,7 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
         return answerOrder(problem.answers).map(answer => ({
           studentId: answer.studentId,
           displayName: answer.displayName,
+          contentRef: answer.contentRef,
           load: () => loadAnswer(answer.contentRef, exerciseId, frameDocument),
         }))
       }
@@ -135,7 +138,17 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
           const frameDocument = frame.contentDocument
           if (!frameDocument || installed.has(frameDocument)) continue
           if (!frameDocument.querySelector('.callout-solution')) continue
-          const result = installSolutionMarking(frameDocument, { answersFor: answersForFrame(frameDocument) })
+          const result = installSolutionMarking(frameDocument, {
+            answersFor: answersForFrame(frameDocument),
+            onShow: (exerciseId, answer, wrapper) => {
+              setActivePair(current => {
+                if (answer && wrapper) return { exerciseId, studentId: answer.studentId, contentRef: answer.contentRef, wrapper }
+                return current?.exerciseId === exerciseId && current.wrapper.ownerDocument === frameDocument
+                  ? null
+                  : current
+              })
+            },
+          })
           if (!result.installed) continue
           installed.add(frameDocument)
           removers.push(result.remove)
@@ -150,8 +163,10 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
 
     return () => {
       cancelled = true
+      setActivePair(null)
       stop?.()
       for (const remove of removers) remove()
     }
   }, [document, editorMounted])
+  return activePair
 }
