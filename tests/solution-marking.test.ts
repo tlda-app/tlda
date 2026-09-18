@@ -1,0 +1,121 @@
+/**
+ * The arrows on a solution callout, and what paging does to the chapter.
+ *
+ * These assertions are all structure and state. jsdom has no layout, so
+ * nothing here can tell you the answer sits in the margin with its top aligned
+ * or that a photograph fits its callout — those are checked on the rendered
+ * chapter in the app, and a green run here is not evidence of them.
+ */
+import test, { after, before } from 'node:test'
+import assert from 'node:assert/strict'
+import { JSDOM } from 'jsdom'
+import type { MarkableAnswer } from '../src/classroom/solutionMarking'
+
+// Imported the same way its sibling test imports the module it covers: a
+// top-level dynamic import, which is what makes vitest treat this file as a
+// suite rather than reporting "no test suite found" while node:test happily
+// prints ticks beside it.
+const { installSolutionMarking, exerciseIdForSolution } = await import('../src/classroom/solutionMarking')
+
+// Each chapter gets its own JSDOM rather than a bare `createHTMLDocument`,
+// because a document made that way has no `defaultView` — and the code under
+// test reaches through it for `Node`, exactly as it does in the browser.
+const windows: JSDOM[] = []
+before(() => {})
+after(() => { for (const w of windows) w.window.close() })
+
+// The shape the course's own `solution-callout.lua` produces: the exercise
+// callout, then the solution callout after it, with a header to hang arrows on.
+const CHAPTER = `
+  <div id="exr-a" class="callout callout-exercise"><p>question a</p></div>
+  <div class="callout callout-solution"><div class="callout-header">Solution</div><p>solution a</p></div>
+  <div id="exr-b" class="callout callout-exercise"><p>question b</p></div>
+  <div class="callout callout-solution"><div class="callout-header">Solution</div><p>solution b</p></div>
+`
+
+function chapter() {
+  const jsdom = new JSDOM(`<!doctype html><html><head></head><body>${CHAPTER}</body></html>`)
+  windows.push(jsdom)
+  return jsdom.window.document
+}
+
+function answersFor(doc: Document, names: string[]): (id: string) => Promise<MarkableAnswer[]> {
+  return async () => names.map(name => {
+    const element = doc.createElement('div')
+    element.className = 'callout callout-answer'
+    element.textContent = `${name}'s answer`
+    return { studentId: name, displayName: name, element }
+  })
+}
+
+test('a solution callout is matched to the exercise above it', () => {
+  const doc = chapter()
+  const [first, second] = doc.querySelectorAll<HTMLElement>('.callout-solution')
+  assert.equal(exerciseIdForSolution(first, doc), 'exr-a')
+  assert.equal(exerciseIdForSolution(second, doc), 'exr-b')
+})
+
+test('arrows arrive on every solution, and start at no answer with no pair', () => {
+  const doc = chapter()
+  const { installed } = installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana']) })
+
+  assert.equal(installed, 2, 'both solutions carry arrows')
+  assert.equal(doc.querySelectorAll('.tlda-marking-arrows').length, 2)
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0, 'position zero forms no pair')
+  const label = doc.querySelector('.tlda-marking-arrows .tlda-marking-arrows-label')
+  assert.equal(label?.textContent, 'no answer')
+  assert.equal(doc.querySelector<HTMLButtonElement>('.tlda-marking-arrows button')?.disabled, true, 'back is dead at zero')
+})
+
+test('paging forward pairs one answer with its own solution, and back removes it again', async () => {
+  const doc = chapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const arrows = doc.querySelectorAll('.tlda-marking-arrows')[0]
+  const [back, forward] = arrows.querySelectorAll<HTMLButtonElement>('button')
+
+  forward.click()
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  const pairs = doc.querySelectorAll('.tlda-marking-pair')
+  assert.equal(pairs.length, 1, 'only the solution he paged forms a pair')
+  assert.equal(pairs[0].querySelectorAll('.tlda-marking-answer').length, 1)
+  assert.match(pairs[0].querySelector('.tlda-marking-answer')!.textContent!, /ana/)
+  assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'ana 1/2')
+  // The solution is moved, not copied — one of it, still the chapter's own.
+  assert.equal(doc.querySelectorAll('.callout-solution').length, 2)
+
+  back.click()
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0, 'back to zero leaves no wrapper behind')
+  assert.equal(doc.querySelectorAll('.callout-solution').length, 2)
+  assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
+})
+
+test('removing the marking leaves the chapter as it was found', async () => {
+  const doc = chapter()
+  const before = doc.body.innerHTML
+  const { remove } = installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana']) })
+  const forward = doc.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')[1]
+  forward.click()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 1)
+
+  remove()
+
+  assert.equal(doc.querySelectorAll('.tlda-marking-arrows').length, 0)
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0)
+  assert.equal(doc.body.innerHTML, before, 'the chapter is byte-identical to before marking')
+})
+
+test('an exercise nobody answered leaves the arrows at zero rather than failing', async () => {
+  const doc = chapter()
+  installSolutionMarking(doc, { answersFor: async () => [] })
+  const forward = doc.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')[1]
+
+  forward.click()
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0)
+  assert.equal(doc.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
+})
