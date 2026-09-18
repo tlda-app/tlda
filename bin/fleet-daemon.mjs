@@ -148,6 +148,8 @@ import { createDaemonMintCore, recordedMintIdentity } from '../daemon/mint-core.
 import { MintStore } from '../daemon/mint-store.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 import { compileWakePermissionProfile } from '../daemon/wake-permission-profile.mjs'
+import { createLagProfiler } from '../server/lib/lag-profiler.mjs'
+import { createContinuousProfiler } from '../server/lib/continuous-profiler.mjs'
 import {
   invalidProjectSourceEnvironmentOwners,
   projectBelongsToWorld as projectBelongsToEnvironment,
@@ -221,6 +223,25 @@ applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 const resolveAgentRoute = createAgentRouteResolver({
   permissionLedger,
   daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+})
+
+// Every window written to disk as a `.cpuprofile`, quiet windows included, so a
+// question about any recent interval can be answered afterwards.
+const continuousProfiler = createContinuousProfiler({
+  dir: path.join(CONFIG_DIR, `profiles-daemon${DAEMON_STATE_SUFFIX}`),
+})
+continuousProfiler.start().catch(e => {
+  console.error('[profiler] FAILED TO START — no daemon profile will be recorded:', e?.message || e)
+})
+
+// Supplemental to the profile above: samples on V8's sampler thread and writes a
+// ranked report when the event loop stalls past its threshold. It answers what
+// was on the stack when the loop jammed, not where the time went.
+const lagProfiler = createLagProfiler({
+  dir: path.join(CONFIG_DIR, `lag-profiles-daemon${DAEMON_STATE_SUFFIX}`),
+})
+lagProfiler.start().catch(e => {
+  console.error('[lag-profiler] FAILED TO START — daemon stalls will not be captured:', e?.message || e)
 })
 
 const LOG_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.log`)

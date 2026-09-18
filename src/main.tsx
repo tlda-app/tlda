@@ -15,6 +15,18 @@ import './frame-probe'  // perf-probe frame timing (inactive unless ?perf=1)
 import App from './App.tsx'
 import { installAppShellFreshnessProbe } from './appShellFreshness'
 import { installUnreadAppBadge } from './fleet-data-adapter'
+import { installSelfProfiler } from './selfProfiler'
+
+// Always-on stack sampling. Unlike `./frame-probe` above this needs no flag: it
+// is the instrument that answers "what was the main thread doing" without
+// anyone having decided in advance what to time.
+//
+// It starts here in the body rather than as a side-effecting import, so unlike
+// `./crashBeacon` it does NOT cover App's own module evaluation — hoisting puts
+// every import before this line. That window is startup, which is a separate
+// question from the hours-long session this is built for, and `perf-probe` has
+// a 'startup' probe for it. Stated because the gap is invisible otherwise.
+installSelfProfiler()
 
 // High-res display compensation: macOS "More Space" gives huge CSS viewports
 // where CSS pixels are physically tiny (retina display + lots of CSS px = small UI).

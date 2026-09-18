@@ -196,7 +196,9 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
           result.push({ tool: '_text', arg: block.text, ts: ev.timestamp })
         }
       }
-      if (ev.usage) result.push({ tool: '_usage', ts: ev.timestamp, usage: ev.usage })
+      // Token usage is not extracted. Nothing consumes a `_usage` activity event:
+      // the server discards it at ingest (`shouldStoreDaemonActivity`), so it was
+      // built, queued, sent over the websocket and accepted only to be dropped.
     }
     for (const [resultId] of toolResults) {
       const matchingIds = pendingTools.has(resultId)

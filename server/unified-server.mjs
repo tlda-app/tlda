@@ -55,6 +55,7 @@ import { createHash, randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { CONFIG_DIR, DEFAULT_PORT, getActiveEnvName, getFleetServerUrl, getRwToken, getServerUrl, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
+import { createContinuousProfiler } from './lib/continuous-profiler.mjs'
 import { createFleetFrameStallTracker, resolveStallMs } from './lib/fleet-frame-stalls.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
@@ -405,6 +406,16 @@ setInterval(() => {
 // query at 25ms, so 190 x 4ms is invisible, and it wraps only `.all()`/`.get()`,
 // so synchronous `.run()` writes are never measured at all. The sampler sees the
 // thread itself, so a stall names its own cause without anyone being attached.
+// The profile itself: every window written to disk as a `.cpuprofile`, quiet
+// windows included, so a question about any recent interval can be answered
+// afterwards by speedscope or profview. The lag profiler below is supplemental
+// to this — it keeps a slice around a stall and nothing else.
+const continuousProfiler = createContinuousProfiler({ dir: join(CONFIG_DIR, 'profiles') })
+continuousProfiler.start().catch(e => {
+  console.error('[profiler] FAILED TO START — no profile will be recorded:', e)
+  recordServerPerfEvent('profiler-start-failed', { error: e?.message || String(e) })
+})
+
 const lagProfiler = createLagProfiler({ dir: join(CONFIG_DIR, 'lag-profiles') })
 lagProfiler.start().catch(e => {
   // A diagnostic failing to start must not take the server down with it, but it
@@ -4153,6 +4164,7 @@ app.get('/api/diagnostics/live-perf', requireRead, async (req, res) => {
       eventLoopLag: lastEventLoopLag,
       ws: wsSummary(),
       events: serverEvents,
+      profiler: continuousProfiler.snapshot(),
       lagProfiler: lagProfiler.snapshot(),
       // The store runs on one worker thread that handles one call at a time, so
       // a store call's latency is mostly the queue in front of it. Everything
