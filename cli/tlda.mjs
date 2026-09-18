@@ -1484,6 +1484,11 @@ function daemonPathEnv() {
     join(homedir(), '.local', 'bin'),
     '/opt/homebrew/bin',
     '/usr/local/bin',
+    // Quarto's macOS installer puts its binary here and adds this directory to
+    // interactive shells only, so a daemon-spawned server got no quarto and lost
+    // .qmd rendering entirely while still reporting healthy. The deployed image
+    // has quarto on PATH; this is what makes a local server match it.
+    '/Applications/quarto/bin',
     '/usr/bin',
     '/bin',
     '/usr/sbin',
