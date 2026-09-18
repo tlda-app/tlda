@@ -73,6 +73,18 @@ function makeRelativeResourcesAbsolute(root: HTMLElement, baseUrl: string) {
 
 /** Put each instructor solution beside the answer with the matching exercise id. */
 export function pairMarkedExerciseCallouts(studentDocument: Document, solutionDocument: Document, solutionUrl: string, selectedExerciseId?: string): number {
+  // The last rule below is what makes the header's collapsed state mean
+  // something. The toggle further down flips 'show' on the solution's
+  // .callout-collapse, and Bootstrap's own rule for that class is what would
+  // hide it — but the rendered solution document carries no rule for .collapse
+  // at all: zero matching rules across its stylesheets, and the body computes
+  // to display:block with and without 'show'. Without the rule, clicking the
+  // header moves the chevron and the aria state while the body stays exactly
+  // where it was. It is scoped to the pair so it can only ever govern the
+  // solution clone this file puts there, never a collapse elsewhere in the
+  // student's own work — the selector names the instructor solution clone, so a
+  // collapsible callout inside a student's own answer keeps whatever behaviour
+  // it arrived with.
   if (!studentDocument.getElementById(STYLE_ID)) {
     const style = studentDocument.createElement('style')
     style.id = STYLE_ID
@@ -86,6 +98,7 @@ export function pairMarkedExerciseCallouts(studentDocument: Document, solutionDo
       }
       .${PAIR_CLASS} > .callout,
       .${PAIR_CLASS} > .callout-answer { height: 100%; margin-block: 0; min-width: 0; }
+      .${PAIR_CLASS} > .callout-solution .callout-collapse:not(.show) { display: none; }
     `
     studentDocument.head.append(style)
   }
