@@ -17,7 +17,7 @@ const TIME_CONTROLS_MODES: TimeControlsMode[] = ['off', 'auto-hide', 'pinned']
 /**
  * The default the shape starts at when nobody has chosen.
  *
- * This is where `RecordingsButton`'s classroom gate went. That gate decided
+ * This is where the old fixed panel's classroom gate went. That gate decided
  * whether playback existed at all, which is why a doc-view outside a classroom
  * could not reach a recording by any route. Here it decides only whether the
  * transport is *showing*: the body is spacetime-capable everywhere, and setting

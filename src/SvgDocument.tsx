@@ -103,7 +103,7 @@ import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
 import { ClassroomDocViewPlayback } from './overlays/ClassroomDocViewPlayback'
-import { RecordingsButton } from './overlays/RecordingsButton'
+import { ClassroomPlaybackPill } from './pills/ClassroomPlaybackPill'
 
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
@@ -1256,6 +1256,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           <BuildProgressPill document={document} />
         </BuildWarningPill>
         {!IS_CLASSROOM && editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
+        {IS_CLASSROOM && editorRef.current && <ClassroomPlaybackPill mainEditor={editorRef.current} />}
         {/* Build errors: red BuildErrorPill (reads errorsJson from the doc-version sentinel) */}
       </div>
       {!IS_CLASSROOM && editorRef.current && (
@@ -1264,12 +1265,10 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
       {IS_CLASSROOM && editorRef.current && (
         <ClassroomDocViewPlayback mainEditor={editorRef.current} />
       )}
-      {/* The way in to playback. A sibling of the route above rather than nested
-          with it, because that mount is asserted by
-          tests/classroom-doc-view-playback.test.mjs and this must not change its
-          shape. It owns its own selection and surface and writes no canvas
-          shape, so a read-only student can reach a lecture. */}
-      {IS_CLASSROOM && <RecordingsButton />}
+      {/* Classroom playback lives in a real fleet-docview shape, toggled from
+          the classroom pill in the build-pills row above. The fixed panel that
+          used to sit here is gone: it was its own chrome rather than a shape,
+          which is why it never looked like the dock it embedded. */}
       </div>
       {editorRef.current && (
         <div className="managed-surface-overlay-owner">

@@ -1,0 +1,58 @@
+/* ClassroomPlaybackPill — same bottom-right cluster seat as the fleet icon. */
+
+.classroom-playback-pill-container {
+  /* Same seat the fleet icon holds outside the classroom. */
+  position: fixed;
+  bottom: 82px;
+  right: 16px;
+  z-index: 10001;
+  pointer-events: all;
+}
+
+body.phone-mode .classroom-playback-pill-container {
+  bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
+}
+
+body.phone-mode .classroom-playback-pill-badge {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+@media (pointer: coarse) and (min-width: 601px) {
+  .classroom-playback-pill-container {
+    bottom: calc(82px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+    right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
+  }
+}
+
+.classroom-playback-pill-badge {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--pill-icon-color, rgba(0, 0, 0, 1));
+  cursor: pointer;
+  opacity: var(--ui-tone-dormant);
+  transition: color 0.3s, opacity 0.3s;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-width: 27px;
+  min-height: 27px;
+  pointer-events: all;
+  touch-action: none;
+}
+
+.classroom-playback-pill-container:hover .classroom-playback-pill-badge {
+  color: var(--pill-icon-color-hover, rgba(0, 0, 0, 1));
+  opacity: var(--ui-tone-active);
+}
+
+html[data-theme="dark"] .classroom-playback-pill-badge {
+  color: var(--pill-icon-color, rgba(255, 255, 255, 1));
+}
+
+html[data-theme="dark"] .classroom-playback-pill-container:hover .classroom-playback-pill-badge {
+  color: var(--pill-icon-color-hover, rgba(255, 255, 255, 1));
+}
