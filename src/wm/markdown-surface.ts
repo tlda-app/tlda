@@ -76,13 +76,21 @@ export function createTemporaryMarkdownSurfaceRequest({
 	}
 }
 
+/**
+ * The shape meta a materialized Markdown chip carries. Deliberately no
+ * `managedLayerId`: the chip is materialized into the open project and served
+ * from `/docs/<project>/parts/<hash>.html`, so it is one of that project's docs
+ * and belongs in `document-page` with the rest of them. `tldaShapeLayerId` reads
+ * `managedLayerId` ahead of everything else, so naming one here would put this
+ * doc in a layer of its own. A managed surface is a viewer of the doc; it does
+ * not decide where the doc lives.
+ */
 export function temporaryMarkdownShapeMeta(
 	request: ManagedSurfaceRequest<TemporaryMarkdownSurfacePayload, TemporaryMarkdownSurfaceKind>,
 ) {
 	return {
 		temporaryMarkdownColumn: true,
 		managedSurfaceId: request.surfaceId,
-		managedLayerId: request.layerId,
 		managedHitPolicy: request.hitPolicy,
 		managedCleanup: request.cleanup,
 	}

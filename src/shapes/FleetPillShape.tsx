@@ -311,7 +311,6 @@ async function createReportArtifactShapeFromPill(
 async function createMarkdownDocviewShapeFromPill(
   editor: Editor,
   pagePoint: { x: number; y: number },
-  frame: FleetInteractionFrame,
   pill: FleetPillRecord,
   content?: string,
   showError?: (message: string) => void,
@@ -350,7 +349,7 @@ async function createMarkdownDocviewShapeFromPill(
     return true
   }
   const url = `/docs/${projectName}/${materializedPart.outputFile}?t=${Date.now()}`
-  await createMarkdownDocviewFromContent(editor, pagePoint, frame, title, markdown, {
+  await createMarkdownDocviewFromContent(editor, pagePoint, title, markdown, {
     materializedDoc: projectName,
     materializedFile: materializedPart.outputFile,
     ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
@@ -361,24 +360,20 @@ async function createMarkdownDocviewShapeFromPill(
 export async function createMarkdownDocviewFromContent(
   editor: Editor,
   pagePoint: { x: number; y: number },
-  frame: FleetInteractionFrame,
   title: string,
   markdown: string,
   meta: Record<string, unknown> = {},
   overrideUrl?: string,
-  screenPoint?: { x: number; y: number },
 ) {
   const materialized = await createTemporaryMarkdownColumn(editor, pagePoint, title, markdown, meta, overrideUrl)
   if (!materialized?.shapeId) return true
-  // Project with the camera that will read it back — the same round trip the
-  // report-artifact branch below already names both sides of. A caller that
-  // hands us a real screen point (the Finder drop) does no round trip at all;
-  // a pill drag has only a page point, and projecting it with the main camera
-  // while placeFleetShapeAtScreenPoint un-projects with the HUD's put the
-  // docview off by the overlay transform — non-zero whenever the layout has
-  // ridden the document.
-  const docviewScreenPoint = screenPoint || pagePointToClient(editor, pagePoint, frame.viewportId)
-  await placeFleetShapeAtScreenPoint(editor, 'fleet-docview', docviewScreenPoint.x, docviewScreenPoint.y, MARKDOWN_DOCVIEW_W, MARKDOWN_DOCVIEW_H, {
+  // Placed the way a dropped label places a chat: the panel is created at the
+  // drop's page point. Every caller resolves that point through the WM for the
+  // viewport its gesture happened in, so it is already the coordinate the panel
+  // needs and there is nothing for a projection to add.
+  await createFleetShape(editor, 'fleet-docview', pagePoint.x, pagePoint.y, {
+    w: MARKDOWN_DOCVIEW_W,
+    h: MARKDOWN_DOCVIEW_H,
     sources: '[]',
     label: '',
     page: 0,
@@ -387,7 +382,7 @@ export async function createMarkdownDocviewFromContent(
     title,
     targetShapeId: String(materialized.shapeId),
     useFullBounds: true,
-  }, { frame })
+  })
   return true
 }
 
@@ -676,7 +671,7 @@ export async function dropPillOnTarget(
     const pill: unknown = editor.getShape(pillId)
     const pillType = isFleetPillRecord(pill) ? pill.props.pillType : undefined
     if (isFleetPillRecord(pill) && (pillType === 'file' || pillType === 'doc') &&
-        await createMarkdownDocviewShapeFromPill(createEditor, createPagePoint, frame, pill, content, showError)) {
+        await createMarkdownDocviewShapeFromPill(createEditor, createPagePoint, pill, content, showError)) {
       return
     }
     // Project with the camera that will read it back. This point is handed to

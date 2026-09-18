@@ -92,12 +92,12 @@ export function MarkdownDropHandler() {
             return
           }
           const url = `/docs/${projectName}/${materialized.outputFile}?t=${Date.now()}`
-          await createMarkdownDocviewFromContent(editor, pagePoint, frame, title, markdown, {
+          await createMarkdownDocviewFromContent(editor, pagePoint, title, markdown, {
             materializedDoc: projectName,
             materializedFile: materialized.outputFile,
             sourceFileName: file.name,
             sourceProjectName: name,
-          }, url, screenPoint)
+          }, url)
         }
         reader.readAsText(file)
       }

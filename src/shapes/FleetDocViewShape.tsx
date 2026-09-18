@@ -454,6 +454,9 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         pageBounds: targetShapePageBounds,
         panelWidth: w,
         panelHeight: panelH,
+        // A whole shape is read from its top. The page-region branch below keeps
+        // the region centred, which is what a reader who clicked a ref asked for.
+        anchor: 'top',
         userId: shape.props.userId,
         deviceId: shape.props.deviceId,
         source: 'target',

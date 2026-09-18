@@ -13,7 +13,7 @@ test('native Markdown file drops enter the bounded doc-view path', () => {
   )
   assert.match(
     handler,
-    /createMarkdownDocviewFromContent\(editor, pagePoint, title, markdown,[\s\S]*url, screenPoint\)/,
+    /createMarkdownDocviewFromContent\(editor, pagePoint, title, markdown,[\s\S]*\}, url\)/,
     'native Markdown file drops must create the same HUD doc view as Markdown chips',
   )
   assert.doesNotMatch(
@@ -31,7 +31,30 @@ test('Markdown doc-view creation is shared with the Markdown chip path', () => {
   )
   assert.match(
     pill,
-    /placeFleetShapeAtScreenPoint\(editor, 'fleet-docview', docviewScreenPoint\.x, docviewScreenPoint\.y, MARKDOWN_DOCVIEW_W, MARKDOWN_DOCVIEW_H/,
+    /createFleetShape\(editor, 'fleet-docview', pagePoint\.x, pagePoint\.y, \{/,
     'Markdown opens as a fleet doc-view panel, not only as an html-page column',
+  )
+})
+
+test('the doc view is placed the way a dropped label places a chat', () => {
+  // Skip, 2026-09-18: "place it like the fking label drop places the chat".
+  // The label drop creates its panel at the gesture's page point and stops;
+  // the Markdown drop used to project that page point to screen and un-project
+  // it again through whichever viewport the frame named, which is the identity
+  // only while the HUD is closed.
+  const labelDrop = pill.match(
+    /createFleetShape\(createEditor, 'fleet-chat', createPagePoint\.x, createPagePoint\.y, \{/,
+  )
+  assert.ok(labelDrop, 'the label drop must still create its chat at the drop page point')
+
+  const docview = pill.slice(
+    pill.indexOf('export async function createMarkdownDocviewFromContent'),
+    pill.indexOf('export async function createTemporaryMarkdownColumn'),
+  )
+  assert.ok(docview.length > 0, 'createMarkdownDocviewFromContent must precede createTemporaryMarkdownColumn')
+  assert.doesNotMatch(
+    docview,
+    /pagePointToClient|placeFleetShapeAtScreenPoint/,
+    'the Markdown doc view must not round-trip its page point through screen coordinates',
   )
 })
