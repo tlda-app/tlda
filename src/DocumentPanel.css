@@ -2015,17 +2015,9 @@ body.touch-toc-mode .phone-toc-backdrop {
   pointer-events: all;
 }
 
-/* The button TOC is the desktop panel, opened by a button instead of a hover.
-   One idiom on both entry paths (phone-mode, touch-toc-mode): same surface as
-   .doc-panel in its open state — opaque panel background, 11px panel type,
-   250px docked width. The iOS-idiom drawer (translucent, system-ui 14px,
-   per-element color overrides) is gone; the per-element rules below only carry
-   the open-state values, because the modal is open by definition and has no
-   hover to reveal them. */
 .phone-toc-modal {
-  width: 250px;
-  max-width: calc(100vw - 64px);
-  max-height: 85vh;
+  width: min(300px, 80vw);
+  height: 100%;
   background: rgba(255, 255, 255, 0.75);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -2034,9 +2026,14 @@ body.touch-toc-mode .phone-toc-backdrop {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   font-family: system-ui, -apple-system, sans-serif;
-  font-size: 11px;
+  font-size: 14px;
   color: rgba(0, 0, 0, 0.6);
   padding-top: calc(54px + env(safe-area-inset-top));
+}
+
+body.touch-toc-mode:not(.phone-mode) .phone-toc-modal {
+  width: min(340px, 42vw);
+  max-width: calc(100vw - 64px);
 }
 
 /* Override ghost opacity — modal content should be fully visible */
@@ -2052,30 +2049,70 @@ body.touch-toc-mode .phone-toc-backdrop {
   background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border-bottom-color: rgba(0, 0, 0, 0.08);
 }
 
 .phone-toc-modal .doc-panel-tab {
-  color: rgba(0, 0, 0, 0.4);
+  min-height: 44px;
+  color: rgba(0, 0, 0, 0.45);
 }
 
 .phone-toc-modal .doc-panel-tab--gear {
-  flex: 0 0 32px;
+  flex-basis: 44px;
 }
 
 .phone-toc-modal .doc-panel-tab.active {
-  color: rgba(0, 0, 0, 0.65);
+  color: rgba(0, 0, 0, 0.7);
   border-bottom-color: rgba(0, 0, 0, 0.3);
 }
 
-.phone-toc-modal .search-input-wrap {
-  border-bottom-color: rgba(0, 0, 0, 0.05);
+.phone-toc-modal .toc-item {
+  padding: 8px 12px;
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.phone-toc-modal .toc-row-center {
+  width: 22px;
+  height: 22px;
+  margin-right: 5px;
+  opacity: var(--ui-tone-dormant);
+}
+
+.phone-toc-modal .toc-item.section {
+  padding-top: 6px;
+  color: rgba(0, 0, 0, 0.65);
+  font-weight: 500;
+}
+
+.phone-toc-modal .toc-item.subsection {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.phone-toc-modal .toc-diff-hint {
+  padding: 7px 12px;
+  color: rgba(0, 0, 0, 0.5);
+  opacity: var(--ui-tone-active);
+}
+
+.phone-toc-modal .toc-bottom-controls {
+  padding: 4px 12px 8px;
+  gap: 12px;
+}
+
+.phone-toc-modal .toc-bottom-controls .toc-diff-hint {
+  padding: 5px 0;
+}
+
+.phone-toc-modal .toc-bottom-controls--compact .toc-state-control {
+  padding: 2px !important;
+}
+
+.phone-toc-modal .toc-diff-hint:hover {
+  opacity: var(--ui-tone-full) !important;
 }
 
 .phone-toc-modal .search-input {
-  font-size: 11px;
-  border-color: rgba(0, 0, 0, 0.1);
-  color: inherit;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.6);
 }
 
 /* Dark mode */
@@ -2097,16 +2134,31 @@ html[data-theme="dark"] .phone-toc-modal {
 
 html[data-theme="dark"] .phone-toc-modal .phone-panel-tabs {
   background: rgba(0, 0, 0, 0.85);
-  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
 html[data-theme="dark"] .phone-toc-modal .doc-panel-tab {
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.45);
 }
 
 html[data-theme="dark"] .phone-toc-modal .doc-panel-tab.active {
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(255, 255, 255, 0.7);
   border-bottom-color: rgba(255, 255, 255, 0.3);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-item {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-item.section {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-item.subsection {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-diff-hint {
+  color: rgba(255, 255, 255, 0.5);
 }
 
 /* Highlighter button — bottom right, desktop + mobile */

@@ -120,10 +120,25 @@ function asFleetEvent(event: Record<string, unknown>): FleetEvent {
   return fleetEvent
 }
 
+// `Date.parse` is the expensive part of every event sort: `compareFleetEvents`
+// runs O(n log n) times and parsed both sides on each call, so one event's
+// timestamp was re-parsed on the order of log n times per sort and again on
+// every re-sort. Cache the parse against the event object instead.
+//
+// The raw string is stored alongside the number and compared on each hit, so an
+// event whose timestamp changes re-parses rather than returning a stale value —
+// a string comparison is still far cheaper than a parse. A WeakMap keeps this
+// tied to the event's own lifetime, so it cannot grow into a leak.
+const parsedEventTimestamps = new WeakMap<FleetEvent, { raw: string; ms: number }>()
+
 function eventTimestamp(event: FleetEvent): number {
   const raw = typeof event.timestamp === 'string' ? event.timestamp : ''
+  const cached = parsedEventTimestamps.get(event)
+  if (cached !== undefined && cached.raw === raw) return cached.ms
   const ts = raw ? Date.parse(raw) : NaN
-  return Number.isNaN(ts) ? Number.MAX_SAFE_INTEGER : ts
+  const ms = Number.isNaN(ts) ? Number.MAX_SAFE_INTEGER : ts
+  parsedEventTimestamps.set(event, { raw, ms })
+  return ms
 }
 
 function compareFleetEvents(a: FleetEvent, b: FleetEvent): number {
