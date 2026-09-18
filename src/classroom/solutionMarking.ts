@@ -25,12 +25,19 @@ const ANSWER_CLASS = 'tlda-marking-answer'
 const ARROWS_CLASS = 'tlda-marking-arrows'
 const STYLE_ID = 'tlda-marking-style'
 
-/** One student's answer to one exercise, as the arrows page through them. */
+/**
+ * One student's answer to one exercise, as the arrows page through them.
+ *
+ * The element is fetched when that student is shown, not when the list is
+ * built. A class is forty-odd people and each answer lives in its own rendered
+ * document; loading all of them to display one would put forty fetches behind
+ * a single click on a machine that is already the bottleneck.
+ */
 export interface MarkableAnswer {
   studentId: string
   displayName: string
-  /** The answer element, already belonging to the chapter's document. */
-  element: HTMLElement
+  /** Resolves the answer element, in the chapter's document. Null if it has none. */
+  load: () => Promise<HTMLElement | null>
 }
 
 export interface SolutionMarkingOptions {
@@ -190,14 +197,25 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
     forward.setAttribute('aria-label', `Next student's answer for ${exerciseId}`)
     arrows.append(back, label, forward)
 
-    const render = () => {
+    const render = async () => {
       const current = index >= 0 && answers ? answers[index] ?? null : null
       label.textContent = current
         ? `${current.displayName} ${index + 1}/${answers!.length}`
         : 'no answer'
       back.disabled = index < 0
       forward.disabled = answers !== null && index >= answers.length - 1
-      if (current) pair(solution, current.element, doc)
+      if (!current) {
+        unpair(solution)
+        options.onShow?.(exerciseId, null)
+        return
+      }
+      const shown = index
+      const element = await current.load()
+      // He can page again while a fetch is in flight. Only the answer that is
+      // still the current one is allowed to land, or a slow student's work
+      // appears beside the solution after he has already moved past them.
+      if (shown !== index) return
+      if (element) pair(solution, element, doc)
       else unpair(solution)
       options.onShow?.(exerciseId, current)
     }
@@ -211,13 +229,13 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
       const next = index + delta
       if (next < -1 || next > answers.length - 1) return
       index = next
-      render()
+      await render()
     }
 
     back.addEventListener('click', () => { void step(-1) })
     forward.addEventListener('click', () => { void step(1) })
     host.append(arrows)
-    render()
+    void render()
 
     cleanups.push(() => {
       unpair(solution)

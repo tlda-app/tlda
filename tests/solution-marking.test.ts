@@ -40,12 +40,17 @@ function chapter() {
 }
 
 function answersFor(doc: Document, names: string[]): (id: string) => Promise<MarkableAnswer[]> {
-  return async () => names.map(name => {
-    const element = doc.createElement('div')
-    element.className = 'callout callout-answer'
-    element.textContent = `${name}'s answer`
-    return { studentId: name, displayName: name, element }
-  })
+  return async () => names.map(name => ({
+    studentId: name,
+    displayName: name,
+    // Loaded when that student is shown, which is what the arrows do.
+    load: async () => {
+      const element = doc.createElement('div')
+      element.className = 'callout callout-answer'
+      element.textContent = `${name}'s answer`
+      return element
+    },
+  }))
 }
 
 test('a solution callout is matched to the exercise above it', () => {
@@ -74,7 +79,7 @@ test('paging forward pairs one answer with its own solution, and back removes it
   const [back, forward] = arrows.querySelectorAll<HTMLButtonElement>('button')
 
   forward.click()
-  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 5))
 
   const pairs = doc.querySelectorAll('.tlda-marking-pair')
   assert.equal(pairs.length, 1, 'only the solution he paged forms a pair')
@@ -85,7 +90,7 @@ test('paging forward pairs one answer with its own solution, and back removes it
   assert.equal(doc.querySelectorAll('.callout-solution').length, 2)
 
   back.click()
-  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 5))
 
   assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0, 'back to zero leaves no wrapper behind')
   assert.equal(doc.querySelectorAll('.callout-solution').length, 2)
@@ -98,7 +103,7 @@ test('removing the marking leaves the chapter as it was found', async () => {
   const { remove } = installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana']) })
   const forward = doc.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')[1]
   forward.click()
-  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 5))
   assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 1)
 
   remove()
@@ -114,8 +119,42 @@ test('an exercise nobody answered leaves the arrows at zero rather than failing'
   const forward = doc.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')[1]
 
   forward.click()
-  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 5))
 
   assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0)
   assert.equal(doc.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
+})
+
+test('a slow answer that lands after he has paged on does not appear', async () => {
+  // He pages faster than the network. Without the guard, the first student's
+  // answer resolves late and is pasted beside the solution he has already moved
+  // past — one student's work shown under another's name, which is the worst
+  // failure this surface has available to it.
+  const doc = chapter()
+  const delays: Record<string, number> = { ana: 40, bo: 0 }
+  installSolutionMarking(doc, {
+    answersFor: async () => ['ana', 'bo'].map(name => ({
+      studentId: name,
+      displayName: name,
+      load: async () => {
+        await new Promise(resolve => setTimeout(resolve, delays[name]))
+        const element = doc.createElement('div')
+        element.className = 'callout callout-answer'
+        element.textContent = `${name}'s answer`
+        return element
+      },
+    })),
+  })
+  const arrows = doc.querySelectorAll('.tlda-marking-arrows')[0]
+  const [, forward] = arrows.querySelectorAll<HTMLButtonElement>('button')
+
+  forward.click()   // ana, slow
+  await new Promise(resolve => setTimeout(resolve, 5))
+  forward.click()   // bo, fast — lands first
+  await new Promise(resolve => setTimeout(resolve, 80))
+
+  const shown = doc.querySelector('.tlda-marking-answer')
+  assert.ok(shown, 'somebody is shown')
+  assert.match(shown!.textContent!, /bo/, 'the student he is on, not the one he paged past')
+  assert.equal(doc.querySelectorAll('.tlda-marking-answer').length, 1, 'and only one of them')
 })
