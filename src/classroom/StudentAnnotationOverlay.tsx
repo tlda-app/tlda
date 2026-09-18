@@ -1,5 +1,5 @@
-import { useMemo, useEffect, useState, type CSSProperties } from 'react'
-import { Tldraw, Vec, react, useValue, type Editor } from 'tldraw'
+import { useMemo, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { CollaboratorCursorOverlayUtil, Tldraw, Vec, react, useValue, type Editor } from 'tldraw'
 import { useSync } from '@tldraw/sync'
 import { STORE_WS, LICENSE_KEY } from '../activeConfig'
 import { appendToken } from '../authToken'
@@ -76,6 +76,10 @@ function mirror(name: string, observe: () => unknown, write: () => void): () => 
   return () => { stopped = true; stop() }
 }
 
+class LayerWithoutCollaboratorCursor extends CollaboratorCursorOverlayUtil {
+  override isActive() { return false }
+}
+
 
 interface StudentAnnotationOverlayProps {
   /** The room the book itself is synced to — the layer the whole class shares. */
@@ -144,6 +148,7 @@ export function StudentAnnotationOverlay({
   onCameraChange,
   bounds,
 }: StudentAnnotationOverlayProps) {
+  const overlayRootRef = useRef<HTMLDivElement>(null)
   // Whether the camera is owned outside this component. A boolean, not the
   // camera itself, so the effects below do not resubscribe on every pan.
   const cameraIsExternal = explicitCamera !== undefined
@@ -168,6 +173,7 @@ export function StudentAnnotationOverlay({
   const [overlayEditor, setOverlayEditor] = useState<Editor | null>(null)
   const shapeUtils = useMemo(() => createDocumentShapeUtils(), [])
   const tools = useMemo(() => DOCUMENT_TOOLS, [])
+  const overlayUtils = useMemo(() => [LayerWithoutCollaboratorCursor], [])
 
   const syncUri = useMemo(() => () => appendToken(`${STORE_WS}/sync/${roomId}`), [roomId])
   const store = useSync({ uri: syncUri, shapeUtils, assets: INLINE_ASSETS })
@@ -264,6 +270,28 @@ export function StudentAnnotationOverlay({
     overlayEditor.updateInstanceState({ isReadonly: !isWriteTarget })
   }, [overlayEditor, isWriteTarget])
 
+  useEffect(() => {
+    const root = overlayRootRef.current
+    if (!root || !cameraIsExternal || !capturing || !bookEditor) return
+    const forwardWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      bookEditor.dispatch({
+        type: 'wheel',
+        name: 'wheel',
+        delta: new Vec(-event.deltaX, -event.deltaY, 0),
+        point: new Vec(event.clientX, event.clientY),
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        accelKey: event.ctrlKey || event.metaKey,
+      })
+    }
+    root.addEventListener('wheel', forwardWheel, { capture: true, passive: false })
+    return () => root.removeEventListener('wheel', forwardWheel, { capture: true })
+  }, [bookEditor, cameraIsExternal, capturing])
+
   // The store goes to <Tldraw> with its status attached, exactly as the book's
   // editor does — tldraw owns the not-yet-synced state itself.
   //
@@ -279,29 +307,11 @@ export function StudentAnnotationOverlay({
   // same name.
   return (
     <div
+      ref={overlayRootRef}
       className="studentAnnotationOverlay"
       data-capturing={capturing ? 'true' : 'false'}
       data-tool={currentToolId}
       data-visible={visible ? 'true' : 'false'}
-      onWheelCapture={event => {
-        if (!cameraIsExternal || !capturing || !bookEditor) return
-        // A bounded marking layer is the current canvas layer, not a modal
-        // surface. It owns pen pointers while drawing but wheel/trackpad input
-        // still belongs to the document camera underneath it.
-        event.preventDefault()
-        event.stopPropagation()
-        bookEditor.dispatch({
-          type: 'wheel',
-          name: 'wheel',
-          delta: new Vec(-event.deltaX, -event.deltaY, 0),
-          point: new Vec(event.clientX, event.clientY),
-          shiftKey: event.shiftKey,
-          altKey: event.altKey,
-          ctrlKey: event.ctrlKey,
-          metaKey: event.metaKey,
-          accelKey: event.ctrlKey || event.metaKey,
-        })
-      }}
       style={bounds ? ({
         position: 'fixed',
         inset: 'auto',
@@ -326,6 +336,7 @@ export function StudentAnnotationOverlay({
         // has never heard of.
         licenseKey={LICENSE_KEY}
         tools={tools}
+        overlayUtils={overlayUtils}
         hideUi
         // tldraw runs what `onMount` returns when the editor goes, so the
         // teardown is where the reference is dropped. Nothing may hold a

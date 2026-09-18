@@ -89,6 +89,26 @@ test('a late callout header does not acquire a second pager', () => {
   assert.equal(solution.querySelectorAll('.tlda-marking-arrows').length, 1)
 })
 
+test('Quarto callout body markup does not acquire a second pager', () => {
+  const jsdom = new JSDOM(`<!doctype html><html><head></head><body>
+    <div id="exr-a"></div>
+    <div class="callout callout-solution">
+      <div class="callout-header">Solution</div>
+      <div class="callout-body-container callout-body">
+        <div class="callout-solution">solution body</div>
+      </div>
+    </div>
+  </body></html>`)
+  windows.push(jsdom)
+  const doc = jsdom.window.document
+
+  const result = installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana']) })
+
+  assert.equal(result.installed, 1)
+  assert.equal(doc.querySelectorAll('.tlda-marking-arrows').length, 1)
+  assert.equal(doc.querySelector('.callout-header .tlda-marking-arrows')?.textContent, '‹no answer›')
+})
+
 test('paging forward pairs one answer with its own solution, and back removes it again', async () => {
   const doc = chapter()
   installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })

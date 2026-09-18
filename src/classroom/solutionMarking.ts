@@ -218,6 +218,7 @@ function pair(solution: HTMLElement, answer: HTMLElement, displayName: string, d
 export function installSolutionMarking(doc: Document, options: SolutionMarkingOptions): { installed: number; remove: () => void } {
   installStyle(doc)
   const solutions = Array.from(doc.querySelectorAll<HTMLElement>('.callout-solution'))
+    .filter(solution => !solution.parentElement?.closest('.callout-solution'))
   const cleanups: Array<() => void> = []
 
   for (const solution of solutions) {
