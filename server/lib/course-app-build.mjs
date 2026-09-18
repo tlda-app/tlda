@@ -110,7 +110,7 @@ export function copyCourseAppAssets(courseDir, outputDir, spec) {
   }
 }
 
-/** Compile an already-built TLDA project into the released course app tree. */
+/** Compile an already-built TLDA project into the published course app tree. */
 export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir, suppliedSpec = null) {
   const sourceRoot = resolve(courseDir)
   const builtRoot = resolve(builtDir)
@@ -129,26 +129,26 @@ export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir,
     if (source && !bySource.has(source)) bySource.set(source, page)
   }
   const membership = deriveCourseBookSpec(courseDir)
-  const releasedSpec = deriveCourseAppSpec(courseDir, indexFile)
+  const announcementSpec = deriveCourseAppSpec(courseDir, indexFile)
   const membershipSources = new Set([...membership.documents, ...membership.decks])
   const membershipEntries = values => values.filter(source => membershipSources.has(source) && bySource.has(source))
   const renderedSourceEntries = values => suppliedSpec
     ? values.filter(source => bySource.has(source))
     : []
   const spec = {
-    ...releasedSpec,
+    ...announcementSpec,
     documents: [...new Set([...membershipEntries(membership.documents), ...(suppliedSpec ? renderedSourceEntries(suppliedSpec.documents) : [])])],
     decks: [...new Set([...membershipEntries(membership.decks), ...(suppliedSpec ? renderedSourceEntries(suppliedSpec.decks) : [])])],
     assets: suppliedSpec
-      ? [...new Set([...releasedSpec.assets, ...suppliedSpec.assets])]
-      : releasedSpec.assets,
+      ? [...new Set([...announcementSpec.assets, ...suppliedSpec.assets])]
+      : announcementSpec.assets,
     links: suppliedSpec
-      ? [...new Set([...releasedSpec.links, ...suppliedSpec.links])]
-      : releasedSpec.links,
+      ? [...new Set([...announcementSpec.links, ...suppliedSpec.links])]
+      : announcementSpec.links,
   }
   const wantedSources = [...spec.documents, ...spec.decks]
   const missing = wantedSources.filter(source => !bySource.has(source))
-  if (missing.length) throw new Error(`released course input is absent from the TLDA build: ${missing.join(', ')}`)
+  if (missing.length) throw new Error(`declared course input is absent from the TLDA build: ${missing.join(', ')}`)
   const pages = wantedSources.map(source => bySource.get(source))
 
   rmSync(outputDir, { recursive: true, force: true })
