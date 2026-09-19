@@ -247,6 +247,16 @@ function pair(solution: HTMLElement, doc: Document) {
 export function answerMarkup(answer: HTMLElement, displayName: string, doc: Document): string {
   const copy = answer.cloneNode(true) as HTMLElement
   copy.classList.add(ANSWER_CLASS)
+  // A PHOTOGRAPH MUST NOT COME BACK AS A NEGATIVE.
+  //
+  // The answer's document inverts with the chapter, which is what makes its
+  // text readable on a dark canvas — and it inverts the student's photograph
+  // with it, so a picture of their handwriting arrives white-on-black. He is
+  // marking the handwriting in that picture. `darkmode-invariant` is the book's
+  // own counter-inversion, shipped in the same injected stylesheet, so this
+  // uses the mechanism that already exists for exactly this rather than
+  // inventing a rule.
+  for (const image of copy.querySelectorAll('img')) image.classList.add('darkmode-invariant')
   const header = doc.createElement('div')
   header.className = ANSWER_HEADER_CLASS
   header.textContent = displayName
