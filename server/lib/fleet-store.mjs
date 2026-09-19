@@ -2695,8 +2695,17 @@ export class FleetStore {
     this._agentRegistryLoaded = true;
   }
 
+  // Resolved-set caching rides this method. It is the ONE place every agent
+  // mutation reaches — label add/remove, rename, death, mint, subscription —
+  // which is why the cache needs no registry, journal or event stream of its
+  // own. A 17th call site inherits invalidation for free; a mutation that
+  // bypasses this one serves stale sets silently.
   _syncAgentRegistry(id) {
-    if (!this._agentRegistry || !this._aliveAgentRegistry || !id) return;
+    if (!id) return;
+    // Before the registry guard below: an unloaded registry is not a reason to
+    // keep a stale cache entry.
+    this._invalidateLiteralCandidatesFor(id);
+    if (!this._agentRegistry || !this._aliveAgentRegistry) return;
     const agent = this.getAgent(id);
     if (!agent) {
       this._agentRegistry.remove(id);
@@ -2706,6 +2715,88 @@ export class FleetStore {
     this._agentRegistry.upsert(agent);
     if (!isFleetRosterAgent(agent)) this._aliveAgentRegistry.remove(id);
     else this._aliveAgentRegistry.upsert(agent);
+  }
+
+  // ---- Resolved literal candidates ----
+  //
+  // The expensive part of resolving an agent-set expression is one SQL query
+  // per literal. Everything after it — dropping the sender, projecting runtime
+  // status, `evalExpr` per candidate, sorting — is in-memory work over a small
+  // set.
+  //
+  // So the cache sits on the LITERAL, not on the expression's answer. That is
+  // not a simplification, it is the only correct place: the final id list
+  // depends on `from`, because a sender is excluded from their own send. Keying
+  // a finished result would therefore need the sender in the key, which is a
+  // per-reader cache — the same thing that makes `my_labels` not worth caching,
+  // and it would miss far more often than it hit. A literal's candidate set has
+  // no such dependency, is shared by every expression mentioning that term, and
+  // is invalidated by exactly one term.
+  //
+  // Pseudo-labels (`awake`, `here`, …) are deliberately NOT cached: they read
+  // runtime status, which churns on every process start and stop, and they do
+  // not touch SQL in the first place.
+  static LITERAL_CACHE_MAX_ENTRIES = 500
+  static LITERAL_CACHE_MAX_MEMBERS = 200
+
+  _literalCandidateCacheGet(label) {
+    const hit = this._literalCandidateCache?.get(label)
+    if (!hit) return null
+    // Refresh recency: delete + set moves the key to the end of a Map's
+    // insertion order, which is the eviction order used below.
+    this._literalCandidateCache.delete(label)
+    this._literalCandidateCache.set(label, hit)
+    return hit
+  }
+
+  _literalCandidateCacheSet(label, agents) {
+    if (!this._literalCandidateCache) {
+      this._literalCandidateCache = new Map()
+      this._literalCacheTermsByAgent = new Map()
+    }
+    // A set too large to be worth holding is also the one most likely to be a
+    // one-off. Refusing it outright keeps the bound a count of entries rather
+    // than an estimate of memory.
+    if (agents.length > FleetStore.LITERAL_CACHE_MAX_MEMBERS) return
+    this._literalCandidateCache.set(label, agents)
+    for (const agent of agents) {
+      let terms = this._literalCacheTermsByAgent.get(agent.id)
+      if (!terms) { terms = new Set(); this._literalCacheTermsByAgent.set(agent.id, terms) }
+      terms.add(label)
+    }
+    while (this._literalCandidateCache.size > FleetStore.LITERAL_CACHE_MAX_ENTRIES) {
+      const oldest = this._literalCandidateCache.keys().next().value
+      this._dropLiteralCandidateEntry(oldest)
+    }
+  }
+
+  _dropLiteralCandidateEntry(label) {
+    const agents = this._literalCandidateCache?.get(label)
+    if (!agents) return
+    this._literalCandidateCache.delete(label)
+    for (const agent of agents) {
+      const terms = this._literalCacheTermsByAgent?.get(agent.id)
+      if (!terms) continue
+      terms.delete(label)
+      if (terms.size === 0) this._literalCacheTermsByAgent.delete(agent.id)
+    }
+  }
+
+  // Invalidate every cached literal this agent's membership could have changed.
+  //
+  // BEFORE ∪ AFTER, and the before half is the one that is easy to lose. An
+  // agent that just had a label REMOVED no longer answers to it, so the terms
+  // it answers to now cannot tell you which cached set has to drop it. The
+  // before half comes from `_literalCacheTermsByAgent`, which records the terms
+  // whose cached sets currently contain this agent.
+  _invalidateLiteralCandidatesFor(id) {
+    if (!this._literalCandidateCache?.size) return
+    const stale = new Set(this._literalCacheTermsByAgent?.get(id) || [])
+    const agent = this.getAgent(id)
+    if (agent) for (const term of labelsForAgent(agent)) {
+      if (this._literalCandidateCache.has(term)) stale.add(term)
+    }
+    for (const term of stale) this._dropLiteralCandidateEntry(term)
   }
 
   resolveChatRecipients(filterAst, { from = null, filter = '', runtimeProjections = {} } = {}) {
@@ -2721,6 +2812,8 @@ export class FleetStore {
         if (ids.length === 0) return []
         return this.getAgentsByIds(ids).filter(isFleetRosterAgent)
       }
+      const cached = this._literalCandidateCacheGet(label)
+      if (cached) return cached
       const rows = this.db.prepare(`
         SELECT ${this._AGENT_SELECT} ${this._AGENT_JOIN}
         WHERE agents.dead = 0
@@ -2736,7 +2829,9 @@ export class FleetStore {
           )
         ORDER BY agents.last_seen DESC
       `).all({ label })
-      return hydrateCandidates(rows)
+      const candidates = hydrateCandidates(rows)
+      this._literalCandidateCacheSet(label, candidates)
+      return candidates
     }
     const indexedCandidates = (ast) => {
       const fromLabel = (label) => {
