@@ -64,6 +64,7 @@ import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat, hasSourceMapping } from '../shared/document-formats.mjs'
 import { resolveContainedPath } from './lib/path-containment.mjs'
 import { solutionsVariantFileFor } from './lib/classroom-solution-variant.mjs'
+import { serverOwnerUpsertRow } from './lib/server-owner-row.mjs'
 import { resolveLocalImage } from '../shared/local-image.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
@@ -3047,15 +3048,11 @@ scheduleSessionEntryBackfill()
 
 // Ensure server owner exists as a human agent in the DB on startup
 if (fleetStore) {
-  await fleetStore.upsertAgent({
+  await fleetStore.upsertAgent(serverOwnerUpsertRow({
     id: SERVER_OWNER_ID,
-    friendly_name: SERVER_OWNER_NAME,
-    human: true,
-    dead: false,
-    labels: [],
-    registered_at: new Date().toISOString(),
-    last_seen: new Date().toISOString(),
-  })
+    name: SERVER_OWNER_NAME,
+    existing: await fleetStore.getAgent(SERVER_OWNER_ID),
+  }))
   runtimeStatusStore.markHumanPresence(
     SERVER_OWNER_ID,
     RUNTIME_STATUS.AWAY,
