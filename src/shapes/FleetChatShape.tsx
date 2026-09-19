@@ -64,7 +64,7 @@ import {
 } from '../../shared/filter-semantics.mjs'
 import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
 import { TERMINAL_GLYPH_PATHS, TERMINAL_GLYPH_UNAVAILABLE_PATH, TERMINAL_GLYPH_VIEWBOX } from '../fleet/terminal-glyph.mjs'
-import { labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { labelsForAgent, decodeFilterEntities } from '../../shared/fleet-labels.mjs'
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetIdentity, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent, searchFleet } from '../fleet-data-adapter'
@@ -1970,7 +1970,25 @@ function threadSearchRequest(descriptor: any, agent: string | null, currentProje
   if (since) filters.since = since
   if (until) filters.before = until
   if (!agentRequest) {
-    const raw = String(view.filter || descriptor?.filterExpression || '')
+    // A stored filter can arrive HTML-escaped, and this card re-runs it to draw
+    // itself — so the reader sees `juxtaposition is not valid syntax in "skip
+    // &lt;&gt; staff-lead"`, which blames the grammar for something the grammar
+    // did not do.
+    //
+    // The escaping is NOT this app's doing. The live store holds it that way in
+    // the tool input itself — `{"tool":"tlda/thread","input":{"filter":"skip
+    // &lt;&gt; staff-lead"}}` — so a caller passed text it had copied out of
+    // rendered output, while 39,742 stored events carry a raw `<>` with no
+    // trouble at all. Nothing between here and the parser adds entities.
+    //
+    // Decoding is safe rather than permissive: `&lt;` and `&gt;` cannot occur
+    // in an agent name or a label, so there is exactly one string this could
+    // have meant, and it is the one the caller wrote before something rendered
+    // it. This does not loosen the grammar — a filter that is still malformed
+    // after decoding fails exactly as before, which is the part worth keeping:
+    // making juxtaposition legal would turn a corrupt query into a successful
+    // one with confidently wrong results.
+    const raw = decodeFilterEntities(String(view.filter || descriptor?.filterExpression || ''))
     let filterExpression = ''
     try {
       const parsed = parseSearchQuery(raw)

@@ -90,6 +90,23 @@ export function parseFilter(input) {
   return parseUnifiedFilter(input, { sort: 'message' })
 }
 
+// Undo HTML escaping on a filter expression before it reaches the grammar.
+//
+// Only the four entities an escaper produces, and only in this direction: a
+// filter is never HTML, so there is nothing here to re-escape and no way for a
+// legitimate expression to be altered. `&amp;` goes last so `&amp;lt;` decodes
+// to `&lt;` rather than to `<` — a doubly-escaped string should come back one
+// layer, not collapse.
+export function decodeFilterEntities(s) {
+  if (!s.includes('&')) return s
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
 export function parseMessageFilter(input) {
   return desugarMessageFilter(parseUnifiedFilter(input, { sort: 'message' }))
 }
