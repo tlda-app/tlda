@@ -1,6 +1,8 @@
 import { unzipSync, strFromU8 } from 'fflate'
 import path from 'node:path'
 
+import { isGeneratedSupportFilter } from './qmd-support-filters.mjs'
+
 // A submission is an archive, not a file: students get a template whose solution
 // callouts are blanked, answer inside them, and photograph anything they did on
 // paper — so the .qmd travels with the images it references.
@@ -218,6 +220,17 @@ export function inspectSubmissionArchive(bytes, { template = null } = {}) {
     for (const target of [...new Set([...images, ...includes, ...filters])]) {
       const resolved = path.posix.normalize(base === '.' ? target : `${base}/${target}`)
       if (!present.has(resolved)) {
+        // A filter the course tooling generates into `<stem>.qmd.support/` is
+        // NOT a reason to refuse the hand-in, because the render path drops it
+        // when it is absent — `withoutAbsentSupportFilters`, same predicate.
+        // Refusing here while the renderer tolerated it stranded a real
+        // submission on 2026-09-19: renderable, and un-re-submittable through
+        // the only route that can give it a new revision. A student cannot be
+        // expected to carry a directory they never knew they had.
+        //
+        // Images and other includes still refuse. Those the render genuinely
+        // needs, and a page missing one is wrong rather than merely noisy.
+        if (filters.includes(target) && isGeneratedSupportFilter(target)) continue
         missing.push(target)
       } else if (includes.includes(target) && resolved.toLowerCase().endsWith('.qmd')) {
         pending.push(resolved)

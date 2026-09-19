@@ -26,8 +26,30 @@
 
 const FRONT_MATTER = /^(---\r?\n)([\s\S]*?)(\r?\n---\s*(?:\r?\n|$))/
 
-/** A `filters:` list item naming a file under some `<stem>.qmd.support/`. */
-const SUPPORT_FILTER_ITEM = /^(\s*)-\s*(['"]?)([^'"\n]*\.qmd\.support\/[^'"\n]+)\2\s*$/
+/** A `filters:` list item, whatever it names. */
+const FILTER_ITEM = /^(\s*)-\s*(['"]?)([^'"\n]+)\2\s*$/
+
+/**
+ * Is this filter one the course tooling generates into its own support
+ * directory — the kind a hand-in is not expected to carry?
+ *
+ * ONE STATEMENT, TWO CONSUMERS, and that is the point of exporting it. The
+ * render path drops such a filter when it is absent; intake must not refuse an
+ * archive for the same absence. Those were written as two independent rules on
+ * 2026-09-19 and immediately disagreed: the renderer tolerated exactly what
+ * intake refused, which left a real student hand-in renderable and
+ * un-re-submittable at the same time, with no way to re-run its build. The
+ * question "what must an archive carry" now has one answer rather than two that
+ * drift.
+ *
+ * Deliberately narrow. `solution-callout.lua` sits beside this one in the same
+ * `filters:` list and is what folds the solutions away; a missing image or
+ * include genuinely breaks the page. Only the generator's own
+ * `<stem>.qmd.support/` is treated as optional.
+ */
+export function isGeneratedSupportFilter(target) {
+  return /(?:^|\/)[^/]*\.qmd\.support\/[^/]+$/.test(String(target ?? ''))
+}
 
 /**
  * `text` with absent support-directory filters removed from its front matter.
@@ -56,9 +78,10 @@ export function withoutAbsentSupportFilters(text, hasFile) {
     if (inFilters && /^\S/.test(line)) inFilters = false
     if (!inFilters) return true
 
-    const item = line.match(SUPPORT_FILTER_ITEM)
+    const item = line.match(FILTER_ITEM)
     if (!item) return true
     const target = item[3]
+    if (!isGeneratedSupportFilter(target)) return true
     if (hasFile(target)) return true
     dropped.push(target)
     return false

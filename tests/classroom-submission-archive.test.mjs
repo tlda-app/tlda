@@ -98,16 +98,24 @@ test('an entry escaping the archive root is refused', () => {
   assert.match(result.errors.join(' '), /unsafe/)
 })
 
-// A filter the archive does not carry is fatal in a way a missing image is not:
-// pandoc refuses the render outright, AFTER the whole document has knitted, so
-// the work is complete and the page is lost. And it happens on the server, where
-// the student never sees it — they are told they handed in, and we hold
-// something that cannot render. Measured on a real submission: 33 of 33 chunks
-// executed, then `cannot open …answer-placement-warning.lua`, zero pages.
+// A filter the archive does not carry was fatal in a way a missing image is
+// not: pandoc refuses the render outright, AFTER the whole document has
+// knitted, so the work is complete and the page is lost. Measured on a real
+// submission: 33 of 33 chunks executed, then `cannot open
+// …answer-placement-warning.lua`, zero pages.
 //
-// The generated handout ships every filter it names, so an archive that is
-// missing one has been taken apart after generation. Refusing it costs a
-// re-zip; accepting it costs the mark.
+// INTAKE MUST NOT REFUSE WHAT THE RENDER PATH TOLERATES, and that is the rule
+// these tests now hold. `withoutAbsentSupportFilters` drops an absent
+// `<stem>.qmd.support/` filter from the build copy, because it is generated
+// tooling that does nothing to the output. Refusing the same archive here left
+// one real hand-in renderable and un-re-submittable at once — intake is the only
+// route to a new revision, so there was no way to re-run its build at all. The
+// two rules were written independently nine minutes apart and disagreed
+// immediately; both now read `isGeneratedSupportFilter`.
+//
+// Every other missing filter is still refused. `solution-callout.lua` is what
+// folds the solutions away, so a page rendered without it says something
+// different. Refusing costs a re-zip; accepting costs the mark.
 
 const FILTERED = `---
 title: "Homework"
@@ -131,14 +139,29 @@ test('an archive carrying the filters its front matter names is accepted', () =>
   assert.deepEqual(result.answerIds, ['ans-exr-bias'])
 })
 
-test('a declared filter that is not in the archive is refused and named', () => {
+// This is the archive of the one real hand-in on the box, 2026-09-18: the
+// document names its generated support filter and the zip does not carry the
+// directory. It must be accepted, because the render drops that filter.
+test('a missing support-directory filter is accepted, because the render drops it', () => {
   const result = inspectSubmissionArchive(zip({
     'hw5.qmd': strToU8(FILTERED),
     'markov.jpg': PNG,
     'solution-callout.lua': LUA,
   }))
-  assert.equal(result.ok, false)
-  assert.match(result.errors.join(' '), /hw5\.qmd\.support\/answer-placement-warning\.lua/)
+  assert.equal(result.ok, true, result.errors.join(' '))
+  assert.deepEqual(result.answerIds, ['ans-exr-bias'])
+})
+
+test('a missing filter outside the support directory is still refused and named', () => {
+  const result = inspectSubmissionArchive(zip({
+    'hw5.qmd': strToU8(FILTERED),
+    'markov.jpg': PNG,
+    'hw5.qmd.support/answer-placement-warning.lua': LUA,
+  }))
+  assert.equal(result.ok, false, 'a missing solution-callout.lua changes what the page says')
+  assert.match(result.errors.join(' '), /solution-callout\.lua/)
+  // And it must not blame the filter that is allowed to be absent.
+  assert.doesNotMatch(result.errors.join(' '), /answer-placement-warning\.lua/)
 })
 
 test('a filter is resolved beside the qmd, so a zipped folder still passes', () => {
