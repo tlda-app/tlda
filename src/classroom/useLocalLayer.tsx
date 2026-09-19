@@ -4,6 +4,7 @@ import { classroomApi, type ProblemAnswer } from './api'
 import { htmlIframeElements } from '../htmlIframeRegistry'
 import { StudentAnnotationOverlay } from './StudentAnnotationOverlay'
 import { gradingDraftRoomId } from '../../shared/classroom-rooms.mjs'
+import { useInkFrame } from './useInkFrame'
 import {
   NO_ANSWER,
   answersByExercise,
@@ -40,6 +41,15 @@ export interface OpenPair {
   exerciseId: string
   answer: ProblemAnswer
   roomId: string
+  /**
+   * The pair element in the chapter — solution and answer side by side.
+   *
+   * Carried because the glass over it needs a frame, and the frame is measured
+   * from this element: it supplies the ORIGIN the ink is stored against. Skip,
+   * 9/18: "the glass coordinate frame is the coordinate system of the div
+   * wrapping the pair."
+   */
+  wrapper: HTMLElement
 }
 
 interface AnswerDocument {
@@ -65,6 +75,50 @@ async function loadAnswerDocument(contentRef: string): Promise<AnswerDocument> {
   const response = await fetch(url)
   if (!response.ok) throw new Error(`${contentRef} could not be read`)
   return { document: new DOMParser().parseFromString(await response.text(), 'text/html'), url }
+}
+
+/**
+ * The glass over one pair, with the frame that makes it drawable.
+ *
+ * A component rather than a loop body because the frame is a hook, and one pair
+ * is one frame. Everything it does is `useInkFrame` plus handing the result on:
+ * `bounds` positions the pane in SCREEN coordinates, so it asks no parent for a
+ * size and cannot be broken by being mounted somewhere else; `camera` puts page
+ * zero at the pair wrapper's top-left, so a stroke is stored relative to the
+ * callout and survives the page re-flowing under it.
+ *
+ * Without a frame the pane fell back to the stylesheet's `inset: 0`, inherited
+ * whatever box its parent had — 0x0, inside `.bottom-panels` — and every stroke
+ * went through to the book's canvas and into the shared chapter room.
+ *
+ * Rendered only once the frame exists. A pane with no frame is the state that
+ * caused this, so there is no fallback to it.
+ */
+function LocalLayerGlass({
+  pair,
+  bookRoomId,
+  editor,
+  isWriteTarget,
+}: {
+  pair: OpenPair
+  bookRoomId: string
+  editor: Editor | null
+  isWriteTarget: boolean
+}) {
+  const frame = useInkFrame(pair.wrapper, `[data-tlda-exercise="${pair.exerciseId}"]`, editor)
+  if (!frame) return null
+  return (
+    <StudentAnnotationOverlay
+      bookRoomId={bookRoomId}
+      studentId={pair.answer.studentId}
+      bookEditor={editor}
+      visible
+      isWriteTarget={isWriteTarget}
+      roomId={pair.roomId}
+      camera={frame.camera}
+      bounds={frame.bounds}
+    />
+  )
 }
 
 export function useLocalLayer({
@@ -243,10 +297,15 @@ export function useLocalLayer({
           continue
         }
         setError('')
+        // `pairStudentAnswer` returns the answer it placed; its parent is the
+        // pair wrapper, which is the origin the glass is measured against.
+        const wrapper = placed.parentElement
+        if (!wrapper) continue
         next.push({
           exerciseId,
           answer,
           roomId: gradingDraftRoomId(`doc-${answer.contentRef}`, `ans-${exerciseId}`),
+          wrapper,
         })
       }
       if (!cancelled) setOpenPairs(next)
@@ -261,14 +320,12 @@ export function useLocalLayer({
   const overlays = (
     <>
       {openPairs.map(pair => (
-        <StudentAnnotationOverlay
+        <LocalLayerGlass
           key={pair.roomId}
+          pair={pair}
           bookRoomId={documentRoomId}
-          studentId={pair.answer.studentId}
-          bookEditor={editor}
-          visible
+          editor={editor}
           isWriteTarget={writeTarget === pair.exerciseId}
-          roomId={pair.roomId}
         />
       ))}
     </>
