@@ -37,6 +37,10 @@ function normalizeModelOptions(options = {}) {
         valueSpec && typeof valueSpec === 'object' && !Array.isArray(valueSpec)
           ? {
               ...(valueSpec.description ? { description: String(valueSpec.description) } : {}),
+              // A value that still works but should say something when chosen.
+              // The text lives beside the value so anything can be warned about
+              // by editing config, without a code change.
+              ...(valueSpec.warn ? { warn: String(valueSpec.warn) } : {}),
               ...(valueSpec.options ? { options: normalizeModelOptions(valueSpec.options) } : {}),
             }
           : {},
@@ -94,6 +98,7 @@ export function normalizeSpawnModelKwargs(kwargs = {}, { config = {}, allowDefau
   const spec = resolveModelSpec(model, { config })
   const options = {}
   const activeOptionSpecs = {}
+  const warnings = []
   const knownKeys = new Set(['model'])
 
   function visit(optionSpecs = {}) {
@@ -109,6 +114,11 @@ export function normalizeSpawnModelKwargs(kwargs = {}, { config = {}, allowDefau
       }
       options[name] = value
       const selected = optionSpec.values?.[value]
+      // Warn on a choice, not on a default. A configured default is the
+      // considered setting; the warning exists for someone overriding it.
+      if (hasValue && selected?.warn) {
+        warnings.push({ option: name, value, model: spec.alias, message: String(selected.warn) })
+      }
       if (selected?.options) visit(selected.options)
     }
   }
@@ -126,8 +136,14 @@ export function normalizeSpawnModelKwargs(kwargs = {}, { config = {}, allowDefau
     description: spec.description,
     options,
     activeOptionSpecs,
+    warnings,
     spec,
   }
+}
+
+// One line per warned choice, for a caller that has somewhere to print it.
+export function formatModelOptionWarnings(warnings = []) {
+  return warnings.map(({ option, value, model, message }) => `warning: ${model} ${option}=${value} — ${message}`)
 }
 
 function resolveHarnessModel(harness, model, options = {}) {

@@ -4612,6 +4612,30 @@ export async function runFleetSpawn(spawnArgs, {
   const explicitPermissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
   const explicitCwd = hasRawFlag(spawnArgs, 'cwd')
   const explicitModelArg = flagFromRaw(spawnArgs, 'model') || undefined
+  // A warned option value is available and still launches; choosing it prints
+  // the warning configured beside that value. Said here so it covers mint, wake
+  // and refresh alike, and before any of them commits to a launch. An
+  // unresolvable model is the launch's own error to report, not this line's.
+  try {
+    const { formatModelOptionWarnings, normalizeSpawnModelKwargs } = await import('../agent-launch/models.mjs')
+    const effortArg = flagFromRaw(spawnArgs, 'effort') || undefined
+    const chosen = normalizeSpawnModelKwargs(
+      {
+        model: explicitModelArg,
+        ...collectSpawnModelOptionsFromRaw(spawnArgs),
+        ...(effortArg ? { effort: effortArg } : {}),
+      },
+      { config: withDaemonModelAliases({}, readDaemonConfig(defaultDaemonConfigPath(configDir))) },
+    )
+    for (const line of formatModelOptionWarnings(chosen.warnings)) console.warn(yellow(`  ${line}`))
+  } catch (e) {
+    // Only a model that will not resolve is swallowed, and only because the
+    // launch below resolves the same model and reports it properly -- a wake
+    // with no --model reaches here before its recorded model is known. Anything
+    // else is a fault in this block and must not be hidden: an empty catch here
+    // silently ate a ReferenceError while this was being written.
+    if (!/daemon model|model option/i.test(e?.message || '')) throw e
+  }
   // A named --permissions profile must be one the operator actually configured in
   // daemon.yaml. Unknown profile → loud error listing the real ones, never a
   // silent fallback. Checked here so it covers wake as well: the wake branch

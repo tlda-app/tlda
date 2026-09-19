@@ -52,7 +52,7 @@ import {
   recipientAttachmentRef,
 } from '../shared/inbox-reference-materialization.mjs';
 import { getActiveEnvName } from '../shared/config.mjs';
-import { listModels as listSpawnModels, normalizeSpawnModelKwargs } from '../agent-launch/models.mjs';
+import { formatModelOptionWarnings, listModels as listSpawnModels, normalizeSpawnModelKwargs } from '../agent-launch/models.mjs';
 import {
   defaultDaemonConfigPath,
   readDaemonConfig,
@@ -699,10 +699,10 @@ function spawnPermissionDescriptions() {
 async function validateSpawnRequest(opts = {}) {
   const model = opts.model;
   const kind = opts.kind;
-  if (!model && !kind) return null;
+  if (!model && !kind) return { error: null, warnings: [] };
   const catalog = await getSpawnModelCatalog();
   const result = validateSpawnModelSelection({ model, kind }, catalog);
-  if (!result.ok) return result.error;
+  if (!result.ok) return { error: result.error, warnings: [] };
   const daemonConfig = readDaemonConfig();
   const config = withDaemonModelAliases({}, daemonConfig);
   const reserved = new Set([
@@ -714,11 +714,12 @@ async function validateSpawnRequest(opts = {}) {
     if (!reserved.has(key) && value != null && value !== '') kwargs[key] = value;
   }
   try {
-    normalizeSpawnModelKwargs({ model, ...kwargs }, { config });
+    const normalized = normalizeSpawnModelKwargs({ model, ...kwargs }, { config });
+    // A warned value is still a legal choice. It launches, and it says so.
+    return { error: null, warnings: formatModelOptionWarnings(normalized.warnings) };
   } catch (e) {
-    return e.message || String(e);
+    return { error: e.message || String(e), warnings: [] };
   }
-  return null;
 }
 
 function spawnModelOptionsFromArgs(opts = {}) {
@@ -3199,10 +3200,12 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       const agentCwd = spawnOpts.cwd || getAgentCwd();
       const operationId = args.operation_id || `${activeAgentId()}:mcp-mint-delegate:${crypto.randomUUID()}`;
       let spawnResult = null;
+      let mintWarnings = [];
 
       try {
-        const modelError = await validateSpawnRequest(spawnOpts);
+        const { error: modelError, warnings } = await validateSpawnRequest(spawnOpts);
         if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
+        mintWarnings = warnings;
         spawnResult = await mcpFleetTransport.durable('spawn', {
           fresh: true,
           name: agentName,
@@ -3243,7 +3246,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       return {
         content: [{
           type: 'text',
-          text: `Minted ${assignedName} and delegated [${spawnResult.task_id}] to ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${assignedName}\nThe task is attached now; the agent is still starting and is notified when it joins. A launch failure retracts the task.`,
+          text: `${mintWarnings.map(line => `${line}\n`).join('')}Minted ${assignedName} and delegated [${spawnResult.task_id}] to ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${assignedName}\nThe task is attached now; the agent is still starting and is notified when it joins. A launch failure retracts the task.`,
         }],
       };
     }

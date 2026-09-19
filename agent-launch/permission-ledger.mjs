@@ -282,6 +282,8 @@ function normalizeChoiceOptions(options = {}, context = 'options') {
         const row = valueSpec && typeof valueSpec === 'object' && !Array.isArray(valueSpec) ? valueSpec : {}
         return [valueKey, {
           ...(row.description ? { description: String(row.description) } : {}),
+          // A value that remains selectable but says something when chosen.
+          ...(row.warn ? { warn: String(row.warn) } : {}),
           ...(row.options ? { options: normalizeChoiceOptions(row.options, `${context}.${key}.values.${valueKey}.options`) } : {}),
         }]
       }).filter(Boolean)),
