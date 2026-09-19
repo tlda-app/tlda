@@ -418,6 +418,11 @@ Useful scopes:
 - `since:` and `before:` bound time; `after:` is an alias for `since:`.
 - `type:` and `role:` select event or message roles.
 - `me` resolves to the current identity.
+- A name selects whoever held it **when each message was sent**. `from:chief`
+  over a week gives each holder's own messages rather than every holder's
+  blended together; a `fleet:` id selects that agent at every instant.
+- Names are matched in full. The search box completes a fragment to a whole
+  name as you type, and the query language takes the completed name.
 - `A <> B` means messages between `A` and `B`.
 - Parenthesized agent expressions support `|`, `&`, and `!`, as in
   `agent:(reviewer | writer)` or `agent:(reviewer & !writer)`.

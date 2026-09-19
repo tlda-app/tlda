@@ -98,7 +98,7 @@ import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCac
 import { classroomRoomAccess, gradingDraftRoomTarget } from '../shared/classroom-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
-import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
+import { agentSpansCover, intersectAgentSpans, isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
 import { FleetStoreClient } from './lib/fleet-store-client.mjs'
 import { FleetSearchClient } from './lib/fleet-search-client.mjs'
 import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
@@ -7715,47 +7715,56 @@ async function dispatchFleetWsMessage(ws, msg) {
       // "nothing matched" — so the caller is told which name failed instead of
       // being left to conclude the history is empty.
       const unresolvedNames = new Set()
+      // An agent expression resolves to the SPANS it names — who, and over what
+      // interval — because a name binds at the point of use. `from:chief` names
+      // whoever held `chief` when each message was sent, so the answer cannot be
+      // a flat id set: one would have to blend every holder's traffic together
+      // with nothing in the result to say which era a row belongs to.
+      //
+      // Both ends null is unconditional: an id, and `me`, name the same agent at
+      // every instant.
+      const unconditionalSpan = (id) => ({ id, from_ts: null, to_ts: null })
       const resolveAgentNode = async (node) => {
-        if (!node) return new Set()
+        if (!node) return []
         switch (node.t) {
           case 'lit': {
             // agentNodesInMessageFilter annotates every leaf before the query.
             // The post-filter runs this same function once per result row and
             // recipient; ignoring the annotation repeated the full selector
             // query dozens or hundreds of times for one search request.
-            if (Array.isArray(node.ids)) return new Set(node.ids)
-            if (node.v?.startsWith?.('fleet:')) return new Set([node.v])
-            const ids = await fleetSearchStore.resolveAgentSelector({
+            if (Array.isArray(node.spans)) return node.spans
+            if (node.v?.startsWith?.('fleet:')) return [unconditionalSpan(node.v)]
+            const spans = await fleetSearchStore.resolveAgentSpans({
               ...(node.selector || { fragment: node.v }),
               _requestContext: searchRequestContext,
             })
-            if (!ids.length) unresolvedNames.add(node.v)
-            return new Set(ids)
+            if (!spans.length) unresolvedNames.add(node.v)
+            return spans
           }
-          case 'me': return new Set([currentSearchActor()])
-          case 'and': {
-            const left = await resolveAgentNode(node.l)
-            const right = await resolveAgentNode(node.r)
-            return new Set([...left].filter(id => right.has(id)))
-          }
-          case 'or': return new Set([...await resolveAgentNode(node.l), ...await resolveAgentNode(node.r)])
+          case 'me': return [unconditionalSpan(currentSearchActor())]
+          case 'and':
+            return intersectAgentSpans(await resolveAgentNode(node.l), await resolveAgentNode(node.r))
+          case 'or': return [...await resolveAgentNode(node.l), ...await resolveAgentNode(node.r)]
           case 'not':
             // Search-side negated agent sets are enforced by the post-filter.
             // Do not broaden the SQL prefilter to "all agents" here.
-            return new Set()
-          default: return new Set()
+            return []
+          default: return []
         }
       }
+      // The ids those spans reach, which is the SQL prefilter's candidate set:
+      // everyone the name ever pointed at. Deliberately a superset — the span
+      // test narrows it where a row and its timestamp are both in hand.
       const collectPrefilterIds = async (node, out = new Set()) => {
         if (!node) return out
         switch (node.t) {
           case 'from':
           case 'to':
-            for (const id of await resolveAgentNode(node.x)) out.add(id)
+            for (const span of await resolveAgentNode(node.x)) out.add(span.id)
             break
           case 'lit':
           case 'me':
-            for (const id of await resolveAgentNode(node)) out.add(id)
+            for (const span of await resolveAgentNode(node)) out.add(span.id)
             break
           case 'and':
           case 'or':
@@ -7766,14 +7775,14 @@ async function dispatchFleetWsMessage(ws, msg) {
         }
         return out
       }
-      const matchesAgentNode = async (node, id) => {
+      const matchesAgentNode = async (node, id, timestamp) => {
         if (!node) return true
         switch (node.t) {
           case 'lit':
-          case 'me': return (await resolveAgentNode(node)).has(id)
-          case 'and': return await matchesAgentNode(node.l, id) && await matchesAgentNode(node.r, id)
-          case 'or': return await matchesAgentNode(node.l, id) || await matchesAgentNode(node.r, id)
-          case 'not': return !await matchesAgentNode(node.x, id)
+          case 'me': return agentSpansCover(await resolveAgentNode(node), id, timestamp)
+          case 'and': return await matchesAgentNode(node.l, id, timestamp) && await matchesAgentNode(node.r, id, timestamp)
+          case 'or': return await matchesAgentNode(node.l, id, timestamp) || await matchesAgentNode(node.r, id, timestamp)
+          case 'not': return !await matchesAgentNode(node.x, id, timestamp)
           default: return false
         }
       }
@@ -7789,17 +7798,17 @@ async function dispatchFleetWsMessage(ws, msg) {
       // disjuncts contain a `to:`.
       const matchesRecipient = async (node, row) => {
         for (const id of row.recipients || []) {
-          if (await matchesAgentNode(node, id)) return true
+          if (await matchesAgentNode(node, id, row.timestamp)) return true
         }
         return false
       }
       const matchesMessageNode = async (node, row) => {
         if (!node) return true
         switch (node.t) {
-          case 'from': return await matchesAgentNode(node.x, rowFrom(row))
+          case 'from': return await matchesAgentNode(node.x, rowFrom(row), row.timestamp)
           case 'to': return await matchesRecipient(node.x, row)
           case 'lit':
-          case 'me': return await matchesAgentNode(node, rowFrom(row)) || await matchesRecipient(node, row) || await matchesAgentNode(node, row.agentId)
+          case 'me': return await matchesAgentNode(node, rowFrom(row), row.timestamp) || await matchesRecipient(node, row) || await matchesAgentNode(node, row.agentId, row.timestamp)
           case 'since': return !row.timestamp || row.timestamp >= node.v
           case 'before': return !row.timestamp || row.timestamp < node.v
           case 'type': return row.type === node.v || row.role === node.v
@@ -7824,7 +7833,7 @@ async function dispatchFleetWsMessage(ws, msg) {
       // matching rows". See server/lib/message-filter-sql.mjs.
       if (messageFilter) {
         for (const node of agentNodesInMessageFilter(messageFilter)) {
-          node.ids = [...await resolveAgentNode(node)]
+          node.spans = await resolveAgentNode(node)
         }
       }
       if (messageFilter) {
@@ -7849,27 +7858,38 @@ async function dispatchFleetWsMessage(ws, msg) {
       if (msg.filterExpression) {
         const sugared = parseFilter(msg.filterExpression)
         if (sugared?.t === 'between') {
-          const a = [...await resolveAgentNode(sugared.l)]
-          const b = [...await resolveAgentNode(sugared.r)]
+          // The pair read bounds the QUERY, and it is bounded by id: the
+          // desugared filter's own `from`/`to` leaves carry the spans, and the
+          // compiled predicate and the evaluator both narrow what comes back.
+          const a = [...new Set((await resolveAgentNode(sugared.l)).map(span => span.id))]
+          const b = [...new Set((await resolveAgentNode(sugared.r)).map(span => span.id))]
           if (a.length && b.length) betweenPair = { a, b }
         }
       }
-      // A typed name fragment (agent:/from:) resolves on the SERVER to the set of
-      // fleet ids it refers to — substring over current + historical names,
-      // dawn-aware. An empty match yields an impossible id (an empty result set),
-      // NOT an unfiltered search.
+      // A typed name fragment (agent:/from:) resolves on the SERVER to the spans
+      // it refers to — who held that name, and when. An empty match yields an
+      // impossible id (an empty result set), NOT an unfiltered search.
+      //
+      // The spans travel to the store alongside the ids. This path carries no
+      // filter expression, so there is no compiled predicate behind it; without
+      // them the same name would bind lexically through `from:` and dynamically
+      // here, and which answer you got would depend on how you phrased the
+      // question.
       let resolvedAgentIds = []
+      let searchAgentSpans = null
       if (msg.agent) resolvedAgentIds = (Array.isArray(msg.agent) ? msg.agent : [msg.agent]).filter(Boolean)
       if (msg.agentQuery || msg.agentResolve) {
         const selector = { ...(msg.agentResolve || { fragment: msg.agentQuery }), _requestContext: searchRequestContext }
-        const ids = await fleetSearchStore.resolveAgentSelector(selector)
+        const spans = await fleetSearchStore.resolveAgentSpans(selector)
+        const ids = [...new Set(spans.map(span => span.id))]
         if (!ids.length) unresolvedNames.add(selector.fragment)
         searchAgent = ids.length ? ids : [noMatch];
+        searchAgentSpans = spans.length ? spans : null
         resolvedAgentIds = ids
       }
       const hasText = (msg.query || '').trim().length > 0;
       let results = await fleetSearchStore.searchAll(msg.query || '', {
-        limit: msg.limit, agent: searchAgent, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
+        limit: msg.limit, agent: searchAgent, agentSpans: searchAgentSpans, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
         // No keyword + an agent filter → return that agent's whole history
         // instead of FTS-matching the literal query text.
         agentOnly: msg.agentOnly ?? (!hasText && !!searchAgent),
@@ -7882,9 +7902,9 @@ async function dispatchFleetWsMessage(ws, msg) {
       })
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
-        const ids = [...new Set((await Promise.all(naturalQueries.map(async query => {
-          if (String(query || '').trim() === 'me') return [currentSearchActor()]
-          const resolved = await fleetSearchStore.resolveAgentSelector({
+        const spans = (await Promise.all(naturalQueries.map(async query => {
+          if (String(query || '').trim() === 'me') return [unconditionalSpan(currentSearchActor())]
+          const resolved = await fleetSearchStore.resolveAgentSpans({
             ...(parseUnifiedAgentSelector(query) || { fragment: query }),
             _requestContext: searchRequestContext,
           })
@@ -7894,11 +7914,12 @@ async function dispatchFleetWsMessage(ws, msg) {
           // "No results" out of a term that could never have matched.
           if (!resolved.length) unresolvedNames.add(query)
           return resolved
-        }))).flat())]
+        }))).flat()
+        const ids = [...new Set(spans.map(span => span.id))]
         if (ids.length) {
           const naturalTextQuery = (msg.naturalTextQuery || '').trim()
           const agentResults = await fleetSearchStore.searchAll(naturalTextQuery, {
-            limit: msg.limit, agent: ids, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
+            limit: msg.limit, agent: ids, agentSpans: spans, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
             agentOnly: !naturalTextQuery,
             historyOnly: msg.historyOnly,
             eventOnly: msg.eventOnly,
@@ -7933,6 +7954,8 @@ async function dispatchFleetWsMessage(ws, msg) {
       results = await applyRowFilters(results)
       if (messageFilter && !resolvedAgentIds.length) resolvedAgentIds = [...await collectPrefilterIds(messageFilter)]
       const naturalAgentOnly = !!(msg.naturalAgentQueries?.length || msg.naturalAgentQuery) && !msg.naturalTextQuery && !msg.filterExpression
+      // Identity rows, not messages: this list names WHICH agents the query
+      // reached, which is an id question with no instant to bind at.
       if (naturalAgentOnly && !resolvedAgentIds.length) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
         resolvedAgentIds = [...new Set((await Promise.all(naturalQueries.map(async query => {

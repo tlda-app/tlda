@@ -36,3 +36,61 @@ export function resolveNameAt(entry, ts) {
   }
   return entry.current ?? null
 }
+
+// Does an agent-name span cover one instant? A span with both ends null is
+// UNCONDITIONAL — an id, a lineage seat, a label — and covers everything. A
+// bounded span is [from_ts, to_ts), to_ts null meaning still open.
+//
+// A row with no timestamp is covered only by an unconditional span. That is
+// the same answer TemporalMembership gives an undated event, and the same one
+// SQL gives, where every comparison against a NULL timestamp is NULL and so
+// not true — which is what keeps the compiled predicate and the JS evaluator
+// agreeing on the same rows.
+export function agentSpanCovers(span, timestamp) {
+  if (!span) return false
+  if (span.from_ts == null && span.to_ts == null) return true
+  if (!timestamp) return false
+  if (span.from_ts != null && timestamp < span.from_ts) return false
+  if (span.to_ts != null && timestamp >= span.to_ts) return false
+  return true
+}
+
+// True when any of `spans` names `id` at `timestamp`.
+export function agentSpansCover(spans, id, timestamp) {
+  if (!id) return false
+  for (const span of spans || []) {
+    if (span?.id === id && agentSpanCovers(span, timestamp)) return true
+  }
+  return false
+}
+
+// Intersect a time bound with another — `null` means unbounded, so the later
+// `from` and the earlier `to` win and two absent bounds stay absent.
+export function laterBound(a, b) {
+  if (a == null) return b ?? null
+  if (b == null) return a
+  return a > b ? a : b
+}
+
+export function earlierBound(a, b) {
+  if (a == null) return b ?? null
+  if (b == null) return a
+  return a < b ? a : b
+}
+
+// `chief & bot` names the agent that was both AT THE SAME TIME, so the spans
+// intersect rather than the id sets. Intersecting ids and keeping either side's
+// interval would answer with periods when only one of the two was true.
+export function intersectAgentSpans(left, right) {
+  const out = []
+  for (const a of left || []) {
+    for (const b of right || []) {
+      if (!a?.id || a.id !== b?.id) continue
+      const from = laterBound(a.from_ts, b.from_ts)
+      const to = earlierBound(a.to_ts, b.to_ts)
+      if (from != null && to != null && from >= to) continue
+      out.push({ id: a.id, from_ts: from, to_ts: to })
+    }
+  }
+  return out
+}

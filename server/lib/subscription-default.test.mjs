@@ -192,8 +192,10 @@ test('pull search and push subscriptions agree on persisted query shapes', async
       const filter = parseMessageFilter(query)
       const resolve = node => {
         if (!node) return
-        if (node.t === 'lit') node.ids = [agentIds.get(node.v) || node.v]
-        if (node.t === 'me') node.ids = ['fleet:goose']
+        // Unconditional spans: these are ids, and an id names the same agent at
+        // every instant. Subscription delivery asks who, not who-then.
+        if (node.t === 'lit') node.spans = [{ id: agentIds.get(node.v) || node.v, from_ts: null, to_ts: null }]
+        if (node.t === 'me') node.spans = [{ id: 'fleet:goose', from_ts: null, to_ts: null }]
         resolve(node.l); resolve(node.r); resolve(node.x)
       }
       resolve(filter)

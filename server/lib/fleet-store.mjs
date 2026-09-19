@@ -38,10 +38,10 @@ import {
   isFleetRosterAgent,
   runtimeState,
 } from '../../shared/fleet-runtime-status.mjs';
-import { messageFilterSqlCompiler } from './message-filter-sql.mjs';
+import { agentSpanPredicate, messageFilterSqlCompiler } from './message-filter-sql.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { ServerDaemonOutbox } from './server-daemon-outbox.mjs';
-import { CHAT_HISTORY_EVENT_TYPES, resolveNameAt } from './fleet-history.mjs';
+import { CHAT_HISTORY_EVENT_TYPES, agentSpansCover, earlierBound, laterBound, resolveNameAt } from './fleet-history.mjs';
 
 export { CHAT_HISTORY_EVENT_TYPES } from './fleet-history.mjs';
 
@@ -174,6 +174,27 @@ function parsePrettyName(value) {
     try { return JSON.parse(trimmed); } catch { return value; }
   }
   return value;
+}
+
+// `*chief[2]` counts OCCUPANTS of the seat, so the position indexes agents and
+// not the spans they hold: one agent that held a name across two intervals is
+// the second occupant once, never the second and the third. Slice the distinct
+// ids in order, then keep every span belonging to the ids that survived.
+function selectAgentSpanRange(spans, selector) {
+  if (selector.position == null && !selector.range) return spans;
+  const ids = [];
+  for (const span of spans) if (!ids.includes(span.id)) ids.push(span.id);
+  let kept;
+  if (selector.position != null) {
+    const idx = Math.max(0, Number(selector.position) - 1);
+    kept = ids[idx] ? [ids[idx]] : [];
+  } else {
+    const from = selector.range.from == null ? 0 : Math.max(0, Number(selector.range.from) - 1);
+    const to = selector.range.to == null ? undefined : Math.max(from, Number(selector.range.to));
+    kept = ids.slice(from, to);
+  }
+  const keptIds = new Set(kept);
+  return spans.filter(span => keptIds.has(span.id));
 }
 
 function rankUnifiedSearchRows(rows, { terms = [], query = '', explicitActivitySearch = false } = {}) {
@@ -1438,6 +1459,7 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_alive ON agents(dead, last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_friendly_name ON agents(friendly_name);
+      CREATE INDEX IF NOT EXISTS idx_agents_friendly_name_lower ON agents(lower(friendly_name));
       CREATE INDEX IF NOT EXISTS idx_recipients_unread ON recipients(event_id) WHERE read = 0;
     `);
 
@@ -1461,6 +1483,11 @@ export class FleetStore {
       );
       CREATE INDEX IF NOT EXISTS idx_name_history_fleet ON name_history(fleet_id, from_ts);
       CREATE INDEX IF NOT EXISTS idx_name_history_open ON name_history(fleet_id) WHERE to_ts IS NULL;
+      -- Name resolution reads this table BY NAME, which is the opposite
+      -- direction from the two indexes above. It compares lower(friendly_name),
+      -- so an index on the bare column cannot serve it and SQLite scans;
+      -- the expression index is what makes an exact lookup a seek.
+      CREATE INDEX IF NOT EXISTS idx_name_history_name_lower ON name_history(lower(friendly_name));
 
       -- New agent that registers with a name → open its first span.
       CREATE TRIGGER IF NOT EXISTS name_history_ai AFTER INSERT ON agents
@@ -6487,7 +6514,28 @@ export class FleetStore {
     return this._indexPresence.get(name);
   }
 
-  resolveAgentSelector(selector) {
+  // A name binds at the point of use. `resolveAgentSpans` is the primitive: it
+  // answers not "who is this name" but "who was this name, and when" — one
+  // entry per interval over which the fragment named one agent.
+  //
+  // An entry with a null `from_ts` and a null `to_ts` is UNCONDITIONAL: an id
+  // names the same agent at every instant, and so do a lineage stack entry and
+  // a label. A NAME does not, so it contributes one bounded entry per
+  // `name_history` row, [from_ts, to_ts), `to_ts` null meaning still current.
+  //
+  // `resolveAgentSelector` below flattens this to the distinct ids, which is
+  // the CANDIDATE set for the SQL prefilter — everyone the name ever pointed
+  // at. That set is deliberately broad; what narrows it to the agent holding
+  // the name when a particular message was sent is the span test, applied
+  // where a row and its timestamp are both in hand. Resolving to a flat id set
+  // and stopping there is dynamic scope: it blends every holder of the name
+  // into one answer with nothing to tell them apart.
+  //
+  // Names match EXACTLY, case-insensitively. Completing a fragment to a whole
+  // name is the picker's job, and it does it before the query is submitted.
+  // Matching exactly is also what makes this an indexed seek rather than two
+  // leading-wildcard scans of every agent and every name the fleet has used.
+  resolveAgentSpans(selector) {
     selector = typeof selector === 'string' ? { fragment: selector } : (selector || {});
     const baseFragment = (selector.fragment || '').trim().toLowerCase();
     if (!baseFragment) return [];
@@ -6503,8 +6551,7 @@ export class FleetStore {
     // which era a row belongs to is visible in the result.
     //
     // An emptied lineage was the earlier version of the same bug: it swallowed
-    // the name and returned [], so `from:skip` resolved to nothing while
-    // `from:ski` found him through the substring branch below.
+    // the name and returned [], so `from:skip` resolved to nothing.
     const lineage = this.getLineage(selector.fragment)
     const stackIds = lineage ? this._lineageStackIds(lineage.id) : [];
     // A positional or ranged selector — `*chief[2]` — counts occupants of the
@@ -6512,63 +6559,98 @@ export class FleetStore {
     // the stack. Letting it run off the end into name-history matches would
     // silently answer a different question than the one the index asked.
     if (stackIds.length && (selector.position != null || selector.range)) {
-      if (selector.position != null) {
-        const idx = Math.max(0, Number(selector.position) - 1)
-        return stackIds[idx] ? [stackIds[idx]] : []
-      }
-      const from = selector.range.from == null ? 0 : Math.max(0, Number(selector.range.from) - 1)
-      const to = selector.range.to == null ? undefined : Math.max(from, Number(selector.range.to))
-      return stackIds.slice(from, to)
+      return selectAgentSpanRange(stackIds.map(id => ({ id, from_ts: null, to_ts: null })), selector);
     }
     const q = baseFragment;
     const idAliases = q.startsWith('fleet:') ? [q] : [q, `fleet:${q}`];
-    const like = `%${q}%`;
     const rows = this.db.prepare(`
-      WITH matches AS (
-        SELECT id, coalesce(last_seen, registered_at, '') AS seen_at FROM agents
-          WHERE lower(id) IN (${idAliases.map(() => '?').join(',')})
-        UNION ALL
-        SELECT id, coalesce(last_seen, registered_at, '') AS seen_at FROM agents
-          WHERE friendly_name IS NOT NULL AND lower(friendly_name) LIKE ?
-        UNION ALL
-        SELECT fleet_id AS id, coalesce(to_ts, from_ts, '') AS seen_at FROM name_history
-          WHERE friendly_name IS NOT NULL AND lower(friendly_name) LIKE ?
-        UNION ALL
-        SELECT agents.id, coalesce(agents.last_seen, agents.registered_at, '') AS seen_at
-          FROM agents, json_each(CASE WHEN json_valid(agents.labels) THEN agents.labels ELSE '[]' END) AS label
-          WHERE lower(label.value) = ?
-      )
-      SELECT id FROM matches
-      GROUP BY id
-      ORDER BY max(seen_at) DESC, id ASC
-    `).all(...idAliases, like, like, q);
+      SELECT id, coalesce(last_seen, registered_at, '') AS seen_at,
+             NULL AS from_ts, NULL AS to_ts FROM agents
+        WHERE lower(id) IN (${idAliases.map(() => '?').join(',')})
+      UNION ALL
+      SELECT fleet_id AS id, coalesce(to_ts, from_ts, '') AS seen_at,
+             from_ts, to_ts FROM name_history
+        WHERE lower(friendly_name) = ?
+      UNION ALL
+      -- A named agent normally has an open span: the name_history triggers open
+      -- one at register and on every rename, and the backfill seeded the agents
+      -- that predate them. This branch covers an agent that both missed, which
+      -- exact matching would otherwise lose where the old substring union found
+      -- it. Bounded by the agent's own registration rather than unconditional,
+      -- because an unconditional current-name match is the dynamic scope this
+      -- method exists to remove.
+      SELECT id, coalesce(last_seen, registered_at, '') AS seen_at,
+             coalesce(registered_at, '') AS from_ts, NULL AS to_ts FROM agents
+        WHERE lower(friendly_name) = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM name_history nh
+            WHERE nh.fleet_id = agents.id AND nh.to_ts IS NULL
+          )
+      UNION ALL
+      SELECT agents.id, coalesce(agents.last_seen, agents.registered_at, '') AS seen_at,
+             NULL AS from_ts, NULL AS to_ts
+        FROM agents, json_each(CASE WHEN json_valid(agents.labels) THEN agents.labels ELSE '[]' END) AS label
+        WHERE lower(label.value) = ?
+    `).all(...idAliases, q, q, q);
     // Lineage stack first — its order is occupancy order, which is what a
-    // positional selector like `*chief[2]` counts against — then everything the
-    // name matched directly or historically, most recently seen first.
-    let ids = [...new Set([...stackIds, ...rows.map(r => r.id)])];
-    if (selector.position != null) {
-      const idx = Math.max(0, Number(selector.position) - 1);
-      ids = ids[idx] ? [ids[idx]] : [];
-    } else if (selector.range) {
-      const from = selector.range.from == null ? 0 : Math.max(0, Number(selector.range.from) - 1);
-      const to = selector.range.to == null ? undefined : Math.max(from, Number(selector.range.to));
-      ids = ids.slice(from, to);
+    // positional selector counts against — then every id the name reached, most
+    // recently seen first. Ordered here rather than in SQL because the sort key
+    // belongs to the id while the rows are spans, and there are at most a
+    // handful of either.
+    const recency = new Map();
+    for (const row of rows) {
+      const seen = row.seen_at || '';
+      if (!recency.has(row.id) || seen > recency.get(row.id)) recency.set(row.id, seen);
     }
-    return ids;
+    const order = [...stackIds, ...[...recency.keys()].sort((a, b) => {
+      const byRecency = (recency.get(b) || '').localeCompare(recency.get(a) || '');
+      return byRecency !== 0 ? byRecency : a.localeCompare(b);
+    })];
+    const spansById = new Map();
+    for (const id of stackIds) spansById.set(id, [{ id, from_ts: null, to_ts: null }]);
+    for (const row of rows) {
+      const span = { id: row.id, from_ts: row.from_ts || null, to_ts: row.to_ts || null };
+      const held = spansById.get(row.id);
+      if (!held) { spansById.set(row.id, [span]); continue }
+      // An unconditional entry covers every instant, so it absorbs the bounded
+      // ones rather than sitting beside them: an id that is also a name is
+      // still reachable at every timestamp through the id.
+      if (held.some(s => s.from_ts === null && s.to_ts === null)) continue;
+      if (span.from_ts === null && span.to_ts === null) { spansById.set(row.id, [span]); continue }
+      if (held.some(s => s.from_ts === span.from_ts && s.to_ts === span.to_ts)) continue;
+      held.push(span);
+    }
+    const ordered = [];
+    const emitted = new Set();
+    for (const id of order) {
+      if (emitted.has(id)) continue;
+      emitted.add(id);
+      ordered.push(...(spansById.get(id) || []));
+    }
+    return selectAgentSpanRange(ordered, selector);
+  }
+
+  // Unchanged in shape and in order: the distinct ids a fragment reaches, most
+  // recently seen first behind any lineage stack. This is the candidate set,
+  // not the answer — see resolveAgentSpans for what makes it a superset.
+  resolveAgentSelector(selector) {
+    const spans = this.resolveAgentSpans(selector);
+    return [...new Set(spans.map(span => span.id))];
   }
 
   // `messageFilterAst` is the caller's filter expression, desugared, with each
-  // agent leaf carrying the fleet ids it resolved to (`node.ids`). Without it
-  // the filter runs in JS AFTER this method has applied `limit`, so the page is
-  // spent on rows the filter is about to discard and a short or empty result is
-  // indistinguishable from a quiet world. With it, `limit` counts matching rows.
+  // agent leaf carrying the spans it resolved to (`node.spans`) — who the name
+  // pointed at, and when. Without it the filter runs in JS AFTER this method
+  // has applied `limit`, so the page is spent on rows the filter is about to
+  // discard and a short or empty result is indistinguishable from a quiet
+  // world. With it, `limit` counts matching rows.
   //
   // It arrives as data, not as a compiled predicate or a callback, because this
   // method runs on the store's worker thread and everything reaching it crosses
   // `postMessage` — a function would not survive the trip.
-  searchAll(query, { limit = 50, agent, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly, between = null, messageFilterAst = null } = {}) {
+  searchAll(query, { limit = 50, agent, agentSpans = null, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly, between = null, messageFilterAst = null } = {}) {
     const messageFilterSql = messageFilterAst
-      ? messageFilterSqlCompiler(messageFilterAst, node => node.ids || [])
+      ? messageFilterSqlCompiler(messageFilterAst, node => node.spans || [])
       : null;
     const textExpression = parseSearchTextExpression(query);
     const terms = textExpression ? collectTextExpressionTerms(textExpression, { includeNegated: true }) : ftsQueryTerms(query);
@@ -6580,7 +6662,16 @@ export class FleetStore {
     // Normalize agent to array for multi-ID lineage search
     const agentIds = Array.isArray(agent) ? agent : agent ? [agent] : [];
     const hasAgent = agentIds.length > 0;
-    const agentPlaceholders = agentIds.map(() => '?').join(',');
+    // `agentSpans` says WHEN each of those ids answered to the name the caller
+    // searched. This is the path that carries no filter expression — a bare
+    // name in the box, or `agentQuery` — so without it the same name would be
+    // lexical through `from:` and dynamic here, which is the worse of the two
+    // states: the answer would depend on how the query was phrased. Absent, an
+    // id stands for itself at every instant, which is what an explicit
+    // `fleet:` id means.
+    const searchSpans = agentSpans?.length
+      ? agentSpans
+      : agentIds.map(id => ({ id, from_ts: null, to_ts: null }));
     const historyMode = historyOnly ?? agentOnly ?? false;
     const textExpressionOnly = !!textExpression && positiveTextTerms.length === 0;
     // No text to match on means this is a history listing, not a text search.
@@ -6603,21 +6694,22 @@ export class FleetStore {
     // `recipients`, not a column on the event, so an agent matches as a
     // recipient when it appears in that event's recipient set — for one
     // recipient or for a whole group alike.
-    function agentClause(fromCol, idCol, agentCol) {
+    function agentClause(fromCol, idCol, agentCol, tsCol) {
+      const at = (col) => agentSpanPredicate(searchSpans, col, tsCol) || { sql: '0', params: [] };
       // `from:` semantics — restrict to messages the agent SENT (from_id only).
       if (fromOnly) {
-        if (agentIds.length === 1) return { clause: `${fromCol} = ?`, params: [agentIds[0]] };
-        return { clause: `${fromCol} IN (${agentPlaceholders})`, params: [...agentIds] };
+        const sent = at(fromCol);
+        return { clause: sent.sql, params: sent.params };
       }
-      if (agentIds.length === 1) {
-        return {
-          clause: `(${fromCol} = ? OR EXISTS (SELECT 1 FROM recipients rc WHERE rc.event_id = ${idCol} AND rc.agent_id = ?) OR ${agentCol} = ?)`,
-          params: [agentIds[0], agentIds[0], agentIds[0]],
-        };
-      }
+      // The recipient probe reads the OUTER row's timestamp, correlated in: the
+      // instant that decides which agent a name pointed at belongs to the
+      // message, not to the recipients row.
+      const sent = at(fromCol);
+      const received = at('rc.agent_id');
+      const owned = at(agentCol);
       return {
-        clause: `(${fromCol} IN (${agentPlaceholders}) OR EXISTS (SELECT 1 FROM recipients rc WHERE rc.event_id = ${idCol} AND rc.agent_id IN (${agentPlaceholders})) OR ${agentCol} IN (${agentPlaceholders}))`,
-        params: [...agentIds, ...agentIds, ...agentIds]
+        clause: `(${sent.sql} OR EXISTS (SELECT 1 FROM recipients rc WHERE rc.event_id = ${idCol} AND ${received.sql}) OR ${owned.sql})`,
+        params: [...sent.params, ...received.params, ...owned.params],
       };
     }
     function eventRowMatches(row) {
@@ -6626,10 +6718,11 @@ export class FleetStore {
       if (since && row.timestamp < since) return false;
       if (before && row.timestamp >= before) return false;
       if (hasAgent) {
-        if (fromOnly) return agentIds.includes(row.from);
-        return agentIds.includes(row.from)
-          || (row.recipients || []).some(id => agentIds.includes(id))
-          || agentIds.includes(row.agentId);
+        const named = (id) => agentSpansCover(searchSpans, id, row.timestamp);
+        if (fromOnly) return named(row.from);
+        return named(row.from)
+          || (row.recipients || []).some(named)
+          || named(row.agentId);
       }
       return true;
     }
@@ -6637,7 +6730,7 @@ export class FleetStore {
       if (sessionRole && row.role !== sessionRole) return false;
       if (since && row.timestamp < since) return false;
       if (before && row.timestamp >= before) return false;
-      if (hasAgent && !agentIds.includes(row.agentId)) return false;
+      if (hasAgent && !agentSpansCover(searchSpans, row.agentId, row.timestamp)) return false;
       return true;
     }
 
@@ -6663,15 +6756,27 @@ export class FleetStore {
           // the measurements in _queryAgentEventsForSearch before collapsing it
           // into a single `IN (...)` query; that has been tried twice and timed
           // out at three ids both times.
-          : agentIds.flatMap(agentId => this._queryAgentEventsForSearch({
-            agent: agentId,
-            types: eventTypes,
-            excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,
-            sinceTs: since,
-            untilTs: before,
-            limit,
-            filterSql: messageFilterSql?.events('events') || null,
-          }));
+          //
+          // One read per SPAN, not per id, and the span narrows the read's own
+          // time bound. An agent that held the name for two hours is read over
+          // those two hours, so the lexical narrowing happens inside the index
+          // walk. Filtering afterwards instead would spend the page budget on
+          // rows belonging to a different holder and hand back a short answer
+          // with nothing to say what had been cut.
+          : searchSpans.flatMap(span => {
+            const sinceTs = laterBound(since, span.from_ts);
+            const untilTs = earlierBound(before, span.to_ts);
+            if (sinceTs && untilTs && sinceTs >= untilTs) return [];
+            return this._queryAgentEventsForSearch({
+              agent: span.id,
+              types: eventTypes,
+              excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,
+              sinceTs,
+              untilTs,
+              limit,
+              filterSql: messageFilterSql?.events('events') || null,
+            });
+          });
         eventRows = rows.map(r => ({
           source: 'fleet',
           id: r.id,
@@ -6693,7 +6798,7 @@ export class FleetStore {
         const eClauses = [];
         const eParams = [];
         if (hasAgent) {
-          const ac = agentClause('e.from_id', 'e.id', 'e.agent_id');
+          const ac = agentClause('e.from_id', 'e.id', 'e.agent_id', 'e.timestamp');
           eClauses.push(ac.clause);
           eParams.push(...ac.params);
         }
@@ -6815,13 +6920,9 @@ export class FleetStore {
       const sClauses = [];
       const sParams = [];
       if (hasAgent) {
-        if (agentIds.length === 1) {
-          sClauses.push('s.agent_id = ?');
-          sParams.push(agentIds[0]);
-        } else {
-          sClauses.push(`s.agent_id IN (${agentPlaceholders})`);
-          sParams.push(...agentIds);
-        }
+        const owned = agentSpanPredicate(searchSpans, 's.agent_id', 's.timestamp') || { sql: '0', params: [] };
+        sClauses.push(owned.sql);
+        sParams.push(...owned.params);
       }
       if (sessionRole) { sClauses.push('s.role = ?'); sParams.push(sessionRole); }
       if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }

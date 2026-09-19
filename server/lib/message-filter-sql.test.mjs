@@ -5,21 +5,45 @@ import Database from 'better-sqlite3'
 import { parseMessageFilter } from '../../shared/fleet-labels.mjs'
 import { agentNodesInMessageFilter, compileMessageFilterSql } from './message-filter-sql.mjs'
 
-// The ids each name in these filters stands for. Resolution is the server's
-// job; the compiler only ever sees the answer.
-const IDS = {
-  me: ['fleet:me'],
-  skip: ['fleet:skip'],
-  chief: ['fleet:chief'],
-  pm: ['fleet:pm'],
+// The spans each name in these filters stands for. Resolution is the server's
+// job; the compiler only ever sees the answer. Both ends null is unconditional
+// — an id names the same agent at every instant.
+//
+// `rotator` is the case the compiler exists to get right: ONE name, two agents,
+// disjoint periods. `from:rotator` must return Skip's messages from before the
+// handoff and the pm's from after it, and neither one's from the other's
+// period. A compiler that flattened a name to its id set would return all of
+// both, and every expression below would still pass.
+const at = (id) => ({ id, from_ts: null, to_ts: null })
+const HANDOFF = '2026-08-18T03:00:00Z'
+const SPANS = {
+  me: [at('fleet:me')],
+  skip: [at('fleet:skip')],
+  chief: [at('fleet:chief')],
+  pm: [at('fleet:pm')],
+  rotator: [
+    { id: 'fleet:skip', from_ts: null, to_ts: HANDOFF },
+    { id: 'fleet:pm', from_ts: HANDOFF, to_ts: null },
+  ],
 }
 
 function annotate(expression) {
   const ast = parseMessageFilter(expression)
   for (const node of agentNodesInMessageFilter(ast)) {
-    node.ids = IDS[node.t === 'me' ? 'me' : node.v] || []
+    node.spans = SPANS[node.t === 'me' ? 'me' : node.v] || []
   }
   return ast
+}
+
+// The span test, transcribed from `agentSpanCovers`. An undated row is covered
+// only by an unconditional span, which is also what SQL answers when every
+// comparison against its NULL timestamp comes back NULL.
+function covers(span, timestamp) {
+  if (span.from_ts == null && span.to_ts == null) return true
+  if (!timestamp) return false
+  if (span.from_ts != null && timestamp < span.from_ts) return false
+  if (span.to_ts != null && timestamp >= span.to_ts) return false
+  return true
 }
 
 // A direct transcription of `matchesMessageNode` in unified-server, which is
@@ -31,7 +55,7 @@ function evaluate(node, row) {
   const agent = (n, id) => {
     switch (n.t) {
       case 'lit':
-      case 'me': return (n.ids || []).includes(id)
+      case 'me': return (n.spans || []).some(span => span.id === id && covers(span, row.timestamp))
       case 'and': return agent(n.l, id) && agent(n.r, id)
       case 'or': return agent(n.l, id) || agent(n.r, id)
       case 'not': return !agent(n.x, id)
@@ -107,6 +131,14 @@ const EXPRESSIONS = [
   'from:skip & before:2026-08-18T01:30:00Z',
   'from:nobody-at-all',
   '!from:nobody-at-all',
+  'from:rotator',
+  'to:rotator',
+  'involving:rotator',
+  '!from:rotator',
+  'rotator',
+  'from:rotator & to:me',
+  'from:(rotator | chief)',
+  'from:rotator & since:2026-08-18T04:00:00Z',
 ]
 
 test('the compiled SQL selects exactly the rows the evaluator matches', () => {
@@ -114,7 +146,7 @@ test('the compiled SQL selects exactly the rows the evaluator matches', () => {
   try {
     for (const expression of EXPRESSIONS) {
       const ast = annotate(expression)
-      const compiled = compileMessageFilterSql(ast, { idsFor: node => node.ids || [] })
+      const compiled = compileMessageFilterSql(ast, { spansFor: node => node.spans || [] })
       assert.ok(compiled, `"${expression}" did not compile`)
 
       const sqlEventIds = db.prepare(
@@ -157,7 +189,7 @@ test('a LIMIT taken with the filter in the query returns matching rows, not left
     // Same page budget, filter inside the query: 2 asked for, 2 matching rows
     // returned, and the older one is no longer hidden behind a discard.
     const ast = annotate('from:skip')
-    const compiled = compileMessageFilterSql(ast, { idsFor: node => node.ids || [] })
+    const compiled = compileMessageFilterSql(ast, { spansFor: node => node.spans || [] })
     const withFilter = db.prepare(
       `SELECT e.id FROM events e WHERE ${compiled.events.sql} ORDER BY e.timestamp DESC LIMIT 2`,
     ).all(...compiled.events.params).map(r => r.id)
@@ -169,7 +201,7 @@ test('a LIMIT taken with the filter in the query returns matching rows, not left
 
 test('an unresolvable name compiles to a predicate that matches nothing, not to everything', () => {
   const ast = annotate('from:nobody-at-all')
-  const compiled = compileMessageFilterSql(ast, { idsFor: node => node.ids || [] })
+  const compiled = compileMessageFilterSql(ast, { spansFor: node => node.spans || [] })
   const db = freshDb()
   try {
     const ids = db.prepare(`SELECT e.id FROM events e WHERE ${compiled.events.sql}`).all(...compiled.events.params)
@@ -181,5 +213,5 @@ test('an unresolvable name compiles to a predicate that matches nothing, not to 
 
 test('an unsupported node refuses the whole filter rather than compiling part of it', () => {
   const ast = { t: 'and', l: { t: 'from', x: { t: 'lit', v: 'skip', ids: ['fleet:skip'] } }, r: { t: 'unknown-node' } }
-  assert.equal(compileMessageFilterSql(ast, { idsFor: node => node.ids || [] }), null)
+  assert.equal(compileMessageFilterSql(ast, { spansFor: node => node.spans || [] }), null)
 })

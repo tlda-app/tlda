@@ -7,6 +7,7 @@ const METHODS = new Set([
   'getSearchStats',
   'resolveAgentQuery',
   'resolveAgentSelector',
+  'resolveAgentSpans',
   'searchAll',
 ])
 

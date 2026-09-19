@@ -7,6 +7,7 @@ const METHODS = [
   'getSearchStats',
   'resolveAgentQuery',
   'resolveAgentSelector',
+  'resolveAgentSpans',
   'searchAll',
 ]
 

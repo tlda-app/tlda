@@ -160,6 +160,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'report',
   'resolveAgentQuery',
   'resolveAgentSelector',
+  'resolveAgentSpans',
   'resolveChatRecipients',
   'resolveChatRows',
   'resolveSubscriptionDeliveries',
