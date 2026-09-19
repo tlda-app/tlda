@@ -158,6 +158,16 @@ const ANCHORED_TAIL_EPS_BASE = 1
 // A genuine departure (he stops to read) easily outlasts this; a settle
 // bounce never does.
 const ANCHORED_FOLLOW_OFF_SETTLE_MS = 250
+// Both reads here force synchronous layout — `getComputedStyle` flushes style,
+// `clientHeight` flushes layout — and the caller runs this inside a
+// ResizeObserver callback, which is the textbook way to thrash: the browser has
+// just finished laying out, hands you the geometry, and we throw it away to ask
+// for it again. Against the 6,511-node chat DOM that measured ~13ms a call and
+// ~18% of the app's CPU.
+//
+// So this is now the SLOW path, used only where there is no observer entry to
+// read — attaching the scroller. `anchoredGeometryFromEntry` below is the one
+// that runs on every resize.
 const anchoredViewportGeometry = (el: HTMLElement) => {
   const style = getComputedStyle(el)
   const paddingTop = Number.parseFloat(style.paddingTop) || 0
@@ -165,6 +175,51 @@ const anchoredViewportGeometry = (el: HTMLElement) => {
   return {
     viewportHeight: Math.max(0, el.clientHeight - paddingTop - paddingBottom),
     paddingBottom,
+    padding: paddingTop + paddingBottom,
+  }
+}
+
+// The same geometry, taken from what the observer was already given.
+//
+// `contentBoxSize` IS clientHeight minus padding, which is exactly
+// viewportHeight — no measurement needed. Only `paddingBottom` is not in the
+// entry, and padding is a CSS constant here (`padding: 4px 0` on
+// `.fleet-chat-log-anchored`), so it is read once and kept.
+//
+// Kept HONESTLY rather than assumed: the entry carries the border box too, and
+// border-minus-content is padding plus border. When that total changes — a zoom,
+// a theme that restyles the container — the cached split is stale and is
+// re-read. When it has not changed, neither has the padding, and nothing is
+// measured. The alternative was halving the total on the assumption that
+// `4px 0` stays symmetric, which is true today and is not a thing to depend on.
+type AnchoredPaddingCache = { total: number, bottom: number } | null
+
+const anchoredGeometryFromEntry = (
+  el: HTMLElement,
+  entry: ResizeObserverEntry,
+  cache: AnchoredPaddingCache,
+): { viewportHeight: number, paddingBottom: number, cache: AnchoredPaddingCache } => {
+  const contentHeight = entry.contentBoxSize?.[0]?.blockSize ?? entry.contentRect.height
+  const borderHeight = entry.borderBoxSize?.[0]?.blockSize
+  if (borderHeight == null) {
+    const measured = anchoredViewportGeometry(el)
+    return {
+      viewportHeight: measured.viewportHeight,
+      paddingBottom: measured.paddingBottom,
+      cache: { total: measured.padding, bottom: measured.paddingBottom },
+    }
+  }
+  const total = Math.max(0, borderHeight - contentHeight)
+  if (cache && Math.abs(cache.total - total) < 0.5) {
+    return { viewportHeight: Math.max(0, contentHeight), paddingBottom: cache.bottom, cache }
+  }
+  const style = getComputedStyle(el)
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0
+  const paddingBottom = Number.parseFloat(style.paddingBottom) || 0
+  return {
+    viewportHeight: Math.max(0, contentHeight),
+    paddingBottom,
+    cache: { total: paddingTop + paddingBottom, bottom: paddingBottom },
   }
 }
 type ChatTrafficMode = 'normal' | 'quiet'
@@ -2566,8 +2621,8 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
-    const update = () => {
-      const { viewportHeight: nextHeight, paddingBottom } = anchoredViewportGeometry(el)
+    let paddingCache: AnchoredPaddingCache = null
+    const apply = (nextHeight: number, paddingBottom: number) => {
       tailEpsRef.current = ANCHORED_TAIL_EPS_BASE + paddingBottom
       setViewportHeight(nextHeight)
       const nextTailTop = tailTop(nextHeight)
@@ -2575,8 +2630,17 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       else modelTopRef.current = Math.max(0, Math.min(modelTopRef.current, nextTailTop))
       setGeometryVersion(version => version + 1)
     }
-    update()
-    const observer = new ResizeObserver(update)
+    // The first pass has no entry to read, so it measures once.
+    const initial = anchoredViewportGeometry(el)
+    paddingCache = { total: initial.padding, bottom: initial.paddingBottom }
+    apply(initial.viewportHeight, initial.paddingBottom)
+    const observer = new ResizeObserver(entries => {
+      const entry = entries[entries.length - 1]
+      if (!entry) return
+      const next = anchoredGeometryFromEntry(el, entry, paddingCache)
+      paddingCache = next.cache
+      apply(next.viewportHeight, next.paddingBottom)
+    })
     observer.observe(el)
     return () => observer.disconnect()
   }, [tailTop])
