@@ -35,6 +35,21 @@ uploadDir: /app/server/persist/uploads
 # to stdout. Do not kill a healthy course build during that quiet interval.
 buildStallTimeoutMs: 3600000
 
+# How many search children run here. One meant a single slow query blocked every
+# other search, and the timeout that recycles a stuck child would have cancelled
+# queries that had done nothing wrong.
+#
+# 4 on a 2-core, 4 GB box is a memory question rather than a CPU one: these
+# children are mostly blocked on disk, and they run at BELOW_NORMAL so
+# communications win a core whenever both want one. Measured on this machine, a
+# child costs 60.7 MB Pss — 33.7 MB of it private — against 2438 MB available.
+# An RSS reading suggests ~326 MB and is the wrong number: it counts shared
+# pages again in every process.
+#
+# Set explicitly rather than left to the default so that changing the default
+# later does not silently change this deployment.
+searchWorkers: 4
+
 buildExecutor:
   url: ws://tlda-pic-dev.internal:7711
   git:

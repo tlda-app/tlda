@@ -69,8 +69,7 @@ class StubClient extends FleetSearchClient {
 // problem, which is the thing this whole change is about.
 test('a request the child never answers rejects, and does not guess why', { timeout: 5000 }, async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '150'
-  process.env.TLDA_SEARCH_WORKERS = '1'
-  const client = new StubClient('/nonexistent.db')
+  const client = new StubClient('/nonexistent.db', { workers: 1 })
 
   // Captured before the request: a recycle respawns, so `_workers[0].child` is
   // a NEW child by the time the assertion runs and would never look killed.
@@ -122,8 +121,7 @@ test('a request the child never answers rejects, and does not guess why', { time
 
 test('CONTROL: a slow-but-live reply still succeeds and is not failed by the bound', async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '2000'
-  process.env.TLDA_SEARCH_WORKERS = '1'
-  const client = new StubClient('/nonexistent.db')
+  const client = new StubClient('/nonexistent.db', { workers: 1 })
 
   const pending = client.searchAll({ query: 'anything' })
   // Comfortably slower than the 1000ms elapsed-log threshold, comfortably inside
@@ -139,8 +137,7 @@ test('CONTROL: a slow-but-live reply still succeeds and is not failed by the bou
 
 test('CONTROL: an error from the child still propagates as that error', async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '2000'
-  process.env.TLDA_SEARCH_WORKERS = '1'
-  const client = new StubClient('/nonexistent.db')
+  const client = new StubClient('/nonexistent.db', { workers: 1 })
 
   const pending = client.searchAll({ query: 'anything' })
   setTimeout(() => {
@@ -157,8 +154,7 @@ test('CONTROL: an error from the child still propagates as that error', async ()
 // on timeout cancelled queries that had done nothing wrong.
 test('a query occupying one worker does not block a query on another', { timeout: 5000 }, async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '5000'
-  process.env.TLDA_SEARCH_WORKERS = '2'
-  const client = new StubClient('/nonexistent.db')
+  const client = new StubClient('/nonexistent.db', { workers: 2 })
 
   // First request goes to a worker and is never answered.
   const stuck = client.searchAll({ query: 'slow' })
@@ -184,8 +180,7 @@ test('a query occupying one worker does not block a query on another', { timeout
 
 test('recycling one worker does not cancel queries on the others', { timeout: 5000 }, async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '5000'
-  process.env.TLDA_SEARCH_WORKERS = '2'
-  const client = new StubClient('/nonexistent.db')
+  const client = new StubClient('/nonexistent.db', { workers: 2 })
 
   const doomed = client.searchAll({ query: 'doomed' })
   await new Promise(resolve => setImmediate(resolve))

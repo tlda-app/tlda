@@ -62,6 +62,16 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'buildMaxConcurrency',
   'buildPriority',
   'buildStallTimeoutMs',
+  // How many search children this deployment runs. Absent means 4.
+  //
+  // One child meant a single slow query blocked every other search, so this is
+  // the knob that decides how much of that isolation a box can afford. Cost is
+  // ~61 MB Pss per child measured on the live box, not the ~326 MB an RSS
+  // reading suggests — RSS counts shared pages again in every process.
+  //
+  // Ships BEFORE any server.yaml names it: this list is closed, so a config
+  // carrying the key is a hard startup failure on a tree that predates it.
+  'searchWorkers',
   // Which published projects are delivered, and to which environment:
   // `{ '<project>': '<environment>' }`. Absent -- the normal case -- means
   // nothing is delivered and publication behaves as it always has.

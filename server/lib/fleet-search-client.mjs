@@ -1,6 +1,8 @@
 import { fork } from 'node:child_process'
 import { constants as osConstants, setPriority } from 'node:os'
 
+import { loadServerConfig } from '../../shared/config.mjs'
+
 const METHODS = [
   'getAgentsByIds',
   'getChatContext',
@@ -91,26 +93,39 @@ function searchTimeoutError(what, timeoutMs) {
 // the rest keep answering, and confines a recycle to the queries on that child.
 //
 // Configurable because the right number is a property of the box, not of the
-// code. Each child opens its own connection to the fleet database and carries
-// its own page cache — the live child was measured at ~326 MB RSS — so on a
-// small machine the pool is bounded by memory long before CPU. Set
-// TLDA_SEARCH_WORKERS to fit the deployment.
+// code, and it lives in the deployment's `server.yaml` rather than an
+// environment variable so a wrong value is a diff someone can read.
+//
+// Cost per child, measured on the live box rather than guessed: Pss 60.7 MB,
+// of which 33.7 MB is private dirty — most of an RSS reading is shared pages
+// counted again in every process, which is what makes RSS the wrong number for
+// "what does one more of these cost". Against 2.4 GB available there, four is
+// comfortable. It is still a knob because the fleet database grows and the box
+// it runs on is about to change.
 const DEFAULT_SEARCH_WORKERS = 4
 
 function searchWorkerCount() {
-  const configured = Number(process.env.TLDA_SEARCH_WORKERS)
+  let configured
+  try {
+    configured = Number(loadServerConfig().searchWorkers)
+  } catch {
+    // A CLI or a test may run with no deployment config at all; the default is
+    // not worth a startup failure.
+    configured = NaN
+  }
   if (!Number.isFinite(configured) || configured < 1) return DEFAULT_SEARCH_WORKERS
   return Math.floor(configured)
 }
 
 export class FleetSearchClient {
-  constructor(dbPath) {
+  constructor(dbPath, { workers = null } = {}) {
     this.dbPath = dbPath
     this._seq = 0
     this._pending = new Map()
     this._closed = false
     this._workers = []
-    for (let i = 0; i < searchWorkerCount(); i++) this._spawn(i)
+    const count = Number.isFinite(workers) && workers >= 1 ? Math.floor(workers) : searchWorkerCount()
+    for (let i = 0; i < count; i++) this._spawn(i)
     for (const method of METHODS) this[method] = (...args) => this._call(method, args)
   }
 
