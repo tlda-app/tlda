@@ -33,6 +33,7 @@ import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { createDocumentManifest } from './document-manifest.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
+import { withoutAbsentSupportFilters } from './qmd-support-filters.mjs'
 import { findTldaManifests, manifestTitleFromHtml, readTldaManifest } from './tlda-manifest.mjs'
 import { injectQuartoOutputProvenance } from './quarto-output-provenance.mjs'
 import { markQuartoSourceLines } from './quarto-source-lines.mjs'
@@ -1158,6 +1159,51 @@ export function retainNativeTldaRender(outDir, manifestPath) {
  * Returns `{ manifest, regenerateBookTocs: true }`, the same shape the
  * service adapter has always returned.
  */
+/**
+ * Remove handout support filters the render tree does not carry.
+ *
+ * A generated handout names a warning filter inside its own `<stem>.qmd.support/`
+ * directory. When a student hands in the document without that directory, pandoc
+ * refuses the render after the whole thing has knitted — over a filter whose only
+ * effect is a stderr warning for the student's own render. The work is there and
+ * the page is lost.
+ *
+ * Runs over the copy for every qmd build rather than only for submissions: the
+ * build worker has no classroom state to ask, and the rule needs none. A project
+ * that carries its support directory is untouched, because the filter is only
+ * dropped when the file it names is absent.
+ *
+ * What was dropped is logged. A build that alters a document silently is the
+ * failure this guards against, not one to commit.
+ */
+function dropAbsentSupportFilters(outDir, addLog) {
+  const documents = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (/\.qmd$/i.test(entry.name)) documents.push(full)
+    }
+  }
+  try { walk(outDir) } catch { return }
+
+  for (const document of documents) {
+    let original
+    try { original = readFileSync(document, 'utf8') } catch { continue }
+    if (!original.includes('.qmd.support/')) continue
+    const base = dirname(document)
+    const { text, dropped } = withoutAbsentSupportFilters(original, rel => existsSync(join(base, rel)))
+    if (!dropped.length) continue
+    try {
+      writeFileSync(document, text)
+      addLog(`[qmd] ${relative(outDir, document)}: dropped ${dropped.length} absent support filter(s) the render would have died on: ${dropped.join(', ')}`)
+    } catch (e) {
+      addLog(`[qmd] ${relative(outDir, document)}: could not drop absent support filter(s): ${e.message}`)
+    }
+  }
+}
+
 export async function buildIncrementalQmd({
   sourceDir: srcDir,
   outputDir: outDir,
@@ -1220,6 +1266,10 @@ export async function buildIncrementalQmd({
   cpSync(srcDir, outDir, { recursive: true })
   const copyMs = Math.round(Number(process.hrtime.bigint() - copyStart) / 1e6)
   addLog(`[qmd] copied source tree to the output directory in ${copyMs}ms (${describeTreeSize(srcDir)})`)
+
+  // On the COPY, never on the source: a handed-in document keeps the bytes that
+  // were validated, and this is the scratch tree the render runs against.
+  dropAbsentSupportFilters(outDir, addLog)
 
   // After the source copy, so the persisted records win over the revision's.
   stageFreezeIntoRender(outDir, addLog)
