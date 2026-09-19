@@ -141,6 +141,7 @@ function MarkedPair({
         scale={frame.camera.z}
         onHeight={setAnswerHeight}
         onHeader={setAnswerHeader}
+        marked={marked}
       />
       {marked && <StudentAnnotationOverlay
         bookRoomId={bookRoomId}

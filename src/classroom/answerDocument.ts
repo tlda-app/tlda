@@ -71,15 +71,25 @@ function attribute(value: string) {
  * paint a page-coloured rectangle over the chapter, and it must not grow its own
  * scrollbars — the pane is sized to its content by the caller.
  */
-export function answerDocumentSrcdoc({ answerHtml, styles, baseHref, bodyClass = '' }: {
+export function answerDocumentSrcdoc({ answerHtml, styles, baseHref, bodyClass = '', htmlClass = '' }: {
   answerHtml: string
   styles: AnswerStyleSources
   baseHref: string
   bodyClass?: string
+  /**
+   * The chapter's own `<html>` class, which is how dark reading is switched on.
+   *
+   * The app serves every document with `html.tlda-dark { filter: invert(...) }`
+   * in it and toggles that class per iframe, so the inversion is the document's
+   * and not the canvas's. Carrying the stylesheet without the class gives an
+   * answer with the rule and nothing to trigger it: near-black text painted
+   * over a dark canvas, which reads as a dim pane beside a bright chapter.
+   */
+  htmlClass?: string
 }): string {
   const links = styles.stylesheets.map(href => `<link rel="stylesheet" href="${attribute(href)}">`).join('')
   const inline = styles.inline.map(css => `<style>${css}</style>`).join('')
-  return '<!doctype html><html><head>'
+  return `<!doctype html><html class="${attribute(htmlClass)}"><head>`
     + `<base href="${attribute(baseHref)}">`
     + links
     + inline

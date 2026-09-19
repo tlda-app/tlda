@@ -27,6 +27,7 @@ export function AnswerPane({
   scale,
   onHeight,
   onHeader,
+  marked,
 }: {
   /** The answer, marked up for a document of its own. */
   markup: string
@@ -40,6 +41,8 @@ export function AnswerPane({
   onHeight: (height: number) => void
   /** The header the Return button portals into, once it exists. */
   onHeader: (header: HTMLElement | null) => void
+  /** Whether this is the pair he is marking, which decides who wins a collision. */
+  marked: boolean
 }) {
   const ref = useRef<HTMLIFrameElement>(null)
   const [ready, setReady] = useState(0)
@@ -55,6 +58,9 @@ export function AnswerPane({
       // The book's theme is a class on its body — without it the callout is
       // styled by rules that never match and comes back looking like nothing.
       bodyClass: chapter.body.className,
+      // And dark reading is a class on its `html`. Read here for the first
+      // paint; kept in step below, because he switches it while reading.
+      htmlClass: chapter.documentElement.className,
     })
   }, [markup, chapter])
 
@@ -75,11 +81,26 @@ export function AnswerPane({
     report()
     const resize = new view.ResizeObserver(report)
     resize.observe(root)
+
+    // FOLLOW THE CHAPTER INTO DARK AND BACK.
+    //
+    // `HtmlPageShape` toggles `tlda-dark` on each document it renders when he
+    // changes theme. The answer is a document too and nothing tells it, so
+    // without this it keeps whichever theme it was built in — an un-inverted
+    // answer beside an inverted chapter, which is the dim pane. Copied rather
+    // than rebuilt into the srcdoc, because rebuilding reloads the iframe and
+    // he would lose his place in a long answer to a theme switch.
+    const follow = () => { root.className = chapter.documentElement.className }
+    follow()
+    const theme = new MutationObserver(follow)
+    theme.observe(chapter.documentElement, { attributes: true, attributeFilter: ['class'] })
+
     return () => {
       resize.disconnect()
+      theme.disconnect()
       onHeader(null)
     }
-  }, [ready, srcdoc, onHeight, onHeader])
+  }, [ready, srcdoc, chapter, onHeight, onHeader])
 
   return (
     <iframe
@@ -104,7 +125,14 @@ export function AnswerPane({
         background: 'transparent',
         // Under the glass, which is 200 and takes the pointer while he marks.
         // Above the book, or the answer would be behind the page it sits beside.
-        zIndex: 199,
+        //
+        // AND THE ONE HE IS MARKING WINS A COLLISION. A photographed answer is
+        // taller than the distance to the next solution, so panes do overlap —
+        // measured up to 632px on his chapter. This does not resolve that; it
+        // resolves it for the pane he is drawing on, which is the one that must
+        // never be covered. Reading down a chapter of long answers is still a
+        // question about what the marked region IS, and it is not a z-index.
+        zIndex: marked ? 199 : 198,
       }}
     />
   )
