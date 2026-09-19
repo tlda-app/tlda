@@ -108,3 +108,37 @@ test('an unmarked line before any build error is not an error', async t => {
 
   assert.deepEqual(await extractBuildErrors('homework'), { errors: [], warnings: [], logMissing: false })
 })
+
+// The cause is at the END of what a renderer managed to say, under whatever
+// progress chatter it printed first. Quarto lists every chunk it knits — the
+// real submission printed 33 of them, two lines each — so a cap that keeps the
+// FIRST n lines reports the knitting and drops the pandoc error underneath it.
+// Observed in production after the first version of this parser shipped: the
+// message ran to `pandoc / to: html` and stopped, one line short of the reason.
+test('a long build error keeps its end, where the reason is', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-log-tail-'))
+  await initProjectStore(root)
+  t.after(async () => {
+    setProjectPathOverride('homework')
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  })
+  createProject({ name: 'homework', mainFile: 'week1-homework.qmd' })
+  const chatter = Array.from({ length: 66 }, (_, i) => `${i + 1}/33 [unnamed-chunk-${i}]`)
+  writeFileSync(join(root, 'homework', 'build.log'), [
+    '[build] quarto render failed for week1-homework.qmd: exited with status 1. Its last output was:',
+    ...chatter,
+    'ERROR: cannot open homework-calibration.qmd.support/answer-placement-warning.lua',
+    'Execution halted',
+  ].join('\n') + '\n')
+
+  const { errors } = await extractBuildErrors('homework')
+  assert.equal(errors.length, 1)
+  // The reason survives, which is the entire point.
+  assert.match(errors[0].message, /answer-placement-warning\.lua/)
+  assert.match(errors[0].message, /Execution halted/)
+  // The headline is kept even though the chatter between it and the end is not.
+  assert.match(errors[0].message, /quarto render failed for week1-homework\.qmd/)
+  // And the message stays bounded rather than carrying all 66 progress lines.
+  assert.ok(errors[0].message.split('\n').length <= 42, errors[0].message.split('\n').length)
+})

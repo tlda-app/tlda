@@ -1021,8 +1021,14 @@ export async function extractPipelineWarningsAsync(name) {
  * is the signal, and an entry that is a complete sentence keeps to one line.
  *
  * A line beginning `[tag] ` also closes the entry, so an unrelated later stage
- * is never swallowed into a render's error, and absorption is capped: the point
- * is the reason, which a renderer prints at the end of what it managed to say.
+ * is never swallowed into a render's error.
+ *
+ * THE CAP KEEPS THE END, NOT THE BEGINNING, and getting that backwards defeats
+ * the whole function. A renderer says what went wrong last and says hello first
+ * — `childFailureDetail` tails its output for exactly that reason. Capping the
+ * FIRST n lines filled the window with quarto's per-chunk progress (33 chunks,
+ * two lines each) and dropped the pandoc error underneath it, so the reported
+ * reason still stopped short of the cause.
  */
 const BUILD_LOG_MARKER = /^\[[A-Za-z0-9][A-Za-z0-9-]*\] /
 const MAX_CONTINUATION_LINES = 40
@@ -1032,26 +1038,27 @@ async function buildLogErrors(name) {
   if (logText === null) return { errors: [], warnings: [], logMissing: true }
   const errors = []
   let open = null
-  let continued = 0
   for (const line of logText.split('\n')) {
     if (line.startsWith('[build] ')) {
       const message = line.slice('[build] '.length).trim()
-      open = message.endsWith(':') ? { message } : null
-      continued = 0
-      errors.push(open || { message })
+      // Only an entry that announces output collects any; see above.
+      open = message.endsWith(':') ? { message, tail: [] } : null
+      errors.push(open || { message, tail: [] })
       continue
     }
     if (BUILD_LOG_MARKER.test(line)) {
       open = null
       continue
     }
-    if (!open || continued >= MAX_CONTINUATION_LINES) continue
-    open.message += `\n${line}`
-    continued += 1
+    if (!open) continue
+    // A rolling window, so a log that never marks another line costs the last
+    // n lines of memory rather than all of them.
+    open.tail.push(line)
+    if (open.tail.length > MAX_CONTINUATION_LINES) open.tail.shift()
   }
   return {
     errors: errors
-      .map((error) => ({ message: error.message.trim() }))
+      .map((error) => ({ message: [error.message, ...error.tail].join('\n').trim() }))
       .filter((error) => error.message),
     warnings: [],
     logMissing: false,
