@@ -321,7 +321,62 @@ export async function assignmentForSolutionsDoc(courseId: string, docKey: string
 export function answersByExercise(view: { problems: { problemId: string; answers: ProblemAnswer[] }[] }): Map<string, ProblemAnswer[]> {
   const grouped = new Map<string, ProblemAnswer[]>()
   for (const problem of view.problems) {
-    grouped.set(problem.problemId.replace(/^ans-/, ''), problem.answers)
+    // A student who has not handed in has nothing to page through, so they are
+    // not in the pager. `problems()` returns a row per ENROLLED student —
+    // `contentRef: null` for anyone who has not submitted — and paging those
+    // put three phantoms in front of the one real answer on the live course:
+    // the first press of → read "Fall Readiness Tester · 1 of 4" over no work,
+    // and the app said "null has not finished rendering". The count on the
+    // control is read the same way, so filtering here fixes the label and the
+    // stepping together.
+    //
+    // Who has NOT submitted is a real question and the gradebook answers it.
+    // This control is the one Skip specified on the solution callout — "a
+    // little button that lets me page through my students answers" — and an
+    // absent answer is not one of those.
+    grouped.set(
+      problem.problemId.replace(/^ans-/, ''),
+      problem.answers.filter(answer => answer.contentRef),
+    )
   }
   return grouped
+}
+
+/**
+ * Every mounted, ready page document among `shapeIds`.
+ *
+ * Extracted from the hook so the rule can be tested rather than asserted. The
+ * rule it replaces was `pages[0]`, which made marking work only where the
+ * solutions happened to be the first page — on an 84-page course that is the
+ * index, so the controls had nothing to attach to and paging did not help,
+ * because nothing re-targeted.
+ *
+ * AGGREGATED FROM THE DOM, with the registry as a supplement. One shape can
+ * mount more than once — main canvas plus a pane or HUD — and the registry
+ * holds only the last writer, so trusting it alone puts the controls in an
+ * arbitrary copy. That is not hypothetical: a feedback badge once rendered into
+ * the editor's mount and was missing from the pane the instructor was reading,
+ * while every DOM count reported success, because a count cannot see "in the
+ * wrong document".
+ *
+ * A frame still loading has a `documentElement` and a NULL `body`, and handing
+ * that to an installer throws into the error boundary — hence the `body` test.
+ * Frames that become ready later are picked up when the caller runs this again.
+ */
+export function readyPageDocuments(
+  shapeIds: readonly string[],
+  root: Document,
+  registry: Map<string, HTMLIFrameElement>,
+): Document[] {
+  const documents: Document[] = []
+  for (const shapeId of shapeIds) {
+    const frames = Array.from(root.querySelectorAll<HTMLIFrameElement>(`[data-shape-id="${shapeId}"] iframe`))
+    const registered = registry.get(shapeId)
+    if (registered && !frames.includes(registered)) frames.push(registered)
+    for (const frame of frames) {
+      const contentDocument = frame.contentDocument
+      if (contentDocument?.body && !documents.includes(contentDocument)) documents.push(contentDocument)
+    }
+  }
+  return documents
 }

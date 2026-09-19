@@ -10,6 +10,7 @@ import {
   assignmentForSolutionsDoc,
   installLocalLayerControls,
   pairStudentAnswer,
+  readyPageDocuments,
   removeLocalLayerControls,
   stepPosition,
 } from './localLayer'
@@ -68,15 +69,28 @@ async function loadAnswerDocument(contentRef: string): Promise<AnswerDocument> {
 
 export function useLocalLayer({
   documentKey,
-  pageShapeId,
+  pageShapeIds,
   documentRoomId,
   editor,
   editorMounted,
 }: {
   /** The chapter's document key, which is what relates it to an assignment. */
   documentKey: string
-  /** The chapter page's shape, so its iframe can be found. */
-  pageShapeId: string | undefined
+  /**
+   * EVERY page shape of the document, not the one being read.
+   *
+   * This was `pageShapeId: document.pages[0]`, and that single binding was the
+   * defect: the layer could only ever see the first page, so marking worked on
+   * a project whose first page happened to be the solutions chapter and nowhere
+   * else. On an 84-page course, page 0 is the index — no solution callouts, no
+   * controls, and no amount of paging changed it, because nothing re-targeted.
+   *
+   * Skip, on being shown the one-page-project workaround: "DO NOT BUILD AROUND
+   * DESIGN FLAWS: NOBODY FUCKING ASKED FOR GRADING TO ONLY WORK ON SPECIAL
+   * GRADING PROJECTS." So the layer takes the whole document and attaches
+   * wherever the solutions actually are.
+   */
+  pageShapeIds: readonly string[]
   /** The chapter's own room — the common layer, and the camera owner. */
   documentRoomId: string
   editor: Editor | null
@@ -115,13 +129,33 @@ export function useLocalLayer({
   }, [assignmentId])
 
   /** The chapter's live document, or null while its iframe is still coming up. */
-  const chapterDocument = useCallback((): Document | null => {
-    if (!pageShapeId) return null
-    const frames = Array.from(window.document.querySelectorAll<HTMLIFrameElement>(`[data-shape-id="${pageShapeId}"] iframe`))
-    const registered = htmlIframeElements.get(pageShapeId)
-    if (registered && !frames.includes(registered)) frames.push(registered)
-    return frames.find(frame => frame.contentDocument?.body)?.contentDocument ?? null
-  }, [pageShapeId])
+  /**
+   * Every page document of this chapter that is mounted and ready.
+   *
+   * Aggregated from the DOM, with the registry as a supplement: one shape can
+   * mount more than once — main canvas plus a HUD or pane — and
+   * `htmlIframeElements` holds only the last writer, so trusting it alone puts
+   * the controls in an arbitrary copy. That is not hypothetical; a feedback
+   * badge once rendered into the editor's mount and was absent from the pane the
+   * instructor was looking at, and every DOM count said PASS because a count
+   * cannot see "in the wrong document".
+   *
+   * A frame that is still loading has a `documentElement` and a null `body`, and
+   * handing that to the installer throws into the error boundary — hence the
+   * `body` test rather than a `contentDocument` test. Frames that become ready
+   * later are picked up by the caller's own interval, which re-runs this.
+   */
+  // Keyed on the joined ids rather than the array, so a caller that rebuilds
+  // the list each render does not reinstall the controls on every render.
+  const pageShapeKey = pageShapeIds.join(' ')
+  const chapterDocuments = useCallback(
+    (): Document[] => readyPageDocuments(
+      pageShapeKey ? pageShapeKey.split(' ') : [],
+      window.document,
+      htmlIframeElements,
+    ),
+    [pageShapeKey],
+  )
 
   const step = useCallback((exerciseId: string, next: number) => {
     const forExercise = answers.get(exerciseId) ?? []
@@ -143,12 +177,19 @@ export function useLocalLayer({
   // nothing and the observer settles instead of rescheduling itself.
   useEffect(() => {
     if (!assignmentId || !editorMounted || answers.size === 0) return
-    let installed: Document | null = null
+    // Every document installed into, so every one is cleaned up. A single
+    // `installed` reference was enough while the target could not change; once
+    // the layer follows the reader, the page they left keeps its controls
+    // forever unless each is remembered.
+    const installed = new Set<Document>()
     const install = () => {
-      const chapter = chapterDocument()
-      if (!chapter?.body) return
-      installed = chapter
-      installLocalLayerControls(chapter, answers, positions, (exerciseId, next) => stepRef.current(exerciseId, next))
+      for (const chapter of chapterDocuments()) {
+        installed.add(chapter)
+        // Self-limiting rather than page-aware: the installer walks
+        // `.callout.callout-solution`, so a page with no solutions — the course
+        // index, a prose chapter — takes no controls and needs no test here.
+        installLocalLayerControls(chapter, answers, positions, (exerciseId, next) => stepRef.current(exerciseId, next))
+      }
     }
     const observer = new MutationObserver(install)
     observer.observe(window.document.body, { childList: true, subtree: true })
@@ -157,9 +198,13 @@ export function useLocalLayer({
     return () => {
       window.clearInterval(interval)
       observer.disconnect()
-      if (installed?.body) removeLocalLayerControls(installed)
+      for (const chapter of installed) {
+        // A page unmounted while this ran leaves a document with no body; its
+        // controls went with it.
+        if (chapter.body) removeLocalLayerControls(chapter)
+      }
     }
-  }, [assignmentId, answers, positions, editorMounted, chapterDocument])
+  }, [assignmentId, answers, positions, editorMounted, chapterDocuments])
 
   // Put each chosen answer beside its solution, and say which pairs are open.
   //
@@ -169,10 +214,18 @@ export function useLocalLayer({
   useEffect(() => {
     let cancelled = false
     const apply = async () => {
-      const chapter = chapterDocument()
-      if (!chapter?.body) return
+      const documents = chapterDocuments()
+      if (documents.length === 0) return
+      // The page holding THIS exercise's solution, not "the page". Pairing
+      // across every document would make each page that simply does not contain
+      // the exercise report that the student did not answer it — a false claim
+      // about their work, produced by the layer's own scope.
+      const documentFor = (exerciseId: string) =>
+        documents.find(candidate => candidate.querySelector(`[data-tlda-solution-for="${exerciseId}"]`)) ?? null
       const next: OpenPair[] = []
       for (const [exerciseId, position] of positions) {
+        const chapter = documentFor(exerciseId)
+        if (!chapter) continue
         const forExercise = answers.get(exerciseId) ?? []
         const answer = position === NO_ANSWER ? null : forExercise[position]
         if (!answer) {
@@ -209,7 +262,7 @@ export function useLocalLayer({
     }
     void apply()
     return () => { cancelled = true }
-  }, [positions, answers, chapterDocument])
+  }, [positions, answers, chapterDocuments])
 
   // One layer per open pair: on-demand, keyed on the room, so stepping to the
   // next student swaps the store by replacing the canvas rather than by

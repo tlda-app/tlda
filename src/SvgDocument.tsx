@@ -627,9 +627,20 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   // one is an assignment's solutions, and a reader with no classroom credential
   // is told no. See `useLocalLayer.tsx` for why it hangs off the document
   // rather than off a workspace route.
+  //
+  // EVERY page, not the first one. Passing `pages[0]` bound marking to whatever
+  // happened to be page 0, so it worked only on a project built to have the
+  // solutions there and never on a book — see `useLocalLayer`'s own note.
+  // Memoized on identity rather than rebuilt per render: it is an effect
+  // dependency down there, and a fresh array each render reinstalls the
+  // controls forever.
+  const localLayerPageShapeIds = useMemo(
+    () => document.pages.map(page => String(page.shapeId)),
+    [document],
+  )
   const localLayer = useLocalLayer({
     documentKey: document.name,
-    pageShapeId: document.pages[0]?.shapeId,
+    pageShapeIds: localLayerPageShapeIds,
     documentRoomId: roomId,
     editor: editorRef.current,
     editorMounted,
