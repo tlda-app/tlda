@@ -192,6 +192,8 @@ export type FleetAgentDirectoryRowModel = {
   cwd: string
   cwdLabel: string
   model: string
+  /** A human has no model. See the model cell in FleetAgentDirectoryRow. */
+  human: boolean
   spawnOptions: string[]
   permission: string
   subscriptions: FleetAgentSubscription[]
@@ -294,6 +296,7 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
     cwd,
     cwdLabel,
     model,
+    human: !!agent?.human,
     spawnOptions,
     permission,
     subscriptions: fleetAgentSubscriptions(agent),

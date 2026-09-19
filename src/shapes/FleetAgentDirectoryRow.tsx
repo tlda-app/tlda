@@ -306,14 +306,24 @@ export function FleetAgentDirectoryRow({
             Dimmed and titled as inferred rather than recorded, because it is
             read off the default rather than out of the row. New mints do record
             their resolution, so blanks are the pre-2026-08-23 population; if the
-            default changes again this inference has to change with it. */}
+            default changes again this inference has to change with it.
+
+            And it is an inference about AGENTS. A human's model is not blank
+            because a mint defaulted it — humans are not minted and do not have
+            one — so reading `sonnet` off the default is false rather than
+            merely dim. Skip saw his own row and asked "why am I listed as a
+            sonnet agent"; nothing had set a model, this cell supplied it. The
+            same distinction is already drawn a file over, where
+            formatFleetAgentActivityHealthForAgent returns '' for a human. */}
         <span
           className={`fleet-agents-col-model${row.model ? '' : ' unrecorded'}`}
-          title={row.model
-            ? `model: ${row.model}`
-            : 'no model recorded — it was minted without one, so it took the daemon default (sonnet)'}
+          title={row.human
+            ? ''
+            : row.model
+              ? `model: ${row.model}`
+              : 'no model recorded — it was minted without one, so it took the daemon default (sonnet)'}
         >
-          {row.model || 'sonnet'}
+          {row.human ? '' : (row.model || 'sonnet')}
         </span>
         <span className="fleet-agents-col-seen">{row.ago}</span>
         <span
