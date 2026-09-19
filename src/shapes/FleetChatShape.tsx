@@ -28,7 +28,7 @@ import { getReadabilityProfile, readabilityStyleVars } from '../readabilityProfi
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRenderSignature } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
-import { compareChatMessagesChronologically } from '../fleet/chat-ordering.mjs'
+import { sortChatMessagesChronologically } from '../fleet/chat-ordering.mjs'
 // @ts-ignore — vanilla JS module
 import { activityPreambleDoc } from '../fleet/activity-preamble.mjs'
 // @ts-ignore — vanilla JS module
@@ -3282,21 +3282,21 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const chatMessages = useMemo(() => {
     const chatSortTimer = probe.start('chat', 'chat-sort')
-    const sorted = events
+    const visible = events
       .filter((m: any) => {
         const t = m.type
         if (quietDmTraffic && (t === 'activity' || m._activity)) return false
         return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'timer'
       })
       .filter((m: any) => !m._timer) // skip legacy timer-expired messages (fired→_timerFired and cancelled→_timerCancelled still render)
-      // Match the server history contract: chronological by event timestamp,
-      // with DB id only as the deterministic tie-breaker. Reconnect backfill is
-      // rowid-based so it can recover missed rows, but rendering by rowid made
-      // delayed terminal/activity/chat rows appear minutes out of chronological
-      // place when they were persisted late. Pending optimistic sends have no
-      // db id and naturally sort to the live tail until the server timestamp
-      // arrives.
-      .sort(compareChatMessagesChronologically)
+    // Match the server history contract: chronological by event timestamp,
+    // with DB id only as the deterministic tie-breaker. Reconnect backfill is
+    // rowid-based so it can recover missed rows, but rendering by rowid made
+    // delayed terminal/activity/chat rows appear minutes out of chronological
+    // place when they were persisted late. Pending optimistic sends have no
+    // db id and naturally sort to the live tail until the server timestamp
+    // arrives.
+    const sorted = sortChatMessagesChronologically(visible)
 
     if (isManagedSurfaceProofFixtureEnabled()) {
       sorted.push(createManagedSurfaceProofMessage(shape.id))
