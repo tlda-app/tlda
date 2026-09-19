@@ -60,3 +60,51 @@ test('an absent log is reported as absent, not as a clean build', async t => {
   assert.equal(withLog.logMissing, false)
   assert.equal(withLog.errors.length, 1)
 })
+
+// The reason a render failed arrives on the lines AFTER the marker.
+// `childFailureDetail` writes "<how it ended>. Its last output was:\n<output>"
+// through one addLog call, so only its first line carries `[build] `. This is
+// the production log of `submission-week1-homework-qtm285:skipper`, whose
+// entire reported error was the sentence promising the output — the line naming
+// the missing filter was parsed away, and the student's work looked like it had
+// failed for no stated reason.
+test('a build error keeps the output its first line promises', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-log-continuation-'))
+  await initProjectStore(root)
+  t.after(async () => {
+    setProjectPathOverride('homework')
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  })
+  createProject({ name: 'homework', mainFile: 'week1-homework.qmd' })
+  writeFileSync(join(root, 'homework', 'build.log'), [
+    '[qmd] homework: quarto render week1-homework.qmd',
+    '[build] quarto render failed for week1-homework.qmd: exited with status 1. Its last output was:',
+    'ERROR: cannot open homework-calibration.qmd.support/answer-placement-warning.lua',
+    'Execution halted',
+    '[qmd] homework: publishing diagnostics',
+  ].join('\n') + '\n')
+
+  const { errors, logMissing } = await extractBuildErrors('homework')
+  assert.equal(logMissing, false)
+  assert.equal(errors.length, 1, 'the later [qmd] line must not become a second error')
+  // The whole point: the cause survives the parse.
+  assert.match(errors[0].message, /answer-placement-warning\.lua/)
+  assert.match(errors[0].message, /Execution halted/)
+  // And the marked line that follows is NOT swallowed into it.
+  assert.doesNotMatch(errors[0].message, /publishing diagnostics/)
+})
+
+test('an unmarked line before any build error is not an error', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-log-preamble-'))
+  await initProjectStore(root)
+  t.after(async () => {
+    setProjectPathOverride('homework')
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  })
+  createProject({ name: 'homework', mainFile: 'week1-homework.qmd' })
+  writeFileSync(join(root, 'homework', 'build.log'), 'starting up\nnothing marked here\n')
+
+  assert.deepEqual(await extractBuildErrors('homework'), { errors: [], warnings: [], logMissing: false })
+})

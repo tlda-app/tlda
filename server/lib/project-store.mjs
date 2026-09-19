@@ -992,14 +992,70 @@ export async function extractPipelineWarningsAsync(name) {
  * here names the deck whose last good render is still being served. An error
  * listed against a successful build is that, and is deliberate.
  */
+/**
+ * A `[build] ` entry KEEPS ITS CONTINUATION LINES, and that is the whole of
+ * this function.
+ *
+ * `childFailureDetail` reports a render failure as how it ended followed by the
+ * renderer's own output — one `addLog` call carrying embedded newlines, so the
+ * marker lands on the first line and the rest arrive bare. Filtering the log to
+ * lines that START with the marker therefore kept the sentence that promises
+ * the output and dropped the output itself. Measured 2026-09-19 on
+ * `submission-week1-homework-qtm285:skipper`, whose whole reported reason was:
+ *
+ *     quarto render failed for week1-homework.qmd: exited with status 1. Its last output was:
+ *
+ * and nothing after the colon. The line the parser discarded named the cause —
+ * a Lua filter the handed-in archive did not carry. The process held the reason
+ * and the reader was told there was one, which is the failure-message defect
+ * `AGENTS.md` describes, produced here rather than in the message.
+ *
+ * ONLY AN ENTRY THAT ANNOUNCES OUTPUT ABSORBS ANY, and that restriction is
+ * load-bearing rather than cautious. A failure reason may already be followed
+ * by lines nobody should read back: `publishBuildDiagnostics` writes a worker
+ * failure as its reason plus a JS stack, and the log is deliberately where that
+ * stack lives while the error list stays the one-line reason. Taking every
+ * unmarked line would have pulled the stack into the message and undone that.
+ * The producer marks the difference itself — `childFailureDetail` ends with
+ * "Its last output was:" precisely because more is coming — so a trailing colon
+ * is the signal, and an entry that is a complete sentence keeps to one line.
+ *
+ * A line beginning `[tag] ` also closes the entry, so an unrelated later stage
+ * is never swallowed into a render's error, and absorption is capped: the point
+ * is the reason, which a renderer prints at the end of what it managed to say.
+ */
+const BUILD_LOG_MARKER = /^\[[A-Za-z0-9][A-Za-z0-9-]*\] /
+const MAX_CONTINUATION_LINES = 40
+
 async function buildLogErrors(name) {
   const logText = await readTextOrNull(join(projectDir(name), 'build.log'))
   if (logText === null) return { errors: [], warnings: [], logMissing: true }
-  const errors = logText.split('\n')
-    .filter((line) => line.startsWith('[build] '))
-    .map((line) => ({ message: line.slice('[build] '.length).trim() }))
-    .filter((error) => error.message)
-  return { errors, warnings: [], logMissing: false }
+  const errors = []
+  let open = null
+  let continued = 0
+  for (const line of logText.split('\n')) {
+    if (line.startsWith('[build] ')) {
+      const message = line.slice('[build] '.length).trim()
+      open = message.endsWith(':') ? { message } : null
+      continued = 0
+      errors.push(open || { message })
+      continue
+    }
+    if (BUILD_LOG_MARKER.test(line)) {
+      open = null
+      continue
+    }
+    if (!open || continued >= MAX_CONTINUATION_LINES) continue
+    open.message += `\n${line}`
+    continued += 1
+  }
+  return {
+    errors: errors
+      .map((error) => ({ message: error.message.trim() }))
+      .filter((error) => error.message),
+    warnings: [],
+    logMissing: false,
+  }
 }
 
 /**
