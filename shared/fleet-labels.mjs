@@ -117,6 +117,51 @@ export function evalExpr(ast, labels) {
 }
 
 /**
+ * Walk a parsed filter AST as a SET expression, combining leaf results with set
+ * operations the caller supplies.
+ *
+ * Same principle as `evalExprDirectional` below — one parser, one algebra, and
+ * the callers differ only in how a leaf is interpreted. The difference here is
+ * that a leaf resolves to a SET of agents rather than a boolean, and the two
+ * callers disagree about what a set is and what a name means:
+ *
+ *   - chat recipients (`FleetStore.resolveChatRecipients`) — a `Map<id, agent>`
+ *     of who is in the set NOW;
+ *   - search/thread (`resolveAgentNode` in unified-server) — an array of
+ *     `{id, from_ts, to_ts}` spans covering every id a name EVER pointed at.
+ *
+ * Those two questions must stay distinct — see the comment on
+ * `resolveAgentSpans`, where collapsing them made a read of a previous seat
+ * holder's whole day come back empty. Only the traversal is shared, and it was
+ * previously written out twice over identical node shapes.
+ *
+ * The walk is pure and synchronous: leaves arrive already resolved. That is
+ * deliberate rather than incidental. Leaf resolution is the whole cost here —
+ * a SQL query or an IPC round-trip per literal — so keeping it outside the
+ * algebra is what allows it to be batched, parallelised or cached without this
+ * function changing at all.
+ *
+ * `negate` receives the `not` NODE, not its evaluated child, so that neither
+ * caller starts evaluating a subtree it currently skips. Both decline to, for
+ * different reasons: chat does not support negation, and search enforces it in
+ * its post-filter and must not broaden its SQL prefilter to the whole fleet.
+ * `other` is the escape hatch for node types only one caller knows (`me`).
+ */
+export function walkAgentSetExpr(ast, { leaf, intersect, union, negate, other, empty = null } = {}) {
+  const walk = (node) => {
+    if (!node) return empty
+    switch (node.t) {
+      case 'lit': return leaf(node)
+      case 'and': return intersect(walk(node.l), walk(node.r))
+      case 'or': return union(walk(node.l), walk(node.r))
+      case 'not': return negate ? negate(node) : empty
+      default: return other ? other(node, walk) : empty
+    }
+  }
+  return walk(ast)
+}
+
+/**
  * Convenience: parse `filter` (string or AST) and evaluate against `labels` in
  * one call. Prefer `parseFilter` once + `evalExpr` per-agent when looping over
  * many agents.

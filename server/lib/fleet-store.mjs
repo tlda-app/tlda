@@ -22,7 +22,7 @@ import path from 'path';
 import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
-import { PSEUDO_LABELS, addressTerms, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
+import { PSEUDO_LABELS, addressTerms, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent, walkAgentSetExpr } from '../../shared/fleet-labels.mjs';
 import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY } from '../../shared/subscriptions.mjs';
 import { allTermFtsQuery, anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 import { parseUnifiedFilter } from '../../shared/unified-filter-grammar.mjs';
@@ -2754,17 +2754,17 @@ export class FleetStore {
         if (!a || !b) return null
         return new Map([...a, ...b])
       }
-      const walk = (node) => {
-        if (!node) return null
-        switch (node.t) {
-          case 'lit': return fromLabel(node.v)
-          case 'not': return null
-          case 'and': return intersect(walk(node.l), walk(node.r))
-          case 'or': return union(walk(node.l), walk(node.r))
-          default: return null
-        }
-      }
-      return walk(ast)
+      // The traversal is shared with search's span resolver; only the leaf
+      // meaning and the set type differ. `not` stays unevaluated here — this
+      // resolver has no negation, and `walkAgentSetExpr` hands `negate` the
+      // node rather than a walked child precisely so it cannot acquire one by
+      // accident.
+      return walkAgentSetExpr(ast, {
+        leaf: node => fromLabel(node.v),
+        intersect,
+        union,
+        empty: null,
+      })
     }
     const literal = astLiteral(filterAst);
     if (literal) {
