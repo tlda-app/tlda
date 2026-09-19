@@ -39,6 +39,13 @@ export function MarkingInkOverlay({
   )
   const [draftEditor, setDraftEditor] = useState<Editor | null>(null)
   const [returning, setReturning] = useState(false)
+  // Which problem's marks these are. Named ONCE, because it is both the stem of
+  // the draft room this overlay writes into and the problem `/return` copies
+  // across, and those two being written out separately is what broke returning:
+  // Return passed no problem at all, so the route's copy was skipped, the
+  // submission was still marked returned, and the button still reported a count
+  // — of the local draft it was reading, never of anything the student received.
+  const problemId = `ans-${pair.exerciseId}`
   const pairKey = `${pair.exerciseId}:${pair.studentId}`
   const [returnStatus, setReturnStatus] = useState<{ pairKey: string; text: string; error: boolean } | null>(null)
   const draftShapeCount = useValue(
@@ -64,8 +71,14 @@ export function MarkingInkOverlay({
     try {
       setReturning(true)
       setReturnStatus(null)
-      await classroomApi.returnFeedback(pair.assignmentId, pair.studentId)
-      setReturnStatus({ pairKey, text: `Returned ${draftShapeCount}`, error: false })
+      const { returnedMarks } = await classroomApi.returnFeedback(pair.assignmentId, pair.studentId, problemId)
+      // The server's count of what it copied, not the local draft's. This button
+      // only exists while the draft holds shapes, so nothing copied means the
+      // copy failed — and that has to read as a failure here rather than as a
+      // green count, which is what it did while delivering nothing.
+      setReturnStatus(returnedMarks
+        ? { pairKey, text: `Returned ${returnedMarks}`, error: false }
+        : { pairKey, text: 'Returned nothing — the student received no marks', error: true })
     } catch (error) {
       setReturnStatus({ pairKey, text: (error as Error).message, error: true })
     } finally {
@@ -81,7 +94,7 @@ export function MarkingInkOverlay({
         bookEditor={editor}
         visible
         isWriteTarget={pair.viewerRole === 'instructor'}
-        roomId={gradingDraftRoomId(`doc-${pair.contentRef}`, `ans-${pair.exerciseId}`)}
+        roomId={gradingDraftRoomId(`doc-${pair.contentRef}`, problemId)}
         camera={frame.camera}
         bounds={frame.bounds}
         onEditorMount={setDraftEditor}
