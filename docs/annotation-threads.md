@@ -1,8 +1,21 @@
 # Annotation threads
 
+**This is the grading interface's second version, not its current scope.** Skip,
+2026-09-19: *"that's like, grading interface v2."* What ships first is ink on the
+pair, returned by store copy. Nothing here is work in progress.
+
 A marked answer is not ink on a surface. It is a thread of append-only
 annotation layers, each carrying its own voice track, each living inside the
 timeline of the one before it.
+
+Measured 2026-09-19, of the three parts: **ink exists** and is already keyed per
+student × problem. **Audio exists at lecture scale and is not chunked** — there
+is a recording and playback system, and no per-answer address; Skip: *"the
+pieces are mostly there with the extant non-chunked playback system."* Note the
+`voice-note` tool is speech-to-text and retains no track, so it is not that
+system. **The warp does not exist** under any name, and the `Timewarp` type in
+the fleet playback code is not it: it maps a recording onto itself by region
+speed, is authored after the fact, and cannot express scrubbing back.
 
 Skip, 2026-09-19:
 
@@ -51,9 +64,16 @@ reference is a mutation shared backwards.
 
 One thread per student × problem.
 
-Related: the glass is an infinite pane whose origin is the callout's top-left
-(see [the local layer](local-layer-window-manager.md)) — that is where a layer's
-ink is expressed, and it is orthogonal to the timeline.
+**A tree.** Skip, 2026-09-19: *"tree it is."* A layer names its parent; a reply
+may answer any earlier layer, not only the most recent.
+
+**There is no single timeline for a thread — there is one per path** from the
+root to a leaf, composing that path's warps in order. Two replies warping the
+same parent differently are not in conflict; they are two paths. Playing one
+means following it.
+
+So viewing a thread is choosing a path. The open question is how a reader picks
+one, which is a question about the surface rather than about the model.
 
 ## Not settled here
 
