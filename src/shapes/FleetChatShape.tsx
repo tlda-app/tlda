@@ -2608,7 +2608,18 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     setModelTop((newAnchorTop ?? modelTopRef.current) + anchorOffset)
   }, [itemKeySignature, resetKey])
 
-  useLayoutEffect(() => {
+  // Re-measure every rendered row and absorb the difference.
+  //
+  // Called from two places, and it must be both. The layout effect below covers
+  // a height change that came WITH a render. `rowSizeObserverRef` covers one
+  // that did not, which is the larger half: a thread card's body arriving, the
+  // expand/collapse control writing `style.display` directly, a nested React
+  // root re-rendering on its own schedule, an image resolving its intrinsic
+  // size. docs/chat-rendering.md § "Row height changes after measurement"
+  // enumerates them and says the ResizeObserver is what reacts to them — that
+  // observer watched Virtuoso's item list and went away with Virtuoso in
+  // f34e43f77, so between then and now nothing did.
+  const reconcileRowHeights = useCallback(() => {
     let topAdjustment = 0
     let changed = false
     const modelTop = modelTopRef.current
@@ -2632,10 +2643,59 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       changed = true
     }
     if (!changed) return
+    // Whose position is preserved never depends on where the growth happened:
+    // a row that grew ABOVE the reader moves everything below it down by the
+    // difference, so modelTop absorbs exactly that much and the visible content
+    // does not move. That is Skip's invariant — "nothing changes on your screen
+    // when new messages arrive ... It's just the distance you have to scroll
+    // changes" — applied to growth instead of arrival.
+    //
+    // Nothing here writes `scrollTop`. It moves the MODEL, which the slice
+    // transform follows on the next render, so it cannot fight a momentum
+    // glide and is not a claimant in the re-entrancy map.
     if (tailModeRef.current && !pendingDepartureRef.current) modelTopRef.current = tailTop()
     else modelTopRef.current = clampTop(modelTopRef.current + topAdjustment)
     setGeometryVersion(version => version + 1)
   }, [clampTop, geometry.starts, tailTop])
+
+  useLayoutEffect(() => {
+    reconcileRowHeights()
+  }, [reconcileRowHeights])
+
+  // One observer over the ROWS, not over the list.
+  //
+  // The Virtuoso-era observer watched the item list, and docs/chat-rendering.md
+  // § "The ResizeObserver cannot attribute a resize" is about exactly that: a
+  // firing said the total height changed and nothing about which row or why,
+  // leaving "a row grew after measurement" indistinguishable from "a row was
+  // rendered for the first time during a scroll". Observing each row removes
+  // that ambiguity — reconcileRowHeights compares every row against its own
+  // recorded height, so a first render is a row it has no height for yet and a
+  // growth is a row whose height moved.
+  //
+  // Coalesced onto one frame because a single card settling fires the observer
+  // for several rows at once, and each reconcile pass reads every row's
+  // getBoundingClientRect.
+  const reconcileFrameRef = useRef(0)
+  // The observer is built once and outlives every reconcileRowHeights identity,
+  // so it reads the current one through a ref rather than capturing the first.
+  const reconcileRowHeightsRef = useRef(reconcileRowHeights)
+  reconcileRowHeightsRef.current = reconcileRowHeights
+  const rowSizeObserverRef = useRef<ResizeObserver | null>(null)
+  if (!rowSizeObserverRef.current && typeof ResizeObserver !== 'undefined') {
+    rowSizeObserverRef.current = new ResizeObserver(() => {
+      if (reconcileFrameRef.current) return
+      reconcileFrameRef.current = requestAnimationFrame(() => {
+        reconcileFrameRef.current = 0
+        reconcileRowHeightsRef.current()
+      })
+    })
+  }
+
+  useEffect(() => () => {
+    if (reconcileFrameRef.current) cancelAnimationFrame(reconcileFrameRef.current)
+    rowSizeObserverRef.current?.disconnect()
+  }, [])
 
   const onScroll = useCallback(() => {
     const el = scrollerRef.current
@@ -2690,8 +2750,16 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
               <div
                 key={key}
                 ref={(el) => {
-                  if (el) rowElsRef.current.set(key, el)
-                  else rowElsRef.current.delete(key)
+                  const previous = rowElsRef.current.get(key)
+                  if (previous && previous !== el) rowSizeObserverRef.current?.unobserve(previous)
+                  if (el) {
+                    rowElsRef.current.set(key, el)
+                    // Watched individually, so a growth reports which row grew.
+                    rowSizeObserverRef.current?.observe(el)
+                  } else {
+                    rowElsRef.current.delete(key)
+                    if (previous) rowSizeObserverRef.current?.unobserve(previous)
+                  }
                 }}
                 className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}
                 data-chat-item-key={key}
