@@ -129,3 +129,52 @@ test('an exercise nobody has handed in yields an empty pager, not a phantom', as
   // An empty list steps to NO_ANSWER rather than to a student with no work.
   assert.equal(stepPosition(0, answers.length), NO_ANSWER)
 })
+
+// THE GUARD FOR THE DEFECT ITSELF, and the reason it is written against
+// `installAcrossPages` rather than against the collection helper.
+//
+// The first version of this file tested only which documents were collected,
+// while the traversal lived as a loop in the hook. Restricting that loop to the
+// first document — `.slice(0, 1)`, exactly the bug — left the suite green,
+// because nothing here reached the loop. A guard that cannot fail for the thing
+// it guards is worse than no guard, because it gets cited.
+test('a solution callout on the SECOND page still gets its control', async () => {
+  const { installAcrossPages } = await import('../src/classroom/localLayer')
+  const dom = new JSDOM('<!doctype html><html><body></body></html>')
+  // Page 0 is the course index — no solutions, exactly as on qtm285-course.
+  mount(dom, 'shape:course-page-0', '<h1>Prediction, Inference, and Causality</h1>')
+  // The shape Quarto renders: `## Problem {#exr-count-n2}` becomes a heading
+  // carrying the id, and the solution callout FOLLOWS it. `precedingExerciseId`
+  // relates the two by document order, so a callout nested under the heading
+  // would not resolve.
+  mount(dom, 'shape:course-page-9', `
+    <h2 id="exr-count-n2">Problem</h2>
+    <div class="callout callout-solution"><div class="callout-header"></div>
+      <div class="callout-body">worked solution</div>
+    </div>`)
+
+  const answers = new Map([['exr-count-n2', [
+    { studentId: 'qtm285:skipper', displayName: 'Skipper', contentRef: 'submission-x', gradingStatus: 'ungraded' },
+  ]]])
+  const installed = installAcrossPages(
+    ['shape:course-page-0', 'shape:course-page-9'],
+    dom.window.document,
+    new Map(),
+    answers as never,
+    new Map(),
+    () => {},
+  )
+
+  assert.equal(installed.length, 2, 'both ready pages were installed into')
+  const solutions = installed.find(d => d.querySelector('.callout.callout-solution'))!
+  assert.ok(solutions, 'the solutions page is among them')
+  // The control exists on the page that carries the solutions, which is not
+  // page 0. Restrict the traversal to the first page and this goes red.
+  assert.ok(
+    solutions.querySelector('.tlda-local-layer-control'),
+    'no control on the solutions page — the layer is bound to the wrong page again',
+  )
+  // And the index is left alone rather than decorated.
+  const index = installed.find(d => d !== solutions)!
+  assert.equal(index.querySelector('.tlda-local-layer-control'), null)
+})

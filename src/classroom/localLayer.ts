@@ -380,3 +380,33 @@ export function readyPageDocuments(
   }
   return documents
 }
+
+/**
+ * Install the controls across every ready page of a chapter, and say where.
+ *
+ * Collection and installation are ONE unit on purpose. Split across a helper
+ * and a loop in the hook, the loop was the part no test reached: restricting it
+ * to the first document — `.slice(0, 1)`, exactly the defect this replaced —
+ * left the suite green, because the suite only ever exercised the collection.
+ * A guard that cannot fail for the thing it guards is worse than none, since it
+ * gets cited. Here the traversal is inside the tested surface and the caller
+ * keeps no logic to get wrong.
+ *
+ * Returns the documents actually installed into, so the caller can remove from
+ * each — the page a reader has left keeps its controls otherwise.
+ */
+export function installAcrossPages(
+  shapeIds: readonly string[],
+  root: Document,
+  registry: Map<string, HTMLIFrameElement>,
+  answers: ReadonlyMap<string, readonly ProblemAnswer[]>,
+  positions: ReadonlyMap<string, number>,
+  onStep: (exerciseId: string, next: number) => void,
+): Document[] {
+  const installed: Document[] = []
+  for (const page of readyPageDocuments(shapeIds, root, registry)) {
+    installLocalLayerControls(page, answers, positions, onStep)
+    installed.push(page)
+  }
+  return installed
+}

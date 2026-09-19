@@ -8,7 +8,7 @@ import {
   NO_ANSWER,
   answersByExercise,
   assignmentForSolutionsDoc,
-  installLocalLayerControls,
+  installAcrossPages,
   pairStudentAnswer,
   readyPageDocuments,
   removeLocalLayerControls,
@@ -128,7 +128,6 @@ export function useLocalLayer({
     return () => { cancelled = true }
   }, [assignmentId])
 
-  /** The chapter's live document, or null while its iframe is still coming up. */
   /**
    * Every page document of this chapter that is mounted and ready.
    *
@@ -182,13 +181,21 @@ export function useLocalLayer({
     // the layer follows the reader, the page they left keeps its controls
     // forever unless each is remembered.
     const installed = new Set<Document>()
+    // No traversal here: `installAcrossPages` owns collecting the ready pages
+    // and installing into each, so there is no loop at this call site for a
+    // later edit to narrow. Self-limiting rather than page-aware — the
+    // installer walks `.callout.callout-solution`, so the course index and
+    // every prose chapter take no controls on their own.
     const install = () => {
-      for (const chapter of chapterDocuments()) {
+      for (const chapter of installAcrossPages(
+        pageShapeKey ? pageShapeKey.split(' ') : [],
+        window.document,
+        htmlIframeElements,
+        answers,
+        positions,
+        (exerciseId, next) => stepRef.current(exerciseId, next),
+      )) {
         installed.add(chapter)
-        // Self-limiting rather than page-aware: the installer walks
-        // `.callout.callout-solution`, so a page with no solutions — the course
-        // index, a prose chapter — takes no controls and needs no test here.
-        installLocalLayerControls(chapter, answers, positions, (exerciseId, next) => stepRef.current(exerciseId, next))
       }
     }
     const observer = new MutationObserver(install)
