@@ -52,7 +52,7 @@ Two mechanisms already in the tree carry that, and neither is new:
 | what promotes | how, without a rebuild |
 |---|---|
 | the app | one image. `config/deployments/` for every deployment is baked into it and `TLDA_DEPLOYMENT` selects which one boots, so `pic-preview` and `pic` are the same image running two configurations. Promotion is `fly deploy --image <the digest already validated on the candidate>`, which builds nothing. |
-| the content | `scripts/course-release.mjs`. `stage` runs the builds and writes one immutable manifest; `deploy` moves native pointers and **never invokes a build command**. See [Staged course releases](course-release.md). |
+| the content | Published by the course build. There is no separate staged-release command. |
 
 **It is tailnet-only and ungated, and those two go together.** It runs
 `tailscale serve` rather than `funnel`, so only a device on the tailnet reaches it

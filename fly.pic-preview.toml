@@ -15,9 +15,7 @@
 #               below selects which one boots, so pic-preview and pic are the same
 #               image running two configurations — promotion is `fly deploy
 #               --image <the digest already validated here>`, which does not build.
-#   the content scripts/course-release.mjs. `stage` runs the builds and writes one
 #               immutable manifest; `deploy` moves pointers and NEVER invokes a
-#               build command. See docs/course-release.md.
 #
 # If a promotion step you are about to run rebuilds anything, it is not this.
 #

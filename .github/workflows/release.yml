@@ -81,7 +81,6 @@ jobs:
               --exclude='./docs/chat-rendering.md' \
               --exclude='./docs/chat-scrollback-prefetch-design.md' \
               --exclude='./docs/classroom.md' \
-              --exclude='./docs/course-release.md' \
               --exclude='./docs/current-main-architecture.md' \
               --exclude='./docs/daemon-server-protocol.md' \
               --exclude='./docs/daemon-server-protocol-proposal.md' \
