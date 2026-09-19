@@ -22,7 +22,7 @@ import path from 'path';
 import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
-import { PSEUDO_LABELS, addressTerms, dependencyTerms, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent, walkAgentSetExpr } from '../../shared/fleet-labels.mjs';
+import { PSEUDO_LABELS, addressTerms, astReadsScopeIdentity, canonicalAstKey, dependencyTerms, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent, walkAgentSetExpr } from '../../shared/fleet-labels.mjs';
 import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY } from '../../shared/subscriptions.mjs';
 import { allTermFtsQuery, anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 import { parseUnifiedFilter } from '../../shared/unified-filter-grammar.mjs';
@@ -2754,9 +2754,9 @@ export class FleetStore {
   // Acquire a reference to a resolved set. `kind` is 'plain' or 'subscription';
   // the difference is whether invalidation recomputes and emits a delta or
   // simply marks dirty. Release with `releaseResolvedSet(handle)`.
-  acquireResolvedSet(ast, { kind = 'plain', onDelta = null } = {}) {
-    if (!this._resolvedSetCacheable(ast)) return null
-    const key = this._resolvedSetKey(ast)
+  acquireResolvedSet(ast, { kind = 'plain', onDelta = null, scope = null } = {}) {
+    if (!this._resolvedSetCacheable(ast, scope)) return null
+    const key = this._resolvedSetKey(ast, scope)
     if (!this._resolvedSetRefs) this._resolvedSetRefs = new Map()
     let ref = this._resolvedSetRefs.get(key)
     if (!ref) { ref = { key, count: 0, subscribers: new Set() }; this._resolvedSetRefs.set(key, ref) }
@@ -2785,32 +2785,70 @@ export class FleetStore {
   // more than one correct answer — who holds the name now, and every id it ever
   // pointed at. Only `members` is cached here; a span resolver keying into the
   // same map would silently receive membership.
-  _resolvedSetKey(ast) {
-    const canonical = JSON.stringify(ast, Object.keys(ast).sort())
-    return `members ${canonical}`
+  // `me` and `my_labels` have meaning in a SCOPE — they mean something only
+  // relative to the agent the expression is being evaluated for. That makes the
+  // scope part of the set's identity, not a reason to refuse it: the set is
+  // (question, expression, scope), and two scopes are two sets rather than one
+  // uncacheable one.
+  //
+  // This matters more than any other case. `to:my_labels` and `to:me` are the
+  // two slots every agent is minted with, so they are the most common
+  // expressions in the system — refusing them would have missed on almost
+  // everything while appearing to work.
+  _resolvedSetKey(ast, scope) {
+    return `members ${scope || '-'} ${canonicalAstKey(ast)}`
   }
 
-  // An expression is cacheable only if its answer is a function of stored
-  // membership alone.
+  // A scope-relative expression resolves through one agent's identity, so it
+  // needs a scope to be answered at all — and to be cached.
+  _resolvedSetNeedsScope(ast) {
+    return astReadsSubscriberLabels(ast) || astReadsScopeIdentity(ast)
+  }
+
+  // Everything an entry's correctness rests on.
   //
-  //   - a null AST matches everything and names no terms, so it has no
-  //     dependency to invalidate on — an empty dependency set is one that
-  //     nothing can ever invalidate, which would pin the whole fleet;
-  //   - `my_labels` resolves against the reading subscriber, so it is genuinely
-  //     per-reader;
-  //   - a pseudo-label reads runtime status, which changes on every process
-  //     start and stop. These are the expressions whose membership really does
-  //     move without any agent record changing.
-  _resolvedSetCacheable(ast) {
+  // For a scope-relative expression that is two levels, and both are ordinary
+  // invalidation rather than anything new: the scope agent's OWN labels, because
+  // `my_labels` resolves through them, and the membership of each label it
+  // resolves to, because that is who the set then contains. Both are agent
+  // mutations, and both already ride `_syncAgentRegistry`.
+  _resolvedSetDependencies(ast, scope) {
+    const terms = new Set(dependencyTerms(ast))
+    if (scope) {
+      terms.add(scope)
+      if (astReadsSubscriberLabels(ast)) {
+        const scopeAgent = this.getAgent(scope)
+        if (scopeAgent) for (const label of labelsForAgent(scopeAgent)) terms.add(label)
+      }
+    }
+    return terms
+  }
+
+  // There are no special terms.
+  //
+  // A term names a dependency, an event changes something, and an entry whose
+  // dependencies intersect that change dies. `awake` is not an exception:
+  // wake and hibernate are recorded in `runtime_status_history`, and BOTH
+  // liveness paths already call `_syncAgentRegistry` — `refreshAgentLiveness`
+  // and the durable transition above it, which carries a comment saying in as
+  // many words that a status change is a labelling event. So a liveness change
+  // invalidates entries naming `awake` through the same hook a relabelling uses,
+  // and costs nothing for the entries that don't name it.
+  //
+  // The one expression that cannot be cached is the EMPTY one. It matches
+  // everything and names no terms, so its dependency set is empty — and an empty
+  // dependency set is one that nothing can ever invalidate, which would pin the
+  // whole fleet permanently. That is an absence of dependencies, not a special
+  // kind of term.
+  _resolvedSetCacheable(ast, scope) {
     if (!ast) return false
-    if (astReadsSubscriberLabels(ast)) return false
-    for (const term of dependencyTerms(ast)) if (PSEUDO_LABELS.includes(term)) return false
+    if (this._resolvedSetNeedsScope(ast) && !scope) return false
     return true
   }
 
-  _resolvedSetGet(ast) {
-    if (!this._resolvedSetCache || !this._resolvedSetCacheable(ast)) return null
-    const key = this._resolvedSetKey(ast)
+  _resolvedSetGet(ast, scope = null) {
+    if (!this._resolvedSetCache || !this._resolvedSetCacheable(ast, scope)) return null
+    const key = this._resolvedSetKey(ast, scope)
     const hit = this._resolvedSetCache.get(key)
     if (!hit) return null
     this._resolvedSetCache.delete(key)
@@ -2818,8 +2856,8 @@ export class FleetStore {
     return hit.members
   }
 
-  _resolvedSetSet(ast, members) {
-    if (!this._resolvedSetCacheable(ast)) return
+  _resolvedSetSet(ast, members, scope = null) {
+    if (!this._resolvedSetCacheable(ast, scope)) return
     // A set too big to be worth holding is also the one most likely to be a
     // one-off. Refusing it keeps the bound a count of entries rather than an
     // estimate of memory, which is a number nobody can tune from observation.
@@ -2829,17 +2867,17 @@ export class FleetStore {
       this._resolvedSetKeysByTerm = new Map()
       this._resolvedSetKeysByAgent = new Map()
     }
-    const key = this._resolvedSetKey(ast)
+    const key = this._resolvedSetKey(ast, scope)
     // The expression is stored beside its answer because a subscription ref has
     // to RECOMPUTE on invalidation to produce a delta, and the key is a
     // serialisation rather than something you can resolve from.
-    this._resolvedSetCache.set(key, { ast, members })
+    this._resolvedSetCache.set(key, { ast, members, scope })
     // Indexed two ways, and both are needed for the same reason the literal
     // tier needs them: by the terms the expression DEPENDS on — negated ones
     // included, since `awake & !goose` changes when goose is relabelled — and
     // by the agents currently in it, which is the only record of what the set
     // looked like before a change removes an agent's claim to it.
-    for (const term of dependencyTerms(ast)) {
+    for (const term of this._resolvedSetDependencies(ast, scope)) {
       let keys = this._resolvedSetKeysByTerm.get(term)
       if (!keys) { keys = new Set(); this._resolvedSetKeysByTerm.set(term, keys) }
       keys.add(key)
@@ -2896,7 +2934,7 @@ export class FleetStore {
         // acquire recomputes. Only a subscription ref is told.
         if (!subscribers?.size || !before?.ast) continue
         const beforeIds = before.members.map(agent => agent.id)
-        const afterIds = this.resolveChatRecipients(before.ast, {})
+        const afterIds = this.resolveChatRecipients(before.ast, { scope: before.scope })
         const added = afterIds.filter(agentId => !beforeIds.includes(agentId))
         const removed = beforeIds.filter(agentId => !afterIds.includes(agentId))
         if (!added.length && !removed.length) continue

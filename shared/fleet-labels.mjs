@@ -194,6 +194,51 @@ export function matchFilter(filter, labels) {
 // subscription, per message) ask this first and skip that work when the answer
 // is no. Kept beside evalExprDirectional so the two cannot drift: if a new node
 // type starts reading `subscriber`, it must be added here too.
+/**
+ * A stable string identifying a parsed expression, for use as a cache key.
+ *
+ * Recurses explicitly and sorts keys at every level. It does NOT use
+ * `JSON.stringify(ast, keysArray)`: that argument is a property ALLOWLIST
+ * applied at every depth, so the top node's key names are the only ones any
+ * nested node may keep. With an `and` node — keys `t`, `l`, `r` — every nested
+ * `lit` loses its `v`, and `awake & sleeper` and `hibernating & sleeper`
+ * serialise to the same string. Two unrelated expressions then share a cache
+ * entry and one of them silently gets the other's recipients.
+ */
+export function canonicalAstKey(node) {
+  if (node === null || typeof node !== 'object') return JSON.stringify(node)
+  if (Array.isArray(node)) return `[${node.map(canonicalAstKey).join(',')}]`
+  const keys = Object.keys(node).sort()
+  return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalAstKey(node[k])}`).join(',')}}`
+}
+
+/**
+ * Does this expression name the evaluating agent itself — `me`?
+ *
+ * The companion to `astReadsSubscriberLabels`. Both ask the same question about
+ * a different construct: does this expression only have meaning relative to some
+ * agent. `my_labels` reads that agent's labels, `me` reads its identity, and
+ * either makes the answer a function of the scope as well as the expression.
+ *
+ * A caller that resolves or caches a set needs this to know the scope belongs in
+ * the key. Neither construct makes an expression unanswerable or uncacheable —
+ * two scopes are two sets.
+ */
+export function astReadsScopeIdentity(ast) {
+  if (!ast) return false
+  switch (ast.t) {
+    case 'lit': return ast.v === 'me'
+    case 'me': return true
+    case 'not':
+    case 'from':
+    case 'to':
+    case 'involving': return astReadsScopeIdentity(ast.x)
+    case 'and':
+    case 'or': return astReadsScopeIdentity(ast.l) || astReadsScopeIdentity(ast.r)
+    default: return false
+  }
+}
+
 export function astReadsSubscriberLabels(ast) {
   if (!ast) return false
   switch (ast.t) {

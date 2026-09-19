@@ -9,7 +9,27 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseFilter, addressTerms, dependencyTerms } from './fleet-labels.mjs'
+import { parseFilter, addressTerms, dependencyTerms, canonicalAstKey } from './fleet-labels.mjs'
+
+// `canonicalAstKey` exists because the obvious one-liner is wrong in a way that
+// produces no error: `JSON.stringify(ast, Object.keys(ast).sort())` treats its
+// second argument as a property ALLOWLIST applied at every depth, so only the
+// top node's key names survive anywhere in the tree. Two different expressions
+// then key to the same cache entry and one silently gets the other's answer.
+test('two expressions differing only in a nested literal get different keys', () => {
+  const a = canonicalAstKey(parseFilter('awake & sleeper'))
+  const b = canonicalAstKey(parseFilter('hibernating & sleeper'))
+  assert.notEqual(a, b, 'nested literal values must survive into the key')
+  assert.ok(a.includes('awake'), 'the key must actually carry the literal')
+})
+
+test('the same expression written two ways gets the same key', () => {
+  assert.equal(
+    canonicalAstKey(parseFilter('mathy & reviewers')),
+    canonicalAstKey(parseFilter('mathy  &  reviewers')),
+    'whitespace is not part of the expression',
+  )
+})
 
 const sorted = set => [...set].sort()
 

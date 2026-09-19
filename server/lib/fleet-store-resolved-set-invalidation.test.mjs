@@ -1,7 +1,7 @@
-// Resolving an agent-set expression caches the candidate set of each LITERAL.
-// These tests are about the one rule that keeps that cache honest, and they are
-// written so that getting it wrong fails here rather than months later in a
-// message that silently went to the wrong people.
+// Resolving an agent-set expression caches the matched SET, keyed by the
+// expression. These tests are about the rules that keep that cache honest, and
+// they are written so that getting one wrong fails here rather than months
+// later in a message that silently went to the wrong people.
 //
 // The rule: invalidate on the union of the terms an agent answered to BEFORE
 // the change and the terms it answers to AFTER.
@@ -20,6 +20,7 @@ import { join } from 'node:path'
 
 import { FleetStore } from './fleet-store.mjs'
 import { parseFilter } from '../../shared/fleet-labels.mjs'
+import { RUNTIME_KIND, RUNTIME_STATUS, runtimeState } from '../../shared/fleet-runtime-status.mjs'
 
 const NOW = '2026-09-19T06:00:00.000Z'
 
@@ -87,6 +88,63 @@ test('a rename invalidates the old name as well as the new', () => withStore(asy
 
   assert.deepEqual(recipients(store, 'oldname'), [], 'the old name must stop resolving')
   assert.deepEqual(recipients(store, 'newname'), ['fleet:r'], 'the new name must resolve')
+}))
+
+// The sender is excluded from their own send. That exclusion is a PROJECTION
+// over the cached set, not part of the set — which is the whole reason the
+// sender is not in the cache key. If anyone "fixes" this by keying on `from`,
+// the cache becomes per-reader and stops hitting; if anyone caches the
+// post-exclusion list, this test fails instead, which is the cheap failure.
+test('one cached set serves two different senders correctly', () => withStore(async (store) => {
+  setLabels(store, 'fleet:a', ['crew'])
+  setLabels(store, 'fleet:b', ['crew'])
+
+  const fromA = store.resolveChatRecipients(parseFilter('crew'), { from: 'fleet:a', filter: 'crew' })
+  const fromB = store.resolveChatRecipients(parseFilter('crew'), { from: 'fleet:b', filter: 'crew' })
+
+  assert.deepEqual(fromA, ['fleet:b'], 'a must not be a recipient of its own send')
+  assert.deepEqual(fromB, ['fleet:a'], 'and the cached set must not have been narrowed by the first call')
+}))
+
+// `awake` is not a special term. Wake and hibernate are recorded in
+// runtime_status_history and both liveness paths call _syncAgentRegistry, so a
+// liveness change invalidates through the same hook a relabelling uses. This
+// test exists because the tempting move is to refuse to cache anything naming a
+// pseudo-label, which would miss on a large share of real traffic to avoid a
+// problem that the invalidation hook already solves.
+test('a liveness change invalidates a cached set naming awake', () => withStore(async (store) => {
+  store.upsertAgent({ id: 'fleet:s', friendly_name: 's', labels: [], registered_at: NOW, last_seen: NOW })
+  store.refreshAgentLiveness('fleet:s', runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.HIBERNATING))
+
+  assert.deepEqual(recipients(store, 'awake & s'), [], 'precondition: hibernating, and the empty set is cached')
+
+  store.refreshAgentLiveness('fleet:s', runtimeState(RUNTIME_KIND.AI, RUNTIME_STATUS.AWAKE))
+
+  assert.deepEqual(recipients(store, 'awake & s'), ['fleet:s'], 'waking must invalidate the cached set')
+  assert.deepEqual(recipients(store, 'hibernating & s'), [], 'and must not be served the other set through a colliding key')
+}))
+
+test('a set held by a subscription ref is told what changed', () => withStore(async (store) => {
+  setLabels(store, 'fleet:one', ['crew'])
+  const deltas = []
+  const handle = store.acquireResolvedSet(parseFilter('crew'), {
+    kind: 'subscription',
+    onDelta: delta => deltas.push(delta),
+  })
+  assert.ok(handle, 'precondition: the expression is cacheable and acquirable')
+  store.resolveChatRecipients(parseFilter('crew'), { from: 'fleet:sender', filter: 'crew' })
+
+  setLabels(store, 'fleet:two', ['crew'])
+
+  assert.equal(deltas.length, 1, 'one membership change, one delta')
+  assert.deepEqual(deltas[0].added, ['fleet:two'])
+  assert.deepEqual(deltas[0].removed, [])
+
+  // Release is what stops maintenance. A set with no refs is not told anything,
+  // because there is nobody to tell — and it must not resurrect the entry.
+  store.releaseResolvedSet(handle)
+  setLabels(store, 'fleet:three', ['crew'])
+  assert.equal(deltas.length, 1, 'a released ref receives no further deltas')
 }))
 
 test('an expression over two literals sees a change to either', () => withStore(async (store) => {
