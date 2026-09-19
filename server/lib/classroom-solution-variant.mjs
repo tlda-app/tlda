@@ -44,9 +44,24 @@ export function solutionsVariantFileFor({ store, principal, pageInfo, servedFile
   const assignment = store.assignmentForBookPage(sourceFile.replace(/\.qmd$/i, '.html'), principal.courseId)
   if (!store.maySeeSolutionsFor(assignment, principal)) return null
 
-  // `<stem>.solutions.qmd` is what the handout generator writes beside the
-  // master, so the rendered sibling is found by asking page-info which output
-  // that source produced rather than by guessing at the output's name.
+  // Two shapes can carry a solutions rendering and the build has not settled
+  // which: an ALTERNATE of the homework chapter, same `source.file` and a
+  // second `file`; or a SEPARATE non-chapter source, `<stem>.solutions.qmd`,
+  // which is what the one existing solutions page is. Serving does not need to
+  // care, so it does not: `variant` is the field page-info already uses to say
+  // what a rendering IS — the decks carry `variant: 'slides'` — and a solutions
+  // rendering marked the same way is found whichever way the build made it.
+  //
+  // The source match below is the fallback for the rendering that exists today,
+  // which predates any such mark. Neither branch guesses at an output filename.
   const solutionsSource = sourceFile.replace(/\.qmd$/i, '.solutions.qmd')
-  return pageInfo.find(page => page.source?.file === solutionsSource)?.file || null
+  const solutions = pageInfo.find(page => (
+    page.variant === 'solutions'
+    && (page.source?.file === sourceFile || page.source?.file === solutionsSource)
+  )) || pageInfo.find(page => page.source?.file === solutionsSource)
+
+  // Never hand back the page that was asked for: that is not a substitution,
+  // and returning it would make an entitled reader's request read as satisfied
+  // when nothing was substituted.
+  return solutions?.file && solutions.file !== servedFilePath ? solutions.file : null
 }

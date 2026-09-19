@@ -123,6 +123,57 @@ test('with no solutions rendering in the build, the homework page stands', () =>
   })
 })
 
+test('an alternate rendering of the same chapter is found by its variant mark', () => {
+  // The other build shape: one source, two outputs, the second marked the way
+  // page-info already marks a deck. Serving must not care which shape it is.
+  withStore(store => {
+    const alternates = [
+      pageInfo[0],
+      {
+        file: SOLUTIONS_PAGE,
+        title: 'Homework: The Idea of Calibration',
+        variant: 'solutions',
+        source: { type: 'project-source', format: 'qmd', file: 'homework/homework-calibration.qmd' },
+      },
+    ]
+    assert.equal(
+      solutionsVariantFileFor({
+        store,
+        principal: { role: 'instructor', courseId: COURSE },
+        pageInfo: alternates,
+        servedFilePath: HOMEWORK_PAGE,
+      }),
+      SOLUTIONS_PAGE,
+    )
+    // And it is still refused to a classmate who has handed in nothing.
+    assert.equal(
+      solutionsVariantFileFor({
+        store,
+        principal: { role: 'student', studentId: NOT_HANDED_IN, courseId: COURSE },
+        pageInfo: alternates,
+        servedFilePath: HOMEWORK_PAGE,
+      }),
+      null,
+    )
+  })
+})
+
+test('a variant entry that IS the requested page is not a substitution', () => {
+  // A build that marked the homework page itself would otherwise make an
+  // entitled request read as substituted while nothing changed.
+  withStore(store => {
+    assert.equal(
+      solutionsVariantFileFor({
+        store,
+        principal: { role: 'instructor', courseId: COURSE },
+        pageInfo: [{ ...pageInfo[0], variant: 'solutions' }],
+        servedFilePath: HOMEWORK_PAGE,
+      }),
+      null,
+    )
+  })
+})
+
 test('an unreadable page-info is refused rather than guessed at', () => {
   withStore(store => {
     const instructor = { role: 'instructor', courseId: COURSE }
