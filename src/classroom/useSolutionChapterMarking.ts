@@ -157,6 +157,13 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
           }
           const result = installSolutionMarking(frameDocument, {
             answersFor: answersForFrame(frameDocument),
+            // Which student the gradebook link named, if it came from one. An
+            // instructor clicked a particular person's cell; landing him at
+            // "no student's answer" throws that away and makes him page back to
+            // where he already said he was going.
+            openAt: identity.role === 'instructor'
+              ? new URLSearchParams(window.location.search).get('student')
+              : null,
             onShow: (exerciseId, answer, wrapper) => {
               setActivePair(current => {
                 if (answer && wrapper) return {

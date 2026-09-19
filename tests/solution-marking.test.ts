@@ -134,6 +134,48 @@ test('paging forward pairs one answer with its own solution, and back removes it
   assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
 })
 
+// OPENING ON THE STUDENT THE GRADEBOOK NAMED.
+//
+// The gradebook link is one student's cell. Landing at "no student's answer"
+// throws away the only thing that link said and makes him page back to the
+// person he had already chosen.
+test('a named student is already paired when the chapter opens', async () => {
+  const doc = chapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']), openAt: 'bo' })
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  const arrows = doc.querySelectorAll('.tlda-marking-arrows')[0]
+  assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'bo 2/2')
+  const pairs = doc.querySelectorAll('.tlda-marking-pair')
+  assert.equal(pairs.length, 2, 'every solution opens on the named student, not only the first')
+  assert.match(pairs[0].querySelector('.tlda-marking-answer')!.textContent!, /bo/)
+  // Not the first answer in the list, or this would pass against an install that
+  // simply stepped forward once.
+  assert.doesNotMatch(pairs[0].querySelector('.tlda-marking-answer')!.textContent!, /ana/)
+})
+
+test('a student nobody answered with leaves the arrows where they were', async () => {
+  const doc = chapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']), openAt: 'nobody' })
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  const arrows = doc.querySelectorAll('.tlda-marking-arrows')[0]
+  assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0)
+})
+
+// The default is unchanged, and this is what says so: he opens the chapter to
+// read it far more often than to mark one person.
+test('no named student still opens at no answer', async () => {
+  const doc = chapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  const arrows = doc.querySelectorAll('.tlda-marking-arrows')[0]
+  assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0)
+})
+
 test('removing the marking leaves the chapter as it was found', async () => {
   const doc = chapter()
   const before = doc.body.innerHTML

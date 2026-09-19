@@ -50,6 +50,19 @@ export interface SolutionMarkingOptions {
   answersFor: (exerciseId: string) => Promise<MarkableAnswer[]>
   /** Called whenever the shown student changes, including back to nobody. */
   onShow?: (exerciseId: string, answer: MarkableAnswer | null, pair: HTMLElement | null) => void
+  /**
+   * Open on this student's answer rather than at position zero.
+   *
+   * The gradebook link is a particular student's cell, so arriving at "no
+   * student's answer" and making him page to the one he clicked loses the only
+   * thing that link said. An id nobody answered with is not an error — the
+   * arrows stay at position zero, which is where they would have been anyway.
+   *
+   * Position zero remains the default everywhere else: he opens the chapter to
+   * read it far more often than to mark one person, and `3a5141394` records that
+   * as his 4:18 spec.
+   */
+  openAt?: string | null
 }
 
 function installStyle(doc: Document) {
@@ -289,7 +302,16 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
     back.addEventListener('click', () => { void step(-1) })
     forward.addEventListener('click', () => { void step(1) })
     host.append(arrows)
-    void render()
+    // Opening on a named student asks for the answers up front, which is exactly
+    // what `step` avoids doing for a chapter he is only reading — so it happens
+    // only when a student was actually named.
+    void (async () => {
+      if (!options.openAt) return void render()
+      answers ??= await options.answersFor(exerciseId)
+      const at = answers.findIndex(answer => answer.studentId === options.openAt)
+      if (at >= 0) index = at
+      await render()
+    })()
 
     cleanups.push(() => {
       unpair(solution)

@@ -133,14 +133,31 @@ export function GradebookWorkspace() {
       next.set('assignment', assignmentId)
       return `?${next}`
     }
-    next.delete('project')
+    // AN INSTRUCTOR OPENS THE SOLUTION CHAPTER, NOT A MODE.
+    //
+    // Skip: "It's just supposed to look like the ordinary solution chapter — it
+    // is the solution chapter — and it's not a mode." This sent him to
+    // `?workspace=classroom-problems`, which is that mode, so the one link he
+    // uses to reach a submission landed on the surface he rejected.
+    //
+    // `course` is KEPT. It was deleted here, and the marking layer cannot mount
+    // without it: the chapter asks `/api/classroom/me?course=…` before it
+    // installs, and with no course that answers 400, the identity comes back
+    // null, and the install returns early. So the link that opened marking was
+    // also the link that guaranteed there was none.
+    const assignment = data.assignments.find(candidate => candidate.id === assignmentId)
     next.delete('compareDoc')
     next.delete('markingCourse')
     next.delete('markingAssignment')
     next.delete('markingStudent')
-    next.set('workspace', 'classroom-problems')
-    next.set('assignment', assignmentId)
+    next.delete('assignment')
+    next.delete('workspace')
+    next.set('course', courseId)
+    // The student whose cell he clicked. The chapter opens its arrows on that
+    // person rather than at "no student's answer", which is the only thing this
+    // link says that the chapter's own URL does not.
     next.set('student', studentId)
+    if (assignment?.solutionsDocKey) next.set('project', assignment.solutionsDocKey)
     return `?${next}`
   }
 

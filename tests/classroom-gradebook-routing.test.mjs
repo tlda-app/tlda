@@ -8,8 +8,23 @@ const comparison = readFileSync(new URL('../src/classroom/HomeworkComparisonWork
 const toc = readFileSync(new URL('../src/panels/TocTab.tsx', import.meta.url), 'utf8')
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 
-test('gradebook submission links use the project route and the return link clears it', () => {
-  assert.match(gradebook, /next\.set\('project', contentRef\)/)
+// These assertions read the SOURCE TEXT. That catches a line being changed or
+// dropped and proves nothing about what the link does when clicked — the route
+// it builds is checked in the app, not here.
+
+test('the gradebook opens the solution chapter, not the mode Skip rejected', () => {
+  // "It's just supposed to look like the ordinary solution chapter — it is the
+  // solution chapter — and it's not a mode." The link sent him to
+  // `?workspace=classroom-problems`, which is that mode.
+  // The code, not the word: the comment above the fix names the mode it removed,
+  // and a bare /classroom-problems/ matches that comment and fails on the fix.
+  assert.doesNotMatch(gradebook, /next\.set\('workspace', 'classroom-problems'\)/)
+  // `course` is what the chapter needs to resolve an identity before it installs
+  // the marking layer; this deleted it, so the link that opened marking also
+  // guaranteed there was none.
+  assert.match(gradebook, /next\.set\('course', courseId\)/)
+  // And the student whose cell he clicked, so the arrows open on that person.
+  assert.match(gradebook, /next\.set\('student', studentId\)/)
   assert.doesNotMatch(gradebook, /next\.set\('doc', contentRef\)/)
   assert.match(lifecycle, /\['project', 'compareDoc', 'markingCourse', 'markingAssignment', 'markingStudent'\]/)
 })
