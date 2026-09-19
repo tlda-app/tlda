@@ -22,7 +22,7 @@ async function serve() {
 }
 
 function seeded(store) {
-  store.upsertCourse({ id: 'c', title: 'C' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'c', displayName: 'Ada', enrollmentToken: 'a' })
   store.upsertStudent({ id: 'bo', courseId: 'c', displayName: 'Bo', enrollmentToken: 'b' })
   store.upsertStudent({ id: 'demo', courseId: 'c', displayName: 'Demo', enrollmentToken: 'd', layerScope: 'common' })
@@ -98,7 +98,7 @@ test('an unattached draft is not returned even when he returns the rest', async 
 
 test('not submitted is an ordinary answer, not an error state', async t => {
   const { store, server, get } = await serve(); t.after(() => server.close())
-  store.upsertCourse({ id: 'c', title: 'C' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'cy', courseId: 'c', displayName: 'Cy', enrollmentToken: 'c' })
   store.upsertAssignment({ id: 'hw', courseId: 'c', title: 'HW', dueAt: '2026-09-12', solutionsDocKey: 'hw-solutions' })
   principal = { role: 'student', studentId: 'cy', courseId: 'c' }

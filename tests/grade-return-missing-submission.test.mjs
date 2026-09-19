@@ -11,7 +11,7 @@ import { createClassroomRouter } from '../server/routes/classroom.mjs'
 async function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-grade-404-'))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
-  store.upsertCourse({ id: 'c1', title: 'Course' })
+  store.upsertCourse({ id: 'c1', title: 'Course', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'c1', displayName: 'Ada', enrollmentToken: 'secret' })
   store.upsertAssignment({ id: 'hw1', courseId: 'c1', title: 'HW1', dueAt: '2026-09-01T20:00:00Z' })
 

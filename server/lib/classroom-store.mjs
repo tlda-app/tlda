@@ -169,12 +169,22 @@ export class ClassroomStore {
 
   upsertCourse({ id, title, preferredName, pronouns }) {
     const existing = this.getCourse(id)
-    // Never null: the column is NOT NULL, and a caller that names no instructor
-    // gets the same generic the backfill uses rather than a constraint failure.
-    // `POST /courses` still refuses an empty name, so the human-facing path
-    // cannot reach this default — it is for internal callers that only have a
-    // course to record.
-    const nextPreferredName = (preferredName === undefined ? existing?.preferred_name : preferredName) || 'Instructor'
+    // A NEW COURSE MUST BE NAMED. AN EXISTING ONE KEEPS THE NAME IT HAS.
+    //
+    // Nothing forced the issue when the column went in nullable, which is how
+    // four courses sat unnamed for three weeks while the solution chapter's
+    // marking silently never installed. The schema refuses a null now, and this
+    // refuses the call that would have wanted one — so an omission fails at the
+    // caller that made it rather than as a missing feature weeks later.
+    //
+    // An update that names nobody carries no opinion about the name and leaves
+    // the stored one alone. That is what lets a caller change a course's title
+    // without having to know its instructor.
+    const named = String(preferredName ?? '').trim()
+    if (!existing && !named) {
+      throw new Error(`classroom store: course "${id}" cannot be created without an instructor's preferred name — it is shown as the name of a person, and nothing else on the row can stand in for it.`)
+    }
+    const nextPreferredName = named || existing.preferred_name
     const nextPronouns = pronouns === undefined ? (existing?.pronouns || null) : (String(pronouns ?? '').trim() || null)
     this.db.prepare(`INSERT INTO courses(id,title,preferred_name,pronouns) VALUES (?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET title=excluded.title, preferred_name=excluded.preferred_name, pronouns=excluded.pronouns`)

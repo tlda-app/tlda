@@ -115,17 +115,29 @@ test('opening an already-migrated store leaves it alone', t => {
   assert.equal(second.db.pragma('table_info(courses)').find(c => c.name === 'preferred_name').notnull, 1)
 })
 
-test('a caller that records a course without naming an instructor still gets a row', t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-preferred-name-default-'))
+// NOTHING FORCED THE ISSUE, WHICH IS WHY IT LASTED THREE WEEKS.
+//
+// The backfill above repairs the rows that exist. This is what stops the next
+// one: creating a course with no instructor's name fails at the caller that
+// omitted it, rather than storing a row that reads fine and disables marking
+// for whoever opens the chapter later.
+test('a course cannot be created without an instructor name, and keeps it once it has one', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-preferred-name-required-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
   t.after(() => store.close())
 
-  // The column is NOT NULL now, so this would be a constraint failure rather
-  // than a null if the store did not supply the same generic the backfill uses.
-  assert.equal(store.upsertCourse({ id: 'c', title: 'C' }).preferred_name, 'Instructor')
-  // And naming one later replaces it rather than being ignored.
+  assert.throws(() => store.upsertCourse({ id: 'c', title: 'C' }), /without an instructor's preferred name/)
+  assert.throws(() => store.upsertCourse({ id: 'c', title: 'C', preferredName: '   ' }), /without an instructor's preferred name/)
+  assert.equal(store.getCourse('c'), null, 'the refused course was stored anyway')
+
   assert.equal(store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Skip' }).preferred_name, 'Skip')
-  // A later write that names nobody keeps the name already there.
-  assert.equal(store.upsertCourse({ id: 'c', title: 'C renamed' }).preferred_name, 'Skip')
+  // An update that names nobody carries no opinion about the name: it leaves the
+  // stored one alone rather than refusing, so a title can be changed without
+  // having to know the instructor.
+  const renamed = store.upsertCourse({ id: 'c', title: 'C renamed' })
+  assert.equal(renamed.preferred_name, 'Skip')
+  assert.equal(renamed.title, 'C renamed')
+  // And a later name replaces it.
+  assert.equal(store.upsertCourse({ id: 'c', title: 'C renamed', preferredName: 'Professor Example' }).preferred_name, 'Professor Example')
 })

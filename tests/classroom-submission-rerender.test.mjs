@@ -31,7 +31,7 @@ async function serve(rerunFailedBuild) {
 }
 
 function enrol(store) {
-  store.upsertCourse({ id: 'c', title: 'C' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'c', displayName: 'Ada', enrollmentToken: 'tok' })
   store.upsertAssignment({ id: 'hw', courseId: 'c', title: 'HW', dueAt: '2026-09-12' })
 }

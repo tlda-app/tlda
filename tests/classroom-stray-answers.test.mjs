@@ -169,7 +169,7 @@ test('an edit to the handout after the freeze is not blamed on the student', asy
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-freeze-'))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
   try {
-    store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
+    store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
     store.upsertAssignment({ id: 'hw9', courseId: 'qtm285', title: 'Homework 9', dueAt: '2026-09-01T20:00:00Z' })
     store.freezeTemplate('hw9', { templateDocKey: 'hw9-handout', templateVersion: 'rev-at-freeze' })
 

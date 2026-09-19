@@ -49,7 +49,7 @@ const pageInfo = [
 function withStore(fn) {
   const root = mkdtempSync(join(tmpdir(), 'tlda-solution-variant-'))
   const store = new ClassroomStore(join(root, 'classroom.db'))
-  store.upsertCourse({ id: COURSE, title: 'QTM 285' })
+  store.upsertCourse({ id: COURSE, title: 'QTM 285', preferredName: 'Instructor' })
   store.registerStudent({ courseId: COURSE, preferredName: 'Ada', universityLogin: 'ada', enrollmentToken: 'tok-ada' })
   store.registerStudent({ courseId: COURSE, preferredName: 'Biko', universityLogin: 'biko', enrollmentToken: 'tok-biko' })
   store.upsertAssignment({

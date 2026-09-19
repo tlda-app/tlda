@@ -94,7 +94,7 @@ test('the sync socket asks who you are before letting you into a room', async t 
 
   const classroomDb = join(dir, 'classroom.db')
   const store = new ClassroomStore(classroomDb)
-  store.upsertCourse({ id: 'c', title: 'C' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'c', displayName: 'Ada', enrollmentToken: 'tok-ada' })
   store.upsertStudent({ id: 'bo', courseId: 'c', displayName: 'Bo', enrollmentToken: 'tok-bo' })
   store.close()

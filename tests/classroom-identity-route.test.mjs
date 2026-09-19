@@ -38,7 +38,7 @@ test('a student is told who they are, and it comes from their token', async t =>
   const { store, server, get } = await serve(byEnrolmentToken)
   t.after(() => server.close())
 
-  store.upsertCourse({ id: 'c', title: 'C' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'c', displayName: 'Ada', enrollmentToken: 'token-ada' })
   store.upsertStudent({ id: 'bo', courseId: 'c', displayName: 'Bo', enrollmentToken: 'token-bo' })
 
@@ -87,26 +87,18 @@ test('instructor identity failures name the condition that failed', async t => {
   assert.deepEqual(await get('/me?course=missing'), { status: 404, body: { error: 'Course not found' } })
 })
 
-// A COURSE RECORDED WITHOUT AN INSTRUCTOR'S NAME STILL RESOLVES.
+// THERE IS NO THIRD FAILURE HERE, AND THE MISSING ONE IS DELIBERATE.
 //
-// This answered 409 "Course instructor preferred name is not configured", which
-// read as a cosmetic complaint about a badge and was not one. The solution
-// chapter's marking asks `/me` before it installs and gives up on a null
-// identity, so on every course whose row predates the column — which was every
-// real course, since `4a01a1545` added it with no backfill — the marking layer
-// silently never installed and the only visible trace was a toast about a name.
+// This route also answered 409 "Course instructor preferred name is not
+// configured" when the name was empty. That read as a cosmetic complaint about
+// a badge and was not one: the solution chapter's marking asks `/me` before it
+// installs and gives up on a null identity, so on every course whose row
+// predates the column — which was every real course, since `4a01a1545` added it
+// with no backfill — the marking layer silently never installed, and the only
+// visible trace was a toast about a name.
 //
-// It resolves to the store's generic rather than to null: the column is NOT NULL
-// now and the store supplies that same generic for a caller that names nobody,
-// so the route has nothing left to refuse. `POST /courses` still demands a real
-// name, which is the path a person actually uses.
-test('a course recorded without an instructor name still resolves its instructor', async t => {
-  const { store, server, get } = await serve(() => ({ role: 'instructor' }))
-  t.after(() => server.close())
-  store.upsertCourse({ id: 'unnamed', title: 'Unnamed' })
-
-  assert.deepEqual(await get('/me?course=unnamed'), {
-    status: 200,
-    body: { role: 'instructor', courseId: 'unnamed', preferredName: 'Instructor', pronouns: null },
-  })
-})
+// There is deliberately no test here for a course with no name, because a
+// course with no name can no longer exist: the store backfills the column,
+// holds it NOT NULL, and refuses to create a course without one. That guarantee
+// is tested where it lives, in `classroom-course-preferred-name-migration`.
+// If you are here to add the 409 back, the thing to change is the store.

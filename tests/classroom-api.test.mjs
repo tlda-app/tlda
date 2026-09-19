@@ -10,7 +10,7 @@ import { classroomPrincipal, createClassroomRouter } from '../server/routes/clas
 async function serverFixture({ resolveSubmissionBuild = async contentRef => ({ buildStatus: contentRef === 'hw1-ada' ? 'success' : 'missing', buildAt: '2026-09-02T03:41:51Z' }) } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-api-'))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
-  store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
+  store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret' })
   store.upsertStudent({ id: 'grace', courseId: 'qtm285', displayName: 'Grace', enrollmentToken: 'grace-secret' })
   store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z' })
@@ -37,7 +37,7 @@ test('a classroom enrollment token identifies a student without exposing the glo
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-principal-'))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
   try {
-    store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
+    store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
     store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'student-secret' })
     const principal = classroomPrincipal({ headers: { 'x-tlda-student-token': 'student-secret' }, query: {} }, store, null)
     assert.deepEqual(principal, { role: 'student', studentId: 'ada', courseId: 'qtm285', displayName: 'Ada', preferredName: 'Ada', pronouns: null, layerScope: 'student' })
@@ -232,7 +232,7 @@ test('a student transfers their enrollment to one new device without exposing or
 test('device transfer rejects instructor, anonymous, wrong-course and expired attempts', async () => {
   const f = await serverFixture()
   try {
-    f.store.upsertCourse({ id: 'other', title: 'Other course' })
+    f.store.upsertCourse({ id: 'other', title: 'Other course', preferredName: 'Instructor' })
     assert.equal((await f.request('/courses/qtm285/device-transfer', 'instructor', { method: 'POST' })).status, 403)
     assert.equal((await f.request('/courses/qtm285/device-transfer', '', { method: 'POST' })).status, 401)
     assert.equal((await f.request('/courses/other/device-transfer', 'ada', { method: 'POST' })).status, 403)
@@ -330,7 +330,7 @@ test('an emailed-homework repair link lands on that student\'s submitted assignm
     assert.equal((await f.request('/courses/qtm285/students/grace/repair-link', 'instructor', {
       method: 'POST', body: JSON.stringify({ assignmentId: 'hw1' }),
     })).status, 409, 'a link cannot claim to open work the student has not submitted')
-    f.store.upsertCourse({ id: 'other', title: 'Other course' })
+    f.store.upsertCourse({ id: 'other', title: 'Other course', preferredName: 'Instructor' })
     f.store.upsertAssignment({ id: 'other-hw', courseId: 'other', title: 'Other homework', dueAt: '2026-09-01T20:00:00Z' })
     assert.equal((await f.request('/courses/qtm285/students/ada/repair-link', 'instructor', {
       method: 'POST', body: JSON.stringify({ assignmentId: 'other-hw' }),
@@ -341,7 +341,7 @@ test('an emailed-homework repair link lands on that student\'s submitted assignm
 test('a repair link cannot be minted by a student, for another course, or for nobody', async () => {
   const f = await serverFixture()
   try {
-    f.store.upsertCourse({ id: 'other', title: 'Other course' })
+    f.store.upsertCourse({ id: 'other', title: 'Other course', preferredName: 'Instructor' })
     // The student who most wants one is exactly the one who cannot ask: this is
     // instructor-only, and a student cannot aim it at a classmate either.
     assert.equal((await f.request('/courses/qtm285/students/ada/repair-link', 'ada', { method: 'POST' })).status, 403)
@@ -360,7 +360,7 @@ test('a repair link cannot be minted by a student, for another course, or for no
 test('a repair link redeemed against the wrong course is refused', async () => {
   const f = await serverFixture()
   try {
-    f.store.upsertCourse({ id: 'other', title: 'Other course' })
+    f.store.upsertCourse({ id: 'other', title: 'Other course', preferredName: 'Instructor' })
     const link = await (await f.request('/courses/qtm285/students/grace/repair-link', 'instructor', { method: 'POST' })).json()
     const transferCode = new URL(link.repairUrl).searchParams.get('transfer')
     const wrongCourse = await f.request('/courses/other/device-transfer/redeem', '', {

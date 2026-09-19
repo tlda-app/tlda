@@ -9,7 +9,7 @@ import { ClassroomStore } from '../server/lib/classroom-store.mjs'
 
 function course() {
   const store = new ClassroomStore(':memory:')
-  store.upsertCourse({ id: 'c', title: 'C' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'c', displayName: 'Ada', enrollmentToken: 'a' })
   store.upsertStudent({ id: 'bo', courseId: 'c', displayName: 'Bo', enrollmentToken: 'b' })
   store.upsertAssignment({ id: 'hw', courseId: 'c', title: 'HW', dueAt: '2026-09-12' })

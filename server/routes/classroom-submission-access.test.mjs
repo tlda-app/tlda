@@ -33,7 +33,7 @@ const SUBMISSION = `submission-${ASSIGNMENT}-${OWNER}`
 /** A store holding one course, two students, and one submission by the first. */
 function storeWithOneSubmission(root) {
   const store = new ClassroomStore(join(root, 'classroom.db'))
-  store.upsertCourse({ id: COURSE, title: 'QTM 285' })
+  store.upsertCourse({ id: COURSE, title: 'QTM 285', preferredName: 'Instructor' })
   store.registerStudent({ courseId: COURSE, preferredName: 'Ada', universityLogin: 'ada', enrollmentToken: 'tok-ada' })
   store.registerStudent({ courseId: COURSE, preferredName: 'Biko', universityLogin: 'biko', enrollmentToken: 'tok-biko' })
   store.upsertAssignment({ id: ASSIGNMENT, courseId: COURSE, title: 'Setup', dueAt: '2026-09-01T00:00:00.000Z' })

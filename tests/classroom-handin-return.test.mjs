@@ -15,7 +15,7 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
   const projects = path.join(dir, 'projects')
   await initProjectStore(projects)
 
-  store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
+  store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret', layerScope: 'common' })
   store.upsertStudent({ id: 'grace', courseId: 'qtm285', displayName: 'Grace', enrollmentToken: 'grace-secret' })
   store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z' })

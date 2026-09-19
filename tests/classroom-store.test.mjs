@@ -8,7 +8,7 @@ import { ClassroomStore } from '../server/lib/classroom-store.mjs'
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-'))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
-  store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
+  store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret' })
   store.upsertStudent({ id: 'grace', courseId: 'qtm285', displayName: 'Grace', enrollmentToken: 'grace-secret' })
   store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z', sourceDocKey: 'hw1-source', bookPageFile: 'homework/hw1.html', handoutFilter: 'homework/assignment-callout.lua', solutionFilter: 'homework/solution-callout.lua', solutionsDocKey: 'hw1-solutions', solutionsVersion: 'abc' })

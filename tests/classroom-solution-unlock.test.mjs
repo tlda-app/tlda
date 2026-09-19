@@ -30,7 +30,7 @@ test('the solution is withheld until the student submits, then appears', async t
   const { store, server, base, get } = await serve()
   t.after(() => server.close())
 
-  store.upsertCourse({ id: 'c', title: 'C' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'c', displayName: 'Ada', enrollmentToken: 'tok' })
   store.upsertAssignment({ id: 'hw', courseId: 'c', title: 'HW', dueAt: '2026-09-12', solutionsDocKey: 'hw-solutions' })
 
@@ -56,7 +56,7 @@ test('the solution is withheld until the student submits, then appears', async t
 test('the instructor always sees the solution', async t => {
   const { store, server, get } = await serve()
   t.after(() => server.close())
-  store.upsertCourse({ id: 'c', title: 'C' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Instructor' })
   store.upsertAssignment({ id: 'hw', courseId: 'c', title: 'HW', dueAt: '2026-09-12', solutionsDocKey: 'hw-solutions' })
   principal = { role: 'instructor' }
   assert.equal((await get('/assignments/hw')).solutionsDocKey, 'hw-solutions')
@@ -65,7 +65,7 @@ test('the instructor always sees the solution', async t => {
 test("one student's submission does not unlock it for another", async t => {
   const { store, server, get } = await serve()
   t.after(() => server.close())
-  store.upsertCourse({ id: 'c', title: 'C' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'c', displayName: 'Ada', enrollmentToken: 'tok-a' })
   store.upsertStudent({ id: 'bo', courseId: 'c', displayName: 'Bo', enrollmentToken: 'tok-b' })
   store.upsertAssignment({ id: 'hw', courseId: 'c', title: 'HW', dueAt: '2026-09-12', solutionsDocKey: 'hw-solutions' })

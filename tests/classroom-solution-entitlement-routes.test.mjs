@@ -14,7 +14,7 @@ async function serve() {
   const projects = path.join(dir, 'projects')
   await initProjectStore(projects)
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
-  store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
+  store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
   store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret' })
   store.upsertStudent({ id: 'bo', courseId: 'qtm285', displayName: 'Bo', enrollmentToken: 'bo-secret' })
   store.upsertAssignment({
