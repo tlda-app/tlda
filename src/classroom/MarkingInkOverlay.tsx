@@ -20,14 +20,54 @@ export interface ActiveMarkingPair {
   answerMarkup: string
 }
 
+/**
+ * Every open pair's answer, and the glass on the one he is marking.
+ *
+ * READING AND MARKING ARE SEPARATE HERE, deliberately. His gradebook link opens
+ * one student on every solution in the chapter, so he expects to read that
+ * person's work all the way down the margin; but a mark belongs to one answer,
+ * and a glass is a tldraw editor, so seven of them is not the same proposition
+ * as seven iframes. Each pair gets a pane; the last one he paged gets the glass
+ * and the Return button.
+ */
 export function MarkingInkOverlay({
+  pairs,
+  editor,
+  bookRoomId,
+}: {
+  pairs: ActiveMarkingPair[]
+  editor: Editor
+  bookRoomId: string
+}) {
+  // The most recent arrival is the one he is on. `onShow` appends, so this is
+  // "the pair he last paged to" without anything having to track intent.
+  const marked = pairs[pairs.length - 1]
+  return (
+    <>
+      {pairs.map(pair => (
+        <MarkedPair
+          key={`${pair.wrapper.ownerDocument.URL}:${pair.exerciseId}`}
+          pair={pair}
+          editor={editor}
+          bookRoomId={bookRoomId}
+          marked={pair === marked}
+        />
+      ))}
+    </>
+  )
+}
+
+function MarkedPair({
   pair,
   editor,
   bookRoomId,
+  marked,
 }: {
   pair: ActiveMarkingPair
   editor: Editor
   bookRoomId: string
+  /** Whether this is the pair the glass and the Return button are on. */
+  marked: boolean
 }) {
   // The pane measures the answer and the frame places it, so the height goes
   // up from one and back down to the other. It starts at zero rather than at a
@@ -59,14 +99,17 @@ export function MarkingInkOverlay({
   )
 
   useEffect(() => {
-    if (!frame) return
+    // The view layer belongs to the glass, so an unmarked pair does not make
+    // one. Otherwise every open pair would register a marking layer and only
+    // one of them would ever have ink in it.
+    if (!frame || !marked) return
     const wm = getEditorWMCore(editor)
     ensureViewLayer(wm, layerId, {
       parent: wm.rootLayerId,
       transform: frame.wrapperTransform,
     })
     return () => removeLayers(wm, [layerId])
-  }, [editor, frame, layerId])
+  }, [editor, frame, layerId, marked])
 
   if (!frame) return null
   const returnMarks = async () => {
@@ -99,7 +142,7 @@ export function MarkingInkOverlay({
         onHeight={setAnswerHeight}
         onHeader={setAnswerHeader}
       />
-      <StudentAnnotationOverlay
+      {marked && <StudentAnnotationOverlay
         bookRoomId={bookRoomId}
         studentId={pair.studentId}
         bookEditor={editor}
@@ -110,8 +153,8 @@ export function MarkingInkOverlay({
         bounds={frame.bounds}
         onEditorMount={setDraftEditor}
         onEditorRelease={released => setDraftEditor(current => current === released ? null : current)}
-      />
-      {pair.viewerRole === 'instructor' && answerHeader && createPortal(
+      />}
+      {marked && pair.viewerRole === 'instructor' && answerHeader && createPortal(
         <span className="tlda-marking-return">
           {draftShapeCount > 0 && (
             <button type="button" disabled={returning} onClick={() => void returnMarks()}>

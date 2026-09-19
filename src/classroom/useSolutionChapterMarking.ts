@@ -89,7 +89,14 @@ function answerOrder(answers: ProblemAnswer[]): ProblemAnswer[] {
  * was found. A chapter must never be left holding marking chrome.
  */
 export function useSolutionChapterMarking(document: SvgDocument | null, editorMounted: number) {
-  const [activePair, setActivePair] = useState<ActiveMarkingPair | null>(null)
+  // EVERY OPEN PAIR, not only the one he is marking.
+  //
+  // The gradebook link opens one student on every solution in the chapter, so a
+  // single pair meant he got seven paired solutions and one answer beside them.
+  // Reading and marking are different things: he reads all of their work down
+  // the margin, and marks the one he last paged to. The order is that rule —
+  // the most recent arrival is the marked one.
+  const [activePairs, setActivePairs] = useState<ActiveMarkingPair[]>([])
   useEffect(() => {
     if (!document || document.format !== 'html' || !editorMounted) return
     let cancelled = false
@@ -165,8 +172,15 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
               ? new URLSearchParams(window.location.search).get('student')
               : null,
             onShow: (exerciseId, answer, wrapper, markup) => {
-              setActivePair(current => {
-                if (answer && wrapper && markup) return {
+              setActivePairs(current => {
+                // This exercise's own entry, in this frame, is the only one this
+                // call speaks for. Dropped first so paging a student changes
+                // that pair rather than accumulating them, and so paging to
+                // "no answer" leaves every other solution's pair alone.
+                const others = current.filter(pair =>
+                  pair.exerciseId !== exerciseId || pair.wrapper.ownerDocument !== frameDocument)
+                if (!(answer && wrapper && markup)) return others
+                return [...others, {
                   exerciseId,
                   studentId: answer.studentId,
                   contentRef: answer.contentRef,
@@ -174,10 +188,7 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
                   viewerRole: identity.role,
                   wrapper,
                   answerMarkup: markup,
-                }
-                return current?.exerciseId === exerciseId && current.wrapper.ownerDocument === frameDocument
-                  ? null
-                  : current
+                }]
               })
             },
           })
@@ -195,10 +206,10 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
 
     return () => {
       cancelled = true
-      setActivePair(null)
+      setActivePairs([])
       stop?.()
       for (const remove of removers) remove()
     }
   }, [document, editorMounted])
-  return activePair
+  return activePairs
 }

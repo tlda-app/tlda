@@ -50,6 +50,17 @@ export const ANSWER_HEADER_CLASS = `${ANSWER_CLASS}-header`
  */
 export const ANSWER_DOCUMENT_CSS = `
   .${ANSWER_CLASS} { margin-block-start: 0; }
+  /*
+   * FULL CONTRAST, and the border alone does the separating.
+   *
+   * This header carried opacity 0.85 from the version that lived in the
+   * chapter, which dims the whole subtree — the student's name and the Return
+   * button with it. Beside the chapter's own bright "Solution" header that
+   * reads as a step down, and Return is the control he presses: it spent today
+   * reporting success while sending nothing, so it is the last thing that
+   * should be hard to see. A button he has to hunt for is in the header
+   * positionally and not in the sense he asked for.
+   */
   .${ANSWER_CLASS} > .${ANSWER_HEADER_CLASS} {
     display: flex;
     align-items: center;
@@ -57,7 +68,6 @@ export const ANSWER_DOCUMENT_CSS = `
     font-weight: 600;
     padding: 0.35rem 0.6rem;
     border-bottom: 1px solid currentColor;
-    opacity: 0.85;
   }
   /*
    * A student's photograph is whatever their phone produced — 4032px wide is

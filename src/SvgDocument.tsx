@@ -619,7 +619,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   useMarkedExerciseHtmlAlignment(editorRef, document, editorMounted)
   // The solution chapter's own marking affordance: arrows for an instructor,
   // nothing at all for anybody else.
-  const activeMarkingPair = useSolutionChapterMarking(document, editorMounted)
+  const activeMarkingPairs = useSolutionChapterMarking(document, editorMounted)
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
   useDividerDiff(editorRef, projectName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)
@@ -1169,8 +1169,8 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const bottomPanelsContent = (
     <>
       <div className="bottom-panels">
-        {activeMarkingPair && editorRef.current && (
-          <MarkingInkOverlay pair={activeMarkingPair} editor={editorRef.current} bookRoomId={roomId} />
+        {activeMarkingPairs.length > 0 && editorRef.current && (
+          <MarkingInkOverlay pairs={activeMarkingPairs} editor={editorRef.current} bookRoomId={roomId} />
         )}
         {classroomMarking && editorRef.current && document.pages[0]?.shapeId && document.pages[1]?.shapeId && (
         <ClassroomConnectorOverlay
