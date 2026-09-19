@@ -21,6 +21,14 @@ const ANSWER_ID = /:::\s*\{[^}]*#(ans-[A-Za-z0-9_-]+)[^}]*\}/g
 // document written some other way is one we make no claim about.
 const EXERCISE_ID = /:::\s*\{[^}]*#(exr-[A-Za-z0-9_-]+)[^}]*\}/g
 const REMOTE = /^(https?:|data:|mailto:|#)/i
+// A handout's front matter names its Lua filters. Unlike an image, a filter the
+// archive does not carry is FATAL: pandoc refuses the render outright, after the
+// whole document has knitted, so the work is complete and the page is lost —
+// and it happens on the server, where the student never sees it. Checked here
+// so they are told while they can still re-zip.
+const FRONT_MATTER = /^---\r?\n([\s\S]*?)\r?\n---/
+const FILTERS_BLOCK = /^filters\s*:\s*\r?\n((?:[ \t]+-[^\n]*\r?\n?)+)/m
+const FILTER_ITEM = /^[ \t]+-\s*(['"]?)([^'"\n]+)\1\s*$/
 // What a blanked answer block holds before anyone types in it, from his own
 // bin/make-handout.py.
 const PLACEHOLDER = /^\s*\*?\(?your answer here\)?\*?\s*$/i
@@ -136,9 +144,17 @@ export function parseQmdReferences(source) {
     const target = decodeURIComponent((match[1] || match[2] || match[3]).trim())
     if (!REMOTE.test(target)) includes.push(target)
   }
+  // Read off the front matter rather than the prose, which is where they are
+  // declared and why `withoutCode` never saw them.
+  const filters = []
+  const frontMatter = source.match(FRONT_MATTER)?.[1]
+  for (const line of (frontMatter?.match(FILTERS_BLOCK)?.[1] || '').split('\n')) {
+    const target = line.match(FILTER_ITEM)?.[2]?.trim()
+    if (target && !REMOTE.test(target)) filters.push(target)
+  }
   const answerIds = [...source.matchAll(ANSWER_ID)].map(match => match[1])
   const exerciseIds = [...source.matchAll(EXERCISE_ID)].map(match => match[1])
-  return { images, includes, answerIds, exerciseIds }
+  return { images, includes, filters, answerIds, exerciseIds }
 }
 
 /**
@@ -196,8 +212,10 @@ export function inspectSubmissionArchive(bytes, { template = null } = {}) {
     if (checked.has(current)) continue
     checked.add(current)
     const base = path.posix.dirname(current)
-    const { images, includes } = parseQmdReferences(strFromU8(unpacked[current]))
-    for (const target of [...new Set([...images, ...includes])]) {
+    const { images, includes, filters } = parseQmdReferences(strFromU8(unpacked[current]))
+    // Filters join the walk but are never followed: a `.lua` has no references
+    // of its own that this reads, and only a `.qmd` include recurses below.
+    for (const target of [...new Set([...images, ...includes, ...filters])]) {
       const resolved = path.posix.normalize(base === '.' ? target : `${base}/${target}`)
       if (!present.has(resolved)) {
         missing.push(target)

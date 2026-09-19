@@ -97,3 +97,67 @@ test('an entry escaping the archive root is refused', () => {
   assert.equal(result.ok, false)
   assert.match(result.errors.join(' '), /unsafe/)
 })
+
+// A filter the archive does not carry is fatal in a way a missing image is not:
+// pandoc refuses the render outright, AFTER the whole document has knitted, so
+// the work is complete and the page is lost. And it happens on the server, where
+// the student never sees it — they are told they handed in, and we hold
+// something that cannot render. Measured on a real submission: 33 of 33 chunks
+// executed, then `cannot open …answer-placement-warning.lua`, zero pages.
+//
+// The generated handout ships every filter it names, so an archive that is
+// missing one has been taken apart after generation. Refusing it costs a
+// re-zip; accepting it costs the mark.
+
+const FILTERED = `---
+title: "Homework"
+filters:
+  - "solution-callout.lua"
+  - "hw5.qmd.support/answer-placement-warning.lua"
+---
+
+${ANSWERED}`
+
+const LUA = strToU8('function Meta(meta) return nil end\n')
+
+test('an archive carrying the filters its front matter names is accepted', () => {
+  const result = inspectSubmissionArchive(zip({
+    'hw5.qmd': strToU8(FILTERED),
+    'markov.jpg': PNG,
+    'solution-callout.lua': LUA,
+    'hw5.qmd.support/answer-placement-warning.lua': LUA,
+  }))
+  assert.equal(result.ok, true, result.errors.join(' '))
+  assert.deepEqual(result.answerIds, ['ans-exr-bias'])
+})
+
+test('a declared filter that is not in the archive is refused and named', () => {
+  const result = inspectSubmissionArchive(zip({
+    'hw5.qmd': strToU8(FILTERED),
+    'markov.jpg': PNG,
+    'solution-callout.lua': LUA,
+  }))
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join(' '), /hw5\.qmd\.support\/answer-placement-warning\.lua/)
+})
+
+test('a filter is resolved beside the qmd, so a zipped folder still passes', () => {
+  const result = inspectSubmissionArchive(zip({
+    'hw5/hw5.qmd': strToU8(FILTERED),
+    'hw5/markov.jpg': PNG,
+    'hw5/solution-callout.lua': LUA,
+    'hw5/hw5.qmd.support/answer-placement-warning.lua': LUA,
+  }))
+  assert.equal(result.ok, true, result.errors.join(' '))
+})
+
+test('a remote filter is not demanded of the archive', () => {
+  const remote = `---
+filters:
+  - "https://example.com/filter.lua"
+---
+
+${ANSWERED}`
+  const result = inspectSubmissionArchive(zip({ 'hw5.qmd': strToU8(remote), 'markov.jpg': PNG }))
+  assert.equal(result.ok, true, result.errors.join(' '))
+})
