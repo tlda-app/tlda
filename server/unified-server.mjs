@@ -63,6 +63,7 @@ import { createRotatingAppender } from '../shared/rotating-log.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat, hasSourceMapping } from '../shared/document-formats.mjs'
 import { resolveContainedPath } from './lib/path-containment.mjs'
+import { solutionsVariantFileFor } from './lib/classroom-solution-variant.mjs'
 import { resolveLocalImage } from '../shared/local-image.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
@@ -4905,6 +4906,42 @@ async function ownWorkUrlFor(req, filePath) {
   return `/docs/${encodeURIComponent(submission.contentRef)}/${page}${query}`
 }
 
+/**
+ * The file to read for a homework page, when the reader is entitled to see the
+ * solutions rendering of it instead — or null to serve what was asked for.
+ *
+ * The decision is `solutionsVariantFileFor`; this is the file reading it
+ * drives. The requested page keeps its own title, its own place in the TOC and
+ * its own prev/next, because it is the same chapter either way: only the body
+ * changes.
+ */
+async function solutionsVariantPathFor(req, servedFilePath, outputRoot) {
+  if (!classroomStore) return null
+  // Asked before the page-info read so the static site does not pay for a
+  // decision it can never receive. `solutionsVariantFileFor` refuses it too;
+  // that copy is the rule, this one is the cost.
+  if (isPublishedStaticPage(servedFilePath)) return null
+  let pageInfo
+  try {
+    pageInfo = JSON.parse(await fs.promises.readFile(join(outputRoot, 'page-info.json'), 'utf8'))
+  } catch { return null }
+
+  const solutionsFile = solutionsVariantFileFor({
+    store: classroomStore,
+    principal: classroomPrincipal(req, classroomStore),
+    pageInfo,
+    servedFilePath,
+    isStaticPage: isPublishedStaticPage(servedFilePath),
+  })
+  if (!solutionsFile) return null
+
+  let solutionsPath
+  try {
+    solutionsPath = resolveContainedPath(outputRoot, solutionsFile)
+  } catch { return null }
+  return await docPathExists(solutionsPath) ? solutionsPath : null
+}
+
 async function runDocsAccessCheck(req, res, name) {
   req.params = { ...(req.params || {}), name }
   return await new Promise(resolve => {
@@ -5526,7 +5563,12 @@ app.use('/docs', (req, res, next) => {
           // title, the same prev/next. The difference between them is which
           // machine ran quarto, and that is settled by build time.
           if (shownAs === 'html') {
-            const html = await fs.promises.readFile(projectPath, 'utf8')
+            // A homework page reads as its solutions for the people entitled to
+            // them. Everything below still describes the page that was asked
+            // for — same title, same neighbours, same URL — because this is one
+            // chapter with two renderings rather than two chapters.
+            const solutionsPath = await solutionsVariantPathFor(req, servedFilePath, outputRoot)
+            const html = await fs.promises.readFile(solutionsPath || projectPath, 'utf8')
             // Look up chapter title and compute "Chapter N" numbering within parts
             let chapterTitle = ''
             let isFirstPage = false
