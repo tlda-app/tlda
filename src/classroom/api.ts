@@ -14,7 +14,10 @@ export interface CourseStatus { course: { id: string; title: string }; assignmen
 export interface FeedbackMark { id: string; title: string; text: string; attached: boolean; visibility: 'instructor-draft' | 'returned' }
 export interface ProblemAnswer { studentId: string; displayName: string; layerScope: StudentLayerScope; contentRef: string; gradingStatus: GradingStatus; anchor: string | null }
 export interface ProblemsView { assignment: Assignment; problems: { problemId: string; answers: ProblemAnswer[] }[] }
-export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[]; answerIds?: string[] }
+// `returnedMarks` is how many marking shapes the return copied into the room the
+// student may read. `null` when the return named no problem, so no marking layer
+// was copied; absent on every response that is not a return.
+export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[]; answerIds?: string[]; returnedMarks?: number | null }
 export interface RegisteredStudent { student: { id: string; courseId: string; displayName: string; preferredName?: string; pronouns?: string | null; layerScope: StudentLayerScope }; enrollmentToken: string }
 export interface DeviceTransfer { transferUrl: string; qrSvg: string; expiresAt: string }
 export interface RepairLink { student: { id: string; displayName: string }; repairUrl: string; qrSvg: string; expiresAt: string }

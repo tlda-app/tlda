@@ -770,15 +770,22 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
       const problemId = String(req.body?.problemId || '')
       const submission = store.getSubmission(req.params.assignmentId, req.params.studentId, { includeDrafts: true })
       if (!submission) return res.status(404).json({ error: 'Submission not found' })
+      // How many marks the student can now read. `null` means no problem was
+      // named, so no marking layer was copied at all — which is a different
+      // answer from 0, and the distinction is the whole point of reporting it.
+      // A return that named no problem still marks the submission returned and
+      // still answers 200, so for marking ink this response was indistinguishable
+      // from one that carried the strokes across. It carried none.
+      let returnedMarks = null
       if (problemId) {
         if (typeof copyRoomStore !== 'function') throw new Error('local-layer store copy is not configured')
         const submissionRoomId = `doc-${submission.contentRef}`
-        await copyRoomStore(
+        returnedMarks = await copyRoomStore(
           gradingDraftRoomId(submissionRoomId, problemId),
           gradingReturnedRoomId(submissionRoomId, problemId),
         )
       }
-      res.json(store.returnFeedback(req.params.assignmentId, req.params.studentId))
+      res.json({ ...store.returnFeedback(req.params.assignmentId, req.params.studentId), returnedMarks })
     } catch (error) {
       if (!missingSubmission(error)) throw error
       res.status(404).json({ error: 'Submission not found' })

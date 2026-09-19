@@ -5647,9 +5647,14 @@ app.use('/api/projects', projectRoutes)
 app.use('/api/classroom', createClassroomRouter({
   store: classroomStore,
   submitSubmissionSource: (project, payload) => sourceRoomDaemon.submitFiles(project, payload),
+  // Reports how many shapes it carried, because the caller's own success
+  // message is the only place a return is visible and it was reporting a count
+  // it had not measured.
   copyRoomStore: async (sourceRoomId, destinationRoomId) => {
     const source = await getOrCreateRoom(sourceRoomId)
-    replaceRoomSnapshot(destinationRoomId, source.getCurrentSnapshot())
+    const snapshot = source.getCurrentSnapshot()
+    replaceRoomSnapshot(destinationRoomId, snapshot)
+    return snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
   },
 }))
 

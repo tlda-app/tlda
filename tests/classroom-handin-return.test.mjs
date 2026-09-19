@@ -23,6 +23,7 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
   const builds = []
   const roomCopies = []
   let buildError = null
+  let roomShapeCount = 3
   const app = express()
   app.use(express.json())
   app.use('/api/classroom', createClassroomRouter({
@@ -50,7 +51,15 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
       if (buildError) setImmediate(() => updateProject(contentRef, { buildStatus: 'error' }))
       return { status: 200, body: { ok: true } }
     },
-    copyRoomStore: async (source, destination) => { roomCopies.push({ source, destination }) },
+    // RETURNS A COUNT, because the real `copyRoomStore` in `unified-server.mjs`
+    // now does: it reports how many shapes it carried so the caller's success
+    // message can name a measured number instead of a local guess. A stub that
+    // returned nothing here would let the route report `returnedMarks: undefined`
+    // and still pass.
+    copyRoomStore: async (source, destination) => {
+      roomCopies.push({ source, destination })
+      return roomShapeCount
+    },
   }))
   const server = await new Promise(resolve => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening))
@@ -177,11 +186,48 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
       body: JSON.stringify({ problemId: 'ans-exr-one' }),
     })
     assert.equal(returned.status, 200)
-    assert.equal((await returned.json()).gradingStatus, 'returned')
+    const returnedBody = await returned.json()
+    assert.equal(returnedBody.gradingStatus, 'returned')
     assert.deepEqual(roomCopies, [{
       source: 'doc-submission-hw1-ada::problem::ans-exr-one::grading-draft::',
       destination: 'doc-submission-hw1-ada::problem::ans-exr-one::grading-returned::',
     }])
+    // What the student can now read, as measured by the copy rather than guessed
+    // by the caller. The marking button's whole report is this number.
+    assert.equal(returnedBody.returnedMarks, 3)
+
+    // A RETURN THAT NAMES NO PROBLEM COPIES NOTHING, and says so.
+    //
+    // This is the shape the marking surface was actually sending: the Return
+    // button under a paired answer called the route with no `problemId`, so the
+    // copy below was skipped entirely. The submission was still marked returned
+    // and the response was still 200, which is why it looked like it worked. The
+    // student received no marks. `returnedMarks: null` is the response admitting
+    // it, and `roomCopies` staying put is the proof that nothing moved.
+    const copiesBefore = roomCopies.length
+    const returnedWithoutProblem = await request('/assignments/hw1/submissions/ada/return', 'instructor', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    assert.equal(returnedWithoutProblem.status, 200)
+    const withoutProblemBody = await returnedWithoutProblem.json()
+    assert.equal(withoutProblemBody.gradingStatus, 'returned')
+    assert.equal(withoutProblemBody.returnedMarks, null)
+    assert.equal(roomCopies.length, copiesBefore)
+
+    // An empty draft reports 0, not null: the problem was named and the copy ran,
+    // and it carried nothing. The marking surface shows that as a failure, so the
+    // two cases must not collapse into one value.
+    roomShapeCount = 0
+    const returnedEmpty = await request('/assignments/hw1/submissions/ada/return', 'instructor', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ problemId: 'ans-exr-one' }),
+    })
+    assert.equal(returnedEmpty.status, 200)
+    assert.equal((await returnedEmpty.json()).returnedMarks, 0)
+    roomShapeCount = 3
 
     const mine = await request('/assignments/hw1/mine', 'ada')
     assert.equal(mine.status, 200)
