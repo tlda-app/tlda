@@ -10786,6 +10786,40 @@ process.on('SIGTERM', shutdown)
 // ---------- Global error handlers ----------
 // Don't crash on stray errors — log and keep running
 
+// Losing stdout or stderr is not a stray error. It happens whenever the session
+// that spawned this server exits: the stdio socketpair's other end closes, and
+// every write from then on fails with EPIPE. Node delivers that as a stream
+// error; with no listener it becomes an uncaught exception, and the handler
+// below responds by logging — which writes to the same dead stream, which
+// throws again.
+//
+// Handling it here keeps the failure out of the uncaught-exception handler, so
+// the loop cannot form. And exiting is the right answer rather than lingering
+// quietly: a server that cannot write to its log can no longer report what it
+// is doing or why it stopped, which makes it invisible to everyone — the same
+// policy already applied to EADDRINUSE and EACCES below.
+for (const [name, stream] of [['stdout', process.stdout], ['stderr', process.stderr]]) {
+  stream.on('error', (err) => {
+    if (err?.code !== 'EPIPE' && err?.code !== 'EBADF' && err?.code !== 'ERR_STREAM_DESTROYED') {
+      // Not the orphan case. Surface it exactly as it surfaced before there
+      // was a listener here.
+      throw err
+    }
+    // Best effort only: when a dying parent takes the whole socketpair, fd 2
+    // is gone too and this write throws, so the exit is silent — there is no
+    // channel left to announce it on. It does reach the log in the mixed case,
+    // where one stream is a file and the other is the closed pipe.
+    // Synchronous, so it cannot recurse the way console.error did.
+    try {
+      fs.writeSync(2, `[server] ${name} closed (${err.code}) — the process that started this server is gone, so nothing can read its log. Exiting instead of running unreported.\n`)
+    } catch {
+      // fd 2 is the stream that just died, so this write fails too. There is no
+      // channel left to report on and the exit is the report.
+    }
+    process.exit(1)
+  })
+}
+
 process.on('uncaughtException', (err) => {
   console.error('[server] Uncaught exception:', err.message)
   console.error(err.stack)
