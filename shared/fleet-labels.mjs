@@ -220,11 +220,35 @@ export function astReadsSubscriberLabels(ast) {
  * exclude them.
  */
 export function addressTerms(ast) {
+  return collectTerms(ast, { includeNegated: false })
+}
+
+/**
+ * The terms whose meaning this expression DEPENDS on — every literal it names,
+ * including the negated ones.
+ *
+ * This is the invalidation question, and it is deliberately not the addressing
+ * question above. `awake & !goose` is not addressed to goose, so `addressTerms`
+ * drops it and must keep dropping it. But its resolved membership absolutely
+ * does depend on goose: relabel goose and the answer changes. A cache keyed off
+ * `addressTerms` would never be invalidated by the very agent the expression
+ * names, and would serve a stale set indefinitely.
+ *
+ * The two questions coincide on every expression without a negation, which is
+ * exactly what makes reusing the wrong one hard to notice. One traversal,
+ * parameterised, so the difference is stated at the call site instead of living
+ * in a second copy that drifts.
+ */
+export function dependencyTerms(ast) {
+  return collectTerms(ast, { includeNegated: true })
+}
+
+function collectTerms(ast, { includeNegated }) {
   const out = new Set()
   const walk = (n, negated) => {
     if (!n) return
     switch (n.t) {
-      case 'lit': if (!negated) out.add(n.v); return
+      case 'lit': if (includeNegated || !negated) out.add(n.v); return
       case 'not': return walk(n.x, !negated)
       case 'and':
       case 'or': walk(n.l, negated); walk(n.r, negated); return
