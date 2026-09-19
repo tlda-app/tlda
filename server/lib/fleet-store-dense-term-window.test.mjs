@@ -93,3 +93,36 @@ test('a dense term that fills the page early does not widen further', () => with
   assert.equal(rows.length, 1)
   store._searchAllOnce = real
 }))
+
+// The density DECISION was untested on purpose — the tests above force the
+// verdict so they measure what the wrapper does with it. That left the decision
+// itself unguarded, and its failure mode is silent: a term that should be
+// windowed runs unbounded and simply looks like the slow search this replaced.
+// These cover it by shrinking the probe rather than seeding 20,001 rows.
+test('the density probe classifies by match count, not by luck', () => withStore(async (store) => {
+  const realProbe = FleetStore.SEARCH_DENSE_TERM_PROBE
+  FleetStore.SEARCH_DENSE_TERM_PROBE = 3
+  try {
+    // insertEventRecord, not chat(): chat schedules deferred writes that land
+    // after the store closes, and the failure surfaces in whichever test runs
+    // next rather than this one.
+    const at = n => new Date(Date.parse(NOW) + n * 1000).toISOString()
+    for (let i = 0; i < 5; i++) {
+      store.insertEventRecord({ type: 'chat', from_id: 'fleet:a', text: `widespread filler token qqzz ${i}`, timestamp: at(i) })
+    }
+    store.insertEventRecord({ type: 'chat', from_id: 'fleet:a', text: 'singular needle wwxx', timestamp: at(99) })
+
+    assert.equal(store._termIsDense('qqzz'), true, '5 matches against a probe of 3 is dense')
+    assert.equal(store._termIsDense('wwxx'), false, '1 match against a probe of 3 is not')
+    assert.equal(store._termIsDense('termthatappearsnowhere'), false, 'no matches is not dense')
+  } finally {
+    FleetStore.SEARCH_DENSE_TERM_PROBE = realProbe
+  }
+}))
+
+test('a probe that cannot parse the query declines rather than throwing', () => withStore(async (store) => {
+  // A malformed query is the real search's business to report; the probe must
+  // not turn it into a 500 on the way past.
+  assert.equal(store._termIsDense('"unclosed quote'), false)
+  assert.equal(store._termIsDense(''), false)
+}))
