@@ -120,6 +120,17 @@ const ALLOWED = {
   // shipped both ends of a severed wire more than once while every unit test
   // stayed green.
 
+  'server/lib/lexical-name-search-wire.test.mjs': {
+    count: 1,
+    category: 'wire test',
+    reason: 'Opens /ws/fleet to prove a `from:<name>` search resolves the name against each row\'s own '
+      + 'timestamp once the query has crossed the wire. The transport library would answer from the '
+      + 'client side of that boundary, so routing this through it would test the library and not the '
+      + 'server\'s filter compilation, which is the whole subject -- a resolver that binds names at '
+      + 'query time instead of per row returns every holder a name ever had, and every unit test on '
+      + 'either side stays green while search silently blends three people\'s history.',
+  },
+
   'scratch/fly-topology-room-save.mjs': {
     count: 1,
     category: 'tooling',

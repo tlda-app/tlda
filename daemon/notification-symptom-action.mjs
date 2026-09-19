@@ -45,6 +45,20 @@ export function actionForSymptom(symptom) {
   return NOTIFICATION_SYMPTOM_ACTION[symptom] ?? null
 }
 
+/**
+ * A notice this old does not justify starting a process.
+ *
+ * `null` observed_at means the server sent no timestamp: treat that as current,
+ * because refusing on a missing field would silently disable waking altogether.
+ */
+export function notificationIsStale(observedAt, now, maxAgeMs) {
+  if (!maxAgeMs) return false
+  if (!observedAt) return false
+  const seen = Date.parse(observedAt)
+  if (!Number.isFinite(seen)) return false
+  return (now - seen) > maxAgeMs
+}
+
 export async function performNotificationSymptomAction({ symptom, ensureProcess, suggestRestart }) {
   const action = actionForSymptom(symptom)
   if (!action) return null

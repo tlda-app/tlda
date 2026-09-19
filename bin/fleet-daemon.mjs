@@ -67,7 +67,7 @@ import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
   getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
-  getOutboxInflightDeadlineMs, getOutboxFlushByteBudget,
+  getOutboxInflightDeadlineMs, getOutboxFlushByteBudget, getNotificationWakeMaxAgeMs,
   getFleetServerUrl, getServerUrl, getActiveEnvName, getRuntimeRoot,
 } from '../shared/config.mjs'
 import {
@@ -101,7 +101,7 @@ import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
 import { rebuildLinkedProject } from '../daemon/project-rebuild.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
-import { actionForSymptom, performNotificationSymptomAction } from '../daemon/notification-symptom-action.mjs'
+import { actionForSymptom, notificationIsStale, performNotificationSymptomAction } from '../daemon/notification-symptom-action.mjs'
 import {
   createJsonlProcessBindingReconciler,
   jsonlProcessBindingSignature,
@@ -1000,6 +1000,15 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
   // not recognise, which must never be guessed into a restart.
   if (!actionForSymptom(symptom)) {
     return { ok: true, agent_id, symptom, recorded: true, acted: false, action: null }
+  }
+
+  // An old notice does not justify starting a process. The agent's mail is
+  // already in its inbox and the server hands it over at login, so a stale wake
+  // buys nothing, and a backlog of them is a wake storm with a delay on it.
+  const wakeMaxAgeMs = getNotificationWakeMaxAgeMs()
+  if (notificationIsStale(observed_at, Date.now(), wakeMaxAgeMs)) {
+    log.warn(`[notification-symptom] ${agent_id}: ${symptom} -> not acted (observed_at ${observed_at} older than ${Math.round(wakeMaxAgeMs / 60000)}m)`)
+    return { ok: true, agent_id, symptom, recorded: true, acted: false, action: null, stale: true }
   }
 
   try {

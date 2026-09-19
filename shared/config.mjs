@@ -712,6 +712,16 @@ export function saveMachineId(id) {
   writeFileSync(DAEMON_FILE, String(doc))
 }
 
+// Minutes after which a notification no longer justifies starting a process.
+// Absent = 20. 0 disables the cutoff and every notice can wake.
+export function getNotificationWakeMaxAgeMs() {
+  const minutes = loadDaemonYaml().notificationWakeMaxAgeMinutes ?? 20
+  if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes < 0) {
+    throw new Error(`daemon.yaml: notificationWakeMaxAgeMinutes must be a non-negative number (got ${JSON.stringify(minutes)})`)
+  }
+  return Math.round(minutes * 60_000)
+}
+
 const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
 
 /**
