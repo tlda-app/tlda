@@ -82,6 +82,24 @@ const COURSE_ITEM_BADGE: Record<CourseItemType, string> = {
   deck: 'DECK',
 }
 
+/**
+ * Whether a row is what the class site is serving. Green agrees, yellow is
+ * written and not out there, red is declared and nowhere, and `alarm` is the
+ * class site holding a page this build cannot produce — not a further stage of
+ * publishing, so not a shade on the light. `unknown` is a row that could not be
+ * compared, and it is the one that must never look like an answer.
+ */
+type TocMark = 'green' | 'yellow' | 'red' | 'alarm' | 'unknown'
+const EMPTY_MARKS: ReadonlyMap<number, TocMark> = new Map<number, TocMark>()
+
+// Said as what it means for the class, not as the name of a state.
+const MARK_TITLE: Record<Exclude<TocMark, 'unknown'>, string> = {
+  green: 'The class site has this, and the same words',
+  yellow: 'Written here, not on the class site',
+  red: 'Only you have this — nothing serves it',
+  alarm: 'The class site has this and your book cannot make it',
+}
+
 type HomeworkEntry = { assignmentId: string; returned: boolean }
 const EMPTY_HOMEWORK: ReadonlyMap<string, HomeworkEntry> = new Map<string, HomeworkEntry>()
 const EMPTY_PAGE_FILES: readonly string[] = []
@@ -281,6 +299,33 @@ export function TocTab({ query = '' }: { query?: string }) {
   const pageFiles = !book && fetchedPageFiles && fetchedPageFiles.project === tocProjectName
     ? fetchedPageFiles.files
     : EMPTY_PAGE_FILES
+
+  // Whether each page is what the class site is serving. The server asks both
+  // surfaces and compares their text; nothing here knows how publishing works,
+  // which is the point — a mark computed from a release record reports on the
+  // process rather than on the pages, and a record claiming success is what put
+  // stale solutions in front of a class.
+  //
+  // Carries the project it was fetched for, like `pageFiles` above and for the
+  // same reason: marks read against another project's pages do not fail, they
+  // colour the wrong rows.
+  const [fetchedMarks, setFetchedMarks] = useState<{ project: string; byPage: ReadonlyMap<number, TocMark> } | null>(null)
+  useEffect(() => {
+    if (!tocProjectName) return
+    let cancelled = false
+    const project = tocProjectName
+    fetch(`/api/projects/${encodeURIComponent(project)}/toc-marks`)
+      .then(response => response.ok ? response.json() : null)
+      .then((body: { marks?: Array<{ page: number; mark: TocMark }> } | null) => {
+        if (cancelled) return
+        setFetchedMarks({ project, byPage: new Map((body?.marks ?? []).map(row => [row.page, row.mark])) })
+      })
+      // An unreachable comparison leaves every bullet unmarked, which is what
+      // "we don't know" looks like. It must never look like an answer.
+      .catch(() => { if (!cancelled) setFetchedMarks({ project, byPage: EMPTY_MARKS }) })
+    return () => { cancelled = true }
+  }, [tocProjectName, reloadCount])
+  const markByPage = fetchedMarks && fetchedMarks.project === tocProjectName ? fetchedMarks.byPage : EMPTY_MARKS
 
   const memberItemType = useMemo(() => {
     const types = new Map<string, CourseItemType>()
@@ -606,14 +651,23 @@ export function TocTab({ query = '' }: { query?: string }) {
   let currentSectionIdx = -1
   let currentSubsectionIdx = -1
 
-  function renderCenterButton(h: { title: string; center: () => void }) {
+  // The bullet every row already has, in the colour of what that row is. Skip,
+  // 2026-09-19: "just like an icon that can have varying color? the like,
+  // bullet or whatever on the ToC can be the colored thing." So this gains a
+  // class and a title and nothing else — no badge, no column, no added glyph.
+  // An unmarked row keeps exactly the bullet it has now, which is what a
+  // project with no class site, or a comparison that could not be made, looks
+  // like.
+  function renderCenterButton(h: { title: string; center: () => void; page?: number }) {
+    const mark = h.page != null ? markByPage.get(h.page) : undefined
+    const state = mark && mark !== 'unknown' ? mark : null
     return (
       <button
-        className="toc-row-center"
+        className={`toc-row-center${state ? ` toc-row-center--${state}` : ''}`}
         type="button"
         onClick={() => { h.center() }}
-        title="Center this heading"
-        aria-label="Center this heading"
+        title={state ? `${MARK_TITLE[state]} \u2014 click to centre this heading` : 'Center this heading'}
+        aria-label={state ? `${MARK_TITLE[state]}. Center this heading` : 'Center this heading'}
       >
         <span aria-hidden="true">{'\u2299'}</span>
       </button>

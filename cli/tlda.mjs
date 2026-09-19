@@ -26,6 +26,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
+import { commitAndPushClassSite, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
@@ -93,7 +94,7 @@ import { callLocalDaemonRpc } from '../shared/local-daemon-rpc.mjs'
 // unchanged. (server/agent self-dispatch and aren't spliced; `doctor` and `logs`
 // are their own top-level commands.)
 const PROJECT_SUBS = new Set([
-  'open', 'push', 'promote', 'list', 'ls', 'status', 'errors',
+  'open', 'push', 'promote', 'publish', 'list', 'ls', 'status', 'errors',
   'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'unlink', 'add', 'merge', 'remote',
   'repo-doctor', 'init-shadow',
 ])
@@ -123,6 +124,7 @@ const PROJECT_COMMANDS = [
   ['open', 'Open the viewer'],
   ['push', 'Push source, rebuild'],
   ['promote', 'Publish a project from another environment to this one'],
+  ['publish', 'Send what this environment is serving to the class site'],
   ['status', 'Build status'],
   ['errors', 'LaTeX errors/warnings'],
   ['list', 'List projects'],
@@ -259,6 +261,7 @@ const VALUE_FLAGS = new Set([
   'source', 'handout', 'solutions', 'solutions-version', 'handout-filter', 'solution-filter',
   'homework-root', 'homework', 'project-prefix', 'quarto-bin',
   'handout-generator', 'support-file', 'extension', 'work-dir',
+  'to', 'subdir', 'url',
 ])
 
 const SPAWN_BOOLEAN_FLAGS = new Set([
@@ -616,6 +619,90 @@ async function cmdPromote() {
     return
   }
   console.log(green(`Published ${name}@${revision.slice(0, 7)} to ${to}.`))
+}
+
+/**
+ * Send what the app is serving to the class site.
+ *
+ * Skip, 2026-09-19: *"'publishing' means preview — which matches testing which,
+ * daemon not being broken, matches disk — gets sent to the class site."* One
+ * command, a project name, done. No contract path, no release id, no
+ * stage-then-deploy, and no rebuild from a committed revision — the bytes that
+ * move are the ones the server is serving right now, which is the only
+ * definition under which what he looked at is what his class gets.
+ *
+ * It refuses loudly rather than publishing something else. A publish that did
+ * not publish, reported as one that did, is the failure this replaces.
+ */
+async function cmdPublish() {
+  const name = getPositional(0)
+  if (!name) {
+    console.error('Usage: tlda project publish <name> [--to <class-site-checkout>] [--subdir static] [--url <published base>] [--no-push]')
+    console.error('')
+    console.error('Sends what this environment is serving for <name> to the class site.')
+    process.exit(1)
+  }
+
+  const config = loadCliConfig()
+  const remembered = config.classSites?.[name] || {}
+  const checkout = getFlag('to') || remembered.checkout
+  const subdirectory = getFlag('subdir') || remembered.subdirectory || 'static'
+  const publishedUrl = getFlag('url') || remembered.url || null
+  if (!checkout) {
+    console.error(red(`No class site is recorded for "${name}".`))
+    console.error(`Name it once with ${bold(`--to <checkout>`)} and it is remembered: ${bold(`tlda project publish ${name} --to ~/path/to/class-site`)}`)
+    process.exit(1)
+  }
+  if (!existsSync(join(checkout, '.git'))) {
+    console.error(red(`${checkout} is not a git checkout.`))
+    console.error('Publishing commits the site and pushes it, so the destination has to be one.')
+    process.exit(1)
+  }
+
+  const project = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
+  if (project.buildStatus !== 'success') {
+    console.error(red(`"${name}" is ${project.buildStatus || 'unbuilt'} on ${getActiveEnvName()}, not success.`))
+    console.error(`Publishing sends what is being served, and a failed build is not it. ${bold(`tlda project errors ${name}`)} says why.`)
+    process.exit(1)
+  }
+
+  const inventory = await api('GET', `/api/projects/${encodeURIComponent(name)}/published-tree`)
+  if (!inventory.files?.length) {
+    console.error(red(`"${name}" is serving no published tree.`))
+    process.exit(1)
+  }
+  console.log(`Publishing ${bold(name)}${project.sourceRevision ? `@${project.sourceRevision.slice(0, 7)}` : ''} — ${inventory.files.length} files from ${getActiveEnvName()}...`)
+
+  const { staging } = await stagePublishedTree({
+    serverUrl: getServerUrl(),
+    project: name,
+    files: inventory.files,
+    headers: getReadToken() ? { authorization: `Bearer ${getReadToken()}` } : {},
+  })
+  try {
+    await writePublishedTree({ staging, checkout, subdirectory })
+    const result = await commitAndPushClassSite({
+      checkout,
+      subdirectory,
+      project: name,
+      revision: project.sourceRevision,
+      push: !hasFlag('no-push'),
+    })
+    // Remembered only after it worked, so a failed first run does not leave a
+    // destination recorded that nobody has ever successfully published to.
+    saveCliConfig({ ...config, classSites: { ...config.classSites, [name]: { checkout, subdirectory, url: publishedUrl } } })
+    if (publishedUrl) {
+      await api('PATCH', `/api/projects/${encodeURIComponent(name)}/class-site`, { classSiteUrl: publishedUrl }).catch(() => {})
+    }
+    if (!result.changed) {
+      console.log(green(`The class site already serves this. Nothing changed.`))
+      return
+    }
+    console.log(green(`Published ${result.files} file(s) to ${checkout}/${subdirectory}${result.pushed ? ' and pushed' : ' — NOT pushed (--no-push)'}.`))
+    if (result.commit) console.log(`Commit ${result.commit.slice(0, 7)}.`)
+  } finally {
+    rmSync(staging, { recursive: true, force: true })
+  }
 }
 
 async function cmdBook() {
@@ -7553,6 +7640,10 @@ async function main() {
       case 'book':   await finishCliOperation('project book', cmdBook); break
       case 'push':   await finishCliOperation('project push', cmdPush); break
       case 'promote': await finishCliOperation('project promote', cmdPromote); break
+      // NOT retried: publishing commits and pushes the class site, and a retry
+      // of a partially applied push is a second opinion about what the class
+      // is looking at.
+      case 'publish': await cmdPublish(); break
       case 'link':   await finishCliOperation('project link', cmdLink); break
       case 'unlink': await finishCliOperation('project unlink', cmdUnlink); break
       // NOT wrapped in finishCliOperation, and that is deliberate for both.

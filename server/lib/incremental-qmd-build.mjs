@@ -790,7 +790,25 @@ export function publishIncrementalQmdOutput(outDir, root) {
 // the same fact and cannot drift apart.
 const DECK_PROFILE = 'slides'
 
-function expandRenderEntry(dir, rel, addLog) {
+/**
+ * One `project.render` entry of the deck profile, as deck sources.
+ *
+ * A literal entry names its file. A `*` entry names a NAMING RULE, and it is
+ * expanded against the book's DECLARED CHAPTERS rather than against the
+ * directory: `decks/*-slides.qmd` means "the deck of each declared chapter",
+ * the chapter's stem substituted for the `*`. The directory decides only
+ * whether a named deck exists, never which names to look for.
+ *
+ * That direction of travel is the whole of this function. Read the other way it
+ * is a glob over `decks/`, and what is in `decks/` is not the deck list: an
+ * abandoned lecture, an iPad backup, three competing variants of one deck with
+ * no chosen source. Each of those is a file that exists and none of them is the
+ * deck of a chapter anybody declared, so each arrives in the book, and in a
+ * status display each would wear a colour as though it were material. Walking
+ * from the declaration excludes them by construction rather than by a filter
+ * somebody has to keep current.
+ */
+function expandRenderEntry(dir, rel, chapterStems, addLog) {
   if (!rel.includes('*')) return existsSync(join(dir, rel)) ? [rel] : []
   const slash = rel.lastIndexOf('/')
   const parent = slash === -1 ? '' : rel.slice(0, slash)
@@ -801,13 +819,17 @@ function expandRenderEntry(dir, rel, addLog) {
     addLog(`[qmd] deck profile: ignoring ${rel} — a wildcard directory is not supported`)
     return []
   }
-  const parentDir = parent ? join(dir, parent) : dir
-  if (!existsSync(parentDir)) return []
-  const matcher = new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`)
-  return readdirSync(parentDir)
-    .filter((entry) => matcher.test(entry))
-    .sort()
-    .map((entry) => (parent ? `${parent}/${entry}` : entry))
+  const parts = pattern.split('*')
+  if (parts.length !== 2) {
+    addLog(`[qmd] deck profile: ignoring ${rel} — a name rule substitutes one chapter stem, and this names ${parts.length - 1} places to put it`)
+    return []
+  }
+  const roots = []
+  for (const stem of chapterStems) {
+    const root = (parent ? `${parent}/` : '') + parts[0] + stem + parts[1]
+    if (existsSync(join(dir, root))) roots.push(root)
+  }
+  return roots
 }
 
 /**
@@ -818,9 +840,10 @@ function expandRenderEntry(dir, rel, addLog) {
  * `<deck>.html` beside the source instead of into the book tree, and its
  * `project.render` list is the hand-maintained set of deck sources.
  *
- * That list is the authority. Nothing here infers a deck from a filename —
- * three of this project's decks are named for their chapter and three are not,
- * so a naming rule would both miss decks and claim files that are not decks.
+ * That list is the authority, and a `*` in it is a naming rule read against the
+ * book's declared chapters — never a listing of a directory. See
+ * `expandRenderEntry`: a deck is in the book because a chapter names it, so
+ * whatever else is sitting in `decks/` cannot arrive by being there.
  */
 export function qmdDeckRenderRoots(dir, addLog = () => {}) {
   for (const name of [`_quarto-${DECK_PROFILE}.yml`, `_quarto-${DECK_PROFILE}.yaml`]) {
@@ -828,6 +851,9 @@ export function qmdDeckRenderRoots(dir, addLog = () => {}) {
     if (!existsSync(path)) continue
     const config = parseYaml(readFileSync(path, 'utf8'))
     const entries = Array.isArray(config?.project?.render) ? config.project.render : []
+    // In declaration order, which is the order the chapters are read in, so a
+    // deck sits where its chapter does rather than where the alphabet puts it.
+    const chapterStems = quartoBookRoots(dir).map((chapter) => basename(chapter).replace(/\.qmd$/i, ''))
     const roots = []
     for (const entry of entries) {
       const rel = String(entry).replace(/\\/g, '/').replace(/^\.?\/+/, '')
@@ -836,7 +862,7 @@ export function qmdDeckRenderRoots(dir, addLog = () => {}) {
         addLog(`[qmd] deck profile: ignoring exclusion ${rel}`)
         continue
       }
-      for (const root of expandRenderEntry(dir, rel, addLog)) {
+      for (const root of expandRenderEntry(dir, rel, chapterStems, addLog)) {
         // macOS drops an AppleDouble `._<name>` stub beside a file on a
         // non-native filesystem, and this project has committed several: they
         // match `lectures/*-slides.qmd` exactly as their originals do, are not

@@ -43,6 +43,7 @@ import { deleteProjectAndBuildSubmissions, serializedPublication } from '../lib/
 import { importProjectPromotionStream, validatePromotionName, writeProjectPromotionStream } from '../lib/project-promotion.mjs'
 import { promotionExportHeaders, requirePromotionExport, validatePromotionSourceOrigin } from '../lib/promotion-source.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
+import { compareCourseSurfaces } from '../lib/course-surface-marks.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
@@ -1299,6 +1300,100 @@ router.get('/:name/hashes', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   res.json({ hashes: await hashSourceFiles(req.params.name) })
+})
+
+/**
+ * Where this project's pages are published, so the marks below have something
+ * to compare against and `tlda project publish` has somewhere to send.
+ *
+ * One setting, two features. A second place to record the destination is how a
+ * status display and a publish command come to disagree about what "published"
+ * means, which is the disagreement the marks exist to detect.
+ */
+router.patch('/:name/class-site', requireRw, async (req, res) => {
+  try {
+    const url = req.body?.classSiteUrl
+    if (url != null && !/^https?:\/\//i.test(String(url))) {
+      return res.status(400).json({ error: `class site must be an http(s) address, not ${JSON.stringify(url)}` })
+    }
+    const project = await updateProject(req.params.name, { classSiteUrl: url ? String(url).replace(/\/$/, '') : null })
+    res.json({ ok: true, classSiteUrl: project.classSiteUrl })
+  } catch (e) {
+    res.status(404).json({ error: e.message })
+  }
+})
+
+/**
+ * Every file of the tree a class site serves, with its hash.
+ *
+ * The inventory only: each file is already served at `/docs/<name>/static/<path>`
+ * to anyone who may read the project, so publishing fetches them from there and
+ * checks them against these hashes. That is deliberately not a new transport —
+ * a second way to get the published bytes is a second answer to "what is
+ * published", and one of them will be wrong.
+ */
+router.get('/:name/published-tree', requireRead, async (req, res) => {
+  const project = await readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const root = join(getOutputDir(req.params.name), 'static')
+  if (!existsSync(root)) {
+    return res.status(409).json({
+      error: `"${req.params.name}" has no static/ tree, so it is not a publication build`,
+      buildStatus: project.buildStatus || 'unknown',
+      lastBuild: project.lastBuild || null,
+    })
+  }
+  const files = []
+  const walk = (dir, prefix) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory()) walk(join(dir, entry.name), path)
+      else if (entry.isFile()) {
+        files.push({ path, size: statSync(join(dir, entry.name)).size, sha256: createHash('sha256').update(readFileSync(join(dir, entry.name))).digest('hex') })
+      }
+    }
+  }
+  walk(root, '')
+  res.json({ files, sourceRevision: project.sourceRevision || null, buildStatus: project.buildStatus || 'unknown' })
+})
+
+/**
+ * One mark per page: is what this project is serving what the class site is
+ * serving.
+ *
+ * Computed here, on request, by asking both surfaces — not read from a release
+ * record. A record saying a page was published is what let stale solutions
+ * stand in front of a class, so the answer has to come from the pages
+ * themselves, and it has to be the app that asks. A mark somebody has to run a
+ * script to refresh is a report with colours on it.
+ *
+ * Every failure is reported as a row that could not be compared rather than as
+ * a row that is missing: see `markForRow`. A slow class site must not repaint
+ * his table of contents.
+ */
+router.get('/:name/toc-marks', requireRead, async (req, res) => {
+  const project = await readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const pageInfoPath = join(getOutputDir(req.params.name), 'page-info.json')
+  if (!existsSync(pageInfoPath)) {
+    return res.json({ marks: [], classSiteUrl: project.classSiteUrl || null, why: `${req.params.name} has no built pages to compare` })
+  }
+  const pages = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
+  const staticRoot = join(getOutputDir(req.params.name), 'static')
+  const marks = await compareCourseSurfaces(pages, {
+    // The bytes this server serves, read where it serves them from. A page the
+    // publication does not carry reads as absent rather than as unreadable.
+    readPreview: async path => {
+      const file = join(staticRoot, ...path.split('/'))
+      return existsSync(file) ? readFileSync(file, 'utf8') : null
+    },
+    publishedBase: project.classSiteUrl || null,
+  })
+  res.json({
+    marks: marks.map(({ page, source, mark, why }) => ({ page, source, mark, why })),
+    classSiteUrl: project.classSiteUrl || null,
+    comparedAt: new Date().toISOString(),
+  })
 })
 
 

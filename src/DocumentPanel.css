@@ -890,6 +890,39 @@ html[data-theme="dark"] .toc-drop-hint {
   opacity: var(--ui-tone-rest);
 }
 
+/* Whether a row is what the class site is serving, on the bullet the row
+   already has. No badge, no column, no second glyph: the same ⊙, coloured.
+
+   A marked bullet stops being dormant, because a dormant traffic light is not
+   one — the colour has to be readable at a glance down the column without
+   hovering, which is the entire request. An UNMARKED row is untouched and
+   keeps the dormant bullet it has always had, so "we could not compare this"
+   and "there is no class site" look like nothing rather than like news.
+
+   The reds and greens are picked for a light and a dark panel separately below;
+   these are the light-panel values. Alarm is deliberately NOT a fourth shade of
+   the same light — it is the outlined bullet, because it does not mean "further
+   along", it means the class site is serving something this book cannot make. */
+.toc-row-center--green,
+.toc-row-center--yellow,
+.toc-row-center--red,
+.toc-row-center--alarm {
+  opacity: 1;
+}
+
+.toc-row-center--green { color: #15803d; }
+.toc-row-center--yellow { color: #b45309; }
+.toc-row-center--red { color: #b91c1c; }
+.toc-row-center--alarm {
+  color: #7e22ce;
+  text-shadow: 0 0 3px currentColor;
+}
+
+html[data-theme="dark"] .toc-row-center--green { color: #4ade80; }
+html[data-theme="dark"] .toc-row-center--yellow { color: #fbbf24; }
+html[data-theme="dark"] .toc-row-center--red { color: #f87171; }
+html[data-theme="dark"] .toc-row-center--alarm { color: #d8b4fe; }
+
 .toc-title {
   min-width: 0;
 }

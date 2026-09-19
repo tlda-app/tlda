@@ -6,9 +6,9 @@ import test from 'node:test'
 
 import { publishDeckIntoBook, qmdDeckChapterPairs, qmdDeckRenderRoots } from './build-qmd.mjs'
 
-// The course's own shape: three decks named for their chapter, three not, one
-// of the latter matching no chapter at all, and the set declared by a render
-// list that mixes a glob with literal paths.
+// The course's own shape: a deck named for a declared chapter, a deck named for
+// nothing in the book, and a set declared by a render list that mixes a name
+// rule with literal paths.
 function deckProject() {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-deck-profile-'))
   mkdirSync(join(root, 'lectures'), { recursive: true })
@@ -30,40 +30,52 @@ function deckProject() {
     '    - lectures/*-slides.qmd',
     '    - lectures/Lecture2.qmd',
     '    - lectures/never-written.qmd',
+    '    - lectures/._Lecture2.qmd',
     'book: null',
     '',
   ].join('\n'))
   for (const file of [
     'index.qmd',
     'lectures/chapter-normal-approximation.qmd',
+    // Declared, and has no deck. Its absence is what the name rule reports by
+    // returning nothing for it, rather than by finding some other file.
     'lectures/chapter-sampling.qmd',
     'lectures/chapter-normal-approximation-slides.qmd',
+    // Matches `*-slides.qmd` and belongs to no declared chapter: the shape of
+    // every abandoned lecture and backup sitting in the real deck directory.
     'lectures/Lab1-slides.qmd',
     'lectures/Lecture2.qmd',
-    // Committed in the real project, and it matches the glob exactly as its
-    // original does.
+    // macOS AppleDouble stubs, committed in the real project. Rendering one
+    // fails the whole build.
     'lectures/._Lab1-slides.qmd',
+    'lectures/._Lecture2.qmd',
   ]) writeFileSync(join(root, file), '# doc\n')
   return root
 }
 
-test('the deck set comes from the profile render list, globs expanded', () => {
+test('the deck set is the declared chapters name rule, plus literal entries', () => {
   const root = deckProject()
   try {
+    // In chapter order, and `chapter-sampling` contributes nothing because it
+    // has no deck. Literal entries follow, in the order the profile lists them.
     assert.deepEqual(qmdDeckRenderRoots(root), [
-      'lectures/Lab1-slides.qmd',
       'lectures/chapter-normal-approximation-slides.qmd',
       'lectures/Lecture2.qmd',
     ])
     // A declared entry with no file on disk is not a deck. Inferring one from
     // the name is what would claim a document nobody built.
     assert.equal(qmdDeckRenderRoots(root).includes('lectures/never-written.qmd'), false)
-    // The AppleDouble stub is not a deck. Rendering one fails the whole build,
-    // and the glob matches it exactly as it matches the file it shadows.
-    assert.equal(qmdDeckRenderRoots(root).includes('lectures/._Lab1-slides.qmd'), false)
+    // The file exists and matches `*-slides.qmd`. It is not in the book because
+    // no declared chapter is named `Lab1`, and that is the whole difference
+    // between reading the rule against the chapter list and against the
+    // directory: the directory would have handed it over.
+    assert.equal(qmdDeckRenderRoots(root).includes('lectures/Lab1-slides.qmd'), false)
+    // A literal entry still names its own file, so the dotfile guard is still
+    // the thing standing between an AppleDouble stub and a failed render.
+    assert.equal(qmdDeckRenderRoots(root).includes('lectures/._Lecture2.qmd'), false)
     const skipped = []
     qmdDeckRenderRoots(root, (line) => skipped.push(line))
-    assert.match(skipped.join('\n'), /skipping lectures\/\._Lab1-slides\.qmd/, 'a skipped deck must say so')
+    assert.match(skipped.join('\n'), /skipping lectures\/\._Lecture2\.qmd/, 'a skipped deck must say so')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
@@ -79,10 +91,9 @@ test('a deck pairs with its chapter by stem, and stands alone otherwise', () => 
   const root = deckProject()
   try {
     assert.deepEqual(qmdDeckChapterPairs(root), [
-      // named for a chapter that is not declared in the book — unpaired
-      { deck: 'lectures/Lab1-slides.qmd', chapter: null },
       { deck: 'lectures/chapter-normal-approximation-slides.qmd', chapter: 'lectures/chapter-normal-approximation.qmd' },
-      // a deck whose name matches no chapter at all — unpaired, not forced
+      // Declared literally, and its name matches no chapter at all — unpaired,
+      // not forced onto one.
       { deck: 'lectures/Lecture2.qmd', chapter: null },
     ])
   } finally { rmSync(root, { recursive: true, force: true }) }
@@ -114,7 +125,6 @@ test('a deck pairs with its chapter when they are in different directories', () 
 
     assert.deepEqual(qmdDeckChapterPairs(root), [
       // the chapter it belongs to is one directory over, and it still belongs to it
-      { deck: 'decks/Lab1-slides.qmd', chapter: null },
       {
         deck: 'decks/chapter-normal-approximation-slides.qmd',
         chapter: 'chapters/chapter-normal-approximation.qmd',
