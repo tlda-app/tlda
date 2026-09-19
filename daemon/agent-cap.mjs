@@ -49,6 +49,17 @@ export function countAwakeLocalAgents({ sessionNames = [], probed = true } = {})
   return new Set(sessionNames).size
 }
 
+// Bots are continuity infrastructure: the fleet's lint, grammar, nobody, todd
+// and dev seats are meant to outlast the agents around them. A ceiling that can
+// refuse a bot's restart takes one down for as long as the box stays full, and
+// takes it down silently, which is the opposite of what a bot is for. They still
+// count toward the cap -- they are real load on the box, and the number should
+// say so -- but a bot launch is never the one that gets refused.
+export function isBotLaunch({ kind = null, harness = null } = {}) {
+  const bot = value => String(value || '').trim().toLowerCase() === 'bot'
+  return bot(kind) || bot(harness)
+}
+
 export function agentCapFromConfig(config) {
   const value = config?.agentCap
   if (value === undefined || value === null) return NO_CAP

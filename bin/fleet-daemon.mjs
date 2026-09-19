@@ -156,7 +156,7 @@ import {
   projectWorldsPath,
   readProjectWorlds as readProjectSourceEnvironmentOwners,
 } from '../shared/project-worlds.mjs'
-import { NO_CAP, agentCapFromConfig, agentCapRefusal, countAwakeLocalAgents } from '../daemon/agent-cap.mjs'
+import { NO_CAP, agentCapFromConfig, agentCapRefusal, countAwakeLocalAgents, isBotLaunch } from '../daemon/agent-cap.mjs'
 const log = createLogger('daemon')
 
 // Refuse a launch that would put this box over its awake-agent cap.
@@ -166,9 +166,13 @@ const log = createLogger('daemon')
 // frees its own slot before it takes one. Refusing either at the door would
 // break the common `no-channel` path, which is a live socket loss and not a
 // launch at all.
-async function requireLaunchSlot(operation) {
+async function requireLaunchSlot(operation, launch = {}) {
   const cap = agentCapFromConfig(readDaemonConfig(DAEMON_CONFIG_FILE))
   if (cap === NO_CAP) return
+  if (isBotLaunch(launch)) {
+    log.info(`[agent-cap] ${operation} for a bot is admitted past the cap; bots are not capped out of existence`)
+    return
+  }
   // Running sessions, not existing ones: a dead pane holds its session name and
   // carries no process, so counting names would spend cap slots on nothing.
   const probe = await listRunningSessionNames({ tmuxSocket: TMUX_SOCKET })
@@ -1160,7 +1164,7 @@ agySupervisor = createAgySupervisor({
 })
 
 const agentLauncher = createAgentLauncher({
-  onBeforeLaunch: () => requireLaunchSlot('spawn'),
+  onBeforeLaunch: launch => requireLaunchSlot('spawn', { kind: launch?.kind, harness: launch?.harness }),
   activeEnvName: ACTIVE_ENV,
   configDir: CONFIG_DIR,
   loadDaemonLaunchConfig,
@@ -1561,7 +1565,7 @@ const wakeMint = createDaemonWakeCore({
     return terminateTmuxSession(tmuxSession, { tmuxSocket: TMUX_SOCKET })
   },
   resumeSession: async (facts, wakeParams = {}) => {
-    await requireLaunchSlot('wake')
+    await requireLaunchSlot('wake', { harness: facts?.launchRecipe?.modelSpec?.harness })
     const wakePermission = compileWakePermissionProfile({
       facts,
       wakeParams,
@@ -1592,7 +1596,7 @@ const wakeMint = createDaemonWakeCore({
 })
 
 async function rpcMint(params = {}) {
-  await requireLaunchSlot('mint')
+  await requireLaunchSlot('mint', { kind: params.kind })
   const cwd = resolveMintCwd({
     cwd: params.cwd,
     project: params.project,

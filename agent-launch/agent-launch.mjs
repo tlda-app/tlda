@@ -238,7 +238,7 @@ export function createAgentLauncher({
     requester,
     onLifecycleEvent,
   }) {
-    if (onBeforeLaunch) await onBeforeLaunch()
+    if (onBeforeLaunch) await onBeforeLaunch({ kind, model, name })
     const projects = getProjects()
     const sessionId = session || session_id
     const requestedAgentId = agent_id || agentId || null

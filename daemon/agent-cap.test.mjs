@@ -213,3 +213,46 @@ test('without a gate, and with a gate that admits, the launch proceeds as before
   assert.deepEqual(admitted, uncapped, 'an admitting gate changes nothing about the launch')
   assert.equal(admitted.ok, false, 'and the launch still reaches its own error, not the gate’s')
 })
+
+// Bots are continuity infrastructure. The cap counts them, because they are load
+// on the box, but it never refuses one -- a ceiling that can decline a bot's
+// restart takes it down silently for as long as the box stays full.
+test('a bot launch is recognised from either the request kind or the resolved harness', async () => {
+  const { isBotLaunch } = await import('./agent-cap.mjs')
+  assert.equal(isBotLaunch({ kind: 'bot' }), true, 'tlda agent mint --kind bot')
+  assert.equal(isBotLaunch({ harness: 'bot' }), true, 'a wake, where the harness comes off the launch recipe')
+  assert.equal(isBotLaunch({ kind: 'BOT' }), true)
+  assert.equal(isBotLaunch({ kind: 'claude', harness: 'claude' }), false)
+  assert.equal(isBotLaunch({}), false, 'an unmarked launch is not a bot')
+  assert.equal(isBotLaunch(), false)
+})
+
+test('bots still count toward the cap, so the number describes the box', () => {
+  assert.equal(countAwakeLocalAgents({
+    sessionNames: ['fleet-launch-control', 'fleet-dev', 'fleet-bot-grammar_testing'],
+  }), 3)
+})
+
+// The daemon decides the exemption from what the launch is, so the launcher has
+// to hand the hook enough to tell. Without this the gate sees an empty object
+// and every bot is treated as an ordinary agent.
+test('the launch gate is told what kind of launch it is deciding about', async () => {
+  const { createAgentLauncher } = await import('../agent-launch/agent-launch.mjs')
+  const seen = []
+  const launcher = createAgentLauncher({
+    activeEnvName: 'testing',
+    configDir: '/tmp/tlda-agent-cap-gate-test',
+    onBeforeLaunch: launch => { seen.push(launch) },
+    loadDaemonLaunchConfig: () => ({}),
+    log: { info() {}, warn() {} },
+    machineId: 'test-machine',
+    permissionLedger: {},
+    sendMsg() {},
+    getProjects: () => [{ name: 'proj', sourceDir: null }],
+    tmux() {},
+  })
+  await launcher.handlers.spawn({ name: 'grammar', kind: 'bot', project: 'proj' })
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].kind, 'bot', 'the gate can see this is a bot and admit it')
+  assert.equal(seen[0].name, 'grammar')
+})
