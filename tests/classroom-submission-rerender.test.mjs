@@ -75,7 +75,9 @@ test('a build that did not fail is refused, and the refusal says what state it i
   const body = await response.json()
   assert.equal(body.state, 'complete')
   assert.match(body.error, /only a failed build is re-run/)
-  // The project came off the submission record, never from the caller.
+  // Which project was asked about — not a scoping guarantee, since this caller
+  // sends no project to be preferred over it. The scoping is enforced by the
+  // widening case at the bottom of this file.
   assert.equal(calls[0].project, 'submission-hw-ada')
 })
 
@@ -95,4 +97,32 @@ test('a failed build is re-admitted, and the response says what it was and now i
   assert.equal(body.previousState, 'failed')
   assert.equal(body.state, 'pending')
   assert.equal(body.revision, 'b'.repeat(40))
+})
+
+// The scoping is the reason this route may exist at all, so it is asserted
+// against a caller that TRIES to widen it rather than against a caller that
+// cannot. The previous version of this file checked the project handed to the
+// re-run while the route had no way to accept one — true, and unable to fail.
+// A `project` in the body is the obvious widening, and it must be ignored: the
+// project comes off the submission record or this becomes a general rebuild API
+// that re-runs any project an instructor can name.
+test('a project named by the caller is ignored, not honoured', async t => {
+  const calls = []
+  const { store, server, base } = await serve(async project => {
+    calls.push(project)
+    return { ok: true, state: 'pending', previousState: 'failed', revision: 'c'.repeat(40) }
+  })
+  t.after(() => server.close())
+  enrol(store)
+  store.submit({ assignmentId: 'hw', studentId: 'ada', contentRef: 'submission-hw-ada' })
+  principal = { role: 'instructor' }
+
+  const response = await fetch(`${base}/assignments/hw/submissions/ada/rerender`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ project: 'qtm285-book', name: 'qtm285-book', contentRef: 'qtm285-book' }),
+  })
+  assert.equal(response.status, 200)
+  assert.deepEqual(calls, ['submission-hw-ada'], 'the caller widened the route to another project')
+  assert.equal((await response.json()).project, 'submission-hw-ada')
 })
