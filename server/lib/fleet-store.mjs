@@ -22,7 +22,7 @@ import path from 'path';
 import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
-import { PSEUDO_LABELS, addressTerms, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent, walkAgentSetExpr } from '../../shared/fleet-labels.mjs';
+import { PSEUDO_LABELS, addressTerms, dependencyTerms, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent, walkAgentSetExpr } from '../../shared/fleet-labels.mjs';
 import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY } from '../../shared/subscriptions.mjs';
 import { allTermFtsQuery, anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 import { parseUnifiedFilter } from '../../shared/unified-filter-grammar.mjs';
@@ -2704,7 +2704,7 @@ export class FleetStore {
     if (!id) return;
     // Before the registry guard below: an unloaded registry is not a reason to
     // keep a stale cache entry.
-    this._invalidateLiteralCandidatesFor(id);
+    this._invalidateResolvedSetsFor(id);
     if (!this._agentRegistry || !this._aliveAgentRegistry) return;
     const agent = this.getAgent(id);
     if (!agent) {
@@ -2717,92 +2717,210 @@ export class FleetStore {
     else this._aliveAgentRegistry.upsert(agent);
   }
 
-  // ---- Resolved literal candidates ----
+  // ---- Resolved sets ----
   //
-  // The expensive part of resolving an agent-set expression is one SQL query
-  // per literal. Everything after it — dropping the sender, projecting runtime
-  // status, `evalExpr` per candidate, sorting — is in-memory work over a small
-  // set.
+  // One question — which agents match this expression — answered once and held
+  // until something an answer depends on changes. On a hit no per-literal SQL
+  // runs at all, which is why there is no second cache under this one: a lower
+  // tier would only be consulted on the path this already answered.
   //
-  // So the cache sits on the LITERAL, not on the expression's answer. That is
-  // not a simplification, it is the only correct place: the final id list
-  // depends on `from`, because a sender is excluded from their own send. Keying
-  // a finished result would therefore need the sender in the key, which is a
-  // per-reader cache — the same thing that makes `my_labels` not worth caching,
-  // and it would miss far more often than it hit. A literal's candidate set has
-  // no such dependency, is shared by every expression mentioning that term, and
-  // is invalidated by exactly one term.
+  // What is NOT in the key is the point. The sender, the runtime projection and
+  // the sort order all vary per call and are applied over the cached set on the
+  // way out. Anything that varies per caller or per moment is a projection, not
+  // a key component; treating one as a key component produces a cache that
+  // cannot hit.
   //
-  // Pseudo-labels (`awake`, `here`, …) are deliberately NOT cached: they read
-  // runtime status, which churns on every process start and stop, and they do
-  // not touch SQL in the first place.
-  static LITERAL_CACHE_MAX_ENTRIES = 500
-  static LITERAL_CACHE_MAX_MEMBERS = 200
+  // Retention is by reference, with a bounded LRU underneath:
+  //
+  //   - a SUBSCRIPTION ref is held by something that wants to be TOLD — a chat
+  //     filter someone has open, an agent subscription. It is maintained, and
+  //     invalidation produces a delta, because the holder consumes the change
+  //     rather than the value.
+  //   - a PLAIN ref is pull. Correct on read, marked dirty by an event,
+  //     recomputed on the next acquire.
+  //   - at zero refs a set drops to the LRU dirty rather than maintained, and
+  //     is evicted under the bound. Dropping an unreferenced dirty set is
+  //     always safe: nobody can observe one without acquiring it, and acquiring
+  //     recomputes. So there is no policy about what deserves caching — usage
+  //     decides, and memory stays bounded however many expressions exist.
+  //
+  // Refcount is the ONLY thing that keeps a set maintained. A maintained set
+  // cannot outlive its subscriber and go on computing deltas nobody reads,
+  // because there is no other retention path — by construction rather than by
+  // cleanup.
+  static RESOLVED_SET_MAX_ENTRIES = 500
+  static RESOLVED_SET_MAX_MEMBERS = 200
 
-  _literalCandidateCacheGet(label) {
-    const hit = this._literalCandidateCache?.get(label)
+  // Acquire a reference to a resolved set. `kind` is 'plain' or 'subscription';
+  // the difference is whether invalidation recomputes and emits a delta or
+  // simply marks dirty. Release with `releaseResolvedSet(handle)`.
+  acquireResolvedSet(ast, { kind = 'plain', onDelta = null } = {}) {
+    if (!this._resolvedSetCacheable(ast)) return null
+    const key = this._resolvedSetKey(ast)
+    if (!this._resolvedSetRefs) this._resolvedSetRefs = new Map()
+    let ref = this._resolvedSetRefs.get(key)
+    if (!ref) { ref = { key, count: 0, subscribers: new Set() }; this._resolvedSetRefs.set(key, ref) }
+    ref.count += 1
+    if (kind === 'subscription' && onDelta) ref.subscribers.add(onDelta)
+    return { key, kind, onDelta }
+  }
+
+  releaseResolvedSet(handle) {
+    const ref = handle && this._resolvedSetRefs?.get(handle.key)
+    if (!ref) return
+    // Synchronous, and before anything else can run: a delta computed after
+    // this point has no ref to deliver to and is discarded rather than
+    // resurrecting the entry. A set reaching zero computes NO final delta — it
+    // stops being maintained and drops to the LRU dirty.
+    if (handle.onDelta) ref.subscribers.delete(handle.onDelta)
+    ref.count -= 1
+    if (ref.count <= 0) this._resolvedSetRefs.delete(handle.key)
+  }
+
+  _resolvedSetSubscribers(key) {
+    return this._resolvedSetRefs?.get(key)?.subscribers ?? null
+  }
+
+  // The key carries the QUESTION as well as the expression, because `chief` has
+  // more than one correct answer — who holds the name now, and every id it ever
+  // pointed at. Only `members` is cached here; a span resolver keying into the
+  // same map would silently receive membership.
+  _resolvedSetKey(ast) {
+    const canonical = JSON.stringify(ast, Object.keys(ast).sort())
+    return `members ${canonical}`
+  }
+
+  // An expression is cacheable only if its answer is a function of stored
+  // membership alone.
+  //
+  //   - a null AST matches everything and names no terms, so it has no
+  //     dependency to invalidate on — an empty dependency set is one that
+  //     nothing can ever invalidate, which would pin the whole fleet;
+  //   - `my_labels` resolves against the reading subscriber, so it is genuinely
+  //     per-reader;
+  //   - a pseudo-label reads runtime status, which changes on every process
+  //     start and stop. These are the expressions whose membership really does
+  //     move without any agent record changing.
+  _resolvedSetCacheable(ast) {
+    if (!ast) return false
+    if (astReadsSubscriberLabels(ast)) return false
+    for (const term of dependencyTerms(ast)) if (PSEUDO_LABELS.includes(term)) return false
+    return true
+  }
+
+  _resolvedSetGet(ast) {
+    if (!this._resolvedSetCache || !this._resolvedSetCacheable(ast)) return null
+    const key = this._resolvedSetKey(ast)
+    const hit = this._resolvedSetCache.get(key)
     if (!hit) return null
-    // Refresh recency: delete + set moves the key to the end of a Map's
-    // insertion order, which is the eviction order used below.
-    this._literalCandidateCache.delete(label)
-    this._literalCandidateCache.set(label, hit)
-    return hit
+    this._resolvedSetCache.delete(key)
+    this._resolvedSetCache.set(key, hit)
+    return hit.members
   }
 
-  _literalCandidateCacheSet(label, agents) {
-    if (!this._literalCandidateCache) {
-      this._literalCandidateCache = new Map()
-      this._literalCacheTermsByAgent = new Map()
+  _resolvedSetSet(ast, members) {
+    if (!this._resolvedSetCacheable(ast)) return
+    // A set too big to be worth holding is also the one most likely to be a
+    // one-off. Refusing it keeps the bound a count of entries rather than an
+    // estimate of memory, which is a number nobody can tune from observation.
+    if (members.length > FleetStore.RESOLVED_SET_MAX_MEMBERS) return
+    if (!this._resolvedSetCache) {
+      this._resolvedSetCache = new Map()
+      this._resolvedSetKeysByTerm = new Map()
+      this._resolvedSetKeysByAgent = new Map()
     }
-    // A set too large to be worth holding is also the one most likely to be a
-    // one-off. Refusing it outright keeps the bound a count of entries rather
-    // than an estimate of memory.
-    if (agents.length > FleetStore.LITERAL_CACHE_MAX_MEMBERS) return
-    this._literalCandidateCache.set(label, agents)
-    for (const agent of agents) {
-      let terms = this._literalCacheTermsByAgent.get(agent.id)
-      if (!terms) { terms = new Set(); this._literalCacheTermsByAgent.set(agent.id, terms) }
-      terms.add(label)
+    const key = this._resolvedSetKey(ast)
+    // The expression is stored beside its answer because a subscription ref has
+    // to RECOMPUTE on invalidation to produce a delta, and the key is a
+    // serialisation rather than something you can resolve from.
+    this._resolvedSetCache.set(key, { ast, members })
+    // Indexed two ways, and both are needed for the same reason the literal
+    // tier needs them: by the terms the expression DEPENDS on — negated ones
+    // included, since `awake & !goose` changes when goose is relabelled — and
+    // by the agents currently in it, which is the only record of what the set
+    // looked like before a change removes an agent's claim to it.
+    for (const term of dependencyTerms(ast)) {
+      let keys = this._resolvedSetKeysByTerm.get(term)
+      if (!keys) { keys = new Set(); this._resolvedSetKeysByTerm.set(term, keys) }
+      keys.add(key)
     }
-    while (this._literalCandidateCache.size > FleetStore.LITERAL_CACHE_MAX_ENTRIES) {
-      const oldest = this._literalCandidateCache.keys().next().value
-      this._dropLiteralCandidateEntry(oldest)
+    for (const agent of members) {
+      let keys = this._resolvedSetKeysByAgent.get(agent.id)
+      if (!keys) { keys = new Set(); this._resolvedSetKeysByAgent.set(agent.id, keys) }
+      keys.add(key)
+    }
+    // Evict the oldest UNREFERENCED entry. A referenced set is held by someone
+    // who will read it, so evicting it would guarantee a recompute rather than
+    // save one; only the zero-ref tail is eviction's business. If everything is
+    // referenced there is nothing to evict and the bound yields — refs, not the
+    // bound, decide what is retained.
+    if (this._resolvedSetCache.size > FleetStore.RESOLVED_SET_MAX_ENTRIES) {
+      for (const candidate of this._resolvedSetCache.keys()) {
+        if (this._resolvedSetCache.size <= FleetStore.RESOLVED_SET_MAX_ENTRIES) break
+        if (this._resolvedSetRefs?.get(candidate)?.count > 0) continue
+        this._dropResolvedSetEntry(candidate)
+      }
     }
   }
 
-  _dropLiteralCandidateEntry(label) {
-    const agents = this._literalCandidateCache?.get(label)
-    if (!agents) return
-    this._literalCandidateCache.delete(label)
-    for (const agent of agents) {
-      const terms = this._literalCacheTermsByAgent?.get(agent.id)
-      if (!terms) continue
-      terms.delete(label)
-      if (terms.size === 0) this._literalCacheTermsByAgent.delete(agent.id)
-    }
+  _dropResolvedSetEntry(key) {
+    if (!this._resolvedSetCache?.has(key)) return
+    this._resolvedSetCache.delete(key)
+    for (const keys of this._resolvedSetKeysByTerm.values()) keys.delete(key)
+    for (const keys of this._resolvedSetKeysByAgent.values()) keys.delete(key)
   }
 
-  // Invalidate every cached literal this agent's membership could have changed.
-  //
-  // BEFORE ∪ AFTER, and the before half is the one that is easy to lose. An
-  // agent that just had a label REMOVED no longer answers to it, so the terms
-  // it answers to now cannot tell you which cached set has to drop it. The
-  // before half comes from `_literalCacheTermsByAgent`, which records the terms
-  // whose cached sets currently contain this agent.
-  _invalidateLiteralCandidatesFor(id) {
-    if (!this._literalCandidateCache?.size) return
-    const stale = new Set(this._literalCacheTermsByAgent?.get(id) || [])
+  _invalidateResolvedSetsFor(id) {
+    if (!this._resolvedSetCache?.size) return
+    // BEFORE ∪ AFTER again, for the same reason as the literal tier: an agent
+    // that just lost a label no longer names the set it has to be removed from.
+    const stale = new Set(this._resolvedSetKeysByAgent?.get(id) || [])
     const agent = this.getAgent(id)
     if (agent) for (const term of labelsForAgent(agent)) {
-      if (this._literalCandidateCache.has(term)) stale.add(term)
+      for (const key of this._resolvedSetKeysByTerm?.get(term) || []) stale.add(key)
     }
-    for (const term of stale) this._dropLiteralCandidateEntry(term)
+    // Re-entrancy guard: recomputing below re-enters resolution, and a
+    // subscriber callback may itself touch the store. Without this a single
+    // mutation could cascade through its own deltas.
+    if (this._resolvedSetInvalidating) {
+      for (const key of stale) this._dropResolvedSetEntry(key)
+      return
+    }
+    this._resolvedSetInvalidating = true
+    try {
+      for (const key of stale) {
+        const before = this._resolvedSetCache.get(key)
+        const subscribers = this._resolvedSetSubscribers(key)
+        this._dropResolvedSetEntry(key)
+        // A plain ref is pull: dropping it IS marking it dirty, and the next
+        // acquire recomputes. Only a subscription ref is told.
+        if (!subscribers?.size || !before?.ast) continue
+        const beforeIds = before.members.map(agent => agent.id)
+        const afterIds = this.resolveChatRecipients(before.ast, {})
+        const added = afterIds.filter(agentId => !beforeIds.includes(agentId))
+        const removed = beforeIds.filter(agentId => !afterIds.includes(agentId))
+        if (!added.length && !removed.length) continue
+        for (const notify of subscribers) {
+          // One subscriber throwing must not stop the others being told, and
+          // must not leave the store mid-invalidation.
+          try { notify({ added, removed, members: afterIds }) } catch { /* subscriber's problem */ }
+        }
+      }
+    } finally {
+      this._resolvedSetInvalidating = false
+    }
   }
 
   resolveChatRecipients(filterAst, { from = null, filter = '', runtimeProjections = {} } = {}) {
     const runtimeById = new Map(this._runtimeStatusByAgent || [])
     for (const [id, status] of Object.entries(runtimeProjections || {})) runtimeById.set(id, status)
     const runtimeProjection = id => runtimeById.get(id) || null
+    // A runtime status is a fact about this moment, not about membership, so it
+    // is applied on the way out and never stored.
+    const project = agent => ({
+      ...agent,
+      runtime_status: runtimeProjection(agent.id) || agent.runtime_status || null,
+    })
     const hydrateCandidates = rows => rows
       .map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)))
       .filter(isFleetRosterAgent)
@@ -2812,8 +2930,6 @@ export class FleetStore {
         if (ids.length === 0) return []
         return this.getAgentsByIds(ids).filter(isFleetRosterAgent)
       }
-      const cached = this._literalCandidateCacheGet(label)
-      if (cached) return cached
       const rows = this.db.prepare(`
         SELECT ${this._AGENT_SELECT} ${this._AGENT_JOIN}
         WHERE agents.dead = 0
@@ -2829,9 +2945,7 @@ export class FleetStore {
           )
         ORDER BY agents.last_seen DESC
       `).all({ label })
-      const candidates = hydrateCandidates(rows)
-      this._literalCandidateCacheSet(label, candidates)
-      return candidates
+      return hydrateCandidates(rows)
     }
     const indexedCandidates = (ast) => {
       const fromLabel = (label) => {
@@ -2863,14 +2977,19 @@ export class FleetStore {
     }
     const literal = astLiteral(filterAst);
     if (literal) {
-      const literalCandidates = candidatesForLiteral(literal)
-      const found = new Map(literalCandidates
-        .map(agent => ({
-          ...agent,
-          runtime_status: runtimeProjection(agent.id) || agent.runtime_status || null,
-        }))
-        .filter(agent => labelsForAgent(agent).includes(literal))
-        .map(agent => [agent.id, agent]));
+      const cachedMembers = this._resolvedSetGet(filterAst)
+      if (cachedMembers) {
+        return cachedMembers
+          .map(project)
+          .filter(a => a.id !== from)
+          .sort(compareAgentsForRoster)
+          .map(a => a.id);
+      }
+      const found = new Map();
+      for (const agent of candidatesForLiteral(literal)) {
+        // Tested through the projection, stored without it.
+        if (labelsForAgent(project(agent)).includes(literal)) found.set(agent.id, agent);
+      }
       // Addressing one agent by name or id, and the registries have nothing.
       //
       // The registries are built from _getAliveAgents, which excludes rows still
@@ -2889,26 +3008,45 @@ export class FleetStore {
       // reached by reanimating first, exactly as before.
       if (found.size === 0) {
         const stored = this.findAgent(literal);
-        if (stored && !stored.dead && stored.id !== from) found.set(stored.id, stored);
+        // `stored.id !== from` used to be tested here too. The projection below
+        // removes the sender anyway, so the two were the same exclusion written
+        // twice — and having it here made membership depend on the caller,
+        // which is exactly what must not go in a cached set.
+        if (stored && !stored.dead) found.set(stored.id, stored);
       }
-      return [...found.values()]
+      const literalMembers = [...found.values()];
+      this._resolvedSetSet(filterAst, literalMembers);
+      return literalMembers
+        .map(project)
         .filter(a => a.id !== from)
         .sort(compareAgentsForRoster)
         .map(a => a.id);
     }
 
-    const indexed = indexedCandidates(filterAst)
-    const candidates = indexed ? [...indexed.values()] : (() => {
-      this._ensureAgentRegistryLoaded()
-      return this._aliveAgentRegistry.all()
-    })()
+    // Membership and the caller's view of it are two different operations, and
+    // they used to share one `.filter()`. `evalExpr` decides who is in the set;
+    // `id !== from` is this caller being excluded from their own send, and the
+    // runtime projection and sort are likewise per-call. Only the first is the
+    // set, so only the first is cached — putting `from` in the key would make
+    // this a per-reader cache that misses far more often than it hits.
+    let members = this._resolvedSetGet(filterAst)
+    if (!members) {
+      const indexed = indexedCandidates(filterAst)
+      const candidates = indexed ? [...indexed.values()] : (() => {
+        this._ensureAgentRegistryLoaded()
+        return this._aliveAgentRegistry.all()
+      })()
+      // Tested through the projection, stored without it: a runtime status is
+      // a fact about this moment, not about membership, so a cached entry must
+      // not carry one. Expressions that DO read runtime status are refused by
+      // `_resolvedSetSet` rather than handled here.
+      members = candidates.filter(agent => evalExpr(filterAst, labelsForAgent(project(agent))))
+      this._resolvedSetSet(filterAst, members)
+    }
 
-    return candidates
-      .map(agent => ({
-        ...agent,
-        runtime_status: runtimeProjection(agent.id) || agent.runtime_status || null,
-      }))
-      .filter(agent => agent.id !== from && evalExpr(filterAst, labelsForAgent(agent)))
+    return members
+      .map(project)
+      .filter(agent => agent.id !== from)
       .sort(compareAgentsForRoster)
       .map(agent => agent.id);
   }
