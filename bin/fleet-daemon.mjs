@@ -124,7 +124,7 @@ import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
-import { listSessionNames, sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { listRunningSessionNames, listSessionNames, sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { sanitizeSessionName } from '../agent-launch/identity.mjs'
 import { resolvePartialMintRuntime } from '../daemon/partial-mint-runtime-recovery.mjs'
 import { resolvePartialMintPermissionAuthority } from '../daemon/partial-mint-permission-authority.mjs'
@@ -156,7 +156,35 @@ import {
   projectWorldsPath,
   readProjectWorlds as readProjectSourceEnvironmentOwners,
 } from '../shared/project-worlds.mjs'
+import { NO_CAP, agentCapFromConfig, agentCapRefusal, countAwakeLocalAgents } from '../daemon/agent-cap.mjs'
 const log = createLogger('daemon')
+
+// Refuse a launch that would put this box over its awake-agent cap.
+//
+// Called where a process is actually about to start, not at the RPC door: a
+// wake for an agent whose process is already alive is a no-op, and a restart
+// frees its own slot before it takes one. Refusing either at the door would
+// break the common `no-channel` path, which is a live socket loss and not a
+// launch at all.
+async function requireLaunchSlot(operation) {
+  const cap = agentCapFromConfig(readDaemonConfig(DAEMON_CONFIG_FILE))
+  if (cap === NO_CAP) return
+  // Running sessions, not existing ones: a dead pane holds its session name and
+  // carries no process, so counting names would spend cap slots on nothing.
+  const probe = await listRunningSessionNames({ tmuxSocket: TMUX_SOCKET })
+  const daemonKey = `${MACHINE_ID}:${ACTIVE_ENV}`
+  const awake = countAwakeLocalAgents({
+    processBindings: permissionLedger.listProcessBindings(),
+    sessionNames: probe.names,
+    probed: probe.probed,
+    daemonKey,
+  })
+  const refusal = agentCapRefusal(operation, { cap, awake, daemonKey, probeError: probe.error || null })
+  if (refusal) {
+    log.warn(`[agent-cap] ${refusal}`)
+    throw new Error(refusal)
+  }
+}
 // CONFIG_DIR holds daemon configuration, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR lets tests/dev rigs
 // start a second daemon without clobbering the live daemon's PID file or JSONL
@@ -1137,6 +1165,7 @@ agySupervisor = createAgySupervisor({
 })
 
 const agentLauncher = createAgentLauncher({
+  onBeforeLaunch: () => requireLaunchSlot('spawn'),
   activeEnvName: ACTIVE_ENV,
   configDir: CONFIG_DIR,
   loadDaemonLaunchConfig,
@@ -1537,6 +1566,7 @@ const wakeMint = createDaemonWakeCore({
     return terminateTmuxSession(tmuxSession, { tmuxSocket: TMUX_SOCKET })
   },
   resumeSession: async (facts, wakeParams = {}) => {
+    await requireLaunchSlot('wake')
     const wakePermission = compileWakePermissionProfile({
       facts,
       wakeParams,
@@ -1567,6 +1597,7 @@ const wakeMint = createDaemonWakeCore({
 })
 
 async function rpcMint(params = {}) {
+  await requireLaunchSlot('mint')
   const cwd = resolveMintCwd({
     cwd: params.cwd,
     project: params.project,

@@ -21,6 +21,7 @@ import { copyClassroomFiles, copyRenderedVariantProject, renderHomeworkVariants 
 import {
   loadCliConfig, saveCliConfig, loadServerConfig, initConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
+  readAgentCap, saveAgentCap,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
@@ -73,6 +74,7 @@ import {
 import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { NO_CAP, agentCapCommandPlan, awakeLocalAgentBindings } from '../daemon/agent-cap.mjs'
 import { wsReserveShell } from '../agent-launch/register.mjs'
 import { resolveRuntimeRootForEnv } from '../shared/runtime-root.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
@@ -5276,16 +5278,22 @@ async function listFleetAgents() {
 
   const { spawnSync } = await import('child_process')
   const tmuxSessions = new Map()
-  const tmuxResult = spawnSync('tmux', [...tmuxBase(), 'list-sessions', '-F', '#{session_name}\t#{session_attached}'], { encoding: 'utf8' })
+  // Per pane, not per session: under `remain-on-exit` a session outlives the
+  // process it was started for, so a session name on its own does not mean
+  // anything is running. A session counts as running if any of its panes is.
+  const tmuxResult = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-a', '-F', '#{session_name}\t#{session_attached}\t#{pane_dead}'], { encoding: 'utf8' })
   if (tmuxResult.status === 0) {
     for (const line of tmuxResult.stdout.split('\n')) {
       if (!line.trim()) continue
-      const [name, attachedRaw] = line.split('\t')
+      const [name, attachedRaw, deadRaw] = line.split('\t')
       if (!name) continue
-      tmuxSessions.set(name, {
-        name,
-        attached: attachedRaw !== '0',
-      })
+      const existing = tmuxSessions.get(name)
+      const running = deadRaw?.trim() !== '1'
+      if (existing) {
+        existing.running = existing.running || running
+        continue
+      }
+      tmuxSessions.set(name, { name, attached: attachedRaw !== '0', running })
     }
   }
 
@@ -5309,14 +5317,31 @@ async function listFleetAgents() {
     upsertRow(row.id, { process: row, local })
   }
 
-  const rows = [...rowsByKey.values()].map(({ process, local }) => {
-    const tmuxName = process?.tmuxSession || local?.process?.tmuxName || null
-    const tmux = tmuxName ? tmuxSessions.get(tmuxName) || null : null
+  const assembled = [...rowsByKey.values()].map(({ process, local }) => ({
+    process,
+    local,
+    id: process?.id || local?.serverAgentId || local?.localAgentId || 'unknown',
+    tmuxSession: process?.tmuxSession || local?.process?.tmuxName || null,
+    lastSeen: process?.lastSeen || process?.updatedAt || null,
+  }))
+
+  // A binding records its tmux session by name, and seat names are reused, so
+  // "this name is live" is true of every binding that ever held it. Only the
+  // session's current occupant is running; the rest are hibernating agents that
+  // happen to share a name with one that isn't.
+  const runningSessionNames = [...tmuxSessions.values()].filter(s => s.running).map(s => s.name)
+  const occupantIds = new Set(awakeLocalAgentBindings({
+    processBindings: assembled,
+    sessionNames: runningSessionNames,
+  }).map(row => row.id))
+
+  const rows = assembled.map(({ process, local, id, tmuxSession: tmuxName }) => {
+    const tmux = tmuxName && occupantIds.has(id) ? tmuxSessions.get(tmuxName) || null : null
     const friendly = [process?.friendlyName, local?.friendlyName]
       .find(name => name && !isRawFleetId(name))
     const tmuxDisplayName = displayNameFromTmux(tmuxName)
     return {
-      id: process?.id || local?.serverAgentId || local?.localAgentId || 'unknown',
+      id,
       name: friendly || tmuxDisplayName || 'unnamed local agent',
       state: tmux ? (tmux.attached ? 'attached' : 'awake') : 'hibernating',
       tmuxName,
@@ -5469,11 +5494,79 @@ Default behavior:
   else console.error(out)
 }
 
+// Awake agents on this box, by the same rule `tlda agent list` prints and the
+// daemon's cap enforces. Returns null when tmux could not be asked.
+function countAwakeAgentsHere() {
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+  const processLedger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+  let processRows
+  try {
+    processRows = processLedger.listProcessBindings()
+  } finally {
+    processLedger.close()
+  }
+  // A dead pane keeps its session name, so sessions are counted by whether any
+  // pane in them is still running.
+  const probe = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-a', '-F', '#{session_name}\t#{pane_dead}'], { encoding: 'utf8' })
+  const failed = probe.status !== 0 && !/no server running|no sessions/i.test(`${probe.stderr || ''}`)
+  if (failed) return { awake: null, probeError: `${probe.stderr || probe.error?.message || 'tmux exited non-zero'}`.trim() }
+  const running = new Set()
+  for (const line of (probe.stdout || '').split('\n')) {
+    const [name, deadRaw] = line.split('\t')
+    const session = (name || '').trim()
+    if (session && deadRaw?.trim() !== '1') running.add(session)
+  }
+  const sessionNames = [...running]
+  return {
+    awake: awakeLocalAgentBindings({
+      processBindings: processRows,
+      sessionNames,
+      daemonKey: `${localMachineId()}:${localDaemonEnvName()}`,
+    }).length,
+    probeError: null,
+  }
+}
+
+async function cmdAgentCap() {
+  const plan = agentCapCommandPlan(getPositional(1))
+  const where = `${localMachineId()}:${localDaemonEnvName()}`
+
+  if (plan.action === 'read') {
+    const cap = readAgentCap()
+    const { awake, probeError } = countAwakeAgentsHere()
+    const count = awake === null ? `unknown (tmux: ${probeError})` : String(awake)
+    console.log(cap === NO_CAP
+      ? `No agent cap on ${where}. ${count} awake now; launches are not limited.`
+      : `Agent cap on ${where}: ${cap}. ${count} awake now.`)
+    if (cap !== NO_CAP && awake !== null && awake >= cap) {
+      console.log('At or over the cap — the daemon is refusing new launches until something hibernates.')
+    }
+    return
+  }
+
+  if (plan.action === 'clear') {
+    saveAgentCap(null)
+    console.log(`Agent cap removed on ${where}. Launches are no longer limited by a ceiling.`)
+    return
+  }
+
+  const { awake } = countAwakeAgentsHere()
+  saveAgentCap(plan.cap)
+  console.log(`Agent cap on ${where}: ${plan.cap}.`)
+  if (awake !== null && awake > plan.cap) {
+    console.log(`${awake} agents are awake, which is over the new cap. Nothing was killed — `
+      + 'the cap refuses launches, it does not hibernate anything. New launches are refused until '
+      + `${awake - plan.cap + 1} of them hibernate.`)
+  }
+  console.log('The running daemon reads this on each launch; no restart is needed.')
+}
+
 function usageAgent() {
   console.log(`tlda agent — manage fleet agents
 
 Usage:
   tlda agent list [--limit N]
+  tlda agent cap [N|none]              ceiling on agents awake on this box; no argument reads it
   tlda agent mint <name> [--model model] [--cwd path] [--permissions <profile>]
   tlda agent enlist --kind <codex|claude> <session-id> [name] [--permissions <profile>]
   tlda agent message <agent> <text>    break-glass; this machine only, see below
@@ -6064,8 +6157,9 @@ async function cmdAgent() {
     case 'dismiss':   await finishCliOperation('agent dismiss', () => dismissAgent(getPositional(1))); break
     case 'permissions': await finishCliOperation('agent permissions', cmdAgentPermissions); break
     case 'models': await cmdAgentModels(); break
+    case 'cap':       await finishCliOperation('agent cap', cmdAgentCap); break
     default:
-      console.error('Usage: tlda agent <list|mint|enlist|wake|reanimate|move|set-mint-machine|attach|hibernate|dismiss|permissions|models> [name]')
+      console.error('Usage: tlda agent <list|cap|mint|enlist|wake|reanimate|move|set-mint-machine|attach|hibernate|dismiss|permissions|models> [name]')
       process.exit(1)
   }
 }

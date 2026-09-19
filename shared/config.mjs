@@ -726,6 +726,29 @@ export function getNotificationWakeMaxAgeMs() {
   return ms
 }
 
+export function readAgentCap() {
+  const cap = loadDaemonYaml().agentCap
+  if (cap === undefined || cap === null) return null
+  if (!Number.isInteger(cap) || cap < 0) {
+    throw new Error(`daemon.yaml: agentCap must be a non-negative integer or absent (got ${JSON.stringify(cap)})`)
+  }
+  return cap
+}
+
+/** Set the awake-agent ceiling for this box. `null` removes it. */
+export function saveAgentCap(cap) {
+  if (cap !== null && (!Number.isInteger(cap) || cap < 0)) {
+    throw new Error(`agent cap must be a non-negative integer or null (got ${JSON.stringify(cap)})`)
+  }
+  const doc = existsSync(DAEMON_FILE)
+    ? parseDocument(readFileSync(DAEMON_FILE, 'utf8'))
+    : parseDocument('')
+  if (cap === null) doc.delete('agentCap')
+  else doc.set('agentCap', cap)
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
+  writeFileSync(DAEMON_FILE, String(doc))
+}
+
 const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
 
 /**

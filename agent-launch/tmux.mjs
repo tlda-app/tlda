@@ -127,7 +127,46 @@ export async function listSessionNames({ tmuxSocket = process.env.TMUX_SOCKET ||
   } catch (error) {
     const text = `${error?.stderr || ''} ${error?.message || ''}`
     if (/no server running|no sessions/i.test(text)) return { probed: true, names: [] }
-    return { probed: false, names: [] }
+    // A caller that has to refuse because the count is unknown should be able to
+    // say what tmux actually reported, rather than sending the reader to a log.
+    return { probed: false, names: [], error: text.trim() || 'tmux list-sessions failed' }
+  }
+}
+
+// Which tmux sessions still have something running in them.
+//
+// Under `remain-on-exit` a session outlives the process it was started for: the
+// pane goes `dead` and the session name stays. So a name in `listSessionNames`
+// answers "does this session exist", which is the right question when deciding
+// whether a seat can be reclaimed, and the wrong one when asking what the box is
+// carrying -- an exited pane holds a name and no process.
+//
+// Same probe contract as `listSessionNames`: `probed: false` is a failure to
+// look, not an observation of an idle box.
+// Splits `#{session_name}\t#{pane_dead}` pane rows into the sessions that still
+// have a running pane and the sessions that exist at all. A session is running
+// if any one of its panes is.
+export function splitRunningSessions(stdout) {
+  const running = new Set()
+  const seen = new Set()
+  for (const line of String(stdout || '').split('\n')) {
+    const [name, deadFlag] = line.split('\t')
+    const session = (name || '').trim()
+    if (!session) continue
+    seen.add(session)
+    if (deadFlag?.trim() !== '1') running.add(session)
+  }
+  return { names: [...running], sessions: [...seen] }
+}
+
+export async function listRunningSessionNames({ tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+  try {
+    const { stdout } = await tmux(tmuxSocket, 'list-panes', '-a', '-F', '#{session_name}\t#{pane_dead}')
+    return { probed: true, ...splitRunningSessions(stdout) }
+  } catch (error) {
+    const text = `${error?.stderr || ''} ${error?.message || ''}`
+    if (/no server running|no sessions/i.test(text)) return { probed: true, names: [], sessions: [] }
+    return { probed: false, names: [], sessions: [], error: text.trim() || 'tmux list-panes failed' }
   }
 }
 

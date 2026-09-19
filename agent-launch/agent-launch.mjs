@@ -24,6 +24,9 @@ function readFileTail(file, max = 6000) {
 export function createAgentLauncher({
   activeEnvName,
   configDir,
+  // Throws to refuse the launch. The daemon uses it for the awake-agent cap;
+  // absent, every launch proceeds as before.
+  onBeforeLaunch = null,
   loadDaemonLaunchConfig,
   loadDaemonConfigForCwd = readDaemonConfigForCwd,
   log,
@@ -235,6 +238,7 @@ export function createAgentLauncher({
     requester,
     onLifecycleEvent,
   }) {
+    if (onBeforeLaunch) await onBeforeLaunch()
     const projects = getProjects()
     const sessionId = session || session_id
     const requestedAgentId = agent_id || agentId || null

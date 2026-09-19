@@ -38,6 +38,7 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // file (see config/environment-variables.md §2: secrets stay env vars).
   'launchdEnv',
   'notificationWakeMaxAge',
+  'agentCap',
   'terminalInputAllowed',
   // Named subscription sets, in the `{ default, values }` form `models:` and
   // `environments:` use. Additive only — an agent's reachability comes from the
