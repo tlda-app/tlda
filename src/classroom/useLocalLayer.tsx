@@ -10,8 +10,8 @@ import {
   assignmentForSolutionsDoc,
   installAcrossPages,
   pairStudentAnswer,
-  readyPageDocuments,
   removeLocalLayerControls,
+  resolveExercisePages,
   stepPosition,
 } from './localLayer'
 
@@ -128,33 +128,14 @@ export function useLocalLayer({
     return () => { cancelled = true }
   }, [assignmentId])
 
-  /**
-   * Every page document of this chapter that is mounted and ready.
-   *
-   * Aggregated from the DOM, with the registry as a supplement: one shape can
-   * mount more than once — main canvas plus a HUD or pane — and
-   * `htmlIframeElements` holds only the last writer, so trusting it alone puts
-   * the controls in an arbitrary copy. That is not hypothetical; a feedback
-   * badge once rendered into the editor's mount and was absent from the pane the
-   * instructor was looking at, and every DOM count said PASS because a count
-   * cannot see "in the wrong document".
-   *
-   * A frame that is still loading has a `documentElement` and a null `body`, and
-   * handing that to the installer throws into the error boundary — hence the
-   * `body` test rather than a `contentDocument` test. Frames that become ready
-   * later are picked up by the caller's own interval, which re-runs this.
-   */
   // Keyed on the joined ids rather than the array, so a caller that rebuilds
   // the list each render does not reinstall the controls on every render.
+  //
+  // Finding the pages is `readyPageDocuments`' job and it is called from inside
+  // `installAcrossPages` and `resolveExercisePages`, never from here: a
+  // traversal at this call site is a traversal no test can reach, which is how
+  // the page-0 binding survived its own guard.
   const pageShapeKey = pageShapeIds.join(' ')
-  const chapterDocuments = useCallback(
-    (): Document[] => readyPageDocuments(
-      pageShapeKey ? pageShapeKey.split(' ') : [],
-      window.document,
-      htmlIframeElements,
-    ),
-    [pageShapeKey],
-  )
 
   const step = useCallback((exerciseId: string, next: number) => {
     const forExercise = answers.get(exerciseId) ?? []
@@ -211,7 +192,7 @@ export function useLocalLayer({
         if (chapter.body) removeLocalLayerControls(chapter)
       }
     }
-  }, [assignmentId, answers, positions, editorMounted, chapterDocuments])
+  }, [assignmentId, answers, positions, editorMounted, pageShapeKey])
 
   // Put each chosen answer beside its solution, and say which pairs are open.
   //
@@ -221,17 +202,20 @@ export function useLocalLayer({
   useEffect(() => {
     let cancelled = false
     const apply = async () => {
-      const documents = chapterDocuments()
-      if (documents.length === 0) return
-      // The page holding THIS exercise's solution, not "the page". Pairing
-      // across every document would make each page that simply does not contain
-      // the exercise report that the student did not answer it — a false claim
+      // The page holding EACH exercise's solution, resolved in one tested call
+      // so there is no lookup loop here to narrow later. Pairing against the
+      // wrong page reports that the student did not answer — a false claim
       // about their work, produced by the layer's own scope.
-      const documentFor = (exerciseId: string) =>
-        documents.find(candidate => candidate.querySelector(`[data-tlda-solution-for="${exerciseId}"]`)) ?? null
+      const pagesByExercise = resolveExercisePages(
+        pageShapeKey ? pageShapeKey.split(' ') : [],
+        window.document,
+        htmlIframeElements,
+        positions.keys(),
+      )
+      if (pagesByExercise.size === 0) return
       const next: OpenPair[] = []
       for (const [exerciseId, position] of positions) {
-        const chapter = documentFor(exerciseId)
+        const chapter = pagesByExercise.get(exerciseId)
         if (!chapter) continue
         const forExercise = answers.get(exerciseId) ?? []
         const answer = position === NO_ANSWER ? null : forExercise[position]
@@ -269,7 +253,7 @@ export function useLocalLayer({
     }
     void apply()
     return () => { cancelled = true }
-  }, [positions, answers, chapterDocuments])
+  }, [positions, answers, pageShapeKey])
 
   // One layer per open pair: on-demand, keyed on the room, so stepping to the
   // next student swaps the store by replacing the canvas rather than by

@@ -410,3 +410,33 @@ export function installAcrossPages(
   }
   return installed
 }
+
+/**
+ * Which page each exercise's solution callout lives on.
+ *
+ * The pairing counterpart of `installAcrossPages`, and it exists for the same
+ * reason: the lookup used to be a loop in the hook, where no test could reach
+ * it. Restricting THAT loop to one document left the suite green while pairing
+ * regressed to page 0 — and its symptom is worse than a missing control. An
+ * exercise whose solution sits on another page would report that the student
+ * did not answer it: a false claim about their work, produced by the layer's
+ * own scope rather than by anything they did.
+ *
+ * Collection happens once here rather than per exercise, and the callout must
+ * already carry `data-tlda-solution-for` — which `installLocalLayerControls`
+ * stamps — so an exercise appears only once its page has been installed into.
+ */
+export function resolveExercisePages(
+  shapeIds: readonly string[],
+  root: Document,
+  registry: Map<string, HTMLIFrameElement>,
+  exerciseIds: Iterable<string>,
+): Map<string, Document> {
+  const pages = readyPageDocuments(shapeIds, root, registry)
+  const found = new Map<string, Document>()
+  for (const exerciseId of exerciseIds) {
+    const page = pages.find(candidate => candidate.querySelector(`[data-tlda-solution-for="${exerciseId}"]`))
+    if (page) found.set(exerciseId, page)
+  }
+  return found
+}

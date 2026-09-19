@@ -178,3 +178,44 @@ test('a solution callout on the SECOND page still gets its control', async () =>
   const index = installed.find(d => d !== solutions)!
   assert.equal(index.querySelector('.tlda-local-layer-control'), null)
 })
+
+// The pairing half of the same defect, and its symptom is worse than a missing
+// control: pairing against the wrong page makes the layer report that the
+// student did not answer — a false claim about their work, produced by the
+// layer's own scope. Restricting the pairing lookup to the first document used
+// to pass this file 6/6, because the lookup lived in the hook where no test
+// reached it.
+test('an exercise whose solution is on a later page resolves to that page', async () => {
+  const { installAcrossPages, resolveExercisePages } = await import('../src/classroom/localLayer')
+  const dom = new JSDOM('<!doctype html><html><body></body></html>')
+  mount(dom, 'shape:course-page-0', '<h1>Index</h1>')
+  mount(dom, 'shape:course-page-9', `
+    <h2 id="exr-count-n2">Problem</h2>
+    <div class="callout callout-solution"><div class="callout-header"></div>
+      <div class="callout-body">worked solution</div>
+    </div>`)
+
+  const shapeIds = ['shape:course-page-0', 'shape:course-page-9']
+  const answers = new Map([['exr-count-n2', [
+    { studentId: 'qtm285:skipper', displayName: 'Skipper', contentRef: 'submission-x', gradingStatus: 'ungraded' },
+  ]]])
+  // `data-tlda-solution-for` is stamped by the installer, so pairing can only
+  // resolve a page that has been installed into — the real order of events.
+  installAcrossPages(shapeIds, dom.window.document, new Map(), answers as never, new Map(), () => {})
+
+  const pages = resolveExercisePages(shapeIds, dom.window.document, new Map(), ['exr-count-n2'])
+  const page = pages.get('exr-count-n2')
+  assert.ok(page, 'the exercise resolved to no page — pairing would report the student did not answer')
+  assert.ok(page!.querySelector('[data-tlda-solution-for="exr-count-n2"]'))
+  // It is the second page, not the index.
+  assert.equal(page!.querySelector('h1')?.textContent ?? null, null)
+})
+
+test('an exercise on no mounted page resolves to nothing rather than to the wrong one', async () => {
+  const { resolveExercisePages } = await import('../src/classroom/localLayer')
+  const dom = new JSDOM('<!doctype html><html><body></body></html>')
+  mount(dom, 'shape:course-page-0', '<h1>Index</h1>')
+
+  const pages = resolveExercisePages(['shape:course-page-0'], dom.window.document, new Map(), ['exr-absent'])
+  assert.equal(pages.size, 0, 'a missing exercise must not fall back to some other page')
+})
