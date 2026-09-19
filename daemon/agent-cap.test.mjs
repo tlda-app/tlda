@@ -162,3 +162,51 @@ test('a dead-pane session does not consume a cap slot', () => {
     daemonKey: 'mini:testing',
   }), 1)
 })
+
+// The cap is only real if it sits on the path a process actually starts on.
+test('the launch gate refuses a spawn before it does any launch work', async () => {
+  const { createAgentLauncher } = await import('../agent-launch/agent-launch.mjs')
+  const calls = []
+  const launcher = createAgentLauncher({
+    activeEnvName: 'testing',
+    configDir: '/tmp/tlda-agent-cap-gate-test',
+    onBeforeLaunch: () => {
+      calls.push('gate')
+      throw new Error('mint refused: 13 agents awake on mini:testing, cap is 13.')
+    },
+    loadDaemonLaunchConfig: () => ({}),
+    log: { info() {}, warn() {} },
+    machineId: 'test-machine',
+    permissionLedger: {},
+    sendMsg() {},
+    getProjects: () => { calls.push('getProjects'); return [] },
+    tmux() { calls.push('tmux') },
+  })
+
+  await assert.rejects(
+    () => launcher.handlers.spawn({ name: 'over-the-cap', cwd: '/tmp' }),
+    /cap is 13/,
+  )
+  assert.deepEqual(calls, ['gate'], 'nothing past the gate runs when the launch is refused')
+})
+
+test('without a gate, and with a gate that admits, the launch proceeds as before', async () => {
+  const { createAgentLauncher } = await import('../agent-launch/agent-launch.mjs')
+  const build = onBeforeLaunch => createAgentLauncher({
+    activeEnvName: 'testing',
+    configDir: '/tmp/tlda-agent-cap-gate-test',
+    onBeforeLaunch,
+    loadDaemonLaunchConfig: () => ({}),
+    log: { info() {}, warn() {} },
+    machineId: 'test-machine',
+    permissionLedger: {},
+    sendMsg() {},
+    getProjects: () => [{ name: 'proj', sourceDir: null }],
+    tmux() {},
+  })
+
+  const uncapped = await build(null).handlers.spawn({ name: 'a', project: 'proj' })
+  const admitted = await build(async () => {}).handlers.spawn({ name: 'a', project: 'proj' })
+  assert.deepEqual(admitted, uncapped, 'an admitting gate changes nothing about the launch')
+  assert.equal(admitted.ok, false, 'and the launch still reaches its own error, not the gate’s')
+})
