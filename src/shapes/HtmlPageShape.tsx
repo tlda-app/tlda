@@ -71,6 +71,24 @@ export interface ScrollyRegion {
 
 export const htmlScrollyRegions = new Map<string, ScrollyRegion[]>()
 
+// What the served page said about its own health, keyed by shape. Reported even
+// when healthy, so "checked and fine" is distinguishable from "never checked".
+export type DocHealthProbe = {
+  state: 'ok' | 'broken' | 'absent'
+  why?: string
+  [key: string]: unknown
+}
+export type DocHealthReport = {
+  math: DocHealthProbe
+  webr: DocHealthProbe
+  reveal: DocHealthProbe
+  broken: string[]
+  // A probe that threw. Kept apart from `broken`: "it is wrong" and "I could
+  // not tell" are different answers, and neither one is healthy.
+  unknown?: string[]
+}
+export const htmlDocHealth = new Map<string, DocHealthReport>()
+
 type HtmlPageShapeRecord = {
   id: TLShapeId
   x: number
@@ -485,6 +503,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const lastOriginRef = useRef({ x: 0, y: 0 })
 
   const [isPageInert, setIsPageInert] = useState(false)
+  const [docHealth, setDocHealth] = useState<DocHealthReport | null>(null)
   const readPageInert = useCallback((iframe: HTMLIFrameElement | null) => {
     try {
       const doc = iframe?.contentDocument
@@ -1049,6 +1068,12 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         }
         return
       }
+      if (e.data?.type === 'tlda-doc-health' && e.data.shapeId === shape.id) {
+        const report = e.data.report as DocHealthReport
+        htmlDocHealth.set(shape.id, report)
+        setDocHealth(report)
+        return
+      }
       if (e.data?.type === 'tlda-headings' && e.data.shapeId === shape.id) {
         htmlHeadingPositions.set(shape.id, e.data.positions)
         return
@@ -1359,6 +1384,40 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             </div>
           )}
         </div>
+        {/* Shown only when something is broken or unmeasurable — a badge on every
+            healthy chapter is a badge nobody reads. The title carries the
+            renderer's own message, which names the macro at fault. */}
+        {docHealth && (docHealth.broken?.length > 0 || (docHealth.unknown?.length ?? 0) > 0) && (
+          <div
+            title={[...(docHealth.broken ?? []), ...(docHealth.unknown ?? [])]
+              .map((k) => {
+                const probe = docHealth[k as 'math' | 'webr' | 'reveal']
+                return `${k}: ${probe?.why || 'broken'}${probe?.detail ? ` — ${probe.detail}` : ''}${probe?.error ? ` — ${probe.error}` : ''}`
+              })
+              .join('\n')}
+            style={{
+              position: 'absolute',
+              top: 8,
+              right: 8,
+              zIndex: 3,
+              pointerEvents: 'auto',
+              padding: '3px 8px',
+              borderRadius: 4,
+              background: isDark ? 'rgba(120,20,20,0.85)' : 'rgba(204,0,0,0.9)',
+              color: '#fff',
+              fontFamily: '-apple-system, sans-serif',
+              fontSize: 11,
+              fontWeight: 500,
+              letterSpacing: '0.01em',
+              cursor: 'default',
+            }}
+            onPointerDown={stopEventPropagation}
+          >
+            {docHealth.broken?.length
+              ? `${docHealth.broken.join(', ')} did not render`
+              : `could not check ${(docHealth.unknown ?? []).join(', ')}`}
+          </div>
+        )}
         {/* Slides: full-size overlay captures wheel events in parent context,
             avoiding the Safari postMessage round-trip for scroll gestures */}
         {isSlide && !iframeActive && (

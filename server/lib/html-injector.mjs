@@ -45,6 +45,220 @@ const MATHJAX_CONFIG = `
 </script>
 `
 
+// Document health, reported to /api/log and to the parent as `tlda-doc-health`.
+// Catches a throw, and the silent non-render an error handler cannot see: an
+// undefined macro is literal text with a clean console, but KaTeX leaves
+// `.katex-error` and MathJax `mjx-merror` in the DOM.
+//
+// Probes are three-valued. `absent` must never collapse into `ok`, or a page
+// with no maths reads as a page whose maths works.
+// Transport and envelope copy src/crashBeacon.ts; keep them in step.
+const FAULT_BEACON_SCRIPT = `
+<script>
+(function () {
+  var MAX_FIELD = 2000;
+  var params = new URLSearchParams(window.location.search);
+  var shapeId = params.get('_tldaShape') || '';
+
+  function clip(value) {
+    if (value === undefined || value === null) return undefined;
+    var s = typeof value === 'string' ? value : String(value);
+    if (!s) return undefined;
+    return s.length > MAX_FIELD ? s.slice(0, MAX_FIELD) + '…[+' + (s.length - MAX_FIELD) + ']' : s;
+  }
+
+  // sendBeacon survives a dying page; keepalive fetch is the fallback.
+  function send(ns, msg, data) {
+    var payload = {
+      ts: new Date().toISOString(),
+      level: 'error',
+      ns: ns,
+      msg: msg,
+      data: Object.assign({ url: location.href, shapeId: shapeId }, data),
+    };
+    try {
+      var body = JSON.stringify(payload);
+      if (navigator.sendBeacon &&
+          navigator.sendBeacon('/api/log', new Blob([body], { type: 'application/json' }))) return;
+      fetch('/api/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: body,
+        keepalive: true,
+      }).catch(function () {
+        // Nowhere left to report a failed report, and rethrowing would be
+        // caught by the rejection handler below and posted, which loops.
+      });
+    } catch (e) {
+      // Circular payload, or no Blob. Called FROM the error handlers, so a
+      // throw here re-enters them and buries the original fault.
+    }
+  }
+
+  function tell(report) {
+    try {
+      window.parent.postMessage({ type: 'tlda-doc-health', shapeId: shapeId, report: report }, '*');
+    } catch (e) {
+      // Served standalone, so no parent is listening. Supported, not a fault:
+      // the report has already gone to /api/log.
+    }
+  }
+
+  window.addEventListener('error', function (event) {
+    try {
+      // 'error' also fires for failed subresources, where target is the element
+      // rather than window. Unlike crashBeacon.ts these are kept — a macros.js
+      // that 404s is the fault we are looking for — but under their own kind.
+      var target = event.target;
+      if (target && target !== window) {
+        var src = target.src || target.href;
+        if (!src) return;
+        send('doc-fault', 'subresource failed to load', {
+          kind: 'subresource',
+          source: clip(src),
+          tag: target.tagName,
+        });
+        return;
+      }
+      send('doc-fault', event.message || 'error', {
+        kind: 'error',
+        message: clip(event.message),
+        stack: clip(event.error && event.error.stack),
+        source: clip(event.filename),
+        line: event.lineno,
+        column: event.colno,
+      });
+    } catch (e) {
+      // This IS the error handler: a throw here fires 'error' again and
+      // recurses. Reading event.target cross-origin can throw.
+    }
+  }, true);
+
+  window.addEventListener('unhandledrejection', function (event) {
+    try {
+      var reason = event.reason;
+      send('doc-fault', 'unhandled rejection', {
+        kind: 'unhandledrejection',
+        message: clip((reason && reason.message) || reason),
+        stack: clip(reason && reason.stack),
+      });
+    } catch (e) {
+      // A rejection can carry a getter that throws when read, and throwing
+      // here rejects again and re-enters this handler.
+    }
+  });
+
+  function probeMath() {
+    var rendered = document.querySelectorAll('.katex, mjx-container').length;
+    var errored = document.querySelectorAll('.katex-error, mjx-merror').length;
+    // Source delimiters still in the text mean the renderer never ran over
+    // them. The backslash is a charcode, not an escape: this script rides
+    // inside a template literal, so every backslash here is read twice and a
+    // written escape ships wrong while looking right.
+    var BS = String.fromCharCode(92);
+    var body = document.body ? (document.body.innerText || '') : '';
+    var residue = (body.split(BS + '(').length - 1) + (body.split(BS + '[').length - 1);
+
+    if (errored > 0) {
+      var sample = document.querySelector('.katex-error, mjx-merror');
+      return {
+        state: 'broken',
+        why: 'math rendered with errors',
+        errored: errored,
+        rendered: rendered,
+        // KaTeX's title names the undefined control sequence; the count alone
+        // does not tell a reader what to fix.
+        detail: clip(sample && (sample.getAttribute('title') || sample.textContent)),
+      };
+    }
+    if (rendered === 0 && residue > 0) {
+      return { state: 'broken', why: 'math present but nothing rendered it', residue: residue, rendered: 0 };
+    }
+    if (rendered === 0) return { state: 'absent', why: 'no math on this page' };
+    return {
+      state: 'ok',
+      rendered: rendered,
+      engine: window.katex ? 'katex' : (window.MathJax ? 'mathjax' : 'unknown'),
+      macros: window.__tldaKatexMacros ? Object.keys(window.__tldaKatexMacros).length : 0,
+    };
+  }
+
+  function probeWebR() {
+    // The markers are a div with id webr-N and class exercise-cell, beside a
+    // script of type webr-N-contents. Match those and nothing broader:
+    // .cell-code .sourceCode is every static code listing on every Quarto page.
+    //
+    // No backticks in this comment — it lives inside a template literal, and one
+    // backtick closes it and takes the module down.
+    var cells = document.querySelectorAll('div.exercise-cell[id^="webr-"]');
+    if (cells.length === 0) return { state: 'absent', why: 'no webR cells on this page' };
+    // The div ships EMPTY and the runtime mounts into it, so liveness is
+    // readable from the DOM alone: no children means a student cannot run it.
+    var live = 0;
+    for (var i = 0; i < cells.length; i++) if (cells[i].childElementCount > 0) live++;
+    if (live === 0) return { state: 'broken', why: 'webR never mounted any cell', cells: cells.length, live: 0 };
+    if (live < cells.length) {
+      return { state: 'broken', why: 'some webR cells never mounted', cells: cells.length, live: live };
+    }
+    return { state: 'ok', cells: cells.length, live: live };
+  }
+
+  function probeReveal() {
+    if (!document.querySelector('.reveal')) return { state: 'absent', why: 'not a deck' };
+    if (!window.Reveal || typeof window.Reveal.isReady !== 'function' || !window.Reveal.isReady()) {
+      return { state: 'broken', why: 'reveal never initialised' };
+    }
+    return { state: 'ok', slides: document.querySelectorAll('.reveal .slides section').length };
+  }
+
+  // Without this a throwing probe takes check() down: no report, no badge, and
+  // a page that reads as healthy. 'unknown' never folds into 'ok'.
+  function attempt(name, probe) {
+    try {
+      return probe();
+    } catch (e) {
+      return { state: 'unknown', why: 'the ' + name + ' check could not run', error: clip(e && e.message) };
+    }
+  }
+
+  function check() {
+    var report = {
+      math: attempt('math', probeMath),
+      webr: attempt('webR', probeWebR),
+      reveal: attempt('reveal', probeReveal),
+    };
+    var names = ['math', 'webr', 'reveal'];
+    var broken = names.filter(function (k) { return report[k].state === 'broken'; });
+    var unknown = names.filter(function (k) { return report[k].state === 'unknown'; });
+    report.broken = broken;
+    report.unknown = unknown;
+    // Reported either way: a check that only speaks when unhappy is
+    // indistinguishable from one that never ran.
+    tell(report);
+    if (broken.length || unknown.length) {
+      send('doc-capability',
+        'document capability check: ' +
+          (broken.length ? 'failed ' + broken.join(', ') : '') +
+          (broken.length && unknown.length ? '; ' : '') +
+          (unknown.length ? 'could not measure ' + unknown.join(', ') : ''),
+        report);
+    }
+    return report;
+  }
+
+  // After load plus a settle window: MathJax typesets asynchronously and webR
+  // mounts after its wasm load, so probing earlier reports every page broken.
+  function schedule() { setTimeout(check, 1500); }
+  if (document.readyState === 'complete') schedule();
+  else window.addEventListener('load', schedule);
+
+  // Reads the result out. Deliberately not a fault injector: a detector proved
+  // against a failure it staged for itself was measured on a fixture.
+  window.__tldaDocHealthCheck = check;
+})();
+</script>
+`
+
 const BRIDGE_SCRIPT = `
 <script>
 (function() {
@@ -1516,7 +1730,7 @@ export function injectSlidesBridge(html) {
   const headCloseMatch = /(<\/head>)(\s*<body\s)/i.exec(patched)
   if (headCloseMatch) {
     const headCloseIdx = headCloseMatch.index
-    patched = patched.slice(0, headCloseIdx) + SLIDES_HEAD_SCRIPT + patched.slice(headCloseIdx)
+    patched = patched.slice(0, headCloseIdx) + FAULT_BEACON_SCRIPT + SLIDES_HEAD_SCRIPT + patched.slice(headCloseIdx)
   }
   const bodyCloseIdx = patched.lastIndexOf('</body>')
   if (bodyCloseIdx !== -1) {
@@ -1737,6 +1951,16 @@ export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage
   let patched = basePath
     ? html.replace(/(?:\.\.\/)+figs\//g, basePath + 'figs/')
     : html
+
+  // Opening <head> is the earliest seam in a served document, and the handler
+  // has to precede anything that can throw or it reports nothing.
+  const headOpenIdx = patched.indexOf('<head')
+  if (headOpenIdx !== -1) {
+    const headOpenClose = patched.indexOf('>', headOpenIdx)
+    if (headOpenClose !== -1) {
+      patched = patched.slice(0, headOpenClose + 1) + FAULT_BEACON_SCRIPT + patched.slice(headOpenClose + 1)
+    }
+  }
 
   // Inject MathJax config before MathJax loads (must precede the <script src="...mathjax...">)
   const mathjaxScriptIdx = patched.indexOf('mathjax@3')
