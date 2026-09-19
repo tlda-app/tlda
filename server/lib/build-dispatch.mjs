@@ -25,6 +25,7 @@ import { ForkTransport, createRemoteTransport } from './build-transport.mjs'
 import { createBuildQueue } from './build-queue.mjs'
 import { BuildQueueStore } from './build-queue-store.mjs'
 import { listProposalRefs } from './git-proposals.mjs'
+import { projectRevisionStatus } from './source-lifecycle.mjs'
 import { reportBuildFailure } from './build-runner.mjs'
 
 async function patchShape(docName, shapeId, propsPatch) {
@@ -669,6 +670,47 @@ async function recordDisposition(job, state, result = null) {
 
 export async function admitProposal(submission, options = {}) {
   return dispatcher().admitBuild(submission.project, submission, options)
+}
+
+/**
+ * Run an already-accepted revision again, when its last build ended failed.
+ *
+ * NOT A REBUILD API. It re-admits one revision the queue already holds a
+ * terminal row for, which is the single transition `admitBuild` already
+ * implements under `retryTerminal` — the row is dropped and re-admitted as
+ * pending. Nothing here proposes a revision, writes source, or invents a
+ * daemon: the identifiers come from the row being retried, so a re-run lands on
+ * the same branch and kind the original did.
+ *
+ * WHY IT HAS TO EXIST. A build is keyed on the source revision, so once a
+ * revision's build has failed there is no way to run it again — re-submitting
+ * identical bytes produces an identical revision and the source transaction
+ * treats it as a no-op. Measured 2026-09-19 on the one real hand-in on the box:
+ * an instructor re-upload returned 200 with every answer id and enqueued
+ * nothing. A submission has no daemon binding either, so `rebuildLinkedProject`
+ * cannot reach it. That left stored student work permanently unrenderable after
+ * the render bug that broke it had been fixed, and the only workaround was
+ * editing the student's file.
+ *
+ * `complete` is deliberately not retried. A succeeded build is not what this is
+ * for, and re-running one would make this the general rebuild API it must not
+ * become.
+ */
+export async function rerunFailedRevision(project) {
+  const lifecycle = await sourceLifecycleStore(project)
+  const { sourceRevision } = projectRevisionStatus(lifecycle.listRevisionLifecycles(project))
+  if (!sourceRevision) return { ok: false, reason: 'no-accepted-revision' }
+
+  const queue = dispatcher()
+  const row = queue.store.get(project, sourceRevision)
+  if (!row) return { ok: false, reason: 'no-build-record', revision: sourceRevision }
+  if (!['failed', 'killed'].includes(row.state)) return { ok: false, reason: row.state, revision: sourceRevision }
+  const admitted = await queue.admitBuild(
+    project,
+    { revision: sourceRevision, daemonId: row.daemon_id, branch: row.branch, kind: row.kind },
+    { retryTerminal: true },
+  )
+  return { ok: true, state: admitted.state, previousState: row.state, revision: sourceRevision }
 }
 export const killBuild = name => dispatcher().killBuild(name)
 export const killAllDispatchedBuilds = () => dispatcher().killAllDispatchedBuilds()

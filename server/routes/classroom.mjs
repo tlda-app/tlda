@@ -6,6 +6,7 @@ import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
 import { createProject, readProject, replaceSourceFilesAsync, sourceDir, sourceLifecycleStore } from '../lib/project-store.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
+import { rerunFailedRevision } from '../lib/build-dispatch.mjs'
 import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
 import crypto from 'node:crypto'
@@ -276,7 +277,7 @@ async function submissionBuild(contentRef) {
   return { buildStatus: lifecycle.status, buildAt: project.lastBuildSuccess || project.lastBuild || null }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveLinkAccessToken = configuredReadToken, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null, copyRoomStore = null, resolveSubmissionBuild = submissionBuild } = {}) {
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveLinkAccessToken = configuredReadToken, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null, copyRoomStore = null, resolveSubmissionBuild = submissionBuild, rerunFailedBuild = rerunFailedRevision } = {}) {
   const router = Router()
   router.get('/courses/:courseId/manifest.webmanifest', (req, res) => {
     if (!resolveManifestAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
@@ -688,6 +689,45 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
 
   router.post('/assignments/:assignmentId/submissions/:studentId/upload', (req, res) => {
     return receiveSubmissionArchive(req, res, req.params.assignmentId, req.params.studentId)
+  })
+
+  /**
+   * Run a hand-in's build again, when the last one failed.
+   *
+   * The narrow answer to work that is accepted, stored, and unrenderable. A
+   * build is keyed on the source revision, so once a submission's build has
+   * failed nothing re-runs it: re-uploading the student's own bytes yields the
+   * same revision and the source transaction does nothing, and a submission has
+   * no daemon binding for `rebuildLinkedProject` to use. Before this, a hand-in
+   * broken by a server bug stayed broken after the bug was fixed, and the only
+   * way out was to edit the student's file.
+   *
+   * SCOPED TO A SUBMISSION ON PURPOSE. The project is read off the submission
+   * record rather than taken from the caller, so this cannot name an arbitrary
+   * project and cannot become a general rebuild API. It re-runs the revision
+   * that is already accepted — it never proposes a new one, and never touches
+   * stored source.
+   *
+   * A build that has not failed is refused rather than re-run, and the refusal
+   * says which state it is in: re-running a successful build is a different
+   * request and belongs to whoever wants to make it.
+   */
+  router.post('/assignments/:assignmentId/submissions/:studentId/rerender', instructor, async (req, res) => {
+    const { assignmentId, studentId } = req.params
+    const submission = store.getSubmission(assignmentId, studentId, { includeDrafts: true })
+    if (!submission) return res.status(404).json({ error: `${studentId} has not handed in ${assignmentId}, so there is no build to re-run.` })
+
+    const project = submission.contentRef
+    const result = await rerunFailedBuild(project)
+    if (!result.ok) {
+      const at = result.revision ? ` for revision ${result.revision.slice(0, 12)}` : ''
+      const detail = {
+        'no-accepted-revision': 'it has no accepted revision, so there is nothing to build',
+        'no-build-record': `the queue holds no record of a build${at}`,
+      }[result.reason] || `its build${at} is ${result.reason}, and only a failed build is re-run`
+      return res.status(409).json({ error: `${project} was not re-run: ${detail}.`, state: result.reason })
+    }
+    res.json({ project, revision: result.revision, state: result.state, previousState: result.previousState })
   })
 
   router.post('/assignments/:assignmentId/submissions/:studentId/feedback', instructor, (req, res) => {
