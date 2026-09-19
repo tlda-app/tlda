@@ -5037,6 +5037,35 @@ body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: ca
   color: var(--yellow, #dca03c);
   border: 1px solid rgba(220, 160, 60, 0.3);
 }
+/* Beside the lint badge, and the same shape, because it answers the same
+   question from the header: is there anything in here worth opening. */
+.fleet-chat-shape .build-result-warning-badge {
+  flex-shrink: 0;
+  font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
+  padding: 1px 5px;
+  border-radius: 9px;
+  background: rgba(220, 160, 60, 0.14);
+  color: var(--yellow, #dca03c);
+  border: 1px solid rgba(220, 160, 60, 0.24);
+}
+
+/* The body's three kinds of line. `build-result-error` was referenced by the
+   renderer and had no rule at all, so a failed build's reason drew as ordinary
+   body text with nothing marking it as the reason. */
+.fleet-chat-shape .build-result-error {
+  margin: 0 0 4px;
+  color: var(--red, #d9342b);
+}
+.fleet-chat-shape .build-result-warning {
+  margin: 0 0 4px;
+  color: var(--yellow, #dca03c);
+}
+.fleet-chat-shape .build-result-sources {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
+}
+
 .fleet-chat-shape .build-result-toggle {
   flex-shrink: 0;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);

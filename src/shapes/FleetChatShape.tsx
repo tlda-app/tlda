@@ -3530,17 +3530,38 @@ function FleetChatInner({ shape }: { shape: any }) {
       } else if (m.metadata?.type === 'build_result') {
         flushActivity()
         buildResultCount++
-        const { name: projectName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [] } = m.metadata
-        const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || errors.length > 0)
+        // `warnings` and `buildFiles` are on every card the server sends
+        // (`unified-server.mjs`, the `build-card` branch) and neither was read
+        // here, so a build that produced only warnings drew a header and
+        // nothing else — the card was present and said nothing, which is what
+        // Skip meant by "i can see build cards now but there's bvasically no
+        // info in them".
+        const { name: projectName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [], warnings = [], buildFiles } = m.metadata
+        const sourceFiles: string[] = Array.isArray(buildFiles) ? buildFiles : []
+        const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || errors.length > 0 || warnings.length > 0 || sourceFiles.length > 0)
         const lintCount = lintFindings.length
         const lintBadge = lintCount > 0
           ? `<span class="build-result-lint-badge">${lintCount} finding${lintCount !== 1 ? 's' : ''}</span>`
+          : ''
+        // On the HEADER, because the header is the whole card until somebody
+        // clicks it. A count that only appears once the body is open tells him
+        // nothing about whether to open it.
+        const warningBadge = warnings.length > 0
+          ? `<span class="build-result-warning-badge">${warnings.length} warning${warnings.length !== 1 ? 's' : ''}</span>`
           : ''
         const summaryHtml = summary ? renderCtx.renderMarkdown(esc(summary)) : ''
         const lintHtml = lintFindings.map((f: any) => renderCtx.renderMarkdown(esc(f.text))).join('')
         const failureText = buildFailed || mirrorFailed
         const failureHtml = failureText ? `<p class="build-result-error">${esc(failureText)}</p>` : ''
         const errorHtml = errors.map((e: any) => renderCtx.renderMarkdown(esc(e.message || String(e)))).join('')
+        const warningHtml = warnings.map((w: any) => `<p class="build-result-warning">${esc(w.message || String(w))}</p>`).join('')
+        // What the build read, which is the answer to "is this build of the
+        // thing I just changed". Absolute paths inside the project say nothing
+        // a reader wants, so they go as names.
+        const sourceHtml = sourceFiles.length > 0
+          ? `<p class="build-result-sources">From ${sourceFiles.length} source file${sourceFiles.length !== 1 ? 's' : ''}: ` +
+            `${esc(sourceFiles.map((f: string) => f.split('/').pop() || f).join(', '))}</p>`
+          : ''
         const toggle = hasDetails ? `<span class="build-result-toggle">▾</span>` : ''
         // Status color: red = mirror/build failed; green = the version you're
         // viewing is this build; gray = a newer build you haven't loaded (or a
@@ -3557,10 +3578,11 @@ function FleetChatInner({ shape }: { shape: any }) {
           `<span class="build-result-icon">🔨</span>` +
           `<span class="build-result-title">${title}</span>` +
           lintBadge +
+          warningBadge +
           toggle +
           `</div>` +
           (hasDetails
-            ? `<div class="build-result-body">${failureHtml}${errorHtml}${summaryHtml}${lintHtml}</div>`
+            ? `<div class="build-result-body">${failureHtml}${errorHtml}${warningHtml}${summaryHtml}${lintHtml}${sourceHtml}</div>`
             : '') +
           `</div>`
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:build`, html })
