@@ -405,6 +405,20 @@ export function createJsonlIngestor({
   const nativeSubagentDescriptors = new Map()
   const pendingNativeSubagentPaths = new Set()
 
+  // Cursor keys this daemon owns, mapped to their fleet id. The only reader is
+  // the native-subagent parent lookup, which suffix-matches a parent session id
+  // against every cursor key. The cursors map reaches thousands of entries, so
+  // rebuilding an entries array per lookup dominated the daemon: against a live
+  // 6509-entry map a lookup cost 34ms, of which Object.entries alone was 32ms.
+  // Ownership is decided in exactly three places, each of which re-indexes here.
+  const ownedFleetIdByCursorKey = new Map()
+  function indexCursorOwnership(sessionId, entry) {
+    const fleetId = jsonlOwnershipState(entry, daemonKey) === 'mine' ? entry?.owner?.fleet_id : null
+    if (fleetId) ownedFleetIdByCursorKey.set(sessionId, fleetId)
+    else ownedFleetIdByCursorKey.delete(sessionId)
+  }
+  for (const [sessionId, entry] of Object.entries(cursors)) indexCursorOwnership(sessionId, entry)
+
   // Throttle saveCursors — flush at most once per 2s.
   let _cursorSaveTimer = null
   function scheduleCursorSave() {
@@ -526,6 +540,7 @@ export function createJsonlIngestor({
       fleet_id: marker?.fleet_id || entry.owner?.fleet_id || null,
       decided_at: new Date().toISOString(),
     }
+    indexCursorOwnership(pw.sessionId, entry)
     pw.ownershipState = state
     if (state === 'mine' && marker) {
       if (marker.fleet_id) {
@@ -890,12 +905,13 @@ export function createJsonlIngestor({
     return paths
   }
 
+  // A Codex session is keyed both bare and as `rollout-<timestamp>-<uuid>`, so
+  // the parent session id is matched as a suffix rather than by equality.
   function parentAgentIdForNativeSubagent(descriptor) {
-    for (const [cursorSessionId, entry] of Object.entries(cursors)) {
-      if (cursorSessionId !== descriptor.parentSessionId
-          && !cursorSessionId.endsWith(descriptor.parentSessionId)) continue
-      if (jsonlOwnershipState(entry, daemonKey) !== 'mine') continue
-      if (entry.owner?.fleet_id) return entry.owner.fleet_id
+    const exact = ownedFleetIdByCursorKey.get(descriptor.parentSessionId)
+    if (exact) return exact
+    for (const [cursorSessionId, fleetId] of ownedFleetIdByCursorKey) {
+      if (cursorSessionId.endsWith(descriptor.parentSessionId)) return fleetId
     }
     return null
   }
@@ -957,6 +973,7 @@ export function createJsonlIngestor({
       fleet_id: child.id,
       decided_at: new Date().toISOString(),
     }
+    indexCursorOwnership(sessionId, entry)
     scheduleCursorSave()
     return { ...descriptor, agentId: child.id, parentAgentId }
   }
@@ -1120,6 +1137,7 @@ export function createJsonlIngestor({
           fleet_id: agent.id,
           decided_at: new Date().toISOString(),
         }
+        indexCursorOwnership(sessionId, entry)
         scheduleCursorSave()
       }
       if (agent && jsonlOwnershipState(cursors[sessionId], daemonKey) === 'mine') {
