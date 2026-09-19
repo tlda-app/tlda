@@ -6941,7 +6941,65 @@ export class FleetStore {
   // It arrives as data, not as a compiled predicate or a callback, because this
   // method runs on the store's worker thread and everything reaching it crosses
   // `postMessage` — a function would not survive the trip.
-  searchAll(query, { limit = 50, agent, agentSpans = null, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly, between = null, messageFilterAst = null } = {}) {
+  // A very common term costs what it MATCHES, not what it returns.
+  //
+  // Ranking has to score every match before it can pick the best ones, so
+  // `the` — 480,286 matches on the live store — scores all of them to hand back
+  // a page. Measured through the real search surface: 9,919ms, where a rare
+  // term is under a second. Nothing about the page size changes that.
+  //
+  // The cure already existed and nobody reached it: a `since` bound becomes a
+  // rowid range on the match side, and `the` over one day measured 15.83s ->
+  // 0.07s on the same rows. It only ever applied when a caller thought to ask
+  // for a window. This asks on their behalf when the term is dense enough to
+  // need it.
+  //
+  // The probe decides which PLAN to try, never what the answer is: if the
+  // windowed pass comes back short of the page, the unbounded query runs and
+  // returns exactly what it returns today. So a wrong guess costs one cheap
+  // bounded read, and no result can be lost by guessing wrong.
+  //
+  // What it does change, for a term this common: the page is the best-ranked
+  // within a recent window rather than over all time. At 480k matches of a
+  // trigram the ranking between them is noise, and a recent answer beats a
+  // ten-second one. A term rare enough for rank to mean something never
+  // triggers this.
+  static SEARCH_DENSE_TERM_PROBE = 20_001
+  static SEARCH_AUTO_WINDOW_DAYS = [7, 90]
+
+  searchAll(query, options = {}) {
+    const { limit = 50, since = null, historyOnly, agentOnly } = options
+    // Only a text search with no window of its own. A history listing is
+    // already ordered by an index and is not what this is for.
+    const eligible = !since && !historyOnly && !agentOnly && typeof query === 'string' && query.trim()
+    if (!eligible || !this._termIsDense(query)) return this._searchAllOnce(query, options)
+
+    for (const days of FleetStore.SEARCH_AUTO_WINDOW_DAYS) {
+      const from = new Date(Date.now() - days * 86400000).toISOString()
+      const rows = this._searchAllOnce(query, { ...options, since: from })
+      if (rows.length >= limit) return rows
+    }
+    return this._searchAllOnce(query, options)
+  }
+
+  // Is this term dense enough that scoring every match is the cost? Bounded, so
+  // it reads at most the probe size however common the term is — the answer is
+  // "more than this many", which is all the decision needs.
+  _termIsDense(query) {
+    try {
+      const ftsQuery = allTermFtsQuery(query)
+      if (!ftsQuery) return false
+      const rows = this.db.prepare(
+        `SELECT 1 FROM events_fts WHERE events_fts MATCH ? LIMIT ?`,
+      ).all(ftsQuery, FleetStore.SEARCH_DENSE_TERM_PROBE)
+      return rows.length >= FleetStore.SEARCH_DENSE_TERM_PROBE
+    } catch {
+      // A query this cannot parse is one the real search will report on.
+      return false
+    }
+  }
+
+  _searchAllOnce(query, { limit = 50, agent, agentSpans = null, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly, between = null, messageFilterAst = null } = {}) {
     const messageFilterSql = messageFilterAst
       ? messageFilterSqlCompiler(messageFilterAst, node => node.spans || [])
       : null;
