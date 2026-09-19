@@ -37,7 +37,11 @@ export type ClassroomIdentity =
   // principal resolver is free not to carry one, and a badge with no name says
   // nothing rather than saying "undefined".
   | { role: 'student'; studentId: string; courseId: string; displayName?: string; preferredName: string; pronouns?: string | null }
-  | { role: 'instructor'; courseId: string; preferredName: string; pronouns?: string | null }
+  // `preferredName` is null for a course that has none recorded. It is a display
+  // string and nothing else in the instructor path reads it, so its absence must
+  // not cost the caller their identity — the badge already shows no badge rather
+  // than an empty name.
+  | { role: 'instructor'; courseId: string; preferredName: string | null; pronouns?: string | null }
 
 export const classroomApi = {
   // Who the caller is, from their token. The book surface needs this before it

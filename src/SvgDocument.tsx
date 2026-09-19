@@ -146,7 +146,6 @@ import { useSolutionChapterMarking } from './classroom/useSolutionChapterMarking
 import { MarkingInkOverlay } from './classroom/MarkingInkOverlay'
 import { ClassroomConnectorOverlay } from './classroom/ClassroomConnectorOverlay'
 import { ClassroomGradingSurface, type ClassroomGradingSurfaceProps } from './classroom/ClassroomGradingSurface'
-import { useLocalLayer } from './classroom/useLocalLayer'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -621,30 +620,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   // The solution chapter's own marking affordance: arrows for an instructor,
   // nothing at all for anybody else.
   const activeMarkingPair = useSolutionChapterMarking(document, editorMounted)
-
-  // The local layer: marking built into the solution chapter, for an instructor
-  // reading it. Inert on every other document — it asks the course whether this
-  // one is an assignment's solutions, and a reader with no classroom credential
-  // is told no. See `useLocalLayer.tsx` for why it hangs off the document
-  // rather than off a workspace route.
-  //
-  // EVERY page, not the first one. Passing `pages[0]` bound marking to whatever
-  // happened to be page 0, so it worked only on a project built to have the
-  // solutions there and never on a book — see `useLocalLayer`'s own note.
-  // Memoized on identity rather than rebuilt per render: it is an effect
-  // dependency down there, and a fresh array each render reinstalls the
-  // controls forever.
-  const localLayerPageShapeIds = useMemo(
-    () => document.pages.map(page => String(page.shapeId)),
-    [document],
-  )
-  const localLayer = useLocalLayer({
-    documentKey: document.name,
-    pageShapeIds: localLayerPageShapeIds,
-    documentRoomId: roomId,
-    editor: editorRef.current,
-    editorMounted,
-  })
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
   useDividerDiff(editorRef, projectName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)
@@ -1212,9 +1187,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           solutionShapeId={document.pages[1].shapeId}
         />
       )}
-      {/* One glass per open problem x student pair, over the chapter itself. */}
-      {localLayer.overlays}
-      {localLayer.error && <p className="classroomError" role="status">{localLayer.error}</p>}
       {screenshotCapture && editorRef.current && (
         <ScreenshotCapture
           mainEditor={editorRef.current}

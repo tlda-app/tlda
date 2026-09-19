@@ -68,6 +68,7 @@ export class ClassroomStore {
     const courseColumns = new Set(this.db.pragma('table_info(courses)').map(column => column.name))
     if (!courseColumns.has('preferred_name')) this.db.exec('ALTER TABLE courses ADD COLUMN preferred_name TEXT')
     if (!courseColumns.has('pronouns')) this.db.exec('ALTER TABLE courses ADD COLUMN pronouns TEXT')
+    this.#requireCoursePreferredName()
     const assignmentColumns = new Set(this.db.pragma('table_info(assignments)').map(column => column.name))
     if (!assignmentColumns.has('template_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN template_doc_key TEXT')
     if (!assignmentColumns.has('source_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN source_doc_key TEXT')
@@ -100,11 +101,80 @@ export class ClassroomStore {
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_students_course_login ON students(course_id, university_login) WHERE university_login IS NOT NULL')
   }
 
+  /**
+   * Finish the migration that added `preferred_name`.
+   *
+   * `4a01a1545` added it with a bare `ALTER TABLE courses ADD COLUMN
+   * preferred_name TEXT` — nullable, no backfill — on a field the app treats as
+   * required, and then had `/me` answer 409 when it was missing. Every course
+   * predating that commit was null forever, which is every real course on the
+   * teaching box, and the 409 stopped the solution chapter's marking from
+   * installing at all. The visible symptom was a toast about a name.
+   *
+   * Its sibling two lines down is how it should have been written the first
+   * time: `layer_scope` went in as `NOT NULL DEFAULT 'student'`, so no row was
+   * ever missing it. That is not available to a column that already exists, so
+   * this backfills and rebuilds instead — the same end state, reached late.
+   *
+   * `Instructor` rather than the course title: the title is the name of a
+   * course, and this field is displayed as the name of a person. A badge
+   * reading "Logged in as Prediction, Inference, and Causality" would be a
+   * worse answer than a generic one.
+   *
+   * Idempotent, and skipped entirely once the column is already NOT NULL, so
+   * opening the database does not rewrite the table every time.
+   *
+   * FOREIGN KEYS GO OFF AROUND THE REBUILD, AND THAT IS NOT OPTIONAL.
+   * `students` and `assignments` reference `courses(id)` ON DELETE CASCADE, and
+   * the constructor turns foreign keys on. Dropping the old table with them
+   * enforced deletes every student and every assignment of every course —
+   * silently, as a cascade, in the migration that runs on open. This is
+   * SQLite's documented rebuild procedure for exactly that reason. The pragma
+   * is a no-op inside a transaction, so it is set outside one, and
+   * `foreign_key_check` runs before the commit rather than trusting that.
+   */
+  #requireCoursePreferredName() {
+    const column = this.db.pragma('table_info(courses)').find(candidate => candidate.name === 'preferred_name')
+    if (!column || column.notnull) return
+    this.db.pragma('foreign_keys = OFF')
+    try {
+      this.db.exec(`
+        BEGIN;
+        UPDATE courses SET preferred_name = 'Instructor'
+          WHERE preferred_name IS NULL OR trim(preferred_name) = '';
+        CREATE TABLE courses_rebuilt (
+          id TEXT PRIMARY KEY, title TEXT NOT NULL,
+          preferred_name TEXT NOT NULL, pronouns TEXT
+        );
+        INSERT INTO courses_rebuilt(id, title, preferred_name, pronouns)
+          SELECT id, title, preferred_name, pronouns FROM courses;
+        DROP TABLE courses;
+        ALTER TABLE courses_rebuilt RENAME TO courses;
+      `)
+      const violations = this.db.pragma('foreign_key_check')
+      if (violations.length > 0) {
+        this.db.exec('ROLLBACK')
+        throw new Error(`classroom store: rebuilding courses for a NOT NULL preferred_name left ${violations.length} foreign key violation(s); the database is unchanged. First: ${JSON.stringify(violations[0])}`)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec('ROLLBACK')
+      throw error
+    } finally {
+      this.db.pragma('foreign_keys = ON')
+    }
+  }
+
   close() { this.db.close() }
 
   upsertCourse({ id, title, preferredName, pronouns }) {
     const existing = this.getCourse(id)
-    const nextPreferredName = preferredName === undefined ? (existing?.preferred_name || null) : preferredName
+    // Never null: the column is NOT NULL, and a caller that names no instructor
+    // gets the same generic the backfill uses rather than a constraint failure.
+    // `POST /courses` still refuses an empty name, so the human-facing path
+    // cannot reach this default — it is for internal callers that only have a
+    // course to record.
+    const nextPreferredName = (preferredName === undefined ? existing?.preferred_name : preferredName) || 'Instructor'
     const nextPronouns = pronouns === undefined ? (existing?.pronouns || null) : (String(pronouns ?? '').trim() || null)
     this.db.prepare(`INSERT INTO courses(id,title,preferred_name,pronouns) VALUES (?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET title=excluded.title, preferred_name=excluded.preferred_name, pronouns=excluded.pronouns`)

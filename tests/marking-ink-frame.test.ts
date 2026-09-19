@@ -71,7 +71,7 @@ test('the pane geometry does not come from the container', () => {
 })
 
 test('a frame is refused rather than guessed when the iframe has not laid out', () => {
-  // No pane at all is the right answer here: `LocalLayerGlass` renders nothing
+  // No pane at all is the right answer here: `MarkingInkOverlay` renders nothing
   // without a frame, so a document mid-layout gets no glass rather than one
   // with an invented size.
   assert.equal(markingInkFrame({

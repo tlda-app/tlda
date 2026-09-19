@@ -584,7 +584,24 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     if (!courseId) return res.status(400).json({ error: 'course is required' })
     const course = store.getCourse(courseId)
     if (!course) return res.status(404).json({ error: 'Course not found' })
-    if (!course?.preferred_name) return res.status(409).json({ error: 'Course instructor preferred name is not configured' })
+    // A MISSING NAME IS A MISSING NAME, NOT A MISSING IDENTITY.
+    //
+    // This refused the whole call with 409 when `preferred_name` was empty. The
+    // column was added by `4a01a1545` with a bare ALTER TABLE and no backfill,
+    // so every course predating it was null forever — qtm285 among them, which
+    // was every real course on the teaching box. The same commit gave students
+    // `COALESCE(preferred_name, display_name)` and gave courses this refusal:
+    // same field, same commit, opposite treatment.
+    //
+    // What it cost was not a badge. `useSolutionChapterMarking` asks who you are
+    // before it installs and returns on a null identity, so the solution
+    // chapter's marking never installed at all and the only visible trace was a
+    // toast about a name.
+    //
+    // There is nothing to guard now: the store backfills the column and holds it
+    // NOT NULL, so a course that exists has a name. The guard is gone rather
+    // than kept as a fallback, because a fallback here would be unreachable code
+    // standing where the failure used to be.
     res.json({ role: 'instructor', courseId, preferredName: course.preferred_name, pronouns: course.pronouns || null })
   })
 
