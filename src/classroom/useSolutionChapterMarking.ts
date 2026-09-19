@@ -164,15 +164,16 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
             openAt: identity.role === 'instructor'
               ? new URLSearchParams(window.location.search).get('student')
               : null,
-            onShow: (exerciseId, answer, wrapper) => {
+            onShow: (exerciseId, answer, wrapper, markup) => {
               setActivePair(current => {
-                if (answer && wrapper) return {
+                if (answer && wrapper && markup) return {
                   exerciseId,
                   studentId: answer.studentId,
                   contentRef: answer.contentRef,
                   assignmentId: assignment.id,
                   viewerRole: identity.role,
                   wrapper,
+                  answerMarkup: markup,
                 }
                 return current?.exerciseId === exerciseId && current.wrapper.ownerDocument === frameDocument
                   ? null

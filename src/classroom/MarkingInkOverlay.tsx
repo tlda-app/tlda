@@ -4,6 +4,7 @@ import { useValue, type Editor } from 'tldraw'
 import { gradingDraftRoomId } from '../../shared/classroom-rooms.mjs'
 import { ensureViewLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
 import { classroomApi } from './api'
+import { AnswerPane } from './AnswerPane'
 import { StudentAnnotationOverlay } from './StudentAnnotationOverlay'
 import { markingInkLayerId } from './markingInkFrame'
 import { useInkFrame } from './useInkFrame'
@@ -15,13 +16,9 @@ export interface ActiveMarkingPair {
   assignmentId: string
   viewerRole: 'instructor' | 'student'
   wrapper: HTMLElement
+  /** The answer, marked up for the pane to render as a document of its own. */
+  answerMarkup: string
 }
-
-// The selector for the answer inside the pair. `useInkFrame` takes it as an
-// argument because it was extracted from this component to be shared; this is
-// now its only caller, and the copy that lived here has gone rather than being
-// left to drift against it.
-const ANSWER_SELECTOR = '.tlda-marking-answer'
 
 export function MarkingInkOverlay({
   pair,
@@ -32,7 +29,14 @@ export function MarkingInkOverlay({
   editor: Editor
   bookRoomId: string
 }) {
-  const frame = useInkFrame(pair.wrapper, ANSWER_SELECTOR, editor)
+  // The pane measures the answer and the frame places it, so the height goes
+  // up from one and back down to the other. It starts at zero rather than at a
+  // guess: an answer whose height we have not measured is not an answer of some
+  // default height, and a wrong guess would put the glass over the wrong box
+  // for a frame.
+  const [answerHeight, setAnswerHeight] = useState(0)
+  const [answerHeader, setAnswerHeader] = useState<HTMLElement | null>(null)
+  const frame = useInkFrame(pair.wrapper, answerHeight, editor)
   const layerId = useMemo(
     () => markingInkLayerId(pair.contentRef, pair.exerciseId),
     [pair.contentRef, pair.exerciseId],
@@ -65,7 +69,6 @@ export function MarkingInkOverlay({
   }, [editor, frame, layerId])
 
   if (!frame) return null
-  const answerHeader = pair.wrapper.querySelector<HTMLElement>('.tlda-marking-answer-header')
   const returnMarks = async () => {
     if (returning || pair.viewerRole !== 'instructor') return
     try {
@@ -88,6 +91,14 @@ export function MarkingInkOverlay({
 
   return (
     <>
+      <AnswerPane
+        markup={pair.answerMarkup}
+        chapter={pair.wrapper.ownerDocument}
+        bounds={frame.answerBounds}
+        scale={frame.camera.z}
+        onHeight={setAnswerHeight}
+        onHeader={setAnswerHeader}
+      />
       <StudentAnnotationOverlay
         bookRoomId={bookRoomId}
         studentId={pair.studentId}

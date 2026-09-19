@@ -15,15 +15,73 @@
  * on that student's answer, and both have to survive the page reflowing around
  * them.
  *
- * The solution keeps the full text column and the answer overhangs into the
- * margin, so the chapter reads at exactly the width it always did while an
+ * The solution keeps the full text column and the answer goes in the margin
+ * beside it, so the chapter reads at exactly the width it always did while an
  * answer is up.
+ *
+ * THE ANSWER IS NOT PUT IN THIS DOCUMENT. It used to be, positioned at
+ * `left: 100%`, and that is laid out correctly and clipped unreadable: the
+ * chapter is rendered in an iframe and the margin is outside it — measured on
+ * his chapter, the answer's right edge at x=1280 against a 624px iframe.
+ * Widening the iframe reflows the chapter's own text (620 -> 1100), which is
+ * the one thing this layout exists to prevent. So the wrapper is built here and
+ * the answer's markup is handed to the parent document, which hosts it beside
+ * the iframe where nothing can clip it. See `answerDocument.ts` for why it goes
+ * as a document rather than as an element.
  */
 
 const PAIR_CLASS = 'tlda-marking-pair'
 const ANSWER_CLASS = 'tlda-marking-answer'
 const ARROWS_CLASS = 'tlda-marking-arrows'
 const STYLE_ID = 'tlda-marking-style'
+
+/** Where the Return button portals, in the answer's own document. */
+export const ANSWER_HEADER_CLASS = `${ANSWER_CLASS}-header`
+
+/**
+ * The marking chrome's styling, for the answer's own document.
+ *
+ * The header, the Return button and the photograph fitting travel with the
+ * answer because the answer does: they are ours, not the chapter's, so
+ * `answerStyleSources` cannot carry them — it deliberately leaves this
+ * stylesheet behind. Kept here beside the markup that uses it rather than in
+ * `answerDocument.ts`, which knows how to build a document and nothing about
+ * what marking puts in one.
+ */
+export const ANSWER_DOCUMENT_CSS = `
+  .${ANSWER_CLASS} { margin-block-start: 0; }
+  .${ANSWER_CLASS} > .${ANSWER_HEADER_CLASS} {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid currentColor;
+    opacity: 0.85;
+  }
+  /*
+   * A student's photograph is whatever their phone produced — 4032px wide is
+   * ordinary. Fit it to the callout by width, keep its aspect ratio, and leave
+   * a little room at the edges.
+   */
+  .${ANSWER_CLASS} img {
+    max-width: calc(100% - 1rem);
+    height: auto;
+    margin-inline: 0.5rem;
+  }
+  .tlda-marking-return { margin-inline-start: auto; }
+  .tlda-marking-return button {
+    cursor: pointer;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+    border-radius: 0.25rem;
+    padding: 0.1rem 0.45rem;
+  }
+  .tlda-marking-return button[disabled] { opacity: 0.4; cursor: default; }
+  .tlda-marking-return-status { font-size: 0.85em; font-weight: 400; }
+  .tlda-marking-return-error { color: #9a3c32; }
+`
 
 /**
  * One student's answer to one exercise, as the arrows page through them.
@@ -48,8 +106,14 @@ export interface SolutionMarkingOptions {
    * has answered, and the arrows stay at position zero with nothing to show.
    */
   answersFor: (exerciseId: string) => Promise<MarkableAnswer[]>
-  /** Called whenever the shown student changes, including back to nobody. */
-  onShow?: (exerciseId: string, answer: MarkableAnswer | null, pair: HTMLElement | null) => void
+  /**
+   * Called whenever the shown student changes, including back to nobody.
+   *
+   * `markup` is the answer, ready to be a document of its own — the parent
+   * renders it, because this document's iframe would clip it. It is null
+   * exactly when there is nobody to show.
+   */
+  onShow?: (exerciseId: string, answer: MarkableAnswer | null, pair: HTMLElement | null, markup: string | null) => void
   /**
    * Open on this student's answer rather than at position zero.
    *
@@ -69,61 +133,16 @@ function installStyle(doc: Document) {
   if (doc.getElementById(STYLE_ID)) return
   const style = doc.createElement('style')
   style.id = STYLE_ID
-  // The answer is taken out of flow deliberately. In flow it would either
-  // narrow the solution or widen the measure; out of flow at `left: 100%` it
-  // begins exactly where the text column ends, so the chapter keeps the width
-  // it always had and the answer lives in the margin beside it. `top: 0` is
-  // what "tops aligned" means once both are in the wrapper's coordinates.
+  // The chapter's own side of the marking chrome, and nothing else. Everything
+  // the ANSWER needs is in `ANSWER_DOCUMENT_CSS`, because the answer is not in
+  // this document.
+  //
+  // `position: relative` on the wrapper is not layout here — it is the
+  // coordinate origin the instructor's strokes are stored against. Nothing in
+  // this stylesheet moves the chapter, which is the whole point: he is reading
+  // the page at the width it has always had while he marks it.
   style.textContent = `
     .${PAIR_CLASS} { position: relative; }
-    .${PAIR_CLASS} > .${ANSWER_CLASS} {
-      position: absolute;
-      left: 100%;
-      top: 0;
-      /*
-       * The answer arrives as a callout and callouts carry a top margin, which
-       * pushes its border box below the point it is positioned at — measured at
-       * 21px, and the whole of the tops-aligned failure. Zeroed here rather than
-       * compensated for in the offset, because this element is the copy we place
-       * and its margin means nothing where we put it.
-       */
-      margin-block-start: 0;
-      margin-left: 1.5rem;
-      width: 100%;
-      max-width: 32rem;
-      box-sizing: border-box;
-    }
-    /*
-     * A student's photograph is whatever their phone produced — 4032px wide is
-     * ordinary. Fit it to the callout by width, keep its aspect ratio, and
-     * leave a little room at the edges.
-     */
-    .${PAIR_CLASS} img {
-      max-width: calc(100% - 1rem);
-      height: auto;
-      margin-inline: 0.5rem;
-    }
-    .${PAIR_CLASS} > .${ANSWER_CLASS} > .${ANSWER_CLASS}-header {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-weight: 600;
-      padding: 0.35rem 0.6rem;
-      border-bottom: 1px solid currentColor;
-      opacity: 0.85;
-    }
-    .tlda-marking-return { margin-inline-start: auto; }
-    .tlda-marking-return button {
-      cursor: pointer;
-      border: 1px solid currentColor;
-      background: transparent;
-      color: inherit;
-      border-radius: 0.25rem;
-      padding: 0.1rem 0.45rem;
-    }
-    .tlda-marking-return button[disabled] { opacity: 0.4; cursor: default; }
-    .tlda-marking-return-status { font-size: 0.85em; font-weight: 400; }
-    .tlda-marking-return-error { color: #9a3c32; }
     .${ARROWS_CLASS} {
       display: inline-flex;
       gap: 0.25rem;
@@ -183,42 +202,46 @@ function unpair(solution: HTMLElement) {
 }
 
 /**
- * Put one answer beside this solution, creating the wrapper if it is not there.
+ * Make this solution a pair, creating the wrapper if it is not there.
  *
  * The solution element is *moved* into the wrapper, never copied: a clone would
  * be a second thing that could disagree with the chapter, and the instructor is
  * marking the real page.
+ *
+ * The wrapper is all this makes. Nothing is appended to it and nothing beside
+ * it moves — it exists to be the origin a stroke is stored against and the box
+ * the parent positions the answer from. An answer inserted here would be in the
+ * chapter's iframe, which is the clipping this design removes.
  */
-function pair(solution: HTMLElement, answer: HTMLElement, displayName: string, doc: Document) {
-  let wrapper = solution.closest<HTMLElement>(`.${PAIR_CLASS}`)
-  if (!wrapper) {
-    wrapper = doc.createElement('div')
-    wrapper.className = PAIR_CLASS
-    solution.parentNode?.insertBefore(wrapper, solution)
-    wrapper.append(solution)
-  }
-  wrapper.querySelector(`.${ANSWER_CLASS}`)?.remove()
-  answer.classList.add(ANSWER_CLASS)
-  // Whose work this is, said on the answer itself rather than only in the
-  // pager. He is marking one student among forty and the name has to be beside
-  // the work while he reads it, not in a control he looked at a moment ago.
-  // Built here rather than trusted from the student's document, which is
-  // somebody else's HTML and says nothing about who handed it in.
+function pair(solution: HTMLElement, doc: Document) {
+  const existing = solution.closest<HTMLElement>(`.${PAIR_CLASS}`)
+  if (existing) return
+  const wrapper = doc.createElement('div')
+  wrapper.className = PAIR_CLASS
+  solution.parentNode?.insertBefore(wrapper, solution)
+  wrapper.append(solution)
+}
+
+/**
+ * One student's answer, as the markup the parent will render as a document.
+ *
+ * Whose work this is is said on the answer itself rather than only in the
+ * pager: he is marking one student among forty and the name has to be beside
+ * the work while he reads it, not in a control he looked at a moment ago. Built
+ * here rather than trusted from the student's document, which is somebody
+ * else's HTML and says nothing about who handed it in.
+ *
+ * The element is not modified — it is somebody else's page and this is the only
+ * thing we take from it. A copy is marked up and serialized.
+ */
+export function answerMarkup(answer: HTMLElement, displayName: string, doc: Document): string {
+  const copy = answer.cloneNode(true) as HTMLElement
+  copy.classList.add(ANSWER_CLASS)
   const header = doc.createElement('div')
-  header.className = `${ANSWER_CLASS}-header`
+  header.className = ANSWER_HEADER_CLASS
   header.textContent = displayName
-  answer.prepend(header)
-  wrapper.append(answer)
-  // Align the answer's top with the SOLUTION's top, not the wrapper's.
-  //
-  // The answer is positioned against the wrapper, whose top is the solution's
-  // margin box — so `top: 0` lands above the solution's border box by whatever
-  // margin the chapter gives it, measured at 21px here. Zeroing that margin
-  // would align them by moving the solution, which shifts the chapter while he
-  // marks; the chapter staying exactly itself is the constraint. So the offset
-  // is measured and applied to the answer instead, and nothing about the
-  // chapter's own layout changes.
-  answer.style.top = `${solution.offsetTop}px`
+  copy.prepend(header)
+  return copy.outerHTML
 }
 
 /**
@@ -273,7 +296,7 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
       forward.disabled = answers !== null && index >= answers.length - 1
       if (!current) {
         unpair(solution)
-        options.onShow?.(exerciseId, null, null)
+        options.onShow?.(exerciseId, null, null, null)
         return
       }
       const shown = index
@@ -282,9 +305,14 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
       // still the current one is allowed to land, or a slow student's work
       // appears beside the solution after he has already moved past them.
       if (shown !== index) return
-      if (element) pair(solution, element, current.displayName, doc)
+      if (element) pair(solution, doc)
       else unpair(solution)
-      options.onShow?.(exerciseId, current, solution.closest<HTMLElement>(`.${PAIR_CLASS}`))
+      options.onShow?.(
+        exerciseId,
+        current,
+        solution.closest<HTMLElement>(`.${PAIR_CLASS}`),
+        element ? answerMarkup(element, current.displayName, doc) : null,
+      )
     }
 
     const step = async (delta: number) => {

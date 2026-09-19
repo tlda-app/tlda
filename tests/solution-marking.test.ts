@@ -39,6 +39,34 @@ function chapter() {
   return jsdom.window.document
 }
 
+/**
+ * What the parent was handed, in order, as he paged.
+ *
+ * THE ANSWER IS NOT IN THE CHAPTER ANY MORE, so `doc.querySelector` is no
+ * longer where these assertions can look for it — it would find nothing, and a
+ * test that passes by finding nothing proves nothing. The answer goes to the
+ * parent as markup and this is the only place it exists to be checked, so the
+ * claims below are made against what was handed over.
+ */
+function shownAnswers(doc: Document, names: string[]) {
+  const markup: Array<string | null> = []
+  installSolutionMarking(doc, {
+    answersFor: answersFor(doc, names),
+    onShow: (_exerciseId, _answer, _pair, handed) => { markup.push(handed) },
+  })
+  return {
+    /** The answer the parent is currently showing, as an element to assert on. */
+    current: () => {
+      const latest = markup.at(-1)
+      if (latest == null) return null
+      const host = doc.createElement('div')
+      host.innerHTML = latest
+      return host.firstElementChild as HTMLElement | null
+    },
+    handed: markup,
+  }
+}
+
 function answersFor(doc: Document, names: string[]): (id: string) => Promise<MarkableAnswer[]> {
   return async () => names.map(name => ({
     studentId: name,
@@ -111,7 +139,7 @@ test('Quarto callout body markup does not acquire a second pager', () => {
 
 test('paging forward pairs one answer with its own solution, and back removes it again', async () => {
   const doc = chapter()
-  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const shown = shownAnswers(doc, ['ana', 'bo'])
   const arrows = doc.querySelectorAll('.tlda-marking-arrows')[0]
   const [back, forward] = arrows.querySelectorAll<HTMLButtonElement>('button')
 
@@ -120,8 +148,11 @@ test('paging forward pairs one answer with its own solution, and back removes it
 
   const pairs = doc.querySelectorAll('.tlda-marking-pair')
   assert.equal(pairs.length, 1, 'only the solution he paged forms a pair')
-  assert.equal(pairs[0].querySelectorAll('.tlda-marking-answer').length, 1)
-  assert.match(pairs[0].querySelector('.tlda-marking-answer')!.textContent!, /ana/)
+  assert.match(shown.current()!.textContent!, /ana/, "and it is paired with ana's answer")
+  // Which is handed over rather than inserted. The chapter's iframe is 624px
+  // wide and the margin is outside it, so an answer put here is clipped — the
+  // whole reason the parent hosts it.
+  assert.equal(doc.querySelectorAll('.tlda-marking-answer').length, 0, 'the chapter is not holding it')
   assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'ana 1/2')
   // The solution is moved, not copied — one of it, still the chapter's own.
   assert.equal(doc.querySelectorAll('.callout-solution').length, 2)
@@ -130,6 +161,7 @@ test('paging forward pairs one answer with its own solution, and back removes it
   await new Promise(resolve => setTimeout(resolve, 5))
 
   assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0, 'back to zero leaves no wrapper behind')
+  assert.equal(shown.handed.at(-1), null, 'and the parent is told there is nothing to show')
   assert.equal(doc.querySelectorAll('.callout-solution').length, 2)
   assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
 })
@@ -141,17 +173,24 @@ test('paging forward pairs one answer with its own solution, and back removes it
 // person he had already chosen.
 test('a named student is already paired when the chapter opens', async () => {
   const doc = chapter()
-  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']), openAt: 'bo' })
+  const handed: Array<string | null> = []
+  installSolutionMarking(doc, {
+    answersFor: answersFor(doc, ['ana', 'bo']),
+    openAt: 'bo',
+    onShow: (_exerciseId, _answer, _pair, markup) => { handed.push(markup) },
+  })
   await new Promise(resolve => setTimeout(resolve, 5))
 
   const arrows = doc.querySelectorAll('.tlda-marking-arrows')[0]
   assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'bo 2/2')
   const pairs = doc.querySelectorAll('.tlda-marking-pair')
   assert.equal(pairs.length, 2, 'every solution opens on the named student, not only the first')
-  assert.match(pairs[0].querySelector('.tlda-marking-answer')!.textContent!, /bo/)
+  // Both solutions hand over an answer, and it is the named student's.
+  assert.equal(handed.filter(markup => markup !== null).length, 2)
+  for (const markup of handed) assert.match(markup!, /bo/)
   // Not the first answer in the list, or this would pass against an install that
   // simply stepped forward once.
-  assert.doesNotMatch(pairs[0].querySelector('.tlda-marking-answer')!.textContent!, /ana/)
+  for (const markup of handed) assert.doesNotMatch(markup!, /ana/)
 })
 
 test('a student nobody answered with leaves the arrows where they were', async () => {
@@ -211,7 +250,9 @@ test('a slow answer that lands after he has paged on does not appear', async () 
   // failure this surface has available to it.
   const doc = chapter()
   const delays: Record<string, number> = { ana: 40, bo: 0 }
+  const handed: Array<string | null> = []
   installSolutionMarking(doc, {
+    onShow: (_exerciseId, _answer, _pair, markup) => { handed.push(markup) },
     answersFor: async () => ['ana', 'bo'].map(name => ({
       studentId: name,
       displayName: name,
@@ -233,27 +274,36 @@ test('a slow answer that lands after he has paged on does not appear', async () 
   forward.click()   // bo, fast — lands first
   await new Promise(resolve => setTimeout(resolve, 80))
 
-  const shown = doc.querySelector('.tlda-marking-answer')
+  const shown = handed.at(-1)
   assert.ok(shown, 'somebody is shown')
-  assert.match(shown!.textContent!, /bo/, 'the student he is on, not the one he paged past')
-  assert.equal(doc.querySelectorAll('.tlda-marking-answer').length, 1, 'and only one of them')
+  assert.match(shown!, /bo/, 'the student he is on, not the one he paged past')
+  // And ana never arrives late behind him. The parent renders whatever it was
+  // handed last, so a stale hand-over after this point is one student's work
+  // shown under another's name just the same.
+  assert.doesNotMatch(shown!, /ana/)
+  assert.equal(handed.filter(markup => markup?.includes('ana')).length, 0, 'ana was never handed over at all')
 })
 
 test("the answer carries the student's name on itself, not only in the pager", async () => {
   // He is marking one student among forty. The name has to be beside the work
   // while he reads it, not in a control he glanced at a moment ago.
   const doc = chapter()
-  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const shown = shownAnswers(doc, ['ana', 'bo'])
   const forward = doc.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')[1]
 
   forward.click()
   await new Promise(resolve => setTimeout(resolve, 5))
 
-  const header = doc.querySelector('.tlda-marking-answer > .tlda-marking-answer-header')
-  assert.equal(header?.textContent, 'ana')
+  // On the answer the parent renders, not in the chapter — the name travels
+  // with the work because it is part of the work's own document now.
+  const answer = shown.current()!
+  assert.equal(answer.querySelector('.tlda-marking-answer-header')?.textContent, 'ana')
+  assert.equal(answer.firstElementChild?.className, 'tlda-marking-answer-header', 'and it is the first thing in the callout')
+
   // And it moves with the paging rather than sticking to the first student.
   forward.click()
   await new Promise(resolve => setTimeout(resolve, 5))
-  assert.equal(doc.querySelector('.tlda-marking-answer > .tlda-marking-answer-header')?.textContent, 'bo')
-  assert.equal(doc.querySelectorAll('.tlda-marking-answer-header').length, 1, 'one name, not an accumulating pile')
+  const next = shown.current()!
+  assert.equal(next.querySelector('.tlda-marking-answer-header')?.textContent, 'bo')
+  assert.equal(next.querySelectorAll('.tlda-marking-answer-header').length, 1, 'one name, not an accumulating pile')
 })
