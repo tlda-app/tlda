@@ -7429,8 +7429,22 @@ async function dispatchFleetWsMessage(ws, msg) {
       dead: false,
       human: !!msg.human,
       is_manager: !!manager,
-      metadata: (metadata || existing?.metadata || kind)
-        ? { ...(existing?.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
+      // `kind` is the harness an agent runs under. A human does not have one,
+      // so it is dropped here rather than merged — and the merge is why that
+      // matters: once stamped, `...existing?.metadata` carries it forward on
+      // every later register, indefinitely.
+      //
+      // Observed on the live store: `fleet:skip`, `human: 1`, carrying
+      // `{"kind":"claude"}` from a registration on or before 2026-07-21, still
+      // there two months later with nothing re-registering it. The field it
+      // would have been dated by, `registered_at`, was being overwritten by
+      // every server restart, so when it arrived is not recoverable.
+      metadata: (metadata || existing?.metadata || (kind && !msg.human))
+        ? {
+            ...(existing?.metadata || {}),
+            ...(metadata || {}),
+            ...(kind && !msg.human ? { kind } : {}),
+          }
         : null,
     }
     // Shell reservation vs claim. The spawn flow reserves the identity as a
