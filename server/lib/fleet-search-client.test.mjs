@@ -7,9 +7,11 @@
 // socket timeout and tells you nothing about why.
 //
 // That is the shape this box actually produces. The child is forked at
-// PRIORITY_BELOW_NORMAL onto a 2-CPU machine that also runs builds, so it can be
+// PRIORITY_BELOW_NORMAL onto a 2-CPU machine, so it can be
 // starved for minutes while the main thread stays healthy: measured 2026-09-03
-// across a 20-minute outage, peak event-loop lag was 931ms.
+// across a 20-minute outage, peak event-loop lag was 931ms. The priority is
+// deliberate and stays -- communications win the box ahead of search -- so the
+// requirement is that search DEGRADES rather than dies.
 //
 // The second test is the one that stops this fix becoming a new defect. A bound
 // that fires on a healthy-but-slow search would turn working queries into errors,
@@ -32,7 +34,7 @@ class StubChild extends EventEmitter {
     this.sent = []
   }
   send(message) { this.sent.push(message) }
-  kill() {}
+  kill(signal) { this.killed = signal || true; this.emit('exit', null, signal || 'SIGKILL') }
 }
 
 class StubClient extends FleetSearchClient {
@@ -74,16 +76,17 @@ test('a request the child never answers rejects, and does not guess why', { time
       // It must not re-acquire a confident single cause.
       assert.doesNotMatch(error.message, /not your query being too large/)
 
-      // The load-bearing part, and the reason this message exists at all: the
-      // timeout does NOT cancel the query, so the reader must be told to stop
-      // rather than to probe. The old text prescribed "run a trivial search now"
-      // as a discriminator -- advice that adds a second uncancellable scan to a
-      // saturated box. A chief followed it four times in two hours and became a
-      // meaningful share of the load they were reporting.
-      assert.match(error.message, /did NOT cancel your query/)
-      assert.match(error.message, /still running/)
-      assert.match(error.message, /do not retry/)
-      assert.match(error.message, /Wait instead/)
+      // The timeout now CANCELS, by killing the child, so the message says so.
+      // While it did not, the honest advice was to stop issuing queries -- each
+      // retry added another uncancellable scan to a saturated box, and a chief
+      // following the old "run a trivial search to check" advice four times in
+      // two hours became a meaningful share of the load they were reporting.
+      assert.match(error.message, /killed and restarted/)
+      assert.match(error.message, /no longer running/)
+      // The old text is now FALSE and must not survive: saying the query is
+      // still running would send a reader to hunt a process that is gone.
+      assert.doesNotMatch(error.message, /did NOT cancel/)
+      assert.doesNotMatch(error.message, /still running and still holding/)
       // And it must never again tell anyone to issue a query to diagnose this.
       assert.doesNotMatch(error.message, /run a trivial search/)
       return true
@@ -93,6 +96,12 @@ test('a request the child never answers rejects, and does not guess why', { time
   assert.ok(Date.now() - started < 5000, 'must reject on its own bound, not hang')
   // The entry must not be left behind holding a resolve nobody will ever call.
   assert.equal(client._pending.size, 0)
+  // The point of the change: the scan is actually stopped. `better-sqlite3` is
+  // synchronous, so the child cannot read an IPC cancel or run a signal handler
+  // while it is inside the query -- killing the process is the only thing that
+  // reaches it. Asserting the wording without this would test the promise
+  // rather than the behaviour.
+  assert.ok(client._child.killed || client._recycled, 'the timeout must kill the child, not just report')
 })
 
 test('CONTROL: a slow-but-live reply still succeeds and is not failed by the bound', async () => {

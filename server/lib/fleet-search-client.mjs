@@ -46,8 +46,7 @@ function requestTimeoutMs() {
 // What this error may and may not assert.
 //
 // It used to name CPU starvation as the cause, in those words, and rule out the
-// alternative: "which is CPU starvation on the server box, not your query being
-// too large". The timeout cannot distinguish those. All it observes is that no
+// alternative. The timeout cannot distinguish those. All it observes is that no
 // reply arrived in time.
 //
 // It was wrong, and expensively. On 2026-09-12 `from:skip & project:tlda` hit
@@ -57,43 +56,30 @@ function requestTimeoutMs() {
 // message swore it was not. A chief spent the night chasing CPU starvation on
 // the strength of that sentence and repeated it to Skip as fact.
 //
-// Then it was wrong a second way, and that one was worse because the advice was
-// actionable. It told the reader to "run a trivial search now" to tell the two
-// causes apart, and said a retry "queues behind the same child".
+// The advice it then gave was worse, because it was actionable and false. It
+// told the reader to run a trivial search to tell the two causes apart, and
+// said a retry would queue behind the same child. Neither was true while the
+// timeout did not cancel anything: each suggested query added another
+// uncancellable scan to a box already saturated. Measured on 2026-09-12, the
+// child held ~52 MB/s of disk reads for sixteen minutes after the last caller
+// had given up.
 //
-// Neither is true, because THIS TIMEOUT DOES NOT CANCEL THE QUERY. `_call`
-// deletes its pending entry and rejects the caller; it sends nothing to the
-// child, and the child has no abort path — it runs `await store[method](...)`
-// over synchronous SQLite with nothing to interrupt. So the scan continues to
-// completion, holding the only child, long after the caller gave up.
-//
-// Which means the prescribed discriminator ADDS a second uncancellable scan on
-// a box that is already saturated, and a retry does not queue behind anything —
-// it compounds. On 2026-09-12 a chief ran that trivial lookup four times over
-// two hours, on this message's instruction, and was a meaningful share of the
-// load they were reporting as the problem. Measured during it: the child held
-// ~52 MB/s of disk reads for sixteen minutes after the last caller had given up.
-//
-// So this message no longer prescribes any query. The only honest advice at the
-// moment of failure is to stop issuing them, and that is what it says.
-//
-// The real fix is for the child to be interruptible — `better-sqlite3` exposes
-// an interrupt — or for the client to kill and respawn it on timeout rather than
-// abandon the request. Until one of those exists, this text is the guard.
-function starvedChildError(what, timeoutMs) {
+// The timeout now cancels, by killing the child and letting the exit handler
+// respawn it, so that text would describe a state that can no longer happen.
+// What the bound still cannot do is tell you WHY, so it does not guess.
+function searchTimeoutError(what, timeoutMs) {
   return new Error(
-    `the fleet search child did not answer ${what} within ${timeoutMs}ms. `
-    + `IMPORTANT: this timeout did NOT cancel your query. It is still running on the server `
-    + `and still holding the single search child, and there is currently no way to stop it. `
-    + `So: do not retry, and do not run a "quick" search to test whether search is working — `
-    + `each one adds another query that cannot be cancelled, to a queue you cannot see, `
-    + `and that is how a slow minute becomes an unusable hour. Wait instead. `
-    + `Why it happened, in the order worth suspecting: your query was expensive (an agent term `
-    + `resolving to many ids is the usual cause, and a label like project:<name> can resolve to `
-    + `hundreds); or earlier abandoned queries are still running and saturating the box; or the `
-    + `child is starved, since it runs at BELOW_NORMAL priority. `
-    + `This bound cannot tell you which, and it is not worth a query to find out. `
-    + `Raise TLDA_SEARCH_REQUEST_TIMEOUT_MS if this bound is too tight for a legitimately slow search.`,
+    `the fleet search child did not answer ${what} within ${timeoutMs}ms, `
+    + `so it was killed and restarted — the query is no longer running and is no longer `
+    + `holding the search worker. Any other searches in flight were cancelled with it, `
+    + `because there is one child and no way to interrupt a single query inside it. `
+    + `Retrying is safe, but the same query will probably take the same time. `
+    + `Why it happened, in the order worth suspecting: the query was expensive (an agent `
+    + `term resolving to many ids is the usual cause, and a label like project:<name> can `
+    + `resolve to hundreds); or the child is starved, since it runs at BELOW_NORMAL `
+    + `priority so that communications win the box ahead of search. This bound cannot tell `
+    + `you which. Raise TLDA_SEARCH_REQUEST_TIMEOUT_MS if it is too tight for a `
+    + `legitimately slow search.`,
   )
 }
 
@@ -144,9 +130,24 @@ export class FleetSearchClient {
     this._child.on('error', error => this._fail(error))
     this._child.on('exit', (code, signal) => {
       if (this._closed) return
-      this._fail(new Error(`fleet search process exited (${code ?? signal})`))
+      // A recycle is a deliberate kill, and the waiters that die with it did
+      // nothing wrong — say which it was rather than reporting a bare exit.
+      const reason = this._recycleReason
+      this._recycleReason = null
+      this._fail(new Error(reason
+        ? `the fleet search child was restarted because ${reason}; searches in flight were cancelled with it`
+        : `fleet search process exited (${code ?? signal})`))
       this._spawn()
     })
+  }
+
+  // Kill the child so an uncancellable query stops consuming the box. Safe to
+  // call more than once: the second kill finds no child, and `_closed` keeps
+  // shutdown from respawning.
+  _recycle(reason) {
+    if (this._closed || !this._child) return
+    this._recycleReason = reason
+    try { this._child.kill('SIGKILL') } catch { /* already gone */ }
   }
 
   _fail(error) {
@@ -167,7 +168,7 @@ export class FleetSearchClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         console.warn(`[fleet-search-request] TIMEOUT after ${timeoutMs}ms waiting for child ready`)
-        reject(starvedChildError('the ready handshake', timeoutMs))
+        reject(searchTimeoutError('the ready handshake', timeoutMs))
       }, timeoutMs)
       timer.unref?.()
       this._ready.then(
@@ -189,7 +190,14 @@ export class FleetSearchClient {
         // request produced no line at any log retention, ever.
         this._pending.delete(id)
         console.warn(`[fleet-search-request] TIMEOUT after ${timeoutMs}ms ${method} ${JSON.stringify(context || {})}`)
-        reject(starvedChildError(`${method}()`, timeoutMs))
+        reject(searchTimeoutError(`${method}()`, timeoutMs))
+        // Abandoning the request left the scan running: `better-sqlite3` is
+        // synchronous, so the child's event loop is inside the query and cannot
+        // read an IPC cancel or run a signal handler. Killing the process is
+        // the only thing that reaches it. The `exit` handler below rejects the
+        // remaining waiters and respawns, so recovery is the path that already
+        // exists rather than a new one.
+        this._recycle(`a ${method}() request exceeded ${timeoutMs}ms`)
       }, timeoutMs)
       // Never hold the process open on account of an in-flight search.
       timer.unref?.()
