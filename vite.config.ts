@@ -170,6 +170,12 @@ return {
   server: {
     host: true,
     port: 5179,
+    // The JS Self-Profiling API is gated on this header, so without it
+    // `window.Profiler` is absent and `src/selfProfiler.ts` reports itself
+    // unavailable — the always-on client profile does not exist in the dev
+    // loop. The express SPA handler already sends it; the dev front serves
+    // index.html itself and so has to send its own.
+    headers: { 'Document-Policy': 'js-profiling' },
     ...(hasTls ? localTlsHttps() : {}),
     fs: {
       allow: ['..'],

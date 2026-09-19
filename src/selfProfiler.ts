@@ -10,8 +10,19 @@
 //
 // Output is `.cpuprofile`, which speedscope, profview and Chrome DevTools read.
 // Ranking and self-time accounting belong in those tools.
+//
+// Every window is also POSTed to `/api/client-profile-window`, which writes it
+// to disk as its own `.cpuprofile`. Retention in this array is the tab's own
+// copy and dies with the tab; the disk copy is the one anybody other than this
+// document can open.
 
 import { postLivePerf } from './livePerfUpload'
+import { isAutomatedBrowser } from './cameraLink'
+// One conversion, shared with the server, which is where uploaded windows are
+// converted. Re-exported because callers of this module use it.
+import { toCpuprofile } from '../shared/self-profile-to-cpuprofile.mjs'
+
+export { toCpuprofile }
 
 // ---------------------------------------------------------------- the platform API
 //
@@ -69,60 +80,60 @@ export type ProfilerState =
   | { status: 'unavailable'; reason: string }
   | { status: 'stopped' }
 
+// Names this tab in the window filenames on disk, so two tabs rolling in the
+// same millisecond do not overwrite each other and leave the survivor looking
+// like the only one that profiled.
+const TAB_ID = Math.random().toString(36).slice(2, 10)
+
 /**
- * Convert one self-profiling trace to the `.cpuprofile` shape.
+ * Send one rolled window to the disk sink.
  *
- * This is the whole analysis path, and deliberately the only one: `.cpuprofile`
- * is what speedscope, profview and Chrome DevTools already open, so nothing
- * here has to grow a ranker or a viewer.
+ * Best effort and deliberately unawaited by the roll: a sink that is down must
+ * cost the next window nothing, and the in-page copy is unaffected either way.
  */
-export function toCpuprofile(trace: ProfilerTrace): unknown {
-  // `.cpuprofile` node ids are 1-based and every node needs a callFrame. The
-  // stack table maps across one-for-one, with an added root carrying the samples
-  // that have no stack.
-  const ROOT_ID = 1
-  const nodes: Array<{
-    id: number
-    callFrame: { functionName: string; scriptId: string; url: string; lineNumber: number; columnNumber: number }
-    children?: number[]
-  }> = [{
-    id: ROOT_ID,
-    callFrame: { functionName: '(root)', scriptId: '0', url: '', lineNumber: -1, columnNumber: -1 },
-  }]
-
-  const childrenOf = new Map<number, Set<number>>([[ROOT_ID, new Set()]])
-  trace.stacks.forEach((entry, index) => {
-    const id = index + 2 // 1 is the root
-    const frame = trace.frames[entry.frameId]
-    const url = frame?.resourceId != null ? trace.resources[frame.resourceId] || '' : ''
-    nodes.push({
-      id,
-      callFrame: {
-        functionName: frame?.name || '(anonymous)',
-        scriptId: String(frame?.resourceId ?? 0),
-        url,
-        lineNumber: (frame?.line ?? 1) - 1,
-        columnNumber: (frame?.column ?? 1) - 1,
-      },
+function uploadWindow(rolled: RetainedWindow): void {
+  // Only a human session is uploaded. The instrument is one browser a person
+  // keeps open, and what it records is that person's experience of the app; a
+  // playwright tab doing automation has no experience, and its windows would
+  // both swamp the one session that matters and consume its retention.
+  //
+  // The profiler itself still RUNS in an automated tab — `window.__tldaProfiler`
+  // stays available there — because that costs nothing and keeps the in-page
+  // handle uniform. Only the upload is skipped.
+  if (isAutomatedBrowser()) return
+  try {
+    void fetch('/api/client-profile-window', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // NOT `keepalive`. It caps the request body at 64 KB and a real window
+      // runs to several hundred, so keepalive would drop precisely the busy
+      // windows this exists to capture, silently. The cost is that a window
+      // still in flight when the tab closes is lost, which costs one window
+      // rather than every large one.
+      body: JSON.stringify({
+        at: rolled.at,
+        tab: TAB_ID,
+        href: location.href,
+        worstTaskMs: rolled.worstTaskMs,
+        sampleCount: rolled.sampleCount,
+        windowMs: +(rolled.endedAt - rolled.startedAt).toFixed(1),
+        // The RAW trace, converted by the server. Converting here costs a
+        // median 2.8ms and up to 61ms of synchronous main-thread time on real
+        // traces, and triples the bytes — an instrument that causes a long task
+        // in the busy windows it exists to explain.
+        trace: rolled.trace,
+      }),
+    }).catch(() => {
+      // Upload is best effort; an asynchronous network failure must not break
+      // the profiler that produced the window.
     })
-    const parent = entry.parentId != null ? entry.parentId + 2 : ROOT_ID
-    if (!childrenOf.has(parent)) childrenOf.set(parent, new Set())
-    childrenOf.get(parent)!.add(id)
-  })
-
-  for (const node of nodes) {
-    const kids = childrenOf.get(node.id)
-    if (kids && kids.size) node.children = [...kids]
+  } catch (err) {
+    // Swallowed deliberately: uploading a profile is best effort, and letting
+    // it throw would take down the roll that produced the window and end the
+    // continuous profile. Warned rather than silent so a sink that is always
+    // failing is visible in the console.
+    console.warn('[self-profiler] window upload failed', err)
   }
-
-  // `.cpuprofile` timestamps are microseconds; self-profiling gives milliseconds.
-  const samples = trace.samples.map(s => (s.stackId != null ? s.stackId + 2 : ROOT_ID))
-  const timeDeltas = trace.samples.map((s, i) =>
-    i === 0 ? 0 : Math.max(0, Math.round((s.timestamp - trace.samples[i - 1].timestamp) * 1000)))
-  const startTime = Math.round((trace.samples[0]?.timestamp ?? 0) * 1000)
-  const endTime = Math.round((trace.samples[trace.samples.length - 1]?.timestamp ?? 0) * 1000)
-
-  return { nodes, startTime, endTime, samples, timeDeltas }
 }
 
 export type SelfProfilerHandle = {
@@ -281,6 +292,11 @@ export function installSelfProfiler(): SelfProfilerHandle {
     if (retained.length > MAX_RETAINED_WINDOWS) {
       retained.splice(0, retained.length - MAX_RETAINED_WINDOWS)
     }
+
+    // Every window goes to disk, quiet ones included. Which windows are
+    // interesting is a question for whoever opens them, and answering it here
+    // would be the summarizing this instrument exists to avoid.
+    uploadWindow(retained[retained.length - 1])
 
     // A window that contained a long task is worth a line through the transport
     // that already exists, so it survives the tab closing. Deliberately a

@@ -58,6 +58,8 @@ import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { createContinuousProfiler } from './lib/continuous-profiler.mjs'
 import { createFleetFrameStallTracker, resolveStallMs } from './lib/fleet-frame-stalls.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
+import { createClientProfileWindowHandler } from './lib/client-profile-window-sink.mjs'
+import { createRotatingAppender } from '../shared/rotating-log.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat, hasSourceMapping } from '../shared/document-formats.mjs'
 import { resolveContainedPath } from './lib/path-containment.mjs'
@@ -4068,6 +4070,12 @@ app.get('/api/auth/me', async (req, res) => {
 // gets forwarded here automatically. See project guidance on client logging.
 const CLIENT_LOG_FILE = join(homedir(), '.config', 'tlda', 'client.log')
 const CLIENT_PROFILE_FILE = join(homedir(), '.config', 'tlda', 'client-profile.jsonl')
+// Append-only and unbounded until now, on the same volume the deploy builds on.
+// Rotation, not truncation, for the same reason `client.log` gets it: the
+// generations are the evidence somebody will need.
+const appendClientProfileLine = createRotatingAppender(CLIENT_PROFILE_FILE, {
+  onRotate: (file, size) => console.log(`[client-profile] rotated at ${size} bytes: ${file} -> ${file}.1`),
+})
 const LIVE_PERF_MAX_SAMPLES = 250
 const livePerfSamples = []
 const livePerfByDoc = new Map()
@@ -4239,12 +4247,27 @@ app.post('/api/client-profile', async (req, res) => {
     }))
   }
   if (lines.length) {
-    fs.appendFile(CLIENT_PROFILE_FILE, lines.join('\n') + '\n', (err) => {
-      if (err) console.log(`[client-profile] append failed: ${err.message}`)
-    })
+    try {
+      await appendClientProfileLine(lines.join('\n') + '\n')
+    } catch (err) {
+      // Answered as a failure rather than logged and reported ok, the way
+      // `/api/log` already does it: a client told its profile was stored when
+      // it was not has no way to find out otherwise.
+      console.log(`[client-profile] append failed: ${err.message}`)
+      return res.status(500).json({ ok: false, error: `client profile append failed: ${err.message}` })
+    }
   }
   res.json({ ok: true, n: lines.length })
 })
+
+// Each rolled window of the client's always-on sampling profiler, written
+// through as its own `.cpuprofile`. Without this the windows never left the
+// page: `src/selfProfiler.ts` retained them in memory and nothing read them.
+app.post('/api/client-profile-window', createClientProfileWindowHandler({
+  // CONFIG_DIR, not homedir(), so a sandboxed environment keeps its windows to
+  // itself — the same directory the server's own `profiles/` are written to.
+  baseDir: CONFIG_DIR,
+}))
 
 // ---------- Fleet user prefs ----------
 // Per-user key-value store backed by fleet_prefs table. User is identified by fleet ID.
