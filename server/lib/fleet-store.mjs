@@ -6596,12 +6596,29 @@ export class FleetStore {
     // ordered walks beat one big sort.
     //
     // Size, with a date on it, because the figure moves and the argument gets
-    // stronger as it does: the store was **13.09 GB on 2026-09-12**. Comments in
-    // this file and in unified-server.mjs said 2.7 GB, which was true when the
-    // scan reasoning was first written and had since grown by ~5x without anyone
-    // noticing — so those notes were not merely stale, they understated their
-    // own case. If you are reading this much later, measure again rather than
-    // trusting this number; the point is the shape, and the shape worsens.
+    // stronger as it does: 2.7 GB when the scan reasoning was first written,
+    // **13.09 GB on 2026-09-12**, **19.7 GB on 2026-09-19** with 5,515,168
+    // events over 61,752 agents. Each note was true when written and understated
+    // its own case within a fortnight. Measure again rather than trusting the
+    // latest number; the point is the shape, and the shape worsens.
+    //
+    // THE TABLE ABOVE DID NOT REPRODUCE on 2026-09-19, in both directions, and
+    // nobody should act on either row without re-measuring. On the live store,
+    // `SELECT id, timestamp FROM events WHERE from_id … ORDER BY timestamp DESC
+    // LIMIT 50` over the 356 ids `tlda` resolves to:
+    //
+    //   ids          1       20       60      150      356
+    //   per-id     0.6ms   23.6ms   44.4ms   98.2ms   193.6ms
+    //   IN (...)   0.1ms    0.6ms    0.7ms    0.9ms     2.2ms
+    //
+    // So per-id did not reach 37.5s, and `IN` did not time out at three ids —
+    // it was 88x FASTER at 356. That is a simplified query: no type or date
+    // terms, no join, no post-filter, and possibly a warmer cache than the
+    // original run had. It is therefore NOT a result that licenses the rewrite
+    // this comment forbids. What it does establish is that the measurement the
+    // prohibition rests on no longer describes this store, so the rule is
+    // currently unevidenced rather than wrong. Re-measure with the real query
+    // before trusting it in either direction.
     //
     // A local corpus will NOT show this: 174k events over 435 agents sorts
     // cheaply and reported 1262ms -> 336ms, which is a true measurement of an
