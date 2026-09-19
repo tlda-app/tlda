@@ -2754,9 +2754,30 @@ export class FleetStore {
   // Acquire a reference to a resolved set. `kind` is 'plain' or 'subscription';
   // the difference is whether invalidation recomputes and emits a delta or
   // simply marks dirty. Release with `releaseResolvedSet(handle)`.
+  // Three kinds, and the weak one is what keeps the scheme honest.
+  //
+  //   'subscription' — counted. Something that must be TOLD: maintained, and
+  //                    invalidation produces a delta.
+  //   'plain'        — counted. A holder that will read it again and wants it
+  //                    to survive eviction until it lets go.
+  //   'weak'         — UNCOUNTED. Names the set without retaining it.
+  //
+  // A stored subscription row is weak, and it has to be. Every agent is minted
+  // with `to:me` and `to:my_labels`, so if a row counted, every agent in the
+  // fleet would permanently pin two maintained sets: the refcount would stop
+  // meaning anything, nothing would ever reach the LRU, and deltas would be
+  // computed forever for agents that have been hibernating for a week. A row
+  // that exists for everyone by construction is not evidence that anyone is
+  // going to read it.
+  //
+  // What retains a weakly-referenced set is RECENCY. It is an ordinary cache
+  // entry: correct on read, dirty on event, evicted when it falls out of the
+  // bound. An active agent's sets stay warm because they keep being resolved;
+  // a quiet agent's fall out, which is what should happen to them.
   acquireResolvedSet(ast, { kind = 'plain', onDelta = null, scope = null } = {}) {
     if (!this._resolvedSetCacheable(ast, scope)) return null
     const key = this._resolvedSetKey(ast, scope)
+    if (kind === 'weak') return { key, kind, onDelta: null }
     if (!this._resolvedSetRefs) this._resolvedSetRefs = new Map()
     let ref = this._resolvedSetRefs.get(key)
     if (!ref) { ref = { key, count: 0, subscribers: new Set() }; this._resolvedSetRefs.set(key, ref) }
@@ -2766,6 +2787,7 @@ export class FleetStore {
   }
 
   releaseResolvedSet(handle) {
+    if (handle?.kind === 'weak') return
     const ref = handle && this._resolvedSetRefs?.get(handle.key)
     if (!ref) return
     // Synchronous, and before anything else can run: a delta computed after

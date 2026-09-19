@@ -147,6 +147,32 @@ test('a set held by a subscription ref is told what changed', () => withStore(as
   assert.equal(deltas.length, 1, 'a released ref receives no further deltas')
 }))
 
+// Every agent is minted with `to:me` and `to:my_labels`. If a stored row took a
+// counted reference, every agent would permanently pin two maintained sets and
+// the refcount would stop distinguishing anything. A row is a weak reference:
+// it names the set and does not retain it. Recency does the retaining.
+test('a weak reference does not retain and is not told', () => withStore(async (store) => {
+  setLabels(store, 'fleet:one', ['crew'])
+  const deltas = []
+  const weak = store.acquireResolvedSet(parseFilter('crew'), {
+    kind: 'weak',
+    onDelta: delta => deltas.push(delta),
+  })
+  assert.ok(weak, 'a weak acquire still identifies the set')
+  store.resolveChatRecipients(parseFilter('crew'), { from: 'fleet:sender', filter: 'crew' })
+
+  setLabels(store, 'fleet:two', ['crew'])
+
+  assert.equal(deltas.length, 0, 'a weak holder is never told — there is nobody waiting')
+  // Still correct on read, which is all a stored subscription row needs: it is
+  // evaluated when a message arrives, not in advance.
+  assert.deepEqual(
+    recipients(store, 'crew').sort(), ['fleet:one', 'fleet:two'],
+    'and the set is still correct after the change',
+  )
+  store.releaseResolvedSet(weak)
+}))
+
 test('an expression over two literals sees a change to either', () => withStore(async (store) => {
   setLabels(store, 'fleet:both', ['mathy', 'reviewers'])
   assert.deepEqual(recipients(store, 'mathy & reviewers'), ['fleet:both'])
