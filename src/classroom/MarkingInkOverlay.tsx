@@ -71,7 +71,7 @@ export function MarkingInkOverlay({
     try {
       setReturning(true)
       setReturnStatus(null)
-      const { returnedMarks } = await classroomApi.returnFeedback(pair.assignmentId, pair.studentId, problemId)
+      const { returnedMarks } = await classroomApi.returnMarkedProblem(pair.assignmentId, pair.studentId, problemId)
       // The server's count of what it copied, not the local draft's. This button
       // only exists while the draft holds shapes, so nothing copied means the
       // copy failed — and that has to read as a failure here rather than as a

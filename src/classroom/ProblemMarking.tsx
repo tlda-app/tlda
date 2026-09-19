@@ -199,7 +199,7 @@ export function ProblemMarking() {
     try {
       setError('')
       setReturning(true)
-      const submission = await classroomApi.returnFeedback(assignmentId, answer.studentId, problem.problemId)
+      const submission = await classroomApi.returnMarkedProblem(assignmentId, answer.studentId, problem.problemId)
       // Which half got as far as durable state, so the failure message can say
       // so truthfully rather than reporting "the return is recorded" when the
       // server call is the thing that threw.

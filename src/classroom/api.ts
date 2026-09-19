@@ -94,7 +94,31 @@ export const classroomApi = {
   submission: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}`),
   feedback: (assignmentId: string, studentId: string, body: { title: string; text: string; attached?: boolean }) => request<{ id: string }>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/feedback`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   grade: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/grade`, { method: 'POST' }),
-  returnFeedback: (assignmentId: string, studentId: string, problemId?: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/return`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(problemId ? { problemId } : {}),
+  // TWO OPERATIONS, ONE ROUTE, AND THEY ARE NOT THE SAME REQUEST.
+  //
+  // This was a single call with an optional `problemId`, which made the marking
+  // surface's bug expressible in one line: it omitted the problem, so the route
+  // copied no marking layer, still marked the submission returned, still
+  // answered 200, and the button reported a count of the local draft. The
+  // student got nothing and the submission said returned.
+  //
+  // Splitting them is what stops that rather than a test would: returning a
+  // marked problem has nowhere to put a missing problem id, and returning
+  // feedback has nowhere to put one at all. Neither can be called as the other.
+
+  /**
+   * Return an instructor's marks on ONE problem, copying that marking layer into
+   * the room the student may read. `returnedMarks` counts what was copied.
+   */
+  returnMarkedProblem: (assignmentId: string, studentId: string, problemId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/return`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ problemId }),
+  }),
+  /**
+   * Make the instructor's written feedback on a submission visible to its
+   * student. It names no problem because it carries no marks, so `returnedMarks`
+   * comes back null — that is this operation's correct answer, not a failure.
+   */
+  returnFeedback: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/return`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
   }),
 }
