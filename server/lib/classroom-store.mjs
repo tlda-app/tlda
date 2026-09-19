@@ -235,15 +235,39 @@ export class ClassroomStore {
       FROM assignments WHERE book_page_file=? AND course_id=?`).get(bookPageFile, courseId) || null
   }
 
+  /**
+   * May this reader see the solutions for ONE assignment?
+   *
+   * The whole rule, in one place: an instructor may; a student may once they
+   * have handed that assignment in; nobody else may. Anyone with no role at all
+   * — which is what the static site and a logged-out reader look like here —
+   * falls through the student branch and is refused, so the default is withheld
+   * rather than shown.
+   *
+   * Named so the serving path can ask it about the one assignment a requested
+   * page belongs to. `solutionDocumentAccess` answers the same question over a
+   * SET of assignments — for a document that several may bear — and now asks
+   * this per member rather than restating the rule.
+   *
+   * `forStudent` in `routes/classroom.mjs` decides the same thing for the
+   * assignment API and is deliberately left alone: it does not compare courses,
+   * and folding it in here would tighten that endpoint as a side effect of a
+   * serving change.
+   */
+  maySeeSolutionsFor(assignment, principal) {
+    if (!assignment) return false
+    if (principal?.role === 'instructor') return assignment.courseId === principal.courseId
+    if (principal?.role !== 'student') return false
+    if (assignment.courseId !== principal.courseId) return false
+    return Boolean(this.getSubmission(assignment.id, principal.studentId))
+  }
+
   solutionDocumentAccess(docKey, principal) {
     const assignments = this.assignmentsForSolutionBearingDoc(docKey)
     if (assignments.length === 0) return { restricted: false, allowed: true, assignments }
     if (principal?.role === 'instructor') return { restricted: true, allowed: true, assignments }
     if (principal?.role !== 'student') return { restricted: true, allowed: false, assignments }
-    const allowed = assignments.some(assignment =>
-      assignment.courseId === principal.courseId
-      && this.getSubmission(assignment.id, principal.studentId)
-    )
+    const allowed = assignments.some(assignment => this.maySeeSolutionsFor(assignment, principal))
     return { restricted: true, allowed, assignments }
   }
 
