@@ -173,12 +173,7 @@ async function requireLaunchSlot(operation) {
   // carries no process, so counting names would spend cap slots on nothing.
   const probe = await listRunningSessionNames({ tmuxSocket: TMUX_SOCKET })
   const daemonKey = `${MACHINE_ID}:${ACTIVE_ENV}`
-  const awake = countAwakeLocalAgents({
-    processBindings: permissionLedger.listProcessBindings(),
-    sessionNames: probe.names,
-    probed: probe.probed,
-    daemonKey,
-  })
+  const awake = countAwakeLocalAgents({ sessionNames: probe.names, probed: probe.probed })
   const refusal = agentCapRefusal(operation, { cap, awake, daemonKey, probeError: probe.error || null })
   if (refusal) {
     log.warn(`[agent-cap] ${refusal}`)

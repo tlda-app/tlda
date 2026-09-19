@@ -34,12 +34,19 @@ export function awakeLocalAgentBindings({ processBindings = [], sessionNames = [
   return [...occupant.values()]
 }
 
+// What the box is carrying: one per running session.
+//
+// The cap bounds processes on the box rather than rows in the ledger, and a
+// bound agent occupies exactly one session, so the count is the number of
+// running sessions -- including the ones no binding accounts for, which are
+// running all the same. `tlda agent list` prints this same number.
+//
 // `probed: false` means the tmux probe failed. Returning 0 there would read as
 // an empty box and let every launch through, so it returns null and the caller
 // refuses instead.
-export function countAwakeLocalAgents({ processBindings = [], sessionNames = [], probed = true, daemonKey = null } = {}) {
+export function countAwakeLocalAgents({ sessionNames = [], probed = true } = {}) {
   if (!probed) return null
-  return awakeLocalAgentBindings({ processBindings, sessionNames, daemonKey }).length
+  return new Set(sessionNames).size
 }
 
 export function agentCapFromConfig(config) {

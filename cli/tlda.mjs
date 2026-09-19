@@ -5305,19 +5305,19 @@ async function listFleetAgents() {
   // Per pane, not per session: under `remain-on-exit` a session outlives the
   // process it was started for, so a session name on its own does not mean
   // anything is running. A session counts as running if any of its panes is.
-  const tmuxResult = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-a', '-F', '#{session_name}\t#{session_attached}\t#{pane_dead}'], { encoding: 'utf8' })
+  const tmuxResult = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-a', '-F', '#{session_name}\t#{session_attached}\t#{pane_dead}\t#{pane_current_command}\t#{pane_current_path}'], { encoding: 'utf8' })
   if (tmuxResult.status === 0) {
     for (const line of tmuxResult.stdout.split('\n')) {
       if (!line.trim()) continue
-      const [name, attachedRaw, deadRaw] = line.split('\t')
+      const [name, attachedRaw, deadRaw, command, path] = line.split('\t')
       if (!name) continue
       const existing = tmuxSessions.get(name)
       const running = deadRaw?.trim() !== '1'
       if (existing) {
-        existing.running = existing.running || running
+        if (running && !existing.running) Object.assign(existing, { running, command, path })
         continue
       }
-      tmuxSessions.set(name, { name, attached: attachedRaw !== '0', running })
+      tmuxSessions.set(name, { name, attached: attachedRaw !== '0', running, command, path })
     }
   }
 
@@ -5373,7 +5373,31 @@ async function listFleetAgents() {
       model: process?.model || local?.conversation?.model || '-',
       cwd: process?.cwd || local?.process?.cwd || '',
     }
-  }).sort((a, b) => {
+  })
+
+  // Sessions running on this box that no binding on this daemon accounts for.
+  // The ledger is a record of what the daemon started; the box also carries
+  // processes it did not, and a list that reports only the record describes the
+  // record rather than the machine. Declared bots are named as such, because a
+  // bot is continuity infrastructure rather than an agent that can be retired.
+  const declaredBots = new Set(getManagedBots().map(bot => bot.name))
+  const accountedFor = new Set(rows.map(row => row.tmuxName).filter(Boolean))
+  for (const session of tmuxSessions.values()) {
+    if (!session.running || accountedFor.has(session.name)) continue
+    const displayName = displayNameFromTmux(session.name) || session.name
+    const bot = [...declaredBots].find(name => displayName === name || displayName.startsWith(`${name}-`))
+    rows.push({
+      id: '-',
+      name: displayName,
+      state: session.attached ? 'attached' : 'awake',
+      tmuxName: session.name,
+      kind: bot ? `bot:${bot}` : (session.command || 'unbound'),
+      model: '-',
+      cwd: session.path || '',
+    })
+  }
+
+  rows.sort((a, b) => {
     const statusRank = { attached: 0, awake: 0, hibernating: 1 }
     return (statusRank[a.state] ?? 2) - (statusRank[b.state] ?? 2) || a.name.localeCompare(b.name)
   })
@@ -5390,11 +5414,13 @@ async function listFleetAgents() {
     return
   }
 
-  console.log(`  ${padRight('state', 9)} ${padRight('agent', 30)} ${padRight('kind', 7)} ${padRight('model', 14)} cwd`)
+  const kindWidth = Math.max(7, ...shown.map(row => Math.min(String(row.kind).length, 16)))
+  console.log(`  ${padRight('state', 9)} ${padRight('agent', 30)} ${padRight('kind', kindWidth)} ${padRight('model', 14)} cwd`)
   for (const row of shown) {
     const agent = row.name.length > 30 ? `${row.name.slice(0, 29)}…` : row.name
     const model = row.model.length > 14 ? `${row.model.slice(0, 13)}…` : row.model
-    console.log(`  ${padRight(row.state, 9)} ${padRight(agent, 30)} ${padRight(row.kind, 7)} ${padRight(model, 14)} ${row.cwd}`)
+    const kind = String(row.kind).length > 16 ? `${String(row.kind).slice(0, 15)}…` : String(row.kind)
+    console.log(`  ${padRight(row.state, 9)} ${padRight(agent, 30)} ${padRight(kind, kindWidth)} ${padRight(model, 14)} ${row.cwd}`)
   }
 }
 
@@ -5521,14 +5547,6 @@ Default behavior:
 // Awake agents on this box, by the same rule `tlda agent list` prints and the
 // daemon's cap enforces. Returns null when tmux could not be asked.
 function countAwakeAgentsHere() {
-  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-  const processLedger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
-  let processRows
-  try {
-    processRows = processLedger.listProcessBindings()
-  } finally {
-    processLedger.close()
-  }
   // A dead pane keeps its session name, so sessions are counted by whether any
   // pane in them is still running.
   const probe = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-a', '-F', '#{session_name}\t#{pane_dead}'], { encoding: 'utf8' })
@@ -5540,15 +5558,7 @@ function countAwakeAgentsHere() {
     const session = (name || '').trim()
     if (session && deadRaw?.trim() !== '1') running.add(session)
   }
-  const sessionNames = [...running]
-  return {
-    awake: awakeLocalAgentBindings({
-      processBindings: processRows,
-      sessionNames,
-      daemonKey: `${localMachineId()}:${localDaemonEnvName()}`,
-    }).length,
-    probeError: null,
-  }
+  return { awake: running.size, probeError: null }
 }
 
 async function cmdAgentCap() {

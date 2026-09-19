@@ -42,32 +42,42 @@ test('bindings are counted whatever order they arrive in', () => {
   assert.equal(awake[0].id, 'fleet:dev')
 })
 
-test('a binding whose session is not live is not awake', () => {
-  assert.equal(countAwakeLocalAgents({
+test('a binding whose session is not running is not awake', () => {
+  assert.deepEqual(awakeLocalAgentBindings({
     processBindings: DEV_SEAT,
     sessionNames: [],
     daemonKey: 'mini:testing',
-  }), 0)
+  }), [])
+  assert.equal(countAwakeLocalAgents({ sessionNames: [] }), 0)
 })
 
-test('another daemon on the same ledger is not counted against this box', () => {
-  assert.equal(countAwakeLocalAgents({
+test('another daemon on the same ledger does not occupy this box', () => {
+  const awake = awakeLocalAgentBindings({
     processBindings: [
       { id: 'fleet:a', tmuxSession: 'fleet-a', daemonKey: 'mini:testing', lastSeen: '2026-09-18T00:00:00.000Z' },
       { id: 'fleet:b', tmuxSession: 'fleet-b', daemonKey: 'air:testing', lastSeen: '2026-09-18T00:00:00.000Z' },
     ],
     sessionNames: ['fleet-a', 'fleet-b'],
     daemonKey: 'mini:testing',
-  }), 1)
+  })
+  assert.deepEqual(awake.map(row => row.id), ['fleet:a'])
+})
+
+// The cap bounds the box, so a running session counts whether or not the ledger
+// knows about it. On the mini, six running sessions had no binding -- four fleet
+// bots and two leftovers -- and a ledger-only count missed every one.
+test('a running session with no binding still counts against the cap', () => {
+  assert.equal(countAwakeLocalAgents({
+    sessionNames: ['fleet-launch-control', 'fleet-chat-lint-95', 'picpreview-logs'],
+  }), 3)
+})
+
+test('the same session named twice is one thing on the box', () => {
+  assert.equal(countAwakeLocalAgents({ sessionNames: ['fleet-a', 'fleet-a', 'fleet-b'] }), 2)
 })
 
 test('a failed tmux probe refuses instead of reading as an empty box', () => {
-  const awake = countAwakeLocalAgents({
-    processBindings: DEV_SEAT,
-    sessionNames: [],
-    probed: false,
-    daemonKey: 'mini:testing',
-  })
+  const awake = countAwakeLocalAgents({ sessionNames: [], probed: false })
   assert.equal(awake, null, 'an unknown count must not be reported as zero')
 
   const refusal = agentCapRefusal('mint', {
@@ -151,16 +161,9 @@ test('a session whose panes are all dead is not running, and one live pane is en
 })
 
 test('a dead-pane session does not consume a cap slot', () => {
-  const bindings = [
-    { id: 'fleet:live', tmuxSession: 'fleet-live', daemonKey: 'mini:testing', lastSeen: '2026-09-19T00:00:00.000Z' },
-    { id: 'fleet:exited', tmuxSession: 'fleet-exited', daemonKey: 'mini:testing', lastSeen: '2026-09-19T00:00:00.000Z' },
-  ]
-  // Both session names exist; only one still has a process behind it.
-  assert.equal(countAwakeLocalAgents({
-    processBindings: bindings,
-    sessionNames: ['fleet-live'],
-    daemonKey: 'mini:testing',
-  }), 1)
+  // `fleet-exited` still exists as a session; only `fleet-live` is running, and
+  // only running sessions reach the count. On the mini this was 31 of 50.
+  assert.equal(countAwakeLocalAgents({ sessionNames: ['fleet-live'] }), 1)
 })
 
 // The cap is only real if it sits on the path a process actually starts on.
