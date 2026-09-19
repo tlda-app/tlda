@@ -33,22 +33,34 @@ class StubChild extends EventEmitter {
     super()
     this.sent = []
   }
-  send(message) { this.sent.push(message) }
+  send(message) {
+    this.sent.push(message)
+    // The real child answers a close handshake; without this `close()` waits
+    // forever and every test that tidies up times out instead of failing on
+    // what it was actually asserting.
+    if (message?.kind === 'close') setImmediate(() => this.emit('message', { id: message.id }))
+  }
   kill(signal) { this.killed = signal || true; this.emit('exit', null, signal || 'SIGKILL') }
 }
 
 class StubClient extends FleetSearchClient {
-  _spawn() {
-    this._ready = Promise.resolve()
-    this._child = new StubChild()
-    this._child.on('message', message => {
+  _spawn(index) {
+    const worker = this._workers[index] || { index, inflight: new Set() }
+    this._workers[index] = worker
+    worker.ready = Promise.resolve()
+    worker.child = new StubChild()
+    worker.child.on('message', message => {
       const waiter = this._pending.get(message?.id)
       if (!waiter) return
       this._pending.delete(message.id)
+      worker.inflight.delete(message.id)
       if (waiter.timer) clearTimeout(waiter.timer)
       if (message.error) waiter.reject(new Error(message.error.message))
       else waiter.resolve(message.result)
     })
+    // Same exit wiring as a real child, via the class rather than a copy.
+    worker.child.on('exit', (code, signal) => this._onChildExit(worker, code, signal))
+    return worker
   }
 }
 
@@ -57,8 +69,12 @@ class StubClient extends FleetSearchClient {
 // problem, which is the thing this whole change is about.
 test('a request the child never answers rejects, and does not guess why', { timeout: 5000 }, async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '150'
+  process.env.TLDA_SEARCH_WORKERS = '1'
   const client = new StubClient('/nonexistent.db')
 
+  // Captured before the request: a recycle respawns, so `_workers[0].child` is
+  // a NEW child by the time the assertion runs and would never look killed.
+  const childBefore = client._workers[0].child
   const started = Date.now()
   await assert.rejects(
     client.searchAll({ query: 'anything' }),
@@ -101,19 +117,20 @@ test('a request the child never answers rejects, and does not guess why', { time
   // while it is inside the query -- killing the process is the only thing that
   // reaches it. Asserting the wording without this would test the promise
   // rather than the behaviour.
-  assert.ok(client._child.killed || client._recycled, 'the timeout must kill the child, not just report')
+  assert.ok(childBefore.killed, 'the timeout must kill the child, not just report')
 })
 
 test('CONTROL: a slow-but-live reply still succeeds and is not failed by the bound', async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '2000'
+  process.env.TLDA_SEARCH_WORKERS = '1'
   const client = new StubClient('/nonexistent.db')
 
   const pending = client.searchAll({ query: 'anything' })
   // Comfortably slower than the 1000ms elapsed-log threshold, comfortably inside
   // the timeout: exactly the healthy-slow case this must not break.
   setTimeout(() => {
-    const sent = client._child.sent.at(-1)
-    client._child.emit('message', { id: sent.id, result: { results: ['ok'] } })
+    const sent = client._workers[0].child.sent.at(-1)
+    client._workers[0].child.emit('message', { id: sent.id, result: { results: ['ok'] } })
   }, 60)
 
   assert.deepEqual(await pending, { results: ['ok'] })
@@ -122,14 +139,68 @@ test('CONTROL: a slow-but-live reply still succeeds and is not failed by the bou
 
 test('CONTROL: an error from the child still propagates as that error', async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '2000'
+  process.env.TLDA_SEARCH_WORKERS = '1'
   const client = new StubClient('/nonexistent.db')
 
   const pending = client.searchAll({ query: 'anything' })
   setTimeout(() => {
-    const sent = client._child.sent.at(-1)
-    client._child.emit('message', { id: sent.id, error: { message: 'store exploded' } })
+    const sent = client._workers[0].child.sent.at(-1)
+    client._workers[0].child.emit('message', { id: sent.id, error: { message: 'store exploded' } })
   }, 10)
 
   await assert.rejects(pending, /store exploded/)
   assert.equal(client._pending.size, 0)
+})
+
+// The point of a pool, and the two properties worth asserting about it. One
+// child meant a single slow query blocked every other search, and recycling it
+// on timeout cancelled queries that had done nothing wrong.
+test('a query occupying one worker does not block a query on another', { timeout: 5000 }, async () => {
+  process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '5000'
+  process.env.TLDA_SEARCH_WORKERS = '2'
+  const client = new StubClient('/nonexistent.db')
+
+  // First request goes to a worker and is never answered.
+  const stuck = client.searchAll({ query: 'slow' })
+  // The send happens after the readiness handshake resolves, so the routing is
+  // not observable until a tick has passed.
+  await new Promise(resolve => setImmediate(resolve))
+  const busy = client._workers.find(w => w.inflight.size === 1)
+  assert.ok(busy, 'the first request occupies exactly one worker')
+
+  // The second must be routed to the other worker rather than queued behind it.
+  const quick = client.searchAll({ query: 'fast' })
+  const other = client._workers.find(w => w !== busy)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(other.inflight.size, 1, 'the second request went to the idle worker')
+
+  const quickId = other.child.sent.at(-1).id
+  other.child.emit('message', { id: quickId, result: ['answered'] })
+  assert.deepEqual(await quick, ['answered'], 'it answers while the other worker is still stuck')
+
+  stuck.catch(() => {})
+  await client.close()
+})
+
+test('recycling one worker does not cancel queries on the others', { timeout: 5000 }, async () => {
+  process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '5000'
+  process.env.TLDA_SEARCH_WORKERS = '2'
+  const client = new StubClient('/nonexistent.db')
+
+  const doomed = client.searchAll({ query: 'doomed' })
+  await new Promise(resolve => setImmediate(resolve))
+  const busy = client._workers.find(w => w.inflight.size === 1)
+  const survivor = client.searchAll({ query: 'survivor' })
+  await new Promise(resolve => setImmediate(resolve))
+  const other = client._workers.find(w => w !== busy)
+
+  client._recycle(busy, 'a test said so')
+  await assert.rejects(doomed, /restarted because a test said so/)
+
+  // The survivor is untouched: its worker was never killed, and it still answers.
+  const survivorId = other.child.sent.at(-1).id
+  other.child.emit('message', { id: survivorId, result: ['still here'] })
+  assert.deepEqual(await survivor, ['still here'], 'a recycle is confined to its own worker')
+
+  await client.close()
 })

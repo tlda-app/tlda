@@ -83,37 +83,61 @@ function searchTimeoutError(what, timeoutMs) {
   )
 }
 
+// How many search children to run.
+//
+// One was the original, and one is why a single slow query made search look
+// broken: every other search queued behind it, and recycling it on timeout took
+// the innocent ones too. A pool lets a slow query occupy its own worker while
+// the rest keep answering, and confines a recycle to the queries on that child.
+//
+// Configurable because the right number is a property of the box, not of the
+// code. Each child opens its own connection to the fleet database and carries
+// its own page cache — the live child was measured at ~326 MB RSS — so on a
+// small machine the pool is bounded by memory long before CPU. Set
+// TLDA_SEARCH_WORKERS to fit the deployment.
+const DEFAULT_SEARCH_WORKERS = 4
+
+function searchWorkerCount() {
+  const configured = Number(process.env.TLDA_SEARCH_WORKERS)
+  if (!Number.isFinite(configured) || configured < 1) return DEFAULT_SEARCH_WORKERS
+  return Math.floor(configured)
+}
+
 export class FleetSearchClient {
   constructor(dbPath) {
     this.dbPath = dbPath
     this._seq = 0
     this._pending = new Map()
     this._closed = false
-    this._spawn()
+    this._workers = []
+    for (let i = 0; i < searchWorkerCount(); i++) this._spawn(i)
     for (const method of METHODS) this[method] = (...args) => this._call(method, args)
   }
 
-  _spawn() {
-    this._ready = new Promise((resolve, reject) => {
-      this._resolveReady = resolve
-      this._rejectReady = reject
+  _spawn(index) {
+    const worker = this._workers[index] || { index, inflight: new Set() }
+    this._workers[index] = worker
+    worker.ready = new Promise((resolve, reject) => {
+      worker.resolveReady = resolve
+      worker.rejectReady = reject
     })
-    this._child = fork(new URL('./fleet-search-process.mjs', import.meta.url), [], {
+    worker.child = fork(new URL('./fleet-search-process.mjs', import.meta.url), [], {
       env: { ...process.env, TLDA_FLEET_DB: this.dbPath },
       serialization: 'advanced',
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     })
     try {
-      setPriority(this._child.pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+      setPriority(worker.child.pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
     } catch (error) {
-      this._child.kill()
+      worker.child.kill()
       throw new Error(`could not lower fleet search process priority: ${error?.message || error}`, { cause: error })
     }
-    this._child.on('message', message => {
-      if (message?.kind === 'ready') return this._resolveReady()
+    worker.child.on('message', message => {
+      if (message?.kind === 'ready') return worker.resolveReady()
       const waiter = this._pending.get(message?.id)
       if (!waiter) return
       this._pending.delete(message.id)
+      worker.inflight.delete(message.id)
       if (waiter.timer) clearTimeout(waiter.timer)
       const elapsedMs = performance.now() - waiter.queuedAt
       if (elapsedMs >= Number(process.env.TLDA_SEARCH_REQUEST_LOG_MS || 1000)) {
@@ -127,51 +151,73 @@ export class FleetSearchClient {
         waiter.resolve(message.result)
       }
     })
-    this._child.on('error', error => this._fail(error))
-    this._child.on('exit', (code, signal) => {
-      if (this._closed) return
-      // A recycle is a deliberate kill, and the waiters that die with it did
-      // nothing wrong — say which it was rather than reporting a bare exit.
-      const reason = this._recycleReason
-      this._recycleReason = null
-      this._fail(new Error(reason
-        ? `the fleet search child was restarted because ${reason}; searches in flight were cancelled with it`
-        : `fleet search process exited (${code ?? signal})`))
-      this._spawn()
-    })
+    worker.child.on('error', error => this._fail(worker, error))
+    worker.child.on('exit', (code, signal) => this._onChildExit(worker, code, signal))
+    return worker
   }
 
-  // Kill the child so an uncancellable query stops consuming the box. Safe to
+  // Separate from `_spawn` so a caller that supplies its own child — the tests
+  // stub one rather than forking, because "the child never replies" is not
+  // reproducible with a real subprocess — wires the same exit behaviour instead
+  // of a copy of it that can drift.
+  _onChildExit(worker, code, signal) {
+    if (this._closed) return
+    // A recycle is a deliberate kill, and the waiters that die with it did
+    // nothing wrong — say which it was rather than reporting a bare exit.
+    const reason = worker.recycleReason
+    worker.recycleReason = null
+    this._fail(worker, new Error(reason
+      ? `the fleet search child was restarted because ${reason}; searches in flight on that child were cancelled with it`
+      : `fleet search process exited (${code ?? signal})`))
+    this._spawn(worker.index)
+  }
+
+  // Least busy wins. Nothing cleverer, because the cost of a search is not
+  // knowable before it runs — the query that takes sixteen minutes looks exactly
+  // like the one that takes 40ms until it is running.
+  _pickWorker() {
+    let chosen = this._workers[0]
+    for (const worker of this._workers) {
+      if (worker.inflight.size < chosen.inflight.size) chosen = worker
+    }
+    return chosen
+  }
+
+  // Kill one child so an uncancellable query stops consuming the box. Safe to
   // call more than once: the second kill finds no child, and `_closed` keeps
-  // shutdown from respawning.
-  _recycle(reason) {
-    if (this._closed || !this._child) return
-    this._recycleReason = reason
-    try { this._child.kill('SIGKILL') } catch { /* already gone */ }
+  // shutdown from respawning. Only this worker's queries are affected — which
+  // is the point of having more than one.
+  _recycle(worker, reason) {
+    if (this._closed || !worker?.child) return
+    worker.recycleReason = reason
+    try { worker.child.kill('SIGKILL') } catch { /* already gone */ }
   }
 
-  _fail(error) {
-    this._rejectReady?.(error)
-    for (const waiter of this._pending.values()) {
+  _fail(worker, error) {
+    worker.rejectReady?.(error)
+    for (const id of worker.inflight) {
+      const waiter = this._pending.get(id)
+      if (!waiter) continue
+      this._pending.delete(id)
       if (waiter.timer) clearTimeout(waiter.timer)
       waiter.reject(error)
     }
-    this._pending.clear()
+    worker.inflight.clear()
   }
 
   // The ready handshake gets the same bound as a request. `_call` used to await
-  // `this._ready` unguarded, so a child that forked but never sent {kind:'ready'}
+  // readiness unguarded, so a child that forked but never sent {kind:'ready'}
   // hung EVERY call forever, with no timeout and nothing logged. Raced per call
-  // rather than poisoning `_ready` itself, so a child that comes up late still
-  // serves every later caller.
-  _awaitReady(timeoutMs) {
+  // rather than poisoning the promise itself, so a child that comes up late
+  // still serves every later caller.
+  _awaitReady(worker, timeoutMs) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         console.warn(`[fleet-search-request] TIMEOUT after ${timeoutMs}ms waiting for child ready`)
         reject(searchTimeoutError('the ready handshake', timeoutMs))
       }, timeoutMs)
       timer.unref?.()
-      this._ready.then(
+      worker.ready.then(
         value => { clearTimeout(timer); resolve(value) },
         error => { clearTimeout(timer); reject(error) },
       )
@@ -183,39 +229,45 @@ export class FleetSearchClient {
     const id = ++this._seq
     const timeoutMs = requestTimeoutMs()
     const context = requestContext(args)
-    return this._awaitReady(timeoutMs).then(() => new Promise((resolve, reject) => {
+    const worker = this._pickWorker()
+    return this._awaitReady(worker, timeoutMs).then(() => new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         // Only this path can report a request that never came back. The elapsed
         // log below lives in the reply handler, so before this existed a hung
         // request produced no line at any log retention, ever.
         this._pending.delete(id)
+        worker.inflight.delete(id)
         console.warn(`[fleet-search-request] TIMEOUT after ${timeoutMs}ms ${method} ${JSON.stringify(context || {})}`)
         reject(searchTimeoutError(`${method}()`, timeoutMs))
         // Abandoning the request left the scan running: `better-sqlite3` is
         // synchronous, so the child's event loop is inside the query and cannot
         // read an IPC cancel or run a signal handler. Killing the process is
-        // the only thing that reaches it. The `exit` handler below rejects the
-        // remaining waiters and respawns, so recovery is the path that already
-        // exists rather than a new one.
-        this._recycle(`a ${method}() request exceeded ${timeoutMs}ms`)
+        // the only thing that reaches it. The `exit` handler rejects that
+        // child's remaining waiters and respawns it, so recovery is the path
+        // that already exists rather than a new one.
+        this._recycle(worker, `a ${method}() request exceeded ${timeoutMs}ms`)
       }, timeoutMs)
       // Never hold the process open on account of an in-flight search.
       timer.unref?.()
-      this._pending.set(id, { resolve, reject, queuedAt: performance.now(), context, timer })
-      this._child.send({ id, method, args })
+      this._pending.set(id, { resolve, reject, queuedAt: performance.now(), context, timer, worker })
+      worker.inflight.add(id)
+      worker.child.send({ id, method, args })
     }))
   }
 
-  ready() { return this._ready }
+  ready() { return Promise.all(this._workers.map(worker => worker.ready)) }
 
   async close() {
     if (this._closed) return
     this._closed = true
-    const id = ++this._seq
-    await new Promise((resolve, reject) => {
-      this._pending.set(id, { resolve, reject })
-      this._child.send({ id, kind: 'close' })
-    })
-    this._child.kill()
+    await Promise.all(this._workers.map(worker => new Promise(resolve => {
+      const id = ++this._seq
+      this._pending.set(id, { resolve, reject: resolve })
+      worker.inflight.add(id)
+      try { worker.child.send({ id, kind: 'close' }) } catch { resolve() }
+    })))
+    for (const worker of this._workers) {
+      try { worker.child.kill() } catch { /* already gone */ }
+    }
   }
 }
