@@ -33,3 +33,12 @@ test('a missing timestamp is treated as current', () => {
 test('a zero window disables the cutoff', () => {
   assert.equal(notificationIsStale(ago(60 * 48), now, 0), false)
 })
+
+// The setting is a duration with a unit, the same shape as
+// notifications.ackTimeout -- not a bare number with the unit in its name.
+test('the configured window reads as a duration string', async () => {
+  const { parseDurationMs } = await import('../shared/inbox-attention.mjs')
+  assert.equal(parseDurationMs('20m'), 20 * MIN)
+  assert.equal(parseDurationMs('90s'), 90_000)
+  assert.equal(parseDurationMs('20'), null, 'a bare number has no unit and is refused')
+})

@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { parseDurationMs } from './inbox-attention.mjs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { parse as parseYaml, parseDocument } from 'yaml'
@@ -712,14 +713,17 @@ export function saveMachineId(id) {
   writeFileSync(DAEMON_FILE, String(doc))
 }
 
-// Minutes after which a notification no longer justifies starting a process.
-// Absent = 20. 0 disables the cutoff and every notice can wake.
+// How old a notification can be and still justify starting a process.
+// A duration with a unit, the same shape as notifications.ackTimeout.
+// Absent = 20m. Omit the key to keep the default; there is no "off".
 export function getNotificationWakeMaxAgeMs() {
-  const minutes = loadDaemonYaml().notificationWakeMaxAgeMinutes ?? 20
-  if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes < 0) {
-    throw new Error(`daemon.yaml: notificationWakeMaxAgeMinutes must be a non-negative number (got ${JSON.stringify(minutes)})`)
+  const declared = loadDaemonYaml().notificationWakeMaxAge
+  if (declared === undefined || declared === null) return 20 * 60_000
+  const ms = parseDurationMs(declared)
+  if (!ms) {
+    throw new Error(`daemon.yaml: notificationWakeMaxAge must be a duration WITH A UNIT (e.g. 20m, 90s); got ${JSON.stringify(declared)}`)
   }
-  return Math.round(minutes * 60_000)
+  return ms
 }
 
 const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
