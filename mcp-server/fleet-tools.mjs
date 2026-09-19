@@ -3389,6 +3389,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     let recipients = [];
     let agents = [];
     let rosterUnavailable = false;
+    let rosterUnavailableReason = null;
     // Short-circuit: a bare literal agent id (fleet:…) needs no roster lookup —
     // send straight to the id (avoids fetching the whole fleet for the common
     // { to: "fleet:<id>" } case).
@@ -3404,13 +3405,23 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         recipients = resolved?.recipients || [];
       } catch (e) {
         rosterUnavailable = true;
+        rosterUnavailableReason = e?.message || String(e);
       }
     }
     recipients = [...new Set(recipients)];
     // Target validator: report empty/unresolved honestly and distinctly from "server down".
     // A transient roster miss must never block a direct (exact-id) send.
     if (recipients.length === 0) {
-      if (rosterUnavailable) return { content: [{ type: 'text', text: "⚠ Message NOT sent — couldn't fetch the agent roster to resolve a label filter (transient). Retry shortly." }], isError: true };
+      // DELETE THIS BRANCH with the resolved-agent-set cache. It exists only
+      // because resolving a name or an expression needs the server, so a
+      // transport outage turns into a refused send while the durable send path
+      // beside it queues and retries quite happily. Once a cached set answers
+      // without the wire there is no unavailable case left to report, and a
+      // message describing an impossible failure is worse than no message.
+      // `rosterUnavailable` and `rosterUnavailableReason` go with it; the
+      // transport-level distinction in `sendFleetRequestAttempt` stays, since
+      // every other ephemeral op can still hit it.
+      if (rosterUnavailable) return { content: [{ type: 'text', text: `⚠ Message NOT sent — could not resolve "${args.to}" to recipients (transient). ${rosterUnavailableReason || 'no reason reported'}. Retry shortly; addressing a single bare fleet:<id> needs no resolution and works while this is down.` }], isError: true };
       return { content: [{ type: 'text', text: `⚠ Message NOT sent — no agent matched "${args.to}". Check the name/label.` }], isError: true };
     }
     const maxRecipients = args.max_recipients ?? 5;
@@ -5916,7 +5927,18 @@ async function sendFleetRequestAttempt(type, params = {}, opts = {}) {
     const connected = await _reconnectBuffer.waitForConnection(Math.min(remaining, 5_000));
     if (!connected && !_channelRWS?.connected && Date.now() - startedAt >= deadlineMs) break;
   }
-  throw new Error(`fleet WS request was not accepted before deadline after ${deadlineMs}ms (type=${type})`);
+  // Say which of the two things went wrong, because they need opposite fixes
+  // and the caller cannot tell them apart from the outside. `_sendWSOnce`
+  // returns null without sending when the socket is down, so an expiry here is
+  // usually time spent in `waitForConnection` and not a slow server — the
+  // request was never made. Reporting only the deadline sends the reader to
+  // look at the server and the query, which is where this is not.
+  const connectedAtGiveUp = !!_channelRWS?.connected;
+  throw new Error(
+    connectedAtGiveUp
+      ? `fleet WS request was not accepted before deadline after ${deadlineMs}ms (type=${type}); the socket was connected when we gave up, so this is the server not answering in time`
+      : `fleet WS request was not accepted before deadline after ${deadlineMs}ms (type=${type}); the fleet websocket was disconnected when we gave up, so the request was never sent — a transport outage, not a slow server`
+  );
 }
 
 function currentTransportSessionId() {
