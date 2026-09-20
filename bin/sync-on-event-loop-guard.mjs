@@ -54,18 +54,25 @@ const IS_TEST = /\.test\.mjs$|-test\.mjs$/
 // blessed -- they are the backlog, made countable. Lower a number when you fix
 // one; the guard will tell you if you raise one.
 const BUDGET = {
-  // pandoc markdown<->latex conversion on request paths, plus `git show` and
-  // `git log --max-count=500`. Real multi-hundred-ms blocks; unfixed.
-  'server/routes/projects.mjs': 5,
+  // PAID. Was 5: pandoc markdown<->latex conversion on request paths, plus
+  // `git show` and `git log --max-count=500`. The file is still here and still
+  // 2,264 lines, and contains none of the three prohibited calls — so this is
+  // the debt being cleared rather than the guard losing sight of the file,
+  // which is the other thing a zero count can mean. Held at 0 rather than
+  // deleted so a reintroduction fails against a number someone chose.
+  'server/routes/projects.mjs': 0,
   // `pkill` in browser/bridge cleanup routes, and a deepgram bridge restart.
   // Dev-facing, but still on the loop.
   'server/unified-server.mjs': 10,
   // pandoc in the build path. The build itself is already a child process
   // (build-runner.mjs:1753); this is the conversion around it.
   'server/lib/build-runner.mjs': 1,
-  // The source-authority three-way merge. Making it async ripples into the
-  // source-push path -- flagged 2026-07-25 for someone with a clear head.
-  'server/lib/source-lifecycle.mjs': 1,
+  // PAID. Was 1: the source-authority three-way merge, flagged 2026-07-25 as
+  // rippling into the source-push path. The file is present and clean of all
+  // three calls. Whether the merge went async or moved elsewhere, nothing is
+  // over budget anywhere else — the guard passes overall — so it did not
+  // simply relocate into an unbudgeted file.
+  'server/lib/source-lifecycle.mjs': 0,
   // Skip, 2026-07-25, on outline: "maybe it would be cool if it were used at
   // some point, but for now, I don't know." Undecided, not on a hot path.
   // Excluded rather than forced into a decision nobody asked for.

@@ -486,6 +486,30 @@ $ git push ~/work/deploy/pic-preview <sha>:refs/heads/wiring-probe
 remote: push rejected: only refs/heads/main is deployable, got refs/heads/wiring-probe
 ```
 
+## `tsc --noEmit` on the default config type-checks nothing
+
+The root `tsconfig.json` is a solution file — `"files": []` and nothing but
+`references` to `tsconfig.app.json`, `tsconfig.node.json`, and
+`packages/tldraw-wm`. `--noEmit` does not follow project references; only `-b`
+does. So `npx tsc --noEmit` **exits 0 having checked zero files**, and a
+pre-push verification run that way reports success on a tree whose type errors
+are still there. The hook's own `tsc -b` then finds them, and the cost is the
+whole build's wall-clock rather than a few seconds locally.
+
+The gate the hook runs is `npm run build` — `tsc -b && vite build`. To check
+only the type half, name the project:
+
+```sh
+npx tsc -p tsconfig.app.json --noEmit
+```
+
+`tsconfig.app.json` includes `["src"]` only. Code outside `src/` — `server/`,
+`bin/`, `tests/` — is not in that project, so a `.ts` file added under `tests/`
+is not covered by the build's type check and cannot fail it.
+
+A green report that names neither `npm run build` nor an explicit `-p` has not
+established that the tree compiles.
+
 ## A bare `fly deploy` from a fresh checkout fails under two different names
 
 `Dockerfile.live` copies two things **the guarded path is the only producer of**:
