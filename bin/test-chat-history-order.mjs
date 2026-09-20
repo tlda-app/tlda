@@ -66,9 +66,15 @@ try {
 
   // Agent scoping still holds with the extra sort wrapped around it.
   const scoped = await store.queryChatHistory({ agents: ['fleet:aaa'], limit: 100, order: 'desc' })
+  // `recipients`, not `to`. Every row leaving the store passes through
+  // hydrateEvent, which turns the `to_json` column into a recipients ARRAY and
+  // deletes the scalar — so `r.to` is undefined on every row, and this
+  // predicate was false for all 15 rows where aaa is the recipient rather than
+  // the sender. The count was right the whole time, which is why the failure
+  // read as a scoping bug in the query instead of a stale assertion.
   T('agent-scoped excludes other traffic',
-    scoped.every(r => r.from === 'fleet:aaa' || r.to === 'fleet:aaa') && scoped.length === 30,
-    `${scoped.length} rows`)
+    scoped.every(r => r.from === 'fleet:aaa' || r.recipients.includes('fleet:aaa')) && scoped.length === 30,
+    `${scoped.length} rows, offenders: ${JSON.stringify(scoped.filter(r => r.from !== 'fleet:aaa' && !r.recipients.includes('fleet:aaa')).map(r => r.text))}`)
 
   // Paging with `before` must be contiguous in both orders.
   const first = await store.queryChatHistory({ agents: [], limit: 5, order: 'desc' })

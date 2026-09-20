@@ -27,7 +27,14 @@ for (let i = 0; i < 40; i++) {
     type: 'chat',
     timestamp: new Date(Date.UTC(2026, 6, 25, 0, 0, i)).toISOString(),
     from: inConversation ? 'fleet:aaa' : 'fleet:ccc',
-    to: inConversation ? 'fleet:bbb' : 'fleet:aaa',
+    // `recipients`, an ARRAY, because that is what a row leaving the store
+    // looks like: hydrateEvent turns the `to_json` column into this and there
+    // is no scalar `to` on any real row. The fixture used to carry `to`, and
+    // the matcher reads `event.recipients` — so every event where alice is the
+    // RECIPIENT silently failed to match, and the page came back as the
+    // even-numbered half of the conversation. A fixture that does not have the
+    // shape of the thing it stands in for tests the fixture.
+    recipients: [inConversation ? 'fleet:bbb' : 'fleet:aaa'],
     text: `m${i}`,
   })
 }
@@ -36,7 +43,7 @@ for (let i = 0; i < 40; i++) {
 // to chronological on the way out, exactly as the real one does.
 function queryChatHistory({ before, agents, limit }) {
   const ids = new Set(agents || [])
-  let rows = ROWS.filter(r => (!ids.size || ids.has(r.from) || ids.has(r.to)))
+  let rows = ROWS.filter(r => (!ids.size || ids.has(r.from) || r.recipients.some(id => ids.has(id))))
   if (before) rows = rows.filter(r => r.timestamp < before)
   rows = rows.slice().sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)).slice(0, limit)
   rows.reverse()
