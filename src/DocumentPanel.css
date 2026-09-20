@@ -891,23 +891,30 @@ html[data-theme="dark"] .toc-drop-hint {
 }
 
 /* Whether a row is what the class site is serving, on the bullet the row
-   already has. No badge, no column, no second glyph: the same ⊙, coloured.
+   already has. No badge, no column, no second glyph.
 
-   A marked bullet stops being dormant, because a dormant traffic light is not
-   one — the colour has to be readable at a glance down the column without
-   hovering, which is the entire request. An UNMARKED row is untouched and
-   keeps the dormant bullet it has always had, so "we could not compare this"
-   and "there is no class site" look like nothing rather than like news.
+   A MARKED row draws a filled disc; an UNMARKED row keeps the dormant ⊙ it has
+   always had. The first version coloured the ⊙ itself, and Skip's reading of it
+   was "a tiny tiny rim on a weird background" — which is what a 9px ring is: a
+   thin outline with the panel showing through the middle, so the colour had
+   almost no area to be seen in. A disc at this size is the colour, not an edge
+   around it, and it is legible down the column without hovering, which is the
+   whole of what a traffic light is for.
 
-   The reds and greens are picked for a light and a dark panel separately below;
-   these are the light-panel values. Alarm is deliberately NOT a fourth shade of
-   the same light — it is the outlined bullet, because it does not mean "further
-   along", it means the class site is serving something this book cannot make. */
+   Keeping the unmarked ⊙ untouched is deliberate and load-bearing: "we could
+   not compare this" and "there is no class site" have to look like nothing
+   rather than like news.
+
+   Alarm is still not a fourth shade of the same light — the class site serving
+   a page this book cannot produce does not mean "further along" — so it keeps
+   the ring, filled, with a halo. It is the one mark that should look wrong. */
 .toc-row-center--green,
 .toc-row-center--yellow,
 .toc-row-center--red,
 .toc-row-center--alarm {
   opacity: 1;
+  font-size: 11px;
+  line-height: 1;
 }
 
 .toc-row-center--green { color: #15803d; }
@@ -918,10 +925,46 @@ html[data-theme="dark"] .toc-drop-hint {
   text-shadow: 0 0 3px currentColor;
 }
 
-html[data-theme="dark"] .toc-row-center--green { color: #4ade80; }
-html[data-theme="dark"] .toc-row-center--yellow { color: #fbbf24; }
-html[data-theme="dark"] .toc-row-center--red { color: #f87171; }
-html[data-theme="dark"] .toc-row-center--alarm { color: #d8b4fe; }
+html[data-theme="dark"] .toc-row-center--green { color: #22c55e; }
+html[data-theme="dark"] .toc-row-center--yellow { color: #f59e0b; }
+html[data-theme="dark"] .toc-row-center--red { color: #ef4444; }
+html[data-theme="dark"] .toc-row-center--alarm { color: #a855f7; }
+
+/* The reason, drawn by the panel.
+
+   A native `title` never appears on these rows — the table of contents lives
+   inside the canvas and the hover that would raise a browser tooltip is
+   consumed on the way — so Skip had thirty-three coloured marks in front of him
+   and could not read the sentence behind a single one. The `why` is the most
+   useful part of the mark, because it turns a colour into a reason, so it is
+   rendered in the DOM rather than asked of the browser. The `title` attribute
+   stays for the accessibility tree and for anywhere this panel is not inside a
+   canvas. */
+.toc-row-center[data-why] {
+  position: relative;
+}
+
+.toc-row-center[data-why]:hover::after {
+  content: attr(data-why);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 4px);
+  transform: translateX(-12px);
+  z-index: 10;
+  width: max-content;
+  max-width: 220px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.3;
+  text-align: left;
+  white-space: normal;
+  color: #fff;
+  background: rgba(24, 24, 27, 0.95);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
 
 .toc-title {
   min-width: 0;

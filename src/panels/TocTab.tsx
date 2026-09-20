@@ -90,15 +90,15 @@ const COURSE_ITEM_BADGE: Record<CourseItemType, string> = {
  * compared, and it is the one that must never look like an answer.
  */
 type TocMark = 'green' | 'yellow' | 'red' | 'alarm' | 'unknown'
-const EMPTY_MARKS: ReadonlyMap<number, TocMark> = new Map<number, TocMark>()
-
-// Said as what it means for the class, not as the name of a state.
-const MARK_TITLE: Record<Exclude<TocMark, 'unknown'>, string> = {
-  green: 'The class site has this, and the same words',
-  yellow: 'Written here, not on the class site',
-  red: 'Only you have this — nothing serves it',
-  alarm: 'The class site has this and your book cannot make it',
-}
+/**
+ * The mark and the server's own sentence for it. The sentence is carried rather
+ * than re-derived here: the comparison knows WHY a row came out the colour it
+ * did — "the class site serves different text", "declared, and no surface
+ * serves it" — and a label written on this side would be a second opinion that
+ * drifts from the one thing that looked.
+ */
+type TocMarkRow = { mark: TocMark; why: string }
+const EMPTY_MARKS: ReadonlyMap<number, TocMarkRow> = new Map<number, TocMarkRow>()
 
 type HomeworkEntry = { assignmentId: string; returned: boolean }
 const EMPTY_HOMEWORK: ReadonlyMap<string, HomeworkEntry> = new Map<string, HomeworkEntry>()
@@ -309,16 +309,16 @@ export function TocTab({ query = '' }: { query?: string }) {
   // Carries the project it was fetched for, like `pageFiles` above and for the
   // same reason: marks read against another project's pages do not fail, they
   // colour the wrong rows.
-  const [fetchedMarks, setFetchedMarks] = useState<{ project: string; byPage: ReadonlyMap<number, TocMark> } | null>(null)
+  const [fetchedMarks, setFetchedMarks] = useState<{ project: string; byPage: ReadonlyMap<number, TocMarkRow> } | null>(null)
   useEffect(() => {
     if (!tocProjectName) return
     let cancelled = false
     const project = tocProjectName
     fetch(`/api/projects/${encodeURIComponent(project)}/toc-marks`)
       .then(response => response.ok ? response.json() : null)
-      .then((body: { marks?: Array<{ page: number; mark: TocMark }> } | null) => {
+      .then((body: { marks?: Array<{ page: number; mark: TocMark; why: string }> } | null) => {
         if (cancelled) return
-        setFetchedMarks({ project, byPage: new Map((body?.marks ?? []).map(row => [row.page, row.mark])) })
+        setFetchedMarks({ project, byPage: new Map((body?.marks ?? []).map(row => [row.page, { mark: row.mark, why: row.why }])) })
       })
       // An unreachable comparison leaves every bullet unmarked, which is what
       // "we don't know" looks like. It must never look like an answer.
@@ -659,17 +659,23 @@ export function TocTab({ query = '' }: { query?: string }) {
   // project with no class site, or a comparison that could not be made, looks
   // like.
   function renderCenterButton(h: { title: string; center: () => void; page?: number }) {
-    const mark = h.page != null ? markByPage.get(h.page) : undefined
-    const state = mark && mark !== 'unknown' ? mark : null
+    const row = h.page != null ? markByPage.get(h.page) : undefined
+    const state = row && row.mark !== 'unknown' ? row.mark : null
     return (
       <button
         className={`toc-row-center${state ? ` toc-row-center--${state}` : ''}`}
         type="button"
         onClick={() => { h.center() }}
-        title={state ? `${MARK_TITLE[state]} \u2014 click to centre this heading` : 'Center this heading'}
-        aria-label={state ? `${MARK_TITLE[state]}. Center this heading` : 'Center this heading'}
+        title={state ? `${row!.why} — click to centre this heading` : 'Center this heading'}
+        aria-label={state ? `${row!.why}. Center this heading` : 'Center this heading'}
+        // The reason, drawn by the panel rather than by the browser. A native
+        // `title` never appears here: the table of contents lives inside the
+        // canvas, and the hover that would raise a tooltip is consumed on the
+        // way. Skip had the marks in front of him and could not read a single
+        // one of them, which is most of what a colour is worth.
+        data-why={state ? row!.why : undefined}
       >
-        <span aria-hidden="true">{'\u2299'}</span>
+        <span aria-hidden="true">{state ? '\u25CF' : '\u2299'}</span>
       </button>
     )
   }
