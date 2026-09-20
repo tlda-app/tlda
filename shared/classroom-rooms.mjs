@@ -98,6 +98,21 @@ export function gradingLayerRoomTarget(roomId) {
 /**
  * What a caller may do with the annotation thread on one answer.
  *
+ * **Provisional, and due to be deleted rather than extended.** The general
+ * answer is the unix file model Skip gave: a student's homework is owned by
+ * them and grouped to the instructors of the course, and a mark on it inherits
+ * that owner and group — so "anyone replies to anything" falls out of group
+ * membership instead of being encoded as a case. `identity-resolve` is building
+ * that carrier (owner = student id, group = `instructors:<courseId>`); measured
+ * 2026-09-20, none of it exists yet — no owner/group field, no membership
+ * check, and a submission carries an owner but no group.
+ *
+ * So this is the only live answer, and it is deliberately the narrowest one
+ * that unblocks the feature: it hard-codes the single membership the real model
+ * will derive. When the carrier lands, this function goes — do not grow a
+ * second case into it in the meantime, because two answers to one question is
+ * the thing the general model exists to stop.
+ *
  * Separate from `classroomRoomAccess` below and deliberately not folded into
  * it: that function's branch ORDER is its guard, and the one thing it must keep
  * refusing is a student reaching the instructor's private draft. A thread layer

@@ -1,0 +1,48 @@
+/* The plus that starts a reply. Its own file rather than an addition to the
+   marking pane's injected CSS in `solutionMarking.ts`, so the two can be worked
+   on at once without colliding. */
+
+.tlda-reply-plus {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tlda-reply-plus button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  /* Inherits the pane's colour so it follows the chapter into dark, which is
+     what the answer pane around it already does. */
+  opacity: 0.75;
+}
+
+.tlda-reply-plus button:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.tlda-reply-plus button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Recording is a state a person must be able to see they are in without
+   reading a label -- this control is the only thing on screen that knows a
+   microphone is open. */
+.tlda-reply-plus button.tlda-reply-plus-recording {
+  border-color: #d2503c;
+  color: #d2503c;
+  opacity: 1;
+}
+
+.tlda-reply-plus-error {
+  font-size: 12px;
+  color: #d2503c;
+}
