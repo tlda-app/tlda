@@ -63,6 +63,36 @@ export async function stagePublishedTree({ serverUrl, project, files, fetchImpl 
  * the same failure as a stale solution arriving by omission instead of by age,
  * and it is the one a publish step is most likely to get wrong quietly.
  */
+/**
+ * The repository a publish is allowed to reach, and the one it is not.
+ *
+ * Skip's standing instruction is that publication goes to the test site until
+ * he has looked that site over himself. So this refuses the repository his
+ * students read, by name, and says where to send it instead.
+ *
+ * The guard exists BECAUSE the command is short. The manual crossing this
+ * replaces took a build, a copy and a push, and every one of those was a place
+ * to notice you were on the wrong repository. One command has none, so the
+ * noticing has to be here.
+ */
+const CLASS_SITE_REPOSITORIES = [/qtm285\.github\.io/i]
+
+export function classSiteRefusal(remoteUrl) {
+  if (!remoteUrl) return null
+  return CLASS_SITE_REPOSITORIES.some(pattern => pattern.test(remoteUrl))
+    ? `${remoteUrl} is the site his students read. Publication goes to the test site until he has looked that one over himself.`
+    : null
+}
+
+export async function checkoutRemoteUrl(checkout, remote = 'origin') {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', checkout, 'remote', 'get-url', remote], { encoding: 'utf8' })
+    return stdout.trim()
+  } catch {
+    return null
+  }
+}
+
 export async function writePublishedTree({ staging, checkout, subdirectory }) {
   if (!existsSync(join(checkout, '.git'))) {
     throw new Error(`${checkout} is not a git checkout — publishing commits and pushes, so it needs one`)

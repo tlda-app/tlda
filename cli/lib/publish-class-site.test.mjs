@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { commitAndPushClassSite, stagePublishedTree, writePublishedTree } from './publish-class-site.mjs'
+import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, stagePublishedTree, writePublishedTree } from './publish-class-site.mjs'
 
 const sha = (text) => createHash('sha256').update(Buffer.from(text)).digest('hex')
 
@@ -131,4 +131,35 @@ test('a checkout that is not a git repository is refused before anything is writ
     )
     assert.equal(existsSync(join(notARepo, 'static')), false)
   } finally { rmSync(notARepo, { recursive: true, force: true }) }
+})
+
+// The guard exists because the command is short. The manual crossing it
+// replaces was a build, a copy and a push, and each of those was a place to
+// notice you were on the wrong repository; one command has none of them.
+test('the repository his students read is refused by name, and the refusal says where to send it', () => {
+  for (const remote of [
+    'https://github.com/qtm285/qtm285.github.io.git',
+    'git@github.com:qtm285/qtm285.github.io.git',
+    'https://x-access-token:REDACTED@github.com/qtm285/qtm285.github.io.git',
+  ]) {
+    const refusal = classSiteRefusal(remote)
+    assert.ok(refusal, `${remote} is the class site and must be refused`)
+    assert.match(refusal, /students read/)
+  }
+})
+
+test('a test site and an unknown remote are not refused', () => {
+  assert.equal(classSiteRefusal('https://github.com/qtm285/pages-topology-test.git'), null)
+  assert.equal(classSiteRefusal('git@github.com:someone/anything-else.git'), null)
+  // A checkout with no remote at all is a local bare-clone rehearsal, which is
+  // how the command gets exercised without touching anything of his.
+  assert.equal(classSiteRefusal(null), null)
+})
+
+test('a checkout with no origin answers null rather than throwing', async () => {
+  const noRemote = mkdtempSync(join(tmpdir(), 'tlda-no-remote-'))
+  try {
+    execFileSync('git', ['init', '--quiet', noRemote])
+    assert.equal(await checkoutRemoteUrl(noRemote), null)
+  } finally { rmSync(noRemote, { recursive: true, force: true }) }
 })

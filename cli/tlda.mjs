@@ -26,7 +26,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
-import { commitAndPushClassSite, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
+import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
@@ -663,7 +663,7 @@ async function cmdPromote() {
 async function cmdPublish() {
   const name = getPositional(0)
   if (!name) {
-    console.error('Usage: tlda project publish <name> [--to <class-site-checkout>] [--subdir static] [--url <published base>] [--no-push]')
+    console.error('Usage: tlda project publish <name> [--to <site-checkout>] [--subdir static] [--url <published base>] [--no-push]')
     console.error('')
     console.error('Sends what this environment is serving for <name> to the class site.')
     process.exit(1)
@@ -682,6 +682,16 @@ async function cmdPublish() {
   if (!existsSync(join(checkout, '.git'))) {
     console.error(red(`${checkout} is not a git checkout.`))
     console.error('Publishing commits the site and pushes it, so the destination has to be one.')
+    process.exit(1)
+  }
+  // Before anything is fetched, staged or written. A publish is the one
+  // irreversible thing this command does, and the check that it is going
+  // somewhere he meant belongs ahead of the work, not beside the push.
+  const refusal = classSiteRefusal(await checkoutRemoteUrl(checkout))
+  if (refusal && !hasFlag('yes-the-class-site')) {
+    console.error(red(refusal))
+    console.error(`Send it to the test site instead: ${bold(`tlda project publish ${name} --to <test-site-checkout>`)}`)
+    console.error(`If he has told you to publish to the class site, say so: ${bold('--yes-the-class-site')}`)
     process.exit(1)
   }
 
