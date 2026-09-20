@@ -26,7 +26,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
-import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
+import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, configuredPublicationTarget, remoteIsConfiguredTarget, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
@@ -663,7 +663,7 @@ async function cmdPromote() {
 async function cmdPublish() {
   const name = getPositional(0)
   if (!name) {
-    console.error('Usage: tlda project publish <name> [--to <site-checkout>] [--subdir static] [--url <published base>] [--no-push]')
+    console.error('Usage: tlda project publish <name> [--to <site-checkout>] [--subdir static] [--url <published base>] [--no-push] [--drop-missing]')
     console.error('')
     console.error('Sends what this environment is serving for <name> to the class site.')
     process.exit(1)
@@ -687,7 +687,23 @@ async function cmdPublish() {
   // Before anything is fetched, staged or written. A publish is the one
   // irreversible thing this command does, and the check that it is going
   // somewhere he meant belongs ahead of the work, not beside the push.
-  const refusal = classSiteRefusal(await checkoutRemoteUrl(checkout))
+  //
+  // The TARGET is configured — `course-release.json`'s `publication.repository`,
+  // the same field `build-site.py` refuses on — so `--to` only says where that
+  // repository is checked out on this machine, which is machine-local
+  // information rather than a destination. Naming a checkout of some OTHER
+  // repository is the mistake this catches.
+  const remoteUrl = await checkoutRemoteUrl(checkout)
+  const courseRelease = await api('GET', `/api/projects/${encodeURIComponent(name)}/source/course-release.json`)
+    .then(text => JSON.parse(typeof text === 'string' ? text : JSON.stringify(text)))
+    .catch(() => null)
+  const configured = configuredPublicationTarget(courseRelease)
+  if (configured && remoteUrl && !remoteIsConfiguredTarget(remoteUrl, configured.repository)) {
+    console.error(red(`"${name}" publishes to ${bold(configured.repository)}, and ${checkout} is a checkout of ${remoteUrl}.`))
+    console.error('The destination is configured in the course, not chosen per run. Point --to at a checkout of the configured repository.')
+    process.exit(1)
+  }
+  const refusal = classSiteRefusal(remoteUrl)
   if (refusal && !hasFlag('yes-the-class-site')) {
     console.error(red(refusal))
     console.error(`Send it to the test site instead: ${bold(`tlda project publish ${name} --to <test-site-checkout>`)}`)
@@ -707,6 +723,11 @@ async function cmdPublish() {
     console.error(red(`"${name}" is serving no published tree.`))
     process.exit(1)
   }
+  if (inventory.buildStatus === 'building' || project.buildPhase === 'build') {
+    console.error(red(`"${name}" is building right now, so its published tree is being written as this reads it.`))
+    console.error('A publish that races a render ships half of two builds. Wait for it to finish and run this again.')
+    process.exit(1)
+  }
   console.log(`Publishing ${bold(name)}${project.sourceRevision ? `@${project.sourceRevision.slice(0, 7)}` : ''} — ${inventory.files.length} files from ${getActiveEnvName()}...`)
 
   const { staging } = await stagePublishedTree({
@@ -716,7 +737,25 @@ async function cmdPublish() {
     headers: getReadToken() ? { authorization: `Bearer ${getReadToken()}` } : {},
   })
   try {
-    await writePublishedTree({ staging, checkout, subdirectory })
+    // The served tree is swapped into place by a rename, so no half-written
+    // file is ever served — but the swap can land BETWEEN two of the requests
+    // this fetch makes, and then the staged copy is half of one publication and
+    // half of another. Both halves hash correctly against their own build, so
+    // checking each file proves nothing about the set.
+    //
+    // Asking the inventory again is the direct question: is the tree I just
+    // copied still the tree being served. It also covers the case a revision
+    // check misses, a forced rebuild of the SAME revision, because the answer
+    // comes from the files rather than from a name for them.
+    const recheck = await api('GET', `/api/projects/${encodeURIComponent(name)}/published-tree`)
+    const inventoryPrint = (rows) => rows.map(f => `${f.path}:${f.sha256}`).sort().join('\n')
+    if (inventoryPrint(recheck.files || []) !== inventoryPrint(inventory.files)) {
+      console.error(red(`"${name}" was republished while this was reading it.`))
+      console.error(`Its tree went from ${inventory.files.length} file(s) to ${(recheck.files || []).length}, so the copy is part of two builds.`)
+      console.error('Nothing was written. Run it again against the build that finished.')
+      process.exit(1)
+    }
+    await writePublishedTree({ staging, checkout, subdirectory, allowDeletions: hasFlag('drop-missing') })
     const result = await commitAndPushClassSite({
       checkout,
       subdirectory,

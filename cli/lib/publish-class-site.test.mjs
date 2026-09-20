@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, stagePublishedTree, writePublishedTree } from './publish-class-site.mjs'
+import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, configuredPublicationTarget, deletionsFromPublish, remoteIsConfiguredTarget, stagePublishedTree, writePublishedTree } from './publish-class-site.mjs'
 
 const sha = (text) => createHash('sha256').update(Buffer.from(text)).digest('hex')
 
@@ -85,7 +85,7 @@ test('publishing removes a page the build no longer produces', async () => {
     fetchImpl: served(pages),
   })
   try {
-    await writePublishedTree({ staging, checkout, subdirectory: 'static' })
+    await writePublishedTree({ staging, checkout, subdirectory: 'static', allowDeletions: true })
     assert.equal(existsSync(join(checkout, 'static', 'book', 'withdrawn.html')), false, 'the withdrawn page must be gone')
     assert.equal(existsSync(join(checkout, 'static', 'book', 'one.html')), true)
     assert.equal(existsSync(join(checkout, 'README.md')), true, 'the rest of the site is untouched')
@@ -162,4 +162,82 @@ test('a checkout with no origin answers null rather than throwing', async () => 
     execFileSync('git', ['init', '--quiet', noRemote])
     assert.equal(await checkoutRemoteUrl(noRemote), null)
   } finally { rmSync(noRemote, { recursive: true, force: true }) }
+})
+
+// The site is assembled by several producers -- the book build, the decks
+// build, the solutions render -- and this command carries what ONE of them is
+// serving. On this course the difference is not hypothetical: it is the
+// solutions pages Skip asked not to vanish "until the app works consistently
+// for my students", and the bootstrap deck from the 62-deletion incident.
+test('a publish that would take another producers pages off the site refuses and names them', async () => {
+  const checkout = classSite()
+  const staging = mkdtempSync(join(tmpdir(), 'tlda-staging-'))
+  try {
+    mkdirSync(join(checkout, 'static', 'book', 'homework'), { recursive: true })
+    writeFileSync(join(checkout, 'static', 'book', 'homework', 'hw1-solutions.html'), 'from the solutions render')
+    mkdirSync(join(staging, 'book'), { recursive: true })
+    writeFileSync(join(staging, 'book', 'one.html'), 'chapter one')
+
+    const removed = await deletionsFromPublish({ staging, checkout, subdirectory: 'static' })
+    assert.ok(removed.includes('book/homework/hw1-solutions.html'), 'the solutions page is not in this build and would go')
+
+    await assert.rejects(
+      writePublishedTree({ staging, checkout, subdirectory: 'static' }),
+      /would take 2 file\(s\) off the site[\s\S]*hw1-solutions\.html/,
+    )
+    assert.equal(
+      readFileSync(join(checkout, 'static', 'book', 'homework', 'hw1-solutions.html'), 'utf8'),
+      'from the solutions render',
+      'a refused publish must not have written anything',
+    )
+  } finally {
+    rmSync(staging, { recursive: true, force: true })
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+test('a publish that adds and replaces without removing needs no permission', async () => {
+  const checkout = classSite()
+  const staging = mkdtempSync(join(tmpdir(), 'tlda-staging-keep-'))
+  try {
+    mkdirSync(join(staging, 'book'), { recursive: true })
+    writeFileSync(join(staging, 'book', 'withdrawn.html'), 'same page, new words')
+    writeFileSync(join(staging, 'book', 'new.html'), 'a page this build added')
+
+    assert.deepEqual(await deletionsFromPublish({ staging, checkout, subdirectory: 'static' }), [])
+    const result = await writePublishedTree({ staging, checkout, subdirectory: 'static' })
+    assert.equal(result.removed, 0)
+    assert.equal(readFileSync(join(checkout, 'static', 'book', 'withdrawn.html'), 'utf8'), 'same page, new words')
+    assert.equal(existsSync(join(checkout, 'static', 'book', 'new.html')), true)
+  } finally {
+    rmSync(staging, { recursive: true, force: true })
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+// The destination is configured in the course -- `course-release.json`'s
+// `publication.repository`, the same field `build-site.py` refuses on -- so the
+// two producers refuse the same way rather than holding two opinions about
+// where this course publishes.
+test('the publication target comes from the course, and a checkout of another repository is not it', () => {
+  const target = configuredPublicationTarget({
+    publication: { repository: 'qtm285/pages-topology-test', url: 'https://qtm285.github.io/pages-topology-test/' },
+  })
+  assert.deepEqual(target, { repository: 'qtm285/pages-topology-test', url: 'https://qtm285.github.io/pages-topology-test/' })
+
+  for (const remote of [
+    'https://github.com/qtm285/pages-topology-test.git',
+    'git@github.com:qtm285/pages-topology-test',
+  ]) assert.equal(remoteIsConfiguredTarget(remote, target.repository), true, `${remote} is the configured target`)
+
+  // The mistake the check exists for: a checkout of the site his students read,
+  // named to a command whose course says it publishes somewhere else.
+  assert.equal(remoteIsConfiguredTarget('https://github.com/qtm285/qtm285.github.io.git', target.repository), false)
+})
+
+test('a course naming no publication target configures nothing rather than guessing one', () => {
+  assert.equal(configuredPublicationTarget(null), null)
+  assert.equal(configuredPublicationTarget({}), null)
+  assert.equal(configuredPublicationTarget({ publication: {} }), null)
+  assert.equal(remoteIsConfiguredTarget('https://github.com/x/y.git', null), false)
 })

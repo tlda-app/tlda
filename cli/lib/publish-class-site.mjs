@@ -77,6 +77,35 @@ export async function stagePublishedTree({ serverUrl, project, files, fetchImpl 
  */
 const CLASS_SITE_REPOSITORIES = [/qtm285\.github\.io/i]
 
+/**
+ * The repository the course says it publishes to.
+ *
+ * Configured, not passed in. Skip: he thought the publication remote was
+ * configured somewhere, and it is — `course-release.json` carries
+ * `publication.repository`, and `build-site.py` already refuses to assemble
+ * into a repository the course does not name. Reading the SAME field means the
+ * two producers refuse the same way instead of holding two opinions about where
+ * this course publishes.
+ *
+ * His "plan is junk on the fs" ruling was about the plan — the stage-then-
+ * deploy contract, the release ids, the per-artifact CHANGE rows. `publication`
+ * is not that. It is two strings naming a destination, and a second place to
+ * record the destination is how a status display and a publish command come to
+ * disagree about what "published" means.
+ */
+export function configuredPublicationTarget(courseRelease) {
+  const repository = courseRelease?.publication?.repository
+  if (typeof repository !== 'string' || !repository) return null
+  return { repository, url: courseRelease.publication.url || null }
+}
+
+/** Whether a checkout's remote is the repository the course names. */
+export function remoteIsConfiguredTarget(remoteUrl, repository) {
+  if (!remoteUrl || !repository) return false
+  const owner = repository.replace(/\.git$/, '').toLowerCase()
+  return remoteUrl.replace(/\.git$/, '').toLowerCase().endsWith(owner)
+}
+
 export function classSiteRefusal(remoteUrl) {
   if (!remoteUrl) return null
   return CLASS_SITE_REPOSITORIES.some(pattern => pattern.test(remoteUrl))
@@ -93,14 +122,60 @@ export async function checkoutRemoteUrl(checkout, remote = 'origin') {
   }
 }
 
-export async function writePublishedTree({ staging, checkout, subdirectory }) {
+async function filesUnder(root, prefix = '') {
+  const found = []
+  let entries
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    return found
+  }
+  for (const entry of entries) {
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.isDirectory()) found.push(...await filesUnder(join(root, entry.name), path))
+    else if (entry.isFile()) found.push(path)
+  }
+  return found
+}
+
+/**
+ * What this publish would take off the site.
+ *
+ * The site is assembled by SEVERAL producers — the book build, the decks build,
+ * the solutions render — and this command carries what ONE of them is serving.
+ * So a wholesale replacement can be a wholesale deletion of everything the
+ * others put there, and on this course that set is not hypothetical: it is the
+ * solutions pages Skip asked not to vanish "until the app works consistently
+ * for my students", and the bootstrap deck from the 62-deletion incident.
+ *
+ * Wholesale replacement is still right — a page he withdrew has to disappear
+ * rather than serve itself to the class — but "this page is withdrawn" and
+ * "this page came from a producer I am not" look identical from here, and only
+ * one of them should go quietly.
+ */
+export async function deletionsFromPublish({ staging, checkout, subdirectory }) {
+  const destination = resolve(checkout, subdirectory)
+  const incoming = new Set(await filesUnder(staging))
+  return (await filesUnder(destination)).filter(path => !incoming.has(path)).sort()
+}
+
+export async function writePublishedTree({ staging, checkout, subdirectory, allowDeletions = false }) {
   if (!existsSync(join(checkout, '.git'))) {
     throw new Error(`${checkout} is not a git checkout — publishing commits and pushes, so it needs one`)
+  }
+  const removed = await deletionsFromPublish({ staging, checkout, subdirectory })
+  if (removed.length > 0 && !allowDeletions) {
+    const shown = removed.slice(0, 10).map(path => `  ${path}`).join('\n')
+    throw new Error(
+      `publishing would take ${removed.length} file(s) off the site that this build does not produce:\n${shown}` +
+      `${removed.length > 10 ? `\n  …and ${removed.length - 10} more` : ''}\n` +
+      `The site is assembled by more than one producer, so these may belong to another one rather than being withdrawn.`,
+    )
   }
   const destination = resolve(checkout, subdirectory)
   await rm(destination, { recursive: true, force: true })
   await cp(staging, destination, { recursive: true })
-  return { destination, entries: (await readdir(destination)).length }
+  return { destination, entries: (await readdir(destination)).length, removed: removed.length }
 }
 
 /**
