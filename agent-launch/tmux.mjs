@@ -255,11 +255,23 @@ async function dismissClaudeStartupDialog(session, action, {
     return false
   }
   await sleep(500)
-  await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter')
+  // The dev-channels dialog is submitted with C-m (carriage return), not
+  // Enter: measured on five wedged panes, Enter only moved the selection or
+  // added a checkmark while the dialog stayed, and one C-m cleared each
+  // (1, 1, 2, 2, 3 presses). Scope is this dialog path only — Enter submits
+  // composer prompts fine and every injection path keeps it.
+  const submitKey = action === 'devchannels' ? 'C-m' : 'Enter'
+  await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), submitKey)
   // The stop condition is the dialog being gone, never a count: one dismissal
   // may not take (measured: drag-and-hud wedged 70 minutes after a single
-  // send that something swallowed). Re-read immediately and confirm.
-  await sleep(500)
+  // send that something swallowed; marking-v2 needed two C-m; publish-state
+  // needed three). Re-read immediately and confirm.
+  // A loaded agent answers slower than the wait: toc-panel at 16.7% CPU took
+  // eight C-m at four seconds apart before one landed, and a later re-wedge
+  // took ten presses over 80 seconds at load 60 — past this loop's old
+  // 60-second deadline, which gave up before the dialog answered. So the
+  // settle here is generous and the outer loop's deadline must clear 80s.
+  await sleep(4000)
   try {
     const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
     if (claudeStartupDialogAction(stdout) === action) return false
@@ -270,7 +282,11 @@ async function dismissClaudeStartupDialog(session, action, {
 }
 
 export async function dismissDevchannels(session, {
-  timeoutMs = 60_000,
+  // Deadline clears the measured maximum: a loaded box took 80 seconds
+  // (ten presses over 80s at load 60) to clear one dialog, so anything at
+  // or under 80s gives up before the dialog answers and reports a working
+  // fix as failed. The exit is still the dialog being gone, never a count.
+  timeoutMs = 300_000,
   tmuxSocket = process.env.TMUX_SOCKET || null,
   tmuxExec = tmux,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -278,6 +294,14 @@ export async function dismissDevchannels(session, {
 } = {}) {
   const deadline = Date.now() + timeoutMs
   const noDialogOkAt = Date.now() + noDialogGraceMs
+  // Once an attempt has gone out, a dialog-gone read is the dismissal
+  // working, not an agent that never showed a dialog: the no-dialog exit
+  // below exists for clean startup, where no dialog yet may mean the agent
+  // is still booting. After an attempt has gone out, the loop can only exit
+  // while the same dialog persists (keep trying) or when it is gone (done).
+  // Still no count: the stop condition is the dialog being gone, however
+  // many attempts that took.
+  let attempted = false
   while (Date.now() < deadline) {
     try {
       const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
@@ -288,9 +312,23 @@ export async function dismissDevchannels(session, {
         // (not the agent) when it clears, and never report a dismissal that
         // did not take. Dismissing a DIFFERENT action than the one matched
         // above is answering a new question — re-read instead of acting.
+        attempted = true
         const dismissed = await dismissClaudeStartupDialog(session, action, { tmuxSocket, tmuxExec, sleep })
         if (!dismissed) continue
         return true
+      }
+      // No dialog on this read. After an attempt went out, the dialog we saw
+      // may just have cleared between reads — confirm with one more read
+      // rather than trusting a single glance or waiting out the deadline.
+      if (attempted) {
+        await sleep(500)
+        try {
+          const { stdout: again } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
+          if (!claudeStartupDialogAction(again)) return true
+        } catch {
+          // A failed confirm proves nothing; fall through and keep polling.
+        }
+        continue
       }
       const promptReady = stdout.split('\n').slice(-3).some((line) => line.includes('❯'))
       if (Date.now() > noDialogOkAt && promptReady && !stdout.includes('Enter to confirm')) return false
