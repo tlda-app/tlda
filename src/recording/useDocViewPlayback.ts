@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor, TLStore } from 'tldraw'
 import { PlaybackEngine } from './playbackEngine'
-import type { RecordingMeta } from './recorder'
+import { noteParentJump, type RecordingMeta } from './recorder'
 import { getRecording, recordingAudioUrl, type RecordingSummary } from './recordingApi'
 import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
 import { documentShapeUtils, frozenPlaybackStore, parseRecordingRef } from './docViewPlayback'
@@ -169,6 +169,11 @@ export function useDocViewPlayback(projectName: string, ref: string | undefined)
     if (audioRef.current) audioRef.current.currentTime = clamped / 1000
     setCurrentMs(clamped)
     engineRef.current?.seek(clamped)
+    // Moved, not played. A reply being recorded against this playhead has to
+    // hear that as a step: sampled alone it is indistinguishable from playing
+    // very fast, and would read back as a walk through a stretch of the answer
+    // that was never on screen. No-op unless a reply is recording.
+    noteParentJump()
   }, [duration])
 
   const setMuted = useCallback((next: boolean) => {

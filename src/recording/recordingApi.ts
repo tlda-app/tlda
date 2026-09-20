@@ -26,11 +26,31 @@ export async function listRecordings(doc: string): Promise<RecordingSummary[]> {
   return data.recordings ?? []
 }
 
-export async function listRecordingDrafts(doc: string): Promise<RecordingSummary[]> {
+/**
+ * Every private draft, including the layers of answer threads.
+ *
+ * `listRecordingDrafts` is the lecture list and filters those out; this is for
+ * a caller that wants them. See `annotationThread.ts`.
+ */
+export async function listRecordingDraftsIncludingLayers(doc: string): Promise<RecordingSummary[]> {
   const resp = await fetch(`${getServerHttpBase()}/api/projects/${doc}/recording-drafts`)
   if (!resp.ok) return []
   const data = await resp.json()
   return (data.recordings ?? []).map((recording: RecordingSummary) => ({ ...recording, privateDraft: true }))
+}
+
+/**
+ * The lectures among the private drafts.
+ *
+ * A thread layer is stored as a recording — it is ink on a clock with one audio
+ * track, which is what a recording is — so the directory this reads now holds
+ * two kinds of thing where it used to hold one. Without this filter the meaning
+ * of every existing caller's list would have changed underneath it, and marking
+ * a student's answer would put that answer in the lecture picker.
+ */
+export async function listRecordingDrafts(doc: string): Promise<RecordingSummary[]> {
+  const all = await listRecordingDraftsIncludingLayers(doc)
+  return all.filter((recording) => !(recording as { answer?: unknown }).answer)
 }
 
 /** Fetch a recording's full metadata + events. */

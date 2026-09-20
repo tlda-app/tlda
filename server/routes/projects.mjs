@@ -1567,7 +1567,18 @@ router.get('/:name/recording-drafts', requireRecordingPrivateRead, (req, res) =>
         if (!existsSync(join(dir, `${m.id}.audio`))) return null
         const publication = readRecordingPublication(dir, m.id)
         if (publication?.state === 'published') return null
-        return { id: m.id, title: m.title, created: m.created, duration_ms: m.duration_ms, publication }
+        // `answer` and the parent's id, so a thread's shape can be read off the
+        // listing. The warp itself is not here: composing a path needs every
+        // ancestor's events and audio anyway, and those come with the recording.
+        return {
+          id: m.id,
+          title: m.title,
+          created: m.created,
+          duration_ms: m.duration_ms,
+          publication,
+          ...(m.answer ? { answer: m.answer } : {}),
+          ...(m.parent?.layerId ? { parentLayerId: m.parent.layerId } : {}),
+        }
       } catch (error) {
         // A recording that will not parse is NOT the same as no recording, and
         // this used to answer 200 {"recordings":[]} for both. Nothing is slow

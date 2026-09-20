@@ -25,6 +25,7 @@ import type { Editor, TLRecord } from 'tldraw'
 import { log } from '../logger'
 import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
 import { discardDraft, persistAndDeliverDraft, persistDraftCheckpoint, retryPendingDrafts } from './draftOutbox'
+import { WarpRecorder } from '../../shared/annotation-thread.mjs'
 
 export function isRecordable(rec: TLRecord | undefined): boolean {
   return !!rec && rec.typeName === 'shape' && !FLEET_SHAPE_TYPES.has(rec.type)
@@ -55,6 +56,24 @@ export interface BaseEvent {
 
 export type RecordingEvent = StrokeEvent | CameraEvent | BaseEvent
 
+/**
+ * Which student's answer to which problem a recording marks, when it marks one.
+ *
+ * The pair `shared/classroom-rooms.mjs` already names, so a thread hangs off the
+ * same identity the marking layer does. A lecture has no answer and carries
+ * neither this nor a parent.
+ */
+export interface AnswerRef {
+  submissionRoomId: string
+  problemId: string
+}
+
+/** The layer this one replies to, and how its time maps onto that one's. */
+export interface ParentRef {
+  layerId: string
+  warp: { samples: { t: number; pt: number }[] }
+}
+
 export interface RecordingMeta {
   id: string
   title: string
@@ -64,7 +83,28 @@ export interface RecordingMeta {
   audioMime: string
   events: RecordingEvent[]
   baseSnapshot: ReturnType<typeof getSnapshot> | null
+  /** Set when this recording is a layer in an answer's thread. */
+  answer?: AnswerRef
+  /** Set when it replies to an earlier layer. A thread root has none. */
+  parent?: ParentRef
 }
+
+/**
+ * What `startRecording` needs to capture a reply layer rather than a lecture.
+ *
+ * `parentTime` reads the parent's playhead wherever it actually sits — the
+ * `currentMs` a doc-view's playback is showing. The warp is sampled against it
+ * while this layer records, because nothing recovers it afterwards: the ink and
+ * the audio do not say that the playhead sat still for nine seconds.
+ */
+export interface LayerOptions {
+  answer: AnswerRef
+  parentLayerId?: string
+  parentTime?: () => number
+}
+
+/** How often the parent's playhead is read while a reply records. */
+const WARP_SAMPLE_MS = 100
 
 type StateListener = (state: RecorderState) => void
 
@@ -130,6 +170,12 @@ let paused = false
 let pauseStart = 0
 let pausedAccum = 0
 
+// The thread layer being recorded, when this is a reply rather than a lecture.
+let activeAnswer: AnswerRef | null = null
+let activeParentLayerId: string | null = null
+let warpRecorder: WarpRecorder | null = null
+let warpInterval: ReturnType<typeof setInterval> | null = null
+
 let appSessionGeneration = 0
 let appSessionDoc: string | null = null
 let appSessionEditor: Editor | null = null
@@ -152,6 +198,39 @@ const CHECKPOINT_SETTLE_MS = 2000
 /** Elapsed on-record ms — excludes any time spent off the record. */
 function now(): number {
   return performance.now() - t0 - pausedAccum
+}
+
+/**
+ * Start reading the parent's playhead against this layer's clock.
+ *
+ * Off the record, no reading is taken: `now()` does not advance while paused, so
+ * a sample then would land on a `t` already spoken for and claim the reader was
+ * somewhere they were not.
+ */
+function startWarpSampling(parentTime: () => number): void {
+  warpRecorder = new WarpRecorder({ layerTime: now, parentTime })
+  warpRecorder.tick()
+  warpInterval = setInterval(() => {
+    if (!paused) warpRecorder?.tick()
+  }, WARP_SAMPLE_MS)
+}
+
+function stopWarpSampling(): void {
+  if (warpInterval) clearInterval(warpInterval)
+  warpInterval = null
+}
+
+/**
+ * The parent's playhead was moved rather than allowed to run.
+ *
+ * Called by whatever moved it, after the move has landed. Between two samples a
+ * move is indistinguishable from fast playback, and reading it back as playback
+ * would walk this layer through a stretch of the answer that was never on
+ * screen; this is what makes it a step instead.
+ */
+export function noteParentJump(): void {
+  if (state.status !== 'recording' || paused) return
+  warpRecorder?.jump()
 }
 
 /**
@@ -203,7 +282,7 @@ async function refusedForWantOfGesture(err: unknown, userInitiated = false): Pro
 export async function startRecording(
   editor: Editor | null,
   doc: string,
-  { userInitiated = false }: { userInitiated?: boolean } = {},
+  { userInitiated = false, layer }: { userInitiated?: boolean; layer?: LayerOptions } = {},
 ): Promise<string | null> {
   if (state.status !== 'idle') return null
   const token = crypto.randomUUID()
@@ -213,6 +292,9 @@ export async function startRecording(
   checkpointsClosed = false
   activeDoc = doc
   activeEditor = editor
+  activeAnswer = layer?.answer ?? null
+  activeParentLayerId = layer?.parentLayerId ?? null
+  warpRecorder = null
   setState({ status: 'starting', startedAt: null, paused: false, doc, error: null })
 
   // 1. Mic — a dedicated capture for the file recorder. We deliberately do NOT
@@ -305,6 +387,11 @@ export async function startRecording(
   t0 = performance.now()
   mediaRecorder.start(1000) // gather a chunk per second so a crash loses <=1s
 
+  // The warp shares that origin too: it is this layer's time on one axis, so a
+  // reading taken before `t0` would be at a negative moment of a layer that had
+  // not started.
+  if (layer?.parentLayerId && layer.parentTime) startWarpSampling(layer.parentTime)
+
   // 2. Frozen document base + store events. Book member switches append another
   // base event on this same clock; playback therefore changes member without
   // consulting whichever live document happens to be open later.
@@ -346,6 +433,11 @@ function recordingMeta(doc: string, id: string, audioMime: string, duration: num
     audioMime,
     events: [...events],
     baseSnapshot: events.find((event): event is BaseEvent => event.kind === 'base')?.snapshot ?? null,
+    // A lecture has neither, and stays the shape it has always been on disk.
+    ...(activeAnswer ? { answer: activeAnswer } : {}),
+    ...(activeParentLayerId && warpRecorder
+      ? { parent: { layerId: activeParentLayerId, warp: warpRecorder.warp } }
+      : {}),
   }
 }
 
@@ -686,6 +778,10 @@ export async function stopRecording(token: string): Promise<string | null> {
     activeToken = null
     activeDoc = null
     activeEditor = null
+    stopWarpSampling()
+    activeAnswer = null
+    activeParentLayerId = null
+    warpRecorder = null
     setState({ status: 'idle', startedAt: null, paused: false, doc: null })
     return null
   }
@@ -700,6 +796,11 @@ export async function stopRecording(token: string): Promise<string | null> {
   if (paused) { pausedAccum += performance.now() - pauseStart; paused = false }
 
   const duration = now()
+
+  // One last reading before the clock closes, so the warp reaches the end of the
+  // layer rather than stopping up to a sample short of it.
+  warpRecorder?.tick()
+  stopWarpSampling()
 
   // Detach listeners first so nothing lands after the clock is closed.
   if (unlistenStore) { unlistenStore(); unlistenStore = null }
@@ -761,6 +862,9 @@ export async function stopRecording(token: string): Promise<string | null> {
     audioChunks = []
     paused = false
     pausedAccum = 0
+    activeAnswer = null
+    activeParentLayerId = null
+    warpRecorder = null
   }
 
   setState({ status: 'idle', startedAt: null, paused: false, doc: null, error: null })
