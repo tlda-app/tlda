@@ -88,3 +88,38 @@ test('the description is never empty, even for an error we do not recognise', as
       `describeChildFailure(${JSON.stringify(value)}) must say something`)
   }
 })
+
+// One stream silently won, and it was the wrong one for the failure this gate
+// exists to catch. Measured 2026-09-20: given both streams, `stderr || stdout`
+// returned only the stderr text and dropped stdout entirely. His course gate
+// `check-macros-defined.mjs` prints the macro list with `console.log`, so the
+// finding lived on the stream that was thrown away.
+test('both streams survive, so a gate on stdout is not discarded by anything on stderr', () => {
+  const detail = childFailureDetail({
+    code: 1,
+    stdout: 'UNDEFINED — these render as literal text:\n    \\hatmu in 3 file(s)',
+    stderr: 'ERROR: Render failed',
+  })
+  assert.match(detail, /\\hatmu in 3 file\(s\)/, 'the finding is what the reader needs')
+  assert.match(detail, /ERROR: Render failed/, 'and the other stream is not dropped in turn')
+  assert.match(detail, /exited with status 1/, 'how it ended still comes first')
+})
+
+test('a single stream still reads exactly as it did, on either stream', () => {
+  assert.match(childFailureDetail({ code: 1, stderr: 'only on stderr' }), /only on stderr/)
+  assert.match(childFailureDetail({ code: 1, stdout: 'only on stdout' }), /only on stdout/)
+  assert.match(childFailureDetail({ code: 1 }), /printed nothing/)
+})
+
+// The control that makes the one above mean something: a long stderr must not
+// be able to crowd out a short stdout, which would be the same defect in a
+// slower form. The window is split, so the total stays what it was.
+test('a huge stderr cannot crowd out a short stdout', () => {
+  const detail = childFailureDetail({
+    code: 1,
+    stderr: 'x'.repeat(50_000),
+    stdout: 'UNDEFINED — \\hatmu',
+  }, { maxOutputChars: 4000 })
+  assert.match(detail, /UNDEFINED — \\hatmu/, 'the short stream survives whole')
+  assert.ok(detail.length < 4600, `the total stays bounded, was ${detail.length}`)
+})

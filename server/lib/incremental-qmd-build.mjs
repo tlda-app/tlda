@@ -151,14 +151,35 @@ export function describeChildFailure(error) {
  */
 export function childFailureDetail(error, { maxOutputChars = 4000 } = {}) {
   const how = describeChildFailure(error)
-  const printed = String(error?.stderr || error?.stdout || '').trim()
-  if (!printed) return `${how}, and printed nothing`
-  const tail = printed.length > maxOutputChars
+  // BOTH STREAMS, NEITHER DISCARDED. This read `error.stderr || error.stdout`,
+  // so any content on stderr threw stdout away entirely. Measured 2026-09-20
+  // against this function: given both, only the stderr text survived.
+  //
+  // That discards exactly what a pre-render gate produces. The course's
+  // `check-macros-defined.mjs` prints its finding -- which macro is undefined,
+  // in how many files -- with `console.log`, and uses `console.error` only for
+  // refusals. So a gate that caught a real problem reported quarto's generic
+  // line and dropped the reason, on the one failure the gate exists to make
+  // visible.
+  //
+  // Splitting the window rather than concatenating and trimming: a long stderr
+  // must not be able to crowd out a short stdout, which is the same
+  // one-stream-wins defect in a slower form. The total stays what it was.
+  const streams = [['stderr', error?.stderr], ['stdout', error?.stdout]]
+    .map(([label, value]) => [label, String(value || '').trim()])
+    .filter(([, value]) => value)
+  if (streams.length === 0) return `${how}, and printed nothing`
+
+  const budget = Math.floor(maxOutputChars / streams.length)
+  const printed = streams
     // The end is where a renderer says what went wrong; the beginning is where
-    // it says hello.
-    ? `…\n${printed.slice(-maxOutputChars)}`
-    : printed
-  return `${how}. Its last output was:\n${tail}`
+    // it says hello. That is true of a render error and BACKWARDS for a
+    // pre-render gate, whose message comes first -- which is why carrying both
+    // streams matters more than choosing an end: a gate's output is short and
+    // survives whole.
+    .map(([label, value]) => `${label}:\n${value.length > budget ? `…\n${value.slice(-budget)}` : value}`)
+    .join('\n')
+  return `${how}. Its last output was:\n${printed}`
 }
 
 // The fifteen-minute limit remains for package restoration.
