@@ -354,26 +354,28 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   })
   // Redeeming is proving possession of the transfer code, which is itself a
   // per-student secret minted against their own row. No bearer is consulted.
-  // BOOTSTRAP PATH, AND THE ONLY PLACE THE RW BEARER AUTHORISES ANYTHING
+  // BOOTSTRAP PATH, AND THE ONLY PLACE A BARE BEARER AUTHORISES ANYTHING
   // CLASSROOM. The setup CLI mints the first instructor for a course and there
   // is nothing else to authorise it with — no instructor identity exists yet to
   // check membership against. So course creation (and only course creation)
-  // still accepts the RW bearer. Everything after this — every instructor
-  // minted, every course read, every grant — resolves a per-person identity
-  // token and checks membership. Do not extend this exception without a
-  // decision recorded beside it: the next person to read a bearer check here
-  // will otherwise take it for the general mechanism and rebuild what the
-  // instructor table removed.
+  // still accepts any valid token. Tokens carry no level; the bearer only
+  // admits. Everything after this — every instructor minted, every course
+  // read, every grant — resolves a per-person identity token and checks
+  // membership. Do not extend this exception without a decision recorded
+  // beside it: the next person to read a bearer check here will otherwise
+  // take it for the general mechanism and rebuild what the instructor table
+  // removed.
   //
   // Defined ahead of the principal gate below ON PURPOSE: a bootstrap caller
-  // holds only the RW bearer and no per-person token, so the gate would 401
-  // them before they arrived. The handler takes either an instructor identity
-  // (a second course from an existing instructor) or the bearer.
+  // holds only a bearer and no per-person token, so the gate would 401 them
+  // before they arrived. The handler takes either an instructor identity (a
+  // second course from an existing instructor) or any valid token. Tokens
+  // carry no level — the bearer only admits, it grants nothing by itself.
   router.post('/courses', (req, res) => {
     const principal = resolvePrincipal(req, store)
     if (principal) req.classroomPrincipal = principal
     const authorised = principal?.role === 'instructor'
-      || validateToken(extractToken(req)) === 'rw'
+      || !!validateToken(extractToken(req))
     if (!authorised) return res.status(401).json({ error: 'Unauthorized' })
     const { id, title, preferredName, pronouns } = req.body || {}
     if (!id || !title || !String(preferredName || '').trim()) return res.status(400).json({ error: 'id, title, and preferredName are required' })

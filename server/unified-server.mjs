@@ -4079,13 +4079,15 @@ app.get('/health/services', async (req, res) => {
 // Cookie login — set token as cookie, redirect to viewer
 app.get('/auth/login', loginRoute)
 
-// Auth level — tells the client what its token allows
+// Auth level — tells the client its token is recognised. Tokens carry no
+// level: every admitted caller is admitted everywhere, so presenter and
+// publisher are always true for a valid token. The `level: 'rw'` shape is
+// kept so existing clients keep parsing the response.
 app.get('/api/auth/me', async (req, res) => {
   const token = extractToken(req)
   const level = validateToken(token)
-  if (!isTokenGatingEnabled() && level === 'rw') return res.json({ level, presenter: true, publisher: true, dev: true })
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
-  res.json({ level, presenter: level === 'rw', publisher: level === 'rw', dev: !isTokenGatingEnabled() })
+  res.json({ level: 'rw', presenter: true, publisher: true, dev: !isTokenGatingEnabled() })
 })
 
 // ---------- Browser-side log sink ----------

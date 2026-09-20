@@ -1038,7 +1038,9 @@ router.get('/:name/remotes', requireRead, async (req, res) => {
       operation: 'list',
       fetch: req.query.fetch === '1' || req.query.fetch === 'true',
     })
-    const writable = req.authLevel !== 'read'
+    // Tokens carry no level: an admitted caller is admitted everywhere. The
+    // daemon's own per-remote writability still applies below.
+    const writable = true
     res.json({
       project: req.params.name,
       writable,
@@ -1724,11 +1726,11 @@ function answerThreadWriteAccess(req, answer) {
   })
 }
 
-/** The rw rule, unless this is a thread layer and the caller belongs to it. */
+/** Any admitted caller, unless this is a thread layer and the caller belongs to it. */
 function allowRwOrAnswerThread(req, answer) {
   const thread = answerThreadWriteAccess(req, answer)
   if (thread === 'write') return true
-  return validateToken(extractToken(req)) === 'rw'
+  return !!validateToken(extractToken(req))
 }
 
 function readRecordingMeta(dir, id) {

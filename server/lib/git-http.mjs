@@ -52,18 +52,9 @@ function pktLine(text) {
 }
 
 // Fetching and pushing are different authorities and this used to be one gate.
-// `rw` was required for both, so the only credential that could FETCH a project
-// was one that could also move its refs -- which is fine while the only client
-// is a daemon that pushes, and wrong the moment something needs to read and
-// must not write. A remote build executor is exactly that: it materializes a
-// revision and renders it, and it must not be able to create a ref or advance a
-// head. Read-only is now a credential the route can actually issue.
-//
-// ONE LIMIT, STATED RATHER THAN DISCOVERED: with token gating off,
-// `validateToken` answers `rw` for everything (server/lib/auth.mjs), so on an
-// ungated environment every credential is read-write whatever it was issued as.
-// The separation below is real where gating is on and is not a claim about an
-// ungated box.
+// Daemon credentials admit the daemon; the token carries no level, so any
+// recognised token reaches both git services. What a daemon may do is decided
+// by which daemon it is, not by which token it holds.
 function daemonCredentials(req, validateToken) {
   const header = req.headers.authorization || ''
   if (!header.startsWith('Basic ')) return null
@@ -75,14 +66,10 @@ function daemonCredentials(req, validateToken) {
   const token = decoded.slice(colon + 1)
   if (!daemonId) return null
   const level = validateToken(token)
-  if (level !== 'rw' && level !== 'read') return null
+  if (!level) return null
   return { daemonId, level }
 }
 
-// Which services a credential level may reach. `git-upload-pack` is the fetch
-// half and is the only thing a `read` credential gets; everything that can move
-// a ref stays behind `rw`.
-const WRITING_SERVICES = new Set(['git-receive-pack'])
 
 function runService({ service, gitDir, project, req = null, daemonId = null, advertise = false }) {
   return new Promise((resolve, reject) => {
@@ -161,15 +148,6 @@ export function createGitHttpHandler({ validateToken, repositoryForProject, admi
     const service = endpoint === 'info/refs' ? requestedService : endpoint
     if (!['git-receive-pack', 'git-upload-pack'].includes(service)) {
       res.status(400).end('unsupported git service')
-      return
-    }
-    // Checked for the ADVERTISEMENT as well as the service call, because
-    // `info/refs?service=git-receive-pack` is where a client learns what it may
-    // push onto. Refusing only the second half would let a read credential read
-    // the write half's advertisement and fail later, which reads as a broken
-    // route rather than as a refusal.
-    if (WRITING_SERVICES.has(service) && credentials.level !== 'rw') {
-      res.status(403).end(`${service} requires a read-write credential; this one is read-only`)
       return
     }
     if (endpoint === 'info/refs') {
