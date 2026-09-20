@@ -6534,13 +6534,33 @@ export class FleetStore {
       // The received branch now walks idx_recipients_agent_ts and joins events by
       // primary key. That is why `recipients` carries the event timestamp: it is
       // what keeps this branch index-ordered rather than a full sort.
+      // As `events.id IN (SELECT ...)` the planner did NOT do what the comment
+      // above describes. Read off the live 20.15 GB database on 2026-09-20:
+      //
+      //   SEARCH events USING COVERING INDEX idx_events_type (type=?)
+      //   LIST SUBQUERY 1
+      //     SEARCH recipients USING INDEX idx_recipients_agent (agent_id=?)
+      //   USE TEMP B-TREE FOR ORDER BY
+      //
+      // It drove from the type index with NO timestamp bound, so it walked
+      // every event of every chat type in the whole history — the sibling
+      // defect in queryChatHistoryBlocks at least had a window to be bounded
+      // by, and that one still stalled the entire fleet for over two minutes.
+      // It also lands on idx_recipients_agent (agent_id, read) rather than the
+      // ordered idx_recipients_agent_ts, because with no timestamp predicate
+      // there is nothing for the ordered index to serve.
+      //
+      // CROSS JOIN fixes the loop order instead of suggesting it, which is the
+      // whole difference: the intent recorded above was correct and was never
+      // what ran.
       const recvBranch = (withBefore) => `SELECT * FROM (
-            SELECT ${E} FROM events
-            WHERE events.id IN (
+            SELECT ${E} FROM (
               SELECT event_id FROM recipients
               WHERE agent_id IN (${ph})${withBefore ? ' AND timestamp < ?' : ''}
               ORDER BY timestamp DESC LIMIT ?
-            ) AND type IN (${typePh})
+            ) r
+            CROSS JOIN events ON events.id = r.event_id
+            WHERE type IN (${typePh})
             ORDER BY timestamp DESC LIMIT ?)`;
       if (before) {
         const sql = `SELECT * FROM (SELECT * FROM (
