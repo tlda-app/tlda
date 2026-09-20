@@ -425,6 +425,7 @@ export class FleetStore {
       this._backfillSelfSubscriptions();
       this._markMintSlotsMandatory();
       this._backfillNameHistory();
+      this._backfillAgentModels();
     }
     this._listeners = []; // SSE broadcast callbacks
     this._taskDocMaterializer = !readonly && options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
@@ -3847,6 +3848,58 @@ export class FleetStore {
       this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
     })();
     console.log(`[fleet-store] ${NAME}: ${seeded} agent(s) given the default subscription`);
+  }
+
+  // `metadata.model` is supposed to record, by alias, the model an agent
+  // ACTUALLY ran under -- not the one the caller requested, which is usually
+  // nothing. Skip: "we are not supposed to record the requested model, ie
+  // nothing for default ... we are supposed to record (by alias) the one used
+  // ... this field is not supposed to be blank".
+  //
+  // It has been blank on most rows for months, and the panel hid that by
+  // printing `sonnet` for any blank -- an inference that was meant to BE this
+  // migration and became a permanent display rule instead. Measured on the live
+  // store before this ran: 2,499 of 4,518 live agents had no model, including
+  // 752 minted after the daemon default changed, so it was still accumulating.
+  //
+  // A guess, and deliberately so -- Skip: "it doesnt really matter much so if
+  // we dont have the record just like, make something up". The guess is the
+  // era's default rather than one value for everything: `sonnet` was the daemon
+  // default until 2026-08-23 and `muse` after it, so a row is filled with
+  // whatever a blank meant at the time it was minted. A human gets `human`,
+  // which is his answer and is not a guess at all.
+  //
+  // In the store rather than behind an endpoint, per his ruling: "the app
+  // shouldnt have endpoints used for migrations use the db people". The
+  // fill-only `agent-model` RPC stays -- an agent reporting what it came up as
+  // is runtime, not migration -- but nothing drives a backfill over a socket.
+  _backfillAgentModels() {
+    const NAME = 'agent-model-backfill-v1';
+    if (this.db.prepare('SELECT 1 FROM store_migrations WHERE name = ?').get(NAME)) return;
+    // The day the daemon default moved off sonnet, in response to "I NEVER
+    // FUCKING WANT TO WORK WITH SONNET AGENTS".
+    const DEFAULT_CHANGED_AT = '2026-08-23';
+    let filled = 0;
+    this.db.transaction(() => {
+      const rows = this.db.prepare(`
+        SELECT id, human, registered_at FROM agents
+        WHERE json_extract(metadata, '$.model') IS NULL
+      `).all();
+      const set = this.db.prepare(`
+        UPDATE agents
+        SET metadata = json_set(COALESCE(metadata, '{}'), '$.model', @model)
+        WHERE id = @id
+      `);
+      for (const row of rows) {
+        const model = row.human
+          ? 'human'
+          : (String(row.registered_at || '') < DEFAULT_CHANGED_AT ? 'sonnet' : 'muse');
+        set.run({ id: row.id, model });
+        filled++;
+      }
+      this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
+    })();
+    if (filled) console.log(`[fleet-store] ${NAME}: ${filled} agent(s) given a recorded model`);
   }
 
   // v1 ran before the servers wrote subscriptions at mint, so every agent
