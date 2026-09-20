@@ -6138,7 +6138,10 @@ server.on('upgrade', async (req, socket, head) => {
           : false,
     })
     if (access === 'deny') {
-      console.warn(`[sync] refused "${docName}" session=${sessionId} principal=${principal?.studentId ?? principal?.instructorId ?? 'none'}`)
+      const who = principal?.role === 'student' ? `student:${principal.studentId}`
+        : principal?.role === 'instructor' ? `instructor:${principal.instructorId}`
+        : 'nobody'
+      console.warn(`[sync] refused "${docName}" session=${sessionId} who=${who} carrier=${url.searchParams.get('classroomToken') ? 'query' : 'none'} course=${principal?.courseId ?? 'none'}`)
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
       socket.destroy()
       return

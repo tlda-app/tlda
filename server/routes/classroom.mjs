@@ -184,15 +184,46 @@ export function classroomPrincipal(req, store) {
   return null
 }
 
+/**
+ * Which carrier the classroom credential arrived on, for refusal logging.
+ * Shape only — a refusal that will not say what it resolved is the defect
+ * this exists for, and the token itself is never logged.
+ */
+export function classroomTokenCarrier(req) {
+  if (req.headers?.['x-tlda-student-token']) return 'header'
+  if (req.query?.classroomToken) return 'query'
+  const cookie = String(req.headers?.cookie || '')
+    .split(';')
+    .map(part => part.trim())
+    .find(part => part.startsWith('tlda_classroom_token='))
+  if (cookie) return 'cookie'
+  return 'none'
+}
+
+/**
+ * One line on a refusal: who was turned away from whose work, and what the
+ * request resolved to. Role and carrier, never the token — the next
+ * disagreement is settled by "a student over the header reached someone
+ * else's submission" rather than by re-deriving which credential rode where.
+ */
+export function logClassroomRefusal(req, principal, docKey) {
+  const who = principal?.role === 'student' ? `student:${principal.studentId}`
+    : principal?.role === 'instructor' ? `instructor:${principal.instructorId}`
+    : 'nobody'
+  console.warn(`[classroom] refused "${docKey}" who=${who} carrier=${classroomTokenCarrier(req)} course=${principal?.courseId ?? 'none'}`)
+}
+
 export function requireClassroomDocumentAccess(req, res, next) {
   const store = req.app?.locals?.classroomStore
   if (!store || !req.params?.name) return next()
   const resolvePrincipal = req.app?.locals?.resolveClassroomPrincipal || classroomPrincipal
-  const access = store.documentAccess(req.params.name, resolvePrincipal(req, store))
+  const principal = resolvePrincipal(req, store)
+  const access = store.documentAccess(req.params.name, principal)
   if (!access.restricted || access.allowed) return next()
   // One refusal, one shape; the message names which of the two it is, because
   // the next action differs — hand something in, or ask the student whose work
   // this is.
+  logClassroomRefusal(req, principal, req.params.name)
   return res.status(403).json({ error: access.submission
     ? 'A submitted assignment is readable by the student who handed it in and by an instructor'
     : 'Classroom solution access requires instructor access or a submitted assignment' })
