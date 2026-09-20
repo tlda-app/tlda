@@ -39,6 +39,21 @@ test('agreement is published, and a difference is preview', () => {
   assert.equal(markForRow({ preview: 'aaa', published: 'bbb' }).stage, 'preview')
 })
 
+// "the app amd static disagreeing is an error state at that stage bro". These
+// two were the same value and only one of them is a stage: not yet published is
+// behind, while published-and-different is a publish that ran and did not land.
+// Splitting them is what tells him which of his pages are merely unpublished
+// and which are published wrong.
+test('not yet published is behind, and published-but-different is broken', () => {
+  const behind = markForRow({ preview: 'aaa', published: null })
+  assert.equal(behind.stage, 'preview')
+  assert.equal(behind.error, null, 'nothing failed; it simply has not been published')
+
+  const wrong = markForRow({ preview: 'aaa', published: 'bbb' })
+  assert.equal(wrong.stage, 'preview', 'the stage is still where the current text has got to')
+  assert.ok(wrong.error, 'and publishing did not do its job, which is a failure')
+})
+
 test('written but not on the class site is preview, and written but nowhere is here-only', () => {
   assert.equal(markForRow({ preview: 'aaa', published: null }).stage, 'preview')
   assert.equal(markForRow({ preview: null, published: null }).stage, 'here-only')

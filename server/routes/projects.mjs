@@ -1313,12 +1313,17 @@ router.get('/:name/hashes', requireRead, async (req, res) => {
  */
 router.patch('/:name/class-site', requireRw, async (req, res) => {
   try {
-    const url = req.body?.classSiteUrl
-    if (url != null && !/^https?:\/\//i.test(String(url))) {
-      return res.status(400).json({ error: `class site must be an http(s) address, not ${JSON.stringify(url)}` })
+    const updates = {}
+    for (const [field, label] of [['classSiteUrl', 'class site'], ['previewUrl', 'preview']]) {
+      if (!(field in (req.body || {}))) continue
+      const url = req.body[field]
+      if (url != null && !/^https?:\/\//i.test(String(url))) {
+        return res.status(400).json({ error: `${label} must be an http(s) address, not ${JSON.stringify(url)}` })
+      }
+      updates[field] = url ? String(url).replace(/\/$/, '') : null
     }
-    const project = await updateProject(req.params.name, { classSiteUrl: url ? String(url).replace(/\/$/, '') : null })
-    res.json({ ok: true, classSiteUrl: project.classSiteUrl })
+    const project = await updateProject(req.params.name, updates)
+    res.json({ ok: true, classSiteUrl: project.classSiteUrl || null, previewUrl: project.previewUrl || null })
   } catch (e) {
     res.status(404).json({ error: e.message })
   }
@@ -1380,19 +1385,32 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
     return res.json({ marks: [], classSiteUrl: project.classSiteUrl || null, why: `${req.params.name} has no built pages to compare` })
   }
   const pages = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
-  const staticRoot = join(getOutputDir(req.params.name), 'static')
   const marks = await compareCourseSurfaces(pages, {
-    // The bytes this server serves, read where it serves them from. A page the
-    // publication does not carry reads as absent rather than as unreadable.
+    // THE PREVIEW, over HTTP, not this server's own disk.
+    //
+    // Skip: "we have a preview server showing the thing, make the configured
+    // live site show exactly the same thing" — so the question a mark answers
+    // is whether the PREVIEW and the class site agree. Reading this server's
+    // own tree answered it about a surface he is not watching, and the two are
+    // not interchangeable: measured 2026-09-20, the app served this course at
+    // one revision and the preview at another, forty-nine minutes apart.
+    //
+    // No fallback to the local tree when the preview is unknown. A row we
+    // cannot ask about is an error and says so; quietly answering a different
+    // question instead is how this spent three weeks looking correct.
     readPreview: async path => {
-      const file = join(staticRoot, ...path.split('/'))
-      return existsSync(file) ? readFileSync(file, 'utf8') : null
+      if (!project.previewUrl) return undefined
+      const response = await fetch(`${project.previewUrl.replace(/\/$/, '')}/${path}`)
+      if (response.status === 404) return null
+      if (!response.ok) return undefined
+      return await response.text()
     },
     publishedBase: project.classSiteUrl || null,
   })
   res.json({
     marks: marks.map(({ page, source, stage, error, why }) => ({ page, source, stage, error, why })),
     classSiteUrl: project.classSiteUrl || null,
+    previewUrl: project.previewUrl || null,
     comparedAt: new Date().toISOString(),
   })
 })

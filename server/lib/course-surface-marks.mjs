@@ -87,10 +87,22 @@ export function markForRow({ preview, published }) {
     return { stage: 'here-only', error: null, why: 'declared, and no surface serves it' }
   }
   if (!published) {
+    // Behind, not broken. Nothing failed; it has not been published yet.
     return { stage: 'preview', error: null, why: 'written, and not on the class site' }
   }
+  // Published, and publishing did not do its job. Skip: "the app amd static
+  // disagreeing is an error state at that stage bro". Both of this function's
+  // yellows used to be the same value, and only one of them is a stage: a page
+  // not yet on the class site is merely behind, while a page that IS on the
+  // class site saying something else is a publish that ran and did not land.
+  // The stage stays where the current text has got to; the failure is carried
+  // beside it.
   if (preview !== published) {
-    return { stage: 'preview', error: null, why: 'the class site serves different text' }
+    return {
+      stage: 'preview',
+      error: 'the class site serves different text from the preview',
+      why: 'the class site serves different text from the preview',
+    }
   }
   return { stage: 'published', error: null, why: 'the app and the class site serve the same text' }
 }
@@ -132,11 +144,16 @@ export function publishedUrlForPage(file, publishedBase) {
 /**
  * Compare every page and return each row's mark.
  *
- * The app's side is READ, not fetched. The server holds the very bytes it
- * serves, so asking itself over HTTP would add a request that can fail for
- * reasons having nothing to do with his book — a proxy, a scheme, a busy
- * loopback — and every one of those failures would land as a colour on his
- * contents. The class site is genuinely elsewhere and is genuinely asked.
+ * BOTH SIDES ARE ELSEWHERE, and that is the point. The question is whether the
+ * preview he watches and the class site agree — Skip: "we have a preview server
+ * showing the thing, make the configured live site show exactly the same
+ * thing". An earlier version read this server's own tree for the preview side,
+ * which was cheap and answered a question about a surface he is not watching.
+ *
+ * How the caller supplies each side is its business; what matters here is that
+ * neither is assumed. A side nobody could ask yields `undefined` and the row
+ * says an error occurred, rather than quietly falling back to something local
+ * that would answer a different question in the same shape.
  *
  * Failures are answers, and which answer matters. A page a surface does not
  * have is `null` — absent, one of the states the mark is about. A surface that
