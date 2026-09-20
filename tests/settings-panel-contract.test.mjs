@@ -34,7 +34,17 @@ test('TOC button mode is live and defaults on while constrained surfaces stay bu
   assert.match(preferencesSource, /'toc-button-mode': true as boolean/)
   assert.match(prefsTabSource, /checked=\{prefs\.tocButtonMode\}[\s\S]*setPref\('toc-button-mode', e\.target\.checked\)/)
   assert.match(documentPanelSource, /useSyncExternalStore\(subscribePref, \(\) => getPref\('toc-button-mode'\)\)/)
-  assert.match(documentPanelSource, /buttonMode \|\| doc\?\.format === 'slides' \|\| isPhone \|\| IS_TOUCH_DEVICE/)
+  assert.match(documentPanelSource, /showTocButton = buttonMode \|\| doc\?\.format === 'slides' \|\| isPhone \|\| IS_TOUCH_DEVICE/)
+})
+
+test('the three-line button toggles the hover-type panel, not a separate modal', () => {
+  // One panel: the button dispatches, DocumentPanel listens, and the modal is gone.
+  assert.match(documentPanelSource, /window\.dispatchEvent\(new CustomEvent\('toc-button-toggle'\)\)/)
+  assert.match(documentPanelSource, /window\.addEventListener\('toc-toggle', onTocToggle\)/)
+  assert.match(documentPanelSource, /window\.addEventListener\('toc-open-change', onTocOpenChange\)/)
+  assert.doesNotMatch(documentPanelSource, /phone-toc-modal/)
+  assert.doesNotMatch(documentPanelCss, /phone-toc-modal/)
+  assert.doesNotMatch(documentPanelCss, /phone-toc-backdrop/)
 })
 
 test('TOC keeps its established control order and can compact the state controls', () => {

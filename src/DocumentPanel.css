@@ -2226,10 +2226,29 @@ html[data-theme="dark"] .snapshot-label {
    Phone mode (max-width 600px)
    ======================== */
 
-/* Hide panel and toolbar on phone */
-body.phone-mode .doc-panel,
-body.touch-toc-mode .doc-panel {
+/* Hide toolbar on phone; the panel itself stays mounted so the three-line
+   button can open it as an overlay (see the phone-mode override below). */
+body.phone-mode .doc-panel {
   display: none;
+}
+body.phone-mode .doc-panel.doc-panel-open {
+  display: flex;
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(300px, 80vw);
+  max-height: 100dvh;
+  height: 100dvh;
+  z-index: var(--tlda-z-top-control);
+  padding-top: calc(54px + env(safe-area-inset-top));
+  pointer-events: all;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: rgba(0, 0, 0, 0.6);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  font-size: 14px;
 }
 
 body.phone-mode .tlui-layout__bottom {
@@ -2280,118 +2299,26 @@ body.touch-toc-mode .phone-toc-btn:active {
 
 /* phone-bar-btn removed — merged into single ☰ menu button */
 
-/* TOC modal backdrop */
-.phone-toc-backdrop {
-  display: none;
-}
-
-body.phone-mode .phone-toc-backdrop,
-body.touch-toc-mode .phone-toc-backdrop {
-  display: flex;
-  position: fixed;
-  inset: 0;
-  z-index: var(--tlda-z-top-control);
-  background: rgba(0, 0, 0, 0.3);
-  justify-content: flex-end;
-  pointer-events: all;
-}
-
-.phone-toc-modal {
-  width: min(300px, 80vw);
-  height: 100%;
-  background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 14px;
-  color: rgba(0, 0, 0, 0.6);
-  padding-top: calc(54px + env(safe-area-inset-top));
-}
-
-body.touch-toc-mode:not(.phone-mode) .phone-toc-modal {
-  width: min(340px, 42vw);
-  max-width: calc(100vw - 64px);
-}
-
-/* Override ghost opacity — modal content should be fully visible */
-.phone-toc-modal .doc-panel-tabs,
-.phone-toc-modal .doc-panel-content,
-.phone-toc-modal .search-input-wrap {
+/* On phone-sized viewports the button-opened panel renders with readable
+   (non-ghost) type — the modal that used to carry these rules is gone and the
+   hover panel is the only container left. */
+body.phone-mode .doc-panel.doc-panel-open .doc-panel-tabs,
+body.phone-mode .doc-panel.doc-panel-open .doc-panel-content,
+body.phone-mode .doc-panel.doc-panel-open .search-input-wrap {
   opacity: 1;
 }
 
-.phone-toc-modal .phone-panel-tabs {
-  position: sticky;
-  top: 0;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-
-.phone-toc-modal .doc-panel-tab {
+body.phone-mode .doc-panel.doc-panel-open .doc-panel-tab {
   min-height: 44px;
   color: rgba(0, 0, 0, 0.45);
 }
 
-.phone-toc-modal .doc-panel-tab--gear {
-  flex-basis: 44px;
-}
-
-.phone-toc-modal .doc-panel-tab.active {
+body.phone-mode .doc-panel.doc-panel-open .doc-panel-tab.active {
   color: rgba(0, 0, 0, 0.7);
   border-bottom-color: rgba(0, 0, 0, 0.3);
 }
 
-.phone-toc-modal .toc-item {
-  padding: 8px 12px;
-  color: rgba(0, 0, 0, 0.4);
-}
-
-.phone-toc-modal .toc-row-center {
-  width: 22px;
-  height: 22px;
-  margin-right: 5px;
-  opacity: var(--ui-tone-dormant);
-}
-
-.phone-toc-modal .toc-item.section {
-  padding-top: 6px;
-  color: rgba(0, 0, 0, 0.65);
-  font-weight: 500;
-}
-
-.phone-toc-modal .toc-item.subsection {
-  color: rgba(0, 0, 0, 0.4);
-}
-
-.phone-toc-modal .toc-diff-hint {
-  padding: 7px 12px;
-  color: rgba(0, 0, 0, 0.5);
-  opacity: var(--ui-tone-active);
-}
-
-.phone-toc-modal .toc-bottom-controls {
-  padding: 4px 12px 8px;
-  gap: 12px;
-}
-
-.phone-toc-modal .toc-bottom-controls .toc-diff-hint {
-  padding: 5px 0;
-}
-
-.phone-toc-modal .toc-bottom-controls--compact .toc-state-control {
-  padding: 2px !important;
-}
-
-.phone-toc-modal .toc-diff-hint:hover {
-  opacity: var(--ui-tone-full) !important;
-}
-
-.phone-toc-modal .search-input {
+body.phone-mode .doc-panel.doc-panel-open .search-input {
   font-size: 14px;
   color: rgba(0, 0, 0, 0.6);
 }
@@ -2408,38 +2335,18 @@ html[data-theme="dark"] body.touch-toc-mode .phone-toc-btn:active {
   background: rgba(255, 255, 255, 0.06);
 }
 
-html[data-theme="dark"] .phone-toc-modal {
+html[data-theme="dark"] body.phone-mode .doc-panel.doc-panel-open {
   background: rgba(0, 0, 0, 0.75);
   color: rgba(255, 255, 255, 0.6);
 }
 
-html[data-theme="dark"] .phone-toc-modal .phone-panel-tabs {
-  background: rgba(0, 0, 0, 0.85);
-}
-
-html[data-theme="dark"] .phone-toc-modal .doc-panel-tab {
+html[data-theme="dark"] body.phone-mode .doc-panel.doc-panel-open .doc-panel-tab {
   color: rgba(255, 255, 255, 0.45);
 }
 
-html[data-theme="dark"] .phone-toc-modal .doc-panel-tab.active {
+html[data-theme="dark"] body.phone-mode .doc-panel.doc-panel-open .doc-panel-tab.active {
   color: rgba(255, 255, 255, 0.7);
   border-bottom-color: rgba(255, 255, 255, 0.3);
-}
-
-html[data-theme="dark"] .phone-toc-modal .toc-item {
-  color: rgba(255, 255, 255, 0.4);
-}
-
-html[data-theme="dark"] .phone-toc-modal .toc-item.section {
-  color: rgba(255, 255, 255, 0.65);
-}
-
-html[data-theme="dark"] .phone-toc-modal .toc-item.subsection {
-  color: rgba(255, 255, 255, 0.4);
-}
-
-html[data-theme="dark"] .phone-toc-modal .toc-diff-hint {
-  color: rgba(255, 255, 255, 0.5);
 }
 
 /* Highlighter button — bottom right, desktop + mobile */

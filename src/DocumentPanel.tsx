@@ -116,7 +116,8 @@ export function DocumentPanel() {
   const [dragOpen, setDragOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
-  // Close on outside touch (touch devices only — desktop uses CSS :hover)
+  // Close on outside touch (touch devices only — desktop uses CSS :hover).
+  // The sync listener below reports it so the three-line button glyph follows.
   useEffect(() => {
     if (!open) return
     function onPointerDown(e: PointerEvent) {
@@ -167,6 +168,34 @@ export function DocumentPanel() {
     return () => window.removeEventListener('toc-drop-hover', onTocHover)
   }, [])
 
+  // Three-line button entry path: toggle the same panel hover opens.
+  useEffect(() => {
+    function onTocToggle(e: Event) {
+      const detail = (e as CustomEvent).detail as { open?: boolean } | undefined
+      setOpen(prev => {
+        const next = detail?.open ?? !prev
+        window.dispatchEvent(new CustomEvent('toc-open-change', { detail: { open: next } }))
+        return next
+      })
+    }
+    window.addEventListener('toc-toggle', onTocToggle)
+    return () => window.removeEventListener('toc-toggle', onTocToggle)
+  }, [])
+
+  // Report closes the button did not initiate so its glyph stays in sync.
+  // Mounted alongside the close-on-outside-touch effect above so both observe
+  // the same pointerdown stream; this one only reports, never sets state.
+  useEffect(() => {
+    function onPointerDown(e: PointerEvent) {
+      if (e.pointerType === 'mouse') return
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        window.dispatchEvent(new CustomEvent('toc-open-change', { detail: { open: false } }))
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [])
+
   return (
     <>
       <div
@@ -177,6 +206,7 @@ export function DocumentPanel() {
           // Touch tap on collapsed strip → open
           if ((e.nativeEvent as PointerEvent).pointerType !== 'mouse' && !open) {
             setOpen(true)
+            window.dispatchEvent(new CustomEvent('toc-open-change', { detail: { open: true } }))
           }
         }}
         onPointerUp={stopEventPropagation}
@@ -664,15 +694,12 @@ function PhonePageIndicator() {
 }
 
 export function PhoneOverlay() {
-  const classroom = isClassroomSurface()
   const doc = useContext(ProjectContext)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [tab, setTab] = useState<Tab>('document')
-  const [query, setQuery] = useState('')
   const isPhone = usePhoneSizedViewport()
   const buttonMode = useSyncExternalStore(subscribePref, () => getPref('toc-button-mode'))
-  const showButtonToc = buttonMode || doc?.format === 'slides' || isPhone || IS_TOUCH_DEVICE
-  useVisualViewportControlAnchor(showButtonToc)
+  const showTocButton = buttonMode || doc?.format === 'slides' || isPhone || IS_TOUCH_DEVICE
+  useVisualViewportControlAnchor(showTocButton)
   useEffect(() => {
     if (!isPhone) return
     // Show toolbar when menu is open
@@ -686,20 +713,45 @@ export function PhoneOverlay() {
   }, [isPhone])
 
   useEffect(() => {
-    if (!showButtonToc || isPhone) return
+    if (!showTocButton || isPhone) return
     document.body.classList.add('touch-toc-mode')
     return () => { document.body.classList.remove('touch-toc-mode') }
-  }, [showButtonToc, isPhone])
+  }, [showTocButton, isPhone])
 
-  if (!showButtonToc) return null
+  // The button toggles the hover-type DocumentPanel via a CustomEvent rather
+  // than owning its state — the panel keeps hover, touch-tap, and drag opens,
+  // and the button becomes one more entry path. Same shape as toc-drop-hover.
+  // The panel reports back via toc-open-change so the glyph stays in sync with
+  // closes the button did not initiate (outside tap, hover handling).
+  useEffect(() => {
+    if (!showTocButton) return
+    function toggleToc() {
+      setMenuOpen(prev => {
+        const next = !prev
+        window.dispatchEvent(new CustomEvent('toc-toggle', { detail: { open: next } }))
+        return next
+      })
+    }
+    function onTocOpenChange(e: Event) {
+      setMenuOpen((e as CustomEvent).detail?.open ?? false)
+    }
+    window.addEventListener('toc-button-toggle', toggleToc)
+    window.addEventListener('toc-open-change', onTocOpenChange)
+    return () => {
+      window.removeEventListener('toc-button-toggle', toggleToc)
+      window.removeEventListener('toc-open-change', onTocOpenChange)
+    }
+  }, [showTocButton])
+
+  if (!showTocButton) return null
 
   return (
     <>
-      {/* Menu toggle — top right: opens TOC + shows toolbar */}
+      {/* Menu toggle — top right: opens the hover-type panel + shows toolbar */}
       <button
         className="phone-toc-btn"
         aria-label={menuOpen ? 'Close table of contents' : 'Open table of contents'}
-        onClick={() => setMenuOpen(!menuOpen)}
+        onClick={() => window.dispatchEvent(new CustomEvent('toc-button-toggle'))}
         onPointerDown={stopEventPropagation}
         onPointerUp={stopEventPropagation}
         onTouchStart={stopEventPropagation}
@@ -709,7 +761,7 @@ export function PhoneOverlay() {
       </button>
 
       {/* The bottom-right controls follow the control SCHEME, not the viewport
-          width. showButtonToc is already the condition for "this surface is
+          width. showTocButton is already the condition for "this surface is
           driven by buttons rather than a toolbar" — slides, phone, or any touch
           device — and the menu toggle above uses it. These two were gated on
           isPhone alone, so a talk on a desktop or an iPad rendered neither, and
@@ -738,46 +790,6 @@ export function PhoneOverlay() {
           {/* Page number indicator — shows during scroll, fades out */}
           <PhonePageIndicator />
         </>
-      )}
-
-      {/* TOC modal */}
-      {menuOpen && (
-        <div
-          className="phone-toc-backdrop"
-          onClick={() => setMenuOpen(false)}
-          onPointerDown={stopEventPropagation}
-          onTouchStart={stopEventPropagation}
-        >
-          <div
-            className="phone-toc-modal"
-            onClick={(e) => {
-              // Close modal when a TOC item is tapped (navigates to section)
-              if ((e.target as HTMLElement).closest('.toc-item')) {
-                setTimeout(() => setMenuOpen(false), 150)
-              } else {
-                e.stopPropagation()
-              }
-            }}
-            onPointerDown={stopEventPropagation}
-            onTouchStart={stopEventPropagation}
-          >
-            <div className="doc-panel-tabs phone-panel-tabs">
-              <button className={`doc-panel-tab ${tab === 'document' ? 'active' : ''}`} onClick={() => setTab('document')}>
-                Document
-              </button>
-              {documentPanelShowsProject(classroom) && <button className={`doc-panel-tab ${tab === 'project' ? 'active' : ''}`} onClick={() => setTab('project')}>
-                Project
-              </button>}
-              <button className={`doc-panel-tab doc-panel-tab--gear ${tab === 'prefs' ? 'active' : ''}`} onClick={() => setTab('prefs')} aria-label="Settings">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM6 8a2 2 0 114 0 2 2 0 01-4 0z"/><path d="M9.4 1.2a1.5 1.5 0 00-2.8 0l-.3.9a.5.5 0 01-.7.3l-.8-.5a1.5 1.5 0 00-2 2l.5.8a.5.5 0 01-.3.7l-.9.3a1.5 1.5 0 000 2.8l.9.3a.5.5 0 01.3.7l-.5.8a1.5 1.5 0 002 2l.8-.5a.5.5 0 01.7.3l.3.9a1.5 1.5 0 002.8 0l.3-.9a.5.5 0 01.7-.3l.8.5a1.5 1.5 0 002-2l-.5-.8a.5.5 0 01.3-.7l.9-.3a1.5 1.5 0 000-2.8l-.9-.3a.5.5 0 01-.3-.7l.5-.8a1.5 1.5 0 00-2-2l-.8.5a.5.5 0 01-.7-.3l-.3-.9z"/></svg>
-              </button>
-            </div>
-            <PanelSearch query={query} setQuery={setQuery} />
-            {tab === 'document' && <TocTab query={query} />}
-            {tab === 'project' && <ProjectTab query={query} />}
-            {tab === 'prefs' && <PrefsTab query={query} />}
-          </div>
-        </div>
       )}
     </>
   )
