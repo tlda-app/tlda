@@ -2736,9 +2736,47 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     // transform follows on the next render, so it cannot fight a momentum
     // glide and is not a claimant in the re-entrancy map.
     if (tailModeRef.current && !pendingDepartureRef.current) modelTopRef.current = tailTop()
-    else modelTopRef.current = clampTop(modelTopRef.current + topAdjustment)
+    // No tail ceiling on this path, and that is the whole fix.
+    //
+    // clampTop bounds the result by tailTop(), which is `geometry.total -
+    // viewportHeight` — and `total` counts every UNMEASURED row as
+    // ANCHORED_ESTIMATED_ROW_HEIGHT. Measured in Skip's own tab on 2026-09-20,
+    // the median row is 239.7px against that 80px guess, and only 2-7 rows per
+    // pane are ever rendered and therefore ever measured. So `total` is mostly
+    // guesses, it is wrong by a large factor, and it MOVES every time an
+    // offscreen row is measured for the first time.
+    //
+    // Clamping the reader against that number means a row he cannot see
+    // changes where he is looking. With topAdjustment at 0 — nothing above him
+    // changed — clampTop could still return a smaller number than it was given
+    // and pull the content under him. That is precisely the invariant this file
+    // exists to hold, docs/chat-rendering.md § "The rule everything here
+    // serves": a gesture decides whether the reader is off the tail, "it does
+    // not authorize message arrival OR ROW MEASUREMENT to move the visible
+    // content".
+    //
+    // Skip states the exception himself, and it is the one to implement: a
+    // resize "resizes without moving what is in my screen, unless it is on my
+    // screen". Rows entirely above him are absorbed by topAdjustment above, so
+    // the screen holds. Rows below him do not change any start before them, so
+    // the screen holds. A row he is looking at may move what is under it,
+    // because that is the thing he is watching happen.
+    //
+    // The floor stays: a negative model top is not a position. The ceiling is
+    // still enforced where it belongs — on scroll and on viewport resize, both
+    // of which are the reader acting, not the list discovering its own size.
+    //
+    // The cost, stated rather than hidden: rows can measure SMALLER than the
+    // guess (the same sample had a 25.9px row), so total can shrink and leave
+    // modelTop briefly past the true tail — blank space below until the next
+    // scroll or resize re-clamps. That is a transient gap at the bottom instead
+    // of the content jumping under the reader, and between those two the choice
+    // is his and he has already made it.
+    else modelTopRef.current = Math.max(0, modelTopRef.current + topAdjustment)
     setGeometryVersion(version => version + 1)
-  }, [clampTop, geometry.starts, tailTop])
+    // clampTop is deliberately no longer a dependency: this path no longer
+    // clamps. It is still the right thing on scroll and on viewport resize.
+  }, [geometry.starts, tailTop])
 
   useLayoutEffect(() => {
     reconcileRowHeights()
