@@ -43,15 +43,48 @@ async function withStore(seed, fn) {
 
 const modelOf = (store, id) => store.getAgent(id)?.metadata?.model ?? null
 
-test('a blank model is filled with the default of the era it was minted in', () => withStore(
+const agent = (id, registered_at, kind) => ({
+  id, friendly_name: id.replace('fleet:', ''), human: false,
+  registered_at, last_seen: registered_at,
+  ...(kind ? { metadata: { kind } } : {}),
+})
+
+// Skip's mapping, by harness and era: "opus for claude, gpt55 for codex, and
+// deepseek for goose before the muse erra, at which point claude empties can
+// be muse".
+test('a blank is filled by harness, and by era for claude', () => withStore(
   (store) => {
-    store.upsertAgent({ id: 'fleet:old', friendly_name: 'old', human: false, registered_at: '2026-07-01T00:00:00.000Z', last_seen: '2026-07-01T00:00:00.000Z' })
-    store.upsertAgent({ id: 'fleet:new', friendly_name: 'new', human: false, registered_at: '2026-09-01T00:00:00.000Z', last_seen: '2026-09-01T00:00:00.000Z' })
+    store.upsertAgent(agent('fleet:c-old', '2026-07-01T00:00:00.000Z', 'claude'))
+    store.upsertAgent(agent('fleet:c-new', '2026-09-01T00:00:00.000Z', 'claude'))
+    store.upsertAgent(agent('fleet:x-old', '2026-07-01T00:00:00.000Z', 'codex'))
+    store.upsertAgent(agent('fleet:g-old', '2026-07-01T00:00:00.000Z', 'goose'))
   },
   (store) => {
-    assert.equal(modelOf(store, 'fleet:old'), 'sonnet', 'before 2026-08-23 a blank meant the sonnet default')
-    assert.equal(modelOf(store, 'fleet:new'), 'muse', 'after it, a blank meant muse')
+    assert.equal(modelOf(store, 'fleet:c-old'), 'opus', 'claude before the muse era')
+    assert.equal(modelOf(store, 'fleet:c-new'), 'muse', 'claude after it')
+    assert.equal(modelOf(store, 'fleet:x-old'), 'gpt-5.5', 'codex keeps its own')
+    assert.equal(modelOf(store, 'fleet:g-old'), 'deepseek', 'goose keeps its own')
   },
+))
+
+// The literal the panel used to print, and the one thing he does not use.
+// Filling rows with it would manufacture the fiction he complained about.
+test('sonnet is never written', () => withStore(
+  (store) => {
+    for (const [i, kind] of ['claude', 'codex', 'goose', null].entries()) {
+      store.upsertAgent(agent(`fleet:s${i}`, '2026-07-01T00:00:00.000Z', kind))
+    }
+  },
+  (store) => {
+    for (let i = 0; i < 4; i++) {
+      assert.notEqual(modelOf(store, `fleet:s${i}`), 'sonnet', `row ${i} must not be filled with sonnet`)
+    }
+  },
+))
+
+test('a row with no recorded harness takes the claude column', () => withStore(
+  (store) => { store.upsertAgent(agent('fleet:nokind', '2026-07-01T00:00:00.000Z', null)) },
+  (store) => { assert.equal(modelOf(store, 'fleet:nokind'), 'opus') },
 ))
 
 test('a human is recorded as human, which is not a guess', () => withStore(

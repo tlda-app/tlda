@@ -68,7 +68,7 @@ import { serverOwnerUpsertRow } from './lib/server-owner-row.mjs'
 import { resolveLocalImage } from '../shared/local-image.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
-import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
+import { listModels as listSpawnModels, resolveModelSpec } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY, MINT_SLOTS } from '../shared/subscriptions.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
@@ -2712,6 +2712,30 @@ async function performSpawnRelay(caller, msg) {
   const readiness = pendingAgentId
     ? spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
+  // What the agent will actually run as, not what the caller asked for.
+  //
+  // This wrote `model` straight through, and a caller almost never names one --
+  // so the field was simply absent on most mints, and stayed absent, because
+  // the only other writer is a fill-only RPC. Skip: "we are not supposed to
+  // record the requested model, ie nothing for default ... we are supposed to
+  // record (by alias) the one used ... this field is not supposed to be blank."
+  //
+  // Measured before this changed: 752 of the 1,483 agents minted since the
+  // daemon default moved had no model recorded, so it was still accumulating
+  // while a display default made the column look full.
+  //
+  // Resolved from the same module and the same daemon config the launcher uses,
+  // so the alias written here is the one the launch resolves to rather than a
+  // second opinion about it. If it cannot be resolved the mint proceeds without
+  // one -- a spawn must not fail because its label could not be computed, and a
+  // blank is still recoverable by the fill RPC when the agent reports in.
+  let mintedModelAlias = null
+  try {
+    const mintDaemonConfig = cwd ? readDaemonConfigForCwd(cwd) : readDaemonConfig()
+    mintedModelAlias = resolveModelSpec(model, { config: withDaemonModelAliases({}, mintDaemonConfig) })?.alias || null
+  } catch {
+    mintedModelAlias = String(model || '').trim() || null
+  }
   let reservedFriendlyName = null
   if (pendingAgentId) {
     const now = new Date().toISOString()
@@ -2738,7 +2762,7 @@ async function performSpawnRelay(caller, msg) {
         shell: true,
         ...(project ? { project } : {}),
         ...(cwd ? { cwd } : {}),
-        ...(model ? { model } : {}),
+        ...(mintedModelAlias ? { model: mintedModelAlias } : {}),
       },
     })
     // Both slots, written where the row is made, because this is the mint.

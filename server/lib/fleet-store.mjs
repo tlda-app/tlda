@@ -3863,11 +3863,22 @@ export class FleetStore {
   // 752 minted after the daemon default changed, so it was still accumulating.
   //
   // A guess, and deliberately so -- Skip: "it doesnt really matter much so if
-  // we dont have the record just like, make something up". The guess is the
-  // era's default rather than one value for everything: `sonnet` was the daemon
-  // default until 2026-08-23 and `muse` after it, so a row is filled with
-  // whatever a blank meant at the time it was minted. A human gets `human`,
-  // which is his answer and is not a guess at all.
+  // we dont have the record just like, make something up". It is his guess
+  // rather than mine, by HARNESS and era: "since i literally never use sonnet
+  // and mint must record harness prob it should be opus for claude, gpt55 for
+  // codex, and deepseek for goose before the muse erra, at which point claude
+  // empties can be muse". A human gets `human`, which is his answer and not a
+  // guess at all.
+  //
+  // `sonnet` is never written. It was the daemon default before 2026-08-23 and
+  // is the literal the panel used to print, but he does not use it, so filling
+  // rows with it would manufacture exactly the fiction he complained about.
+  //
+  // Two of those names are the era's rather than today's catalog, and are kept
+  // as he said them: `deepseek` is a claude-kind alias now, and the codex alias
+  // is `gpt` today while `gpt-5.5` is what 217 existing rows record. These are
+  // labels for rows whose truth is gone, so his recollection of what was
+  // running beats a tidier name that was not.
   //
   // In the store rather than behind an endpoint, per his ruling: "the app
   // shouldnt have endpoints used for migrations use the db people". The
@@ -3879,10 +3890,16 @@ export class FleetStore {
     // The day the daemon default moved off sonnet, in response to "I NEVER
     // FUCKING WANT TO WORK WITH SONNET AGENTS".
     const DEFAULT_CHANGED_AT = '2026-08-23';
+    // Before the muse era, by harness. After it, a claude blank means muse;
+    // nothing he said moves codex or goose, so they keep theirs.
+    const BEFORE_MUSE = { claude: 'opus', codex: 'gpt-5.5', goose: 'deepseek' };
+    const AFTER_MUSE = { claude: 'muse', codex: 'gpt-5.5', goose: 'deepseek' };
     let filled = 0;
     this.db.transaction(() => {
       const rows = this.db.prepare(`
-        SELECT id, human, registered_at FROM agents
+        SELECT id, human, registered_at,
+               json_extract(metadata, '$.kind') AS kind
+        FROM agents
         WHERE json_extract(metadata, '$.model') IS NULL
       `).all();
       const set = this.db.prepare(`
@@ -3891,9 +3908,12 @@ export class FleetStore {
         WHERE id = @id
       `);
       for (const row of rows) {
-        const model = row.human
-          ? 'human'
-          : (String(row.registered_at || '') < DEFAULT_CHANGED_AT ? 'sonnet' : 'muse');
+        const beforeMuse = String(row.registered_at || '') < DEFAULT_CHANGED_AT;
+        const table = beforeMuse ? BEFORE_MUSE : AFTER_MUSE;
+        // No recorded harness is itself a pre-harness row, so it takes the
+        // claude column -- the harness everything ran under before the others
+        // existed -- rather than a fourth guess.
+        const model = row.human ? 'human' : (table[row.kind] || table.claude);
         set.run({ id: row.id, model });
         filled++;
       }
