@@ -7,8 +7,6 @@ import type { SvgDocument } from '../loaders/types'
 import { classroomApi, type Assignment, type Submission } from './api'
 import { submissionLabel } from './markingLabels'
 import { readClassroomToken } from './classroomToken'
-import { StudentAnnotationOverlay } from './StudentAnnotationOverlay'
-import { gradingReturnedRoomId } from '../../shared/classroom-rooms.mjs'
 import './ClassroomWorkspace.css'
 
 // What a student sees of their own work.
@@ -63,8 +61,7 @@ export function StudentWork() {
   const [document, setDocument] = useState<SvgDocument | null>(null)
   const [error, setError] = useState('')
   const [loaded, setLoaded] = useState(false)
-  // The returned marks live in this same room, so this view resolves their
-  // anchors itself. It never records one — nothing is drawn here — and it never
+  // This view never records an anchor — nothing is drawn here — and never
   // writes a position back, so a student's collapse state stays their own.
   const [workEditor, setWorkEditor] = useState<Editor | null>(null)
   // This view's own document container.
@@ -191,17 +188,24 @@ export function StudentWork() {
         onEditorMount={setWorkEditor}
         onEditorRelease={released => setWorkEditor(current => (current === released ? null : current))}
       />
-      {submission.gradingStatus === 'returned' && (submission.answerIds ?? []).map(problemId => (
-        <StudentAnnotationOverlay
-          key={gradingReturnedRoomId(`doc-${submission.contentRef}`, problemId)}
-          bookRoomId={`doc-${submission.contentRef}`}
-          studentId={submission.studentId}
-          bookEditor={workEditor}
-          visible
-          isWriteTarget={false}
-          roomId={gradingReturnedRoomId(`doc-${submission.contentRef}`, problemId)}
-        />
-      ))}
+      {/*
+        RETURNED MARKS ARE NOT SHOWN HERE. They are shown in the book.
+
+        `docs/classroom.md`: "Handback returns the marked exercise to the student
+        in the book." The book is the solution chapter, where the student has the
+        same `.tlda-marking-pair` wrapper the instructor marked against, and
+        `MarkingInkOverlay` now opens the returned room for them there.
+
+        This surface laid their submission out as a document of its own, so it
+        had no wrapper — and these overlays carried neither `camera` nor
+        `bounds`, so they had no frame at all. Coordinates that are correct
+        relative to the wrapper then placed every mark out in empty canvas above
+        and right of the work. Measured on the walk copy: the same shape now
+        lands on the answer, at the coordinates it was stored with.
+
+        Submitting, reading back their own submitted document and the status
+        panel are this view's jobs and are untouched.
+      */}
     </>}
     <aside className="markingLifecycle" aria-label={publicStudentId ? 'Public student submission' : 'Your submission'}>
       {publicStudentId && <span>Public submission: {publicStudentId}</span>}
