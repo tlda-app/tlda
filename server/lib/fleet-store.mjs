@@ -3874,11 +3874,12 @@ export class FleetStore {
   // is the literal the panel used to print, but he does not use it, so filling
   // rows with it would manufacture exactly the fiction he complained about.
   //
-  // Two of those names are the era's rather than today's catalog, and are kept
-  // as he said them: `deepseek` is a claude-kind alias now, and the codex alias
-  // is `gpt` today while `gpt-5.5` is what 217 existing rows record. These are
-  // labels for rows whose truth is gone, so his recollection of what was
-  // running beats a tidier name that was not.
+  // Current catalog aliases, on his instruction -- "current names plz. i do not
+  // write dash or dots" -- so the codex column is `gpt` rather than the era's
+  // `gpt-5.5`, which 217 existing rows still record and which stays on them
+  // because a recorded model is never overwritten. `deepseek` is a claude-kind
+  // alias in today's catalog rather than a goose one; it is his mapping and it
+  // is a current name, so it stands.
   //
   // In the store rather than behind an endpoint, per his ruling: "the app
   // shouldnt have endpoints used for migrations use the db people". The
@@ -3892,8 +3893,8 @@ export class FleetStore {
     const DEFAULT_CHANGED_AT = '2026-08-23';
     // Before the muse era, by harness. After it, a claude blank means muse;
     // nothing he said moves codex or goose, so they keep theirs.
-    const BEFORE_MUSE = { claude: 'opus', codex: 'gpt-5.5', goose: 'deepseek' };
-    const AFTER_MUSE = { claude: 'muse', codex: 'gpt-5.5', goose: 'deepseek' };
+    const BEFORE_MUSE = { claude: 'opus', codex: 'gpt', goose: 'deepseek' };
+    const AFTER_MUSE = { claude: 'muse', codex: 'gpt', goose: 'deepseek' };
     let filled = 0;
     this.db.transaction(() => {
       const rows = this.db.prepare(`

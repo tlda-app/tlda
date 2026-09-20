@@ -51,7 +51,8 @@ const agent = (id, registered_at, kind) => ({
 
 // Skip's mapping, by harness and era: "opus for claude, gpt55 for codex, and
 // deepseek for goose before the muse erra, at which point claude empties can
-// be muse".
+// be muse" — spelled with the catalog's current aliases, on his instruction:
+// "current names plz. i do not write dash or dots". So `gpt`, not `gpt-5.5`.
 test('a blank is filled by harness, and by era for claude', () => withStore(
   (store) => {
     store.upsertAgent(agent('fleet:c-old', '2026-07-01T00:00:00.000Z', 'claude'))
@@ -62,7 +63,7 @@ test('a blank is filled by harness, and by era for claude', () => withStore(
   (store) => {
     assert.equal(modelOf(store, 'fleet:c-old'), 'opus', 'claude before the muse era')
     assert.equal(modelOf(store, 'fleet:c-new'), 'muse', 'claude after it')
-    assert.equal(modelOf(store, 'fleet:x-old'), 'gpt-5.5', 'codex keeps its own')
+    assert.equal(modelOf(store, 'fleet:x-old'), 'gpt', 'codex keeps its own, by its current alias')
     assert.equal(modelOf(store, 'fleet:g-old'), 'deepseek', 'goose keeps its own')
   },
 ))
