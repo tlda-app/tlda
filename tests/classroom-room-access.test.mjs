@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  answerThreadAccess,
   classroomRoomAccess,
   gradingDraftRoomId,
   gradingLayerRoomTarget,
@@ -233,4 +234,50 @@ test("a student is refused their own submission's per-problem marking layer", ()
 
   // And the instructor can still write them, or the refusal above is just a lock.
   assert.equal(classroomRoomAccess({ roomId: perProblem, tokenLevel: 'rw' }), 'write')
+})
+
+// --- the annotation thread on an answer ---
+//
+// Paired the same way as the rooms above: every refusal sits next to the reply
+// it must not refuse, because "anyone can reply to anything" is broken by a
+// guard that is merely safe.
+
+const OWNER = 'qtm285:ada'
+const OTHER = 'qtm285:ben'
+
+test('both people the answer belongs to may add a layer to its thread', () => {
+  assert.equal(
+    answerThreadAccess({ tokenLevel: 'rw' }),
+    'write',
+    'the instructor marking it',
+  )
+  assert.equal(
+    answerThreadAccess({ tokenLevel: 'read', studentId: OWNER, submissionOwnerId: OWNER }),
+    'write',
+    'the student replying to their own marked answer',
+  )
+})
+
+test('a student may not reach another student\'s thread', () => {
+  assert.equal(
+    answerThreadAccess({ tokenLevel: 'read', studentId: OTHER, submissionOwnerId: OWNER }),
+    'deny',
+  )
+})
+
+test('a read link with nobody behind it gets no thread', () => {
+  assert.equal(answerThreadAccess({ tokenLevel: 'read', submissionOwnerId: OWNER }), 'deny')
+  assert.equal(answerThreadAccess({ tokenLevel: 'read', studentId: OWNER }), 'deny',
+    'an unresolved owner is refused rather than matched against null')
+  assert.equal(answerThreadAccess({ tokenLevel: 'none', studentId: OWNER, submissionOwnerId: OWNER }), 'deny')
+})
+
+test('the thread rule leaves the instructor\'s private draft exactly as it was', () => {
+  // The one refusal that must not move. A thread layer is a different object,
+  // so answering it must not become a way into the draft room.
+  const draft = gradingDraftRoomId('doc-sub-ada', 'ans-ex3')
+  assert.equal(
+    classroomRoomAccess({ roomId: draft, tokenLevel: 'read', studentId: OWNER, submissionOwnerId: OWNER }),
+    'deny',
+  )
 })

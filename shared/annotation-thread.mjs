@@ -1,18 +1,25 @@
 // A marked answer is a thread of append-only annotation layers, each carrying
 // its own voice track, each living inside the timeline of the one before it.
-// See docs/annotation-threads.md — this file is the model, and nothing here
-// decides who may read a layer or when one is returned.
+// See docs/annotation-threads.md.
 //
-// A layer holds three things. Ink and audio are a recording, which already
-// exists (`src/recording/recorder.ts`, stored per project under `recordings/`).
-// The third is the warp, and it exists nowhere else, so it is what this file is
-// mostly about.
+// **A thread layer is just a local layer.** Skip, asked whether the thread's
+// layers were a second kind of thing next to the book's: they are not. So there
+// is one layer concept here, the one in `src/classroom/bookLayers.ts` — a set
+// you can see and one you are writing — and a thread layer is one of those that
+// carries a timeline.
 //
-// Two senses of "layer" meet here and are deliberately not merged. A classroom
-// layer is a sync room with authorization (`shared/classroom-rooms.mjs`); it is
-// live and has no timeline. A thread layer is recorded, append-only and timed.
-// A thread layer is a recording plus an address and a parent; who may read it
-// stays a question about the room it hangs off.
+// Two things follow, and both are the existing model rather than anything new:
+//
+//   - **Anyone replies to anything.** Skip: "its a thread anyone can reply to
+//     anything". There is no access model on book layers — "xommon means
+//     fucking common dude" — so a reply needs no permission to exist, and this
+//     file does not contain one.
+//   - **No removal.** Skip: "no removal". Hiding a layer hides it and deletes
+//     nothing, which is already what the layer model does.
+//
+// What a layer adds on top of being a layer is a timeline: ink on its own clock
+// and one audio track, which `src/recording/recorder.ts` already captures, and
+// a warp. The warp exists nowhere else, so it is what this file is mostly about.
 
 /**
  * A warp maps this layer's time onto its parent's.

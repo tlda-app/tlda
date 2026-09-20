@@ -214,5 +214,3 @@ export function requireRw(req, res, next) {
   req.authLevel = level
   next()
 }
-
-export const requireRecordingPrivateRead = requireRw

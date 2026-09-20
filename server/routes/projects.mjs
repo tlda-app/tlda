@@ -20,7 +20,8 @@ import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'fs/prom
 import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync } from 'fs'
 import { join, basename, dirname, resolve } from 'path'
 import { promisify } from 'util'
-import { requireRead, requireRecordingPrivateRead, requireRw } from '../lib/auth.mjs'
+import { extractToken, requireRead, requireRw, validateToken } from '../lib/auth.mjs'
+import { answerThreadAccess } from '../../shared/classroom-rooms.mjs'
 import {
   createProject, readProject, updateProject, listProjects,
   readProjectMeta,
@@ -1511,7 +1512,71 @@ function recordingsDir(name) {
   return join(getProjectDir(name), 'recordings')
 }
 
-router.post('/:name/recording', requireRw, (req, res) => {
+/**
+ * May this caller take part in the thread on `answer`?
+ *
+ * A lecture keeps `requireRw`, which is right for it — a lecture belongs to the
+ * person who gave it. A thread layer does not: Skip, *"its a thread anyone can
+ * reply to anything"*, so the student whose answer it is has to be able to read
+ * the instructor's layer and add one of their own. Reading it is not optional,
+ * because replying to a layer means warping against its playhead.
+ *
+ * `null` means "not a thread layer", so the caller falls back to the rw rule
+ * and nothing about lectures changes.
+ */
+function answerThreadWriteAccess(req, answer) {
+  if (!answer?.submissionRoomId) return null
+  const store = req.app?.locals?.classroomStore
+  if (!store) return 'deny'
+  const resolvePrincipal = req.app?.locals?.resolveClassroomPrincipal || classroomPrincipal
+  const principal = resolvePrincipal(req, store)
+  const room = String(answer.submissionRoomId)
+  // Same two spellings the sync gate resolves, for the same reason: the room
+  // carries a `doc-` prefix the submissions record does not.
+  const submission = store.submissionDocumentOwner(room)
+    || store.submissionDocumentOwner(room.replace(/^doc-/, ''))
+  return answerThreadAccess({
+    tokenLevel: validateToken(extractToken(req)),
+    studentId: principal?.studentId ?? null,
+    submissionOwnerId: submission?.studentId ?? null,
+  })
+}
+
+/** The rw rule, unless this is a thread layer and the caller belongs to it. */
+function allowRwOrAnswerThread(req, answer) {
+  const thread = answerThreadWriteAccess(req, answer)
+  if (thread === 'write') return true
+  return validateToken(extractToken(req)) === 'rw'
+}
+
+function readRecordingMeta(dir, id) {
+  const metaPath = join(dir, `${id}.json`)
+  if (!existsSync(metaPath)) return null
+  try {
+    return JSON.parse(readFileSync(metaPath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+const notAParticipant = (res) =>
+  res.status(403).json({ error: 'This answer\'s thread is open to the student whose answer it is and to the instructor' })
+
+/** A stored recording: its answer's participants if it is a layer, else rw. */
+function requireRecordingAccess(req, res, next) {
+  const meta = readRecordingMeta(recordingsDir(req.params.name), req.params.id)
+  if (!meta?.answer) return requireRw(req, res, next)
+  return answerThreadWriteAccess(req, meta.answer) === 'write' ? next() : notAParticipant(res)
+}
+
+/** Creating one. The answer is in the body, since nothing is stored yet. */
+function requireRecordingCreate(req, res, next) {
+  const answer = req.body?.answer
+  if (!answer) return requireRw(req, res, next)
+  return allowRwOrAnswerThread(req, answer) ? next() : notAParticipant(res)
+}
+
+router.post('/:name/recording', requireRecordingCreate, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const meta = req.body
@@ -1537,7 +1602,7 @@ router.post('/:name/recording', requireRw, (req, res) => {
 })
 
 // POST /:name/recording/:id/audio — store the raw audio blob (binary body)
-router.post('/:name/recording/:id/audio', requireRw, express.raw({ type: () => true, limit: '500mb' }), (req, res) => {
+router.post('/:name/recording/:id/audio', requireRecordingAccess, express.raw({ type: () => true, limit: '500mb' }), (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const dir = recordingsDir(req.params.name)
@@ -1556,15 +1621,33 @@ router.post('/:name/recording/:id/audio', requireRw, express.raw({ type: () => t
 })
 
 // Raw captures and their review state are private to the teaching token.
-router.get('/:name/recording-drafts', requireRecordingPrivateRead, (req, res) => {
+/**
+ * The private drafts this caller may see.
+ *
+ * This route used to be `rw` and therefore meant one thing: the instructor's
+ * unpublished lectures. It now also holds the layers of answer threads, which
+ * the student whose answer it is has to be able to find — so the gate moved
+ * from the route to each row, and **a row a caller is not entitled to must not
+ * appear here at all.**
+ *
+ * The asymmetry is deliberate and is the whole of the rule: rw sees everything
+ * it saw before, and **anyone else sees only thread layers on their own
+ * answers, never a lecture.** Widening the route without narrowing the rows
+ * would have published the instructor's unpublished lectures to every enrolled
+ * student, which is the failure this function exists to prevent.
+ */
+router.get('/:name/recording-drafts', requireRead, (req, res) => {
   const dir = recordingsDir(req.params.name)
   if (!existsSync(dir)) return res.json({ recordings: [] })
+  const isInstructor = validateToken(extractToken(req)) === 'rw'
   const recordings = readdirSync(dir)
     .filter((f) => f.endsWith('.json'))
     .map((f) => {
       try {
         const m = JSON.parse(readFileSync(join(dir, f), 'utf8'))
         if (!existsSync(join(dir, `${m.id}.audio`))) return null
+        // A lecture is never anyone else's; a layer is, if the answer is theirs.
+        if (!isInstructor && (!m.answer || answerThreadWriteAccess(req, m.answer) !== 'write')) return null
         const publication = readRecordingPublication(dir, m.id)
         if (publication?.state === 'published') return null
         // `answer` and the parent's id, so a thread's shape can be read off the
@@ -1586,7 +1669,10 @@ router.get('/:name/recording-drafts', requireRecordingPrivateRead, (req, res) =>
         // the only thing that finds it is a person noticing their lecture is
         // missing. Say so instead.
         console.error(`[recordings] unreadable recording metadata ${f}: ${error.message}`)
-        return { id: f.replace(/\.json$/, ''), unreadable: true, error: error.message }
+        // Reported to the instructor, whose lecture it may be. To anyone else
+        // this row is the one thing we could not check entitlement on, so it is
+        // dropped rather than announced -- the fallback must not be the leak.
+        return isInstructor ? { id: f.replace(/\.json$/, ''), unreadable: true, error: error.message } : null
       }
     })
     .filter(Boolean)
@@ -1594,7 +1680,7 @@ router.get('/:name/recording-drafts', requireRecordingPrivateRead, (req, res) =>
   res.json({ recordings })
 })
 
-router.get('/:name/recording-draft/:id', requireRecordingPrivateRead, (req, res) => {
+router.get('/:name/recording-draft/:id', requireRecordingAccess, (req, res) => {
   const dir = recordingsDir(req.params.name)
   const metaPath = join(dir, `${req.params.id}.json`)
   if (!existsSync(metaPath)) return res.status(404).json({ error: 'Recording not found' })
@@ -1638,7 +1724,7 @@ export function sendRecordingAudio(res, audioPath, metaPath) {
   })
 }
 
-router.get('/:name/recording-draft/:id/audio', requireRecordingPrivateRead, (req, res) => {
+router.get('/:name/recording-draft/:id/audio', requireRecordingAccess, (req, res) => {
   const dir = recordingsDir(req.params.name)
   const audioPath = join(dir, `${req.params.id}.audio`)
   const metaPath = join(dir, `${req.params.id}.json`)

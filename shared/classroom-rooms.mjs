@@ -96,6 +96,37 @@ export function gradingLayerRoomTarget(roomId) {
 }
 
 /**
+ * What a caller may do with the annotation thread on one answer.
+ *
+ * Separate from `classroomRoomAccess` below and deliberately not folded into
+ * it: that function's branch ORDER is its guard, and the one thing it must keep
+ * refusing is a student reaching the instructor's private draft. A thread layer
+ * is not the draft. Adding a case to it to serve a different object is how that
+ * ordering gets disturbed, so this is its own answer.
+ *
+ * Skip: *"its a thread anyone can reply to anything"*, and `bookLayers.ts` has
+ * no access model at all — so within an answer there is nothing to arbitrate:
+ * the two people the answer belongs to may both read every layer and add one.
+ * "Anyone" is the answer's participants, which is what stops it meaning the
+ * whole internet.
+ *
+ * What this replaces: these layers were reached through the recordings routes,
+ * whose guard is `requireRw`. That encoded "only the instructor authors and
+ * reads layers" — true when marking was one-way, false the moment a student can
+ * reply, and it made the spec unbuildable rather than merely inconvenient.
+ *
+ * Returns 'write' | 'deny'. There is no read-only case: being able to see a
+ * layer and being able to answer it are the same right here.
+ */
+export function answerThreadAccess({ tokenLevel, studentId = null, submissionOwnerId = null }) {
+  if (tokenLevel === 'rw') return 'write'
+  if (tokenLevel !== 'read') return 'deny'
+  // A read link with no enrolment behind it is nobody, exactly as below.
+  if (!studentId || !submissionOwnerId) return 'deny'
+  return studentId === submissionOwnerId ? 'write' : 'deny'
+}
+
+/**
  * What a caller may do in a room.
  *
  * Skip, on what needs gating at all: "we just need to make sure acces to student
