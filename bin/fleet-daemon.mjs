@@ -347,9 +347,15 @@ const SERVER = getDaemonFleetServerUrl()
 // complete environment (database + store) the daemon did. A stray default cannot
 // then misroute a spawn, because the spawn carries the real active name.
 {
+  // Same guard, second call site. It has to carry the declared runtime root too:
+  // patching only the first one left this one refusing the release, and the
+  // daemon crash-looped for another deploy cycle saying exactly what the first
+  // guard had already stopped saying.
+  const { runtimeRoot: lateRuntimeRoot, declared: lateDeclared } = getRuntimeRoot(ACTIVE_ENV, path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'))
   const { refuseReason } = resolveDaemonIsolation({
     env: process.env,
     scriptPath: INSTALL_PATH,
+    declaredRuntimeRoot: lateDeclared ? lateRuntimeRoot : null,
   })
   if (refuseReason) {
     log.error(`refusing to start: ${refuseReason}`)
