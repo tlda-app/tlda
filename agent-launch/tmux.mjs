@@ -230,7 +230,13 @@ export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKey
 }
 
 export function claudeStartupDialogAction(pane = '') {
-  if (/development[- ]channels/i.test(pane) && pane.includes('Enter to confirm')) return 'devchannels'
+  // The dev-channels dialog has two measured wordings: one carrying
+  // 'Enter to confirm', one showing only the numbered choice
+  // ('I am using this for local development' / 'Exit') with no footer.
+  // Match both — the choice text alone identifies it. Anything else showing
+  // 'Enter to confirm' is NOT dismissed (see agent-experience.md): pressing
+  // Enter at an unread dialog answers an unknown question.
+  if (/development[- ]channels/i.test(pane) && /I am using this for local development/i.test(pane)) return 'devchannels'
   if (pane.includes('Resume from summary')) return 'resume-full'
   if (pane.includes('Allow external CLAUDE.md file imports') && pane.includes('Enter to confirm')) return 'allow-external-imports'
   return null
@@ -250,6 +256,16 @@ async function dismissClaudeStartupDialog(session, action, {
   }
   await sleep(500)
   await tmuxExec(tmuxSocket, 'send-keys', '-t', exactTmuxTarget(session), 'Enter')
+  // The stop condition is the dialog being gone, never a count: one dismissal
+  // may not take (measured: drag-and-hud wedged 70 minutes after a single
+  // send that something swallowed). Re-read immediately and confirm.
+  await sleep(500)
+  try {
+    const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
+    if (claudeStartupDialogAction(stdout) === action) return false
+  } catch {
+    // A failed re-read proves nothing; report the attempt, not the outcome.
+  }
   return true
 }
 
@@ -267,7 +283,13 @@ export async function dismissDevchannels(session, {
       const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxTarget(session), '-p')
       const action = claudeStartupDialogAction(stdout)
       if (action) {
-        await dismissClaudeStartupDialog(session, action, { tmuxSocket, tmuxExec, sleep })
+        // The stop condition is the dialog being gone, never the attempt:
+        // keep dismissing while the SAME dialog persists, give up the loop
+        // (not the agent) when it clears, and never report a dismissal that
+        // did not take. Dismissing a DIFFERENT action than the one matched
+        // above is answering a new question — re-read instead of acting.
+        const dismissed = await dismissClaudeStartupDialog(session, action, { tmuxSocket, tmuxExec, sleep })
+        if (!dismissed) continue
         return true
       }
       const promptReady = stdout.split('\n').slice(-3).some((line) => line.includes('❯'))
