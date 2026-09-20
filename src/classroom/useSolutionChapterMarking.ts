@@ -167,11 +167,23 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
       // which is a race that passes whenever the page happens to be warm and
       // fails whenever it is not. `installSolutionMarking` skips a callout that
       // already carries arrows, so running it repeatedly is idempotent.
-      const installed = new WeakSet<Document>()
+      //
+      // AND IT HAS TO KEEP BEING ASKED, NOT ASKED UNTIL IT ANSWERS ONCE. This
+      // ran behind a `WeakSet<Document>` that marked a frame done as soon as a
+      // pass installed anything, so whichever callouts happened to be rendered
+      // on that pass were the only ones that ever got a pager. Measured on the
+      // same chapter across three loads: 5 of 13, then 10 of 13, then 1 of 13.
+      // At 1 of 13 twelve exercises cannot be marked at all, and reloading
+      // returns a different arbitrary number, which is what made it read as
+      // somebody mis-looking rather than as a defect.
+      //
+      // Removing that gate costs one `querySelectorAll` per frame per tick. It
+      // does not cost a new poll: the 250ms interval below runs either way, and
+      // the gate only skipped the work inside it.
       const install = () => {
         for (const frame of Array.from(window.document.querySelectorAll<HTMLIFrameElement>('iframe'))) {
           const frameDocument = frame.contentDocument
-          if (!frameDocument || installed.has(frameDocument)) continue
+          if (!frameDocument) continue
           if (!frameDocument.querySelector('.callout-solution')) continue
           if (identity.role === 'student') {
             for (const toggle of frameDocument.querySelectorAll('.tlda-own-work-toggle')) toggle.remove()
@@ -242,8 +254,10 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
               })
             },
           })
+          // A pass that installed nothing has nothing to undo, so it leaves no
+          // remover behind. That bounds these by the number of passes that
+          // actually did something, which is bounded by the callouts themselves.
           if (!result.installed) continue
-          installed.add(frameDocument)
           removers.push(result.remove)
         }
       }
