@@ -1353,14 +1353,26 @@ router.post('/:name/publish-outcome', requireRw, async (req, res) => {
     if (!/^[0-9a-f]{40}$/i.test(revision)) {
       return res.status(400).json({ error: 'a publish outcome needs the exact revision it carried' })
     }
-    if (!ok && !req.body?.error) {
+    // A refusal is recorded in the existing `publish` phase, not a new one: the
+    // command reached the publish decision and declined, and the marks read it
+    // back through the same record. `refused: true` is what makes it a refusal —
+    // a failure with `error` but no `refused` stays a failure — and `transient`
+    // is what keeps the mid-build race from triangling. The refusal reason must
+    // name what only he can settle; "the publish did not complete" names nothing
+    // and is rejected with the rest.
+    const refused = req.body?.refused === true
+    if (!ok && !refused && !req.body?.error) {
       return res.status(400).json({ error: 'a failed publish must say what failed' })
     }
+    if (refused && (!req.body?.error || /did not complete/i.test(String(req.body.error)))) {
+      return res.status(400).json({ error: 'a refused publish must name the reason it was refused' })
+    }
     const lifecycle = await sourceLifecycleStore(req.params.name, { existingProject: project })
-    lifecycle.recordRevisionPhase(req.params.name, revision, 'publish', ok ? 'published' : 'publish_failed', {
+    lifecycle.recordRevisionPhase(req.params.name, revision, 'publish', ok ? 'published' : refused ? 'publish_refused' : 'publish_failed', {
       target: req.body?.target || null,
       files: Number.isInteger(req.body?.files) ? req.body.files : null,
       error: ok ? null : String(req.body.error),
+      transient: refused && req.body?.transient === true ? true : undefined,
     })
     res.json({ ok: true })
   } catch (e) {
@@ -1448,18 +1460,32 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
   const failureForSource = source => source
     ? failureText.find(text => text.includes(source)) || null
     : null
-  // A publish that ran and failed, from the record the command writes. Without
-  // this the marks can only see that the class site is behind, which is true of
-  // a publish nobody ran and of one that died, and those want different actions.
+  // A publish that ran and failed — or was refused before it could run — from
+  // the record the command writes. Without this the marks can only see that the
+  // class site is behind, which is true of a publish nobody ran, one that died,
+  // and one the command declined to attempt, and those want different actions.
   // Project-wide rather than per page: a publish carries the whole tree, so its
   // failure is a fact about the revision and not about one chapter.
+  //
+  // A refusal is not a retry problem. The mid-build refusal is transient — the
+  // tree is being rewritten as the command reads it, so running it again is the
+  // fix — and a mark that triangles on a state that clears itself trains him to
+  // ignore the column. Every other refusal names something only he can settle
+  // (which surface to publish from, which build is good, where the site lives),
+  // so it triangles like a failure, with "refused" in place of "failed".
   const publishFailure = await sourceLifecycleStore(req.params.name, { existingProject: project })
     .then(store => {
       const current = store.listRevisionLifecycles(req.params.name)
         .find(row => row.sourceRevision === project.sourceRevision)
-      return current?.publish?.state === 'publish_failed'
-        ? current.publish.result?.error || 'the last publish of this revision failed'
-        : null
+      const outcome = current?.publish
+      if (outcome?.state === 'publish_failed') {
+        return outcome.result?.error || 'the last publish of this revision failed'
+      }
+      if (outcome?.state === 'publish_refused' && outcome.result?.transient !== true) {
+        const reason = outcome.result?.error || 'the last publish of this revision was refused'
+        return reason.startsWith('publish refused:') ? reason : `publish refused: ${reason}`
+      }
+      return null
     })
     .catch(() => null)
   const marks = await compareCourseSurfaces([...pages, ...unbuilt.map(row => ({

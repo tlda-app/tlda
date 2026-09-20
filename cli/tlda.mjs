@@ -744,44 +744,18 @@ async function cmdPublish() {
     process.exit(1)
   }
   const project = fromSurface
-  if (project.buildStatus !== 'success') {
-    console.error(red(`"${name}" is ${project.buildStatus || 'unbuilt'} on ${from}, not success.`))
-    console.error(`Publishing sends what is being served, and a failed build is not it. ${bold(`tlda project errors ${name}`)} says why.`)
-    process.exit(1)
-  }
-
-  const inventory = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}/published-tree`, null, { token: getReadToken() })
-    .catch(error => {
-      console.error(red(`${sourceUrl} cannot list what it is serving for "${name}": ${error.message}`))
-      console.error('A surface that cannot be asked for its published tree cannot be published from; it is running code without that route.')
-      process.exit(1)
-    })
-  if (!inventory.files?.length) {
-    console.error(red(`"${name}" is serving no published tree.`))
-    process.exit(1)
-  }
-  if (inventory.buildStatus === 'building' || project.buildPhase === 'build') {
-    console.error(red(`"${name}" is building right now, so its published tree is being written as this reads it.`))
-    console.error('A publish that races a render ships half of two builds. Wait for it to finish and run this again.')
-    process.exit(1)
-  }
-  console.log(`Publishing ${bold(name)}${project.sourceRevision ? `@${project.sourceRevision.slice(0, 7)}` : ''} — ${inventory.files.length} files from ${bold(from)} (${sourceUrl})...`)
-
-  const { staging } = await stagePublishedTree({
-    serverUrl: sourceUrl,
-    project: name,
-    files: inventory.files,
-    headers: getReadToken() ? { authorization: `Bearer ${getReadToken()}` } : {},
-  })
-  // Whatever happens from here is recorded against the revision this carried.
-  // A publish that ran and died has to be distinguishable from one nobody ran,
-  // or the mark beside the chapter cannot tell "not published yet" from
-  // "publishing this broke" -- and only this process knows which.
+  // Whatever happens from here is recorded against the revision this carried —
+  // including the refusals below. A declined publish that leaves no record
+  // reads exactly like one nobody attempted, and only this process knows which.
+  // Declared before the first refusal that can write one, so every refusal
+  // point below is a call rather than a shape to remember.
   const recordOutcome = async (ok, detail) => {
     if (!project.sourceRevision) return
     await apiAt(sourceUrl, 'POST', `/api/projects/${encodeURIComponent(name)}/publish-outcome`, {
       revision: project.sourceRevision,
       ok,
+      refused: detail?.refused === true ? true : undefined,
+      transient: detail?.transient === true ? true : undefined,
       target: checkout,
       files: Number.isInteger(detail?.files) ? detail.files : null,
       error: ok ? null : String(detail?.error || 'the publish did not complete'),
@@ -792,6 +766,54 @@ async function cmdPublish() {
       console.error(yellow(`Could not record the publish outcome: ${recordError.message}`))
     })
   }
+  // A refusal names what only he can settle, in the terminal AND in the
+  // record — the marks triangle on the recorded reason, so a vague one there
+  // is a triangle that answers nothing. Only the mid-build race is transient:
+  // the tree is being rewritten as this reads it, so running it again is the
+  // fix, and a mark on a state that clears itself trains him to ignore the
+  // column.
+  const refuse = async (lines, detail) => {
+    for (const line of lines) console.error(line)
+    await recordOutcome(false, { ...detail, refused: true })
+    process.exit(1)
+  }
+  if (project.buildStatus !== 'success') {
+    await refuse(
+      [red(`"${name}" is ${project.buildStatus || 'unbuilt'} on ${from}, not success.`),
+        `Publishing sends what is being served, and a failed build is not it. ${bold(`tlda project errors ${name}`)} says why.`],
+      { error: `"${name}" is ${project.buildStatus || 'unbuilt'} on ${from}, not success` },
+    )
+  }
+
+  const inventory = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}/published-tree`, null, { token: getReadToken() })
+    .catch(async error => {
+      await refuse(
+        [red(`${sourceUrl} cannot list what it is serving for "${name}": ${error.message}`),
+          'A surface that cannot be asked for its published tree cannot be published from; it is running code without that route.'],
+        { error: `${sourceUrl} cannot list what it is serving for "${name}": ${error.message}` },
+      )
+    })
+  if (!inventory.files?.length) {
+    await refuse(
+      [red(`"${name}" is serving no published tree.`)],
+      { error: `"${name}" is serving no published tree` },
+    )
+  }
+  if (inventory.buildStatus === 'building' || project.buildPhase === 'build') {
+    await refuse(
+      [red(`"${name}" is building right now, so its published tree is being written as this reads it.`),
+        'A publish that races a render ships half of two builds. Wait for it to finish and run this again.'],
+      { error: `"${name}" is building right now`, transient: true },
+    )
+  }
+  console.log(`Publishing ${bold(name)}${project.sourceRevision ? `@${project.sourceRevision.slice(0, 7)}` : ''} — ${inventory.files.length} files from ${bold(from)} (${sourceUrl})...`)
+
+  const { staging } = await stagePublishedTree({
+    serverUrl: sourceUrl,
+    project: name,
+    files: inventory.files,
+    headers: getReadToken() ? { authorization: `Bearer ${getReadToken()}` } : {},
+  })
   try {
     // The served tree is swapped into place by a rename, so no half-written
     // file is ever served — but the swap can land BETWEEN two of the requests
@@ -806,10 +828,14 @@ async function cmdPublish() {
     const recheck = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}/published-tree`, null, { token: getReadToken() })
     const inventoryPrint = (rows) => rows.map(f => `${f.path}:${f.sha256}`).sort().join('\n')
     if (inventoryPrint(recheck.files || []) !== inventoryPrint(inventory.files)) {
-      console.error(red(`"${name}" was republished while this was reading it.`))
-      console.error(`Its tree went from ${inventory.files.length} file(s) to ${(recheck.files || []).length}, so the copy is part of two builds.`)
-      console.error('Nothing was written. Run it again against the build that finished.')
-      process.exit(1)
+      // A race, not a verdict: the tree moved under the read, and the rerun
+      // will see the build that finished. Transient, so the marks stay quiet.
+      await refuse(
+        [red(`"${name}" was republished while this was reading it.`),
+          `Its tree went from ${inventory.files.length} file(s) to ${(recheck.files || []).length}, so the copy is part of two builds.`,
+          'Nothing was written. Run it again against the build that finished.'],
+        { error: `"${name}" was republished while this was reading it`, transient: true },
+      )
     }
     await writePublishedTree({ staging, checkout, subdirectory, allowDeletions: hasFlag('drop-missing') })
     const result = await commitAndPushClassSite({

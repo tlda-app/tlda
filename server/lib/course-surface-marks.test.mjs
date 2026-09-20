@@ -88,6 +88,16 @@ test('a surface nobody could ask has no stage and names itself', () => {
   assert.match(mark.error, /preview could not be asked/)
 })
 
+// A publish the command declined to attempt is not one nobody ran. The refused
+// reason triangles like a failure — it names something only he can settle —
+// and says "refused" rather than "failed" so the two do not read alike.
+test('a refused publish triangles with the refusal reason', () => {
+  const mark = markForRow({ app: 'a', preview: 'a', live: 'b', failure: 'publish refused: "book" is building right now' })
+  assert.equal(mark.stage, 'preview', 'it got to preview, so the attempt that failed was the next one')
+  assert.equal(mark.errorAt, 'live')
+  assert.match(mark.error, /refused/)
+})
+
 test('rows keep their identity through the comparison', () => {
   const [row] = marksForRows([{ page: 4, source: 'decks/chapter-bootstrap-slides.qmd', app: 'a', preview: 'a', live: 'a' }])
   assert.equal(row.page, 4)
