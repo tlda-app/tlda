@@ -89,7 +89,7 @@ function httpRequest(port, method, path, { token = null, json = undefined, body 
   })
 }
 
-test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit and publish', async () => {
+test('lecture proposal crosses authenticated fleet wire; admitted HTTP can edit and publish', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-recording-authority-wire-'))
   const configDir = join(dir, 'config')
   // Dev previews keep projects under ~/.config. The audio route must authorize
@@ -100,7 +100,7 @@ test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit a
   const ffmpegPath = join(dir, 'ffmpeg-fixture.mjs')
   const agentId = 'fleet:lecture-proposer'
   const rwToken = 'wire-rw-token'
-  const readToken = 'wire-read-token'
+  const secondToken = 'wire-second-token'
   mkdirSync(configDir, { recursive: true })
   writeFileSync(join(configDir, 'server.yaml'), 'tokenGating: true\ntokensFromEnvironmentOnly: true\n')
   writeFileSync(join(configDir, 'daemon.yaml'), [
@@ -152,7 +152,7 @@ test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit a
       TLDA_DAEMON_CONFIG_DIR: configDir,
       TLDA_ENV: 'testing',
       TLDA_TOKEN_RW: rwToken,
-      TLDA_TOKEN_READ: readToken,
+      TLDA_TOKEN_READ: secondToken,
       FFMPEG: ffmpegPath,
       TLDA_DEV_SERVER: '1',
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
@@ -262,16 +262,13 @@ test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit a
       token: rwToken, json: { startMs: 0, endMs: 2_000 },
     })).status, 404)
     assert.equal((await httpRequest(port, 'PUT', '/api/projects/wire-class/recording/lecture-1/owner-interval', {
-      token: readToken, json: { startMs: 300, endMs: 1_700 },
-    })).status, 403)
+      token: secondToken, json: { startMs: 300, endMs: 1_700 },
+    })).status, 200)
     assert.equal((await httpRequest(port, 'PUT', '/api/projects/wire-class/recording/lecture-1/owner-interval', {
       token: rwToken, json: { startMs: 300, endMs: 1_700 },
     })).status, 200)
-    assert.equal((await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-1/publish', {
-      token: readToken,
-    })).status, 403)
     const published = await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-1/publish', {
-      token: rwToken,
+      token: secondToken,
     })
     assert.equal(published.status, 200)
     assert.equal(published.body.state, 'published')
@@ -301,11 +298,11 @@ test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit a
     assert.equal(ungatedOwnerEdit.status, 409)
     assert.match(ungatedOwnerEdit.body.error, /needs an agent proposal before owner review/)
 
-    // A read token is a student. It may not propose, exactly as it may not edit
-    // or publish.
+    // Any admitted token may propose: what the caller may do is a fact about
+    // their identity, and both configured tokens resolve to the operator.
     assert.equal((await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-2/propose-interval', {
-      token: readToken, json: { startMs: 200, endMs: 1_800 },
-    })).status, 403)
+      token: secondToken, json: { startMs: 200, endMs: 1_800 },
+    })).status, 200)
 
     const ownerProposed = await httpRequest(port, 'POST', '/api/projects/wire-class/recording/lecture-2/propose-interval', {
       token: rwToken, json: { startMs: 200, endMs: 1_800 },
@@ -334,8 +331,8 @@ test('lecture proposal crosses authenticated fleet wire; only RW HTTP can edit a
     assert.equal(ownerPublished.body.ownerEditedBy, 'classroom:rw')
     assert.equal(ownerPublished.body.committedBy, 'classroom:rw')
 
-    // And the student can now read it, which is the point of publishing.
-    const studentList = await httpRequest(port, 'GET', '/api/projects/wire-class/recordings', { token: readToken })
+    // And the second token can now read it, which is the point of publishing.
+    const studentList = await httpRequest(port, 'GET', '/api/projects/wire-class/recordings', { token: secondToken })
     assert.equal(studentList.status, 200)
     assert.ok(studentList.body.recordings.some(recording => recording.id === 'lecture-2'))
   } finally {

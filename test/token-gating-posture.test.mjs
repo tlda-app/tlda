@@ -54,7 +54,7 @@ test('the tailnet deployments leave gating off by omission', () => {
 })
 
 test('gating is off unless a config file turns it on', async () => {
-  const { initAuth, isTokenGatingEnabled, validateToken } = await import('../server/lib/auth.mjs')
+  const { initAuth, isTokenGatingEnabled, resolveIdentity } = await import('../server/lib/auth.mjs')
   // No PORT escape hatch any more: the posture comes from config, and only config.
   // A worktree server on a non-standard port used to answer differently here.
   const previousPort = process.env.PORT
@@ -62,9 +62,9 @@ test('gating is off unless a config file turns it on', async () => {
   try {
     initAuth()
     assert.equal(isTokenGatingEnabled(), false)
-    // Ungated means every caller is already 'rw'; nothing is silently half-open.
-    assert.equal(validateToken(null), 'rw')
-    assert.equal(validateToken('anything'), 'rw')
+    // Ungated means every caller resolves to the operator; nothing is silently half-open.
+    assert.deepEqual(resolveIdentity(null), { kind: 'operator', groups: [] })
+    assert.deepEqual(resolveIdentity('anything'), { kind: 'operator', groups: [] })
   } finally {
     if (previousPort == null) delete process.env.PORT
     else process.env.PORT = previousPort

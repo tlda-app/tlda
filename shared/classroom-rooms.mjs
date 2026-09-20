@@ -126,9 +126,10 @@ export function gradingLayerRoomTarget(roomId) {
  * whole internet.
  *
  * What this replaces: these layers were reached through the recordings routes,
- * whose guard is `requireRw`. That encoded "only the instructor authors and
- * reads layers" — true when marking was one-way, false the moment a student can
- * reply, and it made the spec unbuildable rather than merely inconvenient.
+ * whose guard admitted only the operator. That encoded "only the instructor
+ * authors and reads layers" — true when marking was one-way, false the moment
+ * a student can reply, and it made the spec unbuildable rather than merely
+ * inconvenient.
  *
  * Decided from the IDENTITY, not from the token. Skip: tokens carry identity,
  * and auth is granted to identities in the app — the unix model. So this takes
@@ -138,11 +139,9 @@ export function gradingLayerRoomTarget(roomId) {
  * Returns 'write' | 'deny'. There is no read-only case: being able to see a
  * layer and being able to answer it are the same right here.
  */
-export function answerThreadAccess({ principal = null, tokenLevel = undefined, submissionOwnerId = null }) {
-  // `tokenLevel` stays in the signature so existing callers keep calling it the
-  // same way; it is ignored. A caller holding an rw bearer who resolves to a
-  // student is that student, and an identity-based rule cannot be talked out of
-  // that by the token.
+export function answerThreadAccess({ principal = null, submissionOwnerId = null }) {
+  // Decided from the identity alone: a caller who resolves to a student is
+  // that student, and no token can talk an identity-based rule out of that.
   if (principal?.role === 'instructor') return 'write'
   // Nobody, or an answer whose owner we could not resolve, gets nothing.
   if (!principal?.studentId || !submissionOwnerId) return 'deny'
@@ -152,18 +151,13 @@ export function answerThreadAccess({ principal = null, tokenLevel = undefined, s
 /**
  * What a caller may do in a room.
  *
- * Decided from the IDENTITY, never from a token level. Skip: tokens carry
+ * Decided from the IDENTITY, never from a token. Skip: tokens carry
  * identity, and auth is granted to identities in the app — the unix model.
  * So this takes the resolved principal (a student token resolving to a
  * student row, an instructor token to an instructor row, anything else
  * resolving to null) and a `isInstructorMember` predicate the caller answers
- * from the store, and never looks at a bearer level. A shared secret has no
- * members; membership is read off the instructors table by the caller.
- *
- * `tokenLevel` and `studentId` stay in the signature so existing callers keep
- * calling it the same way; they are ignored. What a caller may do is a fact
- * about who they are: the principal's student id for a student, instructor
- * membership for an instructor, nobody for null.
+ * from the store. A shared secret has no members; membership is read off the
+ * instructors table by the caller.
  *
  * Skip, on what needs gating at all: "we just need to make sure acces to student
  * jnfo is token gated." So the book and its common layer stay open to the world —
@@ -188,15 +182,13 @@ export function answerThreadAccess({ principal = null, tokenLevel = undefined, s
 export function classroomRoomAccess({
   roomId,
   principal = null,
-  tokenLevel = undefined,
-  studentId = undefined,
   submissionOwnerId = null,
   submissionReturned = false,
   isInstructorMember = false,
 }) {
-  // The caller's old arguments are ignored: neither the bearer level nor a
-  // bare student id decides anything. The principal's own student id is the
-  // only student identity this rule reads.
+  // What a caller may do is a fact about who they are: the principal's own
+  // student id for a student, instructor membership for an instructor, nobody
+  // for null.
   const callerStudentId = principal?.role === 'student' ? principal.studentId : null
   const instructorMember = principal?.role === 'instructor' && isInstructorMember === true
   if (instructorMember) {

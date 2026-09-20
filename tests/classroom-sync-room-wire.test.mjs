@@ -23,8 +23,8 @@ import { studentOverlayRoomId } from '../shared/classroom-rooms.mjs'
 // every denial check here and destroy the thing it was built to enable, so each
 // refusal is paired with the access it must not catch.
 
-const READ_TOKEN = 'read-token-for-the-wire-test'
-const RW_TOKEN = 'rw-token-for-the-wire-test'
+const PUBLIC_TOKEN = 'public-token-for-the-wire-test'
+const SECOND_TOKEN = 'second-token-for-the-wire-test'
 const BOOK_ROOM = 'doc-wire-test-book'
 
 async function unusedPort() {
@@ -100,7 +100,7 @@ test('the sync socket asks who you are before letting you into a room', async t 
   store.close()
 
   // Gating is a server.yaml decision, not an env one: without this the server
-  // starts ungated, validateToken returns 'rw' for everyone, and every check
+  // starts ungated, every caller resolves to the operator, and every check
   // below passes as 'write'. That ungated state IS the hole this change closes,
   // so a test that did not turn gating on would prove nothing while looking green.
   const configDir = join(dir, 'config')
@@ -125,10 +125,10 @@ test('the sync socket asks who you are before letting you into a room', async t 
       TLDA_CONFIG_DIR: configDir,
       TLDA_DEV_SERVER: '1',
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
-      // Gating ON. With it off every visitor is 'rw', which is the configuration
-      // this whole change exists to make survivable.
-      TLDA_TOKEN_READ: READ_TOKEN,
-      TLDA_TOKEN_RW: RW_TOKEN,
+      // Gating ON. With it off every visitor resolves to the operator, which
+      // is the configuration this whole change exists to make survivable.
+      TLDA_TOKEN_READ: PUBLIC_TOKEN,
+      TLDA_TOKEN_RW: SECOND_TOKEN,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -138,25 +138,25 @@ test('the sync socket asks who you are before letting you into a room', async t 
   const adaRoom = studentOverlayRoomId(BOOK_ROOM, 'ada')
 
   // --- the refusals, which are the point ---
-  const boIntoAda = await upgrade(port, adaRoom, `token=${READ_TOKEN}&classroomToken=tok-bo`)
+  const boIntoAda = await upgrade(port, adaRoom, `token=${PUBLIC_TOKEN}&classroomToken=tok-bo`)
   assert.match(boIntoAda, /403/, `a student entered another student's layer: ${boIntoAda}`)
 
-  const anonIntoAda = await upgrade(port, adaRoom, `token=${READ_TOKEN}`)
+  const anonIntoAda = await upgrade(port, adaRoom, `token=${PUBLIC_TOKEN}`)
   assert.match(anonIntoAda, /403/, `the public link entered a student's layer: ${anonIntoAda}`)
 
   const noCredential = await upgrade(port, BOOK_ROOM, '')
   assert.doesNotMatch(noCredential, /101/, `an uncredentialed visitor was let in: ${noCredential}`)
 
   // --- the accesses, without which the refusals prove nothing ---
-  const publicIntoBook = await upgrade(port, BOOK_ROOM, `token=${READ_TOKEN}`)
+  const publicIntoBook = await upgrade(port, BOOK_ROOM, `token=${PUBLIC_TOKEN}`)
   assert.match(publicIntoBook, /101/, `the public link was locked out of the book: ${publicIntoBook}`)
 
-  const adaIntoOwn = await upgrade(port, adaRoom, `token=${READ_TOKEN}&classroomToken=tok-ada`)
+  const adaIntoOwn = await upgrade(port, adaRoom, `token=${PUBLIC_TOKEN}&classroomToken=tok-ada`)
   assert.match(adaIntoOwn, /101/, `a student was locked out of their own layer: ${adaIntoOwn}`)
 
-  const adaIntoBook = await upgrade(port, BOOK_ROOM, `token=${READ_TOKEN}&classroomToken=tok-ada`)
+  const adaIntoBook = await upgrade(port, BOOK_ROOM, `token=${PUBLIC_TOKEN}&classroomToken=tok-ada`)
   assert.match(adaIntoBook, /101/, `a student was locked out of the common layer: ${adaIntoBook}`)
 
-  const instructor = await upgrade(port, adaRoom, `token=${RW_TOKEN}`)
-  assert.match(instructor, /101/, `an instructor was locked out: ${instructor}`)
+  const bearerOnly = await upgrade(port, BOOK_ROOM, `token=${SECOND_TOKEN}`)
+  assert.match(bearerOnly, /101/, `a bearer-only visitor was locked out of the book: ${bearerOnly}`)
 })

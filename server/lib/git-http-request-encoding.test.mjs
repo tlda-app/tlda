@@ -88,7 +88,7 @@ test('a malformed body is answered 500 and the server survives', { timeout: 30_0
   const gitDir = join(root, 'repo.git')
   execFileSync('git', ['init', '--bare', '-q', gitDir])
   const handler = createGitHttpHandler({
-    validateToken: () => 'rw',
+    resolveIdentity: () => ({ kind: 'operator', groups: [] }),
     repositoryForProject: async () => ({ gitDir }),
     admitProposal: async () => {},
   })

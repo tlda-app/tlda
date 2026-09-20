@@ -114,17 +114,6 @@ export function resolveIdentity(token) {
 }
 
 /**
- * Whether the token is one this server recognises. Kept for the call sites
- * that have not converted to `resolveIdentity` yet — it answers from the same
- * table. Returns 'rw' for a recognised token so existing level readers keep
- * working unchanged; null for anything else. New code resolves identity, it
- * does not ask this.
- */
-export function validateToken(token) {
-  return resolveIdentity(token) ? 'rw' : null
-}
-
-/**
  * May this identity do this action on this resource — 3.3, the one predicate.
  *
  * Two surfaces, one signature. The operator surface (projects, history,
@@ -181,7 +170,7 @@ export function extractToken(req) {
   if (cookies.tlda_token) candidates.push(cookies.tlda_token)
 
   for (const candidate of candidates) {
-    if (validateToken(candidate)) return candidate
+    if (resolveIdentity(candidate)) return candidate
   }
   return candidates[0] ?? null
 }
@@ -192,8 +181,7 @@ export function loginRoute(req, res) {
   const token = url.searchParams.get('token')
   if (!token) return res.status(400).send('Missing ?token= parameter')
 
-  const level = validateToken(token)
-  if (!level) return res.status(401).send('Invalid token')
+  if (!resolveIdentity(token)) return res.status(401).send('Invalid token')
 
   // Following a link writes the presented token into the cookie outright.
   // Tokens carry no level, so no token can demote the browser: any valid token
@@ -214,9 +202,7 @@ export function loginRoute(req, res) {
  * Admit the operator, refuse nobody-with-a-name — 3.4, the gate the forty
  * routes share. The token resolves to an identity (3.1) and the identity
  * answers `may()` (3.3); the resource rides along so a per-resource rule has
- * somewhere to read from. `requireRead` and `requireRw` are the same check —
- * both names survive so the call sites do not churn, and neither grants
- * anything by itself.
+ * somewhere to read from. Admission grants nothing by itself.
  *
  * Classroom persons do not come here; their routes resolve through
  * `studentForToken` / `instructorForToken` and gate on the principal.
@@ -232,9 +218,7 @@ export function requireIdentity(resource) {
 
 /** Express middleware: require a recognised token. The only question asked of
  * the token is whether it is one of ours; what the caller may do is decided
- * from their identity afterwards. `requireRead` and `requireRw` are the same
- * check — both names survive so the call sites do not churn, and neither
- * grants anything by itself. */
+ * from their identity afterwards. */
 export function requireRead(req, res, next) {
   const token = extractToken(req)
   const identity = resolveIdentity(token)
@@ -250,12 +234,6 @@ export function requireRead(req, res, next) {
     res.setHeader('Set-Cookie', `tlda_token=${encodeURIComponent(token)}; ${flags}`)
   }
   next()
-}
-
-/** Express middleware: require a recognised token. Same check as `requireRead`
- * — see above. A caller holding any valid token passes. */
-export function requireRw(req, res, next) {
-  return requireRead(req, res, next)
 }
 
 /**

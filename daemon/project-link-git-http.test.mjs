@@ -43,7 +43,7 @@ test('new local project initializes its remote, then materializes only by daemon
     })
     app.use('/api/projects', projectRoutes)
     app.use(createGitHttpHandler({
-      validateToken: value => value === 'secret' ? 'rw' : null,
+      resolveIdentity: value => value === 'secret' ? { kind: 'operator', groups: [] } : null,
       repositoryForProject: async project => (await sourceLifecycleStore(project)).gitRepository(),
       admitProposal: async proposal => { admitted.push(proposal) },
     }))

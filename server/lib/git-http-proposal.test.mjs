@@ -48,7 +48,7 @@ test('authenticated Git HTTP admits one immutable proposal without moving shared
     await sourceGit.advanceHead(project, sharedHead, null)
     const app = express()
     app.use(createGitHttpHandler({
-      validateToken: token => token === 'secret' ? 'rw' : null,
+      resolveIdentity: token => token === 'secret' ? { kind: 'operator', groups: [] } : null,
       repositoryForProject: async name => (await sourceLifecycleStore(name)).gitRepository(),
       admitProposal: async proposal => { admitted.push(proposal) },
     }))

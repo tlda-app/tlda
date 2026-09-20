@@ -1,30 +1,31 @@
-// A read-only viewer must not POST a signal nobody reads.
+// An unauthenticated viewer must not POST a signal nobody reads.
 //
-// Opening a multipage document read-only put a 403 in the console. `SvgDocument`
-// reacted to the camera by computing the visible page range and calling
-// `writeSignal('signal:viewport', { pages })` from a 500ms debounce; that POSTs
-// to `/api/projects/:name/signal`, which is `requireRw`, so a read token was
-// refused. Nobody asked for the request: it followed the camera settling, so
-// reading the document was enough to produce it.
+// Opening a multipage document without a credential put a 401/403 in the
+// console. `SvgDocument` reacted to the camera by computing the visible page
+// range and calling `writeSignal('signal:viewport', { pages })` from a 500ms
+// debounce; that POSTs to `/api/projects/:name/signal`, which admits only the
+// operator, so a caller with no valid token was refused. Nobody asked for the
+// request: it followed the camera settling, so reading the document was enough
+// to produce it.
 //
 // The refusal was correct. The POST was not: `signal:viewport` existed to give
 // the build a page-priority hint, and `b26994172` removed every consumer of it
 // — the watcher's SSE handler and cached-signal seed, both server-side
 // `priorityPages` resolutions, and the per-page SVG conversion they fed. What
 // was left was a writer with no reader, and the repair was to delete it rather
-// than to widen read authority so a write to nowhere could succeed.
+// than to widen authority so a write to nowhere could succeed.
 //
 // So this file asserts two different things, and the difference matters:
 //
-//   1. The route's authority is UNCHANGED. A read token is still refused, for
-//      `signal:viewport` and for every other signal. If a later change "fixes" a
-//      console 403 by letting read tokens broadcast, these fail. This half
-//      passed before the repair and must keep passing.
+//   1. The route's authority is UNCHANGED. A caller with no valid token is
+//      still refused, for `signal:viewport` and for every other signal. If a
+//      later change "fixes" a console refusal by letting strangers broadcast,
+//      these fail. This half passed before the repair and must keep passing.
 //   2. Nothing writes `signal:viewport` any more. This half FAILED before the
 //      repair and is the control that the deletion actually happened.
 //
 // The authority half runs over real HTTP against the real `projects` router
-// rather than against `requireRw` mounted on a stand-in path. What can be wrong
+// rather than against the gate mounted on a stand-in path. What can be wrong
 // here is which middleware that specific route carries, and a hand-mounted
 // route would prove the middleware while skipping the thing that can be wrong.
 import assert from 'node:assert/strict'
@@ -37,8 +38,8 @@ import { dirname, join, relative, extname } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
-const READ = 'test-read-token'
-const RW = 'test-rw-token'
+const STRANGER = 'test-stranger-token'
+const OPERATOR = 'test-operator-token'
 
 // ---- child: the real router, behind the real gate ----
 if (process.argv[2] === '--serve') {
@@ -58,7 +59,7 @@ writeFileSync(join(configDir, 'server.yaml'), 'tokenGating: true\n')
 
 const srv = spawn('node', ['--import', 'tsx', fileURLToPath(import.meta.url), '--serve'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), TLDA_CONFIG_DIR: configDir, TLDA_TOKEN_READ: READ, TLDA_TOKEN_RW: RW },
+  env: { ...process.env, PORT: String(PORT), TLDA_CONFIG_DIR: configDir, TLDA_TOKEN_RW: OPERATOR },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 
@@ -85,31 +86,32 @@ const post = (key, token) => fetch(`http://127.0.0.1:${PORT}/api/projects/dead-s
 }).then(r => r.status)
 
 // The instrument has to be able to answer before an answer means anything. With
-// gating off `requireRw` waves everything through, so an all-200 run would look
-// exactly like a repair that opened the route to read tokens.
+// gating off the operator gate waves everything through, so an all-200 run
+// would look exactly like a repair that opened the route to strangers.
 test('the gate is genuinely on', async () => {
   assert.equal(await post('signal:viewport', null), 401, 'no credential must be refused')
   assert.equal(await post('signal:viewport', 'nonsense'), 401, 'a garbage token must be refused')
 })
 
-// This is the 403 the read-only viewer's console was showing. It is correct, and
-// the repair does not touch it: the fix was to stop asking, not to be allowed.
-test('a read token still cannot broadcast a viewport signal', async () => {
-  assert.equal(await post('signal:viewport', READ), 403)
+// This is the refusal the unauthenticated viewer's console was showing. It is
+// correct, and the repair does not touch it: the fix was to stop asking, not
+// to be allowed.
+test('a stranger still cannot broadcast a viewport signal', async () => {
+  assert.equal(await post('signal:viewport', STRANGER), 401)
 })
 
-// The guard against "fixing" the console by widening read authority. Camera and
+// The guard against "fixing" the console by widening authority. Camera and
 // presenter drive what other people see; compare pins a build hash server-side.
-test('a read token still cannot broadcast any other signal', async () => {
+test('a stranger still cannot broadcast any other signal', async () => {
   for (const key of ['signal:presenter', 'signal:camera-link', 'signal:slide-index', 'signal:compare']) {
-    assert.equal(await post(key, READ), 403, `${key} must stay read-write only`)
+    assert.equal(await post(key, STRANGER), 401, `${key} must stay operator-only`)
   }
 })
 
 // Both directions, or a repair that quietly broke broadcasting would pass.
-test('a read-write token still broadcasts', async () => {
+test('an admitted caller still broadcasts', async () => {
   for (const key of ['signal:viewport', 'signal:presenter', 'signal:camera-link', 'signal:slide-index']) {
-    assert.equal(await post(key, RW), 200, `${key} must still broadcast for read-write`)
+    assert.equal(await post(key, OPERATOR), 200, `${key} must still broadcast for an admitted caller`)
   }
 })
 

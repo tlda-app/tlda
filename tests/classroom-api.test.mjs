@@ -37,15 +37,15 @@ async function serverFixture({ resolveSubmissionBuild = async contentRef => ({ b
   return { store, async request(route, role, init) { return fetch(base + route, { ...init, headers: { 'content-type': 'application/json', 'x-test-role': role, ...(init?.headers || {}) } }) }, close() { server.close(); store.close(); fs.rmSync(dir, { recursive: true, force: true }) } }
 }
 
-test('a classroom enrollment token identifies a student without exposing the global read bearer', () => {
+test('a classroom enrollment token identifies a student without exposing the global bearer', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-principal-'))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
   try {
     store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
     store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'student-secret' })
-    const principal = classroomPrincipal({ headers: { 'x-tlda-student-token': 'student-secret' }, query: {} }, store, null)
+    const principal = classroomPrincipal({ headers: { 'x-tlda-student-token': 'student-secret' }, query: {} }, store)
     assert.deepEqual(principal, { role: 'student', studentId: 'ada', courseId: 'qtm285', displayName: 'Ada', preferredName: 'Ada', pronouns: null, layerScope: 'student' })
-    assert.equal(classroomPrincipal({ headers: { 'x-tlda-student-token': 'wrong' }, query: {} }, store, null), null)
+    assert.equal(classroomPrincipal({ headers: { 'x-tlda-student-token': 'wrong' }, query: {} }, store), null)
   } finally {
     store.close()
     fs.rmSync(dir, { recursive: true, force: true })
@@ -151,7 +151,7 @@ test('a student registers a required preferred name and optional pronouns', asyn
     const corrected = await response.json()
     assert.equal(corrected.displayName, 'Grace Hopper')
     assert.equal(corrected.pronouns, 'they/them')
-    const authority = classroomPrincipal({ headers: { 'x-tlda-student-token': registration.enrollmentToken }, query: {} }, f.store, null)
+    const authority = classroomPrincipal({ headers: { 'x-tlda-student-token': registration.enrollmentToken }, query: {} }, f.store)
     assert.equal(authority.displayName, 'Grace Hopper')
     assert.equal(authority.pronouns, 'they/them')
 

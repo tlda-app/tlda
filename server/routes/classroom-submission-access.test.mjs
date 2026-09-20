@@ -1,7 +1,7 @@
 // A handed-in assignment is the student's own, over HTTP as well as over sync.
 //
 // Measured on the live course box before this gate existed: the shared class
-// read token — the one on the QR code, the one every classmate holds — returned
+// bearer token — the one on the QR code, the one every classmate holds — returned
 // `/api/projects` listing three submissions by student login, and then the
 // rendered homework and the attached photograph of each. `classroomRoomAccess`
 // already refuses one student a look at another's sync layer; nothing said the
@@ -51,10 +51,10 @@ function withStore(fn) {
   try { return fn(store) } finally { store.db.close(); rmSync(root, { recursive: true, force: true }) }
 }
 
-test('the store refuses a submission to a read-token visitor and to a classmate', () => {
+test('the store refuses a submission to a bearer-only visitor and to a classmate', () => {
   withStore(store => {
-    // The read link carries no classroom identity at all, which is exactly what
-    // a student scanning the QR code has.
+    // The bearer link carries no classroom identity at all, which is exactly
+    // what a student scanning the QR code has.
     const anonymous = store.documentAccess(SUBMISSION, null)
     assert.equal(anonymous.restricted, true)
     assert.equal(anonymous.allowed, false)
@@ -91,17 +91,13 @@ test('the enrolment token reaches the principal on the URL, header, or redeemed-
     const asHeader = { headers: { 'x-tlda-student-token': 'tok-ada' }, query: {} }
     const asQuery = { headers: {}, query: { classroomToken: 'tok-ada' } }
     const asCookie = { headers: { cookie: 'other=value; tlda_classroom_token=tok-ada' }, query: {} }
-    // `read` rather than the real token check: this asserts which carrier is
-    // read, not what the bearer token was.
-    assert.equal(classroomPrincipal(asHeader, store, 'read').studentId, OWNER)
-    assert.equal(classroomPrincipal(asQuery, store, 'read').studentId, OWNER)
-    assert.equal(classroomPrincipal(asCookie, store, 'read').studentId, OWNER)
-    assert.equal(classroomPrincipal({ headers: {}, query: {} }, store, 'read'), null)
-    // On an ungated class box every ordinary request has rw capability, but a
-    // classroom token must still identify its student or `/mine` is impossible.
-    assert.equal(classroomPrincipal(asQuery, store, 'rw', false).studentId, OWNER)
-    // With gating enabled an actual rw credential remains the instructor.
-    assert.deepEqual(classroomPrincipal(asQuery, store, 'rw', true), { role: 'instructor' })
+    // The bearer carries no classroom identity: this asserts which carrier is
+    // read, not what any bearer token was. A classroom token must still
+    // identify its student or `/mine` is impossible.
+    assert.equal(classroomPrincipal(asHeader, store).studentId, OWNER)
+    assert.equal(classroomPrincipal(asQuery, store).studentId, OWNER)
+    assert.equal(classroomPrincipal(asCookie, store).studentId, OWNER)
+    assert.equal(classroomPrincipal({ headers: {}, query: {} }, store), null)
   })
 })
 
@@ -141,7 +137,7 @@ async function documentRequest(store, principal) {
   }
 }
 
-test('the document route refuses the class read link and serves the instructor and the owner', async () => {
+test('the document route refuses the class bearer link and serves the instructor and the owner', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-submission-route-'))
   const store = storeWithOneSubmission(root)
   try {
@@ -193,12 +189,12 @@ function answeredCount(text) {
   return Array.isArray(projects) ? projects.length : Object.keys(projects || {}).length
 }
 
-test('a submission\'s history is refused to the class read link and reachable by the instructor', async () => {
+test('a submission\'s history is refused to the class bearer link and reachable by the instructor', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-submission-history-'))
   const store = storeWithOneSubmission(root)
   const encoded = encodeURIComponent(SUBMISSION)
   try {
-    // Measured 200 on the live course box with the shared read token before this.
+    // Measured 200 on the live course box with the shared bearer token before this.
     assert.equal(await projectRouterRequest(store, null, `/api/projects/${encoded}/history/shadow`), 403)
     assert.equal(await projectRouterRequest(store, classmate, `/api/projects/${encoded}/history/shadow`), 403)
     // The instructor is not refused. What the handler then does with a project
@@ -271,7 +267,7 @@ test('a common-scope student\'s work stays readable by their classmates', () => 
     assert.equal(store.getStudent(OWNER).layerScope, 'common')
     assert.equal(store.documentAccess(SUBMISSION, classmate).allowed, true)
 
-    // And it buys nothing to the read link, which is the exposure.
+    // And it buys nothing to the bearer link, which is the exposure.
     assert.equal(store.documentAccess(SUBMISSION, null).allowed, false)
     // Nor to somebody enrolled in a different course.
     assert.equal(store.documentAccess(SUBMISSION, { role: 'student', studentId: 'other:zed', courseId: 'other' }).allowed, false)

@@ -170,16 +170,12 @@ function rememberStudentToken(req, res, token) {
  *
  * A token carries identity and nothing else. A student token resolves against
  * the students table, an instructor token against the instructors table, and a
- * bearer level resolves against nothing — the RW bearer is not consulted here
- * at all. The line that used to return `{ role: 'instructor' }` for an RW
- * bearer is gone deliberately: a shared secret has no members, and "grouped to
- * the instructors" presupposes a group with members. Instructor membership is
- * checked where it is used (`store.isInstructorOf`), never here.
- *
- * The `level` and `gatingEnabled` parameters stay in the signature so existing
- * callers and test resolvers keep calling it the same way; they are ignored.
+ * bearer token resolves against nothing — it is not consulted here at all. A
+ * shared secret has no members, and "grouped to the instructors" presupposes a
+ * group with members. Instructor membership is checked where it is used
+ * (`store.isInstructorOf`), never here.
  */
-export function classroomPrincipal(req, store, level = undefined, gatingEnabled = undefined) {
+export function classroomPrincipal(req, store) {
   const token = studentToken(req)
   const student = store.studentForToken(token)
   if (student) return { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName, preferredName: student.preferredName, pronouns: student.pronouns, layerScope: student.layerScope }
