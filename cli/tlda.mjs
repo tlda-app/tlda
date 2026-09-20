@@ -663,7 +663,7 @@ async function cmdPromote() {
 async function cmdPublish() {
   const name = getPositional(0)
   if (!name) {
-    console.error('Usage: tlda project publish <name> [--to <site-checkout>] [--subdir static] [--url <published base>] [--no-push] [--drop-missing]')
+    console.error('Usage: tlda project publish <name> --from <preview> [--to <site-checkout>] [--subdir static] [--url <published base>] [--no-push] [--drop-missing]')
     console.error('')
     console.error('Sends what this environment is serving for <name> to the class site.')
     process.exit(1)
@@ -674,6 +674,32 @@ async function cmdPublish() {
   const checkout = getFlag('to') || remembered.checkout
   const subdirectory = getFlag('subdir') || remembered.subdirectory || 'static'
   const publishedUrl = getFlag('url') || remembered.url || null
+  // WHICH SURFACE THIS COPIES FROM, named rather than implied.
+  //
+  // Skip: *"i was imagining a gh.io preview but deploy is roo slow dor that to
+  // feel live"* — the preview he watches is a surface that exists because
+  // GitHub Pages is too slow to watch, and publishing means making the live
+  // site show what THAT is showing. Defaulting to the caller's active
+  // environment would copy from whichever server the operator happened to be
+  // pointed at, which is how a publish ships a build nobody looked at. Those
+  // two surfaces are not interchangeable: measured 2026-09-20, the app served
+  // `qtm285-book` at one revision and the preview at another, forty-nine
+  // minutes apart.
+  const from = getFlag('from') || remembered.from || null
+  if (!from) {
+    console.error(red(`No preview surface is recorded for "${name}".`))
+    console.error('Publishing copies what the preview is showing, so the preview has to be named rather than assumed.')
+    console.error(`Name it once and it is remembered: ${bold(`tlda project publish ${name} --from <environment-or-url>`)}`)
+    process.exit(1)
+  }
+  let sourceUrl
+  try {
+    sourceUrl = /^https?:\/\//i.test(from) ? from.replace(/\/$/, '') : getServerUrl(from)
+  } catch {
+    console.error(red(`"${from}" is not an environment this machine knows and is not a URL.`))
+    console.error(`Environments here: ${listEnvironments().map(e => e.active ? bold(e.name) : e.name).join(', ')}`)
+    process.exit(1)
+  }
   if (!checkout) {
     console.error(red(`No class site is recorded for "${name}".`))
     console.error(`Name it once with ${bold(`--to <checkout>`)} and it is remembered: ${bold(`tlda project publish ${name} --to ~/path/to/class-site`)}`)
@@ -711,14 +737,26 @@ async function cmdPublish() {
     process.exit(1)
   }
 
-  const project = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
+  const fromSurface = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}`, null, { token: getReadToken() })
+    .catch(() => null)
+  if (!fromSurface) {
+    console.error(red(`${sourceUrl} does not serve "${name}".`))
+    console.error('Publishing copies what the preview is showing, so the preview has to be showing it.')
+    process.exit(1)
+  }
+  const project = fromSurface
   if (project.buildStatus !== 'success') {
-    console.error(red(`"${name}" is ${project.buildStatus || 'unbuilt'} on ${getActiveEnvName()}, not success.`))
+    console.error(red(`"${name}" is ${project.buildStatus || 'unbuilt'} on ${from}, not success.`))
     console.error(`Publishing sends what is being served, and a failed build is not it. ${bold(`tlda project errors ${name}`)} says why.`)
     process.exit(1)
   }
 
-  const inventory = await api('GET', `/api/projects/${encodeURIComponent(name)}/published-tree`)
+  const inventory = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}/published-tree`, null, { token: getReadToken() })
+    .catch(error => {
+      console.error(red(`${sourceUrl} cannot list what it is serving for "${name}": ${error.message}`))
+      console.error('A surface that cannot be asked for its published tree cannot be published from; it is running code without that route.')
+      process.exit(1)
+    })
   if (!inventory.files?.length) {
     console.error(red(`"${name}" is serving no published tree.`))
     process.exit(1)
@@ -728,10 +766,10 @@ async function cmdPublish() {
     console.error('A publish that races a render ships half of two builds. Wait for it to finish and run this again.')
     process.exit(1)
   }
-  console.log(`Publishing ${bold(name)}${project.sourceRevision ? `@${project.sourceRevision.slice(0, 7)}` : ''} — ${inventory.files.length} files from ${getActiveEnvName()}...`)
+  console.log(`Publishing ${bold(name)}${project.sourceRevision ? `@${project.sourceRevision.slice(0, 7)}` : ''} — ${inventory.files.length} files from ${bold(from)} (${sourceUrl})...`)
 
   const { staging } = await stagePublishedTree({
-    serverUrl: getServerUrl(),
+    serverUrl: sourceUrl,
     project: name,
     files: inventory.files,
     headers: getReadToken() ? { authorization: `Bearer ${getReadToken()}` } : {},
@@ -747,7 +785,7 @@ async function cmdPublish() {
     // copied still the tree being served. It also covers the case a revision
     // check misses, a forced rebuild of the SAME revision, because the answer
     // comes from the files rather than from a name for them.
-    const recheck = await api('GET', `/api/projects/${encodeURIComponent(name)}/published-tree`)
+    const recheck = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}/published-tree`, null, { token: getReadToken() })
     const inventoryPrint = (rows) => rows.map(f => `${f.path}:${f.sha256}`).sort().join('\n')
     if (inventoryPrint(recheck.files || []) !== inventoryPrint(inventory.files)) {
       console.error(red(`"${name}" was republished while this was reading it.`))
@@ -765,7 +803,7 @@ async function cmdPublish() {
     })
     // Remembered only after it worked, so a failed first run does not leave a
     // destination recorded that nobody has ever successfully published to.
-    saveCliConfig({ ...config, classSites: { ...config.classSites, [name]: { checkout, subdirectory, url: publishedUrl } } })
+    saveCliConfig({ ...config, classSites: { ...config.classSites, [name]: { checkout, subdirectory, url: publishedUrl, from } } })
     if (publishedUrl) {
       await api('PATCH', `/api/projects/${encodeURIComponent(name)}/class-site`, { classSiteUrl: publishedUrl }).catch(() => {})
     }
