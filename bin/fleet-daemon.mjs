@@ -297,7 +297,16 @@ const INSTALL_PATH = (() => {
 // the real one). Refuse to start when an isolation signal is set but isolation
 // is incomplete, instead of falling through to the live config. Fail loud.
 {
-  const { refuseReason } = resolveDaemonIsolation({ env: process.env, scriptPath: INSTALL_PATH })
+  // A release cut by the deploy hook is a detached worktree by construction, so
+  // the declared runtimeRoot is what separates "deployed runtime" from "somebody's
+  // rig". Pass it in; without it this guard refuses the sanctioned runtime tree.
+  const guardActualRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const { runtimeRoot: guardRuntimeRoot, declared: guardDeclared } = getRuntimeRoot(ACTIVE_ENV, guardActualRoot)
+  const { refuseReason } = resolveDaemonIsolation({
+    env: process.env,
+    scriptPath: INSTALL_PATH,
+    declaredRuntimeRoot: guardDeclared ? guardRuntimeRoot : null,
+  })
   if (refuseReason) {
     log.error(`refusing to start: ${refuseReason}`)
     process.stderr.write(`[fleet-daemon] REFUSING TO START — ${refuseReason}\n`)

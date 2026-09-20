@@ -10,6 +10,8 @@
 //      newcomer unless it's the same install restarting. Two distinct installs
 //      can never share one machine_id, no matter how the rig is misconfigured.
 
+import { realpathSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { resolveRepoIdentity } from './repo-identity.mjs'
@@ -56,11 +58,32 @@ export function resolveMainDaemonScript(scriptPath, resolveIdentity = resolveRep
 //   - TLDA_DAEMON_CONFIG_DIR + PROJECTS_DIR — its own config and JSONL roots.
 // The leak is a WORKTREE daemon with NEITHER: it falls through to live Fly with
 // the shared machine_id ("air") and evicts the real daemon. That one is refused.
-export function resolveDaemonIsolation({ env = {}, scriptPath = '', resolveIdentity = resolveRepoIdentity } = {}) {
+// The deploy hook materialises every release with `git worktree add --detach`,
+// so the sanctioned runtime tree IS a worktree. That is the opposite of a dev
+// rig: it is the tree daemon.yaml declares as environments.<env>.runtimeRoot and
+// the tree the plist invokes. Refusing it made the release mechanism unable to
+// start a daemon at all — the guard, written when a worktree could only mean
+// someone's rig, blocked the mechanism that replaced that world.
+//
+// So a declared runtime root is itself an isolation signal: this daemon is where
+// it was deployed to be. An undeclared worktree is still refused, which is the
+// case the guard was written for.
+function isDeclaredRuntimeTree(scriptPath, declaredRuntimeRoot) {
+  if (!scriptPath || !declaredRuntimeRoot) return false
+  const norm = (p) => {
+    try { return realpathSync(p) } catch { return resolve(p) }
+  }
+  const root = norm(declaredRuntimeRoot)
+  const script = norm(scriptPath)
+  return script === root || script.startsWith(root.endsWith('/') ? root : root + '/')
+}
+
+export function resolveDaemonIsolation({ env = {}, scriptPath = '', declaredRuntimeRoot = null, resolveIdentity = resolveRepoIdentity } = {}) {
   const usingCustomConfigDir = !!env.TLDA_DAEMON_CONFIG_DIR
   const usingCustomProjectsDir = !!env.PROJECTS_DIR
   const customDataIsolated = usingCustomConfigDir && usingCustomProjectsDir
-  const isolated = customDataIsolated
+  const inDeclaredRuntime = isDeclaredRuntimeTree(scriptPath, declaredRuntimeRoot)
+  const isolated = customDataIsolated || inDeclaredRuntime
   const worktree = isDaemonWorktree(scriptPath, resolveIdentity)
 
   if (usingCustomConfigDir && !usingCustomProjectsDir) {
