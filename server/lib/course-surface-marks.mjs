@@ -144,6 +144,30 @@ export function publicationPathForPage(file) {
   return String(file).replace(/^app\//, '')
 }
 
+/**
+ * Where the course publishes, from the course itself.
+ *
+ * NOT a second hand-set field. A project that publishes somewhere already knows
+ * where it publishes — `course-release.json`'s `publication.url`, the same
+ * block `build-site.py` refuses on — so asking it also to be told where its
+ * class site is makes two facts that must agree and one that nobody sets. That
+ * is exactly how this went invisible: the marks needed a field only I had ever
+ * set, so every other course had none and drew nothing. Skip, on a different
+ * duplication the same night: "whatever suits you just tryimg ti make sure we
+ * dont du-licate shit".
+ *
+ * The published tree sits under `static/` beneath that URL on both sites, which
+ * is the publication layout rather than a guess: the publication root is a
+ * redirect stub to `static/` (`course-publication-build.mjs`), and both the
+ * class site and the test site serve `<publication.url>/static/book/index.html`
+ * — measured on each, with an invented filename returning 404 as a control.
+ */
+export function publishedBaseFromCourse(courseRelease) {
+  const url = courseRelease?.publication?.url
+  if (typeof url !== 'string' || !url) return null
+  return `${url.replace(/\/$/, '')}/static`
+}
+
 export function publishedUrlForPage(file, publishedBase) {
   if (!publishedBase) return null
   return `${publishedBase.replace(/\/$/, '')}/${publicationPathForPage(file)}`

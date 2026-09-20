@@ -44,7 +44,7 @@ import { deleteProjectAndBuildSubmissions, serializedPublication } from '../lib/
 import { importProjectPromotionStream, validatePromotionName, writeProjectPromotionStream } from '../lib/project-promotion.mjs'
 import { promotionExportHeaders, requirePromotionExport, validatePromotionSourceOrigin } from '../lib/promotion-source.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
-import { compareCourseSurfaces } from '../lib/course-surface-marks.mjs'
+import { compareCourseSurfaces, publishedBaseFromCourse } from '../lib/course-surface-marks.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
@@ -1314,7 +1314,9 @@ router.get('/:name/hashes', requireRead, async (req, res) => {
 router.patch('/:name/class-site', requireRw, async (req, res) => {
   try {
     const updates = {}
-    for (const [field, label] of [['classSiteUrl', 'class site'], ['previewUrl', 'preview']]) {
+    // `classSiteUrl` is gone: where a course publishes is derived from its own
+    // `course-release.json`, not carried as a second field that must agree.
+    for (const [field, label] of [['previewUrl', 'preview']]) {
       if (!(field in (req.body || {}))) continue
       const url = req.body[field]
       if (url != null && !/^https?:\/\//i.test(String(url))) {
@@ -1323,9 +1325,46 @@ router.patch('/:name/class-site', requireRw, async (req, res) => {
       updates[field] = url ? String(url).replace(/\/$/, '') : null
     }
     const project = await updateProject(req.params.name, updates)
-    res.json({ ok: true, classSiteUrl: project.classSiteUrl || null, previewUrl: project.previewUrl || null })
+    res.json({ ok: true, previewUrl: project.previewUrl || null })
   } catch (e) {
     res.status(404).json({ error: e.message })
+  }
+})
+
+/**
+ * What a publish attempt did, recorded against the revision it carried.
+ *
+ * BOTH OUTCOMES. A publish that ran and died has to be distinguishable from one
+ * nobody ran, or the mark beside a chapter cannot tell "not published yet" from
+ * "publishing this broke" — and under Skip's rule the triangle appears only when
+ * we KNOW something failed, so without this record a real failure is silently
+ * indistinguishable from being merely behind.
+ *
+ * The command writes it, because the command is the only thing that knows
+ * whether the push landed. That is the same shape as a build recording its own
+ * outcome rather than being inferred from its artifacts.
+ */
+router.post('/:name/publish-outcome', requireRw, async (req, res) => {
+  try {
+    const project = await readProject(req.params.name)
+    if (!project) return res.status(404).json({ error: 'Project not found' })
+    const revision = String(req.body?.revision || '')
+    const ok = req.body?.ok === true
+    if (!/^[0-9a-f]{40}$/i.test(revision)) {
+      return res.status(400).json({ error: 'a publish outcome needs the exact revision it carried' })
+    }
+    if (!ok && !req.body?.error) {
+      return res.status(400).json({ error: 'a failed publish must say what failed' })
+    }
+    const lifecycle = await sourceLifecycleStore(req.params.name, { existingProject: project })
+    lifecycle.recordRevisionPhase(req.params.name, revision, 'publish', ok ? 'published' : 'publish_failed', {
+      target: req.body?.target || null,
+      files: Number.isInteger(req.body?.files) ? req.body.files : null,
+      error: ok ? null : String(req.body.error),
+    })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(409).json({ error: e.message })
   }
 })
 
@@ -1382,9 +1421,16 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const pageInfoPath = join(getOutputDir(req.params.name), 'page-info.json')
   if (!existsSync(pageInfoPath)) {
-    return res.json({ marks: [], classSiteUrl: project.classSiteUrl || null, why: `${req.params.name} has no built pages to compare` })
+    return res.json({ marks: [], why: `${req.params.name} has no built pages to compare` })
   }
   const pages = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
+  // Where this course publishes, from the course. Absent means nobody has said,
+  // and then every row reports that the class site could not be asked — which
+  // is true, and is the state that used to draw nothing at all.
+  const courseRelease = await readSourceFileAsync(req.params.name, 'course-release.json')
+    .then(text => JSON.parse(typeof text === 'string' ? text : String(text)))
+    .catch(() => null)
+  const publishedBase = publishedBaseFromCourse(courseRelease)
   // Declared rows that produced nothing, from the contents rather than from the
   // pages: a render failure deletes the page, and a row keyed only to a page
   // disappears with it. `writeTocJson` now keeps them with `page: null`.
@@ -1402,12 +1448,26 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
   const failureForSource = source => source
     ? failureText.find(text => text.includes(source)) || null
     : null
+  // A publish that ran and failed, from the record the command writes. Without
+  // this the marks can only see that the class site is behind, which is true of
+  // a publish nobody ran and of one that died, and those want different actions.
+  // Project-wide rather than per page: a publish carries the whole tree, so its
+  // failure is a fact about the revision and not about one chapter.
+  const publishFailure = await sourceLifecycleStore(req.params.name, { existingProject: project })
+    .then(store => {
+      const current = store.listRevisionLifecycles(req.params.name)
+        .find(row => row.sourceRevision === project.sourceRevision)
+      return current?.publish?.state === 'publish_failed'
+        ? current.publish.result?.error || 'the last publish of this revision failed'
+        : null
+    })
+    .catch(() => null)
   const marks = await compareCourseSurfaces([...pages, ...unbuilt.map(row => ({
     file: `app/book/${row.source.replace(/\.qmd$/i, '.html')}`,
     source: { file: row.source },
     unbuilt: true,
   }))], {
-    failureFor: page => failureForSource(page.source?.file),
+    failureFor: page => failureForSource(page.source?.file) || publishFailure,
     // THE PREVIEW, over HTTP, not this server's own disk.
     //
     // Skip: "we have a preview server showing the thing, make the configured
@@ -1433,11 +1493,11 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
       if (!response.ok) return undefined
       return await response.text()
     },
-    publishedBase: project.classSiteUrl || null,
+    publishedBase,
   })
   res.json({
     marks: marks.map(({ page, source, stage, error, errorAt, why }) => ({ page, source, stage, error, errorAt, why })),
-    classSiteUrl: project.classSiteUrl || null,
+    publishedBase,
     previewUrl: project.previewUrl || null,
     comparedAt: new Date().toISOString(),
   })

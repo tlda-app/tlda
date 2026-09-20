@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { compareCourseSurfaces, documentTextFingerprint, markForRow, marksForRows, publicationPathForPage, publishedUrlForPage } from './course-surface-marks.mjs'
+import { compareCourseSurfaces, documentTextFingerprint, markForRow, marksForRows, publicationPathForPage, publishedBaseFromCourse, publishedUrlForPage } from './course-surface-marks.mjs'
 
 // The real difference between the same chapter on the app's `static/` tree and
 // on GitHub Pages, reduced to one paragraph. Every one of these is chrome the
@@ -137,4 +137,32 @@ test('the comparison reads 404 as absent, and agreement all the way as published
     [1, 'chapters/one.qmd', 'published'],
     [2, 'decks/two-slides.qmd', 'preview'],
   ])
+})
+
+// Derived from the course, never carried as a second field. The marks needed a
+// field only one person had ever set, so every other course had none and drew
+// nothing — which is the mechanism that hid this work for three weeks. A course
+// that publishes somewhere already knows where.
+test('where a course publishes comes from the course itself', () => {
+  assert.equal(
+    publishedBaseFromCourse({ publication: { url: 'https://qtm285.github.io/pages-topology-test/' } }),
+    'https://qtm285.github.io/pages-topology-test/static',
+  )
+  // Measured on both sites: the publication root is a redirect stub to
+  // `static/`, and `<publication.url>/static/book/index.html` answers 200 on the
+  // class site and on the test site, with an invented filename 404ing.
+  assert.equal(
+    publishedBaseFromCourse({ publication: { url: 'https://qtm285.github.io' } }),
+    'https://qtm285.github.io/static',
+  )
+})
+
+// Absent means nobody has said where this publishes, and then every row reports
+// that the class site could not be asked. That is true, and it is the state
+// that used to draw nothing at all.
+test('a course naming no publication has no published base, rather than a guessed one', () => {
+  assert.equal(publishedBaseFromCourse(null), null)
+  assert.equal(publishedBaseFromCourse({}), null)
+  assert.equal(publishedBaseFromCourse({ publication: {} }), null)
+  assert.equal(publishedUrlForPage('app/book/index.html', null), null)
 })

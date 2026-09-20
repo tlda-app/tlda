@@ -663,7 +663,7 @@ async function cmdPromote() {
 async function cmdPublish() {
   const name = getPositional(0)
   if (!name) {
-    console.error('Usage: tlda project publish <name> --from <preview> [--to <site-checkout>] [--subdir static] [--url <published base>] [--no-push] [--drop-missing]')
+    console.error('Usage: tlda project publish <name> --from <preview> [--to <site-checkout>] [--subdir static] [--no-push] [--drop-missing]')
     console.error('')
     console.error('Sends what this environment is serving for <name> to the class site.')
     process.exit(1)
@@ -673,7 +673,6 @@ async function cmdPublish() {
   const remembered = config.classSites?.[name] || {}
   const checkout = getFlag('to') || remembered.checkout
   const subdirectory = getFlag('subdir') || remembered.subdirectory || 'static'
-  const publishedUrl = getFlag('url') || remembered.url || null
   // WHICH SURFACE THIS COPIES FROM, named rather than implied.
   //
   // Skip: *"i was imagining a gh.io preview but deploy is roo slow dor that to
@@ -774,6 +773,25 @@ async function cmdPublish() {
     files: inventory.files,
     headers: getReadToken() ? { authorization: `Bearer ${getReadToken()}` } : {},
   })
+  // Whatever happens from here is recorded against the revision this carried.
+  // A publish that ran and died has to be distinguishable from one nobody ran,
+  // or the mark beside the chapter cannot tell "not published yet" from
+  // "publishing this broke" -- and only this process knows which.
+  const recordOutcome = async (ok, detail) => {
+    if (!project.sourceRevision) return
+    await apiAt(sourceUrl, 'POST', `/api/projects/${encodeURIComponent(name)}/publish-outcome`, {
+      revision: project.sourceRevision,
+      ok,
+      target: checkout,
+      files: Number.isInteger(detail?.files) ? detail.files : null,
+      error: ok ? null : String(detail?.error || 'the publish did not complete'),
+    }, { token: getRwToken() }).catch(recordError => {
+      // Said out loud rather than swallowed: a publish whose outcome nobody
+      // could record leaves the marks unable to tell what happened, and the
+      // operator is the only one who will ever see this line.
+      console.error(yellow(`Could not record the publish outcome: ${recordError.message}`))
+    })
+  }
   try {
     // The served tree is swapped into place by a rename, so no half-written
     // file is ever served — but the swap can land BETWEEN two of the requests
@@ -803,16 +821,21 @@ async function cmdPublish() {
     })
     // Remembered only after it worked, so a failed first run does not leave a
     // destination recorded that nobody has ever successfully published to.
-    saveCliConfig({ ...config, classSites: { ...config.classSites, [name]: { checkout, subdirectory, url: publishedUrl, from } } })
-    if (publishedUrl) {
-      await api('PATCH', `/api/projects/${encodeURIComponent(name)}/class-site`, { classSiteUrl: publishedUrl }).catch(() => {})
-    }
+    saveCliConfig({ ...config, classSites: { ...config.classSites, [name]: { checkout, subdirectory, from } } })
     if (!result.changed) {
+      // Recorded as a success: the site is serving this revision, which is the
+      // thing the outcome is about. Publishing twice is how somebody checks the
+      // first one worked, and the second run must not report a failure.
+      await recordOutcome(true, { files: 0 })
       console.log(green(`The class site already serves this. Nothing changed.`))
       return
     }
+    await recordOutcome(result.pushed, result.pushed ? { files: result.files } : { error: 'committed but not pushed (--no-push)' })
     console.log(green(`Published ${result.files} file(s) to ${checkout}/${subdirectory}${result.pushed ? ' and pushed' : ' — NOT pushed (--no-push)'}.`))
     if (result.commit) console.log(`Commit ${result.commit.slice(0, 7)}.`)
+  } catch (error) {
+    await recordOutcome(false, { error: error.message })
+    throw error
   } finally {
     rmSync(staging, { recursive: true, force: true })
   }

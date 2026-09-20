@@ -155,7 +155,15 @@ export function createSourceLifecycleStore({ root, project = 'project', onStatus
       // from where. `projectRevisionStatus` reads only build and version, so a
       // promotion phase cannot change any project's reported status; it exists
       // so "when was this last published" has an answer, which it did not.
-      if (!['build', 'version', 'mirror', 'promotion'].includes(phase)) throw new Error(`Invalid source revision phase: ${phase}`)
+      //
+      // `publish` is the same idea for the class site, and it records FAILURES
+      // as well as successes. Without it a publish that ran and died is
+      // indistinguishable from one nobody ran, so the mark beside a chapter
+      // cannot tell "not published yet" from "publishing this broke" — and a
+      // system that cannot say what it did reads exactly like one that did
+      // nothing, which is the defect class that hid three separate things this
+      // week.
+      if (!['build', 'version', 'mirror', 'promotion', 'publish'].includes(phase)) throw new Error(`Invalid source revision phase: ${phase}`)
       const value = journal()
       const lifecycle = value.revisionLifecycle[sourceRevision]
       if (!lifecycle || lifecycle.project !== name) throw new Error(`Source revision ${sourceRevision} is not recorded for ${name}`)
