@@ -20,7 +20,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDocViewPlayback } from '../recording/useDocViewPlayback'
 import { formatTimecode } from '../recording/timeControls'
-import { listThread, type ThreadLayerSummary } from '../recording/annotationThread'
+import { type ThreadLayerSummary } from '../recording/annotationThread'
+import { threadLayers } from '../../shared/annotation-thread.mjs'
 import type { AnswerRef } from '../recording/recorder'
 import type { PlayingLayer } from './replyLayer'
 import './ThreadPlayer.css'
@@ -30,31 +31,32 @@ export interface ThreadPlayerProps {
   /** The project the answer's layers are stored under. */
   doc: string
   /**
+   * This answer's layers, fetched by the caller.
+   *
+   * Not fetched here, and that is about a real number rather than tidiness: a
+   * student arrives with every answer they have open — thirteen, measured on
+   * `8825e2af4` — so a player that listed for itself would make thirteen
+   * identical requests for one project's recordings. The caller holds the pairs
+   * and can ask once.
+   */
+  layers: ThreadLayerSummary[]
+  /**
    * The layer now playing, or null. Passed up so the plus can answer it — the
    * plus replies to whatever is open, which is what makes "reply to anything"
    * reachable without a picker.
    */
   onPlayingChange: (playing: PlayingLayer | null) => void
-  /** Bumped by the caller when a layer is added, so the list refetches. */
-  revision?: number
 }
 
-export function ThreadPlayer({ answer, doc, onPlayingChange, revision = 0 }: ThreadPlayerProps) {
-  const [layers, setLayers] = useState<ThreadLayerSummary[]>([])
+export function ThreadPlayer({ answer, doc, layers, onPlayingChange }: ThreadPlayerProps) {
   const [selected, setSelected] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    listThread(doc, answer)
-      .then((found) => { if (!cancelled) setLayers(found) })
-      .catch((err) => { if (!cancelled) setError((err as Error).message) })
-    return () => { cancelled = true }
-  }, [doc, answer.submissionRoomId, answer.problemId, revision])
-
-  // Stored newest first; oldest first is the order they were said in, which is
-  // the order a thread reads in.
-  const ordered = useMemo(() => [...layers].reverse(), [layers])
+  // This answer's own layers, and oldest first: stored newest first, but a
+  // thread reads in the order things were said.
+  const ordered = useMemo(
+    () => threadLayers(layers, answer).slice().reverse() as ThreadLayerSummary[],
+    [layers, answer],
+  )
 
   const playback = useDocViewPlayback(doc, selected ? `draft:${selected}` : undefined)
   const { currentMs, duration, playing, play, pause, scrub, attachAudio, audioSrc } = playback
@@ -69,7 +71,6 @@ export function ThreadPlayer({ answer, doc, onPlayingChange, revision = 0 }: Thr
     onPlayingChange(selected ? { layerId: selected, currentMs: readPlayhead } : null)
   }, [selected, readPlayhead, onPlayingChange])
 
-  if (error) return <span className="tlda-thread-player-error">{error}</span>
   if (!ordered.length) return null
 
   return (

@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useValue, type Editor } from 'tldraw'
 import { gradingDraftRoomId, gradingReturnedRoomId } from '../../shared/classroom-rooms.mjs'
 import { ReplyPlus } from './ReplyPlus'
 import { ThreadPlayer } from './ThreadPlayer'
 import type { PlayingLayer } from './replyLayer'
+import { listRecordingDraftsIncludingLayers } from '../recording/recordingApi'
+import type { ThreadLayerSummary } from '../recording/annotationThread'
 import { ensureViewLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
 import { classroomApi } from './api'
 import { AnswerPane } from './AnswerPane'
@@ -45,6 +47,34 @@ export function MarkingInkOverlay({
   // The most recent arrival is the one he is on. `onShow` appends, so this is
   // "the pair he last paged to" without anything having to track intent.
   const marked = pairs[pairs.length - 1]
+
+  // One listing per project, not one per pane. A student arrives with every
+  // answer they have open -- thirteen, measured -- and each pane's layers come
+  // out of the same project's recordings, so asking per pane would be thirteen
+  // identical requests for one answer.
+  const docs = useMemo(
+    () => [...new Set(pairs.map(pair => pair.contentRef))].sort().join('\u0000'),
+    [pairs],
+  )
+  const [layersByDoc, setLayersByDoc] = useState<Record<string, ThreadLayerSummary[]>>({})
+  const [revision, setRevision] = useState(0)
+  const noteLayerRecorded = useCallback(() => setRevision(n => n + 1), [])
+
+  useEffect(() => {
+    if (!docs) return
+    let cancelled = false
+    void Promise.all(docs.split('\u0000').map(async doc => {
+      const layers = await listRecordingDraftsIncludingLayers(doc) as ThreadLayerSummary[]
+      return [doc, layers] as const
+    })).then(entries => {
+      if (!cancelled) setLayersByDoc(Object.fromEntries(entries))
+    }).catch(() => {
+      // A listing that fails leaves the players absent rather than the panes
+      // broken; the marks themselves are a different path and still render.
+    })
+    return () => { cancelled = true }
+  }, [docs, revision])
+
   return (
     <>
       {pairs.map(pair => (
@@ -54,6 +84,8 @@ export function MarkingInkOverlay({
           editor={editor}
           bookRoomId={bookRoomId}
           marked={pair === marked}
+          layers={layersByDoc[pair.contentRef] ?? []}
+          onLayerRecorded={noteLayerRecorded}
         />
       ))}
     </>
@@ -65,12 +97,17 @@ function MarkedPair({
   editor,
   bookRoomId,
   marked,
+  layers,
+  onLayerRecorded,
 }: {
   pair: ActiveMarkingPair
   editor: Editor
   bookRoomId: string
   /** Whether this is the pair the glass and the Return button are on. */
   marked: boolean
+  /** This project's layers, listed once by the overlay above. */
+  layers: ThreadLayerSummary[]
+  onLayerRecorded: () => void
 }) {
   // The pane measures the answer and the frame places it, so the height goes
   // up from one and back down to the other. It starts at zero rather than at a
@@ -89,10 +126,6 @@ function MarkedPair({
   // The layer open in front of the reader, if the player is running one. The
   // plus answers whatever this is, so it is the whole of "reply to anything".
   const [playing, setPlaying] = useState<PlayingLayer | null>(null)
-  // Bumped when a layer finishes recording, so the player's list picks it up.
-  // A thread you just added to that does not show what you added reads as the
-  // recording having failed.
-  const [threadRevision, setThreadRevision] = useState(0)
   // Which problem's marks these are. Named ONCE, because it is both the stem of
   // the draft room this overlay writes into and the problem `/return` copies
   // across, and those two being written out separately is what broke returning:
@@ -211,25 +244,27 @@ function MarkedPair({
           built. Answering an existing layer needs the player, and with it the
           warp, which is the next piece rather than something missing from
           this one. */}
-      {/* `showsInk` rather than `marked`, and the flag is answer-pane's: `marked`
-          is one pair, and a student has all of theirs open, so gating on it put
-          the plus on whichever exercise installed last and on none of the other
-          twelve. They caught it in my code having just hit the same shape in
-          their own. */}
+      {/* `showsInk`, not `marked`, and the difference is the whole of "for both
+          readers". `marked` is `pairs[pairs.length - 1]` -- exactly one pane.
+          That was invisible while only one pair was ever open; a student now
+          arrives with every answer they have open, so gating on it put the plus
+          on whichever exercise installed last and on none of the other twelve.
+          `answer-pane` caught this in my code having just hit it in their own,
+          where 13 panes carried 1 glass. Their flag, their diagnosis. */}
       {showsInk && answerHeader && createPortal(
         <>
           <ThreadPlayer
             answer={answerRef}
             doc={pair.contentRef}
+            layers={layers}
             onPlayingChange={setPlaying}
-            revision={threadRevision}
           />
           <ReplyPlus
             answer={answerRef}
             doc={pair.contentRef}
             editor={draftEditor}
             playing={playing}
-            onLayerRecorded={() => setThreadRevision(n => n + 1)}
+            onLayerRecorded={onLayerRecorded}
           />
         </>,
         answerHeader,
