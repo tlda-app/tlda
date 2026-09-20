@@ -3314,11 +3314,13 @@ onGlobalEvent(async (event) => {
     }
   }
   if (event?.type === 'build-card' && fleetStore && event.name) {
-    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [], warnings = [], lastMirrorSuccess, lastBuildSuccess, buildFiles, editedBy } = event
+    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, katexError, errors = [], warnings = [], lastMirrorSuccess, lastBuildSuccess, buildFiles, editedBy } = event
     const text = buildFailed
       ? `❌ Build failed — ${docName}: ${buildFailed}`
       : mirrorFailed
       ? `⚠️ Mirror failed — ${docName} (${hash}): ${mirrorFailed}`
+      : katexError
+      ? `⚠️ Math failed to render — ${docName}: ${katexError}`
       : `Build ${hash} — ${docName}`
     const metadata = {
       type: 'build_result',
@@ -3328,6 +3330,7 @@ onGlobalEvent(async (event) => {
       lintFindings,
       mirrorFailed: mirrorFailed || null,
       buildFailed: buildFailed || null,
+      katexError: katexError || null,
       errors,
       warnings,
       lastMirrorSuccess: lastMirrorSuccess || null,
@@ -4140,9 +4143,95 @@ function appendClientLogEntry(entry) {
   })
 }
 
+// KaTeX runtime errors, fanned in before emission. One card per page plus
+// error: the first report emits, repeats within the window are dropped. He is
+// addressed exactly as a build card is (subscribers, editedBy when set,
+// owner unconditionally) — his words: "same as builds."
+const KATEX_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000
+const katexSeen = new Map()
+
+function katexDedupeKey(docName, error) {
+  return docName + "\u0000" + error
+}
+
+function recordKatexError(entry) {
+  try {
+    const data = entry?.data && typeof entry.data === 'object' ? entry.data : {}
+    const error = typeof data.error === 'string' ? data.error : null
+    if (!error) return
+    const docName = katexDocName(data)
+    if (!docName) return
+    const key = katexDedupeKey(docName, error)
+    const now = Date.now()
+    const last = katexSeen.get(key)
+    if (last && now - last < KATEX_DEDUPE_WINDOW_MS) return
+    katexSeen.set(key, now)
+    if (katexSeen.size > 5000) {
+      for (const [k, ts] of katexSeen) {
+        if (now - ts >= KATEX_DEDUPE_WINDOW_MS) katexSeen.delete(k)
+        if (katexSeen.size <= 4000) break
+      }
+    }
+    const page = typeof data.url === 'string' ? data.url.split('?')[0].split('/').slice(-2).join('/') : null
+    emitKatexErrorCard(docName, error, page).catch(e => {
+      console.error(`[katex-error] card emission failed for ${docName}:`, e?.message || e)
+    })
+  } catch (e) {
+    // Best-effort by contract: the report is already in client.log, so a
+    // fan-in failure must not fail the reader's POST.
+    console.error(`[katex-error] fan-in failed:`, e?.message || e)
+  }
+}
+
+// The project name out of a reader's page URL. location.href arrives as
+// `/docs/<name>/…` (possibly absolute); anything else is not a served
+// document page and resolves null.
+function katexDocName(data) {
+  try {
+    const raw = typeof data.url === 'string' ? data.url : null
+    if (!raw) return null
+    const path = raw.startsWith('http') ? new URL(raw).pathname : raw.split('?')[0]
+    const m = path.match(/\/docs\/([^/]+)\//)
+    return m ? docsProjectName(m[1]) : null
+  } catch {
+    return null
+  }
+}
+
+async function emitKatexErrorCard(docName, error, page) {
+  if (!fleetStore) return
+  const text = `⚠️ Math failed to render — ${docName}${page ? ` (${page})` : ''}: ${error}`
+  const metadata = {
+    type: 'build_result',
+    name: docName,
+    hash: null,
+    summary: null,
+    lintFindings: [],
+    mirrorFailed: null,
+    buildFailed: null,
+    katexError: error,
+    errors: [],
+    warnings: [],
+    lastMirrorSuccess: null,
+    lastBuildSuccess: null,
+    buildFiles: null,
+  }
+  const subs = new Set(await tldaFeedback.subscribers(docName))
+  subs.add(SERVER_OWNER_ID)
+  for (const agentId of subs) {
+    await fleetStore.chat('fleet:tlda', agentId, text, metadata)
+  }
+}
+
+// A katex-error report is a post-build observation on a build that succeeded,
+// not a build failure. It emits its own card directly — never through
+// reportBuildFailure, which writes the sentinel, broadcasts doc status, and
+// marks the build failed. Three wrong actions against a build that succeeded.
+
 app.post('/api/log', createClientLogHandler({
   clientLogFile: CLIENT_LOG_FILE,
   recordLivePerfEntry,
+  recordKatexError,
 }))
 
 // Is the filter path running at all? Answers the question a silent comparator

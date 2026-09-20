@@ -3656,9 +3656,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         // nothing else — the card was present and said nothing, which is what
         // Skip meant by "i can see build cards now but there's bvasically no
         // info in them".
-        const { name: projectName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [], warnings = [], buildFiles } = m.metadata
+        const { name: projectName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, katexError, errors = [], warnings = [], buildFiles } = m.metadata
         const sourceFiles: string[] = Array.isArray(buildFiles) ? buildFiles : []
-        const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || errors.length > 0 || warnings.length > 0 || sourceFiles.length > 0)
+        const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || katexError || errors.length > 0 || warnings.length > 0 || sourceFiles.length > 0)
         const lintCount = lintFindings.length
         const lintBadge = lintCount > 0
           ? `<span class="build-result-lint-badge">${lintCount} finding${lintCount !== 1 ? 's' : ''}</span>`
@@ -3671,7 +3671,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           : ''
         const summaryHtml = summary ? renderCtx.renderMarkdown(esc(summary)) : ''
         const lintHtml = lintFindings.map((f: any) => renderCtx.renderMarkdown(esc(f.text))).join('')
-        const failureText = buildFailed || mirrorFailed
+        const failureText = buildFailed || mirrorFailed || katexError
         const failureHtml = failureText ? `<p class="build-result-error">${esc(failureText)}</p>` : ''
         const errorHtml = errors.map((e: any) => renderCtx.renderMarkdown(esc(e.message || String(e)))).join('')
         const warningHtml = warnings.map((w: any) => `<p class="build-result-warning">${esc(w.message || String(w))}</p>`).join('')
@@ -3688,10 +3688,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         // card for a doc you're not currently viewing).
         const builtHash = String(hash || '').slice(0, 7)
         let statusCls = 'build-result-neutral'
-        if (mirrorFailed || buildFailed) statusCls = 'build-result-failed'
+        if (mirrorFailed || buildFailed || katexError) statusCls = 'build-result-failed'
         else if (projectName === doc) statusCls = (viewingVersion && viewingVersion === builtHash) ? 'build-result-current' : 'build-result-stale'
         const title = buildFailed
           ? `Build failed — <strong>${esc(projectName)}</strong>`
+          : katexError
+          ? `Math failed to render — <strong>${esc(projectName)}</strong>`
           : `Build <code>${esc(hash)}</code> — <strong>${esc(projectName)}</strong>`
         const html = `<div class="build-result-card ${statusCls}">` +
           `<div class="build-result-header">` +

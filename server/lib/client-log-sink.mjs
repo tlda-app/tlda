@@ -2,7 +2,7 @@ import { createRotatingAppender } from '../../shared/rotating-log.mjs'
 
 const MAX_ACKNOWLEDGED_BATCHES = 10_000
 
-export function createClientLogHandler({ clientLogFile, recordLivePerfEntry = () => {}, append = null }) {
+export function createClientLogHandler({ clientLogFile, recordLivePerfEntry = () => {}, recordKatexError = () => {}, append = null }) {
   const acknowledgedBatches = new Set()
   // Nothing rotated this file and it reached 955 MB on his disk. Rotation, not
   // truncation: this log is the instrument several of 2026-08-18's findings were
@@ -34,6 +34,7 @@ export function createClientLogHandler({ clientLogFile, recordLivePerfEntry = ()
         ...(entry.session ? { session: entry.session } : {}),
       }
       if (obj.ns === 'live-perf') recordLivePerfEntry(obj)
+      if (obj.ns === 'katex-error') recordKatexError(obj)
       lines.push(JSON.stringify(obj))
     }
 

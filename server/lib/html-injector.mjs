@@ -104,6 +104,71 @@ const FAULT_BEACON_SCRIPT = `
     }
   }
 
+  // KaTeX render errors, caught at render time inside the wrapper. This runs in
+  // <head> before the page's own math block, so it installs first and Quarto's
+  // hardcoded non-throwing loop renders through it. Setting throwOnError here
+  // turns a silent literal-text render into a throw the catch reports — the
+  // throw is the signal. It never looks at the page.
+  var katexReported = {};
+  function reportKatexError(tex, err) {
+    try {
+      var detail = clip(err && err.message);
+      if (!detail) return;
+      // One report per distinct error per page load: a single broken macro
+      // used fifty times is one defect, not fifty cards.
+      if (katexReported[detail]) return;
+      katexReported[detail] = true;
+      send('katex-error', 'KaTeX render error', {
+        error: detail,
+        tex: clip(tex),
+      });
+    } catch (e) {
+      // Called FROM the render path, so a throw here re-enters the wrapper
+      // and buries the original fault.
+    }
+  }
+
+  function installKatexHook() {
+    try {
+      if (!window.katex || !window.katex.render || window.__tldaKatexHooked) return false;
+      var inner = window.katex.render.bind(window.katex);
+      window.katex.render = function (tex, el, opts) {
+        opts = opts || {};
+        // Quarto hardcodes the non-throwing options in its own template and
+        // the schema accepts only method+url, so this cannot be configuration.
+        // Callers that set it explicitly keep their own value.
+        if (opts.throwOnError === undefined || opts.throwOnError === false) opts.throwOnError = true;
+        try {
+          return inner(tex, el, opts);
+        } catch (err) {
+          reportKatexError(tex, err);
+          // Paint what KaTeX would have painted had it not thrown: callers
+          // and page layout see the same shape as a non-throwing render.
+          try {
+            var fallbackOpts = {};
+            for (var k in opts) fallbackOpts[k] = opts[k];
+            fallbackOpts.throwOnError = false;
+            return inner(tex, el, fallbackOpts);
+          } catch (e2) {
+            return el;
+          }
+        }
+      };
+      window.__tldaKatexHooked = true;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // katex.min.js is deferred, so it may not exist yet when this head script
+  // runs. Poll briefly; give up quietly if KaTeX never loads (MathJax page).
+  (function waitForKatex(tries) {
+    if (installKatexHook()) return;
+    if (tries > 0) setTimeout(function () { waitForKatex(tries - 1); }, 250);
+  })(40);
+  window.__tldaKatexHookInstall = installKatexHook;
+
   window.addEventListener('error', function (event) {
     try {
       // 'error' also fires for failed subresources, where target is the element
