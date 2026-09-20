@@ -46,3 +46,19 @@
   font-size: 12px;
   color: #d2503c;
 }
+
+/* Reply mode: the take being composed. Send is the commit; pause and discard
+   stay small beside it. */
+.tlda-reply-plus-active button {
+  width: auto;
+  min-width: 28px;
+  border-radius: 14px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.tlda-reply-plus-send {
+  border-color: currentColor;
+  opacity: 1;
+  font-weight: 600;
+}

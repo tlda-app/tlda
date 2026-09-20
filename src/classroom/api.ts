@@ -109,9 +109,12 @@ export const classroomApi = {
   /**
    * Return an instructor's marks on ONE problem, copying that marking layer into
    * the room the student may read. `returnedMarks` counts what was copied.
+   * `layerId` is the recording sent with the return; the server verifies it
+   * names a recording belonging to this answer and echoes it back verified.
+   * Omitted for the paused case — ink with no recording still returns.
    */
-  returnMarkedProblem: (assignmentId: string, studentId: string, problemId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/return`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ problemId }),
+  returnMarkedProblem: (assignmentId: string, studentId: string, problemId: string, layerId?: string | null) => request<Submission & { returnedLayerId?: string | null }>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/return`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(layerId ? { problemId, layerId } : { problemId }),
   }),
   /**
    * Make the instructor's written feedback on a submission visible to its

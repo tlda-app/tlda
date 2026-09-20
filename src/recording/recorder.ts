@@ -871,6 +871,47 @@ export async function stopRecording(token: string): Promise<string | null> {
   return id
 }
 
+/**
+ * Drop an in-progress recording without uploading it.
+ *
+ * Stops capture and releases the mic, and discards the events and audio
+ * gathered so far. Draft ink is untouched: it was already in the room the
+ * moment it was drawn, and discarding a take must never destroy marks a
+ * return is about to copy. Returns true when a recording was dropped.
+ */
+export function discardRecording(token: string): boolean {
+  if (activeToken !== token) return false
+  if (state.status !== 'recording' && state.status !== 'starting') return false
+  stopWarpSampling()
+  if (unlistenStore) { unlistenStore(); unlistenStore = null }
+  if (unlistenPage) { unlistenPage(); unlistenPage = null }
+  if (cameraInterval) { clearInterval(cameraInterval); cameraInterval = null }
+  try {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+  } catch { /* already stopped — teardown below is what matters */ }
+  mediaStream?.getTracks().forEach((track) => track.stop())
+  mediaStream = null
+  mediaRecorder = null
+  // A checkpoint taken mid-take must not outlive the discard: the retry path
+  // would re-POST it over nothing, resurrecting a take that was thrown away.
+  const doc = activeDoc
+  const id = activeRecordingId
+  if (doc && id) void discardDraft(doc, id).catch(() => {})
+  activeEditor = null
+  activeDoc = null
+  activeToken = null
+  activeRecordingId = null
+  events = []
+  audioChunks = []
+  paused = false
+  pausedAccum = 0
+  activeAnswer = null
+  activeParentLayerId = null
+  warpRecorder = null
+  setState({ status: 'idle', startedAt: null, paused: false, doc: null, error: null })
+  return true
+}
+
 function pickAudioMime(): string | null {
   const candidates = [
     'audio/webm;codecs=opus',

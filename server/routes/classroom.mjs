@@ -4,14 +4,31 @@ import { extractToken, validateToken } from '../lib/auth.mjs'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
-import { createProject, readProject, replaceSourceFilesAsync, sourceDir, sourceLifecycleStore } from '../lib/project-store.mjs'
+import { createProject, readProject, projectDir, replaceSourceFilesAsync, sourceDir, sourceLifecycleStore } from '../lib/project-store.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { rerunFailedRevision } from '../lib/build-dispatch.mjs'
 import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
 import crypto from 'node:crypto'
 import { createRequire } from 'node:module'
+import { existsSync, readFileSync } from 'node:fs'
 import { gradingDraftRoomId, gradingReturnedRoomId } from '../../shared/classroom-rooms.mjs'
+
+/**
+ * The stored recording for one layer id, or null. Read off disk here rather
+ * than through the projects router so the return verifies the join itself:
+ * send's layer id must name a recording belonging to this answer.
+ */
+function readAnswerRecording(contentRef, layerId) {
+  if (!contentRef || !layerId || String(layerId).includes('/') || String(layerId).includes('..')) return null
+  try {
+    const metaPath = join(projectDir(String(contentRef)), 'recordings', `${layerId}.json`)
+    if (!existsSync(metaPath)) return null
+    return JSON.parse(readFileSync(metaPath, 'utf8'))
+  } catch {
+    return null
+  }
+}
 
 const require = createRequire(import.meta.url)
 const QRCode = require('qrcode-terminal/vendor/QRCode')
@@ -862,6 +879,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   router.post('/assignments/:assignmentId/submissions/:studentId/return', instructorForAssignment, async (req, res) => {
     try {
       const problemId = String(req.body?.problemId || '')
+      const layerId = req.body?.layerId == null ? null : String(req.body.layerId)
       const submission = store.getSubmission(req.params.assignmentId, req.params.studentId, { includeDrafts: true })
       if (!submission) return res.status(404).json({ error: 'Submission not found' })
       // How many marks the student can now read. `null` means no problem was
@@ -871,15 +889,30 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
       // still answers 200, so for marking ink this response was indistinguishable
       // from one that carried the strokes across. It carried none.
       let returnedMarks = null
+      // The recording layer sent with the return, verified rather than trusted:
+      // the id must name a stored recording belonging to this answer, or the
+      // return is rejected rather than landing with its track silently dropped.
+      let returnedLayerId = null
       if (problemId) {
         if (typeof copyRoomStore !== 'function') throw new Error('local-layer store copy is not configured')
         const submissionRoomId = `doc-${submission.contentRef}`
+        if (layerId) {
+          const recording = readAnswerRecording(submission.contentRef, layerId)
+          if (!recording) return res.status(404).json({ error: 'Recording layer not found' })
+          const answer = recording.answer ?? null
+          if (answer?.submissionRoomId !== submissionRoomId || answer?.problemId !== problemId) {
+            return res.status(409).json({ error: 'Recording layer does not belong to this answer' })
+          }
+          returnedLayerId = layerId
+        }
         returnedMarks = await copyRoomStore(
           gradingDraftRoomId(submissionRoomId, problemId),
           gradingReturnedRoomId(submissionRoomId, problemId),
         )
+      } else if (layerId) {
+        return res.status(400).json({ error: 'A recording layer needs a problem to belong to' })
       }
-      res.json({ ...store.returnFeedback(req.params.assignmentId, req.params.studentId), returnedMarks })
+      res.json({ ...store.returnFeedback(req.params.assignmentId, req.params.studentId), returnedMarks, returnedLayerId })
     } catch (error) {
       if (!missingSubmission(error)) throw error
       res.status(404).json({ error: 'Submission not found' })

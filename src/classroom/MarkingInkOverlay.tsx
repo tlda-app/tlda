@@ -280,19 +280,23 @@ function MarkedPair({
       pair.displayName, pair.viewerRole, courseId])
 
   if (!frame) return null
-  const returnMarks = async () => {
+  // The return, with or without a take. Send's layer id travels here so the
+  // mark and its track arrive together; the paused case passes none, and ink
+  // with no recording still returns — that is ordinary marking.
+  const returnMarks = async (layerId?: string | null) => {
     if (returning || pair.viewerRole !== 'instructor') return
     try {
       setReturning(true)
       setReturnStatus(null)
-      const { returnedMarks } = await classroomApi.returnMarkedProblem(pair.assignmentId, pair.studentId, problemId)
+      const { returnedMarks, returnedLayerId } = await classroomApi.returnMarkedProblem(pair.assignmentId, pair.studentId, problemId, layerId ?? null)
       // The server's count of what it copied, not the local draft's. This button
       // only exists while the draft holds shapes, so nothing copied means the
       // copy failed — and that has to read as a failure here rather than as a
       // green count, which is what it did while delivering nothing.
       setReturnStatus(returnedMarks
-        ? { pairKey, text: `Returned ${returnedMarks}`, error: false }
+        ? { pairKey, text: returnedLayerId ? `Returned ${returnedMarks} + voice` : `Returned ${returnedMarks}`, error: false }
         : { pairKey, text: 'Returned nothing — the student received no marks', error: true })
+      if (returnedLayerId) onLayerRecorded()
     } catch (error) {
       setReturnStatus({ pairKey, text: (error as Error).message, error: true })
     } finally {
@@ -360,6 +364,7 @@ function MarkedPair({
             editor={draftEditor}
             playing={playing}
             onLayerRecorded={onLayerRecorded}
+            onSend={(layerId) => returnMarks(layerId)}
           />
         </>,
         answerHeader,
