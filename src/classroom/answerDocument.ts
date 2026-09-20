@@ -89,7 +89,19 @@ export function answerDocumentSrcdoc({ answerHtml, styles, baseHref, bodyClass =
 }): string {
   const links = styles.stylesheets.map(href => `<link rel="stylesheet" href="${attribute(href)}">`).join('')
   const inline = styles.inline.map(css => `<style>${css}</style>`).join('')
-  return `<!doctype html><html class="${attribute(htmlClass)}"><head>`
+  // THE BACKGROUND GOES INLINE, because a stylesheet rule cannot win here.
+  //
+  // The app injects `html.tlda-dark { filter: invert(...); background: #fff }`
+  // into every document it serves, and we carry that stylesheet so the answer
+  // reads in the book's idiom. Our own `html { background: transparent }` below
+  // is a bare element selector and loses to that class rule — so the answer's
+  // page painted white, the filter inverted it, and it sat on the chapter as a
+  // black slab. Measured: chapter `html` transparent, pane `html`
+  // `rgb(255,255,255)`.
+  //
+  // The chapter escapes it the same way, with an inline style the app sets on
+  // its own root. This is that, carried.
+  return `<!doctype html><html class="${attribute(htmlClass)}" style="background: transparent;"><head>`
     + `<base href="${attribute(baseHref)}">`
     + links
     + inline

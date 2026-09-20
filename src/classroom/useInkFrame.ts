@@ -6,13 +6,17 @@ import { markingInkFrame, type MarkingInkFrame } from './markingInkFrame'
 /**
  * The answer's box beside the solution, in the chapter's own coordinates.
  *
- * `GAP` and `WIDTH` are the margin-left and max-width the answer had when it
- * was positioned by the chapter's stylesheet, so the place it lands is the
- * place it landed before — the move to the parent is meant to make it readable,
- * not to relocate it.
+ * `GAP` is the margin-left the answer had when the chapter's stylesheet
+ * positioned it, so it lands where it always landed.
+ *
+ * ITS WIDTH IS THE SOLUTION'S. It was 512 — the old `max-width: 32rem` — while
+ * the solution is 620, so their work sat 108px narrower than the solution
+ * beside it for no reason anyone could give. Skip's word for this layout is
+ * "side by side", and two columns of different widths are not that. Taken from
+ * the wrapper rather than fixed, so a chapter with a different measure gets
+ * matching columns instead of a constant that happens to suit one book.
  */
 const ANSWER_GAP = 24
-const ANSWER_WIDTH = 512
 
 export interface InkFrame extends MarkingInkFrame {
   /** The answer's own screen box, for the pane that renders it. */
@@ -72,12 +76,13 @@ export function useInkFrame(
     const solution = wrapper.firstElementChild
     const top = solution ? solution.getBoundingClientRect().top : wrapperRect.top
     const left = wrapperRect.right + ANSWER_GAP
+    const width = wrapperRect.width
     const answer = {
       left,
       top,
-      right: left + ANSWER_WIDTH,
+      right: left + width,
       bottom: top + answerHeight,
-      width: ANSWER_WIDTH,
+      width,
       height: answerHeight,
     }
 

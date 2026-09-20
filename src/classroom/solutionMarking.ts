@@ -261,6 +261,18 @@ function pair(solution: HTMLElement, doc: Document) {
 export function answerMarkup(answer: HTMLElement, displayName: string, doc: Document): string {
   const copy = answer.cloneNode(true) as HTMLElement
   copy.classList.add(ANSWER_CLASS)
+  // THEIR ANSWER IS NOT SUBHEADED "Template".
+  //
+  // A submission is rendered from the handout template, so the answer callout
+  // arrives carrying that document's own `.callout-header` — measured on the
+  // walk copy, it reads "Answer" then "Template". Beneath the header we
+  // prepend, which already says whose work this is, that told a student reading
+  // their own marked homework that they were looking at a blank.
+  //
+  // Removed rather than renamed: the header below carries the name, and a
+  // second one saying "Answer" over an answer is chrome even when it is not
+  // wrong. The body is untouched — what they wrote is theirs.
+  copy.querySelector(':scope > .callout-header')?.remove()
   // A PHOTOGRAPH MUST NOT COME BACK AS A NEGATIVE.
   //
   // The answer's document inverts with the chapter, which is what makes its

@@ -110,6 +110,18 @@ function MarkedPair({
   const marksRoomId = pair.viewerRole === 'instructor'
     ? gradingDraftRoomId(`doc-${pair.contentRef}`, problemId)
     : gradingReturnedRoomId(`doc-${pair.contentRef}`, problemId)
+  // WHO NEEDS INK ON THIS PAIR.
+  //
+  // He marks one answer at a time, so one glass follows him and thirteen tldraw
+  // editors would be a real cost for nothing. A STUDENT IS NOT MARKING. They
+  // are reading work that was handed back, and every answer of theirs that
+  // carries marks has to show them — with one glass, twelve of their thirteen
+  // answers rendered nothing and the only stroke on screen was a stray already
+  // in the chapter's own room, which is indistinguishable from it working.
+  //
+  // Theirs are read-only by construction: `isWriteTarget` below is the
+  // instructor test, so this mounts a surface they can see and cannot write.
+  const showsInk = marked || pair.viewerRole !== 'instructor'
   const pairKey = `${pair.exerciseId}:${pair.studentId}`
   const [returnStatus, setReturnStatus] = useState<{ pairKey: string; text: string; error: boolean } | null>(null)
   const draftShapeCount = useValue(
@@ -122,14 +134,14 @@ function MarkedPair({
     // The view layer belongs to the glass, so an unmarked pair does not make
     // one. Otherwise every open pair would register a marking layer and only
     // one of them would ever have ink in it.
-    if (!frame || !marked) return
+    if (!frame || !showsInk) return
     const wm = getEditorWMCore(editor)
     ensureViewLayer(wm, layerId, {
       parent: wm.rootLayerId,
       transform: frame.wrapperTransform,
     })
     return () => removeLayers(wm, [layerId])
-  }, [editor, frame, layerId, marked])
+  }, [editor, frame, layerId, showsInk])
 
   if (!frame) return null
   const returnMarks = async () => {
@@ -163,7 +175,7 @@ function MarkedPair({
         onHeader={setAnswerHeader}
         marked={marked}
       />
-      {marked && <StudentAnnotationOverlay
+      {showsInk && <StudentAnnotationOverlay
         bookRoomId={bookRoomId}
         studentId={pair.studentId}
         bookEditor={editor}
