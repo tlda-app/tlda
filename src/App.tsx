@@ -4,7 +4,8 @@ import type { HtmlPageEntry } from './svgDocumentLoader'
 import type { SvgDocument } from './loaders/types'
 import { clientOpenKind, fetchDocumentManifest, loadDocumentByFormat } from './loaders/documentFormatLoader'
 import { clearDocumentStores } from './stores'
-import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
+import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent, getToken, appendToken } from './authToken'
+import { readClassroomToken } from './classroom/classroomToken'
 import { attachAppRecordingEditor, isAppRecordingOn, recordsByDefault, setAppRecording } from './recording/recorder'
 import { isClassroomSurface } from './classroom/classroomSurface'
 import { buildFailureReason, emptyDocumentNotice } from './documentBuildNotice'
@@ -157,14 +158,28 @@ type State =
 const ASSET_BASE = STORE_HTTP
 
 // Fetch a single document config from the API — fast path for ?project=X
+//
+// Both credentials ride the same way the sync socket carries them: the bearer
+// via the patched fetch's Authorization header, the classroom token via
+// `appendToken` on the URL. A bare fetch reaches a classroom-restricted
+// project as nobody and is refused — and the refusal used to prescribe
+// `?token=`, which cannot help when the bearer admits but no classroom
+// principal resolves. The message names what is actually missing instead.
 async function fetchDocConfig(projectName: string, includePageInfo = false): Promise<DocConfig | null> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8000)
   try {
-    const url = `${ASSET_BASE}/api/projects/${projectName}${includePageInfo ? '?include=page-info' : ''}`
+    const url = appendToken(`${ASSET_BASE}/api/projects/${projectName}${includePageInfo ? '?include=page-info' : ''}`)
     const resp = await fetch(url, { signal: controller.signal })
     if (resp.status === 401 || resp.status === 403) {
-      throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
+      if (!getToken()) {
+        throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
+      }
+      if (!readClassroomToken()) {
+        throw new Error('This project needs your classroom sign-in for this course — open your Continue link or registration page, then reload.')
+      }
+      const detail = await resp.json().catch(() => null)
+      throw new Error(detail?.error || 'This project is not shared with that classroom sign-in.')
     }
     if (resp.status === 404) return null
     if (!resp.ok) return null
@@ -550,10 +565,14 @@ function DocumentApp() {
       } catch { /* ignore status check failure */ }
 
       const msg = (e as Error).message
-      const isAuth = msg.includes('401') || msg.includes('403') || msg.includes('Unauthorized') || msg.includes('Forbidden') || msg.includes('Authentication')
+      const isAuth = msg.includes('classroom sign-in') || msg.includes('Authentication')
       setState({
         phase: 'error',
-        message: isAuth ? 'Authentication required. Add ?token=TOKEN to the URL.' : `Failed to load "${projectName}": ${msg}`,
+        // The message from fetchDocConfig already names what is missing —
+        // a bearer, a classroom sign-in, or a wrong classroom identity — so
+        // it rides through verbatim. Rewriting it here to `?token=` is what
+        // sent readers after a credential that could not help.
+        message: isAuth ? msg : `Failed to load "${projectName}": ${msg}`,
         errorType: isAuth ? 'auth' : 'generic',
       })
     }
