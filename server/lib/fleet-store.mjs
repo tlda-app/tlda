@@ -6428,13 +6428,39 @@ export class FleetStore {
            ORDER BY timestamp DESC LIMIT ?)`);
       params.push(...CHAT_HISTORY_EVENT_TYPES, ...ids, ...rangeParams, limit);
 
+      // The recipient branch JOINS the indexed lookup instead of testing
+      // membership against it, and the difference is the whole cost of this
+      // function. As `events.id IN (SELECT ...)` the planner read off the live
+      // 20.15 GB database on 2026-09-20 was:
+      //
+      //   SEARCH events USING COVERING INDEX idx_events_type (type=? AND timestamp>? AND timestamp<?)
+      //   LIST SUBQUERY 1
+      //     SEARCH recipients USING INDEX idx_recipients_agent_ts (agent_id=? ...)
+      //   USE TEMP B-TREE FOR ORDER BY
+      //
+      // — it drove from the type index and walked EVERY event of every chat
+      // type in the window, testing each against the list, with the sort
+      // preventing the LIMIT from being pushed down. So the cost scaled with
+      // the size of the time window rather than the size of the page. The inner
+      // lookup is the cheap side: `idx_recipients_agent_ts` already yields at
+      // most `limit` ids.
+      //
+      // That is not a theoretical cost. On 2026-09-20T03:19Z it held the single
+      // store worker long enough to stall the whole fleet: 7,216 random 4 KB
+      // page reads per second across 15.1-19.6 GB of the file, six chat inserts
+      // queued behind it each reporting ~121.8 SECONDS, queue depth 268.
+      //
+      // CROSS JOIN rather than JOIN: in SQLite that is the documented way to
+      // FIX the loop order rather than suggest it, and being suggested is
+      // exactly what failed here. It changes no rows — only which side drives.
       parts.push(`SELECT * FROM (
-          SELECT ${E} FROM events
-           WHERE events.id IN (
-             SELECT event_id FROM recipients
-              WHERE agent_id IN (${ph})${block.to ? ' AND timestamp < ?' : ''}${block.from ? ' AND timestamp >= ?' : ''}
-              ORDER BY timestamp DESC LIMIT ?
-           ) AND type IN (${typePh})${range}
+          SELECT events.id, events.timestamp FROM (
+            SELECT event_id FROM recipients
+             WHERE agent_id IN (${ph})${block.to ? ' AND timestamp < ?' : ''}${block.from ? ' AND timestamp >= ?' : ''}
+             ORDER BY timestamp DESC LIMIT ?
+          ) r
+          CROSS JOIN events ON events.id = r.event_id
+           WHERE type IN (${typePh})${range}
            ORDER BY timestamp DESC LIMIT ?)`);
       params.push(...ids, ...rangeParams, limit, ...CHAT_HISTORY_EVENT_TYPES, ...rangeParams, limit);
 
