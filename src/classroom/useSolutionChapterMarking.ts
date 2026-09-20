@@ -182,24 +182,41 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
             // instructor clicked a particular person's cell; landing him at
             // "no student's answer" throws that away and makes him page back to
             // where he already said he was going.
-            // A STUDENT ARRIVES ON THEIR OWN RETURNED WORK.
             //
-            // The gradebook link names a student because he clicked their
-            // cell; a student is always the student, so the same mechanism
-            // opens on them with nothing to read off the URL. `findIndex` by
-            // `studentId` matches the single entry their list holds.
+            // A STUDENT OPENS THEIR OWN WORK. NOTHING OPENS IT FOR THEM.
             //
-            // They came to read feedback that has been returned to them —
-            // `docs/classroom.md`: handback returns the marked exercise to the
-            // student in the book. A mark reachable only by knowing to press an
-            // arrow they have never been shown has not been returned in any
-            // sense that means. This install only runs at all once their
-            // submission is `returned`, so nothing opens before there is
-            // something to open, and a student with nothing back still sees the
-            // ordinary chapter.
+            // This arm used to be `identity.studentId`, which put a student's
+            // marked homework on screen the moment they arrived. Skip, looking
+            // at it: *"it shouldnt autoopen shit"*, and the reason, which is
+            // the part that governs cases nobody has enumerated yet —
+            //
+            //   "suppose a student wants to look at shit and is like,
+            //    embarqssed. like dont make that decision for the, bro"
+            //
+            // They may be in class with someone beside them. Opening their
+            // feedback for them takes that decision away, and it is not ours to
+            // take. The same rule read from his side of the room: he teaches
+            // from a solution in class, and opening one must not drag a
+            // student's homework onto the screen beside it.
+            //
+            // So a solution opens on its own, and an answer opens because
+            // somebody asked. `collapsedLabel` below is what says there is
+            // something there to ask for — it indicates and does not open,
+            // which is the whole of the affordance.
+            //
+            // It was also expensive: auto-opening paired every solution on
+            // arrival, and thirteen pairs is thirteen panes and thirteen
+            // editors — measured at about two minutes before a mark appeared.
+            // Mounting nothing removes that cost rather than optimising it.
+            //
+            // Skip, on what that leaves: *"to realize this i guess you can only
+            // show one answer at once and that is fine"*. So one-at-a-time is
+            // not a limitation this accepts, it is the state that obtains once
+            // nothing opens unasked — the thirteen were an artifact of opening
+            // thirteen things nobody asked for.
             openAt: identity.role === 'instructor'
               ? new URLSearchParams(window.location.search).get('student')
-              : identity.studentId,
+              : null,
             // And if they page back to the collapsed position, it still must
             // not tell them their own marked homework does not exist.
             collapsedLabel: identity.role === 'student' ? 'marked' : undefined,
