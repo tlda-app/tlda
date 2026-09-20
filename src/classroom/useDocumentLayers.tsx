@@ -4,6 +4,9 @@ import type { Editor } from 'tldraw'
 import { StudentAnnotationOverlay } from './StudentAnnotationOverlay'
 import { classroomApi, type ClassroomIdentity, type StatusRow } from './api'
 import {
+  registerLayer,
+  registeredLayers,
+  unregisterLayer,
   readerLayers,
   studentLayers,
   teacherLayers,
@@ -16,6 +19,7 @@ import { moveShapesToLayer, copyShapesToLayer, layerStore, layerFrameConversion 
 import { getEditorWMCore } from '../wm/editor-wm'
 import { ensureClassroomLayer } from '../wm/classroom-layers'
 import { withOverlayEditor, withoutOverlayEditor } from './overlayEditorRegistry'
+import type { BookLayer } from './bookLayers'
 import type { LayersValue } from './layersContext'
 import { shouldResolveDocumentLayerIdentity } from './classroomSurface'
 
@@ -89,10 +93,21 @@ export function useDocumentLayers({
     return readerLayers()
   }, [identity?.role, classroomRoster])
 
+  // WHO IS READING CHANGING IS NOT WHAT IS OPEN CHANGING, and this used to
+  // treat them as one event.
+  //
+  // The held selections are dropped when the base changes, so no frame offers
+  // choices from the previous reader's layers. That was right while the set was
+  // fixed per identity. Registered rows come and go as work is opened, so left
+  // as it was, opening a second problem would drop the reader's visibility and
+  // write target mid-session — a picker that resets itself whenever you use it.
+  //
+  // So the seed resets and the registered rows are re-applied on top: a new
+  // reader loses the old reader's selections, and nobody loses what is open.
   const [layersBase, setLayersBase] = useState(baseLayers)
   if (layersBase !== baseLayers) {
     setLayersBase(baseLayers)
-    setLayers(baseLayers)
+    setLayers(current => registeredLayers(current).reduce(registerLayer, baseLayers))
   }
 
   const mineLayer = layers.layers.find(l => l.id === 'mine')
@@ -181,6 +196,19 @@ export function useDocumentLayers({
     }
   }, [targetEditor, editorForLayer, frameConversionTo, layers.target])
 
+  // Registering is how a layer gets into the list -- the list is what has been
+  // registered, not a set anyone maintains. `register` also takes the write
+  // target, because the thing you just opened is the thing you are working on;
+  // that is what lets him page to a student and mark with no picker
+  // interaction, and leaves the picker as the way back to a layer he left.
+  const register = useCallback((layer: BookLayer) => {
+    setLayers(current => setWriteTarget(registerLayer(current, layer), layer.id))
+  }, [])
+
+  const unregister = useCallback((id: BookLayerId) => {
+    setLayers(current => unregisterLayer(current, id))
+  }, [])
+
   const layersValue = useMemo<LayersValue>(() => ({
     state: layers,
     setVisible: (id, visible) => setLayers(current => setLayerVisible(current, id, visible)),
@@ -189,7 +217,9 @@ export function useDocumentLayers({
     moveSelection: moveSelectionToLayer,
     copySelection: copySelectionToLayer,
     moveError,
-  }), [layers, selectionCount, moveSelectionToLayer, copySelectionToLayer, moveError])
+    register,
+    unregister,
+  }), [layers, selectionCount, moveSelectionToLayer, copySelectionToLayer, moveError, register, unregister])
 
   // The overlay rooms. A student has their own; an instructor composites the
   // readable student layers over the document, with visibility from the one

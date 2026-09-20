@@ -104,7 +104,16 @@ export function BookLayersControl({
             // Moving offers the layers you may write, except the one the
             // selection is already on. Writing offers the layers you may write.
             const isSource = layer.id === state.target
-            const disabled = !layer.targetable || (moving && isSource)
+            // Writing here and receiving a moved selection are different
+            // rights. A marking layer is written into and is not a move
+            // destination: the move converts through the layer's declared
+            // frame, and a marking layer's frame is the answer's wrapper
+            // rather than the page. Offering the move and landing the ink at
+            // the origin is worse than not offering it.
+            const receivable = layer.movable !== false
+            const disabled = moving
+              ? (!receivable || isSource)
+              : !layer.targetable
             return (
               <div key={layer.id} className={`bookLayersOption${!moving && isSource ? ' active' : ''}`}>
                 <button
@@ -119,7 +128,9 @@ export function BookLayersControl({
                   }}
                   title={
                     moving
-                      ? (isSource ? `Already on ${layer.label}` : `Move to ${layer.label}`)
+                      ? (isSource
+                          ? `Already on ${layer.label}`
+                          : receivable ? `Move to ${layer.label}` : `${layer.label} cannot receive a move`)
                       : (layer.targetable ? `Write to ${layer.label}` : `${layer.label} is not yours to write`)
                   }
                 >

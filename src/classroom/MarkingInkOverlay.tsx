@@ -5,6 +5,7 @@ import { gradingDraftRoomId, gradingReturnedRoomId } from '../../shared/classroo
 import { ReplyPlus } from './ReplyPlus'
 import { ThreadPlayer } from './ThreadPlayer'
 import type { PlayingLayer } from './replyLayer'
+import { useLayers } from './layersContext'
 import { listRecordingDraftsIncludingLayers } from '../recording/recordingApi'
 import type { ThreadLayerSummary } from '../recording/annotationThread'
 import { ensureViewLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
@@ -17,6 +18,9 @@ import { useInkFrame } from './useInkFrame'
 export interface ActiveMarkingPair {
   exerciseId: string
   studentId: string
+  /** Whose work, as the pager already says it. A picker row naming a person
+   *  by their login is a debug list; this is the name he uses for them. */
+  displayName: string
   contentRef: string
   assignmentId: string
   viewerRole: 'instructor' | 'student'
@@ -126,6 +130,19 @@ function MarkedPair({
   // The layer open in front of the reader, if the player is running one. The
   // plus answers whatever this is, so it is the whole of "reply to anything".
   const [playing, setPlaying] = useState<PlayingLayer | null>(null)
+  const layersValue = useLayers()
+  // The two operations, not the whole context value. `layersValue` is rebuilt
+  // on every state change in the hook; `register` and `unregister` are
+  // `useCallback(..., [])` and so are stable. Depending on them is what lets
+  // this effect declare its real dependencies instead of suppressing the rule.
+  const register = layersValue?.register
+  const unregister = layersValue?.unregister
+  const courseId = useMemo(
+    () => new URLSearchParams(window.location.search).get('course') || '',
+    [],
+  )
+  const markingLayerId = `marking:${pair.contentRef}:${pair.exerciseId}` as const
+  const isWriteTarget = layersValue?.state.target === markingLayerId
   // Which problem's marks these are. Named ONCE, because it is both the stem of
   // the draft room this overlay writes into and the problem `/return` copies
   // across, and those two being written out separately is what broke returning:
@@ -167,7 +184,22 @@ function MarkedPair({
   //
   // Theirs are read-only by construction: `isWriteTarget` below is the
   // instructor test, so this mounts a surface they can see and cannot write.
-  const showsInk = marked || pair.viewerRole !== 'instructor'
+  // THE WRITE TARGET DECIDES WHERE INK GOES; `marked` DOES NOT DECIDE WHAT
+  // RENDERS.
+  //
+  // `marked` is `pairs[pairs.length - 1]` -- the pair last paged to -- and it
+  // was doing both jobs. With two problems open, switching rows in the picker
+  // would move the highlight while ink kept landing in whichever pair was
+  // paged to last: a picker that looks right and writes to the wrong layer.
+  //
+  // So the glass mounts on the pair the picker is pointing at. `marked` stays
+  // in the condition because paging registers and takes the target, and the
+  // first render after paging happens before that state lands -- without it the
+  // glass would blink out between paging and registering.
+  //
+  // A student has no write target at all; their glasses are read-only, which is
+  // why their side is unchanged.
+  const showsInk = pair.viewerRole === 'instructor' ? (marked || isWriteTarget) : true
   const pairKey = `${pair.exerciseId}:${pair.studentId}`
   const [returnStatus, setReturnStatus] = useState<{ pairKey: string; text: string; error: boolean } | null>(null)
   const draftShapeCount = useValue(
@@ -188,6 +220,51 @@ function MarkedPair({
     })
     return () => removeLayers(wm, [layerId])
   }, [editor, frame, layerId, showsInk])
+
+  // MARKING STOPS DRAWING TO THE FRAMEBUFFER AND ASKS FOR A WINDOW.
+  //
+  // This overlay used to declare its layer to the wm and stop there, which is
+  // why marking layers had no name, were absent from the picker, and could not
+  // be swapped or hidden with it -- not because anything blocked them, but
+  // because they were never in the list. Skip: "each solution tou have opened
+  // like this ccreates what i was hoping would be a normal wm layer / you swap
+  // between them hide them etc using the normal layer picker".
+  //
+  // So it registers. The list is what has been registered, and the layer exists
+  // because a person opened something -- Skip again: "you get one layer for ech
+  // problem you are actively marking". Opening registers; closing the pair
+  // unregisters; nothing is per-problem-that-exists.
+  //
+  // Owner is the STUDENT whose work this hangs off, not the instructor who drew
+  // on it: a mark on someone's homework is part of that homework. Group is the
+  // course's instructors, the same group as the submission. `draftState` is what
+  // this reader is bound to -- he writes the draft, they read the returned copy
+  // -- so the row never claims a privacy the room behind it does not have.
+  useEffect(() => {
+    if (!register || !unregister || !frame) return
+    const id = `marking:${pair.contentRef}:${pair.exerciseId}` as const
+    register({
+      id,
+      // Whose work and which problem. The exercise has no human title in the
+      // rendered chapter -- the callouts are titled "Exercise" generically,
+      // measured -- so the id is the only thing naming the problem, stripped
+      // of its prefix. The person, at least, is named as he names them.
+      label: `${pair.displayName} — ${pair.exerciseId.replace(/^exr-/, '')}`,
+      visible: true,
+      studentId: pair.studentId,
+      // He writes into a marking layer; a student reading returned marks does
+      // not, which is the same read-only their glass already has.
+      targetable: pair.viewerRole === 'instructor',
+      // Not a move destination: see the picker's own note.
+      movable: false,
+      owner: pair.studentId,
+      group: `instructors:${courseId}`,
+      offerable: true,
+      draftState: pair.viewerRole === 'instructor' ? 'draft' : 'returned',
+    })
+    return () => unregister(id)
+  }, [register, unregister, frame, pair.contentRef, pair.exerciseId, pair.studentId,
+      pair.displayName, pair.viewerRole, courseId])
 
   if (!frame) return null
   const returnMarks = async () => {

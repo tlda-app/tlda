@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { BookLayerState, BookLayerId } from './bookLayers'
+import type { BookLayer, BookLayerState, BookLayerId } from './bookLayers'
 
 /**
  * The reader's layers, and the two selections over them, passed to whichever
@@ -24,6 +24,16 @@ export interface LayersValue {
   copySelection: (id: BookLayerId) => void
   /** Set when a move or copy could not be completed. Nothing was lost. */
   moveError?: string
+  /**
+   * Put a layer in the list, and write into it.
+   *
+   * The list is what has been registered rather than a set someone maintains,
+   * so this is how anything that owns a layer gets it shown. Taking the write
+   * target with it is deliberate: the thing just opened is the thing being
+   * worked on.
+   */
+  register: (layer: BookLayer) => void
+  unregister: (id: BookLayerId) => void
 }
 
 export const LayersContext = createContext<LayersValue | null>(null)

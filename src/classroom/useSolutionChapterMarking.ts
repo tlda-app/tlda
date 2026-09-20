@@ -232,6 +232,7 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
                 return [...others, {
                   exerciseId,
                   studentId: answer.studentId,
+                  displayName: answer.displayName,
                   contentRef: answer.contentRef,
                   assignmentId: assignment.id,
                   viewerRole: identity.role,

@@ -21,7 +21,7 @@
 // see the book can write its layer.
 
 /** `common` is the book's own room — the layer everyone in the class shares. */
-export type BookLayerId = 'common' | 'mine' | `student:${string}`
+export type BookLayerId = 'common' | 'mine' | `student:${string}` | `marking:${string}`
 
 export interface BookLayer {
   id: BookLayerId
@@ -32,11 +32,84 @@ export interface BookLayer {
   studentId?: string
   /** False for a layer you may look at but not write, e.g. a student's, to a teacher. */
   targetable: boolean
+  /**
+   * False for a layer that may not receive a moved selection.
+   *
+   * Separate from `targetable`, which is about writing NEW ink here. A marking
+   * layer is written into and is still not somewhere you may move existing ink
+   * TO: the move converts through the layer's declared frame, and a marking
+   * layer's frame is the answer's wrapper rather than the page. Offering the
+   * move and landing the ink at the origin is worse than not offering it.
+   */
+  movable?: boolean
+  /**
+   * Registered by whatever owns the thing, rather than seeded by role.
+   *
+   * The seed rows are the book's own; these come and go as work is opened. A
+   * new reader's seed replaces the seed and re-applies these, because who is
+   * reading changing is not the same event as what is open changing.
+   */
+  registered?: boolean
+  /** Whose work this layer hangs off. Null for the book's own layers. */
+  owner?: string | null
+  /** The group that may also reach it, e.g. `instructors:<courseId>`. */
+  group?: string | null
+  /** Whether a person is ever offered this row, as against plumbing. */
+  offerable?: boolean
+  /**
+   * `draft` denies everyone but an instructor member, the owner included;
+   * `returned` admits the owner read-only; `open` is the ordinary check.
+   *
+   * As registered this is per-reader — a marking layer is `draft` in the
+   * instructor's view and `returned` in the student's, because each is bound to
+   * the room they actually read. A server-side registry would carry one row per
+   * object and evaluate membership at query time instead.
+   */
+  draftState?: 'open' | 'draft' | 'returned'
 }
 
 export interface BookLayerState {
   layers: BookLayer[]
   target: BookLayerId
+}
+
+/**
+ * Add a layer, or replace it where it already is.
+ *
+ * Registration is the act that says a thing is shown to a person — which is why
+ * the list is what has been registered rather than a set someone maintains.
+ * Skip: *"the idea that we have static lists is fling stupid"*.
+ *
+ * Position is preserved on replace so a re-register does not reorder the
+ * control under someone's cursor, and neither the write target nor any other
+ * row's visibility is touched: opening a new thing is not a reason to change
+ * what someone was looking at or writing into.
+ */
+export function registerLayer(state: BookLayerState, layer: BookLayer): BookLayerState {
+  const row = { ...layer, registered: true }
+  const at = state.layers.findIndex(existing => existing.id === layer.id)
+  if (at < 0) return { ...state, layers: [...state.layers, row] }
+  const layers = [...state.layers]
+  layers[at] = row
+  return { ...state, layers }
+}
+
+/**
+ * Remove a registered layer.
+ *
+ * Writing falls back to `common` if the layer being removed was the target —
+ * the book's own layer is the one that is always there, and leaving the target
+ * pointing at something gone would make the next stroke land nowhere.
+ */
+export function unregisterLayer(state: BookLayerState, id: BookLayerId): BookLayerState {
+  const layers = state.layers.filter(layer => layer.id !== id)
+  if (layers.length === state.layers.length) return state
+  return { layers, target: state.target === id ? 'common' : state.target }
+}
+
+/** The rows something registered, as against the seed for this reader. */
+export function registeredLayers(state: BookLayerState): BookLayer[] {
+  return state.layers.filter(layer => layer.registered)
 }
 
 /**
