@@ -154,6 +154,9 @@ function validateDaemonConfig(parsed, { validateDefault = true } = {}) {
 function validateProjectDaemonOverride(parsed) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : parsed
   validateProjectDaemonOverrideTopLevel(root, 'project daemon override')
+  if (root.agentConfigDir !== undefined && (typeof root.agentConfigDir !== 'string' || !root.agentConfigDir.trim())) {
+    throw new Error('project daemon override: "agentConfigDir" must be a nonempty path')
+  }
   return root
 }
 
@@ -988,6 +991,13 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
     ...(Object.keys(harnessOptions).length ? { harnessOptions } : {}),
     permissionProfiles: { ...daemonProfiles },
     defaultPermissionProfile: daemonConfig.default || null,
+    // Restored 2026-09-20 after the July self-reverts (b7477abd, 33fc2086d):
+    // same-author self-reverts, minutes after their own originals, one 90-minute
+    // window, bare titles with no body, nothing touching the idea since. That is
+    // a sweep aborting its own change, not a team rejecting it — so restore,
+    // not redesign. Carries the project's agent config folder through the
+    // readDaemonConfigForCwd join into the launch config spawnEnv reads.
+    ...(daemonConfig.agentConfigDir ? { agentConfigDir: daemonConfig.agentConfigDir } : {}),
   }
 }
 

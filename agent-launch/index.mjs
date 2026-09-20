@@ -217,10 +217,32 @@ function directModelConfig(kind, model) {
   }
 }
 
-function spawnEnv(params = {}) {
+function spawnEnv(params = {}, config = {}, requestedKind = '') {
   const env = { ...process.env }
   if (params.activeEnvName) env.TLDA_ENV = params.activeEnvName
   if (params.machineId) env.TLDA_MACHINE_ID = params.machineId
+  // Restored 2026-09-20 after the July self-reverts (b7477abd, 33fc2086d):
+  // same-author self-reverts, minutes after their own originals, one 90-minute
+  // window, bare titles with no body, nothing touching the idea since. That is
+  // a sweep aborting its own change, not a team rejecting it — so restore,
+  // not redesign. The project's .tlda-daemon.yaml names its lane bundle via
+  // agentConfigDir; each harness reads its own variable off the launch call.
+  const agentConfigDir = config.agentConfigDir
+  if (agentConfigDir) {
+    const harnessConfigDir = path.join(agentConfigDir, requestedKind)
+    if (requestedKind === 'codex') {
+      env.TLDA_AGENT_CONFIG_DIR = harnessConfigDir
+      env.CODEX_HOME = harnessConfigDir
+    }
+    if (requestedKind === 'claude') {
+      env.TLDA_AGENT_CONFIG_DIR = harnessConfigDir
+      env.CLAUDE_CONFIG_DIR = harnessConfigDir
+    }
+    if (requestedKind === 'goose') {
+      env.TLDA_AGENT_CONFIG_DIR = harnessConfigDir
+      env.AGENTS_HOME = harnessConfigDir
+    }
+  }
   return env
 }
 
@@ -394,7 +416,7 @@ export async function launchMintProcess(params) {
     enforceFence: !!params.enforceFence,
     harnessOptions: launchPolicy.harnessOptions,
     config,
-    env: spawnEnv(params),
+    env: spawnEnv(params, config, requestedKind),
     // Same rule as the wake path below: the caller wins field by field, and the
     // declaration supplies what it did not say. A fresh mint that passes a script
     // and no env used to reach the bot with neither.
@@ -598,7 +620,7 @@ async function spawnFresh(params) {
       enforceFence: !!params.enforceFence,
       harnessOptions: launchPolicy.harnessOptions,
       config,
-      env: spawnEnv(params),
+      env: spawnEnv(params, config, requestedKind),
     })
     traceSpawnDecision('command', {
       name,
@@ -1103,7 +1125,7 @@ async function spawnRespawn(params) {
     enforceFence: !!params.enforceFence,
     harnessOptions: launchPolicy.harnessOptions,
     config,
-    env: spawnEnv(params),
+    env: spawnEnv(params, config, requestedKind),
     // From `bots.yaml`, not from the mint's stored recipe. These six were the
     // bot recipe: a copy of the declaration taken at mint time and replayed on
     // every wake afterwards, free to drift the moment the file was edited.
@@ -1244,7 +1266,7 @@ async function spawnRefresh(params) {
     enforceFence: !!params.enforceFence,
     harnessOptions: launchPolicy.harnessOptions,
     config,
-    env: spawnEnv(params),
+    env: spawnEnv(params, config, requestedKind),
   })
   const terminated = await (deps.terminateTmuxSession || terminateTmuxSession)(tmuxSession, { tmuxSocket: params.tmuxSocket })
   if (!terminated) {
@@ -1391,7 +1413,7 @@ export async function launchDoctorYolo(params = {}) {
     // doctor yolo` never does. What made break-glass agents look routable
     // anyway is that spawnEnv copies process.env, so one launched from another
     // agent's shell inherited that agent's daemon key by accident.
-    env: spawnEnv({ ...params, machineId, activeEnvName: envName }),
+    env: spawnEnv({ ...params, machineId, activeEnvName: envName }, config, requestedKind),
   })
   traceSpawnDecision('doctor-yolo-command', {
     name,
@@ -1634,7 +1656,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     enforceFence: !!params.enforceFence,
     harnessOptions: launchPolicy.harnessOptions,
     config,
-    env: spawnEnv(params),
+    env: spawnEnv(params, config, requestedKind),
   })
   const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, alreadyAlive: true }
@@ -1718,7 +1740,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     enforceFence: !!params.enforceFence,
     harnessOptions: launchPolicy.harnessOptions,
     config,
-    env: spawnEnv(params),
+    env: spawnEnv(params, config, requestedKind),
   })
   const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: true, sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, alreadyAlive: true }

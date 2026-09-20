@@ -141,11 +141,17 @@ delete process.env.TLDA_ENV
 const projectDir = join(DIR, 'project')
 mkdirSync(projectDir)
 writeFileSync(join(projectDir, '.tlda-daemon.yaml'), `default: wd
+agentConfigDir: /tmp/project-agent-config
 models:
   default: gpt
 `)
 check('project override accepts profile/model policy fields',
       ledger.readDaemonConfigForCwd(projectDir, join(DIR, 'daemon.yaml')).default === 'wd')
+check('project override carries the agent config folder',
+      ledger.readDaemonConfigForCwd(projectDir, join(DIR, 'daemon.yaml')).agentConfigDir === '/tmp/project-agent-config')
+writeFileSync(join(projectDir, '.tlda-daemon.yaml'), 'agentConfigDir: ""\n')
+check('project override rejects an empty agent config folder',
+      throws(() => ledger.readDaemonConfigForCwd(projectDir, join(DIR, 'daemon.yaml'))))
 writeFileSync(join(projectDir, '.tlda-daemon.yaml'), `environments:
   default: complete
   values:
