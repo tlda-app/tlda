@@ -12,13 +12,14 @@
  * in progress — and the jump report is the thing that makes a scrub read back
  * as a step rather than as a walk through answer nobody saw.
  *
- * No editor is mounted yet, so a layer plays as voice and a moving playhead
- * without its ink replaying. That is a real limit and is the next piece: the
- * hook takes an editor and will drive its `PlaybackEngine` when one is given.
+ * The layer plays in its own read-only editor beside the transport, through
+ * the same `DocViewSpacetimeBody` a doc-view uses — one layer, one engine, one
+ * audio clock, nothing new.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDocViewPlayback } from '../recording/useDocViewPlayback'
+import { DocViewSpacetimeBody } from '../shapes/DocViewSpacetime'
 import { formatTimecode } from '../recording/timeControls'
 import { type ThreadLayerSummary } from '../recording/annotationThread'
 import { threadLayers } from '../../shared/annotation-thread.mjs'
@@ -73,43 +74,61 @@ export function ThreadPlayer({ answer, doc, layers, onPlayingChange }: ThreadPla
 
   if (!ordered.length) return null
 
+  // The player keeps the header's inline shape while nothing is open, and grows
+  // a canvas under the transport once a layer is selected.
   return (
-    <span className="tlda-thread-player">
-      <select
-        value={selected ?? ''}
-        onChange={(event) => setSelected(event.target.value || null)}
-        aria-label="Layer to play"
-      >
-        <option value="">Layers…</option>
-        {ordered.map((layer, index) => (
-          <option key={layer.id} value={layer.id}>
-            {`${index + 1}. ${formatTimecode(layer.duration_ms ?? 0)}`}
-            {layer.parentLayerId ? ' ↳' : ''}
-          </option>
-        ))}
-      </select>
+    <span className={`tlda-thread-player${selected ? ' tlda-thread-player-open' : ''}`}>
+      <span className="tlda-thread-player-transport">
+        <select
+          value={selected ?? ''}
+          onChange={(event) => setSelected(event.target.value || null)}
+          aria-label="Layer to play"
+        >
+          <option value="">Layers…</option>
+          {ordered.map((layer, index) => (
+            <option key={layer.id} value={layer.id}>
+              {`${index + 1}. ${formatTimecode(layer.duration_ms ?? 0)}`}
+              {layer.parentLayerId ? ' ↳' : ''}
+            </option>
+          ))}
+        </select>
 
+        {selected && (
+          <>
+            <button type="button" onClick={() => (playing ? pause() : play())}>
+              {playing ? '❙❙' : '▶'}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(1, duration)}
+              value={Math.min(currentMs, duration)}
+              // Every move is a jump, and the recorder is told so. Between two
+              // samples a drag is indistinguishable from very fast playback.
+              onChange={(event) => scrub(Number(event.target.value))}
+              aria-label="Playhead"
+            />
+            <span className="tlda-thread-player-time">
+              {formatTimecode(currentMs)} / {formatTimecode(duration)}
+            </span>
+            {audioSrc && <audio ref={attachAudio} src={audioSrc} preload="metadata" />}
+          </>
+        )}
+      </span>
+
+      {/* The ink, redrawing as it was drawn. The player hook already owns the
+          frozen store and the engine mount; this is the same body a doc-view
+          uses, in a fixed-height frame so the answer header keeps its shape
+          whether or not a layer is open. 320px is a layout call: tall enough
+          for a mark to read, short enough to sit beside an answer. */}
       {selected && (
-        <>
-          <button type="button" onClick={() => (playing ? pause() : play())}>
-            {playing ? '❙❙' : '▶'}
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={Math.max(1, duration)}
-            value={Math.min(currentMs, duration)}
-            // Every move is a jump, and the recorder is told so. Between two
-            // samples a drag is indistinguishable from very fast playback.
-            onChange={(event) => scrub(Number(event.target.value))}
-            aria-label="Playhead"
-          />
-          <span className="tlda-thread-player-time">
-            {formatTimecode(currentMs)} / {formatTimecode(duration)}
-          </span>
-          {audioSrc && <audio ref={attachAudio} src={audioSrc} preload="metadata" />}
-        </>
+        <span className="tlda-thread-player-canvas">
+          <DocViewSpacetimeBody playback={playback} height={PLAYER_CANVAS_HEIGHT} />
+        </span>
       )}
     </span>
   )
 }
+
+/** Fixed frame height for the player editor. See the note at the mount. */
+const PLAYER_CANVAS_HEIGHT = 320

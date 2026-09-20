@@ -10,6 +10,29 @@
   font-size: 12px;
 }
 
+/* With a layer open the player grows a canvas under the transport. Without
+   one it keeps the header's inline shape, as before. */
+.tlda-thread-player-open {
+  display: inline-block;
+}
+
+.tlda-thread-player-transport {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tlda-thread-player-canvas {
+  display: block;
+  width: 100%;
+  min-width: 280px;
+  margin-top: 6px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  overflow: hidden;
+  opacity: 0.85;
+}
+
 .tlda-thread-player select,
 .tlda-thread-player button {
   background: transparent;
