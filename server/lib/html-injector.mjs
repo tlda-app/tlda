@@ -562,9 +562,25 @@ const BRIDGE_SCRIPT = `
       // → treat as in-page anchor if they point to this same iframe URL
       var parsed = href;
       if (/^https?:\\/\\//.test(href) && href.includes(window.location.host)) {
-        // Extract just the hash portion — these are same-document cross-refs
+        // Same document (matching path): keep just the hash portion.
+        // Cross-chapter path: keep the full path so the parent chapter
+        // matcher can find the target shape; keep any hash as the anchor.
+        // (A bare cross-chapter URL with no hash used to be reduced to the
+        // empty string here, shipping targetFile/targetPath/anchor all null
+        // — so no target shape ever resolved and the parent fell back to
+        // centering the current page top.)
         var hashIdx = href.indexOf('#');
-        parsed = hashIdx >= 0 ? href.slice(hashIdx) : '';
+        try {
+          var linkUrl = new URL(href, window.location.href);
+          var selfUrl = new URL(window.location.href);
+          if (linkUrl.pathname === selfUrl.pathname) {
+            parsed = hashIdx >= 0 ? href.slice(hashIdx) : '';
+          } else {
+            parsed = linkUrl.pathname + (hashIdx >= 0 ? href.slice(hashIdx) : '');
+          }
+        } catch (parseErr) {
+          parsed = hashIdx >= 0 ? href.slice(hashIdx) : '';
+        }
       }
       var parts = parsed.split('#');
       var targetFile = (parts[0] || '').replace(/^\\.\\//,'').replace(/^.*\\//,'') || null;
