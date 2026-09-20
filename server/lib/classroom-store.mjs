@@ -33,6 +33,16 @@ export class ClassroomStore {
         id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
         display_name TEXT NOT NULL, enrollment_token_hash TEXT UNIQUE NOT NULL, active INTEGER NOT NULL DEFAULT 1
       );
+      -- Instructors are identity rows with per-person tokens, mirroring
+      -- students: a token resolves to a person, and membership in a course's
+      -- instructors group is the relation that grants instructor access. The
+      -- shared RW bearer never resolves to an instructor (see classroomPrincipal
+      -- in routes/classroom.mjs). Additive only: no existing table is altered.
+      CREATE TABLE IF NOT EXISTS instructors (
+        id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+        display_name TEXT NOT NULL, preferred_name TEXT, pronouns TEXT,
+        token_hash TEXT UNIQUE NOT NULL, active INTEGER NOT NULL DEFAULT 1
+      );
       CREATE TABLE IF NOT EXISTS student_device_credentials (
         id TEXT PRIMARY KEY,
         student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
@@ -230,6 +240,48 @@ export class ClassroomStore {
   }
   listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, university_login AS universityLogin, layer_scope AS layerScope FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
 
+  /**
+   * Register one instructor for a course, minting their per-person token.
+   *
+   * Mirrors `registerStudent` deliberately: id `<course>:<login>`, token
+   * hashed at rest and returned once to the caller. The caller that mints the
+   * FIRST instructor for a course is the setup CLI over the RW bearer — the
+   * bootstrap path, and the only place the bearer authorises anything
+   * classroom. Every instructor after that is minted by an instructor identity.
+   */
+  registerInstructor({ courseId, displayName, preferredName = null, pronouns = null, universityLogin, token }) {
+    const id = `${courseId}:${universityLogin}`
+    const tokenHash = hashEnrollmentToken(token)
+    this.db.prepare(`INSERT INTO instructors(id,course_id,display_name,preferred_name,pronouns,token_hash,active)
+      VALUES (?,?,?,?,?,?,1)`).run(id, courseId, displayName, preferredName || displayName, pronouns || null, tokenHash)
+    return this.getInstructor(id)
+  }
+
+  getInstructor(id) { return this.db.prepare('SELECT id, course_id AS courseId, COALESCE(preferred_name,display_name) AS displayName, preferred_name AS preferredName, pronouns, active FROM instructors WHERE id=?').get(id) || null }
+
+  instructorForToken(token) {
+    if (!token) return null
+    return this.db.prepare(`SELECT id, course_id AS courseId, COALESCE(preferred_name,display_name) AS displayName, preferred_name AS preferredName, pronouns
+      FROM instructors WHERE token_hash=? AND active=1`).get(hashEnrollmentToken(token)) || null
+  }
+
+  listInstructors(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, COALESCE(preferred_name,display_name) AS displayName FROM instructors WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
+
+  /**
+   * Is this principal a member of a course's instructors group?
+   *
+   * The group IS the relation: membership is read off the instructors table,
+   * never off a role string on the request and never off a bearer level. A
+   * principal that carries no instructor id is not a member — there is no
+   * second way in.
+   */
+  isInstructorOf(principal, courseId) {
+    if (principal?.role !== 'instructor' || !principal.instructorId || !courseId) return false
+    if (principal.courseId && principal.courseId !== courseId) return false
+    const row = this.getInstructor(principal.instructorId)
+    return Boolean(row && row.active !== 0 && row.courseId === courseId)
+  }
+
   createDeviceTransfer({ id = crypto.randomUUID(), studentId, courseId, transferCode, createdAt = new Date().toISOString(), expiresAt }) {
     const student = this.getStudent(studentId)
     if (!student || !student.active || student.courseId !== courseId) throw new Error('student not found in course')
@@ -336,7 +388,7 @@ export class ClassroomStore {
    */
   maySeeSolutionsFor(assignment, principal) {
     if (!assignment) return false
-    if (principal?.role === 'instructor') return assignment.courseId === principal.courseId
+    if (this.isInstructorOf(principal, assignment.courseId)) return true
     if (principal?.role !== 'student') return false
     if (assignment.courseId !== principal.courseId) return false
     return Boolean(this.getSubmission(assignment.id, principal.studentId))
@@ -345,8 +397,12 @@ export class ClassroomStore {
   solutionDocumentAccess(docKey, principal) {
     const assignments = this.assignmentsForSolutionBearingDoc(docKey)
     if (assignments.length === 0) return { restricted: false, allowed: true, assignments }
-    if (principal?.role === 'instructor') return { restricted: true, allowed: true, assignments }
-    if (principal?.role !== 'student') return { restricted: true, allowed: false, assignments }
+    // An instructor of ANY bearing assignment may read: the document carries
+    // answers for each, and membership in one is enough.
+    if (principal?.role !== 'student') {
+      const member = assignments.some(assignment => this.isInstructorOf(principal, assignment.courseId))
+      return { restricted: true, allowed: member, assignments }
+    }
     const allowed = assignments.some(assignment => this.maySeeSolutionsFor(assignment, principal))
     return { restricted: true, allowed, assignments }
   }
@@ -401,7 +457,7 @@ export class ClassroomStore {
    * smuggled in under a privacy fix.
    */
   mayReadStudentWork(principal, { studentId, courseId }) {
-    if (principal?.role === 'instructor') return true
+    if (this.isInstructorOf(principal, courseId)) return true
     if (principal?.role !== 'student') return false
     if (principal.studentId === studentId) return true
     const owner = this.getStudent(studentId)

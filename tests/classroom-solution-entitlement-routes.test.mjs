@@ -15,6 +15,7 @@ async function serve() {
   await initProjectStore(projects)
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
   store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
+  store.registerInstructor({ courseId: 'qtm285', displayName: 'Instructor', universityLogin: 'instructor', token: 'instructor-secret' })
   store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret' })
   store.upsertStudent({ id: 'bo', courseId: 'qtm285', displayName: 'Bo', enrollmentToken: 'bo-secret' })
   store.upsertAssignment({
@@ -34,7 +35,13 @@ async function serve() {
   app.locals.classroomStore = store
   app.locals.resolveClassroomPrincipal = req => {
     const role = req.headers['x-test-role']
-    if (role === 'instructor') return { role: 'instructor' }
+    if (role === 'instructor') {
+      const instructor = store.instructorForToken('instructor-secret')
+      // The courseId rides along because `isInstructorOf` is course-scoped: a
+      // bare `{ role: 'instructor' }` with no course answers false for every
+      // course, which is exactly the old model this change removes.
+      return instructor ? { role: 'instructor', instructorId: instructor.id, courseId: instructor.courseId, displayName: instructor.displayName, preferredName: instructor.preferredName, pronouns: instructor.pronouns } : null
+    }
     if (role === 'ada') return { role: 'student', studentId: 'ada', courseId: 'qtm285' }
     if (role === 'bo') return { role: 'student', studentId: 'bo', courseId: 'qtm285' }
     return null

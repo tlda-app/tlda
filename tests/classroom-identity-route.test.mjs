@@ -26,12 +26,17 @@ async function serve(resolvePrincipal) {
   }
 }
 
-// Identity is resolved from the enrolment token against the real store, so the
-// token -> student half is exercised rather than stubbed. The bearer-token check
-// that sits above it in production is the part standing in here.
+// Identity is resolved from the per-person token against the real store, so
+// both halves are exercised rather than stubbed: a student token resolves to a
+// student row, an instructor token to an instructor row, and a bearer level
+// resolves to nothing at all.
 const byEnrolmentToken = (req, store) => {
-  const student = store.studentForToken(req.headers['x-tlda-student-token'])
-  return student ? { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName } : null
+  const token = req.headers['x-tlda-student-token']
+  const student = store.studentForToken(token)
+  if (student) return { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName }
+  const instructor = store.instructorForToken ? store.instructorForToken(token) : null
+  if (instructor) return { role: 'instructor', instructorId: instructor.id, courseId: instructor.courseId, displayName: instructor.displayName, preferredName: instructor.preferredName, pronouns: instructor.pronouns }
+  return null
 }
 
 test('a student is told who they are, and it comes from their token', async t => {
@@ -66,25 +71,44 @@ test('no token is 401, not an anonymous identity', async t => {
   assert.equal(anon.body.studentId, undefined)
 })
 
-test('an instructor gets the course-owned preferred name and no student id', async t => {
-  const { store, server, get } = await serve(() => ({ role: 'instructor' }))
+test('an instructor gets their own registered name and no student id', async t => {
+  // The name is the instructor's own, from their own per-person token — not the
+  // course row's. Reading the course name here put the instructor's identity on
+  // a column describing somebody else.
+  const { store, server, get } = await serve(byEnrolmentToken)
   t.after(() => server.close())
-  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Professor Example', pronouns: 'they/them' })
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Course Name' })
+  store.registerInstructor({ courseId: 'c', displayName: 'Professor Example', preferredName: 'Professor Example', pronouns: 'they/them', universityLogin: 'prof', token: 'token-prof' })
 
-  const who = await get('/me?course=c')
+  const who = await get('/me?course=c', { 'x-tlda-student-token': 'token-prof' })
   assert.equal(who.status, 200)
   assert.equal(who.body.role, 'instructor')
   assert.equal(who.body.studentId, undefined, 'an instructor was handed a student overlay to write into')
   assert.equal(who.body.preferredName, 'Professor Example')
   assert.equal(who.body.pronouns, 'they/them')
+  assert.equal(who.body.instructorId, 'c:prof')
+  assert.equal(who.body.courseId, 'c')
 })
 
 test('instructor identity failures name the condition that failed', async t => {
-  const { store, server, get } = await serve(() => ({ role: 'instructor' }))
+  const { store, server, get } = await serve(byEnrolmentToken)
   t.after(() => server.close())
+  store.upsertCourse({ id: 'c', title: 'C', preferredName: 'Course Name' })
+  store.registerInstructor({ courseId: 'c', displayName: 'Professor Example', universityLogin: 'prof', token: 'token-prof' })
+  store.upsertCourse({ id: 'other', title: 'Other', preferredName: 'Other' })
 
-  assert.deepEqual(await get('/me'), { status: 400, body: { error: 'course is required' } })
-  assert.deepEqual(await get('/me?course=missing'), { status: 404, body: { error: 'Course not found' } })
+  // No token at all: the gate answers before the handler is reached.
+  assert.deepEqual(await get('/me?course=c'), { status: 401, body: { error: 'Unauthorized' } })
+  // A member asking about a course they are not a member of is refused rather
+  // than answered: `?course=` names the course being asked about.
+  assert.deepEqual(
+    await get('/me?course=other', { 'x-tlda-student-token': 'token-prof' }),
+    { status: 403, body: { error: 'Forbidden' } },
+  )
+  assert.deepEqual(
+    await get('/me?course=missing', { 'x-tlda-student-token': 'token-prof' }),
+    { status: 403, body: { error: 'Forbidden' } },
+  )
 })
 
 // THERE IS NO THIRD FAILURE HERE, AND THE MISSING ONE IS DELIBERATE.

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { ClassroomStore } from '../lib/classroom-store.mjs'
-import { configuredReadToken, extractToken, isTokenGatingEnabled, validateToken } from '../lib/auth.mjs'
+import { extractToken, validateToken } from '../lib/auth.mjs'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
@@ -34,11 +34,10 @@ function courseInitials(course) {
   return (words.length > 1 ? `${words[0][0]}${words.at(-1)[0]}` : words[0]?.slice(0, 2) || 'TL').toUpperCase()
 }
 
-export function classroomWebManifest({ course, project, readToken }) {
+export function classroomWebManifest({ course, project }) {
   const start = new URL('/', 'http://tlda.invalid')
   start.searchParams.set('project', project)
   start.searchParams.set('course', course.id)
-  start.searchParams.set('token', readToken)
   return {
     id: `/?course=${encodeURIComponent(course.id)}`,
     name: course.title,
@@ -77,19 +76,20 @@ export function classroomTransferQrSvg(value) {
 /**
  * The URL a transfer code is redeemed at.
  *
- * `returnPath`, `project` and `accessToken` are arguments rather than things read
- * off the request, because the two callers differ on all three. A student adding
- * a device is making a link for themselves: their page is where they want to
- * land, it already names the project, and the credential they hold is the class
- * read token. An instructor is making a link for somebody else: the gradebook
- * they are standing on is not the student's destination, it names no project, and
- * the token they hold is RW.
+ * `returnPath` and `project` are arguments rather than things read off the
+ * request, because the two callers differ on both. A student adding a device is
+ * making a link for themselves: their page is where they want to land, and it
+ * already names the project. An instructor is making a link for somebody else:
+ * the gradebook they are standing on is not the student's destination and names
+ * no project. The transfer code is the credential in both cases — no token of
+ * any kind is written into the URL, because a link that leaves the browser must
+ * never carry a capability.
  *
  * `project` matters because without it the app never calls `loadDocument` and
  * shows the manifest picker instead — a repaired student would arrive at a list
  * of documents rather than in their class.
  */
-function deviceTransferUrl(req, courseId, transferCode, { returnPath = '', project = null, accessToken = null } = {}) {
+function deviceTransferUrl(req, courseId, transferCode, { returnPath = '', project = null } = {}) {
   const protocol = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim()
   const origin = `${protocol}://${req.get('host')}`
   const requested = String(returnPath || '').startsWith('/') ? new URL(returnPath, origin) : null
@@ -102,7 +102,6 @@ function deviceTransferUrl(req, courseId, transferCode, { returnPath = '', proje
   url.searchParams.set('course', courseId)
   url.searchParams.set('transfer', transferCode)
   if (project) url.searchParams.set('project', project)
-  if (accessToken) url.searchParams.set('token', accessToken)
   return url.toString()
 }
 
@@ -149,15 +148,27 @@ function rememberStudentToken(req, res, token) {
   res.append('Set-Cookie', `tlda_classroom_token=${encodeURIComponent(token)}; ${flags}`)
 }
 
-export function classroomPrincipal(req, store, level = validateToken(extractToken(req)), gatingEnabled = isTokenGatingEnabled()) {
-  const student = store.studentForToken(studentToken(req))
-  // An ungated class box treats every ordinary request as rw. A real classroom
-  // credential must still identify its student there, or `/mine` can never be
-  // reached on pic-dev. On a gated box an actual rw credential remains the
-  // instructor even when the browser also remembers a student token.
-  if (student && !gatingEnabled) return { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName, preferredName: student.preferredName, pronouns: student.pronouns, layerScope: student.layerScope }
-  if (level === 'rw') return { role: 'instructor' }
-  return student ? { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName, preferredName: student.preferredName, pronouns: student.pronouns, layerScope: student.layerScope } : null
+/**
+ * Who this request is, from classroom identity tokens alone.
+ *
+ * A token carries identity and nothing else. A student token resolves against
+ * the students table, an instructor token against the instructors table, and a
+ * bearer level resolves against nothing — the RW bearer is not consulted here
+ * at all. The line that used to return `{ role: 'instructor' }` for an RW
+ * bearer is gone deliberately: a shared secret has no members, and "grouped to
+ * the instructors" presupposes a group with members. Instructor membership is
+ * checked where it is used (`store.isInstructorOf`), never here.
+ *
+ * The `level` and `gatingEnabled` parameters stay in the signature so existing
+ * callers and test resolvers keep calling it the same way; they are ignored.
+ */
+export function classroomPrincipal(req, store, level = undefined, gatingEnabled = undefined) {
+  const token = studentToken(req)
+  const student = store.studentForToken(token)
+  if (student) return { role: 'student', studentId: student.id, courseId: student.courseId, displayName: student.displayName, preferredName: student.preferredName, pronouns: student.pronouns, layerScope: student.layerScope }
+  const instructor = store.instructorForToken ? store.instructorForToken(token) : null
+  if (instructor) return { role: 'instructor', instructorId: instructor.id, courseId: instructor.courseId, displayName: instructor.displayName, preferredName: instructor.preferredName, pronouns: instructor.pronouns }
+  return null
 }
 
 export function requireClassroomDocumentAccess(req, res, next) {
@@ -174,8 +185,13 @@ export function requireClassroomDocumentAccess(req, res, next) {
     : 'Classroom solution access requires instructor access or a submitted assignment' })
 }
 
-function ownsStudent(principal, studentId) {
-  return principal?.role === 'instructor' || (principal?.role === 'student' && principal.studentId === studentId)
+function ownsStudent(principal, studentId, store, courseId = null) {
+  if (principal?.role === 'student' && principal.studentId === studentId) return true
+  // An instructor of the student's course may act on their row: grading,
+  // feedback, rerender, repair. Membership, not the role string alone — the
+  // course id comes from the assignment or the path, never from the caller.
+  if (principal?.role === 'instructor' && store && courseId) return store.isInstructorOf(principal, courseId)
+  return false
 }
 
 // The rule itself is `store.mayReadStudentWork`, because the document, the
@@ -183,12 +199,12 @@ function ownsStudent(principal, studentId) {
 // of it here would drift from theirs. This adds only what is local to a row:
 // the assignment has to exist and be in the caller's course.
 function canReadStudent(principal, assignmentId, studentId, store) {
-  // Kept ahead of the lookup: an instructor asking about an assignment that does
-  // not exist got a 404 from the handler, and turning that into a 403 would be a
-  // change nobody asked for.
-  if (ownsStudent(principal, studentId)) return true
   const assignment = store.getAssignment(assignmentId)
-  if (!assignment) return false
+  // Kept ahead of the membership check: an instructor asking about an
+  // assignment that does not exist got a 404 from the handler, and turning
+  // that into a 403 would be a change nobody asked for.
+  if (!assignment) return principal?.role === 'student' && principal.studentId === studentId
+  if (ownsStudent(principal, studentId, store, assignment.courseId)) return true
   return store.mayReadStudentWork(principal, { studentId, courseId: assignment.courseId })
 }
 
@@ -200,7 +216,7 @@ function canReadStudent(principal, assignmentId, studentId, store) {
 // solutionsDocKey hands them the solutions — the difference between a rule and
 // a suggestion is whether the key is in the response at all.
 function forStudent(assignment, principal, store) {
-  if (principal.role === 'instructor') return assignment
+  if (store.isInstructorOf(principal, assignment.courseId)) return assignment
   const submitted = store.getSubmission(assignment.id, principal.studentId)
   if (submitted) return assignment
   const { solutionsDocKey, solutionsVersion, ...withheld } = assignment
@@ -277,27 +293,32 @@ async function submissionBuild(contentRef) {
   return { buildStatus: lifecycle.status, buildAt: project.lastBuildSuccess || project.lastBuild || null }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveManifestAccess = req => validateToken(extractToken(req)) === 'read', resolveLinkAccessToken = configuredReadToken, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null, copyRoomStore = null, resolveSubmissionBuild = submissionBuild, rerunFailedBuild = rerunFailedRevision } = {}) {
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = null, resolveManifestAccess = null, resolveLinkAccessToken = null, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, submitSubmissionSource = null, copyRoomStore = null, resolveSubmissionBuild = submissionBuild, rerunFailedBuild = rerunFailedRevision } = {}) {
   const router = Router()
+  // The manifest and icon name a course and a project — neither is student
+  // information — so they are open. The bearer check that used to sit here
+  // (`resolveManifestAccess`) is gone: holding a class link must never be what
+  // admits a reader, and the manifest is what the link IS.
   router.get('/courses/:courseId/manifest.webmanifest', (req, res) => {
-    if (!resolveManifestAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
     const course = store.getCourse(req.params.courseId)
     if (!course) return res.status(404).json({ error: 'Course not found' })
     const project = String(req.query.project || '').trim()
     if (!project) return res.status(400).json({ error: 'project is required' })
-    const readToken = extractToken(req)
     res.set('Cache-Control', 'private, no-store')
-    res.type('application/manifest+json').send(classroomWebManifest({ course, project, readToken }))
+    res.type('application/manifest+json').send(classroomWebManifest({ course, project }))
   })
   router.get('/courses/:courseId/icon.svg', (req, res) => {
-    if (!resolveManifestAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
     const course = store.getCourse(req.params.courseId)
     if (!course) return res.status(404).json({ error: 'Course not found' })
     res.set('Cache-Control', 'private, no-store')
     res.type('image/svg+xml').send(classroomIconSvg(course))
   })
+  // Self-enrolment is the product: a student with no credential yet arrives and
+  // leaves holding a per-person token. Gating this on a bearer would make the
+  // class link the credential, which is exactly the model being removed. The
+  // `resolveRegistrationAccess` parameter stays accepted and ignored so older
+  // callers keep constructing.
   router.post('/courses/:courseId/register', (req, res) => {
-    if (!resolveRegistrationAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
     const preferredName = String(req.body?.preferredName || '').trim()
     const pronouns = String(req.body?.pronouns || '').trim()
     const universityLogin = String(req.body?.universityLogin || '').trim().toLowerCase()
@@ -314,8 +335,34 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
       throw error
     }
   })
+  // Redeeming is proving possession of the transfer code, which is itself a
+  // per-student secret minted against their own row. No bearer is consulted.
+  // BOOTSTRAP PATH, AND THE ONLY PLACE THE RW BEARER AUTHORISES ANYTHING
+  // CLASSROOM. The setup CLI mints the first instructor for a course and there
+  // is nothing else to authorise it with — no instructor identity exists yet to
+  // check membership against. So course creation (and only course creation)
+  // still accepts the RW bearer. Everything after this — every instructor
+  // minted, every course read, every grant — resolves a per-person identity
+  // token and checks membership. Do not extend this exception without a
+  // decision recorded beside it: the next person to read a bearer check here
+  // will otherwise take it for the general mechanism and rebuild what the
+  // instructor table removed.
+  //
+  // Defined ahead of the principal gate below ON PURPOSE: a bootstrap caller
+  // holds only the RW bearer and no per-person token, so the gate would 401
+  // them before they arrived. The handler takes either an instructor identity
+  // (a second course from an existing instructor) or the bearer.
+  router.post('/courses', (req, res) => {
+    const principal = resolvePrincipal(req, store)
+    if (principal) req.classroomPrincipal = principal
+    const authorised = principal?.role === 'instructor'
+      || validateToken(extractToken(req)) === 'rw'
+    if (!authorised) return res.status(401).json({ error: 'Unauthorized' })
+    const { id, title, preferredName, pronouns } = req.body || {}
+    if (!id || !title || !String(preferredName || '').trim()) return res.status(400).json({ error: 'id, title, and preferredName are required' })
+    res.status(201).json(store.upsertCourse({ id, title, preferredName: String(preferredName).trim(), pronouns }))
+  })
   router.post('/courses/:courseId/device-transfer/redeem', (req, res) => {
-    if (!resolveRegistrationAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
     const transferCode = String(req.body?.transferCode || '')
     if (!transferCode) return res.status(400).json({ error: 'transferCode is required' })
     const enrollmentToken = crypto.randomBytes(32).toString('hex')
@@ -333,9 +380,17 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     next()
   })
 
-  const instructor = (req, res, next) => req.classroomPrincipal.role === 'instructor'
-    ? next()
-    : res.status(403).json({ error: 'Instructor access required' })
+  // Membership, not a role string: the principal carries an instructor id, and
+  // the store answers whether that id is a member of THIS course's instructors
+  // group. A bearer level is never consulted — a shared secret has no members.
+  // Course-scoped so one course's instructor is not every course's.
+  const instructorOf = courseIdOf => (req, res, next) => {
+    const courseId = typeof courseIdOf === 'function' ? courseIdOf(req) : courseIdOf
+    return store.isInstructorOf(req.classroomPrincipal, courseId)
+      ? next()
+      : res.status(403).json({ error: 'Instructor access required' })
+  }
+  const instructor = instructorOf(req => req.params.courseId ?? req.body?.courseId)
 
   router.post('/courses/:courseId/device-transfer', (req, res) => {
     const principal = req.classroomPrincipal
@@ -351,9 +406,11 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
       createdAt,
       expiresAt,
     })
+    // No bearer in the URL: the transfer code IS the credential, and writing a
+    // shared secret into a link that leaves the browser rebuilds what this
+    // change removes.
     const transferUrl = deviceTransferUrl(req, principal.courseId, transferCode, {
       returnPath: req.body?.returnPath,
-      accessToken: extractToken(req),
     })
     res.status(201).json({ transferUrl, qrSvg: classroomTransferQrSvg(transferUrl), expiresAt })
   })
@@ -371,8 +428,9 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
    * minted against. It resolves to the same student id, so their submissions,
    * their marks and their layer are the ones they land in; nothing is created.
    *
-   * It carries the class read token, never `extractToken(req)`: this URL is
-   * written into an email, and the caller authorised to make one holds RW.
+   * It carries no bearer at all: the transfer code is the credential, and the
+   * student redeems it with no prior identity. The `resolveLinkAccessToken`
+   * parameter stays accepted and ignored so older callers keep constructing.
    *
    * `project` is where the student lands once redeemed, and it has to be said
    * because the instructor's page does not say it. Without one the app shows the
@@ -407,15 +465,30 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     const expiresAt = new Date(Date.parse(createdAt) + REPAIR_LINK_TTL_MS).toISOString()
     const transferCode = crypto.randomBytes(32).toString('base64url')
     store.createDeviceTransfer({ studentId: student.id, courseId: student.courseId, transferCode, createdAt, expiresAt })
-    const repairUrl = deviceTransferUrl(req, student.courseId, transferCode, { project: project || null, accessToken: resolveLinkAccessToken() })
+    const repairUrl = deviceTransferUrl(req, student.courseId, transferCode, { project: project || null })
     const landedRepairUrl = landingPath ? (() => { const url = new URL(repairUrl); url.searchParams.set('landing', landingPath); return url.toString() })() : repairUrl
     res.status(201).json({ student, repairUrl: landedRepairUrl, qrSvg: classroomTransferQrSvg(landedRepairUrl), expiresAt })
   })
 
-  router.post('/courses', instructor, (req, res) => {
-    const { id, title, preferredName, pronouns } = req.body || {}
-    if (!id || !title || !String(preferredName || '').trim()) return res.status(400).json({ error: 'id, title, and preferredName are required' })
-    res.status(201).json(store.upsertCourse({ id, title, preferredName: String(preferredName).trim(), pronouns }))
+  // An instructor enrols the way a student does: per-person token, minted once,
+  // hashed at rest, returned once. The first instructor for a course arrives
+  // over the bootstrap path above; every one after that is minted by an
+  // instructor identity already in the group.
+  router.post('/courses/:courseId/instructors', instructor, (req, res) => {
+    const { displayName, preferredName, pronouns, universityLogin } = req.body || {}
+    const login = String(universityLogin || '').trim().toLowerCase()
+    if (!displayName || !login) return res.status(400).json({ error: 'displayName and universityLogin are required' })
+    if (!/^[a-z0-9._-]+$/.test(login)) return res.status(400).json({ error: 'universityLogin contains unsupported characters' })
+    if (!store.getCourse(req.params.courseId)) return res.status(404).json({ error: 'Course not found' })
+    const token = crypto.randomBytes(32).toString('hex')
+    try {
+      const instructorRow = store.registerInstructor({ courseId: req.params.courseId, displayName, preferredName, pronouns, universityLogin: login, token })
+      rememberStudentToken(req, res, token)
+      return res.status(201).json({ instructor: instructorRow, token })
+    } catch (error) {
+      if (String(error?.code || '').startsWith('SQLITE_CONSTRAINT')) return res.status(409).json({ error: 'That university login is already an instructor for this course' })
+      throw error
+    }
   })
 
   router.post('/courses/:courseId/students', instructor, (req, res) => {
@@ -441,8 +514,9 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   router.get('/courses/:courseId/assignments', (req, res) => {
     const p = req.classroomPrincipal
     if (p.role === 'student' && p.courseId !== req.params.courseId) return res.status(403).json({ error: 'Forbidden' })
+    if (p.role === 'instructor' && !store.isInstructorOf(p, req.params.courseId)) return res.status(403).json({ error: 'Forbidden' })
     const assignments = store.listAssignments(req.params.courseId)
-    if (p.role === 'instructor') return res.json({ assignments })
+    if (store.isInstructorOf(p, req.params.courseId)) return res.json({ assignments })
     res.json({ assignments: assignments.map(assignment => ({
       ...forStudent(assignment, p, store),
       submission: store.getSubmission(assignment.id, p.studentId),
@@ -456,6 +530,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   router.get('/courses/:courseId/status', async (req, res) => {
     const p = req.classroomPrincipal
     if (p.role === 'student' && p.courseId !== req.params.courseId) return res.status(403).json({ error: 'Forbidden' })
+    if (p.role === 'instructor' && !store.isInstructorOf(p, req.params.courseId)) return res.status(403).json({ error: 'Forbidden' })
     const status = store.status(req.params.courseId, p.role === 'student' ? { studentId: p.studentId } : {})
     const builds = new Map()
     for (const row of status.rows) {
@@ -528,7 +603,16 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
 
   // The assignment as he marks it: each problem, and every student's answer to
   // that problem, so he can hold one exercise still and flick through the class.
-  router.get('/assignments/:assignmentId/problems', instructor, (req, res) => {
+  // Assignment-scoped: the course comes from the assignment row, so one
+  // course's instructor reads one course's problems.
+  const instructorForAssignment = (req, res, next) => {
+    const assignment = store.getAssignment(req.params.assignmentId)
+    if (!assignment) return res.status(404).json({ error: 'Assignment not found' })
+    return store.isInstructorOf(req.classroomPrincipal, assignment.courseId)
+      ? next()
+      : res.status(403).json({ error: 'Instructor access required' })
+  }
+  router.get('/assignments/:assignmentId/problems', instructorForAssignment, (req, res) => {
     const view = store.problems(req.params.assignmentId)
     if (!view) return res.status(404).json({ error: 'Assignment not found' })
     res.json(view)
@@ -542,7 +626,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     res.json(forStudent(assignment, p, store))
   })
 
-  router.put('/assignments/:assignmentId/template', instructor, async (req, res) => {
+  router.put('/assignments/:assignmentId/template', instructorForAssignment, async (req, res) => {
     const { templateDocKey, templateFile = null } = req.body || {}
     if (!templateDocKey) return res.status(400).json({ error: 'templateDocKey is required' })
     try {
@@ -580,8 +664,15 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   router.get('/me', (req, res) => {
     const p = req.classroomPrincipal
     if (p.role === 'student') return res.json({ role: 'student', studentId: p.studentId, courseId: p.courseId, displayName: p.displayName, preferredName: p.preferredName || p.displayName, pronouns: p.pronouns || null })
-    const courseId = String(req.query?.course || '')
+    // The name is the instructor's own, from their own token — the same rule as
+    // the student branch above. The course row's name is the course's, and
+    // reading it here is what put the instructor's identity on a column that
+    // describes somebody else. `?course=` stays as the course being asked
+    // about, and a caller asking about a course they are not a member of is
+    // refused rather than answered.
+    const courseId = String(req.query?.course || p.courseId || '')
     if (!courseId) return res.status(400).json({ error: 'course is required' })
+    if (!store.isInstructorOf(p, courseId)) return res.status(403).json({ error: 'Forbidden' })
     const course = store.getCourse(courseId)
     if (!course) return res.status(404).json({ error: 'Course not found' })
     // A MISSING NAME IS A MISSING NAME, NOT A MISSING IDENTITY.
@@ -602,13 +693,15 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     // NOT NULL, so a course that exists has a name. The guard is gone rather
     // than kept as a fallback, because a fallback here would be unreachable code
     // standing where the failure used to be.
-    res.json({ role: 'instructor', courseId, preferredName: course.preferred_name, pronouns: course.pronouns || null })
+    res.json({ role: 'instructor', instructorId: p.instructorId, courseId, displayName: p.displayName, preferredName: p.preferredName || p.displayName, pronouns: p.pronouns || null })
   })
 
   router.get('/assignments/:assignmentId/submissions/:studentId', (req, res) => {
     const { assignmentId, studentId } = req.params
+    const assignment = store.getAssignment(assignmentId)
+    if (!assignment) return res.status(404).json({ error: 'Assignment not found' })
     if (!canReadStudent(req.classroomPrincipal, assignmentId, studentId, store)) return res.status(403).json({ error: 'Forbidden' })
-    const row = store.getSubmission(assignmentId, studentId, { includeDrafts: req.classroomPrincipal.role === 'instructor' })
+    const row = store.getSubmission(assignmentId, studentId, { includeDrafts: store.isInstructorOf(req.classroomPrincipal, assignment.courseId) })
     if (!row) return res.status(404).json({ error: 'Submission not found' })
     res.json(row)
   })
@@ -622,8 +715,9 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   // already reads. So `contentRef` stays a document key and nothing downstream
   // has to learn a new shape.
   const receiveSubmissionArchive = (req, res, assignmentId, studentId) => {
-    if (!ownsStudent(req.classroomPrincipal, studentId)) return res.status(403).json({ error: 'Forbidden' })
-    if (!store.getAssignment(assignmentId)) return res.status(404).json({ error: 'Assignment not found' })
+    const assignment = store.getAssignment(assignmentId)
+    if (!assignment) return res.status(404).json({ error: 'Assignment not found' })
+    if (!ownsStudent(req.classroomPrincipal, studentId, store, assignment.courseId)) return res.status(403).json({ error: 'Forbidden' })
 
     const chunks = []
     let settled = false
@@ -729,7 +823,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
    * says which state it is in: re-running a successful build is a different
    * request and belongs to whoever wants to make it.
    */
-  router.post('/assignments/:assignmentId/submissions/:studentId/rerender', instructor, async (req, res) => {
+  router.post('/assignments/:assignmentId/submissions/:studentId/rerender', instructorForAssignment, async (req, res) => {
     const { assignmentId, studentId } = req.params
     const submission = store.getSubmission(assignmentId, studentId, { includeDrafts: true })
     if (!submission) return res.status(404).json({ error: `${studentId} has not handed in ${assignmentId}, so there is no build to re-run.` })
@@ -747,7 +841,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     res.json({ project, revision: result.revision, state: result.state, previousState: result.previousState })
   })
 
-  router.post('/assignments/:assignmentId/submissions/:studentId/feedback', instructor, (req, res) => {
+  router.post('/assignments/:assignmentId/submissions/:studentId/feedback', instructorForAssignment, (req, res) => {
     const { title, text, attached = true } = req.body || {}
     if (!title || !text) return res.status(400).json({ error: 'title and text are required' })
     const id = store.addFeedback({ assignmentId: req.params.assignmentId, studentId: req.params.studentId, title, text, attached })
@@ -756,7 +850,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
 
   const missingSubmission = error => /submission not found/i.test(error?.message || '')
 
-  router.post('/assignments/:assignmentId/submissions/:studentId/grade', instructor, (req, res) => {
+  router.post('/assignments/:assignmentId/submissions/:studentId/grade', instructorForAssignment, (req, res) => {
     try {
       res.json(store.setStatus(req.params.assignmentId, req.params.studentId, 'graded'))
     } catch (error) {
@@ -765,7 +859,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     }
   })
 
-  router.post('/assignments/:assignmentId/submissions/:studentId/return', instructor, async (req, res) => {
+  router.post('/assignments/:assignmentId/submissions/:studentId/return', instructorForAssignment, async (req, res) => {
     try {
       const problemId = String(req.body?.problemId || '')
       const submission = store.getSubmission(req.params.assignmentId, req.params.studentId, { includeDrafts: true })

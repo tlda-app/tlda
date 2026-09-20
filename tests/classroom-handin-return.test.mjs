@@ -16,6 +16,7 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
   await initProjectStore(projects)
 
   store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
+  store.registerInstructor({ courseId: 'qtm285', displayName: 'Instructor', universityLogin: 'instructor', token: 'instructor-secret' })
   store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret', layerScope: 'common' })
   store.upsertStudent({ id: 'grace', courseId: 'qtm285', displayName: 'Grace', enrollmentToken: 'grace-secret' })
   store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z' })
@@ -29,12 +30,14 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
   app.use('/api/classroom', createClassroomRouter({
     store,
     resolvePrincipal(req) {
-      return req.headers['x-test-role'] === 'instructor'
-        ? { role: 'instructor' }
-        : req.headers['x-test-role'] === 'ada'
-          ? { role: 'student', studentId: 'ada', courseId: 'qtm285', layerScope: 'common' }
-          : req.headers['x-test-role'] === 'grace'
-            ? { role: 'student', studentId: 'grace', courseId: 'qtm285', layerScope: 'student' }
+      if (req.headers['x-test-role'] === 'instructor') {
+        const instructor = store.instructorForToken('instructor-secret')
+        return instructor ? { role: 'instructor', instructorId: instructor.id, courseId: instructor.courseId, displayName: instructor.displayName } : null
+      }
+      return req.headers['x-test-role'] === 'ada'
+        ? { role: 'student', studentId: 'ada', courseId: 'qtm285', layerScope: 'common' }
+        : req.headers['x-test-role'] === 'grace'
+          ? { role: 'student', studentId: 'grace', courseId: 'qtm285', layerScope: 'student' }
           : null
     },
     // ACCEPTS THE SNAPSHOT AND MATERIALISES NOTHING, because that is what the

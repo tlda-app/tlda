@@ -11,6 +11,7 @@ async function serverFixture({ resolveSubmissionBuild = async contentRef => ({ b
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-api-'))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
   store.upsertCourse({ id: 'qtm285', title: 'QTM 285', preferredName: 'Instructor' })
+  store.registerInstructor({ courseId: 'qtm285', displayName: 'Instructor', universityLogin: 'instructor', token: 'instructor-secret' })
   store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret' })
   store.upsertStudent({ id: 'grace', courseId: 'qtm285', displayName: 'Grace', enrollmentToken: 'grace-secret' })
   store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z' })
@@ -22,7 +23,10 @@ async function serverFixture({ resolveSubmissionBuild = async contentRef => ({ b
     return 'build-abc'
   }, resolvePrincipal(req, classroomStore) {
     const role = req.headers['x-test-role']
-    if (role === 'instructor') return { role }
+    if (role === 'instructor') {
+      const instructor = classroomStore.instructorForToken('instructor-secret')
+      return instructor ? { role: 'instructor', instructorId: instructor.id, courseId: instructor.courseId, displayName: instructor.displayName, preferredName: instructor.preferredName, pronouns: instructor.pronouns } : null
+    }
     if (role === 'ada') return { role: 'student', studentId: 'ada', courseId: 'qtm285' }
     if (role === 'grace') return { role: 'student', studentId: 'grace', courseId: 'qtm285' }
     const student = classroomStore.studentForToken(req.headers['x-tlda-student-token'])
@@ -160,10 +164,14 @@ test('a student registers a required preferred name and optional pronouns', asyn
   } finally { f.close() }
 })
 
-test('a class-scoped web app manifest carries only the class, project, and ordinary read bearer', async () => {
+test('a class-scoped web app manifest carries only the class and project, never a token', async () => {
   const f = await serverFixture()
   try {
-    assert.equal((await f.request('/courses/qtm285/manifest.webmanifest?project=course-book', '')).status, 401)
+    // Open, with or without any credential: the manifest names a course and a
+    // project, neither of which is student information, and holding a class
+    // link must never be what admits a reader. A token in the URL would rebuild
+    // the bearer-as-capability model this change removes.
+    assert.equal((await f.request('/courses/qtm285/manifest.webmanifest?project=course-book', '')).status, 200)
     const response = await f.request('/courses/qtm285/manifest.webmanifest?project=course-book&token=read-access', '')
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('content-type'), 'application/manifest+json; charset=utf-8')
@@ -173,7 +181,7 @@ test('a class-scoped web app manifest carries only the class, project, and ordin
     const start = new URL(manifest.start_url, 'https://class.example')
     assert.equal(start.searchParams.get('project'), 'course-book')
     assert.equal(start.searchParams.get('course'), 'qtm285')
-    assert.equal(start.searchParams.get('token'), 'read-access')
+    assert.equal(start.searchParams.get('token'), null)
     assert.equal(start.searchParams.has('classroomToken'), false)
     assert.equal(manifest.icons.length, 1)
     assert.equal(manifest.icons[0].src, '/tlda-mark.svg')
@@ -196,7 +204,8 @@ test('a student transfers their enrollment to one new device without exposing or
     const transferCode = transferUrl.searchParams.get('transfer')
     assert.equal(transferUrl.searchParams.get('workspace'), 'classroom-transfer')
     assert.equal(transferUrl.searchParams.get('course'), 'qtm285')
-    assert.equal(transferUrl.searchParams.get('token'), 'read-access')
+    // The transfer code IS the credential; no bearer rides along in the URL.
+    assert.equal(transferUrl.searchParams.get('token'), null)
     assert.equal(transferUrl.searchParams.get('project'), 'course-book')
     assert.equal(transferUrl.searchParams.has('name'), false)
     assert.ok(transferCode?.length > 30)
@@ -239,9 +248,11 @@ test('device transfer rejects instructor, anonymous, wrong-course and expired at
 
     let response = await f.request('/courses/qtm285/device-transfer', 'ada', { method: 'POST', headers: { authorization: 'Bearer read-access' } })
     const transferCode = new URL((await response.json()).transferUrl).searchParams.get('transfer')
+    // Redeeming needs no bearer at all: the transfer code is the credential,
+    // and the student redeeming it holds no prior identity.
     assert.equal((await f.request('/courses/qtm285/device-transfer/redeem', '', {
-      method: 'POST', body: JSON.stringify({ transferCode }),
-    })).status, 401, 'a transfer redeemed without the class read bearer')
+      method: 'POST', body: JSON.stringify({ transferCode: 'wrong-code' }),
+    })).status, 404, 'a transfer redeemed with the wrong code')
     response = await f.request('/courses/other/device-transfer/redeem', '', {
       method: 'POST', headers: { authorization: 'Bearer read-access' }, body: JSON.stringify({ transferCode }),
     })
@@ -282,10 +293,11 @@ test('an instructor repair link puts a locked-out student back into their own ac
     // than in their class. The Continue link is built from this URL, so the
     // project has to be on it here.
     assert.equal(repairUrl.searchParams.get('project'), 'course-book')
-    // The instructor holds RW and this URL is going into an email. It carries the
-    // class read token, which is the credential every student already has.
-    assert.equal(repairUrl.searchParams.get('token'), 'read-access')
-    assert.doesNotMatch(link.repairUrl, /ada-secret|rw-access/)
+    // This URL is going into an email. It carries the transfer code and no
+    // bearer of any kind — a link that leaves the browser must never carry a
+    // capability.
+    assert.equal(repairUrl.searchParams.get('token'), null)
+    assert.doesNotMatch(link.repairUrl, /ada-secret|rw-access|read-access/)
     assert.equal(repairUrl.searchParams.has('classroomToken'), false)
     // The gradebook the instructor minted it from is not where the student lands.
     assert.equal(repairUrl.pathname, '/')
@@ -347,8 +359,10 @@ test('a repair link cannot be minted by a student, for another course, or for no
     assert.equal((await f.request('/courses/qtm285/students/ada/repair-link', 'ada', { method: 'POST' })).status, 403)
     assert.equal((await f.request('/courses/qtm285/students/grace/repair-link', 'ada', { method: 'POST' })).status, 403)
     assert.equal((await f.request('/courses/qtm285/students/ada/repair-link', '', { method: 'POST' })).status, 401)
-    // Naming the wrong course does not reach a student who is not in it.
-    assert.equal((await f.request('/courses/other/students/ada/repair-link', 'instructor', { method: 'POST' })).status, 404)
+    // Naming the wrong course is refused before the student lookup: the caller
+    // is not a member of that course's instructors group, so the handler never
+    // reaches the row that is not there either. 403, not 404 — membership first.
+    assert.equal((await f.request('/courses/other/students/ada/repair-link', 'instructor', { method: 'POST' })).status, 403)
     assert.equal((await f.request('/courses/qtm285/students/nobody/repair-link', 'instructor', { method: 'POST' })).status, 404)
     // A link cannot name a landing place that could never have been a project.
     assert.equal((await f.request('/courses/qtm285/students/ada/repair-link', 'instructor', {
