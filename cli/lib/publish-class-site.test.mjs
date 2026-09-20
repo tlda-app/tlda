@@ -176,14 +176,17 @@ test('a publish that would take another producers pages off the site refuses and
     mkdirSync(join(checkout, 'static', 'book', 'homework'), { recursive: true })
     writeFileSync(join(checkout, 'static', 'book', 'homework', 'hw1-solutions.html'), 'from the solutions render')
     mkdirSync(join(staging, 'book'), { recursive: true })
+    // The new tree still LINKS the solutions page, which is what makes its
+    // removal a loss rather than a withdrawal.
+    writeFileSync(join(staging, 'book', 'index.html'), '<a href="homework/hw1-solutions.html">solutions</a>')
     writeFileSync(join(staging, 'book', 'one.html'), 'chapter one')
 
-    const removed = await deletionsFromPublish({ staging, checkout, subdirectory: 'static' })
-    assert.ok(removed.includes('book/homework/hw1-solutions.html'), 'the solutions page is not in this build and would go')
+    const { lost } = await deletionsFromPublish({ staging, checkout, subdirectory: 'static' })
+    assert.ok(lost.includes('book/homework/hw1-solutions.html'), 'the solutions page is still linked and would go')
 
     await assert.rejects(
       writePublishedTree({ staging, checkout, subdirectory: 'static' }),
-      /would take 2 file\(s\) off the site[\s\S]*hw1-solutions\.html/,
+      /still point at[\s\S]*hw1-solutions\.html/,
     )
     assert.equal(
       readFileSync(join(checkout, 'static', 'book', 'homework', 'hw1-solutions.html'), 'utf8'),
@@ -204,7 +207,7 @@ test('a publish that adds and replaces without removing needs no permission', as
     writeFileSync(join(staging, 'book', 'withdrawn.html'), 'same page, new words')
     writeFileSync(join(staging, 'book', 'new.html'), 'a page this build added')
 
-    assert.deepEqual(await deletionsFromPublish({ staging, checkout, subdirectory: 'static' }), [])
+    assert.deepEqual(await deletionsFromPublish({ staging, checkout, subdirectory: 'static' }), { lost: [], droppable: [] })
     const result = await writePublishedTree({ staging, checkout, subdirectory: 'static' })
     assert.equal(result.removed, 0)
     assert.equal(readFileSync(join(checkout, 'static', 'book', 'withdrawn.html'), 'utf8'), 'same page, new words')
@@ -240,4 +243,85 @@ test('a course naming no publication target configures nothing rather than guess
   assert.equal(configuredPublicationTarget({}), null)
   assert.equal(configuredPublicationTarget({ publication: {} }), null)
   assert.equal(remoteIsConfiguredTarget('https://github.com/x/y.git', null), false)
+})
+
+// `deploy-currency`'s case, and the one a source mapping would have missed:
+// four figures stored under one chapter's assets directory are referenced by a
+// DIFFERENT chapter. Asking what produced the file says they are superseded;
+// following the references says they are live images on a current page.
+test('a file referenced from another chapters page is a loss, not a withdrawal', async () => {
+  const checkout = classSite()
+  const staging = mkdtempSync(join(tmpdir(), 'tlda-staging-xref-'))
+  try {
+    mkdirSync(join(checkout, 'static', 'book', 'chapters', 'without-replacement_files', 'figure-html'), { recursive: true })
+    writeFileSync(join(checkout, 'static', 'book', 'chapters', 'without-replacement_files', 'figure-html', 'fig-binom-1.svg'), '<svg/>')
+    mkdirSync(join(staging, 'book', 'chapters'), { recursive: true })
+    writeFileSync(join(staging, 'book', 'withdrawn.html'), 'kept so the fixture only tests the figure')
+    writeFileSync(
+      join(staging, 'book', 'chapters', 'bootstrap.html'),
+      '<img src="without-replacement_files/figure-html/fig-binom-1.svg?v=123">',
+    )
+
+    const { lost, droppable } = await deletionsFromPublish({ staging, checkout, subdirectory: 'static' })
+    assert.deepEqual(lost, ['book/chapters/without-replacement_files/figure-html/fig-binom-1.svg'])
+    assert.deepEqual(droppable, [])
+  } finally {
+    rmSync(staging, { recursive: true, force: true })
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+// Their catch rather than mine: a refused page's own assets are referenced only
+// by it, so on a single pass they look unreachable and get dropped -- quietly
+// discarding the figures of exactly the page just protected.
+test('the assets of a refused page are refused with it, to fixpoint', async () => {
+  const checkout = classSite()
+  const staging = mkdtempSync(join(tmpdir(), 'tlda-staging-fixpoint-'))
+  try {
+    mkdirSync(join(checkout, 'static', 'book', 'decks', 'deck_files', 'figure-revealjs'), { recursive: true })
+    writeFileSync(
+      join(checkout, 'static', 'book', 'decks', 'deck-slides.html'),
+      '<img src="deck_files/figure-revealjs/plot-1.svg">',
+    )
+    writeFileSync(join(checkout, 'static', 'book', 'decks', 'deck_files', 'figure-revealjs', 'plot-1.svg'), '<svg/>')
+    mkdirSync(join(staging, 'book'), { recursive: true })
+    writeFileSync(join(staging, 'book', 'withdrawn.html'), 'kept')
+    writeFileSync(join(staging, 'book', 'index.html'), '<a href="decks/deck-slides.html">the deck</a>')
+
+    const { lost, droppable } = await deletionsFromPublish({ staging, checkout, subdirectory: 'static' })
+    assert.ok(lost.includes('book/decks/deck-slides.html'), 'the deck is linked from the new index, so it is a loss')
+    assert.ok(
+      lost.includes('book/decks/deck_files/figure-revealjs/plot-1.svg'),
+      'and its figure must be kept with it -- nothing in the NEW tree points at the figure, only the refused deck does',
+    )
+    assert.deepEqual(droppable, [])
+  } finally {
+    rmSync(staging, { recursive: true, force: true })
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+// The other half, and the reason the override flag stops being the daily path:
+// a page nothing points at any more is a withdrawal and goes without asking.
+test('a page nothing links any more is withdrawn and needs no permission', async () => {
+  const checkout = classSite()
+  const staging = mkdtempSync(join(tmpdir(), 'tlda-staging-withdraw-'))
+  try {
+    mkdirSync(join(checkout, 'static', 'book'), { recursive: true })
+    writeFileSync(join(checkout, 'static', 'book', 'retired.html'), 'a chapter he took out')
+    mkdirSync(join(staging, 'book'), { recursive: true })
+    writeFileSync(join(staging, 'book', 'withdrawn.html'), 'kept')
+    writeFileSync(join(staging, 'book', 'index.html'), '<a href="withdrawn.html">what is left</a>')
+
+    const { lost, droppable } = await deletionsFromPublish({ staging, checkout, subdirectory: 'static' })
+    assert.deepEqual(lost, [], 'nothing points at it, so nothing is lost')
+    assert.deepEqual(droppable, ['book/retired.html'])
+
+    const result = await writePublishedTree({ staging, checkout, subdirectory: 'static' })
+    assert.equal(result.withdrawn, 1)
+    assert.equal(existsSync(join(checkout, 'static', 'book', 'retired.html')), false, 'a withdrawal must actually come off the site')
+  } finally {
+    rmSync(staging, { recursive: true, force: true })
+    rmSync(checkout, { recursive: true, force: true })
+  }
 })

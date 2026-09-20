@@ -89,15 +89,25 @@ const COURSE_ITEM_BADGE: Record<CourseItemType, string> = {
  * publishing, so not a shade on the light. `unknown` is a row that could not be
  * compared, and it is the one that must never look like an answer.
  */
-type TocMark = 'green' | 'yellow' | 'red' | 'alarm' | 'unknown'
 /**
- * The mark and the server's own sentence for it. The sentence is carried rather
- * than re-derived here: the comparison knows WHY a row came out the colour it
- * did — "the class site serves different text", "declared, and no surface
- * serves it" — and a label written on this side would be a second opinion that
- * drifts from the one thing that looked.
+ * How far along a row is. Skip's three: "red: here only; yellow: preview;
+ * green: published". `null` is a row whose stage nobody could determine, and it
+ * carries an error instead — it is not a fourth stage.
  */
-type TocMarkRow = { mark: TocMark; why: string }
+type TocStage = 'here-only' | 'preview' | 'published' | null
+/**
+ * The stage, whether something errored, and the server's own sentence.
+ *
+ * TWO AXES, because an error can happen at any stage: a page the class site
+ * serves that this build cannot produce is published AND broken, and a row
+ * nobody could compare has no stage at all and is only broken. One value
+ * cannot say both, which is why this is not a single mark any more.
+ *
+ * The sentence is carried rather than re-derived here: the comparison is the
+ * only thing that looked, and a label written on this side would be a second
+ * opinion that drifts from it.
+ */
+type TocMarkRow = { stage: TocStage; error: string | null; why: string }
 const EMPTY_MARKS: ReadonlyMap<number, TocMarkRow> = new Map<number, TocMarkRow>()
 
 type HomeworkEntry = { assignmentId: string; returned: boolean }
@@ -316,9 +326,9 @@ export function TocTab({ query = '' }: { query?: string }) {
     const project = tocProjectName
     fetch(`/api/projects/${encodeURIComponent(project)}/toc-marks`)
       .then(response => response.ok ? response.json() : null)
-      .then((body: { marks?: Array<{ page: number; mark: TocMark; why: string }> } | null) => {
+      .then((body: { marks?: Array<{ page: number; stage: TocStage; error: string | null; why: string }> } | null) => {
         if (cancelled) return
-        setFetchedMarks({ project, byPage: new Map((body?.marks ?? []).map(row => [row.page, { mark: row.mark, why: row.why }])) })
+        setFetchedMarks({ project, byPage: new Map((body?.marks ?? []).map(row => [row.page, { stage: row.stage, error: row.error, why: row.why }])) })
       })
       // An unreachable comparison leaves every bullet unmarked, which is what
       // "we don't know" looks like. It must never look like an answer.
@@ -660,23 +670,37 @@ export function TocTab({ query = '' }: { query?: string }) {
   // like.
   function renderCenterButton(h: { title: string; center: () => void; page?: number }) {
     const row = h.page != null ? markByPage.get(h.page) : undefined
-    const state = row && row.mark !== 'unknown' ? row.mark : null
+    const stage = row?.stage ?? null
+    const failed = row?.error ?? null
     return (
-      <button
-        className={`toc-row-center${state ? ` toc-row-center--${state}` : ''}`}
-        type="button"
-        onClick={() => { h.center() }}
-        title={state ? `${row!.why} — click to centre this heading` : 'Center this heading'}
-        aria-label={state ? `${row!.why}. Center this heading` : 'Center this heading'}
-        // The reason, drawn by the panel rather than by the browser. A native
-        // `title` never appears here: the table of contents lives inside the
-        // canvas, and the hover that would raise a tooltip is consumed on the
-        // way. Skip had the marks in front of him and could not read a single
-        // one of them, which is most of what a colour is worth.
-        data-why={state ? row!.why : undefined}
-      >
-        <span aria-hidden="true">{state ? '\u25CF' : '\u2299'}</span>
-      </button>
+      <>
+        <button
+          className={`toc-row-center${stage ? ` toc-row-center--${stage}` : ''}`}
+          type="button"
+          onClick={() => { h.center() }}
+          title={row ? `${row.why} — click to centre this heading` : 'Center this heading'}
+          aria-label={row ? `${row.why}. Center this heading` : 'Center this heading'}
+          // The reason, drawn by the panel rather than by the browser. A native
+          // `title` never appears here: the table of contents lives inside the
+          // canvas, and the hover that would raise a tooltip is consumed on the
+          // way. Skip had every mark in front of him and could not read one.
+          data-why={row ? row.why : undefined}
+        >
+          <span aria-hidden="true">{'\u2299'}</span>
+        </button>
+        {/* The second axis, and the app's own error glyph rather than a new
+            one — Skip: "like we use for errors". It appears beside the target
+            instead of replacing it, because a row can be published AND broken,
+            and a row nobody could compare is broken with no stage at all. */}
+        {failed && (
+          <span
+            className="toc-row-error"
+            title={failed}
+            aria-label={failed}
+            data-why={failed}
+          >{'\u26A0'}</span>
+        )}
+      </>
     )
   }
 

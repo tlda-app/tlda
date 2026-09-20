@@ -34,37 +34,47 @@ test('one changed number is a different fingerprint at the same length', () => {
   assert.notEqual(documentTextFingerprint(edited), documentTextFingerprint(PUBLISHED_COPY))
 })
 
-test('agreement is green, and a difference in text is yellow', () => {
-  assert.equal(markForRow({ preview: 'aaa', published: 'aaa' }).mark, 'green')
-  assert.equal(markForRow({ preview: 'aaa', published: 'bbb' }).mark, 'yellow')
+test('agreement is published, and a difference is preview', () => {
+  assert.equal(markForRow({ preview: 'aaa', published: 'aaa' }).stage, 'published')
+  assert.equal(markForRow({ preview: 'aaa', published: 'bbb' }).stage, 'preview')
 })
 
-test('written but not on the class site is yellow, and written but nowhere is red', () => {
-  assert.equal(markForRow({ preview: 'aaa', published: null }).mark, 'yellow')
-  assert.equal(markForRow({ preview: null, published: null }).mark, 'red')
+test('written but not on the class site is preview, and written but nowhere is here-only', () => {
+  assert.equal(markForRow({ preview: 'aaa', published: null }).stage, 'preview')
+  assert.equal(markForRow({ preview: null, published: null }).stage, 'here-only')
 })
 
-// The state his course is actually in tonight: the class site serves five decks
-// and eight chapters the current build does not produce. Reading that as
-// "behind" would file it under a colour meaning "fine after the next publish",
-// which it is not — publishing would remove them.
-test('the class site serving what the app cannot produce alarms rather than taking a shade', () => {
-  assert.equal(markForRow({ preview: null, published: 'aaa' }).mark, 'alarm')
+// Skip's correction, and the reason a fifth colour was wrong: error is
+// orthogonal to stage. The class site serving a page this build cannot make is
+// published AND broken, so it keeps its stage and gains an error rather than
+// being moved off the scale.
+test('the class site serving what the app cannot produce is published and errored, both', () => {
+  const row = markForRow({ preview: null, published: 'aaa' })
+  assert.equal(row.stage, 'published')
+  assert.ok(row.error, 'and it must carry the error')
 })
 
-// A network failure is a fact about us. Painting his contents from it would
-// make every row yellow the moment GitHub is slow, and yellow means he has
-// unpublished work — a claim about his book made out of our outage.
-test('a surface nobody could ask leaves the row unmarked', () => {
-  assert.equal(markForRow({ preview: 'aaa', published: undefined }).mark, 'unknown')
-  assert.equal(markForRow({ preview: undefined, published: 'aaa' }).mark, 'unknown')
+// "unkown is an error state dude". Saying nothing was the bug that made this
+// feature invisible for three weeks: every row was unaskable because no class
+// site was configured, so every row drew nothing.
+test('a surface nobody could ask has no stage and IS an error', () => {
+  for (const row of [markForRow({ preview: 'aaa', published: undefined }), markForRow({ preview: undefined, published: 'aaa' })]) {
+    assert.equal(row.stage, null, 'it has no stage, because not-knowing is not a stage')
+    assert.ok(row.error, 'and it must say so rather than drawing nothing')
+  }
+})
+
+test('a row that is fine carries no error at all', () => {
+  assert.equal(markForRow({ preview: 'aaa', published: 'aaa' }).error, null)
+  assert.equal(markForRow({ preview: 'aaa', published: null }).error, null)
+  assert.equal(markForRow({ preview: null, published: null }).error, null)
 })
 
 test('rows keep their identity through the comparison', () => {
-  assert.deepEqual(
-    marksForRows([{ page: 4, source: 'decks/chapter-bootstrap-slides.qmd', preview: 'aaa', published: 'aaa' }]),
-    [{ page: 4, source: 'decks/chapter-bootstrap-slides.qmd', preview: 'aaa', published: 'aaa', mark: 'green', why: 'the app and the class site serve the same text' }],
-  )
+  const [row] = marksForRows([{ page: 4, source: 'decks/chapter-bootstrap-slides.qmd', preview: 'aaa', published: 'aaa' }])
+  assert.equal(row.page, 4)
+  assert.equal(row.source, 'decks/chapter-bootstrap-slides.qmd')
+  assert.equal(row.stage, 'published')
 })
 
 // A real address on the live class site, checked by hand: the deck is `200` at
@@ -91,7 +101,8 @@ test('a surface that cannot be reached is not reported as a missing page', async
     publishedBase: 'https://site.example',
     fetchImpl: async () => Promise.reject(new Error('ENOTFOUND')),
   })
-  assert.equal(marks[0].mark, 'unknown', 'an unreachable class site must not repaint the contents')
+  assert.equal(marks[0].stage, null, 'an unreachable class site must not invent a stage')
+  assert.ok(marks[0].error, 'but it must say that it could not be reached')
 })
 
 test('the comparison reads 404 as absent and agreeing text as green', async () => {
@@ -102,8 +113,8 @@ test('the comparison reads 404 as absent and agreeing text as green', async () =
       ? { ok: false, status: 404, text: async () => '' }
       : { ok: true, status: 200, text: async () => '<main><p>same prose</p></main>' },
   })
-  assert.deepEqual(marks.map(row => [row.page, row.source, row.mark]), [
-    [1, 'chapters/one.qmd', 'green'],
-    [2, 'decks/two-slides.qmd', 'yellow'],
+  assert.deepEqual(marks.map(row => [row.page, row.source, row.stage]), [
+    [1, 'chapters/one.qmd', 'published'],
+    [2, 'decks/two-slides.qmd', 'preview'],
   ])
 })

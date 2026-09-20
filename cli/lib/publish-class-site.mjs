@@ -18,7 +18,7 @@
 import { execFile as execFileCb } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdtemp, mkdir, rm, cp, writeFile, readdir } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, cp, readFile, writeFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -55,14 +55,6 @@ export async function stagePublishedTree({ serverUrl, project, files, fetchImpl 
   }
 }
 
-/**
- * Replace the class site's published tree with the staged one.
- *
- * WHOLESALE, not a merge. A page he withdrew has to disappear from the site;
- * copying over the top leaves it there, serving itself to the class. That is
- * the same failure as a stale solution arriving by omission instead of by age,
- * and it is the one a publish step is most likely to get wrong quietly.
- */
 /**
  * The repository a publish is allowed to reach, and the one it is not.
  *
@@ -138,44 +130,126 @@ async function filesUnder(root, prefix = '') {
   return found
 }
 
+const REFERENCE = /(?:href|src)\s*=\s*(['"])([^'"]+)\1/gi
+
+/** Every local path an HTML file points at, resolved against its own location. */
+function referencesFrom(html, fromPath) {
+  const base = fromPath.includes('/') ? fromPath.slice(0, fromPath.lastIndexOf('/')) : ''
+  const found = new Set()
+  for (const [, , raw] of html.matchAll(REFERENCE)) {
+    const target = raw.split(/[?#]/, 1)[0]
+    if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('//') || target.startsWith('/')) continue
+    let decoded
+    try { decoded = decodeURIComponent(target) } catch { continue }
+    const parts = base ? base.split('/') : []
+    for (const segment of decoded.split('/')) {
+      if (segment === '.' || segment === '') continue
+      if (segment === '..') parts.pop()
+      else parts.push(segment)
+    }
+    found.add(parts.join('/'))
+  }
+  return found
+}
+
+async function readIfHtml(root, path) {
+  if (!/\.html?$/i.test(path)) return null
+  try { return await readFile(join(root, ...path.split('/')), 'utf8') } catch { return null }
+}
+
 /**
- * What this publish would take off the site.
+ * Split what this publish would remove into what is safe to drop and what
+ * would be a loss.
  *
- * The site is assembled by SEVERAL producers — the book build, the decks build,
- * the solutions render — and this command carries what ONE of them is serving.
- * So a wholesale replacement can be a wholesale deletion of everything the
- * others put there, and on this course that set is not hypothetical: it is the
- * solutions pages Skip asked not to vanish "until the app works consistently
- * for my students", and the bootstrap deck from the 62-deletion incident.
+ * THE RULE IS REACHABILITY, not declaration: is the file still pointed at by
+ * something. `deploy-currency` found this by trying to build the fixture for
+ * the declaration rule I was going to write, and it is better — it sidesteps
+ * `output-file:` renames, solutions pages sharing a master, and decks living
+ * outside the chapter tree, because it never asks what produced a file, only
+ * whether anything still points at it. A withdrawal is then exactly "nothing
+ * references it", which is mechanically true of a page Skip withdrew and
+ * mechanically false of a page a producer failed to make.
  *
- * Wholesale replacement is still right — a page he withdrew has to disappear
- * rather than serve itself to the class — but "this page is withdrawn" and
- * "this page came from a producer I am not" look identical from here, and only
- * one of them should go quietly.
+ * Their instance is the one a source mapping would have missed: four figures
+ * under `chapter-sampling-without-replacement_files/` are referenced by
+ * `chapter-bootstrap.html`, a different chapter. The declaration is fine either
+ * way; only following the actual references sees it.
+ *
+ * IT RUNS TO FIXPOINT, and that is their catch rather than mine. A refused
+ * page's own assets are referenced only by it, so on one pass they look
+ * unreachable and get dropped — which would quietly discard the figures of
+ * exactly the page just protected. So anything refused is then read for what
+ * IT points at, and those are refused too, until nothing new is added.
  */
 export async function deletionsFromPublish({ staging, checkout, subdirectory }) {
   const destination = resolve(checkout, subdirectory)
   const incoming = new Set(await filesUnder(staging))
-  return (await filesUnder(destination)).filter(path => !incoming.has(path)).sort()
+  const removed = (await filesUnder(destination)).filter(path => !incoming.has(path))
+  if (removed.length === 0) return { lost: [], droppable: [] }
+
+  const candidates = new Set(removed)
+  const lost = new Set()
+  // Seed: anything the NEW tree still points at is live, whatever this build
+  // failed to produce.
+  let frontier = []
+  for (const path of incoming) {
+    const html = await readIfHtml(staging, path)
+    if (html) frontier.push(...referencesFrom(html, path))
+  }
+  while (frontier.length > 0) {
+    const next = []
+    for (const target of frontier) {
+      if (!candidates.has(target) || lost.has(target)) continue
+      lost.add(target)
+      // Fixpoint: what this kept file points at is kept with it.
+      const html = await readIfHtml(destination, target)
+      if (html) next.push(...referencesFrom(html, target))
+    }
+    frontier = next
+  }
+  return {
+    lost: [...lost].sort(),
+    droppable: removed.filter(path => !lost.has(path)).sort(),
+  }
 }
 
+/**
+ * Replace the class site's published tree with the staged one.
+ *
+ * WHOLESALE, not a merge. A page he withdrew has to disappear from the site;
+ * copying over the top leaves it there, serving itself to the class — the same
+ * failure as a stale solution, arriving by omission instead of by age.
+ *
+ * But the site is assembled by SEVERAL producers — the book build, the decks
+ * build, the solutions render — and this command carries what ONE of them is
+ * serving, so a wholesale replacement can wholesale-delete what the others put
+ * there. On this course that set is not hypothetical: it is the solutions pages
+ * Skip asked not to vanish "until the app works consistently for my students",
+ * and the bootstrap deck from the 62-deletion incident. So wholesale is kept
+ * and the removals are SPLIT: see `deletionsFromPublish`.
+ */
 export async function writePublishedTree({ staging, checkout, subdirectory, allowDeletions = false }) {
   if (!existsSync(join(checkout, '.git'))) {
     throw new Error(`${checkout} is not a git checkout — publishing commits and pushes, so it needs one`)
   }
-  const removed = await deletionsFromPublish({ staging, checkout, subdirectory })
-  if (removed.length > 0 && !allowDeletions) {
-    const shown = removed.slice(0, 10).map(path => `  ${path}`).join('\n')
+  // Only a LOSS stops the publish. A file nothing points at any more is a
+  // withdrawal and goes quietly, which is what keeps the override flag from
+  // becoming the daily path and therefore meaningless — `deploy-currency` hit
+  // exactly that deadlock, where their guard could refuse to publish but could
+  // never take anything down.
+  const { lost, droppable } = await deletionsFromPublish({ staging, checkout, subdirectory })
+  if (lost.length > 0 && !allowDeletions) {
+    const shown = lost.slice(0, 10).map(path => `  ${path}`).join('\n')
     throw new Error(
-      `publishing would take ${removed.length} file(s) off the site that this build does not produce:\n${shown}` +
-      `${removed.length > 10 ? `\n  …and ${removed.length - 10} more` : ''}\n` +
-      `The site is assembled by more than one producer, so these may belong to another one rather than being withdrawn.`,
+      `publishing would remove ${lost.length} file(s) that pages on the site still point at:\n${shown}` +
+      `${lost.length > 10 ? `\n  …and ${lost.length - 10} more` : ''}\n` +
+      `Something still links these, so they are missing from this build rather than withdrawn.`,
     )
   }
   const destination = resolve(checkout, subdirectory)
   await rm(destination, { recursive: true, force: true })
   await cp(staging, destination, { recursive: true })
-  return { destination, entries: (await readdir(destination)).length, removed: removed.length }
+  return { destination, entries: (await readdir(destination)).length, removed: lost.length + droppable.length, withdrawn: droppable.length }
 }
 
 /**

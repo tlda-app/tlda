@@ -40,42 +40,59 @@ export function documentTextFingerprint(html) {
 }
 
 /**
- * The mark for one declared row, from what each surface returned.
+ * The mark for one declared row: HOW FAR ALONG it is, and separately WHETHER
+ * SOMETHING ERRORED.
  *
- * Two surfaces, because the class site is the frontend: `preview` is what the
- * app is serving and `published` is what the class site is serving. There is no
- * third to reconcile.
+ * Two axes, because Skip asked for two. The colour is the stage — "red: here
+ * only; yellow: preview; green: published" — and error is orthogonal to it:
+ * *"whether the staleness was due to error or not"* can be true at any stage,
+ * so it cannot be a point on the same scale. This returned one of five
+ * mutually exclusive values and spent `alarm` as a fifth colour, which
+ * collapsed an independent fact onto a line that cannot hold it. A page the
+ * class site serves and this build cannot produce is `published` AND errored,
+ * not a state in between.
  *
  * `undefined` and `null` are different answers and the difference is the whole
  * reason this takes them separately. `null` means THE SURFACE WAS ASKED AND
- * DOES NOT SERVE THIS PAGE, which is one of the states the mark is about.
- * `undefined` means NOBODY COULD ASK — the site was unreachable, the request
- * failed, no published address is known. Collapsing the two paints his entire
- * table of contents yellow the moment his network drops, which is a claim about
- * his book made out of a fact about ours.
+ * DOES NOT SERVE THIS PAGE, which is one of the stages. `undefined` means
+ * NOBODY COULD ASK — the site was unreachable, the request failed, no
+ * published address is known.
  *
- * `alarm` is not a fourth shade and must not be drawn as one. It is the single
- * state that is broken rather than behind: the class site serving a page the
- * app cannot produce. That is not a stage of publishing, so it does not get a
- * place on a traffic light whose colours mean "further along".
+ * AN UNASKABLE ROW HAS NO STAGE AND IS AN ERROR. It used to have no stage and
+ * no error, and draw nothing, on the reasoning that a colour invented out of a
+ * fact about us would be a claim about his book. Half of that is right and the
+ * conclusion was wrong: Skip, *"unkown is an error state dude"*. The
+ * alternative to a false colour is not silence, it is saying that something
+ * failed — which is true, is about us, and is what the error glyph is for.
+ *
+ * This cost three weeks. Every row came back unaskable because no class site
+ * was configured, every mark drew nothing, and the feature looked like it did
+ * not exist. An error on each row would have said "we cannot reach the class
+ * site" on the first day instead of nothing at all.
  */
 export function markForRow({ preview, published }) {
   if (preview === undefined || published === undefined) {
-    return { mark: 'unknown', why: 'a surface could not be asked' }
+    return { stage: null, error: 'a surface could not be asked', why: 'a surface could not be asked' }
   }
+  // Published, and the current build cannot reproduce it. The stage is what the
+  // class is looking at; the error is that nothing here can make it again.
   if (!preview && published) {
-    return { mark: 'alarm', why: 'the class site serves this and the app does not produce it' }
+    return {
+      stage: 'published',
+      error: 'the class site serves this and the app does not produce it',
+      why: 'the class site serves this and the app does not produce it',
+    }
   }
   if (!preview && !published) {
-    return { mark: 'red', why: 'declared, and no surface serves it' }
+    return { stage: 'here-only', error: null, why: 'declared, and no surface serves it' }
   }
   if (!published) {
-    return { mark: 'yellow', why: 'written, and not on the class site' }
+    return { stage: 'preview', error: null, why: 'written, and not on the class site' }
   }
   if (preview !== published) {
-    return { mark: 'yellow', why: 'the class site serves different text' }
+    return { stage: 'preview', error: null, why: 'the class site serves different text' }
   }
-  return { mark: 'green', why: 'the app and the class site serve the same text' }
+  return { stage: 'published', error: null, why: 'the app and the class site serve the same text' }
 }
 
 /**

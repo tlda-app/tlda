@@ -1391,7 +1391,7 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
     publishedBase: project.classSiteUrl || null,
   })
   res.json({
-    marks: marks.map(({ page, source, mark, why }) => ({ page, source, mark, why })),
+    marks: marks.map(({ page, source, stage, error, why }) => ({ page, source, stage, error, why })),
     classSiteUrl: project.classSiteUrl || null,
     comparedAt: new Date().toISOString(),
   })

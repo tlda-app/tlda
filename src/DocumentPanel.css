@@ -890,6 +890,211 @@ html[data-theme="dark"] .toc-drop-hint {
   opacity: var(--ui-tone-rest);
 }
 
+/* Two axes on the row, because Skip asked for two.
+
+   THE TARGET CARRIES THE STAGE. Red here-only, yellow preview, green
+   published. The glyph stays the target it already was — "the target thing is
+   a target glyph for a reason" — and the colour is delivered by an UNDERLAY of
+   matching shape behind it rather than by tinting the rim. Colouring the ⊙
+   itself gave "a tiny tiny rim on a weird background", which is what a 9px
+   ring is: an outline with the panel showing through, almost no area for the
+   colour to live in. A disc behind it fills the middle, so the mark reads as a
+   filled target down the column without hovering — which is the whole of what
+   a traffic light is for.
+
+   A row with no stage draws no underlay. It is not blank, though: it carries
+   the error glyph below, because a row nobody could compare is a failure and
+   not a silence. */
+.toc-row-center--here-only,
+.toc-row-center--preview,
+.toc-row-center--published {
+  position: relative;
+  opacity: 1;
+}
+
+.toc-row-center--here-only::before,
+.toc-row-center--preview::before,
+.toc-row-center--published::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  border-radius: 50%;
+  background: currentColor;
+  z-index: 0;
+}
+
+/* Above its own underlay, and dark enough to keep the concentric rings legible
+   against it — the target has to still read as a target. */
+.toc-row-center--here-only > span,
+.toc-row-center--preview > span,
+.toc-row-center--published > span {
+  position: relative;
+  z-index: 1;
+  color: rgba(0, 0, 0, 0.75);
+}
+
+.toc-row-center--here-only { color: #dc2626; }
+.toc-row-center--preview { color: #f59e0b; }
+.toc-row-center--published { color: #16a34a; }
+
+html[data-theme="dark"] .toc-row-center--here-only { color: #f87171; }
+html[data-theme="dark"] .toc-row-center--preview { color: #fbbf24; }
+html[data-theme="dark"] .toc-row-center--published { color: #4ade80; }
+
+/* THE TRIANGLE CARRIES WHETHER SOMETHING FAILED, and it is the glyph the app
+   already uses for errors. It sits BESIDE the target rather than replacing it:
+   a page the class site serves that this build cannot produce is published and
+   broken at once, and an error is not a stage. */
+.toc-row-error {
+  position: relative;
+  flex: 0 0 auto;
+  margin-right: 3px;
+  font-size: 10px;
+  line-height: 1;
+  align-self: center;
+  color: #b45309;
+  cursor: default;
+}
+
+html[data-theme="dark"] .toc-row-error { color: #fbbf24; }
+
+/* The reason, drawn by the panel.
+
+   A native `title` never appears on these rows — the table of contents lives
+   inside the canvas and the hover that would raise a browser tooltip is
+   consumed on the way — so Skip had thirty-three marks in front of him and
+   could not read the sentence behind a single one. The `why` is the most
+   useful part, because it turns a colour into a reason, so it is rendered in
+   the DOM rather than asked of the browser. The `title` attribute stays for the
+   accessibility tree and for anywhere this panel is not inside a canvas. */
+.toc-row-center[data-why],
+.toc-row-error[data-why] {
+  position: relative;
+}
+
+.toc-row-center[data-why]:hover::after,
+.toc-row-error[data-why]:hover::after {
+  content: attr(data-why);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 4px);
+  transform: translateX(-12px);
+  z-index: 10;
+  width: max-content;
+  max-width: 220px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.3;
+  text-align: left;
+  white-space: normal;
+  color: #fff;
+  background: rgba(24, 24, 27, 0.95);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
+.toc-title {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* What kind of course item a chapter is: homework, a lecture deck. Sits at the
+   end of the row so the titles stay aligned down the column, and is monochrome
+   so it reads as a mark on the row rather than competing with it. */
+.toc-item-type {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  align-self: center;
+  flex: none;
+  opacity: 0.55;
+}
+
+.toc-item:hover .toc-item-type {
+  opacity: 0.85;
+}
+
+.toc-drop-hint {
+  color: #0284c7;
+  border: 1px dashed #38bdf8;
+  border-radius: 4px;
+  margin: 4px 8px;
+  padding: 4px 8px;
+  opacity: var(--ui-tone-active);
+  pointer-events: none;
+}
+
+.toc-adding {
+  color: #64748b;
+  font-style: italic;
+  margin: 4px 8px;
+  pointer-events: none;
+}
+
+html[data-theme="dark"] .toc-drop-hint {
+  color: #38bdf8;
+  border-color: #0284c7;
+}
+
+.toc-fold {
+  display: block;
+  flex-shrink: 0;
+  width: 10px;
+  margin-right: 3px;
+  cursor: pointer;
+  font-size: 8px;
+  transition: transform 0.15s;
+}
+
+.toc-fold::before {
+  content: '▾';
+}
+
+.toc-fold.collapsed::before {
+  content: '▸';
+}
+
+.toc-fold-spacer {
+  display: block;
+  flex-shrink: 0;
+  width: 10px;
+  margin-right: 3px;
+}
+
+.toc-row-center {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-right: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 9px;
+  line-height: 1;
+  opacity: var(--ui-tone-dormant);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.toc-item:hover .toc-row-center,
+.toc-row-center:hover,
+.toc-row-center:focus-visible {
+  opacity: var(--ui-tone-rest);
+}
+
 /* Whether a row is what the class site is serving, on the bullet the row
    already has. No badge, no column, no second glyph.
 
