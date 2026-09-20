@@ -256,3 +256,71 @@ test('publication keeps relative source and output symlinks relative', async () 
     rmSync(instanceRoot, { recursive: true, force: true })
   }
 })
+
+// Every exit from `publishBuildInstance` except the successful one used to
+// write nothing at all. A build could render, publish into its instance, fail
+// the swap, roll back correctly -- and leave the revision's `build` phase
+// `pending`, so `projectRevisionStatus` reported the project `building`
+// FOREVER. On 2026-09-20 that was live on the course for four hours, and the
+// only way to learn otherwise was to notice that the stored record said
+// success while the derived status said building.
+test('a publication refused as stale records that it was superseded, and why', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-publish-stale-record-'))
+  const newRoot = mkdtempSync(join(tmpdir(), 'tlda-publish-stale-new-'))
+  const oldRoot = mkdtempSync(join(tmpdir(), 'tlda-publish-stale-old-'))
+  const name = 'paper'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    const lifecycle = await sourceLifecycleStore(name, { context: { referencedRoots: ['main.md'] } })
+    const git = await lifecycle.gitRepository()
+    const older = await git.acceptRevision({ project: name, files: [{ path: 'main.md', content: 'old' }], message: 'base' })
+    await git.advanceHead(name, older, null)
+    const newer = await git.acceptRevision({ project: name, parent: older, files: [{ path: 'main.md', content: 'new' }], message: 'next' })
+
+    await publishBuildInstance(name, newer, 2, instance(newRoot, name, 'new'), [])
+    const stale = await publishBuildInstance(name, older, 1, instance(oldRoot, name, 'old'), [])
+    assert.equal(stale.published, false)
+
+    const row = lifecycle.listRevisionLifecycles(name).find(r => r.sourceRevision === older)
+    assert.equal(row.build.state, 'superseded', 'a refused publication must not be left pending')
+    // The REASON, not just the state. A record saying it failed without saying
+    // why leaves the next reader comparing endpoints, which is how four hours
+    // went.
+    assert.match(row.build.result.reason, /not an ancestor|head moved/)
+    assert.equal(row.build.result.ok, false)
+  } finally {
+    await closeProjectStore()
+    for (const dir of [root, newRoot, oldRoot]) rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a publication that throws mid-swap records the failure, its reason and its stage', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-publish-throw-record-'))
+  const instanceRoot = mkdtempSync(join(tmpdir(), 'tlda-publish-throw-inst-'))
+  const name = 'paper'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    const lifecycle = await sourceLifecycleStore(name, { context: { referencedRoots: ['main.md'] } })
+    const git = await lifecycle.gitRepository()
+    const revision = await git.acceptRevision({ project: name, files: [{ path: 'main.md', content: 'only' }], message: 'base' })
+
+    // An item the instance does not carry: the swap throws part-way, which is
+    // the shape of the real failure -- correct about the bytes, and previously
+    // mute about having happened.
+    await assert.rejects(
+      publishBuildInstance(name, revision, 1, instance(instanceRoot, name, 'only'), [], ['output', 'not-a-thing']),
+      /no not-a-thing to publish/,
+    )
+
+    const row = lifecycle.listRevisionLifecycles(name).find(r => r.sourceRevision === revision)
+    assert.equal(row.build.state, 'build_failed', 'a rolled-back publication must not be left pending')
+    assert.match(row.build.result.reason, /not-a-thing/, 'and it must carry the reason it died of')
+    assert.equal(row.build.result.stage, 'rolled-back', 'and say whether the swap was undone')
+    assert.equal(projectRevisionStatus(lifecycle.listRevisionLifecycles(name)).status, 'error')
+  } finally {
+    await closeProjectStore()
+    for (const dir of [root, instanceRoot]) rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -343,13 +343,62 @@ export function publishBuildDiagnostics(name, instanceProject, failureReason = n
 export async function publishBuildInstance(name, sourceRevision, acceptSeq, instanceProject, reports = [], replacedItems = PUBLISH_REPLACED_ITEMS, reportSinks = SINKS) {
   return serializedPublication(name, async () => {
     const lifecycle = await sourceLifecycleStore(name)
+    /**
+     * Say that this publication did not happen, and why.
+     *
+     * Every exit from here except the last one used to write nothing. A build
+     * could render, publish into its instance, fail the swap, roll back
+     * correctly -- and leave no record at all, so the revision's `build` phase
+     * stayed `pending` and `projectRevisionStatus` reported the project
+     * `building` FOREVER. On 2026-09-20 that was live on the course for four
+     * hours; the only way to learn otherwise was to notice that the stored
+     * record said success while the derived status said building.
+     *
+     * The state is one `projectRevisionStatus` already reads, so nothing new is
+     * invented and neither value can be mistaken for success. THE REASON IS THE
+     * POINT: a record saying only that it failed leaves the next reader where
+     * that four hours started.
+     *
+     * Recording must never mask the original failure, so it cannot throw: the
+     * admission is written first because `recordRevisionPhase` refuses a
+     * revision it has never seen, and a failure to record is reported beside
+     * the thing it was trying to describe rather than in place of it.
+     */
+    const recordNotPublished = async (state, detail) => {
+      try {
+        lifecycle.recordRevisionAdmission(name, sourceRevision, acceptSeq)
+        lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, { ok: false, ...detail })
+      } catch (recordError) {
+        // Swallowed deliberately: this runs on the failure path, and its only
+        // job is to describe a failure that has already happened. Rethrowing
+        // would REPLACE the real error with one about the bookkeeping, so the
+        // caller would be told that recording broke instead of that publishing
+        // did -- which is the same class of defect this function exists to fix.
+        // Reported beside the original rather than in place of it.
+        console.error(`[publish:${name}] ${sourceRevision} ${state} and could not be recorded: ${recordError.message}`)
+      }
+    }
     const git = await lifecycle.gitRepository()
     const expectedHead = await git.head(name)
     if (expectedHead && !await git.isAncestor(expectedHead, sourceRevision)) {
+      await recordNotPublished('superseded', {
+        reason: 'the project head is not an ancestor of this revision, so this build is behind what the project holds',
+        head: expectedHead,
+        stage: 'before-swap',
+      })
       return { published: false, stale: true, sourceRevision, currentHead: expectedHead }
     }
 
     const liveProject = projectDir(name)
+    // `headMoved` lives out here so the recorder below can say which side of
+    // the head advance a failure happened on. Everything from the instance
+    // check down is inside one try: the FIRST version of this recorder sat only
+    // in the inner catch, and a test caught it missing the throw that refuses
+    // an instance with nothing to publish -- which is before the transaction
+    // exists and so was still leaving no record at all. An exit that writes
+    // nothing is the defect; where in the function it exits from is not.
+    let headMoved = false
+    try {
     // Checked BEFORE the transaction directory exists, so a refusal leaves
     // nothing behind: `recoverBuildPublications` only cleans up transactions
     // that got as far as writing their marker, and the marker is written below.
@@ -388,10 +437,17 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
     }))
 
     const old = {}
-    let headMoved = false
     try {
       const currentHead = await git.head(name)
       if (currentHead !== expectedHead || (currentHead && !await git.isAncestor(currentHead, sourceRevision))) {
+        await recordNotPublished('superseded', {
+          reason: currentHead === expectedHead
+            ? 'the project head is not an ancestor of this revision, so this build is behind what the project holds'
+            : 'the project head moved while this publication was preparing',
+          head: currentHead,
+          expectedHead,
+          stage: 'at-swap',
+        })
         return { published: false, stale: true, sourceRevision, currentHead }
       }
       for (const item of replacedItems) {
@@ -442,6 +498,18 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
       // loop exactly as copying one does, so fixing only the copy would have
       // left half the stall in place.
       await rm(transaction, { recursive: true, force: true })
+    }
+    } catch (error) {
+      // `headMoved` is the stage, and it is the one thing a reader needs:
+      // false means the swap was undone and the project still serves its
+      // previous render, true means the head advanced and the failure came
+      // after.
+      await recordNotPublished('build_failed', {
+        reason: error.message,
+        stage: headMoved ? 'after-head-advanced' : 'rolled-back',
+        head: headMoved ? sourceRevision : expectedHead,
+      })
+      throw error
     }
   })
 }
