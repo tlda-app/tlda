@@ -4,6 +4,7 @@ import { useSync } from '@tldraw/sync'
 import { STORE_WS, LICENSE_KEY } from '../activeConfig'
 import { appendToken } from '../authToken'
 import { createDocumentShapeUtils, INLINE_ASSETS, DOCUMENT_TOOLS } from '../SvgDocument'
+import { recordingElapsedMs } from '../recording/recorder'
 import { studentOverlayRoomId } from './studentOverlayRoom'
 import { markingLayerCaptures } from './markingCapture'
 import './StudentAnnotationOverlay.css'
@@ -331,7 +332,34 @@ export function StudentAnnotationOverlay({
         onMount={editor => {
           setOverlayEditor(editor)
           onEditorMount?.(editor)
-          return () => { setOverlayEditor(null); onEditorRelease?.(editor) }
+          // WHERE THE MARK SITS IN THE MARKING SESSION.
+          //
+          // Nothing was recording this. The book stamps its own shapes from
+          // `setupSvgEditor` (`editorSetup.ts`), but this editor is not that
+          // editor and never runs it — that handler also re-sorts page shapes,
+          // carries the viewer draft flow and anchors shapes to source lines,
+          // none of which apply to a sheet of marks over somebody else's canvas.
+          // So marking ink carried no time at all.
+          //
+          // `t` is ON-RECORD MILLISECONDS, NOT WALL TIME. The recording is the
+          // timeline the marks sit in, and Skip chose relative time over
+          // wallclock because wallclock can slip. The number comes from the
+          // recorder rather than from a clock computed here, so there is exactly
+          // one thing entitled to say when a mark happened.
+          //
+          // `null` when nothing is recording, and that is the honest answer
+          // rather than a gap: with no recording there is no timeline for the
+          // mark to have a position in. Marking while paused DOES get a number —
+          // it is a position in a timeline that exists — and `recordingElapsedMs`
+          // freezes at the pause point so a paused stretch does not spread marks
+          // across time the recording does not contain.
+          const stopStamping = editor.sideEffects.registerAfterCreateHandler('shape', (shape, source) => {
+            if (source !== 'user' || shape.meta?.t != null) return
+            const t = recordingElapsedMs()
+            if (t == null) return
+            editor.store.update(shape.id, s => ({ ...s, meta: { ...s.meta, t } }))
+          })
+          return () => { stopStamping(); setOverlayEditor(null); onEditorRelease?.(editor) }
         }}
         components={OVERLAY_COMPONENTS}
       />

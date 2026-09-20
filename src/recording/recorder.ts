@@ -201,6 +201,32 @@ function now(): number {
 }
 
 /**
+ * Where something made right now sits in the recording, in on-record ms, or
+ * `null` when nothing is being recorded.
+ *
+ * Exported so a mark can carry its position in the marking session without
+ * computing a clock of its own. The recording is the timeline — Skip: the audio
+ * track "is the like, marking timeline" — so this is the only thing entitled to
+ * say when a mark happened, and a second clock beside it would be a second
+ * answer to the same question.
+ *
+ * FROZEN WHILE PAUSED, which is why this cannot just be `now()`. Marking off the
+ * record is marking "on 'pause'", and it happens "instantaneously wrt the
+ * timeline": every mark made during one paused stretch belongs at the instant
+ * the pause began. `now()` keeps advancing through a pause, because the stretch
+ * is only added to `pausedAccum` on resume, so using it here would spread marks
+ * across time the recording does not contain.
+ *
+ * `null` rather than a wall time when no recording has run: there is no timeline
+ * for the mark to have a position in, and inventing one would put two meanings
+ * in one field.
+ */
+export function recordingElapsedMs(): number | null {
+  if (state.status !== 'recording') return null
+  return paused ? pauseStart - t0 - pausedAccum : now()
+}
+
+/**
  * Start reading the parent's playhead against this layer's clock.
  *
  * Off the record, no reading is taken: `now()` does not advance while paused, so
