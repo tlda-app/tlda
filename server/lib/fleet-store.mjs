@@ -426,6 +426,7 @@ export class FleetStore {
       this._markMintSlotsMandatory();
       this._backfillNameHistory();
       this._backfillAgentModels();
+      this._indexDaemonOutboxProcessedAt();
     }
     this._listeners = []; // SSE broadcast callbacks
     this._taskDocMaterializer = !readonly && options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
@@ -3837,6 +3838,43 @@ export class FleetStore {
   // from one that deliberately unsubscribed, and would silently restore it —
   // which is the floor again, wearing a migration's clothes. Recording that it
   // ran is what keeps this a migration.
+  // The daemon outbox ledger is pruned by `processed_at` and indexed by nothing.
+  //
+  // `_pruneDaemonOutboxLedger` runs `DELETE FROM daemon_outbox_processed WHERE
+  // processed_at < ?`, and the table is `id TEXT PRIMARY KEY, type, processed_at`
+  // — so that predicate has no index to use and SQLite must read every row.
+  // Read off the live database 2026-09-20:
+  //
+  //   EXPLAIN QUERY PLAN  ->  SCAN daemon_outbox_processed
+  //   rows                     2,207,067
+  //   rows older than 7d       0
+  //
+  // So once an hour the store's single worker thread reads 2.2 million rows to
+  // delete NONE, and every fleet operation queues behind it while it does.
+  // `slowestRun` caught it the minute run-time recording went live:
+  // markDaemonOutboxProcessed, 10,395ms in one call. It is not a slow query
+  // that has to happen — it is a full scan that accomplishes nothing on the
+  // current data, and it gets slower as the ledger grows.
+  //
+  // Same defect as the chat-history plans fixed the same night: the cost
+  // follows the size of the table rather than the size of the work.
+  //
+  // The index makes the DELETE seek to the cutoff and touch only what it will
+  // actually remove — near-free when that is nothing, which is the normal case.
+  // It costs one B-tree write per processed envelope, against a scan of the
+  // whole table every hour.
+  _indexDaemonOutboxProcessedAt() {
+    const NAME = 'daemon-outbox-processed-at-index-v1';
+    if (this.db.prepare('SELECT 1 FROM store_migrations WHERE name = ?').get(NAME)) return;
+    const startedAt = Date.now();
+    // CREATE INDEX is itself a full pass over the table, so it is done once,
+    // here, at startup — not lazily on the hot path where it would land inside
+    // somebody's chat insert.
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_daemon_outbox_processed_at ON daemon_outbox_processed(processed_at)');
+    this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
+    console.log(`[fleet-store] ${NAME}: built in ${Date.now() - startedAt}ms`);
+  }
+
   _backfillDefaultSubscriptions() {
     const NAME = 'default-subscriptions-v1';
     if (this.db.prepare('SELECT 1 FROM store_migrations WHERE name = ?').get(NAME)) return;
