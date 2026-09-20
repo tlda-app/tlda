@@ -25,50 +25,52 @@ const ADA = studentOverlayRoomId(BOOK, 'ada')
 const BO = studentOverlayRoomId(BOOK, 'bo')
 
 test('the public link reads the book and its common layer', () => {
-  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read' }), 'read')
+  assert.equal(classroomRoomAccess({ roomId: BOOK, principal: null }), 'read')
 })
 
 test("the public link is refused a student's layer", () => {
-  assert.equal(classroomRoomAccess({ roomId: ADA, tokenLevel: 'read' }), 'deny')
+  assert.equal(classroomRoomAccess({ roomId: ADA, principal: null }), 'deny')
 })
 
 test('an enrolled student writes the common layer — it is common', () => {
-  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read', studentId: 'ada' }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: BOOK, principal: { role: 'student', studentId: 'ada' } }), 'write')
 })
 
 test('an enrolled student writes their own layer', () => {
-  assert.equal(classroomRoomAccess({ roomId: ADA, tokenLevel: 'read', studentId: 'ada' }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: ADA, principal: { role: 'student', studentId: 'ada' } }), 'write')
 })
 
 test("a student is refused another student's layer, in both directions", () => {
-  assert.equal(classroomRoomAccess({ roomId: BO, tokenLevel: 'read', studentId: 'ada' }), 'deny')
-  assert.equal(classroomRoomAccess({ roomId: ADA, tokenLevel: 'read', studentId: 'bo' }), 'deny')
+  assert.equal(classroomRoomAccess({ roomId: BO, principal: { role: 'student', studentId: 'ada' } }), 'deny')
+  assert.equal(classroomRoomAccess({ roomId: ADA, principal: { role: 'student', studentId: 'bo' } }), 'deny')
 })
 
-test('no credential is refused everything, including the book', () => {
-  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: null }), 'deny')
-  assert.equal(classroomRoomAccess({ roomId: ADA, tokenLevel: null }), 'deny')
+// Nobody reads the book and its common layer — that is what makes a public
+// course site possible — and is refused a student's layer.
+test('no credential is refused the book, and is refused a student layer', () => {
+  assert.equal(classroomRoomAccess({ roomId: BOOK, principal: null }), 'read')
+  assert.equal(classroomRoomAccess({ roomId: ADA, principal: null }), 'deny')
 })
 
 test('an instructor is unchanged', () => {
-  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'rw' }), 'write')
-  assert.equal(classroomRoomAccess({ roomId: ADA, tokenLevel: 'rw' }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: BOOK, principal: { role: 'instructor', instructorId: 'qtm285:prof' }, isInstructorMember: true }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: ADA, principal: { role: 'instructor', instructorId: 'qtm285:prof' }, isInstructorMember: true }), 'write')
 })
 
 test('a student id that is a prefix of another does not reach it', () => {
   // 'ada' must not open 'ada2'. String containment would; equality does not.
-  assert.equal(classroomRoomAccess({ roomId: studentOverlayRoomId(BOOK, 'ada2'), tokenLevel: 'read', studentId: 'ada' }), 'deny')
+  assert.equal(classroomRoomAccess({ roomId: studentOverlayRoomId(BOOK, 'ada2'), principal: { role: 'student', studentId: 'ada' } }), 'deny')
 })
 
 test('a book whose own name contains the marker still resolves to its last segment', () => {
   const odd = studentOverlayRoomId('doc-weird::student::thing', 'ada')
   assert.deepEqual(studentOverlayRoomOwner(odd), { bookRoomId: 'doc-weird::student::thing', studentId: 'ada' })
-  assert.equal(classroomRoomAccess({ roomId: odd, tokenLevel: 'read', studentId: 'ada' }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: odd, principal: { role: 'student', studentId: 'ada' } }), 'write')
 })
 
 test('an ordinary document room is not mistaken for a private layer', () => {
   assert.equal(studentOverlayRoomOwner('doc-anything'), null)
-  assert.equal(classroomRoomAccess({ roomId: 'doc-anything', tokenLevel: 'read' }), 'read')
+  assert.equal(classroomRoomAccess({ roomId: 'doc-anything', principal: null }), 'read')
 })
 
 // A submission's room is the other room that is one student's, and unlike the
@@ -81,26 +83,26 @@ test('an ordinary document room is not mistaken for a private layer', () => {
 const SUBMISSION_ROOM = 'doc-submission-hw-minus-1-setup-qtm285:ada'
 
 test("a submission's room is refused to the class read link and to a classmate", () => {
-  assert.equal(classroomRoomAccess({ roomId: SUBMISSION_ROOM, tokenLevel: 'read', submissionOwnerId: 'qtm285:ada' }), 'deny')
+  assert.equal(classroomRoomAccess({ roomId: SUBMISSION_ROOM, principal: null, submissionOwnerId: 'qtm285:ada' }), 'deny')
   assert.equal(classroomRoomAccess({
-    roomId: SUBMISSION_ROOM, tokenLevel: 'read', studentId: 'qtm285:bo', submissionOwnerId: 'qtm285:ada',
+    roomId: SUBMISSION_ROOM, principal: { role: 'student', studentId: 'qtm285:bo' }, submissionOwnerId: 'qtm285:ada',
   }), 'deny')
 })
 
 test('the student who handed it in keeps their submission room, and so does the instructor', () => {
   assert.equal(classroomRoomAccess({
-    roomId: SUBMISSION_ROOM, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
+    roomId: SUBMISSION_ROOM, principal: { role: 'student', studentId: 'qtm285:ada' }, submissionOwnerId: 'qtm285:ada',
   }), 'write')
-  assert.equal(classroomRoomAccess({ roomId: SUBMISSION_ROOM, tokenLevel: 'rw', submissionOwnerId: 'qtm285:ada' }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: SUBMISSION_ROOM, principal: { role: 'instructor', instructorId: 'qtm285:prof' }, isInstructorMember: true, submissionOwnerId: 'qtm285:ada' }), 'write')
 })
 
 test('nothing changes for a room that is not a submission', () => {
   // The caller passes null when the record says the room is not one, which is
   // every book and every common layer. This is the control that says the new
   // parameter cannot narrow anything it was not given.
-  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read', submissionOwnerId: null }), 'read')
-  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read', studentId: 'ada', submissionOwnerId: null }), 'write')
-  assert.equal(classroomRoomAccess({ roomId: ADA, tokenLevel: 'read', studentId: 'ada', submissionOwnerId: null }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: BOOK, principal: null, submissionOwnerId: null }), 'read')
+  assert.equal(classroomRoomAccess({ roomId: BOOK, principal: { role: 'student', studentId: 'ada' }, submissionOwnerId: null }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: ADA, principal: { role: 'student', studentId: 'ada' }, submissionOwnerId: null }), 'write')
 })
 
 // --- the instructor's marking layer ---
@@ -115,22 +117,19 @@ const GRADING_RETURNED = gradingReturnedRoomId(SUBMISSION_ROOM, 'ans-exr-die-his
 test('the student local layer is fixed to self and read-only after return', () => {
   assert.equal(classroomRoomAccess({
     roomId: GRADING_RETURNED,
-    tokenLevel: 'read',
-    studentId: 'qtm285:ada',
+    principal: { role: 'student', studentId: 'qtm285:ada' },
     submissionOwnerId: 'qtm285:ada',
     submissionReturned: true,
   }), 'read')
   assert.equal(classroomRoomAccess({
     roomId: GRADING_RETURNED,
-    tokenLevel: 'read',
-    studentId: 'qtm285:bo',
+    principal: { role: 'student', studentId: 'qtm285:bo' },
     submissionOwnerId: 'qtm285:ada',
     submissionReturned: true,
   }), 'deny')
   assert.equal(classroomRoomAccess({
     roomId: GRADING_RETURNED,
-    tokenLevel: 'read',
-    studentId: 'qtm285:ada',
+    principal: { role: 'student', studentId: 'qtm285:ada' },
     submissionOwnerId: 'qtm285:ada',
     submissionReturned: false,
   }), 'deny')
@@ -141,7 +140,7 @@ test('the marking layer is refused to the student whose submission it hangs off'
   // and Ada may write that submission room — so if the draft check sat below the
   // submission-owner branch she would be handed the marks being withheld.
   assert.equal(classroomRoomAccess({
-    roomId: GRADING_DRAFT, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
+    roomId: GRADING_DRAFT, principal: { role: 'student', studentId: 'qtm285:ada' }, submissionOwnerId: 'qtm285:ada',
   }), 'deny')
 })
 
@@ -152,8 +151,7 @@ test('returning does not open the draft room itself', () => {
   // see yet would reach her as it is drawn — with no second return to gate it.
   assert.equal(classroomRoomAccess({
     roomId: GRADING_DRAFT,
-    tokenLevel: 'read',
-    studentId: 'qtm285:ada',
+    principal: { role: 'student', studentId: 'qtm285:ada' },
     submissionOwnerId: 'qtm285:ada',
     submissionReturned: true,
   }), 'deny')
@@ -162,15 +160,13 @@ test('returning does not open the draft room itself', () => {
 test('a returned marking layer still refuses classmates and anonymous readers', () => {
   assert.equal(classroomRoomAccess({
     roomId: GRADING_DRAFT,
-    tokenLevel: 'read',
-    studentId: 'qtm285:bo',
+    principal: { role: 'student', studentId: 'qtm285:bo' },
     submissionOwnerId: 'qtm285:ada',
     submissionReturned: true,
   }), 'deny')
   assert.equal(classroomRoomAccess({
     roomId: GRADING_DRAFT,
-    tokenLevel: 'read',
-    submissionOwnerId: 'qtm285:ada',
+        submissionOwnerId: 'qtm285:ada',
     submissionReturned: true,
   }), 'deny')
 })
@@ -190,24 +186,24 @@ test('the grading room names its submission and problem without rebasing either'
 
 test('the marking layer is refused to a classmate and to the class read link', () => {
   assert.equal(classroomRoomAccess({
-    roomId: GRADING_DRAFT, tokenLevel: 'read', studentId: 'qtm285:bo', submissionOwnerId: 'qtm285:ada',
+    roomId: GRADING_DRAFT, principal: { role: 'student', studentId: 'qtm285:bo' }, submissionOwnerId: 'qtm285:ada',
   }), 'deny')
-  assert.equal(classroomRoomAccess({ roomId: GRADING_DRAFT, tokenLevel: 'read' }), 'deny')
+  assert.equal(classroomRoomAccess({ roomId: GRADING_DRAFT, principal: null }), 'deny')
 })
 
 test('the instructor may write their own marking layer', () => {
   // Without this the refusals above would pass on a rule that locked everyone
   // out, which withholds marks by making them impossible to make.
-  assert.equal(classroomRoomAccess({ roomId: GRADING_DRAFT, tokenLevel: 'rw' }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: GRADING_DRAFT, principal: { role: 'instructor', instructorId: 'qtm285:prof' }, isInstructorMember: true }), 'write')
 })
 
 test('naming a draft layer does not narrow the submission room it hangs off', () => {
   // The control for the marker itself: the stem must keep behaving exactly as it
   // did, or this change withholds the returned work too.
   assert.equal(classroomRoomAccess({
-    roomId: SUBMISSION_ROOM, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
+    roomId: SUBMISSION_ROOM, principal: { role: 'student', studentId: 'qtm285:ada' }, submissionOwnerId: 'qtm285:ada',
   }), 'write')
-  assert.equal(classroomRoomAccess({ roomId: BOOK, tokenLevel: 'read' }), 'read')
+  assert.equal(classroomRoomAccess({ roomId: BOOK, principal: null }), 'read')
 })
 
 test("a student is refused their own submission's per-problem marking layer", () => {
@@ -221,7 +217,7 @@ test("a student is refused their own submission's per-problem marking layer", ()
   // a formatting assertion would still pass with the door open.
   const perProblem = gradingDraftRoomId(SUBMISSION_ROOM, 'ans-exr-die-histogram')
   assert.equal(classroomRoomAccess({
-    roomId: perProblem, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
+    roomId: perProblem, principal: { role: 'student', studentId: 'qtm285:ada' }, submissionOwnerId: 'qtm285:ada',
   }), 'deny')
 
   // Two problems on one submission are two rooms, so marks cannot bleed between
@@ -229,11 +225,11 @@ test("a student is refused their own submission's per-problem marking layer", ()
   const other = gradingDraftRoomId(SUBMISSION_ROOM, 'ans-exr-count-n1')
   assert.notEqual(other, perProblem)
   assert.equal(classroomRoomAccess({
-    roomId: other, tokenLevel: 'read', studentId: 'qtm285:ada', submissionOwnerId: 'qtm285:ada',
+    roomId: other, principal: { role: 'student', studentId: 'qtm285:ada' }, submissionOwnerId: 'qtm285:ada',
   }), 'deny')
 
   // And the instructor can still write them, or the refusal above is just a lock.
-  assert.equal(classroomRoomAccess({ roomId: perProblem, tokenLevel: 'rw' }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: perProblem, principal: { role: 'instructor', instructorId: 'qtm285:prof' }, isInstructorMember: true }), 'write')
 })
 
 // --- the annotation thread on an answer ---
@@ -290,7 +286,7 @@ test('the thread rule leaves the instructor\'s private draft exactly as it was',
   // so answering it must not become a way into the draft room.
   const draft = gradingDraftRoomId('doc-sub-ada', 'ans-ex3')
   assert.equal(
-    classroomRoomAccess({ roomId: draft, tokenLevel: 'read', studentId: OWNER, submissionOwnerId: OWNER }),
+    classroomRoomAccess({ roomId: draft, principal: { role: 'student', studentId: OWNER }, submissionOwnerId: OWNER }),
     'deny',
   )
 })

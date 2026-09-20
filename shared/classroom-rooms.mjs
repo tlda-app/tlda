@@ -138,7 +138,11 @@ export function gradingLayerRoomTarget(roomId) {
  * Returns 'write' | 'deny'. There is no read-only case: being able to see a
  * layer and being able to answer it are the same right here.
  */
-export function answerThreadAccess({ principal = null, submissionOwnerId = null }) {
+export function answerThreadAccess({ principal = null, tokenLevel = undefined, submissionOwnerId = null }) {
+  // `tokenLevel` stays in the signature so existing callers keep calling it the
+  // same way; it is ignored. A caller holding an rw bearer who resolves to a
+  // student is that student, and an identity-based rule cannot be talked out of
+  // that by the token.
   if (principal?.role === 'instructor') return 'write'
   // Nobody, or an answer whose owner we could not resolve, gets nothing.
   if (!principal?.studentId || !submissionOwnerId) return 'deny'
@@ -148,15 +152,29 @@ export function answerThreadAccess({ principal = null, submissionOwnerId = null 
 /**
  * What a caller may do in a room.
  *
- * Skip, on what needs gating at all: "we just need to make sure acces to student
- * jnfo is token gated." So the book and its common layer stay open to the shared
- * read link — that is what makes a public course site possible, and a gate there
- * would be the defect rather than the caution. The only new refusal is on a
- * student's own layer.
+ * Decided from the IDENTITY, never from a token level. Skip: tokens carry
+ * identity, and auth is granted to identities in the app — the unix model.
+ * So this takes the resolved principal (a student token resolving to a
+ * student row, an instructor token to an instructor row, anything else
+ * resolving to null) and a `isInstructorMember` predicate the caller answers
+ * from the store, and never looks at a bearer level. A shared secret has no
+ * members; membership is read off the instructors table by the caller.
  *
- *   shared read token   read  the book and its common layer;  denied a student's
- *   enrolment token     write the book and its common layer;  write their OWN
- *   rw token            write everything
+ * `tokenLevel` and `studentId` stay in the signature so existing callers keep
+ * calling it the same way; they are ignored. What a caller may do is a fact
+ * about who they are: the principal's student id for a student, instructor
+ * membership for an instructor, nobody for null.
+ *
+ * Skip, on what needs gating at all: "we just need to make sure acces to student
+ * jnfo is token gated." So the book and its common layer stay open to the world —
+ * that is what makes a public course site possible, and a gate there would be
+ * the defect rather than the caution. The only new refusal is on a student's
+ * own layer.
+ *
+ *   nobody (no identity)       read  the book and its common layer;  denied a student's
+ *   enrolled student identity  write the book and its common layer;  write their OWN
+ *   instructor member          write everything except the grading draft they do not own
+ *                              (an instructor's draft is refused by name; see below)
  *
  * "A student's" is two rooms, not one: their private overlay, which the room
  * name says, and the room of the work they handed in, which it does not. The
@@ -169,16 +187,39 @@ export function answerThreadAccess({ principal = null, submissionOwnerId = null 
  */
 export function classroomRoomAccess({
   roomId,
-  tokenLevel,
-  studentId = null,
+  principal = null,
+  tokenLevel = undefined,
+  studentId = undefined,
   submissionOwnerId = null,
   submissionReturned = false,
+  isInstructorMember = false,
 }) {
-  if (tokenLevel === 'rw') return 'write'
-  if (tokenLevel !== 'read') return 'deny'
+  // The caller's old arguments are ignored: neither the bearer level nor a
+  // bare student id decides anything. The principal's own student id is the
+  // only student identity this rule reads.
+  const callerStudentId = principal?.role === 'student' ? principal.studentId : null
+  const instructorMember = principal?.role === 'instructor' && isInstructorMember === true
+  if (instructorMember) {
+    // Instructor membership writes everything the name does not withhold: the
+    // draft refusal below withholds unreturned marks from everyone except an
+    // instructor member, and the returned-room branch admits only the
+    // submission's owner. Every other room is the instructor's to write.
+    // The branch order below is the guard — the draft refusal sits above the
+    // submission-owner branch and must keep sitting above any grant this
+    // early return skips.
+    if (isGradingDraftRoom(roomId)) return 'write'
+    if (!gradingLayerRoomTarget(roomId)?.returned) return 'write'
+  } else if (principal) {
+    // A resolved non-member identity holds no grant of its own: the student
+    // branches below decide what a student may do, and anything else is
+    // nobody with a name. Fall through to the per-room rules.
+  } else {
+    // Nobody: the book and its common layer stay open, everything private is
+    // refused by the branches below.
+  }
 
-  // The instructor's marking layer, refused to everyone the `rw` line above did
-  // not already admit — including the student whose submission it hangs off.
+  // The instructor's marking layer, refused to everyone except an instructor
+  // member — including the student whose submission it hangs off.
   //
   // This sits ABOVE the `submissionOwnerId` branch deliberately. That branch
   // grants the owner 'write', and a draft room is named after their submission
@@ -192,19 +233,20 @@ export function classroomRoomAccess({
   if (isGradingDraftRoom(roomId)) return 'deny'
 
   if (gradingLayerRoomTarget(roomId)?.returned) {
-    return submissionReturned && studentId === submissionOwnerId ? 'read' : 'deny'
+    return submissionReturned && callerStudentId && callerStudentId === submissionOwnerId ? 'read' : 'deny'
   }
 
-  // Handed-in work. Theirs, exactly as their own layer is theirs; a read link
-  // with no enrolment behind it is nobody and gets nothing.
-  if (submissionOwnerId) return studentId === submissionOwnerId ? 'write' : 'deny'
+  // Handed-in work. Theirs, exactly as their own layer is theirs; nobody with
+  // no identity behind them gets nothing.
+  if (submissionOwnerId) return callerStudentId && callerStudentId === submissionOwnerId ? 'write' : 'deny'
 
   const owner = studentOverlayRoomOwner(roomId)
-  // Not a private layer: the book itself, or its common layer. Open to the link.
-  if (!owner) return studentId ? 'write' : 'read'
+  // Not a private layer: the book itself, or its common layer. Open to the
+  // world, writable by an enrolled student.
+  if (!owner) return callerStudentId ? 'write' : 'read'
 
-  // A private layer is the holder's alone. An anonymous read-token visitor has
-  // no layer of their own and is refused rather than given a look at somebody's.
-  if (studentId && owner.studentId === studentId) return 'write'
+  // A private layer is the holder's alone. A visitor with no identity has no
+  // layer of their own and is refused rather than given a look at somebody's.
+  if (callerStudentId && owner.studentId === callerStudentId) return 'write'
   return 'deny'
 }

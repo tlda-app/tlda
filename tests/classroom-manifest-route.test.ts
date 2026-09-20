@@ -6,7 +6,6 @@ import { shouldResolveDocumentLayerIdentity } from '../src/classroom/classroomSu
 test('the instructor marking route does not request the student classroom identity', () => {
   const params = new URLSearchParams({
     project: 'submission-hw-1-student',
-    token: 'read-token',
     markingCourse: 'course',
     markingAssignment: 'hw-1',
     markingStudent: 'student',
@@ -15,7 +14,7 @@ test('the instructor marking route does not request the student classroom identi
 })
 
 test('a classroom student project still loads its course manifest', () => {
-  const params = new URLSearchParams({ project: 'course-book', token: 'read-token' })
+  const params = new URLSearchParams({ project: 'course-book' })
   assert.equal(shouldLoadClassroomManifest(params, true), true)
 })
 

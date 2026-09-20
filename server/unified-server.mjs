@@ -6012,9 +6012,12 @@ server.on('upgrade', async (req, socket, head) => {
     // refusal is on a student's own layer. A browser WebSocket cannot set
     // headers, so the enrolment token arrives on the URL like the bearer one.
     const classroomStore = app?.locals?.classroomStore
-    const enrolmentToken = url.searchParams.get('classroomToken')
-    const enrolled = enrolmentToken && classroomStore
-      ? classroomStore.studentForToken(enrolmentToken)
+    // Identity, never a bearer level: a browser WebSocket cannot set headers,
+    // so the per-person token arrives on the URL as `classroomToken`. The
+    // resolver reads it off `query`, alongside the header and cookie carriers.
+    const principalReq = { headers: req.headers, query: { classroomToken: url.searchParams.get('classroomToken') } }
+    const principal = classroomStore
+      ? (app?.locals?.resolveClassroomPrincipal || classroomPrincipal)(principalReq, classroomStore)
       : null
     // Whose handed-in work this room is, if it is one. The room name is
     // `doc-<project>` for a document room and the bare project name elsewhere,
@@ -6037,13 +6040,17 @@ server.on('upgrade', async (req, socket, head) => {
     const submissionOwnerId = submission?.studentId ?? null
     const access = classroomRoomAccess({
       roomId: docName,
-      tokenLevel: validateToken(extractToken(req)),
-      studentId: enrolled?.id ?? null,
+      principal,
       submissionOwnerId,
       submissionReturned: submission?.gradingStatus === 'returned',
+      isInstructorMember: principal && submission
+        ? classroomStore.isInstructorOf(principal, submission.courseId)
+        : principal?.role === 'instructor' && principal.courseId
+          ? classroomStore.isInstructorOf(principal, principal.courseId)
+          : false,
     })
     if (access === 'deny') {
-      console.warn(`[sync] refused "${docName}" session=${sessionId} enrolled=${enrolled?.id ?? 'none'}`)
+      console.warn(`[sync] refused "${docName}" session=${sessionId} principal=${principal?.studentId ?? principal?.instructorId ?? 'none'}`)
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
       socket.destroy()
       return
@@ -6083,14 +6090,18 @@ server.on('upgrade', async (req, socket, head) => {
     // answers 502 from outside the box to every request, including the no-token
     // control, so nothing here has been proven on the wire and the refusal is
     // asserted by test only.
-    const sourceOwner = app?.locals?.classroomStore?.submissionDocumentOwner(project)?.studentId ?? null
+    const sourceSubmission = app?.locals?.classroomStore?.submissionDocumentOwner(project)
+    const sourceOwner = sourceSubmission?.studentId ?? null
     if (sourceOwner) {
-      const enrolledHere = app?.locals?.classroomStore?.studentForToken(url.searchParams.get('classroomToken'))
+      const sourcePrincipalReq = { headers: req.headers, query: { classroomToken: url.searchParams.get('classroomToken') } }
+      const sourcePrincipal = (app?.locals?.resolveClassroomPrincipal || classroomPrincipal)(sourcePrincipalReq, app.locals.classroomStore)
       const may = classroomRoomAccess({
         roomId: project,
-        tokenLevel: validateToken(extractToken(req)),
-        studentId: enrolledHere?.id ?? null,
+        principal: sourcePrincipal,
         submissionOwnerId: sourceOwner,
+        isInstructorMember: sourcePrincipal
+          ? app.locals.classroomStore.isInstructorOf(sourcePrincipal, sourceSubmission.courseId)
+          : false,
       })
       if (may === 'deny') {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
