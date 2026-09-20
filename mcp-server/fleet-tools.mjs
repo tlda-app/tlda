@@ -5508,7 +5508,18 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
   if (name === 'roster') {
     try {
       const qs = new URLSearchParams();
-      if (args.filter) qs.set('filter', args.filter);
+      // Same normalization `thread` does, for the same reason: the caller is a
+      // language model writing a string, and it sometimes writes the filter
+      // HTML-escaped. Recorded tool input on the live database has agents
+      // sending `skip &lt;&gt; chief` and `from:skip &amp; type:chat` from
+      // 2026-07-25 through 2026-09-19 — many different agents, so it is a
+      // property of the caller rather than one agent's quirk.
+      //
+      // `thread` has normalized this since the entities test was written.
+      // roster did not, so the identical expression parsed through one tool and
+      // failed through the other — observed 2026-07-26, `tlda/fleet_table` with
+      // `awake &amp; cwd:/Users/skip/work/tlda`.
+      if (args.filter) qs.set('filter', normalizeThreadFilterExpression(args.filter));
       if (args.limit) qs.set('limit', String(args.limit));
       const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/fleet-table${qs.toString() ? `?${qs}` : ''}`);
       const data = await res.json();
