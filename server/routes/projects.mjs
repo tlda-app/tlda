@@ -1512,6 +1512,12 @@ function recordingsDir(name) {
   return join(getProjectDir(name), 'recordings')
 }
 
+/** The resolved identity, through whatever resolver the app installed. */
+function classroomPrincipalFor(req, store) {
+  const resolve = req.app?.locals?.resolveClassroomPrincipal || classroomPrincipal
+  return resolve(req, store)
+}
+
 /**
  * May this caller take part in the thread on `answer`?
  *
@@ -1528,16 +1534,13 @@ function answerThreadWriteAccess(req, answer) {
   if (!answer?.submissionRoomId) return null
   const store = req.app?.locals?.classroomStore
   if (!store) return 'deny'
-  const resolvePrincipal = req.app?.locals?.resolveClassroomPrincipal || classroomPrincipal
-  const principal = resolvePrincipal(req, store)
   const room = String(answer.submissionRoomId)
   // Same two spellings the sync gate resolves, for the same reason: the room
   // carries a `doc-` prefix the submissions record does not.
   const submission = store.submissionDocumentOwner(room)
     || store.submissionDocumentOwner(room.replace(/^doc-/, ''))
   return answerThreadAccess({
-    tokenLevel: validateToken(extractToken(req)),
-    studentId: principal?.studentId ?? null,
+    principal: classroomPrincipalFor(req, store),
     submissionOwnerId: submission?.studentId ?? null,
   })
 }
@@ -1639,7 +1642,7 @@ router.post('/:name/recording/:id/audio', requireRecordingAccess, express.raw({ 
 router.get('/:name/recording-drafts', requireRead, (req, res) => {
   const dir = recordingsDir(req.params.name)
   if (!existsSync(dir)) return res.json({ recordings: [] })
-  const isInstructor = validateToken(extractToken(req)) === 'rw'
+  const isInstructor = classroomPrincipalFor(req, req.app?.locals?.classroomStore)?.role === 'instructor'
   const recordings = readdirSync(dir)
     .filter((f) => f.endsWith('.json'))
     .map((f) => {

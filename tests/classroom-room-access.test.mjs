@@ -245,14 +245,17 @@ test("a student is refused their own submission's per-problem marking layer", ()
 const OWNER = 'qtm285:ada'
 const OTHER = 'qtm285:ben'
 
+const instructor = { role: 'instructor' }
+const student = (id) => ({ role: 'student', studentId: id })
+
 test('both people the answer belongs to may add a layer to its thread', () => {
   assert.equal(
-    answerThreadAccess({ tokenLevel: 'rw' }),
+    answerThreadAccess({ principal: instructor, submissionOwnerId: OWNER }),
     'write',
     'the instructor marking it',
   )
   assert.equal(
-    answerThreadAccess({ tokenLevel: 'read', studentId: OWNER, submissionOwnerId: OWNER }),
+    answerThreadAccess({ principal: student(OWNER), submissionOwnerId: OWNER }),
     'write',
     'the student replying to their own marked answer',
   )
@@ -260,16 +263,26 @@ test('both people the answer belongs to may add a layer to its thread', () => {
 
 test('a student may not reach another student\'s thread', () => {
   assert.equal(
-    answerThreadAccess({ tokenLevel: 'read', studentId: OTHER, submissionOwnerId: OWNER }),
+    answerThreadAccess({ principal: student(OTHER), submissionOwnerId: OWNER }),
     'deny',
   )
 })
 
-test('a read link with nobody behind it gets no thread', () => {
-  assert.equal(answerThreadAccess({ tokenLevel: 'read', submissionOwnerId: OWNER }), 'deny')
-  assert.equal(answerThreadAccess({ tokenLevel: 'read', studentId: OWNER }), 'deny',
+test('nobody, and an unresolvable answer, get nothing', () => {
+  assert.equal(answerThreadAccess({ principal: null, submissionOwnerId: OWNER }), 'deny',
+    'a read link with no identity behind it')
+  assert.equal(answerThreadAccess({ principal: student(OWNER) }), 'deny',
     'an unresolved owner is refused rather than matched against null')
-  assert.equal(answerThreadAccess({ tokenLevel: 'none', studentId: OWNER, submissionOwnerId: OWNER }), 'deny')
+})
+
+test('the rule reads the identity, never the token', () => {
+  // Skip: tokens carry identity; auth is granted to identities in the app.
+  // A caller holding an rw token who resolves to a student is that student,
+  // and an identity-based rule cannot be talked out of that by the token.
+  assert.equal(
+    answerThreadAccess({ principal: student(OTHER), tokenLevel: 'rw', submissionOwnerId: OWNER }),
+    'deny',
+  )
 })
 
 test('the thread rule leaves the instructor\'s private draft exactly as it was', () => {

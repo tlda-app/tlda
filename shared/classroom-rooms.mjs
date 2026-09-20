@@ -115,15 +115,19 @@ export function gradingLayerRoomTarget(roomId) {
  * reads layers" — true when marking was one-way, false the moment a student can
  * reply, and it made the spec unbuildable rather than merely inconvenient.
  *
+ * Decided from the IDENTITY, not from the token. Skip: tokens carry identity,
+ * and auth is granted to identities in the app — the unix model. So this takes
+ * the resolved principal and never looks at a token level; what a caller may do
+ * is a fact about who they are, and the token is only how they said so.
+ *
  * Returns 'write' | 'deny'. There is no read-only case: being able to see a
  * layer and being able to answer it are the same right here.
  */
-export function answerThreadAccess({ tokenLevel, studentId = null, submissionOwnerId = null }) {
-  if (tokenLevel === 'rw') return 'write'
-  if (tokenLevel !== 'read') return 'deny'
-  // A read link with no enrolment behind it is nobody, exactly as below.
-  if (!studentId || !submissionOwnerId) return 'deny'
-  return studentId === submissionOwnerId ? 'write' : 'deny'
+export function answerThreadAccess({ principal = null, submissionOwnerId = null }) {
+  if (principal?.role === 'instructor') return 'write'
+  // Nobody, or an answer whose owner we could not resolve, gets nothing.
+  if (!principal?.studentId || !submissionOwnerId) return 'deny'
+  return principal.studentId === submissionOwnerId ? 'write' : 'deny'
 }
 
 /**
