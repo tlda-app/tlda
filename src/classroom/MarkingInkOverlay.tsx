@@ -198,7 +198,12 @@ function MarkedPair({
           built. Answering an existing layer needs the player, and with it the
           warp, which is the next piece rather than something missing from
           this one. */}
-      {marked && answerHeader && createPortal(
+      {/* `showsInk` rather than `marked`, for the same reason the glass moved:
+          `marked` is one pair, and a student has all of theirs open, so the
+          plus landed on whichever installed last and was absent from the other
+          twelve. This commit is `marking-v2`'s and the change is one token —
+          revert it if their design wants a single plus. */}
+      {showsInk && answerHeader && createPortal(
         <ReplyPlus
           answer={{ submissionRoomId: `doc-${pair.contentRef}`, problemId }}
           doc={pair.contentRef}
