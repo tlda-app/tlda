@@ -283,6 +283,30 @@ export function answerMarkup(answer: HTMLElement, displayName: string, doc: Docu
   // uses the mechanism that already exists for exactly this rather than
   // inventing a rule.
   for (const image of copy.querySelectorAll('img')) image.classList.add('darkmode-invariant')
+  // AN ANSWER ARRIVES COLLAPSED, AND NOTHING IN THE PANE CAN OPEN IT.
+  //
+  // The submission is Quarto-rendered, so an answer callout carries Bootstrap's
+  // collapse state: the body is `callout-collapse collapse` without `show`, the
+  // header is `collapsed`, `aria-expanded="false"`. That is inert markup here —
+  // the pane renders the clone as a document of its own and has no Bootstrap to
+  // toggle it — so the body is present in the DOM and hidden by CSS. Measured
+  // on his course: the pane's whole text was the header line, and the student's
+  // counts were in the element underneath it.
+  //
+  // Skip, on the shot that showed it: "it shows the answer next to a collapsed
+  // solution callout / that shouldnt be possible". Beyond looking wrong it is a
+  // trap — marking what is in front of you draws on the template while their
+  // work sits hidden below.
+  //
+  // Expanded on the clone, beside the header strip that is already happening
+  // here, rather than with a stylesheet rule. A CSS override would be a second
+  // place this rule lives, and the two would drift; the import is the one
+  // moment the markup is ours to correct.
+  for (const body of copy.querySelectorAll('.callout-collapse')) body.classList.add('show')
+  for (const collapsed of copy.querySelectorAll('.callout-header.collapsed')) {
+    collapsed.classList.remove('collapsed')
+    collapsed.setAttribute('aria-expanded', 'true')
+  }
   const header = doc.createElement('div')
   header.className = ANSWER_HEADER_CLASS
   header.textContent = displayName
@@ -389,11 +413,30 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
     // Opening on a named student asks for the answers up front, which is exactly
     // what `step` avoids doing for a chapter he is only reading — so it happens
     // only when a student was actually named.
+    //
+    // KNOWING THERE IS SOMETHING TO OPEN IS NOT OPENING IT, and this block is
+    // where those two came apart.
+    //
+    // `collapsedLabel` exists to say *there is something here* — and `render`
+    // can only say it by reading `answers`, which is fetched lazily and, until
+    // now, only by this block or by pressing an arrow. Removing the student's
+    // auto-open removed the only arrival fetch with it, so the label had
+    // nothing to read and fell through to "no answer": a student arriving on
+    // their returned work was told it did not exist. That is the thing the
+    // label was added to stop, reintroduced by deleting the thing it was
+    // parasitic on.
+    //
+    // So a caller that asked for a collapsed label gets the list fetched, and
+    // `index` is NOT set. Opening stays an act a person performs — Skip: "it
+    // shouldnt autoopen shit" — while knowing there is something to open
+    // becomes eager, which is the only way the affordance can be truthful.
     void (async () => {
-      if (!options.openAt) return void render()
+      if (!options.openAt && !options.collapsedLabel) return void render()
       answers ??= await options.answersFor(exerciseId)
-      const at = answers.findIndex(answer => answer.studentId === options.openAt)
-      if (at >= 0) index = at
+      if (options.openAt) {
+        const at = answers.findIndex(answer => answer.studentId === options.openAt)
+        if (at >= 0) index = at
+      }
       await render()
     })()
 
