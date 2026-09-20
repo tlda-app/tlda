@@ -79,7 +79,11 @@ export function AnswerPane({
       onHeader(view.document.querySelector<HTMLElement>(`.${ANSWER_HEADER_CLASS}`))
     }
     report()
-    const resize = new view.ResizeObserver(report)
+    // The answer's OWN `ResizeObserver`, so the observation is driven by the
+    // document being measured rather than by ours. `contentWindow` is typed as
+    // `Window`, which does not declare it — the global constructors live on
+    // `typeof globalThis` — so the view is named at the type it actually has.
+    const resize = new (view as Window & typeof globalThis).ResizeObserver(report)
     resize.observe(root)
 
     // FOLLOW THE CHAPTER INTO DARK AND BACK.
