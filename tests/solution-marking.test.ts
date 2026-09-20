@@ -15,7 +15,7 @@ import type { MarkableAnswer } from '../src/classroom/solutionMarking'
 // top-level dynamic import, which is what makes vitest treat this file as a
 // suite rather than reporting "no test suite found" while node:test happily
 // prints ticks beside it.
-const { installSolutionMarking, exerciseIdForSolution } = await import('../src/classroom/solutionMarking')
+const { installSolutionMarking, exerciseIdForSolution, hasReturnedWork } = await import('../src/classroom/solutionMarking')
 
 // Each chapter gets its own JSDOM rather than a bare `createHTMLDocument`,
 // because a document made that way has no `defaultView` — and the code under
@@ -354,4 +354,21 @@ test("the answer carries the student's name on itself, not only in the pager", a
   const next = shown.current()!
   assert.equal(next.querySelector('.tlda-marking-answer-header')?.textContent, 'bo')
   assert.equal(next.querySelectorAll('.tlda-marking-answer-header').length, 1, 'one name, not an accumulating pile')
+})
+
+// --- the affordance ---
+//
+// The live negative case cannot be loaded: the walk roster is one student
+// holding all thirteen answers, so "an exercise with no returned work of mine"
+// does not exist there to photograph. These cover the direction the surface
+// cannot, which is why they assert both ways rather than only the one that
+// makes the feature look built.
+
+test('the signal fires when there is returned work of the reader\'s own', () => {
+  assert.equal(hasReturnedWork([{ studentId: 's', displayName: 'S', contentRef: 'c', load: async () => null }]), true)
+})
+
+test('and does not fire when there is none, or when the list was never fetched', () => {
+  assert.equal(hasReturnedWork([]), false, 'answered nothing on this exercise')
+  assert.equal(hasReturnedWork(null), false, 'never asked -- must not claim, the "no answer" failure inverted')
 })

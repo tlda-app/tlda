@@ -167,6 +167,16 @@ function installStyle(doc: Document) {
   // the page at the width it has always had while he marks it.
   style.textContent = `
     .${PAIR_CLASS} { position: relative; }
+    /*
+     * The signal, on the collapsed header. Visible without opening anything,
+     * which is the whole requirement: it says there is something here and
+     * leaves the decision to look where it belongs.
+     */
+    .${ARROWS_CLASS}-returned {
+      color: #2f7d5a;
+      font-size: 0.7em;
+      line-height: 1;
+    }
     .${ARROWS_CLASS} {
       display: inline-flex;
       gap: 0.25rem;
@@ -215,6 +225,32 @@ export function exerciseIdForSolution(solution: HTMLElement, doc: Document): str
  */
 function arrowHost(solution: HTMLElement): HTMLElement {
   return solution.querySelector<HTMLElement>('.callout-header') ?? solution
+}
+
+/**
+ * Whether this exercise carries returned work of the reader's own.
+ *
+ * WHAT THIS DOES AND DOES NOT SAY. It says *your work on this exercise has been
+ * returned to you*. It does NOT say *someone wrote on it*, and the difference is
+ * reachable rather than theoretical: `returnFeedback` sets the status on the
+ * SUBMISSION (`classroom-store.mjs:513`, `setStatus(assignmentId, studentId,
+ * 'returned')`), so returning a single marked exercise makes every exercise in
+ * that submission returned. The Return button only appears while the draft
+ * holds shapes, so he can only return what he marked -- but that one return
+ * carries the others with it.
+ *
+ * Saying *feedback* here would be the `"no answer"` defect in the other
+ * direction: a signal shipped under a description it does not meet.
+ *
+ * The truthful version costs nothing extra because `answers` is already
+ * fetched. The version that could say *feedback* needs per-exercise ink, which
+ * exists nowhere: `returnedMarks` is computed at return time and handed to the
+ * response without being persisted (`classroom.mjs:788`), and `feedback_marks`
+ * carries no exercise id at all. Reading it live would mean thirteen returned
+ * sync rooms on arrival, which is the cost this whole night removed.
+ */
+export function hasReturnedWork(answers: MarkableAnswer[] | null): boolean {
+  return !!answers && answers.length > 0
 }
 
 /** Take the pair apart, leaving the solution callout exactly as it was found. */
@@ -349,6 +385,13 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
     back.type = 'button'
     back.textContent = '‹'
     back.setAttribute('aria-label', `Previous student's answer for ${exerciseId}`)
+    // The signal. Skip: "it can show an arrow or whatever but like" -- it
+    // indicates and it opens nothing, because the whole point is that the
+    // decision to look stays theirs. Rendered beside the pager on the COLLAPSED
+    // header, so it is visible without opening the callout.
+    const marker = doc.createElement('span')
+    marker.className = `${ARROWS_CLASS}-returned`
+    marker.textContent = '\u25CF'
     const label = doc.createElement('span')
     label.className = `${ARROWS_CLASS}-label`
     const forward = doc.createElement('button')
@@ -372,6 +415,20 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
       label.textContent = current
         ? `${current.displayName} ${index + 1}/${answers!.length}`
         : answers?.length ? options.collapsedLabel ?? 'no answer' : 'no answer'
+      // Only for the reader whose own work it is. For him the pager already
+      // says whose answer he is on, and a dot on every exercise he can mark
+      // would be thirteen identical marks carrying nothing.
+      // PRESENT OR ABSENT, never present-and-hidden. `hidden` still puts the
+      // glyph in `textContent`, and the pager's text is something an existing
+      // test asserts exactly -- a marker that reads as part of the label is a
+      // marker that has changed what the label says.
+      const signal = !!options.collapsedLabel && hasReturnedWork(answers)
+      if (signal) {
+        marker.title = 'Your returned work is here'
+        if (!marker.isConnected) arrows.prepend(marker)
+      } else {
+        marker.remove()
+      }
       back.disabled = index < 0
       forward.disabled = answers !== null && index >= answers.length - 1
       if (!current) {
