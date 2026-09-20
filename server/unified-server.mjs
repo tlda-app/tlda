@@ -10996,6 +10996,12 @@ await traceStartupPhase('recover-build-publications', () => recoverBuildPublicat
 markStartupPhase('listen', 'start')
 server.listen(PORT, HOST, () => {
   markStartupPhase('listen', 'callback')
+  // The routes need to ask the app what it serves — the mount touches the
+  // bytes (solutions variants, metadata aliases, 404 semantics), so reading
+  // this process's disk answers about a surface nobody watches. Hand them the
+  // base URL here, not at route mount: PORT and useTls are settled by now,
+  // and under TLS loopback needs the cert-valid name rather than a guess.
+  app.locals.selfBaseUrl = localServerBaseUrl()
   const proto = useTls ? 'https' : 'http'
   console.log(`Unified server running on ${proto}://${HOST}:${PORT}`)
   if (useTls) console.log(`  TLS: ${TLS_CERT}`)

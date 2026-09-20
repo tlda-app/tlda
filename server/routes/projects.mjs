@@ -1482,20 +1482,59 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
     // question instead is how this spent three weeks looking correct.
     // The app's own tree. An unbuilt row has no page here by definition, which
     // is `null` — asked, and not served — rather than unknown.
+    // THE APP, over HTTP through its own serving mount — not this process's disk.
+    //
+    // An earlier version read the on-disk `static/` tree directly. That is the
+    // same bytes only when nothing between the bytes and the reader touches
+    // them — and the mount does touch them: `solutionsVariantPathFor` swaps in
+    // the solutions rendering for entitled readers, `BARE_METADATA` aliases
+    // resolve, and the plain output read is what 404s rather than what exists.
+    // Reading around the mount answered about a surface nobody watches.
+    //
+    // Addressed at `static/` rather than `app/` for the reason the shell trap
+    // documents: `/docs/<project>/app/…` answers 200 with the reader shell for
+    // ANY path, invented ones included, so a comparison addressed there
+    // fingerprints the same shell for every row. `static/` pages go out as the
+    // build wrote them — no bridge, no title, no anchor — which is also what
+    // the class site serves.
+    //
+    // Same-process fetch, not a network round trip: the request is served by
+    // this server's own `/docs` mount, carrying this request's authorization,
+    // so a gated page is asked as its reader rather than as the filesystem.
     readApp: async path => {
-      const file = join(getOutputDir(req.params.name), 'static', ...path.split('/'))
-      return existsSync(file) ? readFileSync(file, 'utf8') : null
+      // No port-sniffing: the server hands its own base URL to the routes at
+      // listen (see app.locals.selfBaseUrl), because under TLS loopback needs
+      // the cert-valid name and a guessed port is wrong in exactly the
+      // environments where this matters.
+      const base = req.app.locals.selfBaseUrl
+      if (!base) throw new Error('the app has no address to ask itself')
+      const url = `${base}/docs/${encodeURIComponent(req.params.name)}/static/${path.split('/').map(encodeURIComponent).join('/')}`
+      const response = await fetch(url, { headers: req.headers?.authorization ? { authorization: req.headers.authorization } : {} })
+      if (response.status === 404) return null
+      if (!response.ok) throw new Error(`the app answered ${response.status} for ${path}`)
+      return await response.text()
     },
     readPreview: async path => {
       // Throw rather than return undefined: the reason is what distinguishes
       // "nobody configured a preview" from "the preview did not answer", and
       // those read identically without it.
+      //
+      // And a bare fetch is not a check: a bare address can answer 200 with
+      // anything — a proxy page, a stale shell, a captive portal — and the
+      // mark would then swear the preview agrees with the app. So this asserts
+      // a page came back before returning it, and a failure names the address
+      // it could not get one from.
       if (!project.previewUrl) throw new Error('no preview address configured for this project')
-      const url = `${project.previewUrl.replace(/\/$/, '')}/${path}`
-      const response = await fetch(url)
+      const base = project.previewUrl.replace(/\/$/, '')
+      const url = `${base}/${path}`
+      let response
+      try { response = await fetch(url) }
+      catch (e) { throw new Error(`preview at ${base} did not answer (${String(e?.message || e).slice(0, 120)})`) }
       if (response.status === 404) return null
-      if (!response.ok) throw new Error(`${url} answered ${response.status}`)
-      return await response.text()
+      if (!response.ok) throw new Error(`preview at ${base} answered ${response.status} for ${path}`)
+      const text = await response.text()
+      if (!/<(main|body|html)[\s>]/i.test(text)) throw new Error(`preview at ${base} answered 200 with something that is not a page for ${path}`)
+      return text
     },
     publishedBase,
     // Name the destination the row actually compared. "the class site" was a
