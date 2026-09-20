@@ -199,7 +199,20 @@ function MarkedPair({
   //
   // A student has no write target at all; their glasses are read-only, which is
   // why their side is unchanged.
-  const showsInk = pair.viewerRole === 'instructor' ? (marked || isWriteTarget) : true
+  // WHERE A PICKER EXISTS IT DECIDES; WHERE IT DOES NOT, behave as before.
+  //
+  // `marked || isWriteTarget` kept the previously-marked pair's glass mounted
+  // after switching away, so two glasses were live at once -- measured on the
+  // serving build, pair 1 at top 926 and pair 2 still at 4160. With line 306
+  // below also fixed they would merely be one read-only and one writable, but
+  // an editor mounted over an answer nobody is marking is still an editor.
+  //
+  // The fallback is for the surfaces with no `LayersContext` -- `ProblemMarking`
+  // and `StudentWork`. There is no target to follow there, so they keep exactly
+  // the glass they have today rather than losing marking entirely.
+  const showsInk = pair.viewerRole === 'instructor'
+    ? (isWriteTarget || (marked && !layersValue))
+    : true
   const pairKey = `${pair.exerciseId}:${pair.studentId}`
   const [returnStatus, setReturnStatus] = useState<{ pairKey: string; text: string; error: boolean } | null>(null)
   const draftShapeCount = useValue(
@@ -303,7 +316,12 @@ function MarkedPair({
         studentId={pair.studentId}
         bookEditor={editor}
         visible
-        isWriteTarget={pair.viewerRole === 'instructor'}
+        // THE COMPUTED TARGET, not the role. This line was the defect: it is
+        // true for an instructor on EVERY mounted pair, and it gates pointer
+        // capture (`StudentAnnotationOverlay:157`), camera mirror-back (:221)
+        // and tool following (:244) -- write authority, not appearance. So the
+        // picker moved the glass while every glass still claimed the pen.
+        isWriteTarget={isWriteTarget}
         roomId={marksRoomId}
         camera={frame.camera}
         bounds={frame.bounds}
