@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useValue, type Editor } from 'tldraw'
-import { gradingDraftRoomId } from '../../shared/classroom-rooms.mjs'
+import { gradingDraftRoomId, gradingReturnedRoomId } from '../../shared/classroom-rooms.mjs'
 import { ensureViewLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
 import { classroomApi } from './api'
 import { AnswerPane } from './AnswerPane'
@@ -90,6 +90,25 @@ function MarkedPair({
   // submission was still marked returned, and the button still reported a count
   // — of the local draft it was reading, never of anything the student received.
   const problemId = `ans-${pair.exerciseId}`
+  // THE TWO READERS ARE NOT IN THE SAME ROOM, and this is the whole of handback
+  // on this surface.
+  //
+  // The instructor writes the draft; the student reads the copy a return makes.
+  // `classroomRoomAccess` denies a student the draft unconditionally — even
+  // after a return, so that marking resumed afterwards is not live to them —
+  // so pointing both at the draft gave the student a glass over a room they
+  // are refused, and their marks appeared nowhere on the chapter at all.
+  //
+  // Their marks were only ever visible on `StudentWork`, which lays their
+  // submission out as its own document. There is no pair wrapper there, so the
+  // coordinates — correct, and relative to the wrapper — put the mark off in
+  // empty canvas. That is the detached mark, and it is a surface fault rather
+  // than a coordinate one: `docs/classroom.md` says handback returns the marked
+  // exercise "to the student in the book", and the book is this chapter, where
+  // the wrapper exists for them exactly as it does for him.
+  const marksRoomId = pair.viewerRole === 'instructor'
+    ? gradingDraftRoomId(`doc-${pair.contentRef}`, problemId)
+    : gradingReturnedRoomId(`doc-${pair.contentRef}`, problemId)
   const pairKey = `${pair.exerciseId}:${pair.studentId}`
   const [returnStatus, setReturnStatus] = useState<{ pairKey: string; text: string; error: boolean } | null>(null)
   const draftShapeCount = useValue(
@@ -149,7 +168,7 @@ function MarkedPair({
         bookEditor={editor}
         visible
         isWriteTarget={pair.viewerRole === 'instructor'}
-        roomId={gradingDraftRoomId(`doc-${pair.contentRef}`, problemId)}
+        roomId={marksRoomId}
         camera={frame.camera}
         bounds={frame.bounds}
         onEditorMount={setDraftEditor}
