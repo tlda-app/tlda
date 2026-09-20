@@ -34,6 +34,11 @@ const AGENT_RESULT_SHAPE = {
   getPendingShellAgents: 'many',
   getLineageRoster: 'many',
   getAliveAgentsPage: 'page',
+  // Two agent arrays in one result. It is listed with its own shape rather than
+  // folded into 'many' because an unstamped row reads as hibernating, and the
+  // rows this one carries are exactly the roster people read to decide whether
+  // an agent is alive.
+  getFleetTableSnapshot: 'fleetTable',
 }
 
 export class FleetStoreClient {
@@ -157,6 +162,13 @@ export class FleetStoreClient {
     if (shape === 'many') return Array.isArray(result) ? result.map(one) : result
     if (shape === 'page') {
       return Array.isArray(result?.agents) ? { ...result, agents: result.agents.map(one) } : result
+    }
+    if (shape === 'fleetTable') {
+      return {
+        ...result,
+        roster: Array.isArray(result?.roster) ? result.roster.map(one) : [],
+        pendingShells: Array.isArray(result?.pendingShells) ? result.pendingShells.map(one) : [],
+      }
     }
     return result
   }

@@ -633,7 +633,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (!fleetStore) { res.json({ totals: { awake: 0, hibernating: 0, dead: 0, total: 0 }, agents: [], shown: 0, matched: 0 }); return }
       const now = Date.now()
       const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
-      const roster = await fleetStore.getAliveAgents?.() || []
+      // One store call, not three. The worker handles one message at a time, so
+      // each separate await was a turn in the queue rather than a query — and
+      // one of the three (getAliveAgents) reads an in-memory view and does no
+      // query at all. See getFleetTableSnapshot for the measurement.
+      const snapshot = await fleetStore.getFleetTableSnapshot?.() || {}
+      const roster = snapshot.roster || []
       // An agent whose login never completed keeps metadata.shell=1, and no roster read
       // returns it — so the one surface people use to ask "where is X" answers "no agents
       // match" for a row that is sitting right there. Skip hit this reaching for an agent
@@ -644,7 +649,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       // id lookup finds them. The count is reported either way — the totals previously
       // summed to a number these rows were absent from, which is what made "0 dead,
       // N total" look like proof that nothing had gone missing.
-      const pendingShells = await fleetStore.getPendingShellAgents?.() || []
+      const pendingShells = snapshot.pendingShells || []
 
       // Whole-fleet totals (independent of the filter) — the at-a-glance load.
       // Optional filter expression from the query (e.g. "awake & reviewers").
@@ -681,7 +686,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.json({
         resolved_elsewhere: resolvedElsewhere,
         totals: { ...summary.totals, pending: pendingShells.length },
-        wholeFleet: await fleetStore.getAgentSummary?.() || null,
+        wholeFleet: snapshot.wholeFleet || null,
         summary: summary.summary,
         agents: summary.agents,
         shown: summary.shown,

@@ -4541,6 +4541,28 @@ export class FleetStore {
     return this._aliveAgentRosterView?.list || [];
   }
 
+  // The three reads `/api/fleet-table` needs, in one crossing of the worker
+  // boundary.
+  //
+  // The store runs on one thread handling one message at a time, so a caller's
+  // cost is not its query but its turn in the queue. That route awaited
+  // getAliveAgents, getPendingShellAgents and getAgentSummary in sequence, so
+  // every roster read took three turns — and measured on the live server
+  // (2026-09-19, 18,104 calls each over ~69 minutes) those three were 54,312 of
+  // 391,703 calls through the worker, 13.9% of everything.
+  //
+  // The sharpest part is getAliveAgents: it returns the maintained in-memory
+  // view and touches no SQL at all, yet carried the worst mean wait of any
+  // method at 106ms. It was not slow; it was queued. Folding the three together
+  // makes that read free again rather than making it faster.
+  getFleetTableSnapshot() {
+    return {
+      roster: this.getAliveAgents(),
+      pendingShells: this.getPendingShellAgents(),
+      wholeFleet: this.getAgentSummary(),
+    };
+  }
+
   getAgentsByIds(ids = []) {
     const unique = [...new Set((ids || []).filter(Boolean).map(String))];
     if (!unique.length) return [];
