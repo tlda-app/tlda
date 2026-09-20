@@ -28,9 +28,11 @@ export interface ReplyPlusProps {
   playing?: PlayingLayer | null
   /** The editor whose ink belongs to this layer; audio-only without one. */
   editor?: Editor | null
+  /** Called once a layer is stored, so a thread listing can pick it up. */
+  onLayerRecorded?: (layerId: string) => void
 }
 
-export function ReplyPlus({ answer, doc, playing, editor }: ReplyPlusProps) {
+export function ReplyPlus({ answer, doc, playing, editor, onLayerRecorded }: ReplyPlusProps) {
   const [token, setToken] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -66,14 +68,18 @@ export function ReplyPlus({ answer, doc, playing, editor }: ReplyPlusProps) {
     if (!token) return
     setBusy(true)
     try {
-      await stopRecording(token)
+      // The id the server stored it under, which is the layer's id. Announced
+      // only once it is stored: a thread listing told about a layer that failed
+      // to upload would show one that cannot be played.
+      const layerId = await stopRecording(token)
+      if (layerId) onLayerRecorded?.(layerId)
     } catch (err) {
       setError((err as Error).message)
     } finally {
       setBusy(false)
       setToken(null)
     }
-  }, [token])
+  }, [token, onLayerRecorded])
 
   const recording = !!token && getRecorderState().status !== 'idle'
   const kind = replyKind(playing)

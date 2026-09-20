@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { useValue, type Editor } from 'tldraw'
 import { gradingDraftRoomId, gradingReturnedRoomId } from '../../shared/classroom-rooms.mjs'
 import { ReplyPlus } from './ReplyPlus'
+import { ThreadPlayer } from './ThreadPlayer'
+import type { PlayingLayer } from './replyLayer'
 import { ensureViewLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
 import { classroomApi } from './api'
 import { AnswerPane } from './AnswerPane'
@@ -84,6 +86,13 @@ function MarkedPair({
   )
   const [draftEditor, setDraftEditor] = useState<Editor | null>(null)
   const [returning, setReturning] = useState(false)
+  // The layer open in front of the reader, if the player is running one. The
+  // plus answers whatever this is, so it is the whole of "reply to anything".
+  const [playing, setPlaying] = useState<PlayingLayer | null>(null)
+  // Bumped when a layer finishes recording, so the player's list picks it up.
+  // A thread you just added to that does not show what you added reads as the
+  // recording having failed.
+  const [threadRevision, setThreadRevision] = useState(0)
   // Which problem's marks these are. Named ONCE, because it is both the stem of
   // the draft room this overlay writes into and the problem `/return` copies
   // across, and those two being written out separately is what broke returning:
@@ -91,6 +100,10 @@ function MarkedPair({
   // submission was still marked returned, and the button still reported a count
   // — of the local draft it was reading, never of anything the student received.
   const problemId = `ans-${pair.exerciseId}`
+  const answerRef = useMemo(
+    () => ({ submissionRoomId: `doc-${pair.contentRef}`, problemId }),
+    [pair.contentRef, problemId],
+  )
   // THE TWO READERS ARE NOT IN THE SAME ROOM, and this is the whole of handback
   // on this surface.
   //
@@ -198,18 +211,27 @@ function MarkedPair({
           built. Answering an existing layer needs the player, and with it the
           warp, which is the next piece rather than something missing from
           this one. */}
-      {/* `showsInk` rather than `marked`, for the same reason the glass moved:
-          `marked` is one pair, and a student has all of theirs open, so the
-          plus landed on whichever installed last and was absent from the other
-          twelve. This commit is `marking-v2`'s and the change is one token —
-          revert it if their design wants a single plus. */}
+      {/* `showsInk` rather than `marked`, and the flag is answer-pane's: `marked`
+          is one pair, and a student has all of theirs open, so gating on it put
+          the plus on whichever exercise installed last and on none of the other
+          twelve. They caught it in my code having just hit the same shape in
+          their own. */}
       {showsInk && answerHeader && createPortal(
-        <ReplyPlus
-          answer={{ submissionRoomId: `doc-${pair.contentRef}`, problemId }}
-          doc={pair.contentRef}
-          editor={draftEditor}
-          playing={null}
-        />,
+        <>
+          <ThreadPlayer
+            answer={answerRef}
+            doc={pair.contentRef}
+            onPlayingChange={setPlaying}
+            revision={threadRevision}
+          />
+          <ReplyPlus
+            answer={answerRef}
+            doc={pair.contentRef}
+            editor={draftEditor}
+            playing={playing}
+            onLayerRecorded={() => setThreadRevision(n => n + 1)}
+          />
+        </>,
         answerHeader,
       )}
       {marked && pair.viewerRole === 'instructor' && answerHeader && createPortal(
