@@ -119,9 +119,49 @@ test('a surface that cannot be reached is not reported as a missing page', async
     readPreview: async () => '<main><p>same prose</p></main>',
     publishedBase: 'https://site.example',
     fetchImpl: async () => Promise.reject(new Error('ENOTFOUND')),
+    target: 'qtm285.github.io',
   })
-  assert.equal(marks[0].stage, null, 'an unreachable class site must not invent a stage')
-  assert.match(marks[0].error, /the class site could not be asked/, 'and it must name which surface')
+  assert.equal(marks[0].stage, null, 'an unreachable published site must not invent a stage')
+  assert.match(marks[0].error, /qtm285\.github\.io/, 'and it must name the target it compared, not "the class site"')
+  assert.match(marks[0].error, /ENOTFOUND/, 'and carry why it could not be asked')
+})
+
+// "could not be asked" was the identical sentence for a field nobody had set
+// and for a host the server cannot resolve. Separating those cost three
+// measurements and a probe from inside the app machine on 2026-09-20, so the
+// two must not read alike.
+test('an unset address and an unreachable host do not produce the same sentence', async () => {
+  const withoutAddress = await compareCourseSurfaces([PAGE('app/book/chapters/one.html')], {
+    readApp: async () => '<main><p>same prose</p></main>',
+    readPreview: async () => '<main><p>same prose</p></main>',
+    publishedBase: null,
+    fetchImpl: async () => { throw new Error('should not be called') },
+  })
+  const unreachable = await compareCourseSurfaces([PAGE('app/book/chapters/one.html')], {
+    readApp: async () => '<main><p>same prose</p></main>',
+    readPreview: async () => '<main><p>same prose</p></main>',
+    publishedBase: 'https://site.example',
+    fetchImpl: async () => Promise.reject(new Error('ENOTFOUND')),
+  })
+  assert.match(withoutAddress[0].error, /no address configured/)
+  assert.match(unreachable[0].error, /ENOTFOUND/)
+  assert.notEqual(withoutAddress[0].error, unreachable[0].error)
+})
+
+// One row's failure must not be reported against another's.
+test('a reason belongs to the row that produced it', async () => {
+  const marks = await compareCourseSurfaces(
+    [PAGE('app/book/chapters/one.html'), PAGE('app/book/chapters/two.html')], {
+      readApp: async () => '<main><p>same prose</p></main>',
+      readPreview: async () => '<main><p>same prose</p></main>',
+      publishedBase: 'https://site.example',
+      fetchImpl: async url => url.includes('two')
+        ? Promise.reject(new Error('ENOTFOUND'))
+        : { ok: true, status: 200, text: async () => '<main><p>same prose</p></main>' },
+    })
+  assert.equal(marks[0].stage, 'published', 'the row that answered is unaffected')
+  assert.equal(marks[0].error, null)
+  assert.match(marks[1].error, /ENOTFOUND/, 'and only the failing row carries the reason')
 })
 
 test('the comparison reads 404 as absent, and agreement all the way as published', async () => {

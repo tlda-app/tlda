@@ -1487,13 +1487,21 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
       return existsSync(file) ? readFileSync(file, 'utf8') : null
     },
     readPreview: async path => {
-      if (!project.previewUrl) return undefined
-      const response = await fetch(`${project.previewUrl.replace(/\/$/, '')}/${path}`)
+      // Throw rather than return undefined: the reason is what distinguishes
+      // "nobody configured a preview" from "the preview did not answer", and
+      // those read identically without it.
+      if (!project.previewUrl) throw new Error('no preview address configured for this project')
+      const url = `${project.previewUrl.replace(/\/$/, '')}/${path}`
+      const response = await fetch(url)
       if (response.status === 404) return null
-      if (!response.ok) return undefined
+      if (!response.ok) throw new Error(`${url} answered ${response.status}`)
       return await response.text()
     },
     publishedBase,
+    // Name the destination the row actually compared. "the class site" was a
+    // fixed phrase while the configured target was his test site, so a row read
+    // as reassurance about a surface he did not mean.
+    target: publishedBase ? publishedBase.replace(/^https?:\/\//, '').replace(/\/static$/, '') : 'the published site',
   })
   res.json({
     marks: marks.map(({ page, source, stage, error, errorAt, why }) => ({ page, source, stage, error, errorAt, why })),

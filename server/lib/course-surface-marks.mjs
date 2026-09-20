@@ -62,11 +62,17 @@ export function documentTextFingerprint(html) {
  * can say which surface could not be reached, rather than only that one could
  * not. Saying nothing was the bug that kept this invisible for three weeks.
  */
-export function markForRow({ app, preview, live, failure = null }) {
-  const unreachable = [['the app', app], ['preview', preview], ['the class site', live]]
+export function markForRow({ app, preview, live, failure = null, target = 'the published site', reasons = {} }) {
+  const unreachable = [['the app', app, reasons.app], ['preview', preview, reasons.preview], [target, live, reasons.live]]
     .filter(([, value]) => value === undefined)
-    .map(([label]) => label)
+    .map(([label, , reason]) => (reason ? `${label} (${reason})` : label))
   if (unreachable.length > 0) {
+    // WHY THE REASON IS IN THE SENTENCE. "preview could not be asked" was the
+    // identical text for a field nobody had set and for a host the server
+    // cannot resolve, and telling those apart cost three measurements and a
+    // probe from inside the machine on 2026-09-20. The fetch already knows
+    // which it was; discarding it and making the reader rediscover it is the
+    // same defect this column exists to remove.
     const named = unreachable.join(' and ')
     return { stage: null, error: `${named} could not be asked`, errorAt: null, why: `${named} could not be asked` }
   }
@@ -107,9 +113,15 @@ export function markForRow({ app, preview, live, failure = null }) {
     stage,
     error,
     errorAt,
+    // NAME THE TARGET RATHER THAN CALLING IT "the class site". Where a course
+    // publishes is configured, and on 2026-09-20 it was his test site while he
+    // reviewed it -- so "the class site is serving what you wrote" was a
+    // sentence reading as reassurance about a site he did not mean. A row that
+    // names what it compared stays true when somebody flips `publication.url`,
+    // and a reader who was not there can tell which surface answered.
     why: error || (
-      stage === 'published' ? 'the class site is serving what you wrote'
-      : stage === 'preview' ? 'on preview, not yet on the class site'
+      stage === 'published' ? `${target} is serving what you wrote`
+      : stage === 'preview' ? `on preview, not yet on ${target}`
       : 'not on preview yet'
     ),
   }
@@ -194,29 +206,46 @@ export async function compareCourseSurfaces(pages, {
   publishedBase,
   fetchImpl = fetch,
   failureFor = () => null,
+  target = 'the published site',
 }) {
-  const fingerprintOf = async read => {
-    try {
-      const html = await read()
-      if (html === undefined) return undefined
-      return html === null ? null : documentTextFingerprint(html)
-    } catch {
-      return undefined
+  // The reason travels with the value, and per row rather than shared. An
+  // empty catch here is what made "could not be asked" mean both "nobody
+  // configured it" and "the host does not resolve" -- see markForRow -- and a
+  // shared record would report one page's failure against another's row.
+  const probe = reasons => {
+    const fingerprintOf = async (read, surface) => {
+      try {
+        const html = await read()
+        if (html === undefined) return undefined
+        return html === null ? null : documentTextFingerprint(html)
+      } catch (e) {
+        reasons[surface] = String(e?.message || e).slice(0, 200)
+        return undefined
+      }
     }
+    const fetched = (url, surface) => fingerprintOf(async () => {
+      if (!url) {
+        reasons[surface] = 'no address configured'
+        return undefined
+      }
+      const response = await fetchImpl(url)
+      if (response.status === 404) return null
+      if (!response.ok) {
+        reasons[surface] = `${url} answered ${response.status}`
+        return undefined
+      }
+      return await response.text()
+    }, surface)
+    return { fingerprintOf, fetched }
   }
-  const fetched = url => fingerprintOf(async () => {
-    if (!url) return undefined
-    const response = await fetchImpl(url)
-    if (response.status === 404) return null
-    if (!response.ok) return undefined
-    return await response.text()
-  })
   return marksForRows(await Promise.all(pages.map(async (page, index) => {
     const path = publicationPathForPage(page.file)
+    const reasons = {}
+    const { fingerprintOf, fetched } = probe(reasons)
     const [app, preview, live] = await Promise.all([
-      fingerprintOf(() => readApp(path)),
-      fingerprintOf(() => readPreview(path)),
-      fetched(publishedUrlForPage(page.file, publishedBase)),
+      fingerprintOf(() => readApp(path), 'app'),
+      fingerprintOf(() => readPreview(path), 'preview'),
+      fetched(publishedUrlForPage(page.file, publishedBase), 'live'),
     ])
     return {
       page: index + 1,
@@ -224,6 +253,8 @@ export async function compareCourseSurfaces(pages, {
       app,
       preview,
       live,
+      target,
+      reasons,
       failure: failureFor(page) || null,
     }
   })))
