@@ -125,6 +125,20 @@ export interface SolutionMarkingOptions {
    */
   onShow?: (exerciseId: string, answer: MarkableAnswer | null, pair: HTMLElement | null, markup: string | null) => void
   /**
+   * What the pager says at position zero when there IS an answer to show.
+   *
+   * Defaults to `no answer`, which is what it has always said and what is true
+   * for him: he walks a list of students and zero means nobody is selected. A
+   * student's list is one entry, their own returned work, so the same words
+   * tell them their marked homework does not exist. `docs/classroom.md` says
+   * handback returns the marked exercise to the student in the book — a mark
+   * they are told is not there has not been returned in any sense that means.
+   *
+   * Only reached when the list is non-empty, so it can never claim something is
+   * there when nothing is.
+   */
+  collapsedLabel?: string
+  /**
    * Open on this student's answer rather than at position zero.
    *
    * The gradebook link is a particular student's cell, so arriving at "no
@@ -309,9 +323,19 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
 
     const render = async () => {
       const current = index >= 0 && answers ? answers[index] ?? null : null
+      // AT POSITION ZERO, "no answer" AND "not showing one" ARE DIFFERENT
+      // THINGS, and saying the first when the second is true is a lie to
+      // whoever is reading.
+      //
+      // For him they coincide: he pages through a list of students and zero
+      // means he has landed on nobody. For a student the list is one entry —
+      // their own returned work — so the page was telling them there is no
+      // answer while their marked homework sat one click away. `collapsedLabel`
+      // is what to say when there IS something and it is not open; the default
+      // leaves his pager exactly as it was.
       label.textContent = current
         ? `${current.displayName} ${index + 1}/${answers!.length}`
-        : 'no answer'
+        : answers?.length ? options.collapsedLabel ?? 'no answer' : 'no answer'
       back.disabled = index < 0
       forward.disabled = answers !== null && index >= answers.length - 1
       if (!current) {

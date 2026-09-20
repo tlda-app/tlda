@@ -48,10 +48,12 @@ function chapter() {
  * parent as markup and this is the only place it exists to be checked, so the
  * claims below are made against what was handed over.
  */
-function shownAnswers(doc: Document, names: string[]) {
+function shownAnswers(doc: Document, names: string[], openAt?: string, collapsedLabel?: string) {
   const markup: Array<string | null> = []
   installSolutionMarking(doc, {
     answersFor: answersFor(doc, names),
+    openAt,
+    collapsedLabel,
     onShow: (_exerciseId, _answer, _pair, handed) => { markup.push(handed) },
   })
   return {
@@ -213,6 +215,52 @@ test('no named student still opens at no answer', async () => {
   const arrows = doc.querySelectorAll('.tlda-marking-arrows')[0]
   assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
   assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0)
+})
+
+// A STUDENT IS NOT TOLD THEIR OWN MARKED WORK IS ABSENT.
+//
+// Collapsed on arrival is deliberate — their page is the solution page with the
+// grading view unexpanded. But the pager said "no answer" over a list holding
+// their own returned homework, so the one signal that anything had come back
+// said the opposite. `docs/classroom.md`: handback returns the marked exercise
+// to the student in the book.
+test('a student arrives on their own returned answer, not at nobody', async () => {
+  const doc = chapter()
+  const shown = shownAnswers(doc, ['ana'], 'ana')
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  // Open on arrival: their work is beside the solution without pressing
+  // anything, which is what handing it back in the book has to mean.
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 2, 'every solution opens on them')
+  assert.match(shown.current()!.textContent!, /ana/)
+  assert.equal(doc.querySelector('.tlda-marking-arrows-label')?.textContent, 'ana 1/1')
+})
+
+test('paging back says their work is there rather than that nothing is', async () => {
+  const doc = chapter()
+  shownAnswers(doc, ['ana'], 'ana', 'marked')
+  await new Promise(resolve => setTimeout(resolve, 5))
+  const arrows = doc.querySelectorAll('.tlda-marking-arrows')[0]
+
+  arrows.querySelectorAll<HTMLButtonElement>('button')[0].click()
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  assert.equal(arrows.querySelector('.tlda-marking-arrows-label')?.textContent, 'marked')
+  // And that one really is collapsed — the other solution is untouched, which
+  // is why this counts the pager's own solution rather than the chapter's.
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 1, 'only the one he paged back closed')
+  assert.equal(arrows.closest('.tlda-marking-pair'), null, 'and it is that one')
+})
+
+// The counterfactual, and the reason the label cannot become a different lie:
+// with nothing in the list there is nothing to announce, so the words stay the
+// ones that are true.
+test('an exercise with no answers still says so, whatever the label', async () => {
+  const doc = chapter()
+  installSolutionMarking(doc, { answersFor: async () => [], openAt: 'ana', collapsedLabel: 'marked' })
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  assert.equal(doc.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
 })
 
 test('removing the marking leaves the chapter as it was found', async () => {

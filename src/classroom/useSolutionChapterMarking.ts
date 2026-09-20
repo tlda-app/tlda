@@ -126,6 +126,20 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
       const answersForFrame = (frameDocument: Document) => async (exerciseId: string): Promise<MarkableAnswer[]> => {
         if (identity.role === 'student') {
           if (!ownSubmission) return []
+          // ONLY THE EXERCISES THEY ACTUALLY ANSWERED.
+          //
+          // Their submission is one document covering the whole assignment, so
+          // this branch used to hand back the same entry for every exercise in
+          // the chapter — including ones they left blank. The pager then read
+          // `1/1` over their name and paging showed nothing, because
+          // `loadAnswer` finds no `ans-<id>` in their page and returns null.
+          //
+          // `answerIds` is what the submission was inspected to contain when
+          // they handed it in. ABSENT IS NOT EMPTY: a submission recorded
+          // before that field existed carries no list, and filtering on it
+          // would hide every answer they wrote, so an absent list filters
+          // nothing.
+          if (ownSubmission.answerIds && !ownSubmission.answerIds.includes(`ans-${exerciseId}`)) return []
           return [{
             studentId: identity.studentId,
             displayName: identity.displayName ?? identity.preferredName,
@@ -168,9 +182,27 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
             // instructor clicked a particular person's cell; landing him at
             // "no student's answer" throws that away and makes him page back to
             // where he already said he was going.
+            // A STUDENT ARRIVES ON THEIR OWN RETURNED WORK.
+            //
+            // The gradebook link names a student because he clicked their
+            // cell; a student is always the student, so the same mechanism
+            // opens on them with nothing to read off the URL. `findIndex` by
+            // `studentId` matches the single entry their list holds.
+            //
+            // They came to read feedback that has been returned to them —
+            // `docs/classroom.md`: handback returns the marked exercise to the
+            // student in the book. A mark reachable only by knowing to press an
+            // arrow they have never been shown has not been returned in any
+            // sense that means. This install only runs at all once their
+            // submission is `returned`, so nothing opens before there is
+            // something to open, and a student with nothing back still sees the
+            // ordinary chapter.
             openAt: identity.role === 'instructor'
               ? new URLSearchParams(window.location.search).get('student')
-              : null,
+              : identity.studentId,
+            // And if they page back to the collapsed position, it still must
+            // not tell them their own marked homework does not exist.
+            collapsedLabel: identity.role === 'student' ? 'marked' : undefined,
             onShow: (exerciseId, answer, wrapper, markup) => {
               setActivePairs(current => {
                 // This exercise's own entry, in this frame, is the only one this
