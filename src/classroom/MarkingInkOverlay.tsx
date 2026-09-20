@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useValue, type Editor } from 'tldraw'
 import { gradingDraftRoomId, gradingReturnedRoomId } from '../../shared/classroom-rooms.mjs'
+import { ReplyPlus } from './ReplyPlus'
 import { ensureViewLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
 import { classroomApi } from './api'
 import { AnswerPane } from './AnswerPane'
@@ -174,6 +175,26 @@ function MarkedPair({
         onEditorMount={setDraftEditor}
         onEditorRelease={released => setDraftEditor(current => current === released ? null : current)}
       />}
+      {/* The plus is NOT gated on the instructor, and that is the point of it.
+          Skip: "its a thread anyone can reply to anything" — so it sits in the
+          student's header too, on their own returned answer.
+
+          `playing` is null here because this surface has no player yet: a layer
+          can be recorded on the answer but not yet played back beside it. So
+          every layer the plus starts here is a root, which is a mark carrying
+          ink and voice — the half of marking that was specified and never
+          built. Answering an existing layer needs the player, and with it the
+          warp, which is the next piece rather than something missing from
+          this one. */}
+      {marked && answerHeader && createPortal(
+        <ReplyPlus
+          answer={{ submissionRoomId: `doc-${pair.contentRef}`, problemId }}
+          doc={pair.contentRef}
+          editor={draftEditor}
+          playing={null}
+        />,
+        answerHeader,
+      )}
       {marked && pair.viewerRole === 'instructor' && answerHeader && createPortal(
         <span className="tlda-marking-return">
           {draftShapeCount > 0 && (
