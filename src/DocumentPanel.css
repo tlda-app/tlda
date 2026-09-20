@@ -2796,3 +2796,13 @@ html[data-theme="dark"] .mic-toggle-btn {
     right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   }
 }
+
+/* A declared document whose render failed. It keeps its place in the contents
+   rather than vanishing — the point of the row is to say the slides exist and
+   are broken — but there is nothing behind it to open, so the title is not a
+   target. Dimmed rather than hidden: it is still part of his book. */
+.toc-item.toc-item-unbuilt > .toc-title {
+  opacity: var(--ui-tone-dormant);
+  cursor: default;
+  font-style: italic;
+}

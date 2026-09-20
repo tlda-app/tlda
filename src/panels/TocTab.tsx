@@ -108,7 +108,15 @@ type TocStage = 'here-only' | 'preview' | 'published' | null
  * opinion that drifts from it.
  */
 type TocMarkRow = { stage: TocStage; error: string | null; why: string }
-const EMPTY_MARKS: ReadonlyMap<number, TocMarkRow> = new Map<number, TocMarkRow>()
+/**
+ * Keyed by page where there is one, and by source where there is not.
+ *
+ * A declared document whose render failed produces no page, so a row keyed only
+ * to a page number vanishes exactly when something has gone wrong with it —
+ * which is the one time it most needs to be there.
+ */
+type TocMarks = { byPage: ReadonlyMap<number, TocMarkRow>; bySource: ReadonlyMap<string, TocMarkRow> }
+const EMPTY_MARKS: TocMarks = { byPage: new Map<number, TocMarkRow>(), bySource: new Map<string, TocMarkRow>() }
 
 type HomeworkEntry = { assignmentId: string; returned: boolean }
 const EMPTY_HOMEWORK: ReadonlyMap<string, HomeworkEntry> = new Map<string, HomeworkEntry>()
@@ -319,23 +327,31 @@ export function TocTab({ query = '' }: { query?: string }) {
   // Carries the project it was fetched for, like `pageFiles` above and for the
   // same reason: marks read against another project's pages do not fail, they
   // colour the wrong rows.
-  const [fetchedMarks, setFetchedMarks] = useState<{ project: string; byPage: ReadonlyMap<number, TocMarkRow> } | null>(null)
+  const [fetchedMarks, setFetchedMarks] = useState<{ project: string; marks: TocMarks } | null>(null)
   useEffect(() => {
     if (!tocProjectName) return
     let cancelled = false
     const project = tocProjectName
     fetch(`/api/projects/${encodeURIComponent(project)}/toc-marks`)
       .then(response => response.ok ? response.json() : null)
-      .then((body: { marks?: Array<{ page: number; stage: TocStage; error: string | null; why: string }> } | null) => {
+      .then((body: { marks?: Array<{ page: number | null; source: string | null; stage: TocStage; error: string | null; why: string }> } | null) => {
         if (cancelled) return
-        setFetchedMarks({ project, byPage: new Map((body?.marks ?? []).map(row => [row.page, { stage: row.stage, error: row.error, why: row.why }])) })
+        const rows = body?.marks ?? []
+        const mark = (row: typeof rows[number]) => ({ stage: row.stage, error: row.error, why: row.why })
+        setFetchedMarks({
+          project,
+          marks: {
+            byPage: new Map(rows.filter(row => row.page != null).map(row => [row.page as number, mark(row)])),
+            bySource: new Map(rows.filter(row => row.source).map(row => [row.source as string, mark(row)])),
+          },
+        })
       })
       // An unreachable comparison leaves every bullet unmarked, which is what
       // "we don't know" looks like. It must never look like an answer.
-      .catch(() => { if (!cancelled) setFetchedMarks({ project, byPage: EMPTY_MARKS }) })
+      .catch(() => { if (!cancelled) setFetchedMarks({ project, marks: EMPTY_MARKS }) })
     return () => { cancelled = true }
   }, [tocProjectName, reloadCount])
-  const markByPage = fetchedMarks && fetchedMarks.project === tocProjectName ? fetchedMarks.byPage : EMPTY_MARKS
+  const marks = fetchedMarks && fetchedMarks.project === tocProjectName ? fetchedMarks.marks : EMPTY_MARKS
 
   const memberItemType = useMemo(() => {
     const types = new Map<string, CourseItemType>()
@@ -616,7 +632,7 @@ export function TocTab({ query = '' }: { query?: string }) {
   const useHtml = headings.length === 0 && tocItems !== null
 
   // Unified render for both TeX and HTML TOC entries
-  let items: Array<{ level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string; page?: number }> = useHtml
+  let items: Array<{ level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string; page?: number; source?: string; unbuilt?: boolean }> = useHtml
     ? tocItems!.map(h => ({
         level: h.level,
         // `aggregateBookToc` titles a chapter after its member's own top
@@ -631,6 +647,11 @@ export function TocTab({ query = '' }: { query?: string }) {
         center: () => handleHtmlNav(h.page, h.anchor, h.targetFile, h.variant),
         targetFile: h.targetFile,
         page: h.page,
+        // Carried so a row with no page can still find its mark. A declared
+        // document whose render failed has no page to be keyed by, and that is
+        // exactly when it most needs a mark.
+        source: (h as { source?: string }).source,
+        unbuilt: (h as { unbuilt?: boolean }).unbuilt,
       }))
     : headings.map(h => ({
         level: h.level,
@@ -668,8 +689,8 @@ export function TocTab({ query = '' }: { query?: string }) {
   // An unmarked row keeps exactly the bullet it has now, which is what a
   // project with no class site, or a comparison that could not be made, looks
   // like.
-  function renderCenterButton(h: { title: string; center: () => void; page?: number }) {
-    const row = h.page != null ? markByPage.get(h.page) : undefined
+  function renderCenterButton(h: { title: string; center: () => void; page?: number; source?: string }) {
+    const row = h.page != null ? marks.byPage.get(h.page) : h.source ? marks.bySource.get(h.source) : undefined
     const stage = row?.stage ?? null
     const failed = row?.error ?? null
     return (
@@ -704,7 +725,7 @@ export function TocTab({ query = '' }: { query?: string }) {
     )
   }
 
-  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string; page?: number }, nextLevel: TocLevel | TocLevel[]) {
+  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string; page?: number; source?: string; unbuilt?: boolean }, nextLevel: TocLevel | TocLevel[]) {
     const isCollapsed = !normalizedQuery && (collapsed?.has(i) ?? false)
     const next = items[i + 1]
     const childLevels = Array.isArray(nextLevel) ? nextLevel : [nextLevel]
@@ -719,7 +740,7 @@ export function TocTab({ query = '' }: { query?: string }) {
     const homeworkKey = homeworkKeyForTocRow(h, pageFiles)
     const homework = homeworkKey ? homeworkPages.get(homeworkKey) : undefined
     return (
-      <div key={i} className={`toc-item ${h.level}${isCurrent ? ' toc-item-current' : ''}`}>
+      <div key={i} className={`toc-item ${h.level}${isCurrent ? ' toc-item-current' : ''}${h.unbuilt ? ' toc-item-unbuilt' : ''}`}>
         {hasChildren ? (
           <span
             className={`toc-fold ${isCollapsed ? 'collapsed' : ''}`}
@@ -729,7 +750,7 @@ export function TocTab({ query = '' }: { query?: string }) {
           <span className="toc-fold-spacer" />
         )}
         {renderCenterButton(h)}
-        <span className="toc-title" onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
+        <span className="toc-title" onClick={h.unbuilt ? undefined : h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
         {homework?.returned ? <a
           className="toc-item-type toc-item-type--homework"
           href={`?workspace=classroom-work&assignment=${encodeURIComponent(homework.assignmentId)}`}

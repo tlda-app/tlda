@@ -34,59 +34,62 @@ test('one changed number is a different fingerprint at the same length', () => {
   assert.notEqual(documentTextFingerprint(edited), documentTextFingerprint(PUBLISHED_COPY))
 })
 
-test('agreement is published, and a difference is preview', () => {
-  assert.equal(markForRow({ preview: 'aaa', published: 'aaa' }).stage, 'published')
-  assert.equal(markForRow({ preview: 'aaa', published: 'bbb' }).stage, 'preview')
+// The word doing the work is CURRENT. Stale content on live is not arrival: he
+// does not care what is on live if it is not what he wrote, so a class site
+// serving an old page is yellow — the current thing is on preview — and not
+// green-with-a-problem.
+test('the colour is how far the CURRENT version has got', () => {
+  assert.equal(markForRow({ app: 'a', preview: 'a', live: 'a' }).stage, 'published')
+  assert.equal(markForRow({ app: 'a', preview: 'a', live: 'b' }).stage, 'preview', 'live holding the old page is not arrival')
+  assert.equal(markForRow({ app: 'a', preview: 'a', live: null }).stage, 'preview')
+  assert.equal(markForRow({ app: 'a', preview: 'b', live: 'b' }).stage, 'here-only', 'the current text has not reached preview')
+  assert.equal(markForRow({ app: 'a', preview: null, live: null }).stage, 'here-only')
 })
 
-// "the app amd static disagreeing is an error state at that stage bro". These
-// two were the same value and only one of them is a stage: not yet published is
-// behind, while published-and-different is a publish that ran and did not land.
-// Splitting them is what tells him which of his pages are merely unpublished
-// and which are published wrong.
-test('not yet published is behind, and published-but-different is broken', () => {
-  const behind = markForRow({ preview: 'aaa', published: null })
-  assert.equal(behind.stage, 'preview')
-  assert.equal(behind.error, null, 'nothing failed; it simply has not been published')
-
-  const wrong = markForRow({ preview: 'aaa', published: 'bbb' })
-  assert.equal(wrong.stage, 'preview', 'the stage is still where the current text has got to')
-  assert.ok(wrong.error, 'and publishing did not do its job, which is a failure')
-})
-
-test('written but not on the class site is preview, and written but nowhere is here-only', () => {
-  assert.equal(markForRow({ preview: 'aaa', published: null }).stage, 'preview')
-  assert.equal(markForRow({ preview: null, published: null }).stage, 'here-only')
-})
-
-// Skip's correction, and the reason a fifth colour was wrong: error is
-// orthogonal to stage. The class site serving a page this build cannot make is
-// published AND broken, so it keeps its stage and gains an error rather than
-// being moved off the scale.
-test('the class site serving what the app cannot produce is published and errored, both', () => {
-  const row = markForRow({ preview: null, published: 'aaa' })
-  assert.equal(row.stage, 'published')
-  assert.ok(row.error, 'and it must carry the error')
-})
-
-// "unkown is an error state dude". Saying nothing was the bug that made this
-// feature invisible for three weeks: every row was unaskable because no class
-// site was configured, so every row drew nothing.
-test('a surface nobody could ask has no stage and IS an error', () => {
-  for (const row of [markForRow({ preview: 'aaa', published: undefined }), markForRow({ preview: undefined, published: 'aaa' })]) {
-    assert.equal(row.stage, null, 'it has no stage, because not-knowing is not a stage')
-    assert.ok(row.error, 'and it must say so rather than drawing nothing')
+// "not on preview because its like, just changed and hasnt made it over the
+// network red no triangle". In-flight is not an error, slow is not an error,
+// absent is not an error. He edits constantly, so a triangle on every page in
+// transit would cry wolf until he stopped reading the column — which is how
+// these marks became unreadable the first time.
+// "its mot an error until you know there is an error". Ambiguity is a reason to
+// try, not a failure — and he edits constantly, so triangling every row that is
+// merely behind would put a column of errors in front of him nearly always,
+// until he stopped reading it. That is how this went invisible the first time.
+test('nothing derives a triangle from absence, staleness or being behind', () => {
+  for (const row of [
+    { app: 'a', preview: 'b', live: 'b' },
+    { app: 'a', preview: null, live: null },
+    { app: 'a', preview: 'a', live: null },
+    { app: 'a', preview: 'a', live: 'b' },
+  ]) {
+    const mark = markForRow(row)
+    assert.equal(mark.error, null, `${JSON.stringify(row)} is behind, and behind is not broken`)
+    assert.equal(mark.errorAt, null)
   }
 })
 
-test('a row that is fine carries no error at all', () => {
-  assert.equal(markForRow({ preview: 'aaa', published: 'aaa' }).error, null)
-  assert.equal(markForRow({ preview: 'aaa', published: null }).error, null)
-  assert.equal(markForRow({ preview: null, published: null }).error, null)
+// "try failed → now you know". Only a known outcome makes a triangle, and it is
+// named at the link the attempt was trying to cross.
+test('a known failure makes the triangle, at the link it happened on', () => {
+  const render = markForRow({ app: 'a', preview: 'b', live: 'b', failure: 'chapter.qmd failed to render' })
+  assert.equal(render.stage, 'here-only')
+  assert.equal(render.errorAt, 'preview')
+
+  const publish = markForRow({ app: 'a', preview: 'a', live: 'b', failure: 'the publish exited non-zero' })
+  assert.equal(publish.stage, 'preview')
+  assert.equal(publish.errorAt, 'live', 'it got to preview, so the attempt that failed was the next one')
+})
+
+// "unkown is an error state dude" — and now it can say WHICH surface, rather
+// than only that one could not be reached.
+test('a surface nobody could ask has no stage and names itself', () => {
+  const mark = markForRow({ app: 'a', preview: undefined, live: 'a' })
+  assert.equal(mark.stage, null, 'we cannot say how far it got')
+  assert.match(mark.error, /preview could not be asked/)
 })
 
 test('rows keep their identity through the comparison', () => {
-  const [row] = marksForRows([{ page: 4, source: 'decks/chapter-bootstrap-slides.qmd', preview: 'aaa', published: 'aaa' }])
+  const [row] = marksForRows([{ page: 4, source: 'decks/chapter-bootstrap-slides.qmd', app: 'a', preview: 'a', live: 'a' }])
   assert.equal(row.page, 4)
   assert.equal(row.source, 'decks/chapter-bootstrap-slides.qmd')
   assert.equal(row.stage, 'published')
@@ -112,16 +115,18 @@ const PAGE = (file) => ({ file, source: { file: file.replace(/^app\/book\//, '')
 
 test('a surface that cannot be reached is not reported as a missing page', async () => {
   const marks = await compareCourseSurfaces([PAGE('app/book/chapters/one.html')], {
+    readApp: async () => '<main><p>same prose</p></main>',
     readPreview: async () => '<main><p>same prose</p></main>',
     publishedBase: 'https://site.example',
     fetchImpl: async () => Promise.reject(new Error('ENOTFOUND')),
   })
   assert.equal(marks[0].stage, null, 'an unreachable class site must not invent a stage')
-  assert.ok(marks[0].error, 'but it must say that it could not be reached')
+  assert.match(marks[0].error, /the class site could not be asked/, 'and it must name which surface')
 })
 
-test('the comparison reads 404 as absent and agreeing text as green', async () => {
+test('the comparison reads 404 as absent, and agreement all the way as published', async () => {
   const marks = await compareCourseSurfaces([PAGE('app/book/chapters/one.html'), PAGE('app/book/decks/two-slides.html')], {
+    readApp: async () => '<main><p>same prose</p></main>',
     readPreview: async () => '<main><p>same prose</p></main>',
     publishedBase: 'https://site.example',
     fetchImpl: async (url) => url.includes('two-slides')

@@ -40,71 +40,79 @@ export function documentTextFingerprint(html) {
 }
 
 /**
- * The mark for one declared row: HOW FAR ALONG it is, and separately WHETHER
- * SOMETHING ERRORED.
+ * The mark for one declared row: WHERE IN THE CHAIN it has got to, and WHICH
+ * LINK OF THE CHAIN IS BROKEN.
  *
- * Two axes, because Skip asked for two. The colour is the stage — "red: here
- * only; yellow: preview; green: published" — and error is orthogonal to it:
- * *"whether the staleness was due to error or not"* can be true at any stage,
- * so it cannot be a point on the same scale. This returned one of five
- * mutually exclusive values and spent `alarm` as a fifth colour, which
- * collapsed an independent fact onto a line that cannot hold it. A page the
- * class site serves and this build cannot produce is `published` AND errored,
- * not a state in between.
+ * THREE SURFACES IN ORDER, not two compared. Skip:
  *
- * `undefined` and `null` are different answers and the difference is the whole
- * reason this takes them separately. `null` means THE SURFACE WAS ASKED AND
- * DOES NOT SERVE THIS PAGE, which is one of the stages. `undefined` means
- * NOBODY COULD ASK — the site was unreachable, the request failed, no
- * published address is known.
+ *   "the stage where thye disagree"
+ *   "if they disagree on preview its an error on preview"
+ *   "if they agree on preview but disagree on live its an error on live"
  *
- * AN UNASKABLE ROW HAS NO STAGE AND IS AN ERROR. It used to have no stage and
- * no error, and draw nothing, on the reasoning that a colour invented out of a
- * fact about us would be a claim about his book. Half of that is right and the
- * conclusion was wrong: Skip, *"unkown is an error state dude"*. The
- * alternative to a false colour is not silence, it is saying that something
- * failed — which is true, is about us, and is what the error glyph is for.
+ * So the chain is what he wrote → preview → live, and the error names the FIRST
+ * link that broke. An earlier version of this took two arguments and said in
+ * its own comment that there was "no third to reconcile"; there is, and the
+ * question changed shape rather than answer. A two-surface comparison cannot
+ * tell "preview never got it" from "preview got it and live did not", and those
+ * are different failures belonging to different people.
  *
- * This cost three weeks. Every row came back unaskable because no class site
- * was configured, every mark drew nothing, and the feature looked like it did
- * not exist. An error on each row would have said "we cannot reach the class
- * site" on the first day instead of nothing at all.
+ * `undefined` and `null` are different answers throughout. `null` means THE
+ * SURFACE WAS ASKED AND DOES NOT SERVE THIS PAGE, which is part of the chain.
+ * `undefined` means NOBODY COULD ASK, which is an error about us — and now it
+ * can say which surface could not be reached, rather than only that one could
+ * not. Saying nothing was the bug that kept this invisible for three weeks.
  */
-export function markForRow({ preview, published }) {
-  if (preview === undefined || published === undefined) {
-    return { stage: null, error: 'a surface could not be asked', why: 'a surface could not be asked' }
+export function markForRow({ app, preview, live, failure = null }) {
+  const unreachable = [['the app', app], ['preview', preview], ['the class site', live]]
+    .filter(([, value]) => value === undefined)
+    .map(([label]) => label)
+  if (unreachable.length > 0) {
+    const named = unreachable.join(' and ')
+    return { stage: null, error: `${named} could not be asked`, errorAt: null, why: `${named} could not be asked` }
   }
-  // Published, and the current build cannot reproduce it. The stage is what the
-  // class is looking at; the error is that nothing here can make it again.
-  if (!preview && published) {
-    return {
-      stage: 'published',
-      error: 'the class site serves this and the app does not produce it',
-      why: 'the class site serves this and the app does not produce it',
-    }
+
+  // HOW FAR THE CURRENT VERSION HAS GOT. The word doing the work is *current*:
+  // stale content on live is not arrival. He does not care what is on live if
+  // it is not what he wrote, so a class site serving an old page is YELLOW —
+  // the current thing is sitting on preview — and not green-with-a-problem.
+  //
+  //   red     the current version has not reached preview
+  //   yellow  the current version is on preview, not on live
+  //   green   the current version is on live
+  const stage = app === preview
+    ? (app === live ? 'published' : 'preview')
+    : 'here-only'
+
+  // WHETHER WE KNOW IT BROKE. Skip, after revising this twice in three minutes:
+  //
+  //   don't know   → try (backed off, not hammered).   no triangle.
+  //   try failed   → now you know.                     triangle.
+  //   known error  → stop retrying; the triangle IS the action.
+  //   cause fixed  → the next check clears it by itself.
+  //
+  // "its mot an error until you know there is an error". So the triangle is
+  // never derived — not from absence, not from staleness, not from an attempt
+  // that finished without delivering. Ambiguity is not an error; it is a reason
+  // to try again, and trying is somebody else's job.
+  //
+  // This is why the mark holds no state and nothing is ever acknowledged: it is
+  // recomputed from the surfaces and the current build outcome on every read,
+  // so a fixed cause takes its own triangle down. A mark that needs a person to
+  // clear it goes stale and then gets ignored, which is how this column became
+  // invisible the first time.
+  const error = failure || null
+  const errorAt = failure ? (app === preview ? 'live' : 'preview') : null
+
+  return {
+    stage,
+    error,
+    errorAt,
+    why: error || (
+      stage === 'published' ? 'the class site is serving what you wrote'
+      : stage === 'preview' ? 'on preview, not yet on the class site'
+      : 'not on preview yet'
+    ),
   }
-  if (!preview && !published) {
-    return { stage: 'here-only', error: null, why: 'declared, and no surface serves it' }
-  }
-  if (!published) {
-    // Behind, not broken. Nothing failed; it has not been published yet.
-    return { stage: 'preview', error: null, why: 'written, and not on the class site' }
-  }
-  // Published, and publishing did not do its job. Skip: "the app amd static
-  // disagreeing is an error state at that stage bro". Both of this function's
-  // yellows used to be the same value, and only one of them is a stage: a page
-  // not yet on the class site is merely behind, while a page that IS on the
-  // class site saying something else is a publish that ran and did not land.
-  // The stage stays where the current text has got to; the failure is carried
-  // beside it.
-  if (preview !== published) {
-    return {
-      stage: 'preview',
-      error: 'the class site serves different text from the preview',
-      why: 'the class site serves different text from the preview',
-    }
-  }
-  return { stage: 'published', error: null, why: 'the app and the class site serve the same text' }
 }
 
 /**
@@ -142,48 +150,57 @@ export function publishedUrlForPage(file, publishedBase) {
 }
 
 /**
- * Compare every page and return each row's mark.
+ * Ask all three surfaces for every page and return each row's mark.
  *
- * BOTH SIDES ARE ELSEWHERE, and that is the point. The question is whether the
- * preview he watches and the class site agree — Skip: "we have a preview server
- * showing the thing, make the configured live site show exactly the same
- * thing". An earlier version read this server's own tree for the preview side,
- * which was cheap and answered a question about a surface he is not watching.
+ * THREE, IN ORDER: what he wrote, preview, live. Two of them cannot tell
+ * "preview never got it" from "preview got it and live did not", and those are
+ * different failures belonging to different steps.
  *
- * How the caller supplies each side is its business; what matters here is that
- * neither is assumed. A side nobody could ask yields `undefined` and the row
- * says an error occurred, rather than quietly falling back to something local
- * that would answer a different question in the same shape.
+ * How each side is obtained is the caller's business; what matters here is that
+ * none of them is assumed. A side nobody could ask yields `undefined` and the
+ * row says which one, rather than quietly falling back to something local that
+ * would answer a different question in the same shape.
  *
- * Failures are answers, and which answer matters. A page a surface does not
- * have is `null` — absent, one of the states the mark is about. A surface that
- * could not be consulted at all is `undefined`, which `markForRow` reads as
- * "not asked" and refuses to colour. A slow class site must not repaint his
- * table of contents.
+ * Failure outcomes are passed through untouched. Nothing here derives a failure
+ * from an absence — that is the whole point of taking them separately.
  */
-export async function compareCourseSurfaces(pages, { readPreview, publishedBase, fetchImpl = fetch }) {
-  const fetched = async url => {
+export async function compareCourseSurfaces(pages, {
+  readApp,
+  readPreview,
+  publishedBase,
+  fetchImpl = fetch,
+  failureFor = () => null,
+}) {
+  const fingerprintOf = async read => {
+    try {
+      const html = await read()
+      if (html === undefined) return undefined
+      return html === null ? null : documentTextFingerprint(html)
+    } catch {
+      return undefined
+    }
+  }
+  const fetched = url => fingerprintOf(async () => {
     if (!url) return undefined
-    try {
-      const response = await fetchImpl(url)
-      if (response.status === 404) return null
-      if (!response.ok) return undefined
-      return documentTextFingerprint(await response.text())
-    } catch {
-      return undefined
-    }
-  }
-  const read = async path => {
-    try {
-      const html = await readPreview(path)
-      return html == null ? null : documentTextFingerprint(html)
-    } catch {
-      return undefined
-    }
-  }
+    const response = await fetchImpl(url)
+    if (response.status === 404) return null
+    if (!response.ok) return undefined
+    return await response.text()
+  })
   return marksForRows(await Promise.all(pages.map(async (page, index) => {
     const path = publicationPathForPage(page.file)
-    const [preview, published] = await Promise.all([read(path), fetched(publishedUrlForPage(page.file, publishedBase))])
-    return { page: index + 1, source: page.source?.file || null, preview, published }
+    const [app, preview, live] = await Promise.all([
+      fingerprintOf(() => readApp(path)),
+      fingerprintOf(() => readPreview(path)),
+      fetched(publishedUrlForPage(page.file, publishedBase)),
+    ])
+    return {
+      page: index + 1,
+      source: page.source?.file || null,
+      app,
+      preview,
+      live,
+      failure: failureFor(page) || null,
+    }
   })))
 }

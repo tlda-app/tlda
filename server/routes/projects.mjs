@@ -1385,7 +1385,29 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
     return res.json({ marks: [], classSiteUrl: project.classSiteUrl || null, why: `${req.params.name} has no built pages to compare` })
   }
   const pages = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
-  const marks = await compareCourseSurfaces(pages, {
+  // Declared rows that produced nothing, from the contents rather than from the
+  // pages: a render failure deletes the page, and a row keyed only to a page
+  // disappears with it. `writeTocJson` now keeps them with `page: null`.
+  const tocPath = join(getOutputDir(req.params.name), 'toc.json')
+  const unbuilt = existsSync(tocPath)
+    ? JSON.parse(readFileSync(tocPath, 'utf8')).filter(row => row?.unbuilt && row.source)
+    : []
+  // Which document each build error is about. ATTRIBUTION BY PARSING, NOT BY
+  // FIELD: LaTeX errors carry `file`, but a qmd render failure arrives as a
+  // plain string with the filename inside the text, so this reads it out of
+  // prose and will miss any message that names its document differently. Do not
+  // treat this as structured.
+  const { errors: buildErrors = [] } = await extractBuildErrors(req.params.name).catch(() => ({ errors: [] }))
+  const failureText = buildErrors.map(e => (typeof e === 'string' ? e : e?.message || '')).filter(Boolean)
+  const failureForSource = source => source
+    ? failureText.find(text => text.includes(source)) || null
+    : null
+  const marks = await compareCourseSurfaces([...pages, ...unbuilt.map(row => ({
+    file: `app/book/${row.source.replace(/\.qmd$/i, '.html')}`,
+    source: { file: row.source },
+    unbuilt: true,
+  }))], {
+    failureFor: page => failureForSource(page.source?.file),
     // THE PREVIEW, over HTTP, not this server's own disk.
     //
     // Skip: "we have a preview server showing the thing, make the configured
@@ -1398,6 +1420,12 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
     // No fallback to the local tree when the preview is unknown. A row we
     // cannot ask about is an error and says so; quietly answering a different
     // question instead is how this spent three weeks looking correct.
+    // The app's own tree. An unbuilt row has no page here by definition, which
+    // is `null` — asked, and not served — rather than unknown.
+    readApp: async path => {
+      const file = join(getOutputDir(req.params.name), 'static', ...path.split('/'))
+      return existsSync(file) ? readFileSync(file, 'utf8') : null
+    },
     readPreview: async path => {
       if (!project.previewUrl) return undefined
       const response = await fetch(`${project.previewUrl.replace(/\/$/, '')}/${path}`)
@@ -1408,7 +1436,7 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
     publishedBase: project.classSiteUrl || null,
   })
   res.json({
-    marks: marks.map(({ page, source, stage, error, why }) => ({ page, source, stage, error, why })),
+    marks: marks.map(({ page, source, stage, error, errorAt, why }) => ({ page, source, stage, error, errorAt, why })),
     classSiteUrl: project.classSiteUrl || null,
     previewUrl: project.previewUrl || null,
     comparedAt: new Date().toISOString(),

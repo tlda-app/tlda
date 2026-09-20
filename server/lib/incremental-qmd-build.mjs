@@ -525,13 +525,26 @@ export function writeTocJson(outputDir, pageInfo) {
   return toc
 }
 
-export function assembleQuartoBookToc(bookToc, chapterPages, deckPages) {
+export function assembleQuartoBookToc(bookToc, chapterPages, deckPages, missingDecks = []) {
   const deckByChapter = new Map()
   for (let i = 0; i < deckPages.length; i++) {
     const deck = deckPages[i]
     const entries = deckByChapter.get(deck.map) || []
     entries.push({ title: `${deck.title} — Slides`, level: 'section', page: chapterPages.length + i + 1 })
     deckByChapter.set(deck.map, entries)
+  }
+  // A declared deck with no render still gets a row, beside its chapter, with
+  // NO PAGE. `page` numbers a row into `pages[n - 1]`, so there is no number
+  // that could be right here and a wrong one sends the reader to somebody
+  // else's document; `source` is what identifies it instead, and a reader that
+  // cannot navigate it is correct — there is nothing to navigate to. Without
+  // this the deck simply vanishes from the contents when it breaks, which is
+  // the failure hardest to notice and the one worth noticing most.
+  for (const { deck, chapter } of missingDecks) {
+    const title = basename(deck).replace(/-slides\.qmd$/i, '').replace(/^chapter-/, '').replace(/-/g, ' ')
+    const entries = deckByChapter.get(chapter || deck) || []
+    entries.push({ title: `${title} — Slides`, level: 'section', page: null, source: deck, unbuilt: true })
+    deckByChapter.set(chapter || deck, entries)
   }
   const toc = []
   const attachedDecks = new Set()
@@ -1390,10 +1403,21 @@ export async function buildIncrementalQmd({
       publishDeckIntoBook(outDir, bookDir, deck)
     }
     const deckPages = []
+    // Declared decks that produced nothing. A render failure removes the deck's
+    // page, and a deck with no page had no row, so the ONE state most worth
+    // seeing -- this deck is broken -- was the state that deleted the place it
+    // would have been seen. The chapter half cannot reach here: `quartoBookToc`
+    // throws when a declared chapter has no render, so a missing chapter fails
+    // the build loudly. A missing deck was silent.
+    const missingDecks = []
     for (const { deck, chapter } of deckPairs) {
       const rendered = deck.replace(/\.qmd$/i, '.html')
       const path = join(bookDir, rendered)
-      if (!existsSync(path)) continue
+      if (!existsSync(path)) {
+        addLog(`[qmd] ${deck}: declared and not rendered — listed in the contents with no page`)
+        missingDecks.push({ deck, chapter })
+        continue
+      }
       const html = stampFigureUrls(injectQuartoOutputProvenance(
         readFileSync(path, 'utf8'),
         readFileSync(join(outDir, deck), 'utf8'),
@@ -1403,6 +1427,7 @@ export async function buildIncrementalQmd({
       const info = deckPageInfo(html, prefix ? `${prefix}/${rendered}` : rendered)
       if (info.slides.length === 0) {
         addLog(`[qmd] ${deck}: rendered without reveal slides, not published as a deck`)
+        missingDecks.push({ deck, chapter })
         continue
       }
       // `map` is the CHAPTER's root, which puts a deck in the same spatial
@@ -1438,7 +1463,7 @@ export async function buildIncrementalQmd({
       ...deckPages.map(page => ({ ...page, title: `${page.title} — Slides` })),
     ]
     writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(nativePageInfo, null, 2))
-    const toc = assembleQuartoBookToc(bookToc, renderedPageInfo, deckPages)
+    const toc = assembleQuartoBookToc(bookToc, renderedPageInfo, deckPages, missingDecks)
     writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
     writeSourceScopeFile(outDir, sourceScopeFiles)
     await onProjectUpdate?.({
