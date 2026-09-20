@@ -124,6 +124,30 @@ export function validateToken(token) {
   return resolveIdentity(token) ? 'rw' : null
 }
 
+/**
+ * May this identity do this action on this resource — 3.3, the one predicate.
+ *
+ * Two surfaces, one signature. The operator surface (projects, history,
+ * agent/daemon, git-http): the operator may do anything, nobody may do
+ * nothing — `isOperator ? allow : deny`, exactly the (a) answer, with the
+ * resource and action carried so a future per-resource rule has somewhere to
+ * read from rather than a new parameter to thread through forty routes. The
+ * classroom surface does NOT come here: persons resolve through
+ * `studentForToken` / `instructorForToken`, and their predicate is
+ * `classroomRoomAccess` / `mayReadStudentWork` over the resolved principal —
+ * 3.6 makes the sync-room check call that, it does not reroute through this.
+ *
+ * The seam rule, and it is load-bearing: a route that looks operator-ish but
+ * touches a student's work belongs on the classroom side. `projects.mjs`
+ * answer-thread gating already does this by hand — that is the shape, and the
+ * file a route lives in does not decide which predicate it gets.
+ */
+export function may(identity, resource, action) {
+  if (!identity) return false
+  if (identity.kind === 'operator') return true
+  return false
+}
+
 /** Parse cookies from a request */
 function parseCookies(req) {
   const header = req.headers?.cookie
