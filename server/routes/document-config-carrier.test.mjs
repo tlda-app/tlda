@@ -111,6 +111,15 @@ test('a bare fetch is refused; bearer-only is refused with the message; bearer p
     const admitted = await documentRequest(store, `${path}?classroomToken=${ADA_TOKEN}`)
     assert.equal(admitted.status, 200)
     assert.deepEqual(admitted.body, { ok: true })
+
+    // The plain case must survive the carrier: an ordinary project that is no
+    // classroom document at all still opens with a classroom token appended —
+    // most of what Skip opens is not classroom-restricted, and `appendToken`
+    // rides every project URL now, not just restricted ones.
+    const ordinary = await documentRequest(store, `/api/projects/${encodeURIComponent('ordinary-paper')}`)
+    assert.equal(ordinary.status, 200)
+    const ordinaryWithToken = await documentRequest(store, `/api/projects/${encodeURIComponent('ordinary-paper')}?classroomToken=${ADA_TOKEN}`)
+    assert.equal(ordinaryWithToken.status, 200)
   } finally {
     store.db.close()
     rmSync(root, { recursive: true, force: true })
