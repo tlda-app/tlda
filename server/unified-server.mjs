@@ -95,7 +95,7 @@ import { createSourceProposalAdmissionConnectionDispatcher, createSourceProposal
 import projectRoutes from './routes/projects.mjs'
 import { classroomPrincipal, createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
 import { ClassroomStore } from './lib/classroom-store.mjs'
-import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
+import { initAuth, isTokenGatingEnabled, resolveIdentity, extractToken, requireRead, requireOperatorWrite, loginRoute } from './lib/auth.mjs'
 import { writeSentinel, writeSentinelWarning } from './lib/sentinel.mjs'
 import { createPreviewDelivery } from './lib/preview-delivery.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape, replaceRoomSnapshot } from './lib/sync-rooms.mjs'
@@ -3684,7 +3684,7 @@ initAuth()
 const app = express()
 
 app.use(createGitHttpHandler({
-  validateToken,
+  resolveIdentity,
   async repositoryForProject(project) {
     return (await sourceLifecycleStore(project)).gitRepository()
   },
@@ -4084,9 +4084,8 @@ app.get('/auth/login', loginRoute)
 // publisher are always true for a valid token. The `level: 'rw'` shape is
 // kept so existing clients keep parsing the response.
 app.get('/api/auth/me', async (req, res) => {
-  const token = extractToken(req)
-  const level = validateToken(token)
-  if (!level) return res.status(401).json({ error: 'Unauthorized' })
+  const identity = resolveIdentity(extractToken(req))
+  if (!identity) return res.status(401).json({ error: 'Unauthorized' })
   res.json({ level: 'rw', presenter: true, publisher: true, dev: !isTokenGatingEnabled() })
 })
 
@@ -5793,7 +5792,7 @@ const fleetRouter = createFleetRouter({
   enqueueDaemonMessage: (...args) => enqueueDaemonMessage(...args),
   hasOpenFleetSocketForAgent,
   reanimateAgent,
-  requireOperationRead: requireRw,
+  requireOperationRead: requireOperatorWrite,
 })
 app.use(fleetRouter)
 
@@ -6077,8 +6076,7 @@ server.on('upgrade', async (req, socket, head) => {
   // daemon and take down activity cards / terminal cards. Token rotation
   // affects new connections only — established daemons stay up.
   if (isTokenGatingEnabled() && !url.pathname.startsWith('/ws/fleet') && url.pathname !== '/ws/fleet-daemon') {
-    const token = extractToken(req)
-    if (!validateToken(token)) {
+    if (!resolveIdentity(extractToken(req))) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
       socket.destroy()
       return

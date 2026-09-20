@@ -20,7 +20,7 @@ import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'fs/prom
 import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync } from 'fs'
 import { join, basename, dirname, resolve } from 'path'
 import { promisify } from 'util'
-import { extractToken, requireRead, requireRw, validateToken } from '../lib/auth.mjs'
+import { requireRead, requireOperatorWrite } from '../lib/auth.mjs'
 import { answerThreadAccess } from '../../shared/classroom-rooms.mjs'
 import {
   createProject, readProject, updateProject, listProjects,
@@ -409,7 +409,7 @@ router.get('/archived', requireRead, async (req, res) => {
 })
 
 // Create project
-router.post('/', requireRw, async (req, res) => {
+router.post('/', requireOperatorWrite, async (req, res) => {
   try {
     const { name, title, mainFile, format, members, documentRoots } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
@@ -455,7 +455,7 @@ router.get('/:name/promotion-export/:revision', requirePromotionExport, async (r
 
 // The caller names only a configured source environment and exact revision.
 // The destination obtains and verifies the artifact server-to-server.
-router.post('/:name/promote', requireRw, async (req, res) => {
+router.post('/:name/promote', requireOperatorWrite, async (req, res) => {
   try {
     validatePromotionName(req.params.name)
     const sourceEnvironment = String(req.body?.sourceEnvironment || '')
@@ -648,7 +648,7 @@ async function adoptClickedFileAsDocumentRoot(req, name, sourcePath) {
 // Materialize shared/embedded markdown as a real, synced column of this project
 // (not a separate project, not a temp snapshot) — the same manifest/rebuild
 // pipeline that already backs project parts/notes.
-router.post('/:name/parts', requireRw, async (req, res) => {
+router.post('/:name/parts', requireOperatorWrite, async (req, res) => {
   try {
     const adoption = await adoptClickedFileAsDocumentRoot(req, req.params.name, req.body?.sourcePath)
     const result = await realizeProjectMarkdownArtifact({
@@ -688,7 +688,7 @@ router.get('/:name/parts', requireRead, async (req, res) => {
 // Refresh the managed task document as a first-class project part. Unlike the
 // generic markdown artifact route, this preserves tlda-kind: task-doc so the
 // markdown renderer installs the task controls.
-router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
+router.post('/:name/task-doc/refresh', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const fleetStore = req.app?.locals?.fleetStore
@@ -739,7 +739,7 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
 
 // Remove a project part (its file + manifest entry) and tell open viewers to
 // reload so the removed column disappears from the canvas.
-router.delete('/:name/parts', requireRw, async (req, res) => {
+router.delete('/:name/parts', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const ids = Array.isArray(req.body?.ids)
@@ -769,7 +769,7 @@ router.delete('/:name/parts', requireRw, async (req, res) => {
   res.json({ ok: true, deleted: ids })
 })
 
-router.delete('/:name/parts/:id', requireRw, async (req, res) => {
+router.delete('/:name/parts/:id', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const root = projectPartsRoot(req.params.name)
@@ -827,7 +827,7 @@ router.get('/:name/parts/:partId/markdown', requireRead, async (req, res) => {
 })
 
 // Write back a project-owned markdown artifact part.
-router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
+router.put('/:name/parts/:partId/markdown', requireOperatorWrite, async (req, res) => {
   try {
     const result = await writeProjectMarkdownArtifact({
       project: req.params.name,
@@ -847,7 +847,7 @@ router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
 })
 
 // Archive/unarchive project
-router.patch('/:name/archive', requireRw, async (req, res) => {
+router.patch('/:name/archive', requireOperatorWrite, async (req, res) => {
   try {
     const { archived } = req.body
     const project = await updateProject(req.params.name, { archived: !!archived })
@@ -857,7 +857,7 @@ router.patch('/:name/archive', requireRw, async (req, res) => {
   }
 })
 
-router.patch('/:name/star', requireRw, async (req, res) => {
+router.patch('/:name/star', requireOperatorWrite, async (req, res) => {
   try {
     const { starred } = req.body
     const updates = { starred: !!starred }
@@ -870,7 +870,7 @@ router.patch('/:name/star', requireRw, async (req, res) => {
 })
 
 // Toggle autoSync (git mirror sync)
-router.patch('/:name/auto-sync', requireRw, async (req, res) => {
+router.patch('/:name/auto-sync', requireOperatorWrite, async (req, res) => {
   try {
     const { autoSync } = req.body
     const project = await updateProject(req.params.name, { autoSync: !!autoSync })
@@ -881,7 +881,7 @@ router.patch('/:name/auto-sync', requireRw, async (req, res) => {
 })
 
 // Delete project
-router.delete('/:name', requireRw, async (req, res) => {
+router.delete('/:name', requireOperatorWrite, async (req, res) => {
   try {
     await deleteProjectAndBuildSubmissions(req.params.name)
     res.json({ ok: true })
@@ -891,7 +891,7 @@ router.delete('/:name', requireRw, async (req, res) => {
 })
 
 // Add member to book (create book project if needed)
-router.patch('/:name/members', requireRw, async (req, res) => {
+router.patch('/:name/members', requireOperatorWrite, async (req, res) => {
   const { add, members } = req.body
   // A full-set REPLACE, because the additive form cannot express a removal:
   // looping `add` over a caller's intended set silently makes a dropped member
@@ -955,7 +955,7 @@ router.get('/:name/document-roots', requireRead, async (req, res) => {
   }
 })
 
-router.patch('/:name/document-roots', requireRw, async (req, res) => {
+router.patch('/:name/document-roots', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   if (!Array.isArray(req.body?.documentRoots) || req.body.documentRoots.length === 0) {
@@ -1010,7 +1010,7 @@ router.get('/:name/files', requireRead, async (req, res) => {
   res.json({ files, documents })
 })
 
-router.post('/:name/source-room/files', requireRw, async (req, res) => {
+router.post('/:name/source-room/files', requireOperatorWrite, async (req, res) => {
   const daemon = req.app?.locals?.sourceRoomDaemon
   if (!daemon?.submitFiles) return res.status(503).json({ ok: false, error: 'source-room Git submission is not configured' })
   try {
@@ -1058,7 +1058,7 @@ router.get('/:name/remotes', requireRead, async (req, res) => {
   }
 })
 
-router.post('/:name/remotes', requireRw, async (req, res) => {
+router.post('/:name/remotes', requireOperatorWrite, async (req, res) => {
   const send = req.app?.locals?.sendProjectSourceDaemon
   if (!send) return res.status(503).json({ error: 'project source daemon routing is not configured' })
   const operation = String(req.body?.operation || '')
@@ -1077,7 +1077,7 @@ router.post('/:name/remotes', requireRw, async (req, res) => {
   }
 })
 
-router.delete('/:name/remotes/:remote', requireRw, async (req, res) => {
+router.delete('/:name/remotes/:remote', requireOperatorWrite, async (req, res) => {
   const send = req.app?.locals?.sendProjectSourceDaemon
   if (!send) return res.status(503).json({ error: 'project source daemon routing is not configured' })
   try {
@@ -1313,7 +1313,7 @@ router.get('/:name/hashes', requireRead, async (req, res) => {
  * status display and a publish command come to disagree about what "published"
  * means, which is the disagreement the marks exist to detect.
  */
-router.patch('/:name/class-site', requireRw, async (req, res) => {
+router.patch('/:name/class-site', requireOperatorWrite, async (req, res) => {
   try {
     const updates = {}
     // `classSiteUrl` is gone: where a course publishes is derived from its own
@@ -1346,7 +1346,7 @@ router.patch('/:name/class-site', requireRw, async (req, res) => {
  * whether the push landed. That is the same shape as a build recording its own
  * outcome rather than being inferred from its artifacts.
  */
-router.post('/:name/publish-outcome', requireRw, async (req, res) => {
+router.post('/:name/publish-outcome', requireOperatorWrite, async (req, res) => {
   try {
     const project = await readProject(req.params.name)
     if (!project) return res.status(404).json({ error: 'Project not found' })
@@ -1665,7 +1665,7 @@ router.get('/:name/shapes/at/:timestamp', requireRead, async (req, res) => {
 })
 
 // POST /:name/shapes — create a shape
-router.post('/:name/shapes', requireRw, async (req, res) => {
+router.post('/:name/shapes', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shape = req.body
@@ -1702,7 +1702,7 @@ function classroomPrincipalFor(req, store) {
 /**
  * May this caller take part in the thread on `answer`?
  *
- * A lecture keeps `requireRw`, which is right for it — a lecture belongs to the
+ * A lecture keeps `requireOperatorWrite`, which is right for it — a lecture belongs to the
  * person who gave it. A thread layer does not: Skip, *"its a thread anyone can
  * reply to anything"*, so the student whose answer it is has to be able to read
  * the instructor's layer and add one of their own. Reading it is not optional,
@@ -1730,7 +1730,7 @@ function answerThreadWriteAccess(req, answer) {
 function allowRwOrAnswerThread(req, answer) {
   const thread = answerThreadWriteAccess(req, answer)
   if (thread === 'write') return true
-  return !!validateToken(extractToken(req))
+  return !!req.identity
 }
 
 function readRecordingMeta(dir, id) {
@@ -1749,14 +1749,14 @@ const notAParticipant = (res) =>
 /** A stored recording: its answer's participants if it is a layer, else rw. */
 function requireRecordingAccess(req, res, next) {
   const meta = readRecordingMeta(recordingsDir(req.params.name), req.params.id)
-  if (!meta?.answer) return requireRw(req, res, next)
+  if (!meta?.answer) return requireOperatorWrite(req, res, next)
   return answerThreadWriteAccess(req, meta.answer) === 'write' ? next() : notAParticipant(res)
 }
 
 /** Creating one. The answer is in the body, since nothing is stored yet. */
 function requireRecordingCreate(req, res, next) {
   const answer = req.body?.answer
-  if (!answer) return requireRw(req, res, next)
+  if (!answer) return requireOperatorWrite(req, res, next)
   return allowRwOrAnswerThread(req, answer) ? next() : notAParticipant(res)
 }
 
@@ -1929,11 +1929,11 @@ router.get('/:name/recording-draft/:id/audio', requireRecordingAccess, (req, res
 //
 // This is the same `writeCandidateClip` the agent path calls, with the owner as
 // the actor rather than a fleet id. It does not relax who may publish: the route
-// is `requireRw` exactly like owner-interval and publish, and `proposedBy` still
+// is `requireOperatorWrite` exactly like owner-interval and publish, and `proposedBy` still
 // records which actor proposed, so an owner self-proposal and an agent proposal
 // stay distinguishable in the record. No new lifecycle state, because nothing
 // consumes a distinction beyond that actor.
-router.post('/:name/recording/:id/propose-interval', requireRw, (req, res) => {
+router.post('/:name/recording/:id/propose-interval', requireOperatorWrite, (req, res) => {
   const dir = recordingsDir(req.params.name)
   const metaPath = join(dir, `${req.params.id}.json`)
   if (!existsSync(metaPath)) return res.status(404).json({ error: 'Recording not found' })
@@ -1945,7 +1945,7 @@ router.post('/:name/recording/:id/propose-interval', requireRw, (req, res) => {
   }
 })
 
-router.put('/:name/recording/:id/owner-interval', requireRw, (req, res) => {
+router.put('/:name/recording/:id/owner-interval', requireOperatorWrite, (req, res) => {
   const dir = recordingsDir(req.params.name)
   const metaPath = join(dir, `${req.params.id}.json`)
   if (!existsSync(metaPath)) return res.status(404).json({ error: 'Recording not found' })
@@ -1957,7 +1957,7 @@ router.put('/:name/recording/:id/owner-interval', requireRw, (req, res) => {
   }
 })
 
-router.post('/:name/recording/:id/publish', requireRw, async (req, res) => {
+router.post('/:name/recording/:id/publish', requireOperatorWrite, async (req, res) => {
   const dir = recordingsDir(req.params.name)
   const metaPath = join(dir, `${req.params.id}.json`)
   if (!existsSync(metaPath)) return res.status(404).json({ error: 'Recording not found' })
@@ -2017,7 +2017,7 @@ router.get('/:name/recording/:id/audio', requireRead, (req, res) => {
 })
 
 // PUT /:name/shapes/:id — atomic update (send partial props to merge)
-router.put('/:name/shapes/:id', requireRw, async (req, res) => {
+router.put('/:name/shapes/:id', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
@@ -2046,7 +2046,7 @@ router.put('/:name/shapes/:id', requireRw, async (req, res) => {
 })
 
 // DELETE /:name/shapes/:id — delete a shape
-router.delete('/:name/shapes/:id', requireRw, async (req, res) => {
+router.delete('/:name/shapes/:id', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
@@ -2059,7 +2059,7 @@ router.delete('/:name/shapes/:id', requireRw, async (req, res) => {
 })
 
 // POST /:name/snapshot — replace the sync room's snapshot (for publish/deploy)
-router.post('/:name/snapshot', requireRw, async (req, res) => {
+router.post('/:name/snapshot', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const snapshot = req.body
@@ -2073,7 +2073,7 @@ router.post('/:name/snapshot', requireRw, async (req, res) => {
 })
 
 // POST /:name/sync/clear — delete the sync snapshot so the room resets on next connect
-router.post('/:name/sync/clear', requireRw, async (req, res) => {
+router.post('/:name/sync/clear', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   try {
@@ -2101,7 +2101,7 @@ router.get('/:name/sync/health', requireRead, async (req, res) => {
 })
 
 // POST /:name/signal — broadcast a signal to all connected viewers
-router.post('/:name/signal', requireRw, async (req, res) => {
+router.post('/:name/signal', requireOperatorWrite, async (req, res) => {
   const { key, ...data } = req.body
   if (!key) return res.status(400).json({ error: 'key is required' })
   broadcastSignal(syncRoomName(req.params.name), key, data)

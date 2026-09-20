@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { ClassroomStore } from '../lib/classroom-store.mjs'
-import { extractToken, validateToken } from '../lib/auth.mjs'
+import { extractToken, resolveIdentity } from '../lib/auth.mjs'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
@@ -375,7 +375,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     const principal = resolvePrincipal(req, store)
     if (principal) req.classroomPrincipal = principal
     const authorised = principal?.role === 'instructor'
-      || !!validateToken(extractToken(req))
+      || !!resolveIdentity(extractToken(req))
     if (!authorised) return res.status(401).json({ error: 'Unauthorized' })
     const { id, title, preferredName, pronouns } = req.body || {}
     if (!id || !title || !String(preferredName || '').trim()) return res.status(400).json({ error: 'id, title, and preferredName are required' })

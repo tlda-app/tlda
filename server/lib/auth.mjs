@@ -210,6 +210,26 @@ export function loginRoute(req, res) {
   res.redirect(302, redirect)
 }
 
+/**
+ * Admit the operator, refuse nobody-with-a-name — 3.4, the gate the forty
+ * routes share. The token resolves to an identity (3.1) and the identity
+ * answers `may()` (3.3); the resource rides along so a per-resource rule has
+ * somewhere to read from. `requireRead` and `requireRw` are the same check —
+ * both names survive so the call sites do not churn, and neither grants
+ * anything by itself.
+ *
+ * Classroom persons do not come here; their routes resolve through
+ * `studentForToken` / `instructorForToken` and gate on the principal.
+ */
+export function requireIdentity(resource) {
+  return (req, res, next) => {
+    const identity = resolveIdentity(extractToken(req))
+    if (!may(identity, resource, req.method)) return res.status(401).json({ error: 'Unauthorized' })
+    req.identity = identity
+    next()
+  }
+}
+
 /** Express middleware: require a recognised token. The only question asked of
  * the token is whether it is one of ours; what the caller may do is decided
  * from their identity afterwards. `requireRead` and `requireRw` are the same
@@ -236,4 +256,20 @@ export function requireRead(req, res, next) {
  * — see above. A caller holding any valid token passes. */
 export function requireRw(req, res, next) {
   return requireRead(req, res, next)
+}
+
+/**
+ * The operator's write gate — 3.4, the name the forty write routes share.
+ * Resolves the bearer to an identity (3.1) and asks `may()` (3.3) about the
+ * operator's own machinery: projects, history, shapes, recordings-as-lectures,
+ * fleet operations, git-http. Anything touching a student's work does not come
+ * here — it gates on the classroom principal instead, whatever file it lives
+ * in. Same admission as `requireRead` plus the write predicate, so a caller
+ * admitted to read is admitted to write exactly when they are the operator.
+ */
+export function requireOperatorWrite(req, res, next) {
+  const identity = resolveIdentity(extractToken(req))
+  if (!may(identity, { type: 'operator-machinery' }, 'write')) return res.status(401).json({ error: 'Unauthorized' })
+  req.identity = identity
+  next()
 }

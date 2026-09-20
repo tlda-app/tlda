@@ -14,7 +14,7 @@ import { promisify } from 'util'
 import { createHash } from 'crypto'
 const execAsync = promisify(execCb)
 const execFileAsync = promisify(execFileCb)
-import { requireRead, requireRw } from '../lib/auth.mjs'
+import { requireRead, requireOperatorWrite } from '../lib/auth.mjs'
 import { readProject, outputDir, projectDir, sourceDir as getSourceDir, validateSourceFilePath } from '../lib/project-store.mjs'
 import { listVersions, listVersionRange, versionAt, versionTimestamp, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
@@ -366,7 +366,7 @@ router.get('/shadow/bridge', requireRead, async (req, res) => {
  * exists to say, which is the same rule as never inventing an author for a
  * build.
  */
-router.post('/shadow/bridge/annotate', requireRw, async (req, res) => {
+router.post('/shadow/bridge/annotate', requireOperatorWrite, async (req, res) => {
   const { name } = req.params
   const hash = String(req.body?.hash || '')
   const note = String(req.body?.note ?? '')
@@ -582,7 +582,7 @@ router.get('/shadow/at', requireRead, async (req, res) => {
  * POST /shadow/:ref/checkout — Restore source at a shadow repo ref.
  * Extracts source from shadow repo, copies to project source dir, triggers a build.
  */
-router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
+router.post('/shadow/:ref/checkout', requireOperatorWrite, async (req, res) => {
   const { name, ref } = req.params
   const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
@@ -607,7 +607,7 @@ router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
  * so the watcher picks up the restored files and doesn't overwrite them on next edit.
  * Destructive: overwrites any uncommitted changes in project.sourceDir.
  */
-router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
+router.post('/shadow/:ref/revert', requireOperatorWrite, async (req, res) => {
   const { name, ref } = req.params
   const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })

@@ -55,7 +55,7 @@ function pktLine(text) {
 // Daemon credentials admit the daemon; the token carries no level, so any
 // recognised token reaches both git services. What a daemon may do is decided
 // by which daemon it is, not by which token it holds.
-function daemonCredentials(req, validateToken) {
+function daemonCredentials(req, resolveIdentity) {
   const header = req.headers.authorization || ''
   if (!header.startsWith('Basic ')) return null
   let decoded
@@ -65,9 +65,9 @@ function daemonCredentials(req, validateToken) {
   const daemonId = decoded.slice(0, colon)
   const token = decoded.slice(colon + 1)
   if (!daemonId) return null
-  const level = validateToken(token)
-  if (!level) return null
-  return { daemonId, level }
+  const identity = resolveIdentity(token)
+  if (!identity) return null
+  return { daemonId, identity }
 }
 
 
@@ -122,12 +122,12 @@ function runService({ service, gitDir, project, req = null, daemonId = null, adv
   })
 }
 
-export function createGitHttpHandler({ validateToken, repositoryForProject, admitProposal }) {
+export function createGitHttpHandler({ resolveIdentity, repositoryForProject, admitProposal }) {
   return async function gitHttp(req, res, next) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
     const match = url.pathname.match(/^\/git\/([^/]+)\/(info\/refs|git-receive-pack|git-upload-pack)$/)
     if (!match) return next()
-    const credentials = daemonCredentials(req, validateToken)
+    const credentials = daemonCredentials(req, resolveIdentity)
     if (!credentials) {
       res.setHeader('WWW-Authenticate', 'Basic realm="tlda git"')
       res.status(401).end('daemon credentials required')
