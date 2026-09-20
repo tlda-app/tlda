@@ -371,9 +371,35 @@ function printSubmittedRevision(submission) {
   printDocumentsNotInRevision(submission)
 }
 
-function printPushBuildStatus(result, unchangedMessage = 'No changes detected.') {
+function printPushBuildStatus(result, unchangedMessage = 'No changes detected.', serverRevision = null) {
   if (result.unchanged) {
     console.log(dim(unchangedMessage))
+    return
+  }
+  // The submitted revision is the one the server already has, so nothing
+  // follows from this push -- and the command knows both values, so it says so
+  // rather than handing the reader a condition to evaluate.
+  //
+  // Seen 2026-09-19: a new symlink was created, pushed, and the push printed
+  // "Source submitted. A build follows if this revision changed anything."
+  // That sentence is true and it sent the reader away believing a build was
+  // running. It was not: a NEW file is untracked, and a repo whose commits are
+  // made for it does not pick untracked files up, so the revision never moved
+  // and no build could follow. The book stayed broken for twenty minutes on
+  // the strength of that message.
+  //
+  // `git status` is the instrument that answers it, and it is worth naming
+  // here because in an auto-committing repo it is unreliable for MODIFIED
+  // files and exactly right for NEW ones -- which is the opposite of what
+  // anyone burned by the first case will expect.
+  const submitted = String(result?.revision || '')
+  const current = String(serverRevision || '')
+  if (submitted && current && submitted === current) {
+    console.log(green(`Source submitted, and it is the revision the server already had (${submitted.slice(0, 7)}).`))
+    console.log(green('No build will follow, because nothing changed.'))
+    console.log(dim('  A new file is untracked until it is added, and an untracked file is not in any revision.'))
+    console.log(dim('  `git status` in the source directory names anything uncommitted.'))
+    console.log(dim('  `tlda build` forces a rebuild of the revision that is already there.'))
     return
   }
   // THERE USED TO BE A "Build triggered." BRANCH HERE AND IT COULD NOT FIRE.
@@ -1249,7 +1275,14 @@ async function cmdPush() {
   const session = getFlag('session') || process.env.CLAUDE_SESSION_ID || null
 
   console.log(`Submitting to "${name}"...`)
-  printPushBuildStatus(linked.submission, 'No changes detected (use `tlda build` to force a rebuild).')
+  // `projectMetadata` was read before the submission, so it carries the
+  // revision the server had going in. Handing it over is what lets the push
+  // report that nothing moved instead of describing the condition.
+  printPushBuildStatus(
+    linked.submission,
+    'No changes detected (use `tlda build` to force a rebuild).',
+    projectMetadata?.sourceRevision,
+  )
   printDocumentsNotInRevision(linked.submission)
 
   // Auto-join book group from .tlda-book config in source dir
