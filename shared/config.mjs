@@ -11,6 +11,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { parse as parseYaml, parseDocument } from 'yaml'
 import { resolveStrictEnvironmentAuthority, validateServerConfigTopLevel } from './daemon-config-schema.mjs'
+import { resolveRuntimeRootForEnv } from './runtime-root.mjs'
 
 // Preview servers receive an isolated config directory from `tlda-dev serve`.
 // Production keeps the normal shared location; previews must never mutate it.
@@ -510,7 +511,16 @@ export function getRuntimeRoot(envName = null, fallbackRoot = null) {
     const root = loadDaemonYaml()
     const { name } = resolveStrictEnvironmentAuthority(root, envName)
     return resolveRuntimeRootForEnv(root.environments.values, name, fallbackRoot)
-  } catch {
+  } catch (e) {
+    // A box with no daemon.yaml is a fresh install, not a fault — fall back
+    // quietly. A ReferenceError or TypeError here is OUR bug, and swallowing it
+    // is how this function silently answered `declared: false` for every caller
+    // no matter what daemon.yaml said: `resolveRuntimeRootForEnv` was called
+    // here and never imported, so the runtimeRoot guard could never engage.
+    // That cost a day and an outage; say it rather than hide it.
+    if (e instanceof ReferenceError || e instanceof TypeError) {
+      console.error(`[config] getRuntimeRoot is broken, not undeclared: ${e.message}`)
+    }
     return { runtimeRoot: fallbackRoot, declared: false }
   }
 }
