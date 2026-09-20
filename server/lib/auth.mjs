@@ -53,6 +53,7 @@ export function initAuth() {
   }
 
   gatingEnabled = true
+  rebuildIdentityTable()
   console.log('[tokens] Token gating enabled')
   if (!tokenRead) console.warn('[tokens] Warning: no read token configured')
   if (!tokenRw) console.warn('[tokens] Warning: no RW token configured')
@@ -68,17 +69,59 @@ export function isTokenGatingEnabled() { return gatingEnabled }
 export function configuredReadToken() { return tokenRead || tokenRw }
 
 /**
- * Whether the token is one this server recognises. Tokens carry no level: any
- * configured token admits the caller, and what they may do is decided from
- * their identity afterwards. Returns 'rw' for a recognised token so existing
- * level readers keep working unchanged; null for anything else.
+ * The identities one bearer token can resolve to.
+ *
+ * A table rather than two configured strings, and deliberately small: with
+ * gating off there is exactly one row (everything resolves to operator), and
+ * with gating on there is one row per configured token. A shared bearer has
+ * no members, so every row is the operator — classroom persons resolve
+ * through their own per-person tokens (students / instructors tables), never
+ * here. The table exists so the shape is a seam and not an assumption: if a
+ * day comes when two callers on the operator surface must resolve to two
+ * different identities, the rows change and the callers do not.
+ *
+ * `groups` is the unix half. Today the operator's groups are empty; the
+ * instructors group lives on the classroom side (`isInstructorOf`), and the
+ * person tables carry the membership. An operator group added here must mean
+ * the same thing everywhere it is checked, or it is a second membership store
+ * wearing the name of the first.
+ */
+const OPERATOR = { kind: 'operator', groups: [] }
+
+let identityTable = [{ token: null, identity: OPERATOR }]
+
+function rebuildIdentityTable() {
+  if (!gatingEnabled) {
+    identityTable = [{ token: null, identity: OPERATOR }]
+    return
+  }
+  identityTable = []
+  if (tokenRw) identityTable.push({ token: tokenRw, identity: OPERATOR })
+  if (tokenRead && tokenRead !== tokenRw) identityTable.push({ token: tokenRead, identity: OPERATOR })
+}
+
+/**
+ * Who this token is, or null when it is not one of ours. A table lookup —
+ * the token resolves to an identity, and what that identity may do is decided
+ * afterwards. This is the 3.1 seam: `may()` and the route gates read the
+ * returned identity, never the token.
+ */
+export function resolveIdentity(token) {
+  if (!gatingEnabled) return OPERATOR
+  if (!token) return null
+  const row = identityTable.find(row => row.token && token === row.token)
+  return row ? row.identity : null
+}
+
+/**
+ * Whether the token is one this server recognises. Kept for the call sites
+ * that have not converted to `resolveIdentity` yet — it answers from the same
+ * table. Returns 'rw' for a recognised token so existing level readers keep
+ * working unchanged; null for anything else. New code resolves identity, it
+ * does not ask this.
  */
 export function validateToken(token) {
-  if (!gatingEnabled) return 'rw'
-  if (!token) return null
-  if (tokenRw && token === tokenRw) return 'rw'
-  if (tokenRead && token === tokenRead) return 'rw'
-  return null
+  return resolveIdentity(token) ? 'rw' : null
 }
 
 /** Parse cookies from a request */
@@ -149,11 +192,10 @@ export function loginRoute(req, res) {
  * check — both names survive so the call sites do not churn, and neither
  * grants anything by itself. */
 export function requireRead(req, res, next) {
-  if (!gatingEnabled) return next()
   const token = extractToken(req)
-  const level = validateToken(token)
-  if (!level) return res.status(401).json({ error: 'Unauthorized' })
-  req.authLevel = level
+  const identity = resolveIdentity(token)
+  if (!identity) return res.status(401).json({ error: 'Unauthorized' })
+  req.identity = identity
   // Auto-set cookie when ?token= is valid (so sub-requests like images get auth).
   // Tokens carry no level, so writing a valid one back can add nothing beyond
   // admission; the guard below only stops re-sending an identical cookie.
