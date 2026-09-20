@@ -40,6 +40,20 @@ parentPort.on('message', async (msg) => {
     parentPort.postMessage({ kind: 'result', id, result: null })
     return
   }
+  // How long the call actually RAN, measured in here, where it runs.
+  //
+  // The client already times every call, but from the outside: it can only
+  // measure queued-to-settled, which for everything behind a blocking call is
+  // that call's duration and not its own. So the queue could say who WAITED and
+  // never who they waited FOR. Measured on the live server 2026-09-20T03:19:32Z:
+  // six chat inserts each reported ~121.8 SECONDS and all six completed within
+  // 20ms of each other — one blocking op, six victims, and no field anywhere
+  // that could name the op. `runMean` read 0.00 for every method because
+  // nothing was recording it.
+  //
+  // This is the only place the distinction exists. A timer out here spans the
+  // await, so it is the execution time of that method alone.
+  const startedAt = performance.now()
   try {
     const fn = store[method]
     if (typeof fn !== 'function') {
@@ -48,7 +62,7 @@ parentPort.on('message', async (msg) => {
     // await covers both: the ten methods that are already async, and the rest,
     // which return plain values that await passes through unchanged.
     const result = await fn.apply(store, args)
-    parentPort.postMessage({ kind: 'result', id, result })
+    parentPort.postMessage({ kind: 'result', id, result, runMs: performance.now() - startedAt })
   } catch (e) {
     // The message must carry a real reason. A rejected call that arrives as
     // `undefined` is indistinguishable from a call that returned nothing, and
@@ -58,6 +72,9 @@ parentPort.on('message', async (msg) => {
       kind: 'result',
       id,
       error: { message: e?.message || String(e), stack: e?.stack || null },
+      // A call that threw still occupied the worker, and a slow failure is
+      // exactly the shape that would otherwise be invisible here.
+      runMs: performance.now() - startedAt,
     })
   }
 })

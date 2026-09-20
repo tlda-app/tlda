@@ -94,7 +94,7 @@ export class FleetStoreClient {
       const waiter = this._pending.get(msg.id)
       if (!waiter) return
       this._pending.delete(msg.id)
-      this._recordSettled(waiter)
+      this._recordSettled(waiter, msg.runMs)
       if (msg.error) {
         const err = new Error(msg.error.message)
         // Keep the worker-side stack; without it every store failure looks like
@@ -186,7 +186,7 @@ export class FleetStoreClient {
   _methodStats(method) {
     let stats = this._queueStats.byMethod.get(method)
     if (!stats) {
-      stats = { calls: 0, settled: 0, waitTotalMs: 0, waitMaxMs: 0 }
+      stats = { calls: 0, settled: 0, waitTotalMs: 0, waitMaxMs: 0, runTotalMs: 0, runMaxMs: 0 }
       this._queueStats.byMethod.set(method, stats)
     }
     return stats
@@ -199,7 +199,11 @@ export class FleetStoreClient {
     this._methodStats(method).calls += 1
   }
 
-  _recordSettled(waiter) {
+  // `runMs` is the worker's own measurement of the call and is the only number
+  // here that can name a blocker. Wait is a property of the queue: when one call
+  // holds the worker, every call behind it reports that call's duration as its
+  // own wait, so the ranking by wait lists the victims and never the cause.
+  _recordSettled(waiter, runMs) {
     if (!waiter?.method) return
     const waited = performance.now() - waiter.queuedAt
     const q = this._queueStats
@@ -210,6 +214,22 @@ export class FleetStoreClient {
     stats.settled += 1
     stats.waitTotalMs += waited
     if (waited > stats.waitMaxMs) stats.waitMaxMs = waited
+    // An older worker sends no runMs. Leaving the counters untouched keeps the
+    // mean honest — it is divided by runSamples, not by settled, so a mixed
+    // deployment reports the mean of what it actually measured rather than
+    // diluting it towards zero with calls nobody timed.
+    if (typeof runMs !== 'number' || !Number.isFinite(runMs)) return
+    stats.runSamples = (stats.runSamples || 0) + 1
+    stats.runTotalMs += runMs
+    if (runMs > stats.runMaxMs) stats.runMaxMs = runMs
+    q.runSamples = (q.runSamples || 0) + 1
+    q.runTotalMs = (q.runTotalMs || 0) + runMs
+    if (runMs > (q.runMaxMs || 0)) {
+      q.runMaxMs = runMs
+      // The single worst call seen, by name. This is the line to read first
+      // when the queue is backed up: it is the op everything else waited for.
+      q.slowestRun = { method: waiter.method, runMs, at: new Date().toISOString() }
+    }
   }
 
   /**
@@ -243,6 +263,9 @@ export class FleetStoreClient {
         settled: stats.settled,
         waitMeanMs: stats.settled ? stats.waitTotalMs / stats.settled : 0,
         waitMaxMs: stats.waitMaxMs,
+        runMeanMs: stats.runSamples ? stats.runTotalMs / stats.runSamples : 0,
+        runMaxMs: stats.runMaxMs,
+        runSamples: stats.runSamples || 0,
       }
     }
     return {
@@ -254,6 +277,9 @@ export class FleetStoreClient {
       settled: q.settled,
       waitMeanMs: q.settled ? q.waitTotalMs / q.settled : 0,
       waitMaxMs: q.waitMaxMs,
+      runMeanMs: q.runSamples ? q.runTotalMs / q.runSamples : 0,
+      runMaxMs: q.runMaxMs || 0,
+      slowestRun: q.slowestRun || null,
       byMethod,
     }
   }
