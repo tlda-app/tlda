@@ -41,16 +41,34 @@ primary_region = "sjc"
   TLDA_EDGE_RETRY_MS = "250"
   TLDA_EDGE_HEALTH_PORT = "5178"
 
-  # The preview site, as ports on this name rather than a second app. The tldraw
-  # licence is bound to a hostname and a different port on the same host is the
-  # same hostname, so preview shares this one: 443 is the course, 8443 its
-  # preview's store, 10000 the built copy the preview serves as files.
+  # The preview site, as ports on this name rather than a second app: 443 is the
+  # course, 8443 its preview's store, 10000 the built copy the preview serves as
+  # files. Funnel publishes exactly those three ports and no others, which is
+  # what fixes the numbers.
+  #
+  # NOT BECAUSE THE LICENCE NEEDS IT. An earlier version of this comment said the
+  # tldraw licence is bound to a hostname and therefore the preview had to share
+  # this one. That is false -- the key is issued for *.cormorant-matrix.ts.net
+  # (config/deployments/preview-store/daemon.yaml) and covers every box on this
+  # tailnet. Recorded rather than deleted, because it was the stated reason for
+  # the shape and someone reading the shape will look for one.
+  #
+  # Skip, 2026-09-21: *"pic isnt s build server"*, after *"i do not want my
+  # fucking build server to be the host"*. The box with the executor on it is
+  # pic-dev (fly.pic-dev.toml); this one serves.
   #
   # The app process runs both (scripts/fly-entrypoint-live.sh); the edge fronts
   # and publishes them, because the tailnet node lives there and not with the
   # app.
   TLDA_PREVIEW_DEPLOYMENT = "preview-store"
   TLDA_STATIC_DIR = "/app/server/persist/static-site"
+  # THIS BOX TAKES THE COPY, it does not make it. Skip's design, 2026-09-21:
+  # *"either it sends buolds directly to the preview box or testing sends them
+  # to the preview box (pic) when it gets them back from the builder"* — so the
+  # render happens where the source is, and what arrives here is a finished
+  # tree. server/routes/preview-copy.mjs mounts only because of this line, and
+  # refuses every request until TLDA_PREVIEW_COPY_SECRET is set as a Fly secret.
+  TLDA_PREVIEW_COPY_RECEIVE = "1"
   TLDA_EDGE_EXTRA_PORTS = "5179,5180"
   TLDA_EDGE_PREVIEW_PORTS = "8443:5179 10000:5180"
 

@@ -46,6 +46,34 @@ primary_region = "sjc"
   # is the only pointer that must arrive from outside it.
   TLDA_DEPLOYMENT = "live"
 
+  # THE PREVIEW SITE IS SOMEWHERE ELSE, and this is the box that feeds it.
+  #
+  # Skip's design, 2026-09-21: *"either it sends buolds directly to the preview
+  # box or testing sends them to the preview box (pic) when it gets them back
+  # from the builder"*. This is the second: the source lives here, the render
+  # goes out to the executor and comes back here, and when the build publishes,
+  # server/lib/build-dispatch.mjs assembles a copy and POSTs it to the host.
+  # Nothing about a destination reaches the executor, which stays a renderer.
+  #
+  # ONE PROJECT, because a copy is a flat tree — every page sits at the root,
+  # which is the URL a link points at, so two documents in one copy would be two
+  # documents at one address.
+  TLDA_PREVIEW_PROJECT = "qtm285-book"
+  # The destination whose store address and licence are patched into the copy.
+  # A box that runs a preview store gets this from its entrypoint; this one does
+  # not run one, so it names the committed directory itself.
+  TLDA_PREVIEW_DESTINATION = "/app/config/deployments/preview-store"
+  # 6PN, not the tailnet: these machines run tailscale with
+  # --tun=userspace-networking, so there is no interface for another Fly app to
+  # route a 100.x address over, and `.internal` is how they already reach each
+  # other. The host's own receiver checks this address is a 6PN peer before it
+  # unpacks anything, so the two halves agree about which network this is.
+  #
+  # TLDA_PREVIEW_COPY_SECRET is a SECRET, not an env entry — `fly secrets set`.
+  # Unset here and the copy is refused there; unset there and the route refuses
+  # everything rather than defaulting open.
+  TLDA_PREVIEW_HOST = "http://app.process.tlda-pic.internal:5176"
+
 # No [http_service] — the server is NOT exposed on the public internet. Access is
 # tailnet-only via `tailscale serve` (see fly-entrypoint-live.sh). The machine stays
 # running on its CMD + the persistent volume mount (no public service = no autostop).

@@ -192,6 +192,15 @@ if [ -n "${TLDA_PREVIEW_DEPLOYMENT:-}" ]; then
   cp "$PREVIEW_SRC/daemon.yaml" "$PREVIEW_DIR/config/daemon.yaml"
   echo "[entrypoint] preview store '$TLDA_PREVIEW_DEPLOYMENT' on 127.0.0.1:$PREVIEW_PORT, state under $PREVIEW_DIR"
 
+  # THE MAIN SERVER NEEDS THE SAME DIRECTORY, because the copy it puts in front
+  # of the preview carries this destination's config -- its store address and
+  # its licence -- spliced in at publish time. Exported here rather than written
+  # in the deployment file so there is one name for the destination and not two
+  # that can disagree. It is the committed source directory, not the installed
+  # copy on the volume: the latter is this instance's working state and gains
+  # files the destination never declared.
+  export TLDA_PREVIEW_DESTINATION="$PREVIEW_SRC"
+
   # Supervised for the same reason the build executor is: this container's health
   # is the main server's, so an unsupervised preview store that died would leave
   # the box healthy while every browser on the preview site silently stopped

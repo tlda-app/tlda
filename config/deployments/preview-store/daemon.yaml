@@ -8,11 +8,15 @@
 # lives in git is what stopped an absent value from silently becoming someone
 # else's default.
 #
-# IT IS A PORT ON THE BOX THAT ALREADY SERVES, not a box of its own. The tldraw
-# licence is bound to a hostname and a different port on the same host is the
-# same hostname, so the preview store shares the host and differs in port. A
-# second app would be a second hostname, a second volume, a second tailscale
-# identity to authenticate, and a second set of secrets.
+# IT IS A PORT ON THE BOX THAT ALREADY SERVES, not a box of its own -- a second
+# app would be a second volume, a second tailscale identity to authenticate, and
+# a second set of secrets, for a store holding a handful of draft rooms.
+#
+# NOT BECAUSE OF THE LICENCE. An earlier version of this said the tldraw licence
+# is bound to a hostname, so the preview had to share one. That is false, and the
+# key twenty lines below says so: it is issued for *.cormorant-matrix.ts.net and
+# covers every box on this tailnet. Left here rather than deleted because it was
+# the stated reason for the shape and a reader will look for one.
 #
 # THE LIVE HALF IS NOT THIS. Sync and hand-in for the published site are the
 # box's own main server; this one exists to hold the preview's marks apart from
