@@ -26,7 +26,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
-import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, configuredPublicationTarget, remoteIsConfiguredTarget, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
+import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, configuredPublicationTarget, pushTreeToPreviewBox, remoteIsConfiguredTarget, resolvePreviewMachine, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
@@ -664,11 +664,28 @@ async function cmdPublish() {
   const name = getPositional(0)
   if (!name) {
     console.error('Usage: tlda project publish <name> --from <preview> [--to <site-checkout>] [--subdir static] [--no-push] [--drop-missing]')
+    console.error('       tlda project publish <name> --from <preview> --to-preview <fly-app> [--to-preview-dir <path>] [--to-preview-machine <id>]')
     console.error('')
-    console.error('Sends what this environment is serving for <name> to the class site.')
+    console.error('Sends what this environment is serving for <name> to the class site, or to the preview site.')
     process.exit(1)
   }
 
+  // THE PREVIEW DESTINATION IS THE SAME BYTES, SOMEWHERE ELSE. Everything above
+  // the write -- the surface this copies from, the staging, the hash check, the
+  // race recheck -- is what makes a publish trustworthy, and a preview that
+  // skipped any of it would be a second answer to what is published. So the two
+  // destinations differ only in where the verified tree is put: a git checkout
+  // that is committed and pushed, or a directory on the preview box that is
+  // swapped into place.
+  //
+  // It is a separate flag rather than a --to that sometimes means a Fly app,
+  // because the class-site guards below are about a git remote and none of them
+  // can even be asked of a volume.
+  const previewApp = getFlag('to-preview')
+  // Where the preview box's file server looks, which is a property of that box
+  // rather than of this run -- `TLDA_STATIC_DIR` in fly.pic-static.toml, and
+  // the same default server/serve-static-dir.mjs falls back to.
+  const previewDirectory = getFlag('to-preview-dir') || '/app/server/persist/static-site'
   const config = loadCliConfig()
   const remembered = config.classSites?.[name] || {}
   const checkout = getFlag('to') || remembered.checkout
@@ -699,12 +716,13 @@ async function cmdPublish() {
     console.error(`Environments here: ${listEnvironments().map(e => e.active ? bold(e.name) : e.name).join(', ')}`)
     process.exit(1)
   }
-  if (!checkout) {
+  if (!checkout && !previewApp) {
     console.error(red(`No class site is recorded for "${name}".`))
     console.error(`Name it once with ${bold(`--to <checkout>`)} and it is remembered: ${bold(`tlda project publish ${name} --to ~/path/to/class-site`)}`)
+    console.error(`Or send it to the preview site instead: ${bold(`tlda project publish ${name} --to-preview <fly-app>`)}`)
     process.exit(1)
   }
-  if (!existsSync(join(checkout, '.git'))) {
+  if (!previewApp && !existsSync(join(checkout, '.git'))) {
     console.error(red(`${checkout} is not a git checkout.`))
     console.error('Publishing commits the site and pushes it, so the destination has to be one.')
     process.exit(1)
@@ -718,7 +736,7 @@ async function cmdPublish() {
   // repository is checked out on this machine, which is machine-local
   // information rather than a destination. Naming a checkout of some OTHER
   // repository is the mistake this catches.
-  const remoteUrl = await checkoutRemoteUrl(checkout)
+  const remoteUrl = previewApp ? null : await checkoutRemoteUrl(checkout)
   const courseRelease = await api('GET', `/api/projects/${encodeURIComponent(name)}/source/course-release.json`)
     .then(text => JSON.parse(typeof text === 'string' ? text : JSON.stringify(text)))
     .catch(() => null)
@@ -756,7 +774,7 @@ async function cmdPublish() {
       ok,
       refused: detail?.refused === true ? true : undefined,
       transient: detail?.transient === true ? true : undefined,
-      target: checkout,
+      target: previewApp ? `${previewApp}:${previewDirectory}` : checkout,
       files: Number.isInteger(detail?.files) ? detail.files : null,
       error: ok ? null : String(detail?.error || 'the publish did not complete'),
     }, { token: getRwToken() }).catch(recordError => {
@@ -836,6 +854,13 @@ async function cmdPublish() {
           'Nothing was written. Run it again against the build that finished.'],
         { error: `"${name}" was republished while this was reading it`, transient: true },
       )
+    }
+    if (previewApp) {
+      const machine = getFlag('to-preview-machine') || await resolvePreviewMachine(previewApp)
+      const put = await pushTreeToPreviewBox({ staging, app: previewApp, machine, directory: previewDirectory })
+      await recordOutcome(true, { files: inventory.files.length })
+      console.log(green(`Published ${inventory.files.length} file(s) to ${put.app}:${put.directory} — ${put.entries} entries, ${put.kilobytes} kB.`))
+      return
     }
     await writePublishedTree({ staging, checkout, subdirectory, allowDeletions: hasFlag('drop-missing') })
     const result = await commitAndPushClassSite({

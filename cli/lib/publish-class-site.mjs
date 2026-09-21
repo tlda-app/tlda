@@ -15,7 +15,7 @@
  * page, because a second way is a second answer to what is published.
  */
 
-import { execFile as execFileCb } from 'node:child_process'
+import { execFile as execFileCb, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, rm, cp, readFile, writeFile, readdir } from 'node:fs/promises'
@@ -271,4 +271,141 @@ export async function commitAndPushClassSite({ checkout, subdirectory, project, 
   if (!push) return { changed: true, files: staged.length, commit, pushed: false }
   await git('push', remote, `HEAD:${branch}`)
   return { changed: true, files: staged.length, commit, pushed: true }
+}
+
+/**
+ * Put the staged tree on the preview box.
+ *
+ * The preview destination is not a git checkout, so none of the class-site
+ * machinery above applies to it: nothing is committed, nothing is pushed to a
+ * remote, and there is no second producer whose files a wholesale replacement
+ * could delete. It is a directory on a Fly volume that one dumb file server
+ * serves, and replacing it wholesale is the whole operation.
+ *
+ * TAR OVER `fly ssh console`, BECAUSE THE BOX HAS NO `rsync`. Measured on
+ * tlda-pic-static 2026-09-21: `which rsync` finds nothing, `tar` and `node` are
+ * present, and `fly ssh console -C` forwards stdin — a 261MB tree crossed in 32
+ * seconds. Installing rsync would change the image every deployment shares, for
+ * a transport that is already fast enough.
+ *
+ * THE SWAP IS SEPARATE FROM THE TRANSFER, so a connection that dies halfway
+ * leaves the old site serving rather than half of the new one. The unpack lands
+ * beside the served directory and only a rename puts it in front of anyone —
+ * the same reason the server's own publication swaps rather than copying over
+ * the top.
+ */
+
+/**
+ * `fly ssh console -C` takes the remote command as ONE argument and splits it
+ * itself, so a script reaching it has to survive that split. These scripts are
+ * therefore written without a single quote in them and wrapped in single
+ * quotes, and the directory is refused unless it is a plain path — the
+ * alternative is nesting three levels of quoting through two parsers, which is
+ * a thing that works until the day a path has a space in it.
+ */
+const PLAIN_PATH = /^\/[A-Za-z0-9._\-/]*$/
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`
+}
+
+function runShell(spawnImpl, command) {
+  return new Promise((resolve, reject) => {
+    // bash rather than sh for `pipefail`: without it the pipeline reports tar's
+    // consumer and a producer that died mid-tree reads as a clean transfer.
+    const child = spawnImpl('bash', ['-o', 'pipefail', '-c', command], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', code => resolve({ code, stdout, stderr }))
+  })
+}
+
+function flyRemote(app, machine, script) {
+  const target = `-a ${shellQuote(app)}${machine ? ` --machine ${shellQuote(machine)}` : ''}`
+  return `fly ssh console ${target} -C ${shellQuote(`sh -lc '${script}'`)}`
+}
+
+export async function pushTreeToPreviewBox({ staging, app, machine, directory, spawnImpl = spawn }) {
+  if (!PLAIN_PATH.test(directory)) {
+    throw new Error(
+      `the preview directory has to be a plain absolute path and ${JSON.stringify(directory)} is not. ` +
+      'It is spliced into a shell command on the box, and this refuses rather than quoting it three times over.',
+    )
+  }
+  const incoming = `${directory}.incoming`
+
+  // THE PIPE IS A SHELL PIPE ON PURPOSE. Piping tar's stdout into `fly` from
+  // node stalls: measured 2026-09-21, a 261MB tree reached 211MB and stopped,
+  // twice, where the identical shell pipeline moved the same tree in 32
+  // seconds. Whatever `fly ssh console` wants from its stdin, a real pipe
+  // gives it and a node socket does not.
+  const transfer = await runShell(spawnImpl,
+    `tar czf - -C ${shellQuote(staging)} . | ` +
+    flyRemote(app, machine, `rm -rf ${incoming} && mkdir -p ${incoming} && tar xzf - -C ${incoming}`),
+  )
+  if (transfer.code !== 0) {
+    throw new Error(
+      `the staged tree did not reach ${app}:${incoming} — the transfer exited ${transfer.code}. ` +
+      `It said: ${transfer.stderr.trim() || transfer.stdout.trim() || '(nothing)'}. ` +
+      `Nothing was swapped, so ${directory} is still serving what it was.`,
+    )
+  }
+
+  // One rename in, one rename out, then the retired copy is dropped. The file
+  // server resolves every request from the path and holds no directory handle,
+  // so nothing is reading out of the tree being replaced.
+  const swap = await runShell(spawnImpl, flyRemote(app, machine,
+    `set -e; rm -rf ${directory}.previous; ` +
+    `if [ -d ${directory} ]; then mv ${directory} ${directory}.previous; fi; ` +
+    `mv ${incoming} ${directory}; ` +
+    `rm -rf ${directory}.previous; ` +
+    `echo SERVED; ls -A ${directory} | wc -l; du -sk ${directory} | cut -f1`,
+  ))
+  if (swap.code !== 0) {
+    throw new Error(
+      `the tree reached ${app} but was not put in front of the file server — fly exited ${swap.code}. ` +
+      `It said: ${swap.stderr.trim() || swap.stdout.trim() || '(nothing)'}. ` +
+      `${incoming} holds the transferred copy; ${directory} is whatever was there before.`,
+    )
+  }
+  const lines = swap.stdout.split('\n').map(line => line.trim()).filter(Boolean)
+  const marker = lines.indexOf('SERVED')
+  const entries = Number(lines[marker + 1])
+  const kilobytes = Number(lines[marker + 2])
+  if (marker < 0 || !Number.isFinite(entries) || !Number.isFinite(kilobytes)) {
+    throw new Error(
+      `the swap on ${app} completed but said nothing countable about ${directory}, so this cannot report what is ` +
+      `being served. It printed: ${JSON.stringify(swap.stdout.trim().slice(0, 400))}`,
+    )
+  }
+  return { app, directory, entries, kilobytes }
+}
+
+/**
+ * Which machine of the preview app to push to, resolved rather than assumed.
+ *
+ * `fly ssh console` without `--machine` picks one for you, and on an app that
+ * has an edge process it picks the edge — a machine with no volume and no file
+ * server, where the tree would land somewhere nothing serves and the publish
+ * would still report success. So this asks, and refuses to guess when the
+ * answer is not one machine.
+ */
+export async function resolvePreviewMachine(app, execFileImpl = execFileAsync) {
+  const { stdout } = await execFileImpl('fly', ['machines', 'list', '-a', app, '--json'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
+  const machines = JSON.parse(stdout)
+  const started = machines.filter(machine => machine.state === 'started')
+  if (started.length === 1) return started[0].id
+  if (started.length === 0) {
+    throw new Error(
+      `${app} has no started machine to publish to. ` +
+      `It has ${machines.length}: ${machines.map(m => `${m.id} (${m.state})`).join(', ') || 'none at all'}.`,
+    )
+  }
+  throw new Error(
+    `${app} has ${started.length} started machines — ${started.map(m => `${m.id} (${m.region})`).join(', ')} — ` +
+    'so which one serves the preview is not something this can pick. Name it with --to-preview-machine.',
+  )
 }
