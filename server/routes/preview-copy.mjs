@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { createWriteStream } from 'node:fs'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { createWriteStream, existsSync } from 'node:fs'
+import { cp, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 
 import express, { Router } from 'express'
 
-import { swapPreviewCopyIntoPlace } from '../lib/publish-copy.mjs'
+import { previewManifest, swapPreviewCopyIntoPlace } from '../lib/publish-copy.mjs'
 
 /**
  * Take a copy of a build from the box that made it.
@@ -53,6 +53,7 @@ const PLAIN_PATH = /^\/[A-Za-z0-9._\-/]*$/
 // Every member has to be a plain relative path. tar's own defaults would refuse
 // most of this, but "the tool would probably have caught it" is not a check.
 const SAFE_MEMBER = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$)).+$/
+const PREVIEW_MANIFEST = '.tlda-preview-manifest.json'
 
 // A copy is a site, not a disk. Refused before it is written, because an ingest
 // with no ceiling fills the volume the site is served from.
@@ -68,6 +69,39 @@ function run(command, args) {
     child.on('error', reject)
     child.on('close', code => resolve({ code, stdout, stderr }))
   })
+}
+
+async function removeFilesOutsideManifest(root, expected, current = '') {
+  if (!existsSync(root)) return
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name)
+    const name = current ? `${current}/${entry.name}` : entry.name
+    if (name === PREVIEW_MANIFEST) continue
+    if (entry.isDirectory()) {
+      await removeFilesOutsideManifest(path, expected, name)
+      if (!(await readdir(path)).length) await rm(path, { recursive: true, force: true })
+    } else if (!expected.has(name)) {
+      await rm(path, { force: true })
+    }
+  }
+}
+
+function checkedManifest(value) {
+  if (value?.version !== 1 || !Array.isArray(value.files) || typeof value.rootSha256 !== 'string') {
+    throw new Error('the preview copy has no valid manifest')
+  }
+  const files = value.files
+  const seen = new Set()
+  for (const file of files) {
+    if (!file || typeof file.path !== 'string' || !SAFE_MEMBER.test(file.path) || file.path === PREVIEW_MANIFEST || seen.has(file.path)) {
+      throw new Error(`the preview copy manifest names an unsafe or duplicate file: ${file?.path || '(missing path)'}`)
+    }
+    if (!Number.isInteger(file.size) || !/^[0-9a-f]{64}$/.test(file.sha256 || '')) throw new Error(`the preview copy manifest has invalid metadata for ${file.path}`)
+    seen.add(file.path)
+  }
+  const rootSha256 = createHash('sha256').update(JSON.stringify(files)).digest('hex')
+  if (rootSha256 !== value.rootSha256) throw new Error(`the preview copy manifest root is ${rootSha256.slice(0, 12)}, not ${String(value.rootSha256).slice(0, 12)}`)
+  return { ...value, files }
 }
 
 /** Fly's private network; a request from anywhere else is not a peer. */
@@ -142,6 +176,7 @@ export function createPreviewCopyReceiver({ staticDir, secret, log = console, ma
     const work = await mkdtemp(join(tmpdir(), 'tlda-preview-copy-'))
     const archive = join(work, 'copy.tgz')
     const incoming = `${staticDir}.incoming`
+    let switched = false
     try {
       let received = 0
       req.on('data', chunk => {
@@ -149,12 +184,6 @@ export function createPreviewCopyReceiver({ staticDir, secret, log = console, ma
         if (received > maxBytes) req.destroy(new Error(`the copy exceeded ${maxBytes} bytes`))
       })
       await pipeline(req, createWriteStream(archive))
-
-      const declared = req.get('x-tlda-preview-copy-sha256')
-      const actual = createHash('sha256').update(await readFile(archive)).digest('hex')
-      if (declared && declared !== actual) {
-        return res.status(400).json({ error: `the copy arrived as ${actual.slice(0, 12)} and was sent as ${declared.slice(0, 12)}; nothing was written` })
-      }
 
       const listed = await run('tar', ['tzf', archive])
       if (listed.code !== 0) {
@@ -177,20 +206,47 @@ export function createPreviewCopyReceiver({ staticDir, secret, log = console, ma
         })
       }
 
+      if (!members.includes(PREVIEW_MANIFEST)) {
+        return res.status(400).json({ error: `the differential copy has no ${PREVIEW_MANIFEST}; nothing was written` })
+      }
+
       await rm(incoming, { recursive: true, force: true })
-      const unpack = await run('sh', ['-c', `mkdir -p "${incoming}" && tar xzf "${archive}" -C "${incoming}"`])
+      if (existsSync(staticDir)) await cp(staticDir, incoming, { recursive: true })
+      else await mkdir(incoming, { recursive: true })
+      const unpack = await run('tar', ['xzf', archive, '-C', incoming])
       if (unpack.code !== 0) {
         return res.status(500).json({ error: `the copy arrived but did not unpack: ${unpack.stderr.trim() || `tar exited ${unpack.code}`}` })
       }
+
+      const manifest = checkedManifest(JSON.parse(await readFile(join(incoming, PREVIEW_MANIFEST), 'utf8')))
+      const declaredRoot = req.get('x-tlda-preview-copy-root')
+      if (declaredRoot && declaredRoot !== manifest.rootSha256) {
+        return res.status(400).json({ error: `the copy manifest root is ${manifest.rootSha256.slice(0, 12)}, not ${declaredRoot.slice(0, 12)}; nothing was written` })
+      }
+      await removeFilesOutsideManifest(incoming, new Set(manifest.files.map(file => file.path)))
+      const actual = await previewManifest(incoming)
+      if (JSON.stringify(actual) !== JSON.stringify(manifest)) {
+        throw new Error(`the assembled preview tree does not match manifest root ${manifest.rootSha256.slice(0, 12)}`)
+      }
       await swapPreviewCopyIntoPlace({ incoming, staticDir })
-      log.log(`[preview-copy] ${members.length} member(s) now serving from ${staticDir}`)
-      res.json({ ok: true, members: members.length, staticDir })
+      switched = true
+      const transferred = members.filter(member => member !== PREVIEW_MANIFEST && !member.endsWith('/')).length
+      log.log(`[preview-copy] ${manifest.files.length} member(s), ${transferred} transferred, now serving from ${staticDir}`)
+      res.json({ ok: true, members: manifest.files.length, transferred, rootSha256: manifest.rootSha256, staticDir })
     } catch (error) {
       log.warn(`[preview-copy] the copy was not taken: ${error.message}`)
       if (!res.headersSent) res.status(500).json({ error: `the copy was not taken: ${error.message}` })
     } finally {
+      if (!switched) await rm(incoming, { recursive: true, force: true })
       await rm(work, { recursive: true, force: true })
     }
+  })
+
+  router.get('/api/preview-copy/manifest', async (req, res) => {
+    if (!secret) return res.status(503).json({ error: 'this box has no receiving secret configured' })
+    if (req.get('x-tlda-preview-copy') !== secret) return res.status(401).json({ error: 'preview copy refused: wrong or missing secret' })
+    if (!isPeer(req.socket?.remoteAddress)) return res.status(403).json({ error: 'preview copies are taken from private-network peers only' })
+    res.json(await previewManifest(staticDir))
   })
 
   return router

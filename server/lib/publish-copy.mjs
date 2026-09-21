@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { createReadStream, existsSync } from 'node:fs'
+import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
+import { tmpdir } from 'node:os'
 
 import { chapterHeadingFor } from './chapter-heading.mjs'
 import { injectBridge } from './html-injector.mjs'
@@ -266,36 +267,87 @@ export async function copyBuildOutputToPreview({ outputDir, staticDir, distDir, 
  * it goes the way this app already reaches its peers: a POST over Fly's
  * private network, the same route the build executor uses.
  *
- * ONE ARCHIVE, ONE REQUEST, AND ITS DIGEST IN A HEADER. The per-file checks
- * that a fetched publish needs do not apply here — nothing was fetched, the
- * bytes came off this box's own disk — so the only thing that can go wrong is
- * the wire, and one digest answers that.
+ * THE RECEIVER REPORTS ITS MANIFEST FIRST. The request then contains the
+ * complete new manifest and only the blobs whose hashes are absent or changed.
+ * The receiver carries unchanged files forward in an incoming release, checks
+ * every file and the manifest root, and swaps only that complete release.
  */
-export async function sendPreviewCopy({ from, url, secret, fetchImpl = fetch, spawnImpl = spawn }) {
-  const archive = await new Promise((resolve, reject) => {
-    const tar = spawnImpl('tar', ['czf', '-', '-C', from, '.'], { stdio: ['ignore', 'pipe', 'pipe'] })
-    const chunks = []
-    let said = ''
-    tar.stdout.on('data', chunk => chunks.push(chunk))
+const PREVIEW_MANIFEST = '.tlda-preview-manifest.json'
+
+async function listPreviewFiles(root, current = '') {
+  if (!existsSync(root)) return []
+  const files = []
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name)
+    const name = current ? `${current}/${entry.name}` : entry.name
+    if (name === PREVIEW_MANIFEST) continue
+    if (entry.isDirectory()) files.push(...await listPreviewFiles(path, name))
+    else if (entry.isFile() && !entry.isSymbolicLink()) {
+      const bytes = await readFile(path)
+      files.push({ path: name, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
+    }
+  }
+  return files
+}
+
+export async function previewManifest(root) {
+  const files = (await listPreviewFiles(root)).sort((a, b) => a.path.localeCompare(b.path))
+  const rootSha256 = createHash('sha256').update(JSON.stringify(files)).digest('hex')
+  return { version: 1, files, rootSha256 }
+}
+
+async function readRemoteManifest(url, secret, fetchImpl) {
+  const response = await fetchImpl(`${url.replace(/\/$/, '')}/manifest`, {
+    headers: { 'x-tlda-preview-copy': secret },
+  })
+  const body = await response.text()
+  if (!response.ok) throw new Error(`${url} refused the preview manifest with ${response.status}: ${body.slice(0, 300) || '(no body)'}`)
+  try { return JSON.parse(body) } catch { throw new Error(`${url} returned an invalid preview manifest`) }
+}
+
+function tarArchive(from, archive, spawnImpl) {
+  const tar = spawnImpl('tar', ['czf', archive, '-C', from, '.'], { stdio: ['ignore', 'ignore', 'pipe'] })
+  let said = ''
+  return new Promise((resolve, reject) => {
     tar.stderr.on('data', chunk => { said += chunk })
     tar.on('error', reject)
     tar.on('close', code => code === 0
-      ? resolve(Buffer.concat(chunks))
+      ? resolve()
       : reject(new Error(`tar exited ${code} packing ${from}${said.trim() ? `: ${said.trim()}` : ''}`)))
   })
-  const digest = createHash('sha256').update(archive).digest('hex')
-  const response = await fetchImpl(url, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/gzip',
-      'x-tlda-preview-copy': secret,
-      'x-tlda-preview-copy-sha256': digest,
-    },
-    body: archive,
-  })
-  const body = await response.text()
-  if (!response.ok) {
-    throw new Error(`${url} refused the preview copy with ${response.status}: ${body.slice(0, 300) || '(no body)'}`)
+}
+
+/** Send only blobs whose hashes differ from the receiver's current tree. */
+export async function sendPreviewCopy({ from, url, secret, fetchImpl = fetch, spawnImpl = spawn }) {
+  const manifest = await previewManifest(from)
+  const previous = await readRemoteManifest(url, secret, fetchImpl)
+  const previousFiles = new Map((Array.isArray(previous?.files) ? previous.files : []).map(file => [file.path, file.sha256]))
+  const changed = manifest.files.filter(file => previousFiles.get(file.path) !== file.sha256).map(file => file.path)
+  const payload = await mkdtemp(join(tmpdir(), 'tlda-preview-payload-'))
+  try {
+    await writeFile(join(payload, PREVIEW_MANIFEST), `${JSON.stringify(manifest)}\n`)
+    for (const path of changed) {
+      const target = join(payload, path)
+      await mkdir(dirname(target), { recursive: true })
+      await cp(join(from, path), target)
+    }
+    const archive = `${payload}.tgz`
+    await tarArchive(payload, archive, spawnImpl)
+    const response = await fetchImpl(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/gzip',
+        'x-tlda-preview-copy': secret,
+        'x-tlda-preview-copy-root': manifest.rootSha256,
+      },
+      body: createReadStream(archive),
+      duplex: 'half',
+    })
+    const body = await response.text()
+    if (!response.ok) throw new Error(`${url} refused the preview copy with ${response.status}: ${body.slice(0, 300) || '(no body)'}`)
+    return { files: changed.length, rootSha256: manifest.rootSha256, said: body.slice(0, 300) }
+  } finally {
+    await rm(payload, { recursive: true, force: true })
+    await rm(`${payload}.tgz`, { force: true })
   }
-  return { bytes: archive.length, digest, said: body.slice(0, 300) }
 }

@@ -74,7 +74,7 @@ async function refreshPreviewCopy(name) {
           url: `${host.replace(/\/$/, '')}/api/preview-copy`,
           secret: process.env.TLDA_PREVIEW_COPY_SECRET || '',
         })
-        console.log(`[preview] ${name} sent to ${host} — ${sent.bytes} bytes, pointed at ${patched.config.store.ws}${patched.config.licenseKey ? '' : ' (unlicensed)'}`)
+        console.log(`[preview] ${name} sent to ${host} — ${sent.files} changed file(s), root ${sent.rootSha256.slice(0, 12)}, pointed at ${patched.config.store.ws}${patched.config.licenseKey ? '' : ' (unlicensed)'}`)
       } finally {
         await rm(staging, { recursive: true, force: true })
       }

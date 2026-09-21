@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { Readable } from 'node:stream'
 import express from 'express'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -39,27 +40,27 @@ test('a deployment that says nothing about copies starts no receiver', async () 
   assert.equal(await startPreviewCopyReceiver(previewCopyReceiverConfig({})), null)
 })
 
-test('what is sent is the directory, with its own digest beside it', async () => {
+test('what is sent is only the changed files and its complete manifest', async () => {
   const from = mkdtempSync(join(tmpdir(), 'preview-send-'))
   mkdirSync(join(from, 'book'), { recursive: true })
   writeFileSync(join(from, 'book', 'index.html'), 'a page')
-  let seen = null
+  const seen = []
   const result = await sendPreviewCopy({
     from,
     url: 'http://host.internal:5176/api/preview-copy',
     secret: 'shhh',
     fetchImpl: async (url, init) => {
-      seen = { url, init }
+      seen.push({ url, init })
+      if (url.endsWith('/manifest')) return { ok: true, status: 200, text: async () => JSON.stringify({ version: 1, files: [], rootSha256: 'x' }) }
       return { ok: true, status: 200, text: async () => '{"ok":true}' }
     },
   })
-  assert.equal(seen.url, 'http://host.internal:5176/api/preview-copy')
-  assert.equal(seen.init.headers['x-tlda-preview-copy'], 'shhh')
-  assert.equal(seen.init.headers['x-tlda-preview-copy-sha256'], result.digest)
-  assert.ok(result.bytes > 0)
-  // The digest is of the bytes actually sent, not of the directory listing.
-  const { createHash } = await import('node:crypto')
-  assert.equal(createHash('sha256').update(seen.init.body).digest('hex'), result.digest)
+  assert.equal(seen[0].url, 'http://host.internal:5176/api/preview-copy/manifest')
+  assert.equal(seen[1].url, 'http://host.internal:5176/api/preview-copy')
+  assert.equal(seen[1].init.headers['x-tlda-preview-copy'], 'shhh')
+  assert.equal(seen[1].init.headers['x-tlda-preview-copy-root'], result.rootSha256)
+  assert.equal(result.files, 1)
+  assert.equal(seen[1].init.duplex, 'half')
 })
 
 test('a refusal from the host is reported with what it said', async () => {
@@ -95,16 +96,23 @@ test('a copy sent from one box is what the other serves, and the one it replaces
   const from = mkdtempSync(join(tmpdir(), 'preview-build-'))
   mkdirSync(join(from, 'book'), { recursive: true })
   writeFileSync(join(from, 'book', 'chapter-1.html'), 'the page Skip just edited')
+  writeFileSync(join(from, 'unchanged.css'), 'same bytes')
   writeFileSync(join(from, 'page-info.json'), '[{"file":"book/chapter-1.html"}]')
 
   const host = await receiverOn(staticDir)
   try {
     const sent = await sendPreviewCopy({ from, url: host.url, secret: 'shhh' })
-    assert.ok(sent.bytes > 0)
+    assert.equal(sent.files, 3)
     assert.equal(readFileSync(join(staticDir, 'book', 'chapter-1.html'), 'utf8'), 'the page Skip just edited')
     assert.equal(readFileSync(join(staticDir, 'page-info.json'), 'utf8'), '[{"file":"book/chapter-1.html"}]')
     assert.throws(() => readFileSync(join(staticDir, 'stale.html')), /ENOENT/,
       'the previous copy must be replaced rather than merged into')
+
+    writeFileSync(join(from, 'book', 'chapter-1.html'), 'the page Skip edited again')
+    const differential = await sendPreviewCopy({ from, url: host.url, secret: 'shhh' })
+    assert.equal(differential.files, 1, 'the second transfer contains only the changed blob')
+    assert.equal(readFileSync(join(staticDir, 'unchanged.css'), 'utf8'), 'same bytes')
+    assert.equal(readFileSync(join(staticDir, 'book', 'chapter-1.html'), 'utf8'), 'the page Skip edited again')
   } finally { host.close() }
 })
 
@@ -118,20 +126,22 @@ test('a copy that would write outside the served directory is refused and writes
   // what tar would actually hand the unpacker, not a hand-written member name.
   const outside = mkdtempSync(join(tmpdir(), 'preview-outside-'))
   writeFileSync(join(outside, 'escaped.html'), 'should never land')
+  const archive = join(mkdtempSync(join(tmpdir(), 'preview-evil-')), 'evil.tgz')
+  await new Promise((resolve, reject) => {
+    const child = spawn('tar', ['czf', archive, '-C', from, '.', '-C', outside, `../${outside.split('/').pop()}/escaped.html`])
+    child.on('error', reject)
+    child.on('close', code => code === 0 ? resolve() : reject(new Error(`tar exited ${code}`)))
+  })
 
   const host = await receiverOn(staticDir)
   try {
-    await assert.rejects(
-      () => sendPreviewCopy({
-        from, url: host.url, secret: 'shhh',
-        spawnImpl: (cmd, _args, opts) => spawn(
-          cmd,
-          ['czf', '-', '-C', from, '.', '-C', outside, `../${outside.split('/').pop()}/escaped.html`],
-          opts,
-        ),
-      }),
-      /400/,
-    )
+    const response = await fetch(host.url, {
+      method: 'POST',
+      headers: { 'x-tlda-preview-copy': 'shhh' },
+      body: readFileSync(archive),
+      duplex: 'half',
+    })
+    assert.equal(response.status, 400)
     assert.equal(readFileSync(join(staticDir, 'intact.html'), 'utf8'), 'still here')
   } finally { host.close() }
 })
@@ -150,10 +160,30 @@ test('a copy whose bytes changed on the wire is refused and writes nothing', asy
         from, url: host.url, secret: 'shhh',
         fetchImpl: (url, init) => fetch(url, {
           ...init,
-          headers: { ...init.headers, 'x-tlda-preview-copy-sha256': 'f'.repeat(64) },
+          headers: { ...init.headers, 'x-tlda-preview-copy-root': 'f'.repeat(64) },
         }),
       }),
-      /400.*was sent as ffffffffffff/s,
+      /400.*not ffffffffffff/s,
+    )
+    assert.equal(readFileSync(join(staticDir, 'intact.html'), 'utf8'), 'still here')
+  } finally { host.close() }
+})
+
+test('an interrupted transfer leaves the previous complete tree serving', async () => {
+  const staticDir = join(mkdtempSync(join(tmpdir(), 'preview-host-')), 'site')
+  mkdirSync(staticDir, { recursive: true })
+  writeFileSync(join(staticDir, 'intact.html'), 'still here')
+  const host = await receiverOn(staticDir)
+  try {
+    const body = new Readable({ read() { this.push(Buffer.from('partial archive')); this.destroy(new Error('interrupted')) } })
+    await assert.rejects(
+      () => fetch(host.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/gzip', 'x-tlda-preview-copy': 'shhh' },
+        body,
+        duplex: 'half',
+      }),
+      /interrupted|fetch failed/s,
     )
     assert.equal(readFileSync(join(staticDir, 'intact.html'), 'utf8'), 'still here')
   } finally { host.close() }
