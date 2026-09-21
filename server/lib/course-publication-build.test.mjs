@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import { assembleCoursePublication, buildCoursePublication, publicationMetadata, seedCoursePublicationRender } from './course-publication-build.mjs'
+import { deriveCourseBookSpec } from './course-book-spec.mjs'
+import { deriveCourseAppSpec } from './course-app-build.mjs'
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'course-publication-'))
@@ -169,4 +171,83 @@ test('publication output cannot erase course source or the shared render', async
     /must be separate/,
   )
   assert.equal(existsSync(join(rendered, 'page-info.json')), true)
+})
+
+test('real qtm285 publication preserves app chrome and merges all current schedule refs', {
+  skip: !process.env.TLDA_QTM285_SOURCE_DIR || !process.env.TLDA_QTM285_STATIC_DIR || !process.env.TLDA_QTM285_APP_INDEX,
+}, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'course-publication-qtm285-'))
+  const course = join(root, 'course')
+  const staticInput = join(root, 'static-input')
+  const appIndex = join(root, 'app-index.html')
+  const output = join(root, 'publication')
+  const sourceSpec = deriveCourseBookSpec(process.env.TLDA_QTM285_SOURCE_DIR)
+  const announcementSpec = deriveCourseAppSpec(process.env.TLDA_QTM285_SOURCE_DIR, join(process.env.TLDA_QTM285_STATIC_DIR, 'index.html'))
+  const sourceInputs = new Set([
+    'index.qmd',
+    '_quarto.yml',
+    '_quarto-slides.yml',
+    ...sourceSpec.documents,
+    ...sourceSpec.decks,
+    ...announcementSpec.assets,
+  ])
+  for (const rel of sourceInputs) {
+    const destination = join(course, rel)
+    mkdirSync(dirname(destination), { recursive: true })
+    cpSync(join(process.env.TLDA_QTM285_SOURCE_DIR, rel), destination, { recursive: true })
+  }
+  cpSync(process.env.TLDA_QTM285_STATIC_DIR, staticInput, { recursive: true })
+  cpSync(process.env.TLDA_QTM285_APP_INDEX, appIndex)
+
+  const copiedSourceSpec = deriveCourseBookSpec(course)
+  const pages = [
+    ...copiedSourceSpec.documents.map(source => ({ source, file: source === 'index.qmd' ? '_book/index.html' : `_book/${source.replace(/\.qmd$/i, '.html')}`, title: source })),
+    ...copiedSourceSpec.decks.map(source => ({ source, file: `_book/${source.replace(/\.qmd$/i, '.html')}`, title: source, variant: 'slides' })),
+  ]
+  const render = async renderedDir => {
+    for (const page of pages) {
+      mkdirSync(join(renderedDir, dirname(page.file)), { recursive: true })
+      writeFileSync(join(renderedDir, page.file), page.source === 'index.qmd'
+        ? readFileSync(appIndex, 'utf8')
+        : `<main><h1>${page.title}</h1></main>`)
+      mkdirSync(join(renderedDir, dirname(page.source)), { recursive: true })
+      writeFileSync(join(renderedDir, page.source), page.source)
+    }
+    writeFileSync(join(renderedDir, 'page-info.json'), JSON.stringify(pages.map(({ source, file, title, variant }) => ({ file, title, source: { file: source }, ...(variant ? { variant } : {}) }))))
+    writeFileSync(join(renderedDir, 'toc.json'), JSON.stringify(pages.map((page, index) => ({ title: page.title, level: page.variant === 'slides' ? 'section' : 'chapter', page: index + 1 }))))
+  }
+  const assembleStaticFromRealCopy = async ({ outputDir }) => cpSync(staticInput, outputDir, { recursive: true })
+
+  await buildCoursePublication({
+    courseDir: course,
+    indexFile: join(staticInput, 'index.html'),
+    outputDir: output,
+    render,
+    assembleStatic: assembleStaticFromRealCopy,
+  })
+
+  const staticIndex = readFileSync(join(output, 'static/index.html'), 'utf8')
+  const appIndexHtml = readFileSync(join(output, 'app/book/index.html'), 'utf8')
+  const schedule = staticIndex.match(/<div\b[^>]*id=["']schedule["'][\s\S]*?<\/div>/i)?.[0]
+  assert.ok(schedule, 'real static index has a schedule section')
+  const refs = [...schedule.matchAll(/<a\b[^>]*\bhref=(['"])(.*?)\1/gi)].map(match => match[2])
+  assert.equal(refs.length, 21)
+  for (const ref of refs) {
+    const target = ref.replace(/^book\//, '')
+    assert.equal(existsSync(join(output, 'app/book', target)), true, `app schedule target resolves: ${target}`)
+  }
+  assert.equal((appIndexHtml.match(/<(?:section|div)\b[^>]*\bid=["']schedule["']/gi) || []).length, 1)
+  assert.match(appIndexHtml, /id=["']TOC["']/)
+  assert.match(appIndexHtml, /site_libs\/quarto-html\/quarto\.js/)
+  assert.match(appIndexHtml, /course-now/)
+  assert.match(appIndexHtml, /T Nov 3/)
+  assert.match(appIndexHtml, /Dec 10[–-]19/)
+  assert.doesNotMatch(appIndexHtml, /id=["']practices["']/)
+  assert.doesNotMatch(appIndexHtml, /site-assets\/css\/skeleton\.css/)
+  assert.match(appIndexHtml, /href=["'](?:\.\/)?chapters\/chapter-sampling\.html["']/)
+  // Counterfactual: without production mergeAppIndexSchedule wiring this
+  // static-only deck link is absent from the app index.
+  assert.match(appIndexHtml, /href=["']decks\/chapter-sampling-slides\.html["']/)
+  assert.match(appIndexHtml, /\[solutions\]/)
+  assert.doesNotMatch(appIndexHtml, /href=["']homework\/homework-calibration-solutions\.html["']/)
 })
