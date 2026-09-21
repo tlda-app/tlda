@@ -227,7 +227,7 @@ export function useSolutionChapterMarking(document: SvgDocument | null, editorMo
             // nothing opens unasked — the thirteen were an artifact of opening
             // thirteen things nobody asked for.
             openAt: identity.role === 'instructor'
-              ? new URLSearchParams(window.location.search).get('student')
+              ? new URLSearchParams(window.location.search).get('markingStudent')
               : null,
             // And if they page back to the collapsed position, it still must
             // not tell them their own marked homework does not exist.
