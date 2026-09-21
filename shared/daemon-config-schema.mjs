@@ -426,7 +426,7 @@ export function validateStrictEnvironments(environments, label = 'daemon.yaml en
   if (!isRecord(environments.values)) {
     throw new Error(`${label}.values must be an object of named environment entries`)
   }
-  const allowed = new Set([...STRICT_SERVER_FIELDS, 'runtimeRoot'])
+  const allowed = new Set([...STRICT_SERVER_FIELDS, 'runtimeRoot', 'pages'])
   for (const [name, raw] of Object.entries(environments.values)) {
     if (!isRecord(raw)) {
       throw new Error(`tlda environment "${name}" must be an object in ${label}.values`)
@@ -446,6 +446,15 @@ export function validateStrictEnvironments(environments, label = 'daemon.yaml en
     // the daemon refuses to start from anywhere else.
     if (raw.runtimeRoot !== undefined && !isAbsoluteRoot(raw.runtimeRoot)) {
       throw new Error(`tlda environment "${name}": "runtimeRoot" must be an absolute path in ${label}.${name}, got ${JSON.stringify(raw.runtimeRoot)}`)
+    }
+    // Optional: where documents come from. Absent means `store` — a tlda server
+    // serves the pages as well as the app, which is what every environment did
+    // before this key existed. `files` means the pages are files sitting beside
+    // the page asking for them, which is the case for a published or previewed
+    // copy on a plain file server and is not inferable from anything else the
+    // browser can see.
+    if (raw.pages !== undefined && raw.pages !== 'store' && raw.pages !== 'files') {
+      throw new Error(`tlda environment "${name}": "pages" must be "store" or "files" in ${label}.${name}, got ${JSON.stringify(raw.pages)}`)
     }
   }
   return environments.values

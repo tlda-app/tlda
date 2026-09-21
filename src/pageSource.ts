@@ -14,7 +14,7 @@
 // NOT everything the app fetches from the store belongs here. Build errors,
 // project metadata, health and fleet config are the development environment
 // asking its own server about itself, and they stay where they were.
-import { STORE_HTTP } from './activeConfig'
+import { PAGES_FROM, STORE_HTTP } from './activeConfig'
 import { appendToken, getToken } from './authToken'
 import { readClassroomToken } from './classroom/classroomToken'
 import type { HtmlPageEntry } from './svgDocumentLoader'
@@ -38,6 +38,12 @@ export interface DocConfig {
 // Doc assets come from the active config's STORE (http), injected by the server.
 const ASSET_BASE = STORE_HTTP
 
+// A published copy is flat: `book/chapter-x.html` sits at the root of the site,
+// because that is the URL a student's link points at and GitHub Pages serves it
+// from there. So there is no `/docs/<name>/` prefix to add — the document's
+// bytes, and the `page-info.json` that lists them, are simply at the root.
+const FILES_BASE = '/'
+
 /**
  * Where one document's bytes live.
  *
@@ -45,7 +51,7 @@ const ASSET_BASE = STORE_HTTP
  * carried, which is the rule both callers below already followed separately.
  */
 export function documentBase(name: string): string {
-  return `${ASSET_BASE}/docs/${name}/`
+  return PAGES_FROM === 'files' ? FILES_BASE : `${ASSET_BASE}/docs/${name}/`
 }
 
 // Fetch a single document config from the API — fast path for ?project=X
@@ -57,6 +63,14 @@ export function documentBase(name: string): string {
 // `?token=`, which cannot help when the bearer admits but no classroom
 // principal resolves. The message names what is actually missing instead.
 export async function fetchDocConfig(projectName: string, includePageInfo = false): Promise<DocConfig | null> {
+  // No API to ask: a file server answers for files. The manifest the publish
+  // step wrote already carries every document on this copy, so the entry IS the
+  // config — and `page-info.json` is fetched from the base path by whichever
+  // loader needs it, exactly as it is in the store case.
+  if (PAGES_FROM === 'files') {
+    const documents = await fetchManifest()
+    return documents[projectName] || null
+  }
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8000)
   try {
@@ -90,7 +104,8 @@ export async function fetchDocConfig(projectName: string, includePageInfo = fals
 // Fetch document manifest at runtime — derives basePath from key
 export async function fetchManifest(bustCache = false): Promise<Record<string, DocConfig>> {
   try {
-    const url = `${ASSET_BASE}/docs/manifest.json` + (bustCache ? `?t=${Date.now()}` : '')
+    const base = PAGES_FROM === 'files' ? `${FILES_BASE}manifest.json` : `${ASSET_BASE}/docs/manifest.json`
+    const url = base + (bustCache ? `?t=${Date.now()}` : '')
     const resp = await fetch(url)
     if (resp.status === 401 || resp.status === 403) {
       throw new Error('Authentication required. Add ?token=TOKEN to the URL.')

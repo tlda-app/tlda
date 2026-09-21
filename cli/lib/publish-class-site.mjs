@@ -428,7 +428,7 @@ export async function resolvePreviewMachine(app, execFileImpl = execFileAsync) {
  * SOURCE MAPS DO NOT GO OUT. They are 32MB of the 49MB build and they are for
  * whoever is debugging the app, not for a course site.
  */
-export async function patchStagedTreeForDestination({ staging, distDir, configDir }) {
+export async function patchStagedTreeForDestination({ staging, distDir, configDir, document = null }) {
   const previousConfigDir = process.env.TLDA_CONFIG_DIR
   const previousEnv = process.env.TLDA_ENV
   process.env.TLDA_CONFIG_DIR = resolve(configDir)
@@ -460,5 +460,25 @@ export async function patchStagedTreeForDestination({ staging, distDir, configDi
     ? raw.replace('<script type="module"', `${tag}\n    <script type="module"`)
     : raw.replace('</head>', `${tag}\n</head>`)
   await writeFile(join(staging, 'app.html'), html)
-  return { config, shell: 'app.html' }
+
+  // A copy whose pages are files needs the list of them as a file too. The
+  // server answers `/docs/manifest.json` by walking its projects directory;
+  // there is nothing to walk here, so the publish writes what it already knows
+  // about the one document it is publishing. One document, because the copy is
+  // flat -- every page sits at the root, which is the URL a student's link
+  // points at, so two documents in one copy would be two documents at one
+  // address.
+  if (config.pages === 'files') {
+    if (!document?.name) {
+      throw new Error(
+        `${configDir} declares pages: files, so the copy needs a manifest naming the document it carries, and this publish was given none. ` +
+        'Nothing was written.',
+      )
+    }
+    const entry = { name: document.name, pages: document.pages ?? 0 }
+    if (document.format) entry.format = document.format
+    if (document.renderedFormat) entry.renderedFormat = document.renderedFormat
+    await writeFile(join(staging, 'manifest.json'), `${JSON.stringify({ documents: { [document.name]: entry } }, null, 2)}\n`)
+  }
+  return { config, shell: 'app.html', manifest: config.pages === 'files' }
 }

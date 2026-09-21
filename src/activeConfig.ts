@@ -12,6 +12,11 @@ export interface ActiveConfig {
   database: { http: string; ws: string }  // fleet / chat / registry / agents
   store: { http: string; ws: string }      // shapes + doc assets sync
   licenseKey: string                        // tldraw license ("" = unlicensed)
+  // Where documents come from. "store" is a tlda server serving the pages as
+  // well as the app; "files" is a published or previewed copy, where the pages
+  // are files beside the page asking for them. Resolved by shared/config.mjs,
+  // so it is always one of the two words rather than absent.
+  pages: 'store' | 'files'
 }
 
 const injected = (typeof window !== 'undefined'
@@ -32,3 +37,4 @@ export const DATABASE_WS = injected.database.ws
 export const STORE_HTTP = injected.store.http
 export const STORE_WS = injected.store.ws
 export const LICENSE_KEY = injected.licenseKey
+export const PAGES_FROM = injected.pages

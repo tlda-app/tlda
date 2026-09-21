@@ -64,6 +64,22 @@ test('unknown per-env keys are still rejected', () => {
   assert.throws(() => validateStrictEnvironments(cfg), /runtimeRef/)
 })
 
+test('pages accepts the two words that mean something and nothing else', () => {
+  for (const value of ['store', 'files']) {
+    const cfg = structuredClone(BASE)
+    cfg.values.testing.pages = value
+    assert.equal(validateStrictEnvironments(cfg).testing.pages, value)
+  }
+  const bad = structuredClone(BASE)
+  bad.values.testing.pages = 'https://example.test/docs'
+  assert.throws(() => validateStrictEnvironments(bad), /pages/)
+})
+
+test('pages absent is allowed, and stays absent rather than being guessed here', () => {
+  const cfg = structuredClone(BASE)
+  assert.equal(validateStrictEnvironments(cfg).testing.pages, undefined)
+})
+
 test('cross-environment isolation: testing override does not change stable or installed roots', () => {
   const values = validateStrictEnvironments(withRoot('testing', '/Users/you/worktrees/daemon-testing'))
   const testing = resolveRuntimeRootForEnv(values, 'testing', '/repo/checkout')

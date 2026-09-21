@@ -862,6 +862,7 @@ async function cmdPublish() {
         staging,
         distDir: join(tldaRoot, 'dist'),
         configDir: getFlag('to-preview-config') || join(tldaRoot, 'config', 'deployments', 'pic-static-preview'),
+        document: { name, pages: project.pages, format: project.format, renderedFormat: project.renderedFormat },
       })
       const put = await pushTreeToPreviewBox({ staging, app: previewApp, machine, directory: previewDirectory })
       await recordOutcome(true, { files: inventory.files.length })

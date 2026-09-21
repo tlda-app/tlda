@@ -467,12 +467,15 @@ export function initConfig() {
  */
 export function resolveConfig(envName = null) {
   const { name, raw } = resolveStrictEnvironmentAuthority(loadDaemonYaml(), envName)
-  const { database, store, licenseKey } = raw
+  const { database, store, licenseKey, pages } = raw
   return {
     name,
     database: { http: _httpForm(database), ws: _wsForm(database) },
     store: { http: _httpForm(store), ws: _wsForm(store) },
     licenseKey,
+    // Resolved rather than optional, so a reader never has to know what absent
+    // meant. The schema allows only these two words.
+    pages: pages || 'store',
   }
 }
 
