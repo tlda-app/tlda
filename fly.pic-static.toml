@@ -1,6 +1,8 @@
-# fly.pic-static.toml — isolated static-build box, derived from pic-dev.
-# Same image and deployment shape as pic-dev; its own app, volume, and
-# tailnet name keep static course-site builds off every serving box.
+# fly.pic-static.toml — static file server for the published course site.
+# NOT a tlda server and NOT a build box: it serves an rsynced copy of the
+# built site (GitHub-Pages-style) off its volume and nothing else. Its own
+# app, volume, and tailnet name keep the published site off every serving
+# and building box.
 # Deploy with: fly deploy -c fly.pic-static.toml
 app = "tlda-pic-static"
 primary_region = "sjc"
@@ -14,21 +16,12 @@ primary_region = "sjc"
   TLDA_DEPLOYMENT = "pic-static"
   TS_HOSTNAME = "tlda-pic-static"
 
-  # This box renders standalone static builds. The entrypoint starts a
-  # supervised `bin/build-executor.mjs` only where this is set, so the
-  # behaviour is opted into here rather than inferred from the
-  # deployment's name.
-  TLDA_BUILD_EXECUTOR_ENABLE = "1"
+  # Directory the file server points at. On the volume, so it survives
+  # restarts; written by rsync from outside, never by this box.
+  TLDA_STATIC_DIR = "/app/server/persist/static-site"
 
-  # NO TLDA_BUILD_EXECUTOR_HOST here, deliberately. The entrypoint defaults it to
-  # $FLY_PRIVATE_IP, which is resolved on the machine rather than written down:
-  # a literal would be a private address in tracked config, and the name that
-  # reads as obvious -- "tlda-pic-static" -- does not resolve ON the box at all, so
-  # binding to it would fail at listen() and leave the supervisor restarting a
-  # process that can never come up.
-
-  # TLDA_BUILD_EXECUTOR_TOKEN is a SECRET, not an env entry — `fly secrets set`.
-  # The executor refuses to start without it rather than running unauthenticated.
+  # Secrets this box no longer uses (named, not deleted — secret deletion is
+  # a separate reversible act): TLDA_BUILD_EXECUTOR_TOKEN, CLASSROOM_AGENTS_GITHUB_TOKEN.
 
 [[vm]]
   size = "performance-2x"

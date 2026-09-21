@@ -1,16 +1,8 @@
-# What this deployment calls itself in the browser tab. dist/ is one built
-# artifact every deployment serves, so the title cannot be baked in per
-# deployment; the server rewrites it on the way out. The installed web app
-# takes the same name from dist-overrides/manifest.webmanifest.
-appName: PIC static
-
-# Server settings for the isolated static-build deployment. This is the
-# pic-dev server configuration with a separate deployment identity: its own
-# Fly app, volume, tailnet name, and secrets keep static course-site builds
-# off every serving box.
-deepgramBridgeUrl: ws://tlda-voice.internal:8180
-deepgramDirectUrl: wss://tlda-voice.cormorant-matrix.ts.net
-tokensFromEnvironmentOnly: true
-uploadDir: /app/server/persist/uploads
-notifications:
-  ackTimeout: 5s
+# Server settings for the pic-static file-server deployment.
+#
+# The box is not a tlda server: the entrypoint serves the static directory
+# directly and never starts unified-server, so none of these settings are
+# read. This file exists only because the entrypoint requires it to boot
+# (it refuses to start without server.yaml + daemon.yaml for the named
+# deployment). Keep it empty-shaped rather than deleting it.
+{}

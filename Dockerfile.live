@@ -298,6 +298,13 @@ COPY bin/git-proposal-hook.mjs ./bin/git-proposal-hook.mjs
 # the call site shipped and this file did not.
 COPY bin/build-session-history-index.mjs ./bin/build-session-history-index.mjs
 
+# Static file server: the pic-static deployment serves an rsynced copy of the
+# built site off its volume instead of starting unified-server (see the
+# pic-static branch in scripts/fly-entrypoint-live.sh). Ships the same
+# file-by-file way as the two lines above, for the same reason: a call site
+# in the entrypoint with no file in the image is ERR_MODULE_NOT_FOUND at boot.
+COPY server/serve-static-dir.mjs ./server/serve-static-dir.mjs
+
 # Build executor: the process a deployment runs when it is a machine that
 # RENDERS for another deployment rather than for itself. It is started by
 # `scripts/fly-entrypoint-live.sh` only where TLDA_BUILD_EXECUTOR_ENABLE is set,

@@ -1,13 +1,7 @@
-# Daemon/environment authority for the isolated static-build deployment.
-machineId: fly
-
-environments:
-  default: pic-static
-  values:
-    pic-static:
-      database: https://tlda-pic-static.cormorant-matrix.ts.net
-      store: https://tlda-pic-static.cormorant-matrix.ts.net
-      licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
-
-taskDoc:
-  globalDir: /app/server/persist/fleet-task-doc
+# Daemon/environment authority for the pic-static file-server deployment.
+#
+# Same story as server.yaml beside it: nothing reads this — there is no
+# daemon, no fleet store, no task doc on a file server. It exists only so
+# the entrypoint's config check passes and the boot continues to the
+# static branch.
+{}

@@ -135,6 +135,18 @@ if [ -f "$HIST_DB" ] && [ ! -f "$MERGED_FLAG" ]; then
   fi
 fi
 
+# Static file server, only where a deployment has opted in.
+#
+# The pic-static deployment is not a tlda server: it serves an rsynced copy
+# of the built site off its volume and nothing else. It still needs the
+# volume symlinks and the tailnet block above, so it shares this entrypoint
+# up to this branch — then serves files instead of starting unified-server.
+if [ "${TLDA_DEPLOYMENT:-}" = "pic-static" ]; then
+  echo "[entrypoint] static file server over ${TLDA_STATIC_DIR:-/app/server/persist/static-site}"
+  cd /app/server
+  exec node --import tsx serve-static-dir.mjs
+fi
+
 # Build executor, only where a deployment has opted in.
 #
 # OPT-IN BY INTENT, NOT BY IDENTITY. The condition is TLDA_BUILD_EXECUTOR_ENABLE
