@@ -2,24 +2,20 @@
 # carries the preview site, holding its marks apart from the live ones.
 appName: PIC preview
 
-# GATED, FOR NOW, AND NOT BECAUSE ANYONE WANTS IT. Skip's ruling stands --
-# nobody asked for the token gate and it is on its way out: it is one shared
-# string, the same characters for everyone holding it, so it can say whether a
-# caller has the box's key and nothing about who they are. The per-person rule
-# underneath it (`classroomRoomAccess`) is the boundary that should decide.
+# GATED, LIKE THE PUBLISHED SITE, BECAUSE IT IS THE PUBLISHED SITE WITH A
+# DIFFERENT CONFIG PATCHED IN. Skip, 2026-09-21: *"a preview matches the fking
+# published version"*, following *"i never said the preview store was
+# ungated"*. So the preview has no auth posture of its own to decide: its
+# static half is public-read exactly as the published one is, and its store is
+# gated and per-person identically to the live store. Same mechanism, same
+# settings, which is also what makes switching one over to the other trivial.
 #
-# What stops the gate coming off here is one derivation, not the design. The
-# rule that a server where nobody can be told apart grants everybody write is
-# currently derived from the gate being off -- so turning the gate off on THIS
-# box, which is funnelled, would hand every room on it to the internet.
-# Deriving it from "has a class" instead was tried on 2026-09-21 and reverted
-# the same hour: a dev box is (gate off, courses present) and must grant, this
-# box is (gate off, courses present) and must not, and no predicate over those
-# two facts separates them.
-#
-# So the gate comes off here when a deployment can say what its gate-off means,
-# which is a config split rather than a flag. Until then this box is gated and
-# carries nobody, which costs nothing.
+# THIS FILE PREVIOUSLY SAID THE OPPOSITE IN HIS NAME. It read "nobody asked for
+# the token gate and it is on its way out", attributed to a ruling of his. He
+# had said nobody asked for token auth and that it is trivially disabled in
+# config; turning it off *here*, on a funnelled box, was my inference wearing
+# his name. Recorded rather than quietly deleted, because a wrong attribution
+# in a config comment is how one becomes a constraint nobody can trace.
 tokenGating: true
 
 tokensFromEnvironmentOnly: true
