@@ -93,6 +93,54 @@ test('without a connected client, a reload signal performs no eager fetch or pag
   assert.equal(loads, 0)
 })
 
+test('a replacement reload signal disposes an already-mounted stale probe', async () => {
+  let listener
+  const manifestResolvers = []
+  const doc = fakeDocument()
+  const firstProbe = loadRuntimeProbePage('/docs/book/old.html', doc, 10_000, 10_000)
+  const stop = subscribeRuntimeProbe({ basePath: '/docs/book/' }, {
+    onReload: callback => { listener = callback; return () => {} },
+    isConnected: () => true,
+    fetchManifest: () => new Promise(resolve => { manifestResolvers.push(resolve) }),
+    loadPages: async (urls, options) => {
+      const probe = urls[0] === '/docs/book/old.html?_tldaReload=1' ? firstProbe : loadRuntimeProbePage(urls[0], doc, 10_000, 10_000)
+      const unregister = options.onProbe?.(probe)
+      try { await probe.loaded } finally { unregister?.() }
+    },
+  })
+  listener({ type: 'full', timestamp: 1 })
+  manifestResolvers.shift()({ view: { kind: 'html-pages' }, pages: [{ file: 'old.html' }] })
+  await Promise.resolve()
+  listener({ type: 'full', timestamp: 2 })
+  manifestResolvers.shift()({ view: { kind: 'html-pages' }, pages: [{ file: 'new.html' }] })
+  await Promise.resolve()
+  assert.equal(await firstProbe.loaded, false)
+  assert.equal(doc.frames[0].removed, true)
+  assert.equal(doc.frames.length, 2)
+  assert.equal(doc.frames[1].removed, undefined)
+  stop()
+})
+
+test('subscription cleanup disposes an already-mounted probe', async () => {
+  let listener
+  const doc = fakeDocument()
+  const probe = loadRuntimeProbePage('/docs/book/ch1.html', doc, 10_000, 10_000)
+  const stop = subscribeRuntimeProbe({ basePath: '/docs/book/' }, {
+    onReload: callback => { listener = callback; return () => {} },
+    isConnected: () => true,
+    fetchManifest: async () => ({ view: { kind: 'html-pages' }, pages: [{ file: 'ch1.html' }] }),
+    loadPages: async (urls, options) => {
+      const unregister = options.onProbe?.(probe)
+      try { await probe.loaded } finally { unregister?.() }
+    },
+  })
+  listener({ type: 'full', timestamp: 1 })
+  await Promise.resolve()
+  stop()
+  assert.equal(await probe.loaded, false)
+  assert.equal(doc.frames[0].removed, true)
+})
+
 test('documents without a usable base path do not mount a runtime probe', () => {
   assert.equal(hasRuntimeProbeBasePath({}), false)
   assert.equal(hasRuntimeProbeBasePath({ basePath: '' }), false)

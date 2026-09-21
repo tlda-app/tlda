@@ -31,6 +31,7 @@ export function runtimeProbeUrls(
 
 type FrameDocument = Pick<Document, 'body' | 'createElement'>
 type Timer = ReturnType<typeof setTimeout>
+type RuntimeProbe = ReturnType<typeof loadRuntimeProbePage>
 
 export function loadRuntimeProbePage(url: string, document: FrameDocument = window.document, settleMs = RUNTIME_PROBE_SETTLE_MS, timeoutMs = RUNTIME_PROBE_TIMEOUT_MS) {
   let frame: HTMLIFrameElement | null = document.createElement('iframe')
@@ -68,6 +69,7 @@ export function loadRuntimeProbePage(url: string, document: FrameDocument = wind
 
 export async function loadRuntimeProbePages(urls: string[], options: {
   document?: FrameDocument; concurrency?: number; settleMs?: number; timeoutMs?: number; cancelled?: () => boolean
+  onProbe?: (probe: RuntimeProbe) => (() => void) | void
 } = {}) {
   const concurrency = Math.max(1, options.concurrency ?? RUNTIME_PROBE_CONCURRENCY)
   let next = 0
@@ -77,8 +79,13 @@ export async function loadRuntimeProbePages(urls: string[], options: {
       const index = next++
       if (index >= urls.length) return
       const probe = loadRuntimeProbePage(urls[index], options.document, options.settleMs, options.timeoutMs)
-      if (options.cancelled?.()) probe.dispose()
-      results[index] = await probe.loaded
+      const unregister = options.onProbe?.(probe)
+      try {
+        if (options.cancelled?.()) probe.dispose()
+        results[index] = await probe.loaded
+      } finally {
+        unregister?.()
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, urls.length) }, worker))
@@ -92,14 +99,20 @@ export function subscribeRuntimeProbe(document: { basePath: string }, dependenci
   appendUrlToken?: (url: string) => string
   loadPages?: typeof loadRuntimeProbePages
 }) {
-  let current: AbortController | null = null
-  return dependencies.onReload(signal => {
+  let current: { controller: AbortController; dispose: () => void } | null = null
+  const stop = dependencies.onReload(signal => {
     // This is client-connected coverage only. With no connected viewer, do not
     // fetch or create an offscreen frame.
     if (!dependencies.isConnected()) return
-    current?.abort()
+    current?.dispose()
     const controller = new AbortController()
-    current = controller
+    const probes = new Set<() => void>()
+    const dispose = () => {
+      controller.abort()
+      for (const disposeProbe of probes) disposeProbe()
+      probes.clear()
+    }
+    current = { controller, dispose }
     void dependencies.fetchManifest(document.basePath, controller.signal)
       .then(manifest => (dependencies.loadPages || loadRuntimeProbePages)(runtimeProbeUrls(
         document.basePath,
@@ -108,9 +121,22 @@ export function subscribeRuntimeProbe(document: { basePath: string }, dependenci
         dependencies.appendUrlToken,
       ), {
         cancelled: () => controller.signal.aborted,
+        onProbe: probe => {
+          if (controller.signal.aborted) {
+            probe.dispose()
+            return
+          }
+          probes.add(probe.dispose)
+          return () => probes.delete(probe.dispose)
+        },
       }))
       .catch(error => {
         if (!controller.signal.aborted) console.warn('[runtime-error-probe] could not load rebuilt pages:', error)
       })
   })
+  return () => {
+    stop()
+    current?.dispose()
+    current = null
+  }
 }
