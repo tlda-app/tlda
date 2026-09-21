@@ -1337,6 +1337,7 @@ export async function buildIncrementalQmd({
   const incrementalRoots = nativeTldaProject && !scopedNativeProject
     ? qmdIncrementalRenderRoots(outDir, changedFiles)
     : null
+  addLog(`[qmd] render scope: changed=${JSON.stringify(changedFiles)} incremental=${JSON.stringify(incrementalRoots)}`)
   const deckPairs = nativeTldaProject ? qmdDeckChapterPairs(outDir, addLog) : []
   const deckRoots = new Set(deckPairs.map(({ deck }) => deck))
   const chapterRoots = incrementalRoots?.filter((root) => !deckRoots.has(root)) || null
