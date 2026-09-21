@@ -116,12 +116,32 @@ export function DocumentPanel() {
   const [dragOpen, setDragOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
-  // Close on outside touch (touch devices only — desktop uses CSS :hover).
-  // The sync listener below reports it so the three-line button glyph follows.
+  // Close on a pointer outside, WHATEVER KIND OF POINTER IT IS.
+  //
+  // Skip, 2026-09-20: "they also apparently changed the fucking TOC behavior so
+  // there is an x button instead of clicking off closing it", and on how it got
+  // here: "it rode in on the restyle... it didn't borrow the one thing from the
+  // mobile version it was meant to". The one thing was dismissal: deleting
+  // `phone-toc-backdrop` took click-off-to-close with it.
+  //
+  // This used to early-return on `pointerType === 'mouse'`, reasoning that
+  // "desktop hover handles this". It does not. Hover-out only closes a panel
+  // hover opened; open it by CLICKING the button and there is no hover to leave,
+  // so nothing closed it and the ✕ was the only way out. The ✕ was never a
+  // feature somebody added — it is what was left after dismissal was removed.
+  //
+  // The general rule, which is the correction rather than this instance:
+  // dismissal behaves identically for mouse, touch and pen. A device-typed
+  // branch in a dismiss path is the bug, not the fix.
   useEffect(() => {
     if (!open) return
     function onPointerDown(e: PointerEvent) {
-      if (e.pointerType === 'mouse') return // desktop hover handles this
+      // The toggle button is not "outside". These listeners are CAPTURE phase,
+      // so they run before the button's own handler and its
+      // `stopEventPropagation` (a bubble-phase guard) cannot reach them —
+      // without this, clicking ✕ would close here and the button's click would
+      // reopen it, and the control would look dead.
+      if ((e.target as Element)?.closest?.('.phone-toc-btn')) return
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         setOpen(false)
       }
@@ -187,7 +207,11 @@ export function DocumentPanel() {
   // the same pointerdown stream; this one only reports, never sets state.
   useEffect(() => {
     function onPointerDown(e: PointerEvent) {
-      if (e.pointerType === 'mouse') return
+      // Same two rules as the effect above, for the same reasons: every pointer
+      // kind dismisses, and the toggle button is not outside. If these two
+      // disagree about what closed the panel, the glyph and the panel disagree
+      // — which is the state this listener exists to prevent.
+      if ((e.target as Element)?.closest?.('.phone-toc-btn')) return
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         window.dispatchEvent(new CustomEvent('toc-open-change', { detail: { open: false } }))
       }
