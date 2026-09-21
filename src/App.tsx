@@ -1,11 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, Component, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
-import type { HtmlPageEntry } from './svgDocumentLoader'
 import type { SvgDocument } from './loaders/types'
 import { clientOpenKind, fetchDocumentManifest, loadDocumentByFormat } from './loaders/documentFormatLoader'
 import { clearDocumentStores } from './stores'
-import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent, getToken, appendToken } from './authToken'
-import { readClassroomToken } from './classroom/classroomToken'
+import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
 import { attachAppRecordingEditor, isAppRecordingOn, recordsByDefault, setAppRecording } from './recording/recorder'
 import { isClassroomSurface } from './classroom/classroomSurface'
 import { buildFailureReason, emptyDocumentNotice } from './documentBuildNotice'
@@ -26,6 +24,7 @@ import { StudentWork } from './classroom/StudentWork'
 import { HomeworkComparisonWorkspace } from './classroom/HomeworkComparisonWorkspace'
 import { MarkingLifecycle } from './classroom/MarkingLifecycle'
 import { STORE_HTTP } from './activeConfig'
+import { fetchDocConfig, fetchManifest, type DocConfig } from './pageSource'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
@@ -116,22 +115,6 @@ class ErrorBoundary extends Component<
   }
 }
 
-interface DocConfig {
-  name: string
-  pages: number
-  basePath: string
-  format?: 'svg' | 'png' | 'html' | 'book' | 'slides' | 'markdown' | 'qmd' | 'pdf'
-  // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
-  renderedFormat?: 'html' | 'slides'
-  members?: string[]
-  buildStatus?: string
-  starred?: boolean
-  lastBuild?: string
-  createdAt?: string
-  targets?: { texBase: string; mainFile: string; pages: number }[]
-  pageInfo?: HtmlPageEntry[]
-}
-
 type SvgDoc = SvgDocument
 
 interface FleetConfigResponse {
@@ -154,47 +137,9 @@ type State =
   | { phase: 'svg'; document: SvgDoc; roomId: string }
   | { phase: 'book'; bookName: string; members: BookMember[] }
 
-// Doc assets come from the active config's STORE (http), injected by the server.
+// What the development environment asks its own server about itself. Pages do
+// not come through here any more — see src/pageSource.ts.
 const ASSET_BASE = STORE_HTTP
-
-// Fetch a single document config from the API — fast path for ?project=X
-//
-// Both credentials ride the same way the sync socket carries them: the bearer
-// via the patched fetch's Authorization header, the classroom token via
-// `appendToken` on the URL. A bare fetch reaches a classroom-restricted
-// project as nobody and is refused — and the refusal used to prescribe
-// `?token=`, which cannot help when the bearer admits but no classroom
-// principal resolves. The message names what is actually missing instead.
-async function fetchDocConfig(projectName: string, includePageInfo = false): Promise<DocConfig | null> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 8000)
-  try {
-    const url = appendToken(`${ASSET_BASE}/api/projects/${projectName}${includePageInfo ? '?include=page-info' : ''}`)
-    const resp = await fetch(url, { signal: controller.signal })
-    if (resp.status === 401 || resp.status === 403) {
-      if (!getToken()) {
-        throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
-      }
-      if (!readClassroomToken()) {
-        throw new Error('This project needs your classroom sign-in for this course — open your Continue link or registration page, then reload.')
-      }
-      const detail = await resp.json().catch(() => null)
-      throw new Error(detail?.error || 'This project is not shared with that classroom sign-in.')
-    }
-    if (resp.status === 404) return null
-    if (!resp.ok) return null
-    const data = await resp.json()
-    data.basePath = `${ASSET_BASE}/docs/${projectName}/`
-    return data as DocConfig
-  } catch (e) {
-    if ((e as Error).name === 'AbortError') {
-      throw new Error('Server not responding. Try reloading.')
-    }
-    throw e
-  } finally {
-    clearTimeout(timeout)
-  }
-}
 
 // Why the last build failed, in one line, for the screen that says it failed.
 //
@@ -213,27 +158,6 @@ async function fetchBuildFailureReason(projectName: string): Promise<string | nu
   }
 }
 
-// Fetch document manifest at runtime — derives basePath from key
-async function fetchManifest(bustCache = false): Promise<Record<string, DocConfig>> {
-  try {
-    const url = `${ASSET_BASE}/docs/manifest.json` + (bustCache ? `?t=${Date.now()}` : '')
-    const resp = await fetch(url)
-    if (resp.status === 401 || resp.status === 403) {
-      throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
-    }
-    if (!resp.ok) return {}
-    const data = await resp.json()
-    const docs = data.documents || {}
-    // Derive basePath from key — never trust a stored value
-    for (const [key, config] of Object.entries(docs) as [string, DocConfig][]) {
-      config.basePath = `${ASSET_BASE}/docs/${key}/`
-    }
-    return docs
-  } catch (e) {
-    if (e instanceof Error && e.message.includes('Authentication')) throw e
-    return {}
-  }
-}
 
 // Generation counter + abort controller for document loading — prevents stale async completions
 let loadGeneration = 0
