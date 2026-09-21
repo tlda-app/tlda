@@ -5261,7 +5261,8 @@ app.get('/docs/:project/app{/*coursePath}', requireRead, async (req, res, next) 
 // them: no bridge and no title.
 const isPublishedStaticPage = (servedFilePath) => servedFilePath.startsWith('static/')
 
-async function sendPublishedStaticPage(res, projectPath, project, servedFilePath) {
+async function sendPublishedStaticPage(req, res, projectPath, project, servedFilePath) {
+  if (req.query?._tldaPublishRaw === '1') return res.sendFile(resolve(projectPath))
   const location = servedFilePath.slice('static/'.length)
   const href = `/docs/${encodeURIComponent(project)}/app/${location.split('/').map(encodeURIComponent).join('/')}`
   const html = await fs.promises.readFile(projectPath, 'utf8')
@@ -5666,7 +5667,7 @@ app.use('/docs', (req, res, next) => {
             // Slides format: inject the reveal.js bridge script — unless this is
             // the published static tree, which goes out as the build wrote it.
             if (isPublishedStaticPage(servedFilePath)) {
-              return sendPublishedStaticPage(res, projectPath, name, servedFilePath)
+              return sendPublishedStaticPage(req, res, projectPath, name, servedFilePath)
             }
             const html = await fs.promises.readFile(projectPath, 'utf8')
             const injected = injectSlidesBridge(html)
@@ -5702,7 +5703,7 @@ app.use('/docs', (req, res, next) => {
             }
 
             if (isPublishedStaticPage(servedFilePath)) {
-              return sendPublishedStaticPage(res, projectPath, name, servedFilePath)
+              return sendPublishedStaticPage(req, res, projectPath, name, servedFilePath)
             }
             const injected = injectChapterTitle(html, chapterTitle, prev, next)
             res.type('html').send(injected)
@@ -5736,7 +5737,7 @@ app.use('/docs', (req, res, next) => {
               ;({ chapterTitle, isFirstPage, navPrev, navNext } = chapterHeadingFor(pageInfo, servedFilePath))
             } catch (e) { console.warn(`[server] TOC/chapter title parsing failed for ${name}: ${e.message}`) }
             if (isPublishedStaticPage(servedFilePath)) {
-              return sendPublishedStaticPage(res, solutionsPath || projectPath, name, servedFilePath)
+              return sendPublishedStaticPage(req, res, solutionsPath || projectPath, name, servedFilePath)
             }
             const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage, { prev: navPrev, next: navNext }, await ownWorkUrlFor(req, filePath))
             res.type('html').send(injected)

@@ -12,7 +12,9 @@ const sha = (text) => createHash('sha256').update(Buffer.from(text)).digest('hex
 
 function served(pages) {
   return async (url) => {
-    const path = decodeURIComponent(url.split('/static/')[1])
+    const parsed = new URL(url)
+    assert.equal(parsed.searchParams.get('_tldaPublishRaw'), '1')
+    const path = decodeURIComponent(parsed.pathname.split('/static/')[1])
     if (!(path in pages)) return { ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) }
     return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(pages[path]) }
   }

@@ -42,7 +42,7 @@ export async function stagePublishedTree({ serverUrl, project, files, fetchImpl 
   const prefix = half ? `${encodeURIComponent(half)}/` : ''
   try {
     for (const file of files) {
-      const url = `${serverUrl.replace(/\/$/, '')}/docs/${encodeURIComponent(project)}/${prefix}${file.path.split('/').map(encodeURIComponent).join('/')}`
+      const url = `${serverUrl.replace(/\/$/, '')}/docs/${encodeURIComponent(project)}/${prefix}${file.path.split('/').map(encodeURIComponent).join('/')}?_tldaPublishRaw=1`
       const response = await fetchImpl(url, { headers })
       if (!response.ok) throw new Error(`${file.path}: the server lists this file and serves ${response.status} for it at ${url}`)
       const bytes = Buffer.from(await response.arrayBuffer())
