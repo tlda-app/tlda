@@ -95,7 +95,7 @@ import { createSourceProposalAdmissionConnectionDispatcher, createSourceProposal
 import projectRoutes from './routes/projects.mjs'
 import { classroomPrincipal, createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
 import { ClassroomStore } from './lib/classroom-store.mjs'
-import { initAuth, isTokenGatingEnabled, resolveIdentity, extractToken, requireRead, requireOperatorWrite, loginRoute } from './lib/auth.mjs'
+import { configuredReadToken, initAuth, isTokenGatingEnabled, resolveIdentity, extractToken, requireRead, requireOperatorWrite, loginRoute } from './lib/auth.mjs'
 import { writeSentinel, writeSentinelWarning } from './lib/sentinel.mjs'
 import { createPreviewDelivery } from './lib/preview-delivery.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape, replaceRoomSnapshot } from './lib/sync-rooms.mjs'
@@ -103,6 +103,7 @@ import { classroomRoomAccess, gradingLayerRoomTarget } from '../shared/classroom
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { injectPresentationSwitch } from './lib/presentation-switch.mjs'
+import { validatePublishedDocumentRuntime } from './lib/eager-runtime-validation.mjs'
 import { agentSpansCover, intersectAgentSpans, isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
 import { FleetStoreClient } from './lib/fleet-store-client.mjs'
 import { FleetSearchClient } from './lib/fleet-search-client.mjs'
@@ -331,7 +332,15 @@ const classroomStore = new ClassroomStore()
 // Initialize stores
 await traceStartupPhase('init-project-store', () => initProjectStore(PROJECTS_DIR))
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
-initBuildDispatcher()
+initBuildDispatcher({
+  validateRuntime: async name => {
+    const result = await validatePublishedDocumentRuntime(name, {
+      baseUrl: localServerBaseUrl(),
+      token: configuredReadToken(),
+    })
+    if (result.checked > 0) console.log(`[runtime-validation:${name}] loaded ${result.checked} rebuilt page(s)`)
+  },
+})
 
 // Fleet store (SQLite-backed agent registry + chat).
 // TLDA_FLEET_DB overrides the default path — used by integration tests

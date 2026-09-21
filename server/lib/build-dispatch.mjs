@@ -661,6 +661,18 @@ export function createDispatcherWithOptions(transport, options = {}) {
         // delivery's warning layer silently unscoped and therefore off.
         await notifyPublishedHead(options.notifyHeadChanged, name, job.sourceRevision, job.acceptSeq)
         await refreshPreviewCopy(name)
+        if ((pReplaced || PUBLISH_REPLACED_ITEMS).includes('output')) {
+          Promise.resolve()
+            .then(() => options.validateRuntime?.(name))
+            .catch(async error => {
+              const message = `Eager runtime validation failed: ${error?.message || error}`
+              console.error(`[runtime-validation:${name}] ${message}`)
+              await reportBuildFailure(name, message, job.sourceRevision, job.acceptSeq)
+            })
+            .catch(error => {
+              console.error(`[runtime-validation:${name}] failure report could not be delivered: ${error?.message || error}`)
+            })
+        }
         return result
       }
       const sink = sinks[message.m]
@@ -736,7 +748,7 @@ export function buildTransportFor(config, makeRemote = createRemoteTransport) {
   })
 }
 
-export function initBuildDispatcher() {
+export function initBuildDispatcher(options = {}) {
   if (activeDispatcher) return activeDispatcher
   const config = loadServerConfig()
   activeDispatcher = createDispatcherWithOptions(buildTransportFor(config), {
@@ -745,6 +757,7 @@ export function initBuildDispatcher() {
     stallTimeoutMs: config.buildStallTimeoutMs,
     storePath: join(getProjectsDir(), '.build-queue.sqlite'),
     notifyHeadChanged: (...args) => headNotifier?.(...args),
+    validateRuntime: options.validateRuntime,
   })
   return activeDispatcher
 }
