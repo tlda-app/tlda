@@ -336,3 +336,17 @@ test('the grant is off by default, so a real classroom still refuses', () => {
   assert.equal(classroomRoomAccess({ roomId: draft, principal: { role: 'student', studentId: OWNER }, submissionOwnerId: OWNER }), 'deny')
   assert.equal(classroomRoomAccess({ roomId: 'doc-book', principal: null }), 'read')
 })
+
+// The grant is about whether there is a class here, and a box can have one
+// without having a token gate. Deriving it from the gate is what handed every
+// room on a gateless box to anyone who could reach it.
+test('a class on the box means the rules decide, gate or no gate', () => {
+  const withAClass = { roomId: 'doc-qtm285-book', principal: null, everybodyGrant: false }
+  assert.equal(classroomRoomAccess(withAClass), 'read')
+  assert.equal(classroomRoomAccess({ ...withAClass, roomId: studentOverlayRoomId('doc-qtm285-book', 'qtm285:ada') }), 'deny')
+})
+
+test('no class on the box means there is nobody to withhold from', () => {
+  assert.equal(classroomRoomAccess({ roomId: 'doc-anything', principal: null, everybodyGrant: true }), 'write')
+  assert.equal(classroomRoomAccess({ roomId: studentOverlayRoomId('doc-anything', 'qtm285:ada'), principal: null, everybodyGrant: true }), 'write')
+})

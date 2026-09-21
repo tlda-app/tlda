@@ -187,7 +187,7 @@ export function classroomRoomAccess({
   isInstructorMember = false,
   everybodyGrant = false,
 }) {
-  // A DEV SERVER HAS NO CLASSROOM, SO IT HAS NOTHING TO WITHHOLD.
+  // A SERVER WITH NO CLASS ON IT HAS NOTHING TO WITHHOLD.
   //
   // Skip, 2026-09-20: "testing is a dev server", "no auth, no nothing",
   // "classroom is a *published frontend*" — and, for the grant itself, "on

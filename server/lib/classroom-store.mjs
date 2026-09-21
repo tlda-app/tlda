@@ -204,6 +204,16 @@ export class ClassroomStore {
 
   getCourse(id) { return this.db.prepare('SELECT * FROM courses WHERE id=?').get(id) || null }
 
+  /**
+   * Whether there is a class on this box at all.
+   *
+   * The question "is there anything here to withhold", asked of the thing that
+   * would know. Every server constructs a ClassroomStore whether or not anyone
+   * ever put a course in it, so the store existing says nothing; a course in it
+   * says everything.
+   */
+  hasAnyCourse() { return Boolean(this.db.prepare('SELECT 1 FROM courses LIMIT 1').get()) }
+
   upsertStudent({ id, courseId, displayName, preferredName, pronouns, enrollmentToken, active = true, layerScope = 'student' }) {
     if (!STUDENT_LAYER_SCOPES.has(layerScope)) throw new Error(`invalid student layer scope: ${layerScope}`)
     const existing = this.getStudent(id)

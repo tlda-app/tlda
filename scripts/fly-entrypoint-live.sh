@@ -200,8 +200,16 @@ if [ -n "${TLDA_PREVIEW_DEPLOYMENT:-}" ]; then
   (
     cd /app/server
     while true; do
+      # SAME PEOPLE, DIFFERENT MARKS. Everything the preview store writes is its
+      # own -- its rooms, its projects, its fleet -- and that separation is the
+      # draft boundary. Identity is the exception: it reads the SAME classroom
+      # database the main server writes, so a student is the same student here
+      # and the per-person rules can decide. A preview store with its own empty
+      # classroom knows nobody, and a server that knows nobody has nothing to
+      # withhold from anyone.
       if TLDA_CONFIG_DIR="$PREVIEW_DIR/config" \
          TLDA_FLEET_DB="$PREVIEW_DIR/config/fleet.db" \
+         TLDA_CLASSROOM_DB="/root/.config/tlda/classroom.db" \
          PROJECTS_DIR="$PREVIEW_DIR/projects" \
          PORT="$PREVIEW_PORT" \
          node --import tsx unified-server.mjs --i-am-tlda-cli

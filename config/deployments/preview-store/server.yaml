@@ -2,12 +2,24 @@
 # carries the preview site, holding its marks apart from the live ones.
 appName: PIC preview
 
-# Public, and gated, for the same reason the live one is: it shares a box whose
-# public exposure is Tailscale Funnel, and funnel is per port, not per box. The
-# preview site's own reason to be reachable is Skip, who is not always on the
-# tailnet; the gate is what keeps "reachable by him" from meaning "writable by
-# anyone who finds the hostname".
-tokenGating: true
+# NO TOKEN GATE. Nobody asked for one and it is on its way out: it is a single
+# shared string, the same characters for everyone holding it, so it can say
+# whether a caller has the box's key and nothing about who they are.
+#
+# What decides here instead is the per-person rule that was always underneath
+# it -- `classroomRoomAccess` in shared/classroom-rooms.mjs, reading the
+# student's own enrolment token. It already says the book is open to read, an
+# enrolled student writes, a grading draft is an instructor's alone, and
+# handed-in work is its owner's. That is the boundary; the shared string was
+# standing in front of it refusing people before it could be asked.
+#
+# THIS IS ONLY SAFE BECAUSE THIS SERVER KNOWS THE CLASS. It reads the same
+# classroom database the main server writes (TLDA_CLASSROOM_DB, set in
+# scripts/fly-entrypoint-live.sh), so the people are the same people. A preview
+# store with its own empty classroom would know nobody, and a server that knows
+# nobody withholds nothing from anyone -- which on a funnelled box means the
+# internet.
+tokenGating: false
 
 tokensFromEnvironmentOnly: true
 

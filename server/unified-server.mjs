@@ -6105,7 +6105,13 @@ server.on('upgrade', async (req, socket, head) => {
         : principal?.role === 'instructor' && principal.courseId
           ? classroomStore.isInstructorOf(principal, principal.courseId)
           : false,
-      everybodyGrant: !isTokenGatingEnabled(),
+      // WHETHER THERE IS A CLASS HERE, not whether there is a token gate.
+      // Skip's rule is "on servers without classroom grant a group containing
+      // literally everybody rw on everything" -- and a box can have a class and
+      // no gate, at which point deriving this from the gate hands every room on
+      // it to anyone who can reach it. The gate is being removed; the class is
+      // the thing that decides.
+      everybodyGrant: !classroomStore?.hasAnyCourse?.(),
     })
     if (access === 'deny') {
       const who = principal?.role === 'student' ? `student:${principal.studentId}`
@@ -6163,7 +6169,13 @@ server.on('upgrade', async (req, socket, head) => {
         isInstructorMember: sourcePrincipal
           ? app.locals.classroomStore.isInstructorOf(sourcePrincipal, sourceSubmission.courseId)
           : false,
-        everybodyGrant: !isTokenGatingEnabled(),
+        // WHETHER THERE IS A CLASS HERE, not whether there is a token gate.
+      // Skip's rule is "on servers without classroom grant a group containing
+      // literally everybody rw on everything" -- and a box can have a class and
+      // no gate, at which point deriving this from the gate hands every room on
+      // it to anyone who can reach it. The gate is being removed; the class is
+      // the thing that decides.
+      everybodyGrant: !classroomStore?.hasAnyCourse?.(),
       })
       if (may === 'deny') {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
