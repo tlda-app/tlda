@@ -364,13 +364,20 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
   const cleanups: Array<() => void> = []
 
   for (const solution of solutions) {
-    const exerciseId = exerciseIdForSolution(solution, doc)
-    if (!exerciseId) continue
     // The iframe can be observed once while Quarto is still finishing the
     // callout header and again after it exists. The owner is the solution, not
     // whichever host happened to exist on that pass; otherwise one pager lands
     // on the bare callout and a second lands in its eventual header.
+    //
+    // FIRST, because this runs on every tick of the install poll and this is
+    // what makes a settled chapter cheap. `exerciseIdForSolution` scans the
+    // whole document for `[id^="exr-"]` and walks the matches, so asking it
+    // before this check cost one full document scan per callout per tick — on a
+    // 13-exercise chapter, ~52 scans a second forever. Whatever it would have
+    // returned is discarded when the arrows are already there.
     if (solution.querySelector(`.${ARROWS_CLASS}`)) continue
+    const exerciseId = exerciseIdForSolution(solution, doc)
+    if (!exerciseId) continue
     const host = arrowHost(solution)
 
     // Position zero is "no student's answer", which is where every callout
