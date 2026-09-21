@@ -32,7 +32,7 @@ test('substitutes the private URL only in the installed copy', () => {
   const result = run(source, 'https://preview.example.test')
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.installed, /environments:\n  default: pic\n/)
-  assert.match(result.installed, /pic-preview:\n      database: https:\/\/preview\.example\.test\n      store: https:\/\/preview\.example\.test\n      licenseKey: ""/)
+  assert.match(result.installed, /testing:\n      database: https:\/\/preview\.example\.test\n      store: https:\/\/preview\.example\.test\n      licenseKey: ""/)
   assert.equal(readFileSync(picSource, 'utf8'), source)
 })
 

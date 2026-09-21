@@ -18,7 +18,11 @@ environments:
       # window.__TLDA_CONFIG__ — not a secret, so it belongs here and not in
       # `fly secrets`.
       licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
-    pic-preview:
+    # Source environment for ordinary project promotion into the classroom.
+    # Preview files and preview sync state now live on this box's separate
+    # ports; they are not an ordinary-project hop. The projects used by the
+    # classroom are built on testing and promoted directly here.
+    testing:
       database: __TLDA_PROMOTION_SOURCE_URL__
       store: __TLDA_PROMOTION_SOURCE_URL__
       licenseKey: ""

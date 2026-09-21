@@ -16,7 +16,7 @@
  * So: TWO processes, TWO projects roots, TWO config directories, the REAL
  * express router from server/routes/projects.mjs on both sides, and a REAL TLS
  * socket between them. The destination resolves the source by environment NAME
- * through its own daemon.yaml, exactly as `pic` resolves `pic-preview`.
+ * through its own daemon.yaml, exactly as `pic` resolves `testing`.
  * Nothing on either side is stubbed.
  *
  * The stories run in the order a class actually moves: the destination has
@@ -58,10 +58,10 @@ const CLI = resolve(HERE, '../cli/tlda.mjs')
 const EXPORT_TOKEN = 'wire-test-export-token'
 
 // The environment name the destination knows the source by. This is the real
-// shape: `config/deployments/pic/daemon.yaml` declares a `pic-preview`
+// shape: `config/deployments/pic/daemon.yaml` declares a `testing`
 // environment whose store is substituted from TLDA_PROMOTION_SOURCE_URL, and a
 // caller names that environment rather than a URL.
-const SOURCE_ENV = 'pic-preview'
+const SOURCE_ENV = 'testing'
 const DEST_ENV = 'pic'
 const PROJECT = 'a-throwaway-course'
 
