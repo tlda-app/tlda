@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, rm, cp, readFile, writeFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFileCb)
@@ -408,4 +408,57 @@ export async function resolvePreviewMachine(app, execFileImpl = execFileAsync) {
     `${app} has ${started.length} started machines — ${started.map(m => `${m.id} (${m.region})`).join(', ')} — ` +
     'so which one serves the preview is not something this can pick. Name it with --to-preview-machine.',
   )
+}
+
+/**
+ * Make the copy carry the app, pointed at this destination.
+ *
+ * Skip's design, 2026-09-20: *"which we'd like, idk patch in a a like 'build
+ * step' so as to not fuck with teh source"* — the destination's configuration is
+ * written into the copy at publish time, and it is the only difference between
+ * a preview page and a live one.
+ *
+ * THE CONFIG IS RESOLVED, NOT ASSEMBLED. `shared/config.mjs` already turns a
+ * deployment directory into a complete `{database, store, licenseKey}` and
+ * throws on a partial one, so the destination is declared in exactly one place
+ * and a publish cannot invent a half of it. The splice matches the server's own
+ * (`server/unified-server.mjs`, the reader-shell route) so a statically served
+ * page and a served one differ in when the tag was written, not in what it says.
+ *
+ * SOURCE MAPS DO NOT GO OUT. They are 32MB of the 49MB build and they are for
+ * whoever is debugging the app, not for a course site.
+ */
+export async function patchStagedTreeForDestination({ staging, distDir, configDir }) {
+  const previousConfigDir = process.env.TLDA_CONFIG_DIR
+  const previousEnv = process.env.TLDA_ENV
+  process.env.TLDA_CONFIG_DIR = resolve(configDir)
+  // TLDA_ENV names an environment on the machine running this, and would pick
+  // the operator's environment over the destination's own `environments.default`.
+  delete process.env.TLDA_ENV
+  let config
+  try {
+    const { resolveConfig } = await import(`../../shared/config.mjs?destination=${encodeURIComponent(configDir)}`)
+    config = resolveConfig()
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TLDA_CONFIG_DIR
+    else process.env.TLDA_CONFIG_DIR = previousConfigDir
+    if (previousEnv !== undefined) process.env.TLDA_ENV = previousEnv
+  }
+
+  const shellSource = join(distDir, 'index.html')
+  if (!existsSync(shellSource)) {
+    throw new Error(`${distDir} holds no index.html, so there is no app to put in the copy — run the client build first`)
+  }
+  await cp(distDir, staging, {
+    recursive: true,
+    filter: source => !source.endsWith(`${sep}index.html`) && !source.endsWith('.map'),
+  })
+
+  const tag = `<script>window.__TLDA_CONFIG__=${JSON.stringify(config)}</script>`
+  const raw = (await readFile(shellSource, 'utf8')).replace(/\s*<script>window\.__TLDA_CONFIG__=.*?<\/script>\s*/gs, '\n')
+  const html = raw.includes('<script type="module"')
+    ? raw.replace('<script type="module"', `${tag}\n    <script type="module"`)
+    : raw.replace('</head>', `${tag}\n</head>`)
+  await writeFile(join(staging, 'app.html'), html)
+  return { config, shell: 'app.html' }
 }

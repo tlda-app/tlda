@@ -26,7 +26,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
-import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, configuredPublicationTarget, pushTreeToPreviewBox, remoteIsConfiguredTarget, resolvePreviewMachine, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
+import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, configuredPublicationTarget, patchStagedTreeForDestination, pushTreeToPreviewBox, remoteIsConfiguredTarget, resolvePreviewMachine, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
@@ -857,9 +857,16 @@ async function cmdPublish() {
     }
     if (previewApp) {
       const machine = getFlag('to-preview-machine') || await resolvePreviewMachine(previewApp)
+      const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+      const patched = await patchStagedTreeForDestination({
+        staging,
+        distDir: join(tldaRoot, 'dist'),
+        configDir: getFlag('to-preview-config') || join(tldaRoot, 'config', 'deployments', 'pic-static-preview'),
+      })
       const put = await pushTreeToPreviewBox({ staging, app: previewApp, machine, directory: previewDirectory })
       await recordOutcome(true, { files: inventory.files.length })
       console.log(green(`Published ${inventory.files.length} file(s) to ${put.app}:${put.directory} — ${put.entries} entries, ${put.kilobytes} kB.`))
+      console.log(`The copy carries the app at /${patched.shell}, pointed at ${bold(patched.config.store.ws)}${patched.config.licenseKey ? '' : ' (unlicensed — the canvas will render empty)'}.`)
       return
     }
     await writePublishedTree({ staging, checkout, subdirectory, allowDeletions: hasFlag('drop-missing') })
