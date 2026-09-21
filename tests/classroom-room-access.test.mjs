@@ -290,3 +290,49 @@ test('the thread rule leaves the instructor\'s private draft exactly as it was',
     'deny',
   )
 })
+
+// A DEV SERVER HAS NO CLASSROOM.
+//
+// Skip, 2026-09-20: "testing is a dev server", "no auth, no nothing",
+// "classroom is a *published frontend*", and the grant itself — "on servers
+// without classroom grant a group containing literally everybody rw on
+// everything".
+//
+// Both directions, because this is a GRANT and a grant that leaks is worse
+// than the bug it fixes. The pair is the point: the same room, the same
+// caller, opposite answers either side of the flag. A test that only asserts
+// the grant would still pass if the flag were ignored and everything were
+// open, which is precisely the failure mode worth catching.
+
+test('a dev server with no auth writes every ordinary room', () => {
+  // The defect, 2026-09-20: the decision moved onto the resolved principal,
+  // a server with no auth resolves nobody, and the owner of the machine got
+  // `read` on his own rooms. Every write was dropped in silence — no chat
+  // filter committed, no annotation landed.
+  assert.equal(classroomRoomAccess({ roomId: 'doc-book', principal: null }), 'read')
+  assert.equal(
+    classroomRoomAccess({ roomId: 'doc-book', principal: null, everybodyGrant: true }),
+    'write',
+  )
+})
+
+test('the grant reaches the rooms a stranger is otherwise refused', () => {
+  // Not merely the open book: a dev server has no classroom, so there is
+  // nobody for a private layer to belong to and nothing to withhold.
+  const overlay = studentOverlayRoomId('doc-book', OWNER)
+  assert.equal(classroomRoomAccess({ roomId: overlay, principal: null }), 'deny')
+  assert.equal(
+    classroomRoomAccess({ roomId: overlay, principal: null, everybodyGrant: true }),
+    'write',
+  )
+})
+
+test('the grant is off by default, so a real classroom still refuses', () => {
+  // The control. If the parameter were ever defaulted to true, or the flag
+  // dropped at a call site and read as truthy, every assertion in this file
+  // above would still pass while the published frontend opened up. This is
+  // the test that fails for that.
+  const draft = gradingDraftRoomId('doc-sub-ada', 'ans-ex3')
+  assert.equal(classroomRoomAccess({ roomId: draft, principal: { role: 'student', studentId: OWNER }, submissionOwnerId: OWNER }), 'deny')
+  assert.equal(classroomRoomAccess({ roomId: 'doc-book', principal: null }), 'read')
+})

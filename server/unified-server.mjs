@@ -6136,6 +6136,7 @@ server.on('upgrade', async (req, socket, head) => {
         : principal?.role === 'instructor' && principal.courseId
           ? classroomStore.isInstructorOf(principal, principal.courseId)
           : false,
+      everybodyGrant: !isTokenGatingEnabled(),
     })
     if (access === 'deny') {
       const who = principal?.role === 'student' ? `student:${principal.studentId}`
@@ -6193,6 +6194,7 @@ server.on('upgrade', async (req, socket, head) => {
         isInstructorMember: sourcePrincipal
           ? app.locals.classroomStore.isInstructorOf(sourcePrincipal, sourceSubmission.courseId)
           : false,
+        everybodyGrant: !isTokenGatingEnabled(),
       })
       if (may === 'deny') {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')

@@ -185,7 +185,31 @@ export function classroomRoomAccess({
   submissionOwnerId = null,
   submissionReturned = false,
   isInstructorMember = false,
+  everybodyGrant = false,
 }) {
+  // A DEV SERVER HAS NO CLASSROOM, SO IT HAS NOTHING TO WITHHOLD.
+  //
+  // Skip, 2026-09-20: "testing is a dev server", "no auth, no nothing",
+  // "classroom is a *published frontend*" — and, for the grant itself, "on
+  // servers without classroom grant a group containing literally everybody rw
+  // on everything". So this is not a bypass of the rules below; it is the
+  // whole membership of a server that has no course on it.
+  //
+  // Why it has to sit here and not at a call site: on 2026-09-20 the decision
+  // moved off `tokenLevel` onto the resolved principal, and a server with no
+  // auth resolves nobody. Every branch below then read "no principal" as "a
+  // stranger", so the owner of the machine got `read` on his own rooms and
+  // every write was dropped in silence — no filter committed, no annotation
+  // landed. The operator path already had this answer (`resolveIdentity`
+  // returns OPERATOR when gating is off); the classroom path deliberately does
+  // not go through `may()`, so it needed the same answer spelled out, and its
+  // absence is what made the two paths disagree about the same caller.
+  //
+  // Withholding a grading draft on a box with no auth protects nobody: anyone
+  // who can reach it is already unauthenticated. The preview server is where
+  // that behaviour is real, which is the reason it exists.
+  if (everybodyGrant) return 'write'
+
   // What a caller may do is a fact about who they are: the principal's own
   // student id for a student, instructor membership for an instructor, nobody
   // for null.
