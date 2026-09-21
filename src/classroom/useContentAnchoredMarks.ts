@@ -378,9 +378,19 @@ export function useContentAnchoredMarks(
     // disagree about collapse state, and a mark has one opacity — so the caller,
     // which is the only thing that knows which view is its own, names it.
     governingRoot?: () => Element | null
+    // When the marks live in the same editor/store as the source page (the
+    // grading workspace), stamp the marking-layer tag on creation. Identity plus
+    // an origin predicate saying whose input made the shape; when either is
+    // absent this hook only anchors, exactly as before.
+    marking?: {
+      identity: { assignmentId: string; studentId: string; problemId: string; submissionRoomId: string }
+      tag: (identity: { assignmentId: string; studentId: string; problemId: string; submissionRoomId: string }) => { version: 1; assignmentId: string; studentId: string; problemId: string; submissionRoomId: string }
+      isStampedType: (type: string) => boolean
+      isMarkingInput: () => boolean
+    }
   } = {},
 ) {
-  const { anchorOnCreate = false, pageShapeId, governingRoot } = options
+  const { anchorOnCreate = false, pageShapeId, governingRoot, marking } = options
 
   // Record the content under a mark once it is FINISHED, not when it appears.
   //
@@ -402,6 +412,18 @@ export function useContentAnchoredMarks(
         ...Object.values(changes.updated).map((pair: any) => pair[1]),
       ]
       for (const record of candidates) {
+        // In the shared workspace the stamp and the anchor are one pass: a mark
+        // that misses its tag is unreturnable, and an anchor that replaces the
+        // tag instead of merging with it deletes the mark's membership.
+        if (marking && record.typeName === 'shape' && !record.meta?.classroomMarking) {
+          if (marking.isStampedType(record.type) && marking.isMarkingInput()) {
+            markEditor.updateShape({
+              id: record.id,
+              type: record.type,
+              meta: { ...record.meta, classroomMarking: marking.tag(marking.identity) },
+            })
+          }
+        }
         if (record.typeName !== 'shape' || !isMarkShape(record)) continue
         if ((record.meta as AnchoredMeta)?.contentAnchor) continue
         // The stroke is still being drawn; its geometry is not final yet.

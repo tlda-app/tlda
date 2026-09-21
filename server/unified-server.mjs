@@ -101,6 +101,7 @@ import { writeSentinel, writeSentinelWarning } from './lib/sentinel.mjs'
 import { createPreviewDelivery } from './lib/preview-delivery.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape, replaceRoomSnapshot } from './lib/sync-rooms.mjs'
 import { classroomRoomAccess, gradingLayerRoomTarget } from '../shared/classroom-rooms.mjs'
+import { migrateLegacyMarkingSnapshot, projectMarkingSnapshot } from './lib/classroom-marking-layer.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { injectPresentationSwitch } from './lib/presentation-switch.mjs'
@@ -331,7 +332,30 @@ const classroomStore = new ClassroomStore()
 
 // Initialize stores
 await traceStartupPhase('init-project-store', () => initProjectStore(PROJECTS_DIR))
-initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
+initSyncRooms(PROJECTS_DIR, {
+  onSignalFailure: reportSyncSignalFailure,
+  // First-open migration for pre-patch draft rooms: tag existing untagged
+  // annotation records with the room's exact marking identity before the room
+  // goes live, so legacy marks project on Return. sync-rooms applies this
+  // under the load slot before any session can add the locked pages; the
+  // marker makes it idempotent, and returned rooms are never matched.
+  migrateSnapshot: (docName, snapshot) => {
+    const target = gradingLayerRoomTarget(docName)
+    if (!target || target.returned) return snapshot
+    const submission = classroomStore
+      ? (classroomStore.submissionDocumentOwner(target.submissionRoomId)
+        || classroomStore.submissionDocumentOwner(target.submissionRoomId.replace(/^doc-/, '')))
+      : null
+    if (!submission) return snapshot
+    const { snapshot: migrated } = migrateLegacyMarkingSnapshot(snapshot, {
+      assignmentId: submission.assignmentId,
+      studentId: submission.studentId,
+      problemId: target.problemId,
+      submissionRoomId: target.submissionRoomId,
+    })
+    return migrated
+  },
+})
 initBuildDispatcher()
 
 // Fleet store (SQLite-backed agent registry + chat).
@@ -5793,14 +5817,19 @@ app.use('/api/projects', projectRoutes)
 app.use('/api/classroom', createClassroomRouter({
   store: classroomStore,
   submitSubmissionSource: (project, payload) => sourceRoomDaemon.submitFiles(project, payload),
-  // Reports how many shapes it carried, because the caller's own success
-  // message is the only place a return is visible and it was reporting a count
-  // it had not measured.
-  copyRoomStore: async (sourceRoomId, destinationRoomId) => {
+  // Projects the workspace down to this answer's marking dependency closure
+  // before replacing the returned snapshot, so the student receives only the
+  // instructor's marks — never the frozen source pages, the solution page, or
+  // another answer's marks. Reports how many marking records it carried,
+  // because the caller's own success message is the only place a return is
+  // visible and it was reporting a count it had not measured. Throws on a
+  // boundary-crossing binding so the route fails closed instead of replacing.
+  copyRoomStore: async (sourceRoomId, destinationRoomId, identity) => {
     const source = await getOrCreateRoom(sourceRoomId)
     const snapshot = source.getCurrentSnapshot()
-    replaceRoomSnapshot(destinationRoomId, snapshot)
-    return snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
+    const { snapshot: projected, markCount } = projectMarkingSnapshot(snapshot, identity)
+    replaceRoomSnapshot(destinationRoomId, projected)
+    return markCount
   },
 }))
 

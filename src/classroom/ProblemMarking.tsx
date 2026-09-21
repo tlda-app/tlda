@@ -33,23 +33,19 @@ export function ProblemMarking() {
   const [error, setError] = useState('')
   const [returned, setReturned] = useState('')
   const [returning, setReturning] = useState(false)
-  // The two ends of the return: the private marking layer, and the submission
-  // room the student reads.
+  // The workspace editor's readiness, carrying the room it was mounted for.
   //
-  // Refs, not state, and each carries the room its editor was mounted for.
+  // Refs, not state. Measured on the old overlay path: pressing Return
+  // re-renders, the overlay is replaced, and a handler that captured the editor
+  // at render time then acts on a DISPOSED editor — silently. Reading the ref
+  // after the await is what makes the return act on the editor that exists now.
+  // (Why the remount happens is not established, and this does not depend on
+  // knowing: any replacement, from any cause, is handled the same way.)
   //
-  // Measured: pressing Return re-renders, the overlay is replaced, and a handler
-  // that captured the editor at render time then deletes from a DISPOSED editor
-  // — silently, while the live layer keeps the marks. It reported success,
-  // because the dead editor's last store state still listed them. Reading the
-  // ref after the await is what makes the move act on the editor that exists
-  // now. (Why the remount happens is not established, and this does not depend
-  // on knowing: any replacement, from any cause, is handled the same way.)
-  //
-  // The room travels with each editor because "still mounted" is not the
+  // The room travels with the editor because "still mounted" is not the
   // question — "still THIS student's" is. Flicking students during the request
-  // would otherwise record Ada's return and publish onto Bo's work.
-  const draftEditorRef = useRef<{ editor: Editor; roomId: string } | null>(null)
+  // would otherwise record Ada's return against Bo's work.
+  const workspaceEditorRef = useRef<{ editor: Editor; roomId: string } | null>(null)
 
 
   useEffect(() => { setReturned('') }, [problemIndex, studentIndex])
@@ -93,6 +89,14 @@ export function ProblemMarking() {
   // the key on `SvgDocumentEditor` below already says the intent was.
   const solutionsDocKey = view?.assignment.solutionsDocKey ?? null
   const contentRef = answer?.contentRef ?? null
+  // Declared before `returnCurrent`, which compares the mounted editor's room
+  // against it: the check and the mount below name one room, not two
+  // computations that could disagree. `problem` may be undefined while the
+  // view loads, while `returnCurrent` and the mount below only run once it
+  // and the answer exist — hence the optional chain here and the plain access
+  // there.
+  const workspaceRoomId = answer && problem ? gradingDraftRoomId(`doc-${answer.contentRef}`, problem.problemId) : ''
+  const submissionRoomId = answer ? `doc-${answer.contentRef}` : ''
   useEffect(() => {
     if (!contentRef) { setDocument(null); return }
     let cancelled = false
@@ -171,7 +175,14 @@ export function ProblemMarking() {
     // The room this return is FOR, snapshotted before anything can move. Every
     // check below compares against this rather than against whatever the screen
     // shows by the time the server answers.
-    const intendedRoomId = gradingDraftRoomId(`doc-${answer.contentRef}`, problem.problemId)
+    //
+    // This is also the room the sole editor is mounted in: the private
+    // workspace store holds the frozen submitted page, the solution page, and
+    // the marks, and Return projects that store's marking layer into the
+    // student's returned room. Compared against the workspace room computed
+    // below rather than recomputed here, so the check and the mount cannot
+    // disagree about which room this return is for.
+    const intendedRoomId = workspaceRoomId
 
     // Refuse before recording anything if the marking surface is not there.
     //
@@ -191,7 +202,7 @@ export function ProblemMarking() {
     // So: never mounted is refused here and nothing is written; changed
     // mid-flight is still handled there. Both, because they are not the same
     // failure.
-    if (!draftEditorRef.current || draftEditorRef.current.roomId !== intendedRoomId) {
+    if (!workspaceEditorRef.current || workspaceEditorRef.current.roomId !== intendedRoomId) {
       setError('The marking surface is not loaded, so there is nothing to return. Nothing was recorded.')
       return
     }
@@ -238,18 +249,17 @@ export function ProblemMarking() {
   if (!view) return <main className="classroomWorkspace">Loading {assignmentId}…</main>
   if (!problem) return <main className="classroomWorkspace"><p>No submissions yet for {view.assignment.title}.</p></main>
 
+  // Keyed by the workspace room, which names both the student (through the
+  // content ref) and the problem. The old key named the student alone: choosing
+  // a problem then kept the prior problem's editor live behind the new panes —
+  // and the remount now lands at the workspace's own session camera rather
+  // than the document top, which the problem navigation above then moves.
   return <>
     {document
-      // Keyed by the document alone. Including the problem in the key made
-      // choosing one tear the editor down and build a new one, which lands at
-      // its default camera — so the navigation fired into an editor that was
-      // being destroyed and the replacement opened at the top. Changing student
-      // is a different document and should remount; changing problem is a move
-      // within the same one.
       ? <SvgDocumentEditor
-          key={answer?.contentRef}
+          key={workspaceRoomId}
           document={document}
-          roomId={`doc-${answer?.contentRef}`}
+          roomId={workspaceRoomId}
           // Bound to the room it was mounted for, in this render's closure —
           // which is the room that editor actually syncs, whatever the screen
           // has moved on to since.
@@ -258,10 +268,17 @@ export function ProblemMarking() {
             assignmentId,
             problemId: problem.problemId,
             studentId: answer!.studentId,
-            submissionRoomId: `doc-${answer?.contentRef}`,
-            onDraftEditor: (editor, roomId) => {
-              draftEditorRef.current = editor ? { editor, roomId } : null
-            },
+            submissionRoomId,
+          }}
+          onEditorMount={editor => {
+            if (editor) workspaceEditorRef.current = { editor, roomId: workspaceRoomId }
+          }}
+          onEditorRelease={editor => {
+            // Only if it is still the one held: a remount can release the old
+            // editor after the replacement registered, and an unconditional
+            // clear would drop the live one.
+            if (workspaceEditorRef.current?.editor !== editor) return
+            workspaceEditorRef.current = null
           }}
         />
       : <main className="classroomWorkspace"><p className={error ? 'classroomError' : undefined}>{error || `${answer?.displayName} did not answer this one.`}</p></main>}

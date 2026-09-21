@@ -534,17 +534,31 @@ let projectsDir = ''
 /** @type {((failure: object) => void | Promise<void>) | null} */
 let signalFailureReporter = null
 
+/**
+ * Snapshot migration hook, registered once via `initSyncRooms`.
+ *
+ * sync-rooms stays generic: it names the room but knows nothing of grading.
+ * The classroom layer registers a migrator that rewrites a loaded snapshot
+ * before it becomes a live room (see `getOrCreateRoom`).
+ *
+ * @type {((docName: string, snapshot: object) => object) | null}
+ */
+let snapshotMigrator = null
+
 /** @type {Map<string, Set<(event: object) => void>>} */
 const changeListeners = new Map()
 
 /**
  * Initialize the sync rooms module with the projects directory.
  * @param {string} dir - Path to server/projects/ directory
- * @param {{ onSignalFailure?: (failure: object) => void | Promise<void> }} options
+ * @param {{ onSignalFailure?: (failure: object) => void | Promise<void>, migrateSnapshot?: (docName: string, snapshot: object) => object }} options
  */
 export function initSyncRooms(dir, options = {}) {
   projectsDir = dir
   signalFailureReporter = typeof options.onSignalFailure === 'function' ? options.onSignalFailure : null
+  // Always assigned, so a reinitialization without a migrator cannot leave a
+  // prior one installed (notably across tests sharing this module).
+  snapshotMigrator = typeof options.migrateSnapshot === 'function' ? options.migrateSnapshot : null
   // Unref'd, so a test that forgets to stop it still exits.
   if (options.evictIdleRooms !== false) startRoomEvictionSweep()
 }
@@ -876,7 +890,11 @@ export async function getOrCreateRoom(docName) {
     // Re-check: another caller may have created it while we waited for a slot.
     if (rooms.has(docName)) return rooms.get(docName)
 
-    const snapshot = await loadSnapshot(docName)
+    let snapshot = await loadSnapshot(docName)
+    // A classroom migrator rewrites the loaded snapshot before it becomes a
+    // live room. Still under the load slot and before `rooms.set`, so no
+    // session can add records between the migration and the room's creation.
+    if (snapshotMigrator && snapshot) snapshot = snapshotMigrator(docName, snapshot) ?? snapshot
     // Re-check after await — another concurrent caller may have already created it
     if (rooms.has(docName)) return rooms.get(docName)
 

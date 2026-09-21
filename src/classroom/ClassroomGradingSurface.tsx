@@ -5,9 +5,8 @@ import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { useFleetIdentity } from '../fleet-data-adapter'
 import { getEditorWMCore } from '../wm/editor-wm'
 import { mountGradingPanes, gradingPanelWidth, GRADING_PANE_MAX_HEIGHT_FRACTION, type GradingPane } from './gradingPanes'
-import { StudentAnnotationOverlay } from './StudentAnnotationOverlay'
 import { useContentAnchoredMarks } from './useContentAnchoredMarks'
-import { gradingDraftRoomId } from '../../shared/classroom-rooms.mjs'
+import { gradingPanePanInteraction, isWorkspaceMarkingInput, isWorkspaceSubmissionShape, isStampedMarkingShapeType, markingTag, shapeBelongsToMarkingLayer } from './gradingWorkspace'
 
 export interface ClassroomGradingSurfaceProps {
   editor: Editor
@@ -25,16 +24,6 @@ export interface ClassroomGradingSurfaceProps {
    * record.
    */
   submissionRoomId: string
-  /**
-   * The draft layer's editor, **with the room it belongs to**.
-   *
-   * The room travels with the editor because the receiver has to be able to
-   * tell whether the editor it is holding is still the one for the student it
-   * meant to return. Flicking to the next student replaces this layer, and an
-   * editor identified only as "the draft editor" would let a return that began
-   * on one student finish on another.
-   */
-  onDraftEditor?: (editor: Editor | null, roomId: string) => void
 }
 
 function belongsToPane(editor: Editor, shape: TLShape, paneShapeId: TLShapeId) {
@@ -55,25 +44,31 @@ export function ClassroomGradingSurface({
   submissionShapeId,
   solutionShapeId,
   submissionRoomId,
-  onDraftEditor,
 }: ClassroomGradingSurfaceProps) {
-  // The submission pane's own camera. The draft layer is composited over that
-  // pane, and the pane is a viewport with its own camera over the shared store,
-  // so the main editor's camera would put the marks somewhere else.
-  const [submissionCamera, setSubmissionCamera] = useState<{ x: number; y: number; z: number } | null>(null)
-  const draftEditorRef = useRef<Editor | null>(null)
-  // The same editor as the ref, in state, because anchoring is an effect and an
-  // effect cannot see a ref being assigned. The ref stays the identity the
-  // release guard above compares against.
-  const [anchoringEditor, setAnchoringEditor] = useState<Editor | null>(null)
-  const { id: userId } = useFleetIdentity()
-  const deviceId = getDeviceId()
-  const wm = useMemo(() => getEditorWMCore(editor), [editor])
-  // Bound by the student-submission <section> below; declared before the hook
-  // that reads it.
-  const submissionPaneRef = useRef<HTMLElement | null>(null)
-  // A mark belongs to the student's work, not to the page it happens to sit on.
-  // This is the side that MAKES marks, so it is the side that records an anchor.
+  // The identity this answer's marks carry. The editor is already the private
+  // workspace room; this names which answer a shape in it belongs to.
+  const identity = useMemo(() => ({
+    assignmentId,
+    studentId,
+    problemId,
+    submissionRoomId,
+  }), [assignmentId, studentId, problemId, submissionRoomId])
+  const getShape = useCallback((id: string) => editor.getShape(id as TLShapeId) as TLShape | undefined, [editor])
+  const currentToolId = useValue(
+    'classroom-grading-tool',
+    () => editor.getCurrentToolId(),
+    [editor],
+  )
+  // The private workspace has one writable viewport: the submission pane.
+  // Therefore every mark-tool shape created in this store belongs to this
+  // answer, including shapes created asynchronously after pointer-up and voice
+  // notes created immediately on tool entry.
+  const isMarkingInput = useCallback(
+    () => isWorkspaceMarkingInput(editor.getCurrentToolId()),
+    [editor],
+  )
+  // The source page and the mark live in the same private store, so anchoring
+  // reads and writes through one editor.
   //
   // The submission page mounts once per pane and once in the main editor, and
   // those copies disagree about which solutions are open. A mark has one opacity,
@@ -84,11 +79,25 @@ export function ClassroomGradingSurface({
   // THIS instance's pane, held as a ref, not found by a global selector: a
   // document-wide query would answer with some other surface's pane if two were
   // ever mounted, and would silently pick one of them.
-  useContentAnchoredMarks(editor, anchoringEditor, {
+  const submissionPaneRef = useRef<HTMLElement | null>(null)
+  useContentAnchoredMarks(editor, editor, {
     anchorOnCreate: true,
     pageShapeId: submissionShapeId,
     governingRoot: () => submissionPaneRef.current,
+    marking: {
+      identity,
+      tag: markingTag,
+      isStampedType: isStampedMarkingShapeType,
+      isMarkingInput,
+    },
   })
+  const { id: userId } = useFleetIdentity()
+  const deviceId = getDeviceId()
+  const wm = useMemo(() => getEditorWMCore(editor), [editor])
+  // The submission pane's own camera. The pane is a viewport with its own
+  // camera over the shared store, so the main editor's camera would put the
+  // marks somewhere else.
+  const [submissionCamera, setSubmissionCamera] = useState<{ x: number; y: number; z: number } | null>(null)
   const readyViewports = useRef<Set<GradingPane>>(new Set())
   const mountedPanesRef = useRef<ReturnType<typeof mountGradingPanes> | null>(null)
   const [mountedPanes, setMountedPanes] = useState<ReturnType<typeof mountGradingPanes> | null>(null)
@@ -98,6 +107,30 @@ export function ClassroomGradingSurface({
   useEffect(() => {
     setSubmissionCamera(null)
   }, [problemId, studentId])
+
+  // Eraser and selection must not reach outside this answer's marking layer:
+  // the workspace holds the solution page and both locked source pages, and a
+  // drag-select or eraser stroke is evaluated by the shared editor against the
+  // whole store. Deletions are vetoed for anything that is not a shape in this
+  // answer's marking layer — including the submitted page and its content
+  // descendants, which the instructor marks on but never erases. The veto is
+  // deliberately delete-only: moves and reshapes of source pages keep their
+  // existing owners elsewhere.
+  useEffect(() => {
+    const allowed = (id: string) => {
+      const shape = editor.getShape(id as TLShapeId) as TLShape | undefined
+      if (!shape) return false
+      return (
+        shapeBelongsToMarkingLayer(id, getShape, identity) &&
+        !belongsToPane(editor, shape, submissionShapeId) &&
+        !belongsToPane(editor, shape, solutionShapeId)
+      )
+    }
+    return editor.sideEffects.registerBeforeDeleteHandler('shape', (shape: any) => {
+      if (allowed(String(shape.id))) return
+      return false
+    })
+  }, [editor, getShape, identity, solutionShapeId, submissionShapeId])
 
   const submissionBounds = useValue(
     `classroom-submission-bounds:${submissionShapeId}`,
@@ -210,22 +243,27 @@ export function ClassroomGradingSurface({
         ['student-submission', submissionShapeId, submissionBounds],
       ] as const).map(([pane, shapeId, bounds]) => {
         const mounted = paneByKind.get(pane)
-        // One expression for the pane's viewport id, because the overlay has to
-        // name the SAME viewport the panel registered — two spellings that agree
-        // today are two that disagree after a rename, and the disagreement shows
-        // up as a layer that silently stops following its pane.
+        // One expression for the pane's viewport id, because the panes below
+        // have to name the SAME viewport the panel registered — two spellings
+        // that agree today are two that disagree after a rename, and the
+        // disagreement shows up as a layer that silently stops following its
+        // pane.
         const paneViewportId = (kind: GradingPane) =>
           paneByKind.get(kind)?.viewportId ?? `wm:grading:${kind}:${assignmentId}:${studentId}`
+        const isSubmission = pane === 'student-submission'
         return (
           <section
             key={pane}
             className="classroomGradingPane"
             data-grading-pane={pane}
-            ref={pane === 'student-submission'
+            ref={isSubmission
               ? (node => { submissionPaneRef.current = node })
               : undefined}
-            onWheelCapture={pane === 'student-submission' ? event => {
-              if (!submissionCamera) return
+            onWheelCapture={isSubmission ? event => {
+              // While a mark-making tool is active the pane routes input to the
+              // shared editor, and the wheel capture below would pan the pane
+              // camera mid-stroke. Pass through so draw input owns the gesture.
+              if (isWorkspaceMarkingInput(editor.getCurrentToolId())) return
               event.stopPropagation()
               setSubmissionCamera(camera => camera ? {
                 ...camera,
@@ -242,11 +280,21 @@ export function ClassroomGradingSurface({
               viewportId={paneViewportId(pane)}
               wmSurface={mounted?.wmSurface}
               interactionMode="pinned"
-              readOnly
-              panInteraction
+              // The submission pane takes draw input over the shared editor; the
+              // solution pane keeps writing where it always did (the common
+              // layer, never this student's feedback). `readOnly` is false only
+              // on the submission pane, and the explicit predicate below still
+              // filters its rendering set either way.
+              readOnly={!isSubmission}
+              // CanvasClipPanel's pan layer owns primary pointers while active.
+              // Disable it for mark-making tools so TldrawViewport receives the
+              // stroke; restore it for selection and ordinary pane navigation.
+              panInteraction={gradingPanePanInteraction(isSubmission, currentToolId)}
               unboundedPanning
               requestedShapeIds={[shapeId]}
-              shapePredicate={shape => belongsToPane(editor, shape, shapeId)}
+              shapePredicate={shape => isSubmission
+                ? isWorkspaceSubmissionShape(shape, getShape, submissionShapeId, identity)
+                : belongsToPane(editor, shape, shapeId)}
               // Keep this pane's document and its iframe mounted while the
               // measured size arrives.
               //
@@ -262,60 +310,8 @@ export function ClassroomGradingSurface({
               disableCulling
 
               onEditorMount={pane === 'official-solution' ? markSolutionViewportReady : markSubmissionViewportReady}
-              onCamera={pane === 'student-submission' ? setSubmissionCamera : undefined}
-              cameraOverride={pane === 'student-submission' ? (submissionCamera ?? problemCamera) : null}
-              canvasOverlay={pane === 'student-submission' && submissionCamera ? (
-                // The instructor's private marking layer, over the student's
-                // work and nothing else.
-                //
-                // Only this pane. A mark on his own solution is the common
-                // layer — written once for the class — and was never this
-                // student's feedback, so the solution pane keeps writing where
-                // it always did.
-                //
-                // Always the write target: there is no layer menu on this screen,
-                // and the alternative is marks landing in the room the student
-                // reads, which is the defect being fixed.
-                //
-                // Being the write target is not the same as taking every
-                // pointer. The layer captures only while a mark-making tool is
-                // active — `markingCapture.ts` — so pointer, selection, scroll
-                // and pan reach the pane underneath the rest of the time. Skip
-                // settled that: capture while drawing, otherwise pass through.
-                // Keyed on the draft room: flicking students swaps the store behind
-                // the glass, so the overlay must remount rather than reconcile —
-                // a prop-swapped canvas keeps the old room's editor live behind
-                // the new room's sync, and `returnEnds` plus the overlay registry
-                // already handle teardown/mount ordering.
-                <StudentAnnotationOverlay
-                  key={gradingDraftRoomId(submissionRoomId, problemId)}
-                  bookRoomId={submissionRoomId}
-                  studentId={studentId}
-                  bookEditor={editor}
-                  visible
-                  isWriteTarget
-                  roomId={gradingDraftRoomId(submissionRoomId, problemId)}
-                  camera={submissionCamera}
-                  // No onCameraChange: the pane owns its camera and the overlay
-                  // follows it through `camera` above. Writing the overlay's
-                  // camera back into the pane made two owners fight over one
-                  // camera — the scroll/zoom stutter on this surface.
-                  onEditorMount={draftEditor => {
-                    draftEditorRef.current = draftEditor
-                    setAnchoringEditor(draftEditor)
-                    onDraftEditor?.(draftEditor, gradingDraftRoomId(submissionRoomId, problemId))
-                  }}
-                  onEditorRelease={draftEditor => {
-                    // Only if it is still the one we hold: a remount can release
-                    // the old editor after the replacement registered, and an
-                    // unconditional clear would drop the live one.
-                    if (draftEditorRef.current !== draftEditor) return
-                    draftEditorRef.current = null
-                    setAnchoringEditor(current => (current === draftEditor ? null : current))
-                    onDraftEditor?.(null, gradingDraftRoomId(submissionRoomId, problemId))
-                  }}
-                />
-              ) : undefined}
+              onCamera={isSubmission ? setSubmissionCamera : undefined}
+              cameraOverride={isSubmission ? (submissionCamera ?? problemCamera) : null}
             />
           </section>
         )

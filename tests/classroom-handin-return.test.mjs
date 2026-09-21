@@ -54,13 +54,14 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
       if (buildError) setImmediate(() => updateProject(contentRef, { buildStatus: 'error' }))
       return { status: 200, body: { ok: true } }
     },
-    // RETURNS A COUNT, because the real `copyRoomStore` in `unified-server.mjs`
-    // now does: it reports how many shapes it carried so the caller's success
-    // message can name a measured number instead of a local guess. A stub that
-    // returned nothing here would let the route report `returnedMarks: undefined`
-    // and still pass.
-    copyRoomStore: async (source, destination) => {
-      roomCopies.push({ source, destination })
+    // TAKES THE EXPECTED IDENTITY AND RETURNS A COUNT, because the real
+    // `copyRoomStore` in `unified-server.mjs` now does: it projects the source
+    // snapshot to that answer's marking closure before replacing, and reports
+    // how many marking records it carried so the caller's success message can
+    // name a measured number instead of a local guess. A stub that ignored the
+    // identity would let the route pass an unsettled one and still pass.
+    copyRoomStore: async (source, destination, identity) => {
+      roomCopies.push({ source, destination, identity })
       return roomShapeCount
     },
   }))
@@ -194,6 +195,12 @@ test('a common-layer student uses the real hand-in, gradebook, marking, return, 
     assert.deepEqual(roomCopies, [{
       source: 'doc-submission-hw1-ada::problem::ans-exr-one::grading-draft::',
       destination: 'doc-submission-hw1-ada::problem::ans-exr-one::grading-returned::',
+      identity: {
+        assignmentId: 'hw1',
+        studentId: 'ada',
+        problemId: 'ans-exr-one',
+        submissionRoomId: 'doc-submission-hw1-ada',
+      },
     }])
     // What the student can now read, as measured by the copy rather than guessed
     // by the caller. The marking button's whole report is this number.

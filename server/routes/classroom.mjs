@@ -979,9 +979,21 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
           }
           returnedLayerId = layerId
         }
+        // The expected identity travels INTO the store callback rather than
+        // being recomputed there: the route names the answer from the
+        // submission record, and the projection matches only that answer's
+        // exact tag. Projection/replace failure throws before `returnFeedback`,
+        // so a failed Return leaves the submission unmarked — not recorded
+        // with no marks moved.
         returnedMarks = await copyRoomStore(
           gradingDraftRoomId(submissionRoomId, problemId),
           gradingReturnedRoomId(submissionRoomId, problemId),
+          {
+            assignmentId: req.params.assignmentId,
+            studentId: req.params.studentId,
+            problemId,
+            submissionRoomId,
+          },
         )
       } else if (layerId) {
         return res.status(400).json({ error: 'A recording layer needs a problem to belong to' })
