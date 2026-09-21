@@ -810,6 +810,18 @@ async function cmdPublish() {
     await recordOutcome(false, { ...detail, refused: true })
     process.exit(1)
   }
+  // Refuse before either the general status check or the published-tree
+  // inventory. A newly created project can be building its first render and
+  // therefore have no last-good tree yet; neither message may mask the active
+  // render race.
+  if (project.buildStatus === 'building') {
+    await refuse(
+      [red(`"${name}" is building right now, so its published tree is being written as this reads it.`),
+        'A publish that races a render ships half of two builds. Wait for it to finish and run this again.'],
+      { error: `"${name}" is building right now`, transient: true },
+    )
+  }
+
   // THE REFUSAL IS ABOUT PUBLISHING, so it does not apply to a copy nobody is
   // served. `--stage-to` writes to a directory here and pushes nowhere; the
   // tree it copies is the last good render the surface is still serving, which
@@ -853,7 +865,7 @@ async function cmdPublish() {
   //
   // The same file derives `status: failed ? 'error' : pending ? 'building'`, so
   // a render actually in flight is exactly `'building'`, from either source.
-  if (inventory.buildStatus === 'building' || project.buildStatus === 'building') {
+  if (inventory.buildStatus === 'building') {
     await refuse(
       [red(`"${name}" is building right now, so its published tree is being written as this reads it.`),
         'A publish that races a render ships half of two builds. Wait for it to finish and run this again.'],
