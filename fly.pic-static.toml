@@ -1,8 +1,14 @@
-# fly.pic-static.toml — static file server for the published course site.
-# NOT a tlda server and NOT a build box: it serves an rsynced copy of the
-# built site (GitHub-Pages-style) off its volume and nothing else. Its own
-# app, volume, and tailnet name keep the published site off every serving
-# and building box.
+# fly.pic-static.toml — the box the course site is served from and synced to.
+#
+# SEVERAL PROCESSES, ONE BOX, and they are different things: a static file
+# server carrying the built pages (443), a tlda server carrying sync and
+# homework hand-in for qtm285.github.io (8443), and a second tlda server
+# carrying the same two things for the preview copy (10000). The split is in
+# scripts/fly-entrypoint-live.sh; the reason for it is that a mark made while
+# previewing must not be a mark on the live site.
+#
+# NOT a build box. Its own app, volume, and tailnet name keep the published
+# site off every serving and building box.
 # Deploy with: fly deploy -c fly.pic-static.toml
 app = "tlda-pic-static"
 primary_region = "sjc"
@@ -16,10 +22,22 @@ primary_region = "sjc"
   TLDA_DEPLOYMENT = "pic-static"
   TS_HOSTNAME = "tlda-pic-static"
 
+  # PUBLIC, and it has to be. Published pages' browsers connect to this box for
+  # sync, and students hand homework in to it from the Positron extension, so
+  # tailnet-only is not available to it the way it is to pic-preview. The two
+  # tlda servers are token-gated in their own server.yaml, which is what makes
+  # a funneled box safe; the file server serves only what is already published.
+  TS_FUNNEL = "1"
+
   # Directory the file server points at. On the volume, so it survives
   # restarts; written by rsync from outside, never by this box.
   TLDA_STATIC_DIR = "/app/server/persist/static-site"
 
+  # Secrets this box needs, set with `fly secrets set -a tlda-pic-static`:
+  # TLDA_TOKEN_READ and TLDA_TOKEN_RW — both tlda servers here run
+  # `tokensFromEnvironmentOnly: true` with the gate on, so these are the
+  # application boundary in front of student submissions.
+  #
   # Secrets this box no longer uses (named, not deleted — secret deletion is
   # a separate reversible act): TLDA_BUILD_EXECUTOR_TOKEN, CLASSROOM_AGENTS_GITHUB_TOKEN.
 

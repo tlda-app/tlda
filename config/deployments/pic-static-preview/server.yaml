@@ -1,0 +1,18 @@
+# Server settings for the PREVIEW sync and hand-in server on the pic-static box.
+# Same shape as config/deployments/pic-static-live/server.yaml beside it; read
+# that one first.
+appName: PIC preview
+
+# Public, and gated, for the same reason the live one is: it shares a box whose
+# public exposure is Tailscale Funnel, and funnel is per port, not per box. The
+# preview site's own reason to be reachable is Skip, who is not always on the
+# tailnet; the gate is what keeps "reachable by him" from meaning "writable by
+# anyone who finds the hostname".
+tokenGating: true
+
+tokensFromEnvironmentOnly: true
+
+uploadDir: /app/server/persist/instances/preview/uploads
+
+notifications:
+  ackTimeout: 5s
