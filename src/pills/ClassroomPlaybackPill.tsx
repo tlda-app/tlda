@@ -37,11 +37,13 @@ const PLACEMENTS: { id: DocViewPlacement; title: string }[] = [
   { id: 'off', title: 'Off: remove the playback doc-view' },
 ]
 
-function docViewSlotId(userId: string, deviceId: string) {
-  return createShapeId(`fleet-docview-class-${userId.replace('fleet:', '')}-${deviceId}`) as unknown as string
+function docViewSlotId(userId: string, deviceId: string, localOnly = false) {
+  const localSuffix = localOnly ? '-app-local' : ''
+  return createShapeId(`fleet-docview-class-${userId.replace('fleet:', '')}-${deviceId}${localSuffix}`)
 }
 
-function ownedDocView(editor: Editor, userId: string, deviceId: string) {
+function ownedDocView(editor: Editor, userId: string, deviceId: string, localOnly = false) {
+  if (localOnly) return editor.getShape(docViewSlotId(userId, deviceId, true)) as any
   return (editor.getCurrentPageShapes() as any[])
     .find(shape => shape.type === 'fleet-docview' && isFleetShapeForOwnerKey(shape, userId, deviceId)) as any
 }
@@ -57,9 +59,9 @@ function applyPlacement(editor: Editor, placement: DocViewPlacement, localOnly =
   if (!userId || !deviceId) return false
   const bounds = placement === 'off' ? null : getDocumentPageBounds(editor)
   if (placement !== 'off' && !bounds) return false
-  const existing = ownedDocView(editor, userId, deviceId)
+  const existing = ownedDocView(editor, userId, deviceId, localOnly)
   if (placement === 'off' && !existing) return true
-  const id = docViewSlotId(userId, deviceId)
+  const id = docViewSlotId(userId, deviceId, localOnly)
 
   const write = () => {
     if (placement === 'off') {
@@ -104,11 +106,11 @@ function applyPlacement(editor: Editor, placement: DocViewPlacement, localOnly =
   return true
 }
 
-function currentPlacement(editor: Editor): DocViewPlacement | null {
+function currentPlacement(editor: Editor, localOnly = false): DocViewPlacement | null {
   const userId = getHumanId()
   const deviceId = getDeviceId()
   if (!userId || !deviceId) return null
-  const shape = ownedDocView(editor, userId, deviceId)
+  const shape = ownedDocView(editor, userId, deviceId, localOnly)
   if (!shape) return 'off'
   const bounds = getDocumentPageBounds(editor)
   if (!bounds) return 'here'
@@ -147,7 +149,7 @@ export function ClassroomPlaybackPill({
     let cancelled = false
     const read = () => {
       if (cancelled) return
-      const current = currentPlacement(mainEditor)
+      const current = currentPlacement(mainEditor, localOnly)
       if (current === null) return
       if (!defaultSettledRef.current && defaultPlacement) {
         if (current === 'off') {

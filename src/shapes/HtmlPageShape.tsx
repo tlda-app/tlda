@@ -181,7 +181,16 @@ function updateFleetDocview(
       props: { ...shape.props, ...props },
     } as unknown as Parameters<typeof editor.updateShape>[0])
   }
-  editor.run(write, { history: 'ignore' })
+  if (String(shape.id).endsWith('-app-local')) editor.store.mergeRemoteChanges(write)
+  else editor.run(write, { history: 'ignore' })
+}
+
+function activeFleetDocview(editor: Editor) {
+  const shapes = editor.getCurrentPageShapes() as unknown[]
+  return shapes.find(value => (
+    isFleetDocviewShapeRecord(value) && String(value.id).endsWith('-app-local')
+  )) as FleetDocviewShapeRecord | undefined
+    ?? shapes.find(isFleetDocviewShapeRecord)
 }
 
 type MermaidDiagramPayload = {
@@ -742,7 +751,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       if (e.data?.type === 'tlda-doc-link-click') {
         const mapped = htmlDocLinkBounds()
         if (!mapped) return
-        const dvShape = (editor.getCurrentPageShapes() as unknown[]).find(isFleetDocviewShapeRecord)
+        const dvShape = activeFleetDocview(editor)
         if (dvShape) {
           const pageBounds = mapped.current
           const pdfScale = pageBounds.props.h / PDF_HEIGHT
@@ -951,7 +960,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           })
           return
         }
-        const dvShape = (editor.getCurrentPageShapes() as unknown[]).find(isFleetDocviewShapeRecord)
+        const dvShape = activeFleetDocview(editor)
         if (dvShape && !isTemporaryMarkdownNavigation) {
           const showTarget = (anchorY: number | null) => updateFleetDocview(editor, dvShape, {
             mode: 'manual',

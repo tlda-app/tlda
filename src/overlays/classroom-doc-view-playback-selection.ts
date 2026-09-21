@@ -6,8 +6,10 @@ export function classroomDocViewPlaybackSelection(
   deviceReady = true,
 ): any[] {
   if (!deviceReady) return []
-  return shapes.filter(shape => (
+  const owned = shapes.filter(shape => (
     shape.type === 'fleet-docview' &&
     shouldRenderLockedFleetViewportShape(shape, owner)
   ))
+  const local = owned.find(shape => String(shape.id).endsWith('-app-local'))
+  return local ? [local] : owned
 }

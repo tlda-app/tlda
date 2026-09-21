@@ -37,3 +37,12 @@ test('classroom production route selects only the owned doc-view without mutatin
   assert.match(routeCss, /\.classroom-docview-playback \.clip-panel,\s*\.classroom-docview-playback \.clip-panel \* \{\s*pointer-events: none !important;/)
   assert.match(routeCss, /\.classroom-docview-playback \.fleet-docview,\s*\.classroom-docview-playback \.fleet-docview \* \{\s*pointer-events: auto !important;/)
 })
+
+test('app-local doc-view wins over a shared slot for the same owner', () => {
+  const shared = shape('fleet-docview', 'shape:shared')
+  const local = shape('fleet-docview', 'shape:student-browser-app-local')
+  assert.deepEqual(
+    classroomDocViewPlaybackSelection([shared, local], owner).map(item => item.id),
+    ['shape:student-browser-app-local'],
+  )
+})
