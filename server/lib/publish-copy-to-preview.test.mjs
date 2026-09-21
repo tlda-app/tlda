@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { copyBuildOutputToPreview } from './publish-copy.mjs'
+import { copyBuildOutputToPreview, swapPreviewCopyIntoPlace } from './publish-copy.mjs'
 
 const TLDA = new URL('../..', import.meta.url).pathname
 const CONFIG = join(TLDA, 'config/deployments/preview-store')
@@ -68,4 +69,29 @@ test('no build output is refused, and the copy that is serving is left alone', a
     /no build output/,
   )
   assert.ok(existsSync(join(staticDir, 'book', 'index.html')), 'the previous copy must keep serving')
+})
+
+test('a failed second rename restores the previous complete tree', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'preview-swap-'))
+  const staticDir = join(root, 'site')
+  const incoming = join(root, 'incoming')
+  mkdirSync(staticDir, { recursive: true })
+  mkdirSync(incoming, { recursive: true })
+  writeFileSync(join(staticDir, 'intact.html'), 'the previous copy')
+  writeFileSync(join(incoming, 'new.html'), 'the incoming copy')
+  let renames = 0
+  await assert.rejects(
+    () => swapPreviewCopyIntoPlace({
+      incoming,
+      staticDir,
+      renameImpl: async (from, to) => {
+        renames += 1
+        if (renames === 2) throw new Error('incoming rename failed')
+        return rename(from, to)
+      },
+    }),
+    /incoming rename failed/,
+  )
+  assert.equal(readFileSync(join(staticDir, 'intact.html'), 'utf8'), 'the previous copy')
+  assert.equal(existsSync(join(staticDir, 'new.html')), false)
 })

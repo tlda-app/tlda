@@ -237,11 +237,23 @@ export async function assemblePreviewCopy({ outputDir, into, distDir, configDir,
  * half-finished for as long as it takes to assemble, and a build is not a
  * moment. The same reason a transfer unpacks beside the served directory.
  */
-export async function swapPreviewCopyIntoPlace({ incoming, staticDir }) {
+export async function swapPreviewCopyIntoPlace({ incoming, staticDir, renameImpl = rename }) {
   const previous = `${staticDir}.previous`
   await rm(previous, { recursive: true, force: true })
-  if (existsSync(staticDir)) await rename(staticDir, previous)
-  await rename(incoming, staticDir)
+  const hadStatic = existsSync(staticDir)
+  if (hadStatic) await renameImpl(staticDir, previous)
+  try {
+    await renameImpl(incoming, staticDir)
+  } catch (error) {
+    if (hadStatic && existsSync(previous) && !existsSync(staticDir)) {
+      try {
+        await renameImpl(previous, staticDir)
+      } catch (restoreError) {
+        error.message = `${error.message}; restoring the previous preview failed: ${restoreError.message}`
+      }
+    }
+    throw error
+  }
   await rm(previous, { recursive: true, force: true })
   return staticDir
 }

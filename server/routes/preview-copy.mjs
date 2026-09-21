@@ -223,6 +223,7 @@ export function createPreviewCopyReceiver({ staticDir, secret, log = console, ma
       if (declaredRoot && declaredRoot !== manifest.rootSha256) {
         return res.status(400).json({ error: `the copy manifest root is ${manifest.rootSha256.slice(0, 12)}, not ${declaredRoot.slice(0, 12)}; nothing was written` })
       }
+      await rm(join(incoming, PREVIEW_MANIFEST), { force: true })
       await removeFilesOutsideManifest(incoming, new Set(manifest.files.map(file => file.path)))
       const actual = await previewManifest(incoming)
       if (JSON.stringify(actual) !== JSON.stringify(manifest)) {

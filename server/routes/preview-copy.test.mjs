@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { Readable } from 'node:stream'
 import express from 'express'
@@ -89,6 +89,13 @@ async function receiverOn(staticDir, overrides = {}) {
   return { url: `http://127.0.0.1:${server.address().port}/api/preview-copy`, close: () => server.close() }
 }
 
+function filePaths(root, current = '') {
+  return readdirSync(root, { withFileTypes: true }).flatMap(entry => {
+    const path = current ? `${current}/${entry.name}` : entry.name
+    return entry.isDirectory() ? filePaths(join(root, entry.name), path) : [path]
+  })
+}
+
 test('a copy sent from one box is what the other serves, and the one it replaces is gone', async () => {
   const staticDir = join(mkdtempSync(join(tmpdir(), 'preview-host-')), 'site')
   mkdirSync(staticDir, { recursive: true })
@@ -105,6 +112,8 @@ test('a copy sent from one box is what the other serves, and the one it replaces
     assert.equal(sent.files, 3)
     assert.equal(readFileSync(join(staticDir, 'book', 'chapter-1.html'), 'utf8'), 'the page Skip just edited')
     assert.equal(readFileSync(join(staticDir, 'page-info.json'), 'utf8'), '[{"file":"book/chapter-1.html"}]')
+    assert.deepEqual(filePaths(staticDir).sort(), ['book/chapter-1.html', 'page-info.json', 'unchanged.css'])
+    assert.equal(existsSync(join(staticDir, '.tlda-preview-manifest.json')), false, 'the transport manifest must not be served')
     assert.throws(() => readFileSync(join(staticDir, 'stale.html')), /ENOENT/,
       'the previous copy must be replaced rather than merged into')
 
@@ -113,6 +122,8 @@ test('a copy sent from one box is what the other serves, and the one it replaces
     assert.equal(differential.files, 1, 'the second transfer contains only the changed blob')
     assert.equal(readFileSync(join(staticDir, 'unchanged.css'), 'utf8'), 'same bytes')
     assert.equal(readFileSync(join(staticDir, 'book', 'chapter-1.html'), 'utf8'), 'the page Skip edited again')
+    assert.deepEqual(filePaths(staticDir).sort(), ['book/chapter-1.html', 'page-info.json', 'unchanged.css'])
+    assert.equal(existsSync(join(staticDir, '.tlda-preview-manifest.json')), false, 'the transport manifest must not be served')
   } finally { host.close() }
 })
 
