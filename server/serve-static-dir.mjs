@@ -9,6 +9,11 @@ import { join } from 'node:path'
 
 const dir = process.env.TLDA_STATIC_DIR || '/app/server/persist/static-site'
 const port = Number(process.env.PORT || 5176)
+// Whatever the box binds. Loopback is right when the thing publishing this port
+// runs in the same container; it is wrong the moment the front door is a
+// separate machine, and then the failure is a front door that connects to
+// nothing rather than an error here.
+const host = process.env.HOST || '0.0.0.0'
 
 const app = express()
 app.disable('x-powered-by')
@@ -17,6 +22,6 @@ app.disable('x-powered-by')
 // That is the GitHub Pages contract in three lines.
 app.use(express.static(dir, { extensions: ['html'], index: 'index.html' }))
 
-app.listen(port, '127.0.0.1', () => {
-  console.log(`[static] serving ${dir} on 127.0.0.1:${port}`)
+app.listen(port, host, () => {
+  console.log(`[static] serving ${dir} on ${host}:${port}`)
 })

@@ -41,6 +41,19 @@ primary_region = "sjc"
   TLDA_EDGE_RETRY_MS = "250"
   TLDA_EDGE_HEALTH_PORT = "5178"
 
+  # The preview site, as ports on this name rather than a second app. The tldraw
+  # licence is bound to a hostname and a different port on the same host is the
+  # same hostname, so preview shares this one: 443 is the course, 8443 its
+  # preview's store, 10000 the built copy the preview serves as files.
+  #
+  # The app process runs both (scripts/fly-entrypoint-live.sh); the edge fronts
+  # and publishes them, because the tailnet node lives there and not with the
+  # app.
+  TLDA_PREVIEW_DEPLOYMENT = "preview-store"
+  TLDA_STATIC_DIR = "/app/server/persist/static-site"
+  TLDA_EDGE_EXTRA_PORTS = "5179,5180"
+  TLDA_EDGE_PREVIEW_PORTS = "8443:5179 10000:5180"
+
 # No [http_service] — public access uses `tailscale funnel` on the licensed
 # *.example-tailnet.ts.net hostname; see scripts/fly-entrypoint-live.sh. No Fly
 # public service means no autostop, so the machine stays running on its CMD and
