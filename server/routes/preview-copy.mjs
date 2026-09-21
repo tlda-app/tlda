@@ -22,6 +22,12 @@ import { swapPreviewCopyIntoPlace } from '../lib/publish-copy.mjs'
  *
  * OPT-IN BY INTENT: mounted only where a deployment says it receives copies.
  *
+ * `isPeer` is injectable for one reason: the unpack and the swap only ever run
+ * on Fly, so off Fly the only caller is 127.0.0.1 and the network check refuses
+ * before either of them is reached. Without the seam the half of this route
+ * that writes to disk has no test that could fail for a defect in it, and its
+ * first execution would be the deployed one. The default is unchanged.
+ *
  * TWO GATES, BOTH REQUIRED. A shared secret, and the caller being on Fly's
  * private network. The secret alone is not enough on a box that is also behind
  * a funnel, and an endpoint that unpacks an archive is not one to leave a
@@ -67,7 +73,7 @@ export function previewCopyReceiverConfig(env = process.env) {
   }
 }
 
-export function createPreviewCopyReceiver({ staticDir, secret, log = console, maxBytes = MAX_ARCHIVE_BYTES }) {
+export function createPreviewCopyReceiver({ staticDir, secret, log = console, maxBytes = MAX_ARCHIVE_BYTES, isPeer = isFlyPrivate }) {
   if (!PLAIN_PATH.test(staticDir)) {
     throw new Error(`a preview copy lands in a plain absolute path and ${JSON.stringify(staticDir)} is not one`)
   }
@@ -81,7 +87,7 @@ export function createPreviewCopyReceiver({ staticDir, secret, log = console, ma
     if (req.get('x-tlda-preview-copy') !== secret) {
       return res.status(401).json({ error: 'preview copy refused: wrong or missing secret' })
     }
-    if (!isFlyPrivate(req.socket?.remoteAddress)) {
+    if (!isPeer(req.socket?.remoteAddress)) {
       log.warn(`[preview-copy] refused a correctly-signed copy from ${req.socket?.remoteAddress}: not a private-network peer`)
       return res.status(403).json({ error: 'preview copies are taken from private-network peers only' })
     }
@@ -107,8 +113,16 @@ export function createPreviewCopyReceiver({ staticDir, secret, log = console, ma
       if (listed.code !== 0) {
         return res.status(400).json({ error: `the copy is not a readable archive: ${listed.stderr.trim() || `tar exited ${listed.code}`}` })
       }
-      const members = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean)
-      const unsafe = members.filter(member => !SAFE_MEMBER.test(member.replace(/^\.\//, '')))
+      // `./` is the archive's own root -- `tar czf - -C <dir> .` always emits it
+      // -- and it names nothing to write. Dropped rather than checked, because
+      // stripping the `./` prefix leaves an empty string that no rule for a path
+      // can sensibly pass. Found by the round-trip test below, which is the
+      // whole reason that test exists: every real copy carries this member, so
+      // the refusal would have been total and first seen on the deployed box.
+      const members = listed.stdout.split('\n')
+        .map(line => line.trim().replace(/^\.\//, ''))
+        .filter(member => member && member !== '.')
+      const unsafe = members.filter(member => !SAFE_MEMBER.test(member))
       if (unsafe.length) {
         return res.status(400).json({
           error: `the copy names ${unsafe.length} path(s) that would land outside ${staticDir}; nothing was written`,
