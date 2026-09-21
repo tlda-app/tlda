@@ -1569,9 +1569,14 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
     // fixed phrase while the configured target was his test site, so a row read
     // as reassurance about a surface he did not mean.
     target: publishedBase ? publishedBase.replace(/^https?:\/\//, '').replace(/\/static$/, '') : 'the published site',
+    // What this project actually HAS. `readPreview` above throws when there is
+    // no address, so without these the absence arrived as a failure to reach
+    // one — a complaint aimed at every project that never asked for either.
+    previewConfigured: Boolean(project.previewUrl),
+    publishedConfigured: Boolean(publishedBase),
   })
   res.json({
-    marks: marks.map(({ page, source, stage, error, errorAt, why }) => ({ page, source, stage, error, errorAt, why })),
+    marks: marks.map(({ page, source, stage, error, errorAt, why, destinations }) => ({ page, source, stage, error, errorAt, why, destinations })),
     publishedBase,
     previewUrl: project.previewUrl || null,
     comparedAt: new Date().toISOString(),

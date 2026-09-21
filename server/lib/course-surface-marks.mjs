@@ -62,9 +62,42 @@ export function documentTextFingerprint(html) {
  * can say which surface could not be reached, rather than only that one could
  * not. Saying nothing was the bug that kept this invisible for three weeks.
  */
-export function markForRow({ app, preview, live, failure = null, target = 'the published site', reasons = {} }) {
-  const unreachable = [['the app', app, reasons.app], ['preview', preview, reasons.preview], [target, live, reasons.live]]
-    .filter(([, value]) => value === undefined)
+export function markForRow({
+  app,
+  preview,
+  live,
+  failure = null,
+  target = 'the published site',
+  reasons = {},
+  previewConfigured = true,
+  publishedConfigured = true,
+}) {
+  // A DESTINATION NOBODY CONFIGURED IS NOT A DESTINATION THAT FAILED.
+  //
+  // Skip, 2026-09-20: "on projects with no preview target, disable the preview
+  // related checks/ui; similarly with publish" — and, on what he was seeing:
+  // "if there is no preview or publish destination, why would i be troubled by
+  // that. that's most projects".
+  //
+  // The defect this removes: an unconfigured address arrived here as
+  // `undefined`, which this file reserves for NOBODY COULD ASK — an error about
+  // us. So every project that had never opted into preview or publishing wore a
+  // complaint about failing to reach somewhere it was never pointed. Absent and
+  // broken were sharing one value, which is the exact mistake the `undefined` /
+  // `null` split above exists to prevent, one level down.
+  //
+  // Configured-but-dead is untouched and still named: a preview address that
+  // does not answer is a real failure and says which address and why.
+  if (!previewConfigured && !publishedConfigured) {
+    return { stage: null, error: failure || null, errorAt: null, why: failure || null, destinations: false }
+  }
+
+  const unreachable = [
+    ['the app', app, reasons.app, true],
+    ['preview', preview, reasons.preview, previewConfigured],
+    [target, live, reasons.live, publishedConfigured],
+  ]
+    .filter(([, value, , configured]) => configured && value === undefined)
     .map(([label, , reason]) => (reason ? `${label} (${reason})` : label))
   if (unreachable.length > 0) {
     // WHY THE REASON IS IN THE SENTENCE. "preview could not be asked" was the
@@ -85,9 +118,17 @@ export function markForRow({ app, preview, live, failure = null, target = 'the p
   //   red     the current version has not reached preview
   //   yellow  the current version is on preview, not on live
   //   green   the current version is on live
-  const stage = app === preview
-    ? (app === live ? 'published' : 'preview')
-    : 'here-only'
+  //
+  // A surface nobody configured is not a step the page failed to reach — but
+  // it is not a step it PASSED either. With no publish destination the chain
+  // ends at preview: the furthest real stage, never `published`, because
+  // claiming a page is published to a place that does not exist is a worse lie
+  // than the complaint this change removes.
+  const stage = previewConfigured
+    ? (app !== preview ? 'here-only'
+      : publishedConfigured ? (app === live ? 'published' : 'preview')
+      : 'preview')
+    : (app === live ? 'published' : 'here-only')
 
   // WHETHER WE KNOW IT BROKE. Skip, after revising this twice in three minutes:
   //
@@ -119,10 +160,15 @@ export function markForRow({ app, preview, live, failure = null, target = 'the p
     // sentence reading as reassurance about a site he did not mean. A row that
     // names what it compared stays true when somebody flips `publication.url`,
     // and a reader who was not there can tell which surface answered.
+    // Do not name a destination this project does not have. "on preview, not
+    // yet on the published site" is the same lie as the complaint above, in a
+    // calmer voice: it tells the reader a step remains when there is no such
+    // step. With nowhere to publish, reaching preview is arriving.
     why: error || (
       stage === 'published' ? `${target} is serving what you wrote`
-      : stage === 'preview' ? `on preview, not yet on ${target}`
-      : 'not on preview yet'
+      : stage === 'preview' ? (publishedConfigured ? `on preview, not yet on ${target}` : 'on preview')
+      : previewConfigured ? 'not on preview yet'
+      : `not on ${target} yet`
     ),
   }
 }
@@ -207,6 +253,12 @@ export async function compareCourseSurfaces(pages, {
   fetchImpl = fetch,
   failureFor = () => null,
   target = 'the published site',
+  // Whether this project HAS each destination. Defaulted from the addresses so
+  // a caller that knows no better still gets the right answer, and passed
+  // explicitly by one that does — `readPreview` is a function either way, so
+  // its presence says nothing about whether a preview address exists.
+  previewConfigured = true,
+  publishedConfigured = Boolean(publishedBase),
 }) {
   // The reason travels with the value, and per row rather than shared. An
   // empty catch here is what made "could not be asked" mean both "nobody
@@ -242,10 +294,15 @@ export async function compareCourseSurfaces(pages, {
     const path = publicationPathForPage(page.file)
     const reasons = {}
     const { fingerprintOf, fetched } = probe(reasons)
+    // DISABLE THE CHECK, not just the message. Skip: "disable the preview
+    // related checks/ui". An unconfigured destination is not fetched at all —
+    // asking and then discarding the answer would still spend a round trip per
+    // row, per read, on most projects in the fleet, to learn something the
+    // configuration already said.
     const [app, preview, live] = await Promise.all([
       fingerprintOf(() => readApp(path), 'app'),
-      fingerprintOf(() => readPreview(path), 'preview'),
-      fetched(publishedUrlForPage(page.file, publishedBase), 'live'),
+      previewConfigured ? fingerprintOf(() => readPreview(path), 'preview') : undefined,
+      publishedConfigured ? fetched(publishedUrlForPage(page.file, publishedBase), 'live') : undefined,
     ])
     return {
       page: index + 1,
@@ -255,6 +312,8 @@ export async function compareCourseSurfaces(pages, {
       live,
       target,
       reasons,
+      previewConfigured,
+      publishedConfigured,
       failure: failureFor(page) || null,
     }
   })))

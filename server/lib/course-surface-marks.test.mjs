@@ -12,7 +12,7 @@ import { compareCourseSurfaces, documentTextFingerprint, markForRow, marksForRow
 const APP_COPY = `<html><head><title>x</title></head><body><main>
   <p data-source-line="258">Both of the sampling distributions came to us as a <em>parametric form</em>.</p>
   <img src="fig-1.svg?v=1789788442370" class="img-fluid" id="fig-bootstrap">
-  <script>window.MathJax = {}</script>
+  <script>window.katex = {}</script>
 </main></body></html>`
 
 const PUBLISHED_COPY = `<html><head><title>x</title></head><body><main>
@@ -153,9 +153,56 @@ test('an unset address and an unreachable host do not produce the same sentence'
     publishedBase: 'https://site.example',
     fetchImpl: async () => Promise.reject(new Error('ENOTFOUND')),
   })
-  assert.match(withoutAddress[0].error, /no address configured/)
+  // REVISED 2026-09-20. This used to assert that an unset address says "no
+  // address configured". Skip, seeing that on his own project: "if there is no
+  // preview or publish destination, why would i be troubled by that. that's
+  // most projects" — and the instruction, "on projects with no preview target,
+  // disable the preview related checks/ui; similarly with publish".
+  //
+  // So the two are still distinguishable, which is what this test is for, but
+  // the distinction is now silence versus a named failure rather than two
+  // different complaints. A destination nobody configured says NOTHING.
+  assert.equal(withoutAddress[0].error, null)
+  // And the calm sentence must not name the missing destination either: "on
+  // preview, not yet on the published site" tells the reader a step remains
+  // when there is no such step. With nowhere to publish, preview is arrival.
+  assert.equal(withoutAddress[0].why, 'on preview')
   assert.match(unreachable[0].error, /ENOTFOUND/)
   assert.notEqual(withoutAddress[0].error, unreachable[0].error)
+})
+
+test('a project with neither destination is asked about neither, and says nothing', async () => {
+  // The whole of his complaint, in one row: most projects have no preview and
+  // no publication, and they were wearing an error about failing to reach both.
+  //
+  // The `fetchImpl` and `readPreview` throws are the control for "disable the
+  // CHECKS, not just the message" — if either destination were still probed,
+  // this test fails with that error rather than passing quietly.
+  const rows = await compareCourseSurfaces([PAGE('app/book/chapters/one.html')], {
+    readApp: async () => '<main><p>same prose</p></main>',
+    readPreview: async () => { throw new Error('preview must not be asked') },
+    publishedBase: null,
+    previewConfigured: false,
+    fetchImpl: async () => { throw new Error('the published site must not be asked') },
+  })
+  assert.equal(rows[0].error, null)
+  assert.equal(rows[0].why, null)
+  assert.equal(rows[0].stage, null)
+  assert.equal(rows[0].destinations, false)
+})
+
+test('a preview with no publication reaches preview, and never claims published', async () => {
+  // The lie worth refusing: with nowhere to publish, "published" would be a
+  // green mark for a place that does not exist. Preview is the furthest real
+  // stage, so the chain ends there.
+  const rows = await compareCourseSurfaces([PAGE('app/book/chapters/one.html')], {
+    readApp: async () => '<main><p>same prose</p></main>',
+    readPreview: async () => '<main><p>same prose</p></main>',
+    publishedBase: null,
+    fetchImpl: async () => { throw new Error('the published site must not be asked') },
+  })
+  assert.equal(rows[0].stage, 'preview')
+  assert.equal(rows[0].error, null)
 })
 
 // One row's failure must not be reported against another's.
