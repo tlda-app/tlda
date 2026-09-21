@@ -20,7 +20,7 @@ import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'fs/prom
 import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync } from 'fs'
 import { join, basename, dirname, resolve } from 'path'
 import { promisify } from 'util'
-import { requireRead, requireOperatorWrite } from '../lib/auth.mjs'
+import { configuredReadToken, requireRead, requireOperatorWrite } from '../lib/auth.mjs'
 import { answerThreadAccess } from '../../shared/classroom-rooms.mjs'
 import {
   createProject, readProject, updateProject, listProjects,
@@ -69,6 +69,7 @@ import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelo
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
 import { classroomPrincipal, requireClassroomDocumentAccess } from './classroom.mjs'
 import { formatForDocumentPath, normalizeDocumentRoots } from '../../shared/document-roots.mjs'
+import { CopyLiveRoomError, copyLiveRoomSnapshot } from '../lib/copy-live-room.mjs'
 
 const router = Router()
 const execFileAsync = promisify(execFile)
@@ -2089,7 +2090,18 @@ router.delete('/:name/shapes/:id', requireOperatorWrite, async (req, res) => {
   }
 })
 
-// POST /:name/snapshot — replace the sync room's snapshot (for publish/deploy)
+// GET/POST /:name/snapshot — read or replace the sync room's snapshot.
+router.get('/:name/snapshot', requireOperatorWrite, async (req, res) => {
+  const project = await readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  try {
+    const room = await getOrCreateRoom(syncRoomName(req.params.name))
+    res.json(room.getCurrentSnapshot())
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
 router.post('/:name/snapshot', requireOperatorWrite, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
@@ -2100,6 +2112,29 @@ router.post('/:name/snapshot', requireOperatorWrite, async (req, res) => {
     res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
+  }
+})
+
+// Copy the live room into this store exactly once, when the preview UI asks.
+// Only the preview process receives TLDA_LIVE_STORE_URL; on every other server
+// the capability probe says unavailable and the POST refuses without touching
+// either room.
+router.get('/:name/copy-live', requireOperatorWrite, (_req, res) => {
+  res.json({ available: !!process.env.TLDA_LIVE_STORE_URL })
+})
+
+router.post('/:name/copy-live', requireOperatorWrite, async (req, res) => {
+  try {
+    const result = await copyLiveRoomSnapshot({
+      project: req.params.name,
+      liveStoreUrl: process.env.TLDA_LIVE_STORE_URL,
+      token: configuredReadToken(),
+      replaceSnapshot: snapshot => replaceRoomSnapshot(syncRoomName(req.params.name), snapshot),
+    })
+    res.json({ ok: true, ...result })
+  } catch (error) {
+    const status = error instanceof CopyLiveRoomError ? error.status : 500
+    res.status(status).json({ error: error.message })
   }
 })
 

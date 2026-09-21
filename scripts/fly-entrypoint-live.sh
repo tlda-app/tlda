@@ -229,6 +229,7 @@ if [ -n "${TLDA_PREVIEW_DEPLOYMENT:-}" ]; then
          TLDA_CONFIG_DIR="$PREVIEW_DIR/config" \
          TLDA_FLEET_DB="$PREVIEW_DIR/config/fleet.db" \
          TLDA_CLASSROOM_DB="/root/.config/tlda/classroom.db" \
+         TLDA_LIVE_STORE_URL="http://127.0.0.1:${PORT:-5176}" \
          PROJECTS_DIR="$PREVIEW_DIR/projects" \
          PORT="$PREVIEW_PORT" \
          node --import tsx unified-server.mjs --i-am-tlda-cli

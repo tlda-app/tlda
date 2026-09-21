@@ -99,6 +99,7 @@ import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { presentationLocationMatchesPage, presentationPath, presentationRoute } from './presentationRoute'
+import { STORE_HTTP } from './activeConfig'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
@@ -360,7 +361,11 @@ const MAX_VISIBLE_VERSIONS = 5
 function PresentationModeSwitch({ document }: { document: SvgDocument }) {
   const editor = useEditor()
   const route = presentationRoute(window.location.pathname)
+  const isAppRoute = route?.mode === 'app'
   const [pageId, setPageId] = useState(() => editor?.getCurrentPageId())
+  const [copyAvailable, setCopyAvailable] = useState(false)
+  const [copying, setCopying] = useState(false)
+  const [copyStatus, setCopyStatus] = useState('')
 
   useEffect(() => {
     if (!editor) return
@@ -368,6 +373,16 @@ function PresentationModeSwitch({ document }: { document: SvgDocument }) {
     read()
     return editor.store.listen(read, { scope: 'session', source: 'all' })
   }, [editor])
+
+  useEffect(() => {
+    if (!isAppRoute) return
+    let cancelled = false
+    fetch(`${STORE_HTTP}/api/projects/${encodeURIComponent(document.name)}/copy-live`)
+      .then(response => response.ok ? response.json() : null)
+      .then(result => { if (!cancelled) setCopyAvailable(result?.available === true) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [document.name, isAppRoute])
 
   if (!route || route.mode !== 'app') return null
   const page = document.pages.find(candidate => candidate.tldrawPageId === pageId)
@@ -378,14 +393,36 @@ function PresentationModeSwitch({ document }: { document: SvgDocument }) {
   const location = pagePath.startsWith(appPrefix)
     ? decodeURIComponent(pagePath.slice(appPrefix.length))
     : page?.source?.file || route.location
+  const copyLive = async () => {
+    setCopying(true)
+    setCopyStatus('Copying live data…')
+    try {
+      const response = await fetch(`${STORE_HTTP}/api/projects/${encodeURIComponent(document.name)}/copy-live`, { method: 'POST' })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(result.error || `Copy live data failed (${response.status})`)
+      setCopyStatus(`Copied ${result.shapes} live shape${result.shapes === 1 ? '' : 's'}.`)
+    } catch (error) {
+      setCopyStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCopying(false)
+    }
+  }
+
   return (
-    <a
-      href={presentationPath('static', route.project, location, route.prefix)}
-      style={{ position: 'fixed', top: 12, left: 12, zIndex: 10000 }}
-      className="presentation-mode-switch"
-    >
-      Static
-    </a>
+    <div style={{ position: 'fixed', top: 12, left: 12, zIndex: 10000, display: 'flex', alignItems: 'center', gap: 8 }}>
+      <a
+        href={presentationPath('static', route.project, location, route.prefix)}
+        className="presentation-mode-switch"
+      >
+        Static
+      </a>
+      {copyAvailable && (
+        <button type="button" onClick={copyLive} disabled={copying} className="presentation-copy-live">
+          Copy live data
+        </button>
+      )}
+      {copyStatus && <span role="status">{copyStatus}</span>}
+    </div>
   )
 }
 
