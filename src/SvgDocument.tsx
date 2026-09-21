@@ -82,6 +82,7 @@ import { RibbonLane } from './shapes/RibbonLane'
 import { ProvenancePanel } from './shapes/ProvenancePanel'
 import { ProvenanceInline } from './shapes/ProvenanceInline'
 import { initSignalConnection, teardownSignalConnection, dispatchSignalDirect, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { useRuntimeErrorProbe } from './runtimeErrorProbe'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
@@ -546,6 +547,7 @@ function EmergencyDumpRescue({ editor, documentName }: { editor: Editor; documen
 export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMarking = false, classroomGrading, annotationsHidden = false, onEditorMount, onEditorRelease }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
+  useRuntimeErrorProbe(document)
 
   const editorRef = useRef<Editor | null>(null)
   const restoredEditorRef = useRef<Editor | null>(null)

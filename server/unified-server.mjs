@@ -58,6 +58,7 @@ import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { createContinuousProfiler } from './lib/continuous-profiler.mjs'
 import { createFleetFrameStallTracker, resolveStallMs } from './lib/fleet-frame-stalls.mjs'
 import { createClientLogHandler } from './lib/client-log-sink.mjs'
+import { createRuntimeErrorCardFanin } from './lib/runtime-error-card-fanin.mjs'
 import { createClientProfileWindowHandler } from './lib/client-profile-window-sink.mjs'
 import { createRotatingAppender } from '../shared/rotating-log.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
@@ -4186,6 +4187,12 @@ function recordKatexError(entry) {
   }
 }
 
+const recordRuntimeError = createRuntimeErrorCardFanin({
+  docNameFromData: katexDocName,
+  emit: (docName, error, page, kind) => emitRuntimeErrorCard(docName, error, page, kind),
+  onError: e => console.error('[runtime-error] card emission failed:', e?.message || e),
+})
+
 // The project name out of a reader's page URL. location.href arrives as
 // `/docs/<name>/…` (possibly absolute); anything else is not a served
 // document page and resolves null.
@@ -4226,6 +4233,21 @@ async function emitKatexErrorCard(docName, error, page) {
   }
 }
 
+async function emitRuntimeErrorCard(docName, error, page, kind) {
+  if (!fleetStore) return
+  const label = kind === 'capability' ? 'Document capability failed' : 'Runtime error'
+  const text = `⚠️ ${label} — ${docName}${page ? ` (${page})` : ''}: ${error}`
+  const metadata = {
+    type: 'build_result', name: docName, hash: null, summary: null,
+    lintFindings: [], mirrorFailed: null, buildFailed: null, katexError: null,
+    runtimeError: error, runtimeErrorKind: kind, errors: [], warnings: [],
+    lastMirrorSuccess: null, lastBuildSuccess: null, buildFiles: null,
+  }
+  const subs = new Set(await tldaFeedback.subscribers(docName))
+  subs.add(SERVER_OWNER_ID)
+  for (const agentId of subs) await fleetStore.chat('fleet:tlda', agentId, text, metadata)
+}
+
 // A katex-error report is a post-build observation on a build that succeeded,
 // not a build failure. It emits its own card directly — never through
 // reportBuildFailure, which writes the sentinel, broadcasts doc status, and
@@ -4235,6 +4257,7 @@ app.post('/api/log', createClientLogHandler({
   clientLogFile: CLIENT_LOG_FILE,
   recordLivePerfEntry,
   recordKatexError,
+  recordRuntimeError,
 }))
 
 // Is the filter path running at all? Answers the question a silent comparator
