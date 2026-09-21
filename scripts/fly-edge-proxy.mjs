@@ -39,23 +39,49 @@ const holdMs = Number(required('TLDA_EDGE_HOLD_SECONDS')) * 1000
 const retryMs = Number(required('TLDA_EDGE_RETRY_MS'))
 const healthPort = Number(required('TLDA_EDGE_HEALTH_PORT'))
 
-function currentUpstream() {
+// The other ports this machine fronts, each carrying its own server on the app
+// machine. The front door is one port and always was; the preview site is a
+// second server and its store a third, on the same host because the tldraw
+// licence is bound to a hostname.
+//
+// `5179` fronts the app machine's 5179; `15179:5179` fronts its 5179 from a
+// different local port. The bare form is what a real deployment uses, because
+// the edge and the app are different machines and a port can front itself; the
+// pair exists so the same code can be exercised where they are not.
+const extraPorts = (process.env.TLDA_EDGE_EXTRA_PORTS || '')
+  .split(',')
+  .map(entry => entry.trim())
+  .filter(Boolean)
+  .map(entry => {
+    const [listen, upstream = listen] = entry.split(':')
+    const pair = { listen: Number(listen), upstream: Number(upstream) }
+    for (const [which, port] of Object.entries(pair)) {
+      if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+        console.error(`[edge] FATAL: TLDA_EDGE_EXTRA_PORTS names ${JSON.stringify(entry)}, whose ${which} port is not a port`)
+        process.exit(1)
+      }
+    }
+    return pair
+  })
+
+function currentUpstream(port = null) {
   const upstream = upstreamPointer ? readFileSync(upstreamPointer, 'utf8').trim() : configuredUpstream
   if (!upstream) throw new Error(`${upstreamPointer || 'TLDA_EDGE_UPSTREAM'} names no upstream`)
   const at = upstream.lastIndexOf(':')
   const host = upstream.slice(0, at)
-  const port = Number(upstream.slice(at + 1))
-  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) throw new Error(`invalid edge upstream: ${upstream}`)
-  return { upstream, host, port }
+  const declared = Number(upstream.slice(at + 1))
+  if (!host || !Number.isInteger(declared) || declared <= 0 || declared > 65535) throw new Error(`invalid edge upstream: ${upstream}`)
+  const chosen = port ?? declared
+  return { upstream: `${host}:${chosen}`, host, port: chosen }
 }
 
 // Resolve the upstream on every attempt rather than once at boot: the app
 // machine's 6PN address is what changes when it is replaced, and a cached one is
 // how a proxy keeps dialling a machine that no longer exists.
-function connectUpstream() {
+function connectUpstream(port = null) {
   return new Promise((resolve, reject) => {
     let selected
-    try { selected = currentUpstream() } catch (error) { reject(error); return }
+    try { selected = currentUpstream(port) } catch (error) { reject(error); return }
     const socket = net.connect({ host: selected.host, port: selected.port })
     const fail = (err) => { socket.destroy(); reject(err) }
     socket.once('connect', () => { socket.removeListener('error', fail); resolve({ socket, upstream: selected.upstream }) })
@@ -63,10 +89,10 @@ function connectUpstream() {
   })
 }
 
-async function connectHolding(deadline) {
+async function connectHolding(deadline, port = null) {
   for (;;) {
     try {
-      return await connectUpstream()
+      return await connectUpstream(port)
     } catch (err) {
       if (Date.now() >= deadline) throw err
       await new Promise((r) => setTimeout(r, retryMs))
@@ -74,12 +100,13 @@ async function connectHolding(deadline) {
   }
 }
 
-const server = net.createServer((client) => {
+function frontPort(port, upstreamPort = null) {
+  const server = net.createServer((client) => {
   // Nothing may be read off the client until there is somewhere to put it.
   client.pause()
   const startedAt = Date.now()
 
-  connectHolding(startedAt + holdMs).then(({ socket: server_, upstream }) => {
+  connectHolding(startedAt + holdMs, upstreamPort).then(({ socket: server_, upstream }) => {
     const heldMs = Date.now() - startedAt
     // Only worth a line when it actually waited. A held connection is the app
     // machine being absent, which is the event this whole file is about, so it
@@ -99,9 +126,18 @@ const server = net.createServer((client) => {
   })
 })
 
-server.listen(listenPort, '127.0.0.1', () => {
-  console.log(`[edge] 127.0.0.1:${listenPort} -> ${upstreamPointer || configuredUpstream}, holding up to ${holdMs}ms`)
-})
+  server.listen(port, '127.0.0.1', () => {
+    const named = upstreamPort ? `${(upstreamPointer || configuredUpstream)} on :${upstreamPort}` : (upstreamPointer || configuredUpstream)
+    console.log(`[edge] 127.0.0.1:${port} -> ${named}, holding up to ${holdMs}ms`)
+  })
+  return server
+}
+
+frontPort(listenPort)
+// Each extra port fronts the same app machine on its own number. They hold the
+// same way the front door does: when the app machine is gone a connection waits
+// rather than failing, which is the whole reason this process exists.
+for (const { listen, upstream } of extraPorts) frontPort(listen, upstream)
 
 // Health, on its own port and deliberately NOT on the proxied path.
 //

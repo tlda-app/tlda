@@ -60,6 +60,21 @@ if tailscale --socket=/var/run/tailscale/tailscaled.sock up \
   [ -n "$TS_FUNNEL" ] && TS_EXPOSE=funnel
   tailscale --socket=/var/run/tailscale/tailscaled.sock "$TS_EXPOSE" --bg --https=443 "http://127.0.0.1:${TLDA_EDGE_LISTEN_PORT}" \
     || echo "[edge] ERROR: tailscale $TS_EXPOSE failed - browsers cannot reach this server"
+
+  # The preview site and its store, when the app machine carries them. They are
+  # ports on THIS name rather than a second app, because the tldraw licence is
+  # bound to a hostname and a different port on the same host is the same
+  # hostname. 443 stays the front door; a tailnet name has exactly three of
+  # these and this spends the other two.
+  #
+  # Each one is published only if the proxy is fronting it, so a name never
+  # advertises a port with nothing behind it.
+  for preview_port in ${TLDA_EDGE_PREVIEW_PORTS:-}; do
+    public_port=${preview_port%%:*}
+    local_port=${preview_port##*:}
+    tailscale --socket=/var/run/tailscale/tailscaled.sock "$TS_EXPOSE" --bg --https="$public_port" "http://127.0.0.1:${local_port}" \
+      || echo "[edge] ERROR: tailscale $TS_EXPOSE --https=$public_port failed - nothing reaches 127.0.0.1:$local_port from outside"
+  done
 else
   echo "[edge] ERROR: tailscale up failed - browsers cannot reach this server"
 fi
