@@ -181,8 +181,7 @@ function updateFleetDocview(
       props: { ...shape.props, ...props },
     } as unknown as Parameters<typeof editor.updateShape>[0])
   }
-  if (PAGES_FROM === 'files') editor.store.mergeRemoteChanges(write)
-  else write()
+  editor.run(write, { history: 'ignore' })
 }
 
 type MermaidDiagramPayload = {
