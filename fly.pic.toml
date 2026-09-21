@@ -66,9 +66,16 @@ primary_region = "sjc"
   # *"either it sends buolds directly to the preview box or testing sends them
   # to the preview box (pic) when it gets them back from the builder"* — so the
   # render happens where the source is, and what arrives here is a finished
-  # tree. server/routes/preview-copy.mjs mounts only because of this line, and
+  # tree. server/routes/preview-copy.mjs starts only because of this line, and
   # refuses every request until TLDA_PREVIEW_COPY_SECRET is set as a Fly secret.
+  #
+  # It listens on its own socket bound to this machine's 6PN address, NOT as a
+  # route on the server. 443, 8443 and 10000 are published to the open internet
+  # by the edge, and a route on the server would have been published with them;
+  # 5181 is not published by anything, which is what keeps the copy path off the
+  # internet. Nothing needs to reach it but the box that builds.
   TLDA_PREVIEW_COPY_RECEIVE = "1"
+  TLDA_PREVIEW_COPY_PORT = "5181"
   TLDA_EDGE_EXTRA_PORTS = "5179,5180"
   TLDA_EDGE_PREVIEW_PORTS = "8443:5179 10000:5180"
 

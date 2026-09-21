@@ -72,7 +72,9 @@ primary_region = "sjc"
   # TLDA_PREVIEW_COPY_SECRET is a SECRET, not an env entry — `fly secrets set`.
   # Unset here and the copy is refused there; unset there and the route refuses
   # everything rather than defaulting open.
-  TLDA_PREVIEW_HOST = "http://app.process.tlda-pic.internal:5176"
+  # 5181, not the server's port: the receiver is its own listener on the host's
+  # private address (config there, and server/routes/preview-copy.mjs for why).
+  TLDA_PREVIEW_HOST = "http://app.process.tlda-pic.internal:5181"
 
 # No [http_service] — the server is NOT exposed on the public internet. Access is
 # tailnet-only via `tailscale serve` (see fly-entrypoint-live.sh). The machine stays

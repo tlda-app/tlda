@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 
-import { Router } from 'express'
+import express, { Router } from 'express'
 
 import { swapPreviewCopyIntoPlace } from '../lib/publish-copy.mjs'
 
@@ -28,11 +28,22 @@ import { swapPreviewCopyIntoPlace } from '../lib/publish-copy.mjs'
  * that writes to disk has no test that could fail for a defect in it, and its
  * first execution would be the deployed one. The default is unchanged.
  *
- * TWO GATES, BOTH REQUIRED. A shared secret, and the caller being on Fly's
- * private network. The secret alone is not enough on a box that is also behind
- * a funnel, and an endpoint that unpacks an archive is not one to leave a
- * single mistake away from the open internet. An absent secret REFUSES rather
- * than defaulting open, because the failure of the opposite is silent.
+ * IT LISTENS WHERE THE PUBLIC CANNOT REACH IT, on its own socket bound to this
+ * machine's Fly private address. That is the gate; the shared secret is the
+ * second one behind it, and an absent secret REFUSES rather than defaulting
+ * open, because the failure of the opposite is silent.
+ *
+ * NOT A ROUTE ON THE MAIN SERVER, and this was learned the hard way rather than
+ * designed. Mounted there it inherited every way in that the server has: pic
+ * publishes 443, 8443 and 10000 through Tailscale Funnel, so the route was on
+ * the open internet with only the secret in front of it -- and the private-peer
+ * check did not help, because the edge process that fronts those ports connects
+ * to the server over 6PN itself, so every funnelled request arrives wearing a
+ * peer's address. A check that passes for the traffic it exists to refuse is
+ * worse than none: it reads as a second gate that is not there.
+ *
+ * The caller's address is still checked, for the case this socket is reachable
+ * some other way, but the binding is what makes the claim true.
  */
 
 // The served directory is spliced into no shell here, but it is renamed over,
@@ -70,7 +81,43 @@ export function previewCopyReceiverConfig(env = process.env) {
   return {
     staticDir: env.TLDA_STATIC_DIR || '/app/server/persist/static-site',
     secret: env.TLDA_PREVIEW_COPY_SECRET || '',
+    port: Number(env.TLDA_PREVIEW_COPY_PORT || 5181),
+    // Fly puts this machine's 6PN address here. Binding it rather than every
+    // interface is the whole security posture of this listener, so an absent
+    // one is a refusal to start rather than a fallback: on this box the
+    // fallback would be the funnelled interfaces.
+    host: env.FLY_PRIVATE_IP || '',
   }
+}
+
+/**
+ * Start the receiver on its own socket, or say why it did not.
+ *
+ * Returns the listening server, or null when this deployment does not receive
+ * copies. Throws only for a configuration that cannot be honoured, because a
+ * host that silently fails to listen is a preview that silently stops updating.
+ */
+export async function startPreviewCopyReceiver(config, { log = console } = {}) {
+  if (!config) return null
+  const { staticDir, secret, port, host } = config
+  if (!host) {
+    throw new Error(
+      'this deployment says it receives preview copies, but FLY_PRIVATE_IP is unset, so there is no private ' +
+      'address to bind and binding every interface would put the receiver on whatever this box publishes. ' +
+      'Nothing is listening.',
+    )
+  }
+  const app = express()
+  app.use(createPreviewCopyReceiver({ staticDir, secret, log }))
+  const server = await new Promise((resolve, reject) => {
+    const s = app.listen(port, host, () => resolve(s))
+    s.on('error', reject)
+  })
+  log.log(
+    `[preview-copy] taking copies into ${staticDir}, listening on [${host}]:${port}` +
+    `${secret ? '' : ' — NO SECRET SET, every copy will be refused'}`,
+  )
+  return server
 }
 
 export function createPreviewCopyReceiver({ staticDir, secret, log = console, maxBytes = MAX_ARCHIVE_BYTES, isPeer = isFlyPrivate }) {

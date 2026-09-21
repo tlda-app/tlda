@@ -109,7 +109,7 @@ import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter, RESOLVED_UPLOAD_DIR } from './routes/fleet.mjs'
-import { createPreviewCopyReceiver, previewCopyReceiverConfig } from './routes/preview-copy.mjs'
+import { previewCopyReceiverConfig, startPreviewCopyReceiver } from './routes/preview-copy.mjs'
 import { copyAttachmentsToUploadDir } from './lib/chat-attachment-store.mjs'
 import { applyEmailPolicyDelivery, createEmailNotificationTransport, createSmtpTransport, startImapReceiver } from './lib/email-notification-transport.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
@@ -5766,15 +5766,15 @@ const fleetRouter = createFleetRouter({
 })
 app.use(fleetRouter)
 
-// A host takes copies of builds from the box that made them. Mounted only where
-// a deployment says it receives them, so every other box ships the code and
-// exposes nothing; see server/routes/preview-copy.mjs for why it is a POST and
-// what it refuses.
-const previewCopy = previewCopyReceiverConfig()
-if (previewCopy) {
-  app.use(createPreviewCopyReceiver({ ...previewCopy }))
-  console.log(`[preview-copy] taking copies into ${previewCopy.staticDir}${previewCopy.secret ? '' : ' — NO SECRET SET, every copy will be refused'}`)
-}
+// A host takes copies of builds from the box that made them. NOT a route on
+// this server: it listens on its own socket bound to the private network, so
+// that what this box publishes to the world does not publish it too. Started
+// only where a deployment says it receives copies; see
+// server/routes/preview-copy.mjs for why the binding rather than the secret is
+// the gate.
+startPreviewCopyReceiver(previewCopyReceiverConfig()).catch(error => {
+  console.error(`[preview-copy] the receiver is not listening, so no build will reach the preview: ${error.message}`)
+})
 
 // ---------- KaTeX static assets ----------
 // Served at /katex/ for markdown pages that use KaTeX-rendered math

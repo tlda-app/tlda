@@ -220,7 +220,13 @@ if [ -n "${TLDA_PREVIEW_DEPLOYMENT:-}" ]; then
       # and the per-person rules can decide. A preview store with its own empty
       # classroom knows nobody, and a server that knows nobody has nothing to
       # withhold from anyone.
-      if TLDA_CONFIG_DIR="$PREVIEW_DIR/config" \
+      # ONE RECEIVER PER BOX, and it is the main server's. This instance reads
+      # the same environment, so without clearing this it would try to bind the
+      # same private socket and die in a restart loop -- and a second server
+      # renaming the same served directory is not something to make possible in
+      # the first place.
+      if TLDA_PREVIEW_COPY_RECEIVE="" \
+         TLDA_CONFIG_DIR="$PREVIEW_DIR/config" \
          TLDA_FLEET_DB="$PREVIEW_DIR/config/fleet.db" \
          TLDA_CLASSROOM_DB="/root/.config/tlda/classroom.db" \
          PROJECTS_DIR="$PREVIEW_DIR/projects" \

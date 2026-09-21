@@ -6,7 +6,7 @@ import express from 'express'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createPreviewCopyReceiver, isFlyPrivate, previewCopyReceiverConfig } from './preview-copy.mjs'
+import { createPreviewCopyReceiver, isFlyPrivate, previewCopyReceiverConfig, startPreviewCopyReceiver } from './preview-copy.mjs'
 import { sendPreviewCopy } from '../lib/publish-copy.mjs'
 
 test('a peer is on the private network and nothing else is', () => {
@@ -23,6 +23,20 @@ test('a box says whether it receives copies, and an absent secret is not a defau
   const configured = previewCopyReceiverConfig({ TLDA_PREVIEW_COPY_RECEIVE: '1', TLDA_STATIC_DIR: '/srv/site' })
   assert.equal(configured.staticDir, '/srv/site')
   assert.equal(configured.secret, '', 'an unset secret stays empty so the route can refuse rather than assume')
+  assert.equal(configured.host, '', 'an unset private address stays empty so starting can refuse rather than bind everything')
+  assert.equal(configured.port, 5181)
+})
+
+test('with no private address to bind, the receiver refuses to start and says nothing is listening', async () => {
+  await assert.rejects(
+    () => startPreviewCopyReceiver({ staticDir: '/srv/site', secret: 'shhh', port: 5181, host: '' }),
+    /FLY_PRIVATE_IP is unset.*Nothing is listening/s,
+    'binding every interface would put the receiver on whatever the box publishes, so this must not fall back',
+  )
+})
+
+test('a deployment that says nothing about copies starts no receiver', async () => {
+  assert.equal(await startPreviewCopyReceiver(previewCopyReceiverConfig({})), null)
 })
 
 test('what is sent is the directory, with its own digest beside it', async () => {
