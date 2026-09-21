@@ -28,10 +28,11 @@ const DRAG_THRESHOLD = 6
 const ITEM_W = 44
 const ITEM_GAP = 4
 
-type DocViewPlacement = 'here' | 'away' | 'off'
+type DocViewPlacement = 'here' | 'above' | 'away' | 'off'
 
 const PLACEMENTS: { id: DocViewPlacement; title: string }[] = [
   { id: 'here', title: 'Doc-view here: show the playback doc-view' },
+  { id: 'above', title: 'Doc-view above: show it above the document' },
   { id: 'away', title: 'Doc-view away: keep it, parked off screen' },
   { id: 'off', title: 'Off: remove the playback doc-view' },
 ]
@@ -50,7 +51,7 @@ function ownedDocView(editor: Editor, userId: string, deviceId: string) {
  * nothing to act with yet — no identity, no device, no document bounds — so
  * the caller knows not to report a placement that never happened.
  */
-function applyPlacement(editor: Editor, placement: DocViewPlacement): boolean {
+function applyPlacement(editor: Editor, placement: DocViewPlacement, localOnly = false): boolean {
   const userId = getHumanId()
   const deviceId = getDeviceId()
   if (!userId || !deviceId) return false
@@ -60,7 +61,7 @@ function applyPlacement(editor: Editor, placement: DocViewPlacement): boolean {
   if (placement === 'off' && !existing) return true
   const id = docViewSlotId(userId, deviceId)
 
-  editor.run(() => {
+  const write = () => {
     if (placement === 'off') {
       if (existing) editor.deleteShape(existing.id)
       return
@@ -74,8 +75,8 @@ function applyPlacement(editor: Editor, placement: DocViewPlacement): boolean {
       editor.updateShape({
         id: existing.id,
         type: existing.type,
-        x: bounds.minLeft - 440,
-        y: placement === 'here' ? bounds.minTop : bounds.maxBottom + 120,
+        x: placement === 'above' ? bounds.minLeft : bounds.minLeft - 440,
+        y: placement === 'above' ? bounds.minTop - 340 : placement === 'here' ? bounds.minTop : bounds.maxBottom + 120,
         props: { ...existing.props, timeControls: 'pinned', userId, deviceId },
       } as any)
       return
@@ -85,8 +86,8 @@ function applyPlacement(editor: Editor, placement: DocViewPlacement): boolean {
     editor.createShapes([{
       id,
       type: 'fleet-docview',
-      x: bounds.minLeft - 440,
-      y: placement === 'here' ? bounds.minTop : bounds.maxBottom + 120,
+      x: placement === 'above' ? bounds.minLeft : bounds.minLeft - 440,
+      y: placement === 'above' ? bounds.minTop - 340 : placement === 'here' ? bounds.minTop : bounds.maxBottom + 120,
       isLocked: false,
       props: {
         ...fleetPanelDefaultProps('fleet-docview'),
@@ -97,7 +98,9 @@ function applyPlacement(editor: Editor, placement: DocViewPlacement): boolean {
         deviceId,
       },
     }] as any)
-  }, { history: 'ignore' })
+  }
+  if (localOnly) editor.store.mergeRemoteChanges(write)
+  else editor.run(write, { history: 'ignore' })
   return true
 }
 
@@ -111,10 +114,19 @@ function currentPlacement(editor: Editor): DocViewPlacement | null {
   if (!bounds) return 'here'
   const pageBounds = editor.getShapePageBounds(shape.id)
   if (!pageBounds) return 'here'
+  if (pageBounds.maxY <= bounds.minTop) return 'above'
   return pageBounds.y > bounds.maxBottom ? 'away' : 'here'
 }
 
-export function ClassroomPlaybackPill({ mainEditor }: { mainEditor: Editor }) {
+export function ClassroomPlaybackPill({
+  mainEditor,
+  defaultPlacement,
+  localOnly = false,
+}: {
+  mainEditor: Editor
+  defaultPlacement?: DocViewPlacement
+  localOnly?: boolean
+}) {
   const badgeRef = useRef<HTMLSpanElement>(null)
   const identity = useFleetIdentity()
   const [placement, setPlacement] = useState<DocViewPlacement | null>(null)
@@ -127,26 +139,45 @@ export function ClassroomPlaybackPill({ mainEditor }: { mainEditor: Editor }) {
   const isDragRef = useRef(false)
   const selectedIdxRef = useRef<number | null>(null)
   const conditionSeverity = useChromeConditionSeverity('fleet')
+  const defaultSettledRef = useRef(false)
 
   // identity.id in the deps: placement is unknowable until identity resolves,
   // and the click that resolves nothing must not paint a state we never wrote.
   useEffect(() => {
     let cancelled = false
-    whenDeviceReady().then(() => {
-      if (!cancelled) setPlacement(currentPlacement(mainEditor))
-    })
+    const read = () => {
+      if (cancelled) return
+      const current = currentPlacement(mainEditor)
+      if (current === null) return
+      if (!defaultSettledRef.current && defaultPlacement) {
+        if (current === 'off') {
+          defaultSettledRef.current = true
+          if (!applyPlacement(mainEditor, defaultPlacement, localOnly)) {
+            defaultSettledRef.current = false
+            return
+          }
+          setPlacement(defaultPlacement)
+        } else {
+          setPlacement(current)
+          defaultSettledRef.current = true
+        }
+        return
+      }
+      setPlacement(current)
+    }
+    whenDeviceReady().then(read)
     const unsub = mainEditor.store.listen(() => {
-      if (!cancelled) setPlacement(currentPlacement(mainEditor))
+      read()
     }, { source: 'all', scope: 'document' })
     return () => { cancelled = true; unsub() }
-  }, [mainEditor, identity.id])
+  }, [mainEditor, identity.id, defaultPlacement, localOnly])
 
   const apply = useCallback((idx: number) => {
-    if (!applyPlacement(mainEditor, PLACEMENTS[idx].id)) return
+    if (!applyPlacement(mainEditor, PLACEMENTS[idx].id, localOnly)) return
     setPlacement(PLACEMENTS[idx].id)
     setPickerOpen(false)
     setSliderAnchor(null)
-  }, [mainEditor])
+  }, [mainEditor, localOnly])
 
   const sliderOptions = useMemo(() => PLACEMENTS.map(item => ({
     id: item.id,
@@ -155,6 +186,8 @@ export function ClassroomPlaybackPill({ mainEditor }: { mainEditor: Editor }) {
       <svg width={20} height={20} viewBox="0 0 20 20" style={{ display: 'block' }}>
         {item.id === 'here' && <rect x={3} y={4} width={14} height={9} rx={1.5} fill="none" stroke="currentColor" strokeWidth={1.4} />}
         {item.id === 'here' && <rect x={3} y={15} width={14} height={2} rx={1} fill="currentColor" />}
+        {item.id === 'above' && <rect x={3} y={3} width={14} height={5} rx={1.5} fill="none" stroke="currentColor" strokeWidth={1.4} />}
+        {item.id === 'above' && <rect x={3} y={11} width={14} height={6} rx={1} fill="none" stroke="currentColor" strokeWidth={1.4} opacity={0.55} />}
         {item.id === 'away' && <rect x={3} y={4} width={14} height={9} rx={1.5} fill="none" stroke="currentColor" strokeWidth={1.4} opacity={0.45} />}
         {item.id === 'away' && <rect x={3} y={15} width={14} height={2} rx={1} fill="currentColor" opacity={0.45} />}
         {item.id === 'off' && <circle cx={10} cy={10} r={6} fill="none" stroke="currentColor" strokeWidth={1.4} />}
@@ -169,10 +202,11 @@ export function ClassroomPlaybackPill({ mainEditor }: { mainEditor: Editor }) {
       justDraggedRef.current = false
       return
     }
-    const next: DocViewPlacement = placement === 'here' ? 'away' : 'here'
-    if (!applyPlacement(mainEditor, next)) return
+    const home = defaultPlacement || 'here'
+    const next: DocViewPlacement = placement === home ? 'away' : home
+    if (!applyPlacement(mainEditor, next, localOnly)) return
     setPlacement(next)
-  }, [mainEditor, placement])
+  }, [mainEditor, placement, localOnly, defaultPlacement])
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     stopEventPropagation(e)

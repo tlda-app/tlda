@@ -151,12 +151,7 @@ test('the published app path opens the TLDA shell, not the copied course HTML', 
   )
 })
 
-// REMOVED with the TLDA switch it asserted: the `static/` tree is the published
-// site, and the switch's href named a `/docs/…/app/…` address that exists only on
-// preview — the least faithful thing on the page. See the ruling in the delivery
-// thread (01:07 AM): bridge, slides bridge, chapter title, and switch all come
-// off `static/`. Replaced by the fidelity test below.
-test('the static published page goes out as the build wrote it', async () => {
+test('the static published page stays a direct page and offers its App route', async () => {
   const staticPageInfo = [{
     file: 'static/book/chapters/chapter-sampling-with-replacement.html',
     title: 'Sampling with Replacement',
@@ -177,7 +172,9 @@ test('the static published page goes out as the build wrote it', async () => {
     async port => {
       const res = await get(port, `/docs/${PROJECT}/static/book/chapters/chapter-sampling-with-replacement.html`)
       assert.equal(res.status, 200)
-      assert.equal(res.body, built, 'static/ must serve the build bytes untouched — no bridge, no title, no TLDA anchor')
+      assert.match(res.body, /<main>static course page<\/main>/)
+      assert.match(res.body, new RegExp(`class="presentation-mode-switch" href="/docs/${PROJECT}/app/book/chapters/chapter-sampling-with-replacement\\.html"[^>]*>App</a>`))
+      assert.doesNotMatch(res.body, /_tldaShape|tlda-navigate/, 'the direct page must not receive the canvas bridge')
     },
   )
 })
@@ -206,7 +203,9 @@ test('the static published deck goes out without the slides bridge', async () =>
     async port => {
       const res = await get(port, `/docs/${PROJECT}/static/book/decks/chapter-bootstrap-slides.html`)
       assert.equal(res.status, 200)
-      assert.equal(res.body, built, 'a static/ deck must parse as the build wrote it — no slides bridge splice')
+      assert.match(res.body, /<div class="reveal"><div class="slides"><\/div><\/div>/)
+      assert.match(res.body, />App<\/a>/)
+      assert.doesNotMatch(res.body, /_tldaShape|tlda-navigate/, 'a static deck must not receive the slides bridge')
     },
   )
 })

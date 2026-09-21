@@ -6,6 +6,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 
 import { chapterHeadingFor } from './chapter-heading.mjs'
 import { injectBridge } from './html-injector.mjs'
+import { injectPresentationSwitch } from './presentation-switch.mjs'
 
 /**
  * Make the copy carry the app, pointed at this destination.
@@ -91,6 +92,13 @@ export async function patchStagedTreeForDestination({ staging, distDir, configDi
           { prev: heading.navPrev, next: heading.navNext },
           '',
         ))
+
+        const staticFile = file.replace(/^app\//, 'static/')
+        const staticPath = join(staging, ...staticFile.split('/'))
+        if (!existsSync(staticPath)) continue
+        const staticHtml = await readFile(staticPath, 'utf8')
+        const href = `/${file.split('/').map(encodeURIComponent).join('/')}`
+        await writeFile(staticPath, injectPresentationSwitch(staticHtml, href, 'App'))
       }
     }
   }

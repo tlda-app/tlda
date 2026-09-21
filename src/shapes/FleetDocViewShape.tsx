@@ -26,7 +26,7 @@ import {
   useValue,
 } from 'tldraw'
 import { fleetDocviewProps } from '../../shared/shapes/fleet-panel-schema.mjs'
-import type { Editor } from 'tldraw'
+import type { Editor, TLPageId } from 'tldraw'
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { ProjectContext } from '../PanelContext'
@@ -186,7 +186,10 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   }, [mainEditor, targetShapeId])
 
   // --- Return button: save camera before Go, restore on Return ---
-  const [savedCamera, setSavedCamera] = useState<{ x: number; y: number; z: number } | null>(null)
+  const [savedCamera, setSavedCamera] = useState<{
+    camera: { x: number; y: number; z: number }
+    pageId: TLPageId
+  } | null>(null)
 
   // --- Filter overlay ---
   const [showSources, setShowSources] = useState(false)
@@ -711,12 +714,22 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
                   } else {
                     // Click → navigate to location
                     const cam = mainEditor.getCamera()
-                    setSavedCamera({ x: cam.x, y: cam.y, z: cam.z })
-                    const vp = mainEditor.getViewportPageBounds()
-                    mainEditor.centerOnPoint(
-                      { x: vp.x + vp.w / 2, y: bounds.y + bounds.h / 2 },
+                    setSavedCamera({
+                      camera: { x: cam.x, y: cam.y, z: cam.z },
+                      pageId: mainEditor.getCurrentPageId(),
+                    })
+                    const targetShape = targetShapeId ? mainEditor.getShape(targetShapeId) : undefined
+                    const targetPageId = targetShape?.parentId as TLPageId | undefined
+                    const go = () => mainEditor.centerOnPoint(
+                      { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 },
                       { animation: { duration: 300 } }
                     )
+                    if (targetPageId && targetPageId !== mainEditor.getCurrentPageId()) {
+                      mainEditor.setCurrentPage(targetPageId)
+                      setTimeout(go, 100)
+                    } else {
+                      go()
+                    }
                   }
                 }
                 window.addEventListener('pointermove', onMove)
@@ -730,7 +743,13 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
                 onPointerUp={(e: any) => {
                   e.stopPropagation()
                   if (!mainEditor || !savedCamera) return
-                  mainEditor.setCamera(savedCamera, { animation: { duration: 300 } })
+                  const restore = () => mainEditor.setCamera(savedCamera.camera, { animation: { duration: 300 } })
+                  if (savedCamera.pageId !== mainEditor.getCurrentPageId()) {
+                    mainEditor.setCurrentPage(savedCamera.pageId)
+                    setTimeout(restore, 100)
+                  } else {
+                    restore()
+                  }
                   setSavedCamera(null)
                 }}
                 title="Return to previous position"

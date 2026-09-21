@@ -29,6 +29,7 @@ import { deckLayout } from '../loaders/deckLayout'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
 import { attachRglFigureSync } from '../rglFigureSync'
 import { GestureInterpreter } from '@tldraw/editor'
+import { PAGES_FROM } from '../activeConfig'
 
 /** How many pages either side of the viewport keep their iframe mounted, on
  *  each axis. Measured in pages rather than viewports so it means the same
@@ -163,6 +164,25 @@ function isFleetDocviewShapeRecord(value: unknown): value is FleetDocviewShapeRe
     !!candidate.props &&
     typeof candidate.props === 'object'
   )
+}
+
+function updateFleetDocview(
+  editor: Editor,
+  shape: FleetDocviewShapeRecord,
+  props: Record<string, unknown>,
+) {
+  const write = () => {
+    if (shape.isLocked) {
+      editor.updateShape({ id: shape.id, type: shape.type, isLocked: false } as unknown as Parameters<typeof editor.updateShape>[0])
+    }
+    editor.updateShape({
+      id: shape.id,
+      type: shape.type,
+      props: { ...shape.props, ...props },
+    } as unknown as Parameters<typeof editor.updateShape>[0])
+  }
+  if (PAGES_FROM === 'files') editor.store.mergeRemoteChanges(write)
+  else write()
 }
 
 type MermaidDiagramPayload = {
@@ -723,30 +743,20 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       if (e.data?.type === 'tlda-doc-link-click') {
         const mapped = htmlDocLinkBounds()
         if (!mapped) return
-        const vpHeight = editor.getViewportPageBounds().h
-        editor.centerOnPoint({ x: mapped.linkCenter.x, y: mapped.linkCenter.y + vpHeight * 0.35 }, { animation: { duration: 300 } })
         const dvShape = (editor.getCurrentPageShapes() as unknown[]).find(isFleetDocviewShapeRecord)
         if (dvShape) {
           const pageBounds = mapped.current
           const pdfScale = pageBounds.props.h / PDF_HEIGHT
           const yTop = Math.max(0, Math.round((mapped.bounds.y - pageBounds.y) / pdfScale))
           const yBottom = Math.max(yTop + 1, Math.round((mapped.bounds.y + mapped.bounds.h - pageBounds.y) / pdfScale))
-          if (dvShape.isLocked) {
-            editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false } as unknown as Parameters<typeof editor.updateShape>[0])
-          }
-          editor.updateShape({
-            id: dvShape.id,
-            type: dvShape.type,
-            props: {
-              ...dvShape.props,
-              mode: 'manual',
-              label: e.data?.refLabel || '',
-              page: 1,
-              yTop,
-              yBottom,
-              title: htmlDocLinkLabel(),
-            },
-          } as unknown as Parameters<typeof editor.updateShape>[0])
+          updateFleetDocview(editor, dvShape, {
+            mode: 'manual',
+            label: e.data?.refLabel || '',
+            page: 1,
+            yTop,
+            yBottom,
+            title: htmlDocLinkLabel(),
+          })
         }
         window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
           detail: {
@@ -939,6 +949,19 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             // document has been created once, so a target still missing on the
             // second pass stops rather than opening again.
             window.postMessage({ ...e.data, __tldaOpened: true }, '*')
+          })
+          return
+        }
+        const dvShape = (editor.getCurrentPageShapes() as unknown[]).find(isFleetDocviewShapeRecord)
+        if (dvShape && !isTemporaryMarkdownNavigation) {
+          updateFleetDocview(editor, dvShape, {
+            mode: 'manual',
+            targetShapeId: targetShape.id,
+            useFullBounds: true,
+            label: '',
+            title: (typeof e.data.targetTitle === 'string' && e.data.targetTitle)
+              || targetShape.props?.source
+              || '',
           })
           return
         }
@@ -1246,7 +1269,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           // `mergeRemoteChanges` is how this codebase keeps a record off the
           // wire, so the room is left holding the declared height and each
           // client measures its own.
-          if (!wrote && isClassroomDocumentWorkspace()) {
+          if (!wrote && (isClassroomDocumentWorkspace() || PAGES_FROM === 'files')) {
             editor.store.mergeRemoteChanges(() => {
               editor.store.update(shape.id, (s: any) => ({
                 ...s,

@@ -102,6 +102,7 @@ import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCac
 import { classroomRoomAccess, gradingLayerRoomTarget } from '../shared/classroom-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
+import { injectPresentationSwitch } from './lib/presentation-switch.mjs'
 import { agentSpansCover, intersectAgentSpans, isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
 import { FleetStoreClient } from './lib/fleet-store-client.mjs'
 import { FleetSearchClient } from './lib/fleet-search-client.mjs'
@@ -5224,13 +5225,21 @@ app.get('/docs/:project/app{/*coursePath}', requireRead, async (req, res, next) 
 // navigation and posts to a parent that is not there; the slides bridge disables
 // Reveal's own keyboard/controls/touch/wheel; the serve-time title card and its
 // prev/next footer post `tlda-navigate` nowhere. gh.io has none of that, so the
-// preview must have none of it either — including the TLDA anchor, whose href
-// names a `/docs/…/app/…` address that exists only on preview. A splice into the
+// preview must have none of it either. The one addition is the App/Static
+// switch requested for these route families; it is a plain link and carries
+// none of the canvas bridge behavior. A splice into the
 // served bundle is what killed the Bootstrap deck (first-`</body>` splice inside
 // the RevealNotes template string; `80776def2` moved it to the last, removing
 // the instance but not the class). So `static/` pages go out as the build wrote
-// them: no bridge, no title, no anchor.
+// them: no bridge and no title.
 const isPublishedStaticPage = (servedFilePath) => servedFilePath.startsWith('static/')
+
+async function sendPublishedStaticPage(res, projectPath, project, servedFilePath) {
+  const location = servedFilePath.slice('static/'.length)
+  const href = `/docs/${encodeURIComponent(project)}/app/${location.split('/').map(encodeURIComponent).join('/')}`
+  const html = await fs.promises.readFile(projectPath, 'utf8')
+  return res.type('html').send(injectPresentationSwitch(html, href, 'App'))
+}
 
 // Serve sub-resources of html-format projects without auth (CSS, JS, fonts from site_libs)
 // These are Quarto framework files loaded by iframes that can't pass auth headers
@@ -5628,7 +5637,7 @@ app.use('/docs', (req, res, next) => {
             // Slides format: inject the reveal.js bridge script — unless this is
             // the published static tree, which goes out as the build wrote it.
             if (isPublishedStaticPage(servedFilePath)) {
-              return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
+              return sendPublishedStaticPage(res, projectPath, name, servedFilePath)
             }
             const html = await fs.promises.readFile(projectPath, 'utf8')
             const injected = injectSlidesBridge(html)
@@ -5664,7 +5673,7 @@ app.use('/docs', (req, res, next) => {
             }
 
             if (isPublishedStaticPage(servedFilePath)) {
-              return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
+              return sendPublishedStaticPage(res, projectPath, name, servedFilePath)
             }
             const injected = injectChapterTitle(html, chapterTitle, prev, next)
             res.type('html').send(injected)
@@ -5698,7 +5707,7 @@ app.use('/docs', (req, res, next) => {
               ;({ chapterTitle, isFirstPage, navPrev, navNext } = chapterHeadingFor(pageInfo, servedFilePath))
             } catch (e) { console.warn(`[server] TOC/chapter title parsing failed for ${name}: ${e.message}`) }
             if (isPublishedStaticPage(servedFilePath)) {
-              return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
+              return sendPublishedStaticPage(res, solutionsPath || projectPath, name, servedFilePath)
             }
             const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage, { prev: navPrev, next: navNext }, await ownWorkUrlFor(req, filePath))
             res.type('html').send(injected)

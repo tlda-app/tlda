@@ -163,6 +163,8 @@ const IS_PHONE = isPhoneViewport()
 // Module-level for the same reason IS_PHONE is: the components callback is
 // memoized, and the marker is a page fact that does not change without a load.
 const IS_CLASSROOM = isClassroomSurface()
+const IS_APP_DOCUMENT_ROUTE = presentationRoute(window.location.pathname)?.mode === 'app'
+const USES_DOCUMENT_ROUTE_CONTROLS = IS_CLASSROOM || IS_APP_DOCUMENT_ROUTE
 
 // Agent attention overlay wrapper (needs useEditor context)
 function AgentAttentionCanvas() {
@@ -370,9 +372,11 @@ function PresentationModeSwitch({ document }: { document: SvgDocument }) {
   if (!route || route.mode !== 'app') return null
   const page = document.pages.find(candidate => candidate.tldrawPageId === pageId)
   const pagePath = page?.src ? new URL(page.src, window.location.origin).pathname : ''
-  const docsPrefix = `/docs/${encodeURIComponent(route.project)}/app/`
-  const location = route.prefix === 'docs' && pagePath.startsWith(docsPrefix)
-    ? decodeURIComponent(pagePath.slice(docsPrefix.length))
+  const appPrefix = route.prefix === 'docs'
+    ? `/docs/${encodeURIComponent(route.project)}/app/`
+    : '/app/'
+  const location = pagePath.startsWith(appPrefix)
+    ? decodeURIComponent(pagePath.slice(appPrefix.length))
     : page?.source?.file || route.location
   return (
     <a
@@ -823,12 +827,12 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         <RibbonLane /><ProvenancePanel /><ProvenanceInline /><DocumentPanel /><PhoneOverlay />
         <HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower />
         <SemanticHighlightPill />
-        {!IS_CLASSROOM && <AgentAttentionCanvas />}
+        {!USES_DOCUMENT_ROUTE_CONTROLS && <AgentAttentionCanvas />}
         <RecognizeButton />
         <BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud />
-        {!IS_CLASSROOM && <VersionStampSlot />}
-        {!IS_CLASSROOM && <FleetToolGhost />}
-        {!IS_CLASSROOM && <FleetNudgeGuides />}
+        {!USES_DOCUMENT_ROUTE_CONTROLS && <VersionStampSlot />}
+        {!USES_DOCUMENT_ROUTE_CONTROLS && <FleetToolGhost />}
+        {!USES_DOCUMENT_ROUTE_CONTROLS && <FleetNudgeGuides />}
         <ChromeConditions />
       </>
       return {
@@ -1165,6 +1169,14 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     )
   }
 
+  const appDocumentRoute = IS_APP_DOCUMENT_ROUTE ? presentationRoute(window.location.pathname) : null
+  const routedAppPage = appDocumentRoute
+    ? document.pages.find(page => presentationLocationMatchesPage(appDocumentRoute, page.source?.file, page.src))
+    : null
+  const defaultAppDocViewPlacement = document.format === 'slides' || routedAppPage?.meta?.spatialWorldDocument
+    ? 'above'
+    : 'here'
+
   // Bottom panels content — passed via context into InFrontOfTheCanvas
   const bottomPanelsContent = (
     <>
@@ -1255,14 +1267,20 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         <BuildWarningPill warnings={pillWarnings}>
           <BuildProgressPill document={document} />
         </BuildWarningPill>
-        {!IS_CLASSROOM && editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
-        {IS_CLASSROOM && editorRef.current && <ClassroomPlaybackPill mainEditor={editorRef.current} />}
+        {!USES_DOCUMENT_ROUTE_CONTROLS && editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
+        {USES_DOCUMENT_ROUTE_CONTROLS && editorRef.current && (
+          <ClassroomPlaybackPill
+            mainEditor={editorRef.current}
+            defaultPlacement={IS_APP_DOCUMENT_ROUTE ? defaultAppDocViewPlacement : undefined}
+            localOnly={IS_APP_DOCUMENT_ROUTE}
+          />
+        )}
         {/* Build errors: red BuildErrorPill (reads errorsJson from the doc-version sentinel) */}
       </div>
-      {!IS_CLASSROOM && editorRef.current && (
+      {!USES_DOCUMENT_ROUTE_CONTROLS && editorRef.current && (
         <FleetHUD mainEditor={editorRef.current} />
       )}
-      {IS_CLASSROOM && editorRef.current && (
+      {USES_DOCUMENT_ROUTE_CONTROLS && editorRef.current && (
         <ClassroomDocViewPlayback mainEditor={editorRef.current} />
       )}
       {/* Classroom playback lives in a real fleet-docview shape, toggled from
@@ -1536,8 +1554,9 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
               if (initialCamera) {
                 // URL camera params override session restore
                 if (initialCamera.sourcePath) {
+                  const route = presentationRoute(window.location.pathname)
                   const sourcePage = document.pages.find(page => presentationLocationMatchesPage(
-                    initialCamera.sourcePath!,
+                    route || initialCamera.sourcePath!,
                     page.source?.file,
                     page.src,
                   ))
