@@ -2,24 +2,25 @@
 # carries the preview site, holding its marks apart from the live ones.
 appName: PIC preview
 
-# NO TOKEN GATE. Nobody asked for one and it is on its way out: it is a single
-# shared string, the same characters for everyone holding it, so it can say
-# whether a caller has the box's key and nothing about who they are.
+# GATED, FOR NOW, AND NOT BECAUSE ANYONE WANTS IT. Skip's ruling stands --
+# nobody asked for the token gate and it is on its way out: it is one shared
+# string, the same characters for everyone holding it, so it can say whether a
+# caller has the box's key and nothing about who they are. The per-person rule
+# underneath it (`classroomRoomAccess`) is the boundary that should decide.
 #
-# What decides here instead is the per-person rule that was always underneath
-# it -- `classroomRoomAccess` in shared/classroom-rooms.mjs, reading the
-# student's own enrolment token. It already says the book is open to read, an
-# enrolled student writes, a grading draft is an instructor's alone, and
-# handed-in work is its owner's. That is the boundary; the shared string was
-# standing in front of it refusing people before it could be asked.
+# What stops the gate coming off here is one derivation, not the design. The
+# rule that a server where nobody can be told apart grants everybody write is
+# currently derived from the gate being off -- so turning the gate off on THIS
+# box, which is funnelled, would hand every room on it to the internet.
+# Deriving it from "has a class" instead was tried on 2026-09-21 and reverted
+# the same hour: a dev box is (gate off, courses present) and must grant, this
+# box is (gate off, courses present) and must not, and no predicate over those
+# two facts separates them.
 #
-# THIS IS ONLY SAFE BECAUSE THIS SERVER KNOWS THE CLASS. It reads the same
-# classroom database the main server writes (TLDA_CLASSROOM_DB, set in
-# scripts/fly-entrypoint-live.sh), so the people are the same people. A preview
-# store with its own empty classroom would know nobody, and a server that knows
-# nobody withholds nothing from anyone -- which on a funnelled box means the
-# internet.
-tokenGating: false
+# So the gate comes off here when a deployment can say what its gate-off means,
+# which is a config split rather than a flag. Until then this box is gated and
+# carries nobody, which costs nothing.
+tokenGating: true
 
 tokensFromEnvironmentOnly: true
 

@@ -325,35 +325,6 @@ const HOST = process.env.HOST || '0.0.0.0'
 const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 const classroomStore = new ClassroomStore()
 
-/**
- * Whether there is a class on this box, asked of the store rather than inferred.
- *
- * NOT written as an optional call. `store?.hasAnyCourse?.()` reads as caution
- * and is the opposite: a missing method yields undefined, `!undefined` is true,
- * and the grant that means "there is nothing here to withhold" is handed out by
- * a typo. A box that cannot answer this question has not earned an answer that
- * opens it.
- */
-let warnedAboutClassroomStore = false
-function hasAClassOnThisBox() {
-  const store = app?.locals?.classroomStore || classroomStore
-  if (typeof store?.hasAnyCourse !== 'function') {
-    // Answer the withholding way and say so. Throwing here was the first
-    // version and it is worse: this runs inside the async upgrade handler, so
-    // the throw becomes an unhandled rejection with nobody left to destroy the
-    // socket, and the caller hangs instead of being refused. Answering "there
-    // is a class" makes the per-room rules apply, which refuses what should be
-    // refused and keeps the server answering.
-    // Once, not per upgrade: this sits on the connection path, and a line per
-    // connection buries the one line that says why.
-    if (!warnedAboutClassroomStore) {
-      warnedAboutClassroomStore = true
-      console.error('[sync] classroom store cannot say whether this box has a class; withholding as though it does')
-    }
-    return true
-  }
-  return store.hasAnyCourse()
-}
 
 // Initialize stores
 await traceStartupPhase('init-project-store', () => initProjectStore(PROJECTS_DIR))
@@ -6146,13 +6117,25 @@ server.on('upgrade', async (req, socket, head) => {
         : principal?.role === 'instructor' && principal.courseId
           ? classroomStore.isInstructorOf(principal, principal.courseId)
           : false,
-      // WHETHER THERE IS A CLASS HERE, not whether there is a token gate.
-      // Skip's rule is "on servers without classroom grant a group containing
-      // literally everybody rw on everything" -- and a box can have a class and
-      // no gate, at which point deriving this from the gate hands every room on
-      // it to anyone who can reach it. The gate is being removed; the class is
-      // the thing that decides.
-      everybodyGrant: !hasAClassOnThisBox(),
+      // WHAT "NOBODY CAN BE TOLD APART HERE" MEANS, and it is the gate rather
+      // than the class -- tried the other way on 2026-09-21 and reverted the
+      // same hour.
+      //
+      // Skip's sentence is "on servers without classroom grant a group
+      // containing literally everybody rw on everything", so `!hasAnyCourse()`
+      // reads like the faithful predicate. It is not, because two boxes give
+      // the same answer to both facts and want opposite grants: a dev box is
+      // (gate off, courses present) and MUST grant -- gate-off there means
+      // nobody can be identified and whoever reaches it owns it, and deriving
+      // this from the class made every ordinary room read-only for its owner,
+      // writes dropped in silence. A funnelled preview store is also (gate off,
+      // courses present) and must NOT.
+      //
+      // Neither `&&` nor `||` separates them. The real answer is a deployment
+      // saying what its gate-off means, which is config rather than a
+      // derivation; `classroomStore.hasAnyCourse()` exists for that and has no
+      // caller until it lands.
+      everybodyGrant: !isTokenGatingEnabled(),
     })
     if (access === 'deny') {
       const who = principal?.role === 'student' ? `student:${principal.studentId}`
@@ -6210,13 +6193,25 @@ server.on('upgrade', async (req, socket, head) => {
         isInstructorMember: sourcePrincipal
           ? app.locals.classroomStore.isInstructorOf(sourcePrincipal, sourceSubmission.courseId)
           : false,
-        // WHETHER THERE IS A CLASS HERE, not whether there is a token gate.
-      // Skip's rule is "on servers without classroom grant a group containing
-      // literally everybody rw on everything" -- and a box can have a class and
-      // no gate, at which point deriving this from the gate hands every room on
-      // it to anyone who can reach it. The gate is being removed; the class is
-      // the thing that decides.
-      everybodyGrant: !hasAClassOnThisBox(),
+        // WHAT "NOBODY CAN BE TOLD APART HERE" MEANS, and it is the gate rather
+      // than the class -- tried the other way on 2026-09-21 and reverted the
+      // same hour.
+      //
+      // Skip's sentence is "on servers without classroom grant a group
+      // containing literally everybody rw on everything", so `!hasAnyCourse()`
+      // reads like the faithful predicate. It is not, because two boxes give
+      // the same answer to both facts and want opposite grants: a dev box is
+      // (gate off, courses present) and MUST grant -- gate-off there means
+      // nobody can be identified and whoever reaches it owns it, and deriving
+      // this from the class made every ordinary room read-only for its owner,
+      // writes dropped in silence. A funnelled preview store is also (gate off,
+      // courses present) and must NOT.
+      //
+      // Neither `&&` nor `||` separates them. The real answer is a deployment
+      // saying what its gate-off means, which is config rather than a
+      // derivation; `classroomStore.hasAnyCourse()` exists for that and has no
+      // caller until it lands.
+      everybodyGrant: !isTokenGatingEnabled(),
       })
       if (may === 'deny') {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
