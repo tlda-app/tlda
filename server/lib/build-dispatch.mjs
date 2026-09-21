@@ -25,6 +25,56 @@ import { ForkTransport, createRemoteTransport } from './build-transport.mjs'
 import { createBuildQueue } from './build-queue.mjs'
 import { BuildQueueStore } from './build-queue-store.mjs'
 import { listProposalRefs } from './git-proposals.mjs'
+import { fileURLToPath } from 'node:url'
+import { copyBuildOutputToPreview } from './publish-copy.mjs'
+
+/**
+ * Put what just built in front of the preview, on the box that built it.
+ *
+ * This is the step that makes the loop a loop: Skip edits a page, the build
+ * runs where it already runs, and the page is at the preview URL without him
+ * typing anything. Everything before this exists so that a copy can be made;
+ * this is what makes one without being asked.
+ *
+ * OPT-IN BY INTENT. A box refreshes a preview because someone named the project
+ * whose builds it shows, not because of what the box is called. Neither
+ * variable set is the standing behaviour and every other deployment is
+ * untouched.
+ *
+ * NON-FATAL, DELIBERATELY. This runs after the build has published; a copy that
+ * fails must not turn a build that succeeded into one that failed. It says what
+ * went wrong and the build stands -- the previous copy keeps serving, which is
+ * the same answer the swap gives for a transfer that dies halfway.
+ */
+async function refreshPreviewCopy(name) {
+  const project = process.env.TLDA_PREVIEW_PROJECT
+  const staticDir = process.env.TLDA_STATIC_DIR
+  const configDir = process.env.TLDA_PREVIEW_DESTINATION
+  if (!project || !staticDir || !configDir || project !== name) return
+  try {
+    const record = await readProject(name)
+    const result = await copyBuildOutputToPreview({
+      outputDir: join(projectDir(name), 'output'),
+      staticDir,
+      // From this module rather than from PROJECTS_DIR: `dist` sits beside
+      // `server/`, and PROJECTS_DIR is overridden per instance on a box that
+      // runs more than one server -- deriving from it would point a second
+      // instance at a directory that does not exist.
+      distDir: fileURLToPath(new URL('../../dist', import.meta.url)),
+      configDir,
+      document: { name, record: record || { name } },
+    })
+    console.log(`[preview] ${name} is now at ${result.staticDir}, pointed at ${result.store}${result.licensed ? '' : ' (unlicensed)'}`)
+  } catch (error) {
+    // Swallowed on purpose, and this is the reason: the build has ALREADY
+    // published by the time this runs. Rethrowing would take a build that
+    // succeeded and report it as failed, which is a worse lie than a stale
+    // preview -- and the previous copy is still serving, unharmed, because the
+    // new one is assembled beside it and only a rename puts it in front.
+    // What the operator needs is this line, naming the project and the cause.
+    console.error(`[preview] ${name} built and published, but the preview copy was not refreshed: ${error.message}`)
+  }
+}
 import { projectRevisionStatus } from './source-lifecycle.mjs'
 import { reportBuildFailure } from './build-runner.mjs'
 
@@ -593,6 +643,7 @@ export function createDispatcherWithOptions(transport, options = {}) {
         // authoritative. A missing or malformed wire value would leave the
         // delivery's warning layer silently unscoped and therefore off.
         await notifyPublishedHead(options.notifyHeadChanged, name, job.sourceRevision, job.acceptSeq)
+        await refreshPreviewCopy(name)
         return result
       }
       const sink = sinks[message.m]
