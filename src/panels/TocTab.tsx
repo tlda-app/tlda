@@ -10,7 +10,7 @@ import { homeworkKeyForTocRow } from '../homeworkTocKey'
 import { pdfToCanvas } from '../synctexAnchor'
 import { ProjectContext, PanelContext } from '../PanelContext'
 import { onReloadSignal } from '../useYjsSync'
-import { canPresent, subscribeCanPresent } from '../authToken'
+import { appendToken, canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import {
   type ThemeFamily, type ColorScheme,
@@ -234,7 +234,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       // A plain download link navigates on error and drops the reader on the
       // server's JSON, and the compile can fail for the ordinary reason that
       // the document does not compile.
-      const response = await fetch(`/docs/${encodeURIComponent(projectName)}/${encodeURIComponent(texBase)}.pdf`)
+      const response = await fetch(appendToken(`/docs/${encodeURIComponent(projectName)}/${encodeURIComponent(texBase)}.pdf`))
       if (!response.ok) {
         const detail = await response.json().then(body => body?.detail || body?.error).catch(() => null)
         throw new Error(detail || `${response.status} ${response.statusText}`)
@@ -415,7 +415,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       try {
         // Slides format: load TOC from page-info.json
         if (doc.format === 'slides') {
-          const response = await fetch(`/docs/${doc.projectName}/page-info.json`)
+          const response = await fetch(appendToken(`/docs/${doc.projectName}/page-info.json`))
           const entries = response.ok ? await response.json() as Array<{ title?: string }> : null
           if (!cancelled && entries) setSlideTitles(entries.map(entry => entry.title || ''))
           return
@@ -425,7 +425,7 @@ export function TocTab({ query = '' }: { query?: string }) {
         if (targets && targets.length > 1) {
           let pageOffset = 0
           const results = await Promise.all(targets.map(async (target) => {
-            const resp = await fetch(`/docs/${doc.projectName}/${target.name}-lookup.json`).catch(() => null)
+            const resp = await fetch(appendToken(`/docs/${doc.projectName}/${target.name}-lookup.json`)).catch(() => null)
             if (!resp?.ok) return { target, headings: [] as TocEntry[], pageOffset }
             const data = await resp.json()
             const targetHeadings = parseHeadings(data.lines, data.meta, { skipAppendixDivider: true })

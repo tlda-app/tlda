@@ -1,5 +1,6 @@
 import { PDF_HEIGHT } from '../layoutConstants'
 import type { SvgPage } from './types'
+import { appendToken } from '../authToken'
 
 // --- Proof reader types ---
 
@@ -123,7 +124,7 @@ export async function loadProofData(
   // Same /docs/* gate as the page-info loaders. Unchecked, a 401 body reaches
   // the loop below as a ProofInfo with no pairs and fails as "cannot read
   // properties of undefined", which names the symptom instead of the cause.
-  const infoResponse = await fetch(basePath + 'proof-info.json' + cacheBust)
+  const infoResponse = await fetch(appendToken(basePath + 'proof-info.json' + cacheBust))
   if (!infoResponse.ok) {
     const body = await infoResponse.json().catch(() => ({}))
     throw new Error(`${infoResponse.status} ${body.error || infoResponse.statusText || 'could not load proof-info.json'}`.trim())

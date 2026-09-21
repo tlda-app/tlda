@@ -10,6 +10,8 @@
  * anchorIndex, and buildReverseIndex.
  */
 
+import { appendToken } from './authToken'
+
 export interface Label {
   label: string       // "cor:scalar-duality"
   type: string        // "cor"
@@ -52,7 +54,7 @@ export function load(projectName: string, targets?: Array<{ name: string; pages:
         let pageOffset = 0
         for (const target of targets) {
           try {
-            const r = await fetch(`/docs/${projectName}/${target.name}-source-map.json`)
+            const r = await fetch(appendToken(`/docs/${projectName}/${target.name}-source-map.json`))
             if (!r.ok) { pageOffset += target.pages; continue }
             const data = await r.json()
             for (const l of (data.labels || []) as Label[]) {
@@ -69,7 +71,7 @@ export function load(projectName: string, targets?: Array<{ name: string; pages:
         _pages = allPages
       } else {
         // Single-target or fallback: bare alias resolves to primary target's file
-        const r = await fetch(`/docs/${projectName}/source-map.json`)
+        const r = await fetch(appendToken(`/docs/${projectName}/source-map.json`))
         if (!r.ok) throw new Error(`${r.status}`)
         const data = await r.json()
         _labels = data.labels || []
