@@ -890,7 +890,7 @@ async function cmdPublish() {
       const patched = await patchStagedTreeForDestination({
         staging,
         distDir: join(tldaRoot, 'dist'),
-        configDir: getFlag('to-preview-config') || join(tldaRoot, 'config', 'deployments', 'pic-static-preview'),
+        configDir: getFlag('to-preview-config') || join(tldaRoot, 'config', 'deployments', 'preview-store'),
         document: { name, record: project },
       })
       const put = await pushTreeToPreviewBox({ staging, app: previewApp, machine, directory: previewDirectory })

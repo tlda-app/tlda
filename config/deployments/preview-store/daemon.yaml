@@ -1,0 +1,60 @@
+# Environment authority for the PREVIEW STORE.
+#
+# Not a whole deployment: a box names this directory in
+# TLDA_PREVIEW_DEPLOYMENT, and scripts/fly-entrypoint-live.sh installs it into a
+# per-instance config directory on the volume rather than into ~/.config/tlda.
+# It lives under config/deployments/ because that is where the entrypoint
+# already reads committed configuration from, and because an environment that
+# lives in git is what stopped an absent value from silently becoming someone
+# else's default.
+#
+# IT IS A PORT ON THE BOX THAT ALREADY SERVES, not a box of its own. The tldraw
+# licence is bound to a hostname and a different port on the same host is the
+# same hostname, so the preview store shares the host and differs in port. A
+# second app would be a second hostname, a second volume, a second tailscale
+# identity to authenticate, and a second set of secrets.
+#
+# THE LIVE HALF IS NOT THIS. Sync and hand-in for the published site are the
+# box's own main server; this one exists to hold the preview's marks apart from
+# them.
+machineId: fly
+
+# THIS ENVIRONMENT IS THE PREVIEW SITE'S DESTINATION CONFIG, and the fact that it
+# is a different store from live's is the entire point. A room name is unique only
+# within one server (server/lib/sync-rooms.mjs), so a mark made while previewing
+# lands here and not in the published site's rooms. A shared room was proposed and
+# rejected for exactly that reason: it would have made a preview mark a live mark,
+# with no draft boundary and no undo boundary between them.
+#
+# Nothing reconciles the two in the background. A button on the preview site
+# copies live shapes over on demand, which is why there is nothing to drift.
+environments:
+  default: preview-store
+  values:
+    preview-store:
+      # fleet, chat, registry, agents
+      database: https://pic.cormorant-matrix.ts.net:8443
+      # document assets and shape sync
+      store: https://pic.cormorant-matrix.ts.net:8443
+
+      # Same host as the site, so the licence bound to
+      # *.cormorant-matrix.ts.net covers it -- which is the whole reason this is
+      # a port rather than a box. Same key as every other box on this tailnet
+      # (config/deployments/pic/daemon.yaml); it is a client-side value shipped
+      # to every browser, not a secret.
+      #
+      # 8443 because Tailscale Funnel publishes exactly three ports: 443 is
+      # whatever the box already served, 8443 is this, 10000 is the preview
+      # site's files.
+      licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
+
+      # The pages on this destination are FILES, not a tlda server's documents.
+      # A published or previewed copy is a flat tree on a file server: the page
+      # a student opens sits at `book/chapter-x.html` because that is the URL
+      # their link points at, and `page-info.json` and `manifest.json` sit
+      # beside it. Nothing the browser can see tells it that, which is why it is
+      # declared here and baked into the copy by the publish step.
+      pages: files
+
+taskDoc:
+  globalDir: /app/server/persist/preview-store/fleet-task-doc

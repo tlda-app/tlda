@@ -1,15 +1,22 @@
-# fly.pic-static.toml — the box the course site is served from and synced to.
+# fly.pic-static.toml — SUPERSEDED. Do not deploy from this file.
 #
-# SEVERAL PROCESSES, ONE BOX, and they are different things: a static file
-# server carrying the built pages (443), a tlda server carrying sync and
-# homework hand-in for qtm285.github.io (8443), and a second tlda server
-# carrying the same two things for the preview copy (10000). The split is in
-# scripts/fly-entrypoint-live.sh; the reason for it is that a mark made while
-# previewing must not be a mark on the live site.
+# This app existed because a stopped lane had already provisioned it, and the
+# preview site was built on it for that reason and no other. The design says the
+# opposite: *"serve a literal rsynced copy from the same box on a different port
+# or whatever"* — the same box, because the tldraw licence is bound to a
+# hostname and a different port on the same host is the same hostname. A second
+# app is a second hostname, a second volume, a second tailscale identity to
+# authenticate by hand, and a second set of secrets, and it buys nothing.
 #
-# NOT a build box. Its own app, volume, and tailnet name keep the published
-# site off every serving and building box.
-# Deploy with: fly deploy -c fly.pic-static.toml
+# So the preview site is now opt-in by intent on whichever box already serves:
+# `TLDA_STATIC_DIR` for the copy and `TLDA_PREVIEW_DEPLOYMENT` for its store,
+# both in scripts/fly-entrypoint-live.sh. This app's machine is still up and
+# still serving what was pushed to it; the file is kept so that is not a
+# mystery, and because retiring an app is a separate, deliberate act.
+#
+# A deploy from here would now FAIL at boot: the entrypoint no longer has a
+# branch for `TLDA_DEPLOYMENT = pic-static`, and that deployment's server.yaml
+# and daemon.yaml are the empty placeholders it needed when nothing read them.
 app = "tlda-pic-static"
 primary_region = "sjc"
 

@@ -1,6 +1,5 @@
-# Server settings for the PREVIEW sync and hand-in server on the pic-static box.
-# Same shape as config/deployments/pic-static-live/server.yaml beside it; read
-# that one first.
+# Server settings for the preview store -- the second tlda server on a box that
+# carries the preview site, holding its marks apart from the live ones.
 appName: PIC preview
 
 # Public, and gated, for the same reason the live one is: it shares a box whose
@@ -12,7 +11,7 @@ tokenGating: true
 
 tokensFromEnvironmentOnly: true
 
-uploadDir: /app/server/persist/instances/preview/uploads
+uploadDir: /app/server/persist/preview-store/uploads
 
 notifications:
   ackTimeout: 5s

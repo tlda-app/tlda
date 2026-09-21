@@ -135,104 +135,128 @@ if [ -f "$HIST_DB" ] && [ ! -f "$MERGED_FLAG" ]; then
   fi
 fi
 
-# The pic-static box: TWO SERVERS, ONE BOX, and they are different things.
+# The preview site, on whichever box already serves.
 #
-#   127.0.0.1:5176  static file server           funnel 443    the built preview pages
-#   127.0.0.1:5177  tlda server, preview store   funnel 8443   the preview copy's sync
+# Skip's design: *"serve a literal rsynced copy from the same box on a different
+# port or whatever"* -- THE SAME BOX. It has to be, and the reason is the one he
+# gave: the tldraw licence is bound to a hostname, and a different port on the
+# same host is the same hostname. A second Fly app is a second hostname, a second
+# volume, a second tailscale identity to authenticate, and a second set of
+# secrets, and it buys nothing the design asked for.
 #
-# THE LIVE HALF IS NOT HERE, AND MUST NOT BE MOVED HERE. Sync and homework
-# hand-in for the published site run on `pic`, where they already run and where
-# the class already is. The reason is not convenience: a submission exists only
-# on the server that received it -- classroom.db, the project tree under
-# PROJECTS_DIR, and the room snapshot are all local to that process, and nothing
-# replicates between servers (server/lib/classroom-store.mjs,
-# server/routes/classroom.mjs). A second hand-in server would land student work
-# where the instructor cannot see it. The extension is pointed by the handout's
-# `tlda-classroom-server` front matter, so nothing about it is bound to a box.
+# So this is OPT-IN BY INTENT rather than by which deployment it is. A box
+# carries the preview site because someone said it should, and the variables say
+# what it needs:
 #
-# SEPARATE STORES ARE THE POINT of the one server that IS here. A room name is
-# unique only within one server (server/lib/sync-rooms.mjs), so isolation is by
-# origin: the same room on this server and on pic is two different rooms. That is
-# the draft boundary -- a mark made while previewing lands in preview's store and
-# not on the live site. A shared room was proposed and rejected for exactly that.
+#   TLDA_STATIC_DIR        the built copy on the volume -> a file server for it
+#   TLDA_PREVIEW_DEPLOYMENT  a config directory under config/deployments/ -> a
+#                            second tlda server holding the preview store
 #
-# THE FILE SERVER STAYS DUMB, and the sync server is the existing server run a
-# second time. There is no second implementation of sync or hand-in on this box
-# and there must not be one.
+# Neither set is the standing behaviour: a box with neither starts exactly the
+# one server it always started, which is what keeps this off the box the class
+# is on until someone puts it there deliberately.
 #
-# WHY A SECOND INSTANCE DOES NOT COLLIDE with anything. Everything a tlda server
-# writes is addressed by one of four variables, so this one gets its own:
+# SEPARATE STORES ARE THE POINT of the second server. A room name is unique only
+# within one server (server/lib/sync-rooms.mjs), so isolation is by origin: the
+# same room on the preview store and on the live one is two different rooms. That
+# is the draft boundary -- a mark made while previewing lands in preview's store
+# and not on the live site. A shared room was proposed and rejected for exactly
+# that.
+#
+# THE FILE SERVER STAYS DUMB and the preview store is the existing server run a
+# second time. There is no second implementation of sync on this box and there
+# must not be one.
+#
+# WHY A SECOND INSTANCE DOES NOT COLLIDE with the first. Everything a tlda server
+# writes is addressed by one of four variables, so the second gets its own:
 # TLDA_CONFIG_DIR (server.yaml, daemon.yaml, logs, tokens), TLDA_FLEET_DB
 # (fleet.db is otherwise hardcoded to ~/.config/tlda/fleet.db in
 # server/lib/fleet-store.mjs), PROJECTS_DIR (project trees AND each room's
 # sync-snapshot.json), and PORT. Sharing any one of them shares that state.
-if [ "${TLDA_DEPLOYMENT:-}" = "pic-static" ]; then
-  # Each tlda instance runs from a config directory on the volume, installed from
-  # the image every boot like the single-server case above: the image is the
-  # authority and what is running is what is in git.
-  start_tlda_instance() {
-    instance_name=$1
-    instance_port=$2
-    instance_src="/app/config/deployments/pic-static-$instance_name"
-    instance_dir="$PERSIST/instances/$instance_name"
+if [ -n "${TLDA_PREVIEW_DEPLOYMENT:-}" ]; then
+  PREVIEW_SRC="/app/config/deployments/$TLDA_PREVIEW_DEPLOYMENT"
+  PREVIEW_DIR="$PERSIST/preview-store"
+  PREVIEW_PORT="${TLDA_PREVIEW_STORE_PORT:-5179}"
+  for f in server.yaml daemon.yaml; do
+    if [ ! -f "$PREVIEW_SRC/$f" ]; then
+      echo "[entrypoint] FATAL: $PREVIEW_SRC/$f is missing -- TLDA_PREVIEW_DEPLOYMENT names it and the preview store cannot start without it" >&2
+      exit 1
+    fi
+  done
+  mkdir -p "$PREVIEW_DIR/config" "$PREVIEW_DIR/projects" "$PREVIEW_DIR/uploads"
+  cp "$PREVIEW_SRC/server.yaml" "$PREVIEW_DIR/config/server.yaml"
+  cp "$PREVIEW_SRC/daemon.yaml" "$PREVIEW_DIR/config/daemon.yaml"
+  echo "[entrypoint] preview store '$TLDA_PREVIEW_DEPLOYMENT' on 127.0.0.1:$PREVIEW_PORT, state under $PREVIEW_DIR"
 
-    for f in server.yaml daemon.yaml; do
-      if [ ! -f "$instance_src/$f" ]; then
-        echo "[entrypoint] FATAL: $instance_src/$f is missing -- the '$instance_name' server on port $instance_port cannot start without it" >&2
-        exit 1
-      fi
-    done
-
-    mkdir -p "$instance_dir/config" "$instance_dir/projects" "$instance_dir/uploads"
-    cp "$instance_src/server.yaml" "$instance_dir/config/server.yaml"
-    cp "$instance_src/daemon.yaml" "$instance_dir/config/daemon.yaml"
-    echo "[entrypoint] tlda server '$instance_name' on 127.0.0.1:$instance_port, state under $instance_dir"
-
-    # Supervised for the same reason the build executor is: this container's PID 1
-    # is the file server, so an unsupervised sync server that died would leave the
-    # box healthy while every browser connected to it silently stopped syncing.
-    # The loop names each exit so "sync stopped at 04:12" has a line to match.
-    #
-    # The `if` is load-bearing, not style: this script runs under `set -e`, so a
-    # bare `node ...` followed by `status=$?` kills the subshell on exactly the
-    # failure the supervisor exists to survive, and restarts only on a clean exit.
-    (
-      cd /app/server
-      while true; do
-        if TLDA_CONFIG_DIR="$instance_dir/config" \
-           TLDA_FLEET_DB="$instance_dir/config/fleet.db" \
-           PROJECTS_DIR="$instance_dir/projects" \
-           PORT="$instance_port" \
-           node --import tsx unified-server.mjs --i-am-tlda-cli
-        then status=0
-        else status=$?
-        fi
-        echo "[entrypoint] tlda server '$instance_name' exited with status ${status}; restarting in 2s"
-        sleep 2
-      done
-    ) &
-  }
-
-  start_tlda_instance preview 5177
-
-  # The tailnet block above already published $PORT on 443. The sync server needs
-  # its own public endpoint, and it is public rather than tailnet-only because the
-  # preview site has to be openable from whatever device Skip has in his hand.
+  # Supervised for the same reason the build executor is: this container's health
+  # is the main server's, so an unsupervised preview store that died would leave
+  # the box healthy while every browser on the preview site silently stopped
+  # syncing. The loop names each exit so "sync stopped at 04:12" has a line to
+  # match.
   #
-  # It is token-gated (config/deployments/pic-static-preview/server.yaml), which
-  # is the application boundary a funneled box needs -- the same posture as pic,
-  # and the opposite of pic-preview, which is unauthenticated precisely because
-  # only the tailnet can reach it.
-  if tailscale --socket=/var/run/tailscale/tailscaled.sock status >/dev/null 2>&1; then
-    tailscale --socket=/var/run/tailscale/tailscaled.sock funnel --bg --https=8443 "http://127.0.0.1:5177" \
-      || echo "[entrypoint] ERROR: tailscale funnel --https=8443 failed - nothing reaches the preview sync server on 127.0.0.1:5177 from outside this box"
-  else
-    echo "[entrypoint] ERROR: tailscale is not up, so 8443 was never published - the preview sync server is reachable only from inside this machine"
-  fi
+  # The `if` is load-bearing, not style: this script runs under `set -e`, so a
+  # bare `node ...` followed by `status=$?` kills the subshell on exactly the
+  # failure the supervisor exists to survive, and restarts only on a clean exit.
+  (
+    cd /app/server
+    while true; do
+      if TLDA_CONFIG_DIR="$PREVIEW_DIR/config" \
+         TLDA_FLEET_DB="$PREVIEW_DIR/config/fleet.db" \
+         PROJECTS_DIR="$PREVIEW_DIR/projects" \
+         PORT="$PREVIEW_PORT" \
+         node --import tsx unified-server.mjs --i-am-tlda-cli
+      then status=0
+      else status=$?
+      fi
+      echo "[entrypoint] preview store exited with status ${status}; restarting in 2s"
+      sleep 2
+    done
+  ) &
+fi
 
-  echo "[entrypoint] static file server over ${TLDA_STATIC_DIR:-/app/server/persist/static-site}"
-  cd /app/server
-  exec node --import tsx serve-static-dir.mjs
+if [ -n "${TLDA_STATIC_DIR:-}" ]; then
+  STATIC_PORT="${TLDA_STATIC_PORT:-5180}"
+  echo "[entrypoint] preview file server over $TLDA_STATIC_DIR on 127.0.0.1:$STATIC_PORT"
+  (
+    cd /app/server
+    while true; do
+      if PORT="$STATIC_PORT" node --import tsx serve-static-dir.mjs
+      then status=0
+      else status=$?
+      fi
+      echo "[entrypoint] preview file server exited with status ${status}; restarting in 2s"
+      sleep 2
+    done
+  ) &
+fi
+
+# The extra ports are published here rather than in the tailnet block above,
+# because that block runs before this one knows whether there is anything on
+# them. Funnel takes 443, 8443 and 10000 and nothing else, so a box carrying the
+# preview site spends its other two on it: 443 stays whatever the box already
+# served.
+#
+# ONLY WHERE THIS CONTAINER HOLDS THE TAILNET NODE. `live` and `pic` keep their
+# identity in a separate edge process (scripts/fly-entrypoint-edge.sh publishes
+# 443 there), so there is no tailscale here to ask and publishing these ports on
+# those boxes is the edge's job rather than this one's. Saying so is the point:
+# a box that carries the preview site and cannot publish it should report which
+# half is missing, not log a failure it was never going to manage.
+if [ -n "${TLDA_PREVIEW_DEPLOYMENT:-}${TLDA_STATIC_DIR:-}" ]; then
+  if [ "$TLDA_DEPLOYMENT" = "live" ] || [ "$TLDA_DEPLOYMENT" = "pic" ]; then
+    echo "[entrypoint] preview ports are served on this machine but published by the edge process, not here"
+  elif tailscale --socket=/var/run/tailscale/tailscaled.sock status >/dev/null 2>&1; then
+    [ -n "${TLDA_PREVIEW_DEPLOYMENT:-}" ] && {
+      tailscale --socket=/var/run/tailscale/tailscaled.sock funnel --bg --https=8443 "http://127.0.0.1:${TLDA_PREVIEW_STORE_PORT:-5179}" \
+        || echo "[entrypoint] ERROR: tailscale funnel --https=8443 failed - nothing reaches the preview store from outside this box"
+    }
+    [ -n "${TLDA_STATIC_DIR:-}" ] && {
+      tailscale --socket=/var/run/tailscale/tailscaled.sock funnel --bg --https=10000 "http://127.0.0.1:${TLDA_STATIC_PORT:-5180}" \
+        || echo "[entrypoint] ERROR: tailscale funnel --https=10000 failed - nothing reaches the preview site from outside this box"
+    }
+  else
+    echo "[entrypoint] ERROR: tailscale is not up, so the preview ports were never published - the preview site and its store are reachable only from inside this machine"
+  fi
 fi
 
 # Build executor, only where a deployment has opted in.
