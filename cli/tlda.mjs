@@ -8,7 +8,7 @@
  */
 
 import { resolve, relative, basename, dirname, extname, join, delimiter } from 'path'
-import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync, rmSync } from 'fs'
+import { copyFileSync, cpSync, existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync, rmSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname, tmpdir } from 'os'
 import { createHash, randomBytes, randomUUID } from 'crypto'
@@ -263,6 +263,11 @@ const VALUE_FLAGS = new Set([
   'homework-root', 'homework', 'project-prefix', 'quarto-bin',
   'handout-generator', 'support-file', 'extension', 'work-dir',
   'to', 'subdir', 'url',
+  // The preview destination's. A flag that is not here returns `true` rather
+  // than its value, silently -- `--to-preview tlda-pic` gave `previewApp ===
+  // true` and the first thing to actually USE the value threw
+  // `path … Received type boolean (true)` several minutes into a publish.
+  'to-preview', 'to-preview-dir', 'to-preview-machine', 'to-preview-config', 'stage-to',
 ])
 
 const SPAWN_BOOLEAN_FLAGS = new Set([
@@ -666,6 +671,7 @@ async function cmdPublish() {
   if (!name) {
     console.error('Usage: tlda project publish <name> --from <preview> [--to <site-checkout>] [--subdir static] [--no-push] [--drop-missing]')
     console.error('       tlda project publish <name> --from <preview> --to-preview <fly-app> [--to-preview-dir <path>] [--to-preview-machine <id>]')
+    console.error('       …--to-preview <fly-app> --stage-to <dir>   build the copy here and stop, so it can be looked at before any box sees it')
     console.error('')
     console.error('Sends what this environment is serving for <name> to the class site, or to the preview site.')
     process.exit(1)
@@ -683,6 +689,14 @@ async function cmdPublish() {
   // because the class-site guards below are about a git remote and none of them
   // can even be asked of a volume.
   const previewApp = getFlag('to-preview')
+  // WHERE THE FINISHED COPY GOES: a box, or a directory here.
+  //
+  // `--stage-to` runs every step and stops before the push, so the copy can be
+  // served and looked at on this machine before any box sees it. That is not a
+  // convenience: proving a copy by pushing it and loading the URL is how one
+  // piece of work turns into eight deploys, and a staging path that lives in a
+  // separate script is one that drifts from the command it imitates.
+  const stageTo = getFlag('stage-to')
   // Where the preview box's file server looks, which is a property of that box
   // rather than of this run -- `TLDA_STATIC_DIR` in fly.pic-static.toml, and
   // the same default server/serve-static-dir.mjs falls back to.
@@ -796,7 +810,14 @@ async function cmdPublish() {
     await recordOutcome(false, { ...detail, refused: true })
     process.exit(1)
   }
-  if (project.buildStatus !== 'success') {
+  // THE REFUSAL IS ABOUT PUBLISHING, so it does not apply to a copy nobody is
+  // served. `--stage-to` writes to a directory here and pushes nowhere; the
+  // tree it copies is the last good render the surface is still serving, which
+  // is the thing worth looking at when the newest build failed. Saying which
+  // render it is matters more here than refusing to make it.
+  if (stageTo && project.buildStatus !== 'success') {
+    console.log(yellow(`"${name}" is ${project.buildStatus || 'unbuilt'} on ${from}. Staging its last good render — the one that surface is still serving.`))
+  } else if (project.buildStatus !== 'success') {
     await refuse(
       [red(`"${name}" is ${project.buildStatus || 'unbuilt'} on ${from}, not success.`),
         `Publishing sends what is being served, and a failed build is not it. ${bold(`tlda project errors ${name}`)} says why.`],
@@ -823,7 +844,16 @@ async function cmdPublish() {
       { error: `"${name}" is serving no published tree` },
     )
   }
-  if (inventory.buildStatus === 'building' || project.buildPhase === 'build') {
+  // A RENDER IN FLIGHT IS A STATUS, NOT A PHASE. `buildPhase` names the phase
+  // that FAILED or the one pending -- `phase: failed || pending || null` in
+  // server/lib/source-lifecycle.mjs -- so it reads `'build'` for every failed
+  // build, forever. Testing it here said "is building right now" about a build
+  // that stopped thirteen hours earlier, and blocked publishing permanently
+  // after any failure rather than until a render finished.
+  //
+  // The same file derives `status: failed ? 'error' : pending ? 'building'`, so
+  // a render actually in flight is exactly `'building'`, from either source.
+  if (inventory.buildStatus === 'building' || project.buildStatus === 'building') {
     await refuse(
       [red(`"${name}" is building right now, so its published tree is being written as this reads it.`),
         'A publish that races a render ships half of two builds. Wait for it to finish and run this again.'],
@@ -907,7 +937,23 @@ async function cmdPublish() {
         )
       }
       writeFileSync(join(staging, 'page-info.json'), `${JSON.stringify(canvasPages, null, 2)}\n`)
-      const machine = getFlag('to-preview-machine') || await resolvePreviewMachine(previewApp)
+
+      // AND THE DOCUMENT MANIFEST, which is what the loader asks for first and
+      // which neither half contains: the build writes it to the output ROOT,
+      // beside `static/` and `app/` rather than inside either, so no `tree=`
+      // lists it. Without it the copy gets as far as resolving the document and
+      // then stops on `404 could not load document-manifest.json` -- measured
+      // here before this line existed. Its pages are named `app/…`, which is
+      // where they are in the copy, so it needs no rewriting.
+      const documentManifest = await apiAt(sourceUrl, 'GET', `/docs/${encodeURIComponent(name)}/document-manifest.json`, null, { token: getReadToken() })
+      if (!Array.isArray(documentManifest?.pages) || !documentManifest.pages.length) {
+        throw new Error(
+          `${sourceUrl} served no document manifest for "${name}" at /docs/${name}/document-manifest.json, and the copy's ` +
+          'loader asks for that before anything else. Nothing was staged.',
+        )
+      }
+      writeFileSync(join(staging, 'document-manifest.json'), `${JSON.stringify(documentManifest, null, 2)}\n`)
+      const machine = stageTo ? null : (getFlag('to-preview-machine') || await resolvePreviewMachine(previewApp))
       const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
       const patched = await patchStagedTreeForDestination({
         staging,
@@ -915,10 +961,20 @@ async function cmdPublish() {
         configDir: getFlag('to-preview-config') || join(tldaRoot, 'config', 'deployments', 'preview-store'),
         document: { name, record: project },
       })
+      const carries = `The copy carries the app at /${patched.shell}, pointed at ${bold(patched.config.store.ws)}${patched.config.licenseKey ? '' : ' (unlicensed — the canvas will render empty)'}.`
+      if (stageTo) {
+        rmSync(stageTo, { recursive: true, force: true })
+        mkdirSync(stageTo, { recursive: true })
+        cpSync(staging, stageTo, { recursive: true })
+        console.log(green(`Staged ${inventory.files.length} file(s) to ${stageTo} — NOT pushed.`))
+        console.log(carries)
+        console.log(`Serve it: ${bold(`TLDA_STATIC_DIR=${stageTo} HOST=127.0.0.1 PORT=5193 node server/serve-static-dir.mjs`)}`)
+        return
+      }
       const put = await pushTreeToPreviewBox({ staging, app: previewApp, machine, directory: previewDirectory })
       await recordOutcome(true, { files: inventory.files.length })
       console.log(green(`Published ${inventory.files.length} file(s) to ${put.app}:${put.directory} — ${put.entries} entries, ${put.kilobytes} kB.`))
-      console.log(`The copy carries the app at /${patched.shell}, pointed at ${bold(patched.config.store.ws)}${patched.config.licenseKey ? '' : ' (unlicensed — the canvas will render empty)'}.`)
+      console.log(carries)
       return
     }
     await writePublishedTree({ staging, checkout, subdirectory, allowDeletions: hasFlag('drop-missing') })
