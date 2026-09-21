@@ -1309,7 +1309,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           <ClassroomPlaybackPill
             mainEditor={editorRef.current}
             defaultPlacement={IS_APP_DOCUMENT_ROUTE ? defaultAppDocViewPlacement : undefined}
-            localOnly={IS_APP_DOCUMENT_ROUTE}
+            routeScoped={IS_APP_DOCUMENT_ROUTE}
           />
         )}
         {/* Build errors: red BuildErrorPill (reads errorsJson from the doc-version sentinel) */}

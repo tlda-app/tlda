@@ -37,13 +37,13 @@ const PLACEMENTS: { id: DocViewPlacement; title: string }[] = [
   { id: 'off', title: 'Off: remove the playback doc-view' },
 ]
 
-function docViewSlotId(userId: string, deviceId: string, localOnly = false) {
-  const localSuffix = localOnly ? '-app-local' : ''
+function docViewSlotId(userId: string, deviceId: string, routeScoped = false) {
+  const localSuffix = routeScoped ? '-app-local' : ''
   return createShapeId(`fleet-docview-class-${userId.replace('fleet:', '')}-${deviceId}${localSuffix}`)
 }
 
-function ownedDocView(editor: Editor, userId: string, deviceId: string, localOnly = false) {
-  if (localOnly) return editor.getShape(docViewSlotId(userId, deviceId, true)) as any
+function ownedDocView(editor: Editor, userId: string, deviceId: string, routeScoped = false) {
+  if (routeScoped) return editor.getShape(docViewSlotId(userId, deviceId, true)) as any
   return (editor.getCurrentPageShapes() as any[])
     .find(shape => shape.type === 'fleet-docview' && isFleetShapeForOwnerKey(shape, userId, deviceId)) as any
 }
@@ -53,15 +53,15 @@ function ownedDocView(editor: Editor, userId: string, deviceId: string, localOnl
  * nothing to act with yet — no identity, no device, no document bounds — so
  * the caller knows not to report a placement that never happened.
  */
-function applyPlacement(editor: Editor, placement: DocViewPlacement, localOnly = false): boolean {
+function applyPlacement(editor: Editor, placement: DocViewPlacement, routeScoped = false): boolean {
   const userId = getHumanId()
   const deviceId = getDeviceId()
   if (!userId || !deviceId) return false
   const bounds = placement === 'off' ? null : getDocumentPageBounds(editor)
   if (placement !== 'off' && !bounds) return false
-  const existing = ownedDocView(editor, userId, deviceId, localOnly)
+  const existing = ownedDocView(editor, userId, deviceId, routeScoped)
   if (placement === 'off' && !existing) return true
-  const id = docViewSlotId(userId, deviceId, localOnly)
+  const id = docViewSlotId(userId, deviceId, routeScoped)
 
   const write = () => {
     if (placement === 'off') {
@@ -101,16 +101,15 @@ function applyPlacement(editor: Editor, placement: DocViewPlacement, localOnly =
       },
     }] as any)
   }
-  if (localOnly) editor.store.mergeRemoteChanges(write)
-  else editor.run(write, { history: 'ignore' })
+  editor.run(write, { history: 'ignore' })
   return true
 }
 
-function currentPlacement(editor: Editor, localOnly = false): DocViewPlacement | null {
+function currentPlacement(editor: Editor, routeScoped = false): DocViewPlacement | null {
   const userId = getHumanId()
   const deviceId = getDeviceId()
   if (!userId || !deviceId) return null
-  const shape = ownedDocView(editor, userId, deviceId, localOnly)
+  const shape = ownedDocView(editor, userId, deviceId, routeScoped)
   if (!shape) return 'off'
   const bounds = getDocumentPageBounds(editor)
   if (!bounds) return 'here'
@@ -123,11 +122,11 @@ function currentPlacement(editor: Editor, localOnly = false): DocViewPlacement |
 export function ClassroomPlaybackPill({
   mainEditor,
   defaultPlacement,
-  localOnly = false,
+  routeScoped = false,
 }: {
   mainEditor: Editor
   defaultPlacement?: DocViewPlacement
-  localOnly?: boolean
+  routeScoped?: boolean
 }) {
   const badgeRef = useRef<HTMLSpanElement>(null)
   const identity = useFleetIdentity()
@@ -149,12 +148,12 @@ export function ClassroomPlaybackPill({
     let cancelled = false
     const read = () => {
       if (cancelled) return
-      const current = currentPlacement(mainEditor, localOnly)
+      const current = currentPlacement(mainEditor, routeScoped)
       if (current === null) return
       if (!defaultSettledRef.current && defaultPlacement) {
         if (current === 'off') {
           defaultSettledRef.current = true
-          if (!applyPlacement(mainEditor, defaultPlacement, localOnly)) {
+          if (!applyPlacement(mainEditor, defaultPlacement, routeScoped)) {
             defaultSettledRef.current = false
             return
           }
@@ -172,14 +171,14 @@ export function ClassroomPlaybackPill({
       read()
     }, { source: 'all', scope: 'document' })
     return () => { cancelled = true; unsub() }
-  }, [mainEditor, identity.id, defaultPlacement, localOnly])
+  }, [mainEditor, identity.id, defaultPlacement, routeScoped])
 
   const apply = useCallback((idx: number) => {
-    if (!applyPlacement(mainEditor, PLACEMENTS[idx].id, localOnly)) return
+    if (!applyPlacement(mainEditor, PLACEMENTS[idx].id, routeScoped)) return
     setPlacement(PLACEMENTS[idx].id)
     setPickerOpen(false)
     setSliderAnchor(null)
-  }, [mainEditor, localOnly])
+  }, [mainEditor, routeScoped])
 
   const sliderOptions = useMemo(() => PLACEMENTS.map(item => ({
     id: item.id,
@@ -206,9 +205,9 @@ export function ClassroomPlaybackPill({
     }
     const home = defaultPlacement || 'here'
     const next: DocViewPlacement = placement === home ? 'away' : home
-    if (!applyPlacement(mainEditor, next, localOnly)) return
+    if (!applyPlacement(mainEditor, next, routeScoped)) return
     setPlacement(next)
-  }, [mainEditor, placement, localOnly, defaultPlacement])
+  }, [mainEditor, placement, routeScoped, defaultPlacement])
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     stopEventPropagation(e)

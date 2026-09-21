@@ -181,8 +181,7 @@ function updateFleetDocview(
       props: { ...shape.props, ...props },
     } as unknown as Parameters<typeof editor.updateShape>[0])
   }
-  if (String(shape.id).endsWith('-app-local')) editor.store.mergeRemoteChanges(write)
-  else editor.run(write, { history: 'ignore' })
+  editor.run(write, { history: 'ignore' })
 }
 
 function activeFleetDocview(editor: Editor) {
