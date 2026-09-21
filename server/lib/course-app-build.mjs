@@ -101,6 +101,143 @@ export function deriveCourseAppSpec(courseDir, indexFile) {
   return { version: 1, index: indexRoot, documents, decks, assets, links }
 }
 
+function findOpenTag(html, tag, id, className) {
+  const pattern = new RegExp(`<${tag}\\b[^>]*>`, 'gi')
+  let match
+  while ((match = pattern.exec(html))) {
+    if (!new RegExp(`\\bid=["']${id}["']`, 'i').test(match[0])) continue
+    if (className && !new RegExp(`\\bclass=["'][^"']*\\b${className}\\b[^"']*["']`, 'i').test(match[0])) continue
+    return match
+  }
+  return null
+}
+
+function extractElement(html, tag, id, className) {
+  const open = findOpenTag(html, tag, id, className)
+  if (!open) return null
+  const innerStart = open.index + open[0].length
+  const bounds = new RegExp(`<${tag}\\b|</${tag}\\s*>`, 'gi')
+  bounds.lastIndex = innerStart
+  let depth = 1
+  let bound
+  while ((bound = bounds.exec(html))) {
+    depth += bound[0][1] === '/' ? -1 : 1
+    if (depth === 0) return { start: open.index, end: bounds.lastIndex, innerStart, innerEnd: bound.index }
+  }
+  return null
+}
+
+function scheduleDateKey(cellHtml) {
+  const text = cellHtml
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;| /g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return text.replace(/,[^,]*$/, '').trim()
+}
+
+/**
+ * A static href rebased to the app book root, plus the extension-insensitive
+ * stem used to recognise a link the app row already carries in another form
+ * (the TLDA row links a chapter's `.qmd` source; the static row links its
+ * rendered `.html` page). External, absolute, and fragment targets are not
+ * schedule links and return null.
+ */
+function rebaseScheduleHref(rawHref) {
+  const clean = rawHref.trim().replace(/^\.\//, '').split(/[?#]/, 1)[0]
+  const rebased = clean.startsWith('book/') ? clean.slice('book/'.length) : clean
+  if (!rebased || /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(rebased) || rebased.startsWith('/')) return null
+  return { rebased, stem: rebased.replace(/\.[^./]*$/, '') }
+}
+
+function anchorsIn(cellHtml) {
+  return [...cellHtml.matchAll(/<a\b[^>]*\bhref=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi)]
+}
+
+/**
+ * Augment the app index's existing `section#schedule` with the navigation the
+ * static `div.row#schedule` carries, matched row-by-row on date. Only the
+ * static schedule slice is read: its wrapper, head, chrome, and sibling
+ * sections never enter the app tree. A static link the app row already
+ * carries (same stem) is skipped; a static link whose member or asset is
+ * declared present is appended as a link rebased to the app book root;
+ * anything else degrades to bare text, never a 404 link. App-only rows
+ * (later dates with no static counterpart) are untouched.
+ */
+export function mergeStaticScheduleLinks(appHtml, staticHtml, isDeclaredMember) {
+  const unchanged = () => ({ html: appHtml, augmented: 0 })
+  const staticBlock = extractElement(staticHtml, 'div', 'schedule', 'row')
+  if (!staticBlock) return unchanged()
+  const appSection = extractElement(appHtml, 'section', 'schedule', null)
+  if (!appSection) return unchanged()
+  const staticCells = new Map()
+  for (const row of staticHtml.slice(staticBlock.innerStart, staticBlock.innerEnd).matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...row[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(cell => cell[1])
+    if (cells.length < 2) continue
+    const key = scheduleDateKey(cells[0])
+    if (!key) continue
+    if (!staticCells.has(key)) staticCells.set(key, [])
+    staticCells.get(key).push(cells[1])
+  }
+  if (!staticCells.size) return unchanged()
+  let augmented = 0
+  const sectionHtml = appHtml.slice(appSection.innerStart, appSection.innerEnd)
+  const merged = sectionHtml.replace(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi, (whole, inner) => {
+    const cells = [...inner.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)]
+    if (cells.length < 2) return whole
+    const matches = staticCells.get(scheduleDateKey(cells[0][1]))
+    if (!matches) return whole
+    const have = new Set()
+    for (const anchor of anchorsIn(cells[cells.length - 1][1])) {
+      const parsed = rebaseScheduleHref(anchor[2])
+      if (parsed) have.add(parsed.stem)
+    }
+    const additions = []
+    for (const body of matches) {
+      for (const anchor of anchorsIn(body)) {
+        const parsed = rebaseScheduleHref(anchor[2])
+        if (!parsed || have.has(parsed.stem)) continue
+        have.add(parsed.stem)
+        const text = anchor[3].replace(/<[^>]*>/g, '').trim()
+        if (!text) continue
+        additions.push(isDeclaredMember(parsed.rebased) ? ` <a href="${parsed.rebased}">${text}</a>` : ` ${text}`)
+        augmented += 1
+      }
+    }
+    if (!additions.length) return whole
+    const bodyFull = cells[cells.length - 1][0]
+    const patched = bodyFull.replace(/<\/td\s*>$/i, () => `${additions.join('')}</td>`)
+    return whole.replace(bodyFull, () => patched)
+  })
+  return { html: appHtml.slice(0, appSection.innerStart) + merged + appHtml.slice(appSection.innerEnd), augmented }
+}
+
+/**
+ * Merge the static schedule slice into the already-assembled app index. The
+ * app index is the kept tree; the static index is read only for its
+ * `div.row#schedule` navigation. When `indexFile` is not a generated static
+ * index (the qmd/markdown path), there is nothing to merge. Missing members
+ * degrade to text through the declared spec rather than becoming 404 links.
+ */
+function mergeAppIndexSchedule(outputDir, indexFile, spec) {
+  const appIndexPath = join(outputDir, '_book', 'index.html')
+  const staticIndex = resolve(indexFile)
+  if (!existsSync(appIndexPath) || !existsSync(staticIndex) || staticIndex === appIndexPath) return { augmented: 0 }
+  const declared = new Set([...spec.documents, ...spec.decks, ...spec.assets].flatMap(source => {
+    const rendered = source.replace(/\.qmd$/i, '.html')
+    const names = [source, rendered, `book/${rendered}`, `book/${source}`]
+    if (source.endsWith('-slides.qmd')) names.push(`decks/${source.replace(/\.qmd$/i, '.html')}`)
+    return names
+  }))
+  const { html, augmented } = mergeStaticScheduleLinks(
+    readFileSync(appIndexPath, 'utf8'),
+    readFileSync(staticIndex, 'utf8'),
+    href => declared.has(href),
+  )
+  if (augmented) writeFileSync(appIndexPath, html)
+  return { augmented }
+}
+
 /** Explicitly linked downloads are publication artifacts, not Quarto pages. */
 export function copyCourseAppAssets(courseDir, outputDir, spec) {
   for (const rel of spec.assets) {
@@ -181,6 +318,7 @@ export function assembleCourseAppSite(courseDir, indexFile, builtDir, outputDir,
   writeFileSync(join(outputDir, 'page-info.json'), `${JSON.stringify(pages, null, 2)}\n`)
   writeFileSync(join(outputDir, 'toc.json'), `${JSON.stringify(toc, null, 2)}\n`)
   copyCourseAppAssets(courseDir, outputDir, spec)
+  mergeAppIndexSchedule(outputDir, indexFile, spec)
   writeFileSync(join(outputDir, 'course-app-spec.json'), `${JSON.stringify(spec, null, 2)}\n`)
   return { spec, pages, toc }
 }
