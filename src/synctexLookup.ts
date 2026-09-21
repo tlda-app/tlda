@@ -3,13 +3,8 @@
 
 import type { SourceAnchor, PdfPosition } from './synctexAnchor'
 import { onReloadSignal } from './useYjsSync'
-import { STORE_HTTP } from './activeConfig'
 import { optionalJson } from './optionalJson'
-
-// Doc assets come from the active config's STORE (http), injected by the server.
-function assetBase(): string {
-  return STORE_HTTP + '/'
-}
+import { documentBase } from './pageSource'
 
 export interface LookupEntry {
   page: number
@@ -38,8 +33,7 @@ const lookupCache = new Map<string, Promise<LookupData | null>>()
  */
 export function loadLookup(projectName: string): Promise<LookupData | null> {
   if (!lookupCache.has(projectName)) {
-    const base = assetBase()
-    lookupCache.set(projectName, fetch(`${base}docs/${projectName}/lookup.json`)
+    lookupCache.set(projectName, fetch(`${documentBase(projectName)}lookup.json`)
       .then(resp => optionalJson<LookupData>(resp))
       .catch(() => {
         console.warn(`[SyncTeX] Could not load lookup.json for ${projectName}`)
@@ -245,8 +239,7 @@ onReloadSignal(() => {
 export async function loadHtmlToc(projectName: string): Promise<HtmlTocEntry[] | null> {
   if (htmlTocCache.has(projectName)) return htmlTocCache.get(projectName)!
   try {
-    const base = assetBase()
-    const resp = await fetch(`${base}docs/${projectName}/toc.json`)
+    const resp = await fetch(`${documentBase(projectName)}toc.json`)
     if (!resp.ok) { htmlTocCache.set(projectName, null); return null }
     const data = await resp.json()
     htmlTocCache.set(projectName, data)
@@ -260,8 +253,7 @@ export async function loadHtmlToc(projectName: string): Promise<HtmlTocEntry[] |
 export async function loadHtmlSearch(projectName: string): Promise<HtmlSearchEntry[] | null> {
   if (htmlSearchCache.has(projectName)) return htmlSearchCache.get(projectName)!
   try {
-    const base = assetBase()
-    const resp = await fetch(`${base}docs/${projectName}/search-index.json`)
+    const resp = await fetch(`${documentBase(projectName)}search-index.json`)
     if (!resp.ok) { htmlSearchCache.set(projectName, null); return null }
     const data = await resp.json()
     htmlSearchCache.set(projectName, data)
