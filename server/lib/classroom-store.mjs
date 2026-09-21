@@ -449,7 +449,12 @@ export class ClassroomStore {
    */
   documentAccess(docKey, principal) {
     const submission = this.submissionDocumentOwner(docKey)
-    if (!submission) return this.solutionDocumentAccess(docKey, principal)
+    // A source project can carry both public chapters and gated solution
+    // variants. Project-level access cannot distinguish them: gating the
+    // project makes the whole book, including its front door, unreadable.
+    // Solution variants are gated by their requested output file in the docs
+    // serving path; this project-level check protects student submissions.
+    if (!submission) return { restricted: false, allowed: true }
     return { restricted: true, allowed: this.mayReadStudentWork(principal, submission), submission }
   }
 

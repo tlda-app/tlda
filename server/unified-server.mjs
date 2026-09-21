@@ -93,7 +93,7 @@ import { selfBaseUrl } from '../shared/self-base-url.mjs'
 import { listProposalRefs, parseDaemonProposalRef } from './lib/git-proposals.mjs'
 import { createSourceProposalAdmissionConnectionDispatcher, createSourceProposalAdmissionHandler } from './lib/source-proposal-admission.mjs'
 import projectRoutes from './routes/projects.mjs'
-import { classroomPrincipal, createClassroomRouter, requireClassroomDocumentAccess } from './routes/classroom.mjs'
+import { classroomPrincipal, createClassroomRouter, logClassroomRefusal, requireClassroomDocumentAccess } from './routes/classroom.mjs'
 import { ClassroomStore } from './lib/classroom-store.mjs'
 import { initAuth, isTokenGatingEnabled, resolveIdentity, extractToken, requireRead, requireOperatorWrite, loginRoute } from './lib/auth.mjs'
 import { writeSentinel, writeSentinelWarning } from './lib/sentinel.mjs'
@@ -5063,6 +5063,33 @@ async function runDocsAccessCheck(req, res, name) {
   })
 }
 
+async function runSolutionPageAccessCheck(req, res, name, filePath) {
+  const assignments = classroomStore.assignmentsForSolutionBearingDoc(name)
+  if (assignments.length === 0 || !filePath.endsWith('.html')) return null
+
+  let pageInfo
+  try {
+    pageInfo = JSON.parse(await fs.promises.readFile(join(PROJECTS_DIR, name, 'output', 'page-info.json'), 'utf8'))
+  } catch {
+    return null
+  }
+  const page = Array.isArray(pageInfo) ? pageInfo.find(entry => entry?.file === filePath) : null
+  const sourceFile = String(page?.source?.file || '')
+  if (page?.variant !== 'solutions' && !/\.solutions\.qmd$/i.test(sourceFile)) return null
+
+  const bookPageFile = sourceFile
+    .replace(/\.solutions\.qmd$/i, '.html')
+    .replace(/\.qmd$/i, '.html')
+  const assignment = assignments.find(candidate => candidate.bookPageFile === bookPageFile)
+    || (assignments.length === 1 ? assignments[0] : null)
+  const principal = classroomPrincipal(req, classroomStore)
+  if (assignment && classroomStore.maySeeSolutionsFor(assignment, principal)) return null
+
+  logClassroomRefusal(req, principal, `${name}/${filePath}`)
+  res.status(403).json({ error: 'Classroom solution access requires instructor access or a submitted assignment' })
+  return 'sent'
+}
+
 app.get('/docs/manifest.json', requireRead, async (req, res) => {
   const manifest = await generateManifest()
   // The manifest is built by walking the projects directory, so it names every
@@ -5306,6 +5333,8 @@ app.use('/docs', (req, res, next) => {
   const filePath = parts.slice(1).join('/')
   const gated = await runDocsAccessCheck(req, res, name)
   if (gated) return gated === 'sent' ? undefined : next(gated)
+  const solutionGated = await runSolutionPageAccessCheck(req, res, name, filePath)
+  if (solutionGated) return undefined
 
   // Serve derived shadow render cache:
   // /docs/{name}/history/shadow-{hash7}/<texBase>-page-N.svg

@@ -177,8 +177,10 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     if (useFullBounds) {
       return { x: bounds.x - 20, y: bounds.y - 20, w: bounds.w + 40, h: bounds.h + 40 }
     }
-    return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
-  }, [mainEditor, targetShapeId, useFullBounds])
+    const top = Math.max(0, Math.min(bounds.h, yTop || 0))
+    const bottom = yBottom > top ? Math.min(bounds.h, yBottom) : bounds.h
+    return { x: bounds.x, y: bounds.y + top, w: bounds.w, h: Math.max(1, bottom - top) }
+  }, [mainEditor, targetShapeId, useFullBounds, yTop, yBottom])
   const targetShapePageBounds = useValue('docview-target-shape-page-bounds', (): ClipBounds | null => {
     if (!mainEditor || !targetShapeId) return null
     const bounds = mainEditor.getShapePageBounds(targetShapeId)

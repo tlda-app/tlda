@@ -70,6 +70,11 @@ test('the store refuses a submission to a bearer-only visitor and to a classmate
 
 test('an ordinary project is not restricted by this rule', () => {
   withStore(store => {
+    store.upsertAssignment({
+      id: 'book-homework', courseId: COURSE, title: 'Book homework',
+      dueAt: '2026-09-02T00:00:00.000Z', solutionsDocKey: 'qtm285-book',
+      sourceDocKey: 'qtm285-book', bookPageFile: 'homework/book-homework.html',
+    })
     const access = store.documentAccess('qtm285-book', null)
     assert.equal(access.restricted, false)
     assert.equal(access.allowed, true)

@@ -122,7 +122,11 @@ async function renderRelevance(msg, lifecycle) {
   try {
     const project = await readProject(msg.name)
     const git = await lifecycle.gitRepository()
-    const publishedHead = await git.head(msg.name)
+    const published = lifecycle.listRevisionLifecycles(msg.name)
+      .filter(row => (row.acceptSeq ?? 0) < (msg.acceptSeq ?? Number.MAX_SAFE_INTEGER))
+      .filter(row => ['built', 'not_required'].includes(row.build?.state))
+      .at(-1)
+    const publishedHead = published?.sourceRevision || null
     const { changed, deleted } = await git.diffRevisions(publishedHead, msg.sourceRevision)
     const changedFiles = [...changed, ...deleted]
     const decision = shouldBuildOnPush(project, msg.name, {

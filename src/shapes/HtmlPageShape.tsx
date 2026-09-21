@@ -954,15 +954,28 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         }
         const dvShape = (editor.getCurrentPageShapes() as unknown[]).find(isFleetDocviewShapeRecord)
         if (dvShape && !isTemporaryMarkdownNavigation) {
-          updateFleetDocview(editor, dvShape, {
+          const showTarget = (anchorY: number | null) => updateFleetDocview(editor, dvShape, {
             mode: 'manual',
             targetShapeId: targetShape.id,
-            useFullBounds: true,
-            label: '',
+            useFullBounds: anchorY == null,
+            yTop: anchorY ?? 0,
+            yBottom: anchorY == null ? 0 : targetShape.props.h,
+            label: anchor || '',
             title: (typeof e.data.targetTitle === 'string' && e.data.targetTitle)
               || targetShape.props?.source
               || '',
           })
+          const anchorY = anchor ? htmlHeadingPositions.get(targetShape.id)?.[anchor] : null
+          showTarget(anchorY ?? null)
+          if (anchor && anchorY == null) {
+            const poll = setInterval(() => {
+              const resolved = htmlHeadingPositions.get(targetShape.id)?.[anchor]
+              if (resolved == null) return
+              clearInterval(poll)
+              showTarget(resolved)
+            }, 200)
+            setTimeout(() => clearInterval(poll), 8000)
+          }
           return
         }
         // The place stack records where the reader was, on the path where a
