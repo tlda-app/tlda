@@ -837,6 +837,12 @@ async function cmdPublish() {
     files: inventory.files,
     // Both-halves paths already name their half; a single half is the prefix.
     half: previewApp ? '' : 'static',
+    // WHERE EACH HALF LANDS IN THE COPY. The static half is the site, so it is
+    // the root -- `/book/chapter-x.html` is the address a student's link
+    // carries and GitHub Pages serves it from there. The canvas half keeps its
+    // `app/` prefix, which is already how the document manifest names its
+    // pages, so nothing has to be rewritten to find them.
+    layout: previewApp ? path => path.replace(/^static\//, '') : undefined,
     headers: getReadToken() ? { authorization: `Bearer ${getReadToken()}` } : {},
   })
   try {
@@ -863,6 +869,21 @@ async function cmdPublish() {
       )
     }
     if (previewApp) {
+      // THE PAGE LIST THE CANVAS USES, which is not the one the site uses.
+      // A publication writes two: the static half's names its pages `book/…`,
+      // for the site; the output root's names them `app/…`, which is what the
+      // canvas loads and what the server matches a served page against. The
+      // copy is the site at its root, so the static one arrives there by
+      // layout — and is replaced here, because a copy that carries the canvas
+      // needs the canvas's list.
+      const canvasPages = await apiAt(sourceUrl, 'GET', `/docs/${encodeURIComponent(name)}/page-info.json`, null, { token: getReadToken() })
+      if (!Array.isArray(canvasPages) || !canvasPages.length) {
+        throw new Error(
+          `${sourceUrl} served no page list for "${name}" at /docs/${name}/page-info.json, so the copy would carry the site's ` +
+          'list in place of the canvas\'s and load the wrong half of the publication. Nothing was pushed.',
+        )
+      }
+      writeFileSync(join(staging, 'page-info.json'), `${JSON.stringify(canvasPages, null, 2)}\n`)
       const machine = getFlag('to-preview-machine') || await resolvePreviewMachine(previewApp)
       const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
       const patched = await patchStagedTreeForDestination({

@@ -21,6 +21,9 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, rm, cp, readFile, writeFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
+
+import { chapterHeadingFor } from '../../server/lib/chapter-heading.mjs'
+import { injectBridge } from '../../server/lib/html-injector.mjs'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFileCb)
@@ -32,7 +35,7 @@ const execFileAsync = promisify(execFileCb)
  * hash. A half-written site is worse than an old one — it is an old one with
  * holes in it, in front of a class — and a checkout is not a transaction.
  */
-export async function stagePublishedTree({ serverUrl, project, files, fetchImpl = fetch, headers = {}, half = 'static' }) {
+export async function stagePublishedTree({ serverUrl, project, files, fetchImpl = fetch, headers = {}, half = 'static', layout = path => path }) {
   const staging = await mkdtemp(join(tmpdir(), `tlda-publish-${project}-`))
   // Which half of the publication the inventory's paths are relative to. A
   // single-half inventory lists `book/index.html` and the half is the prefix; a
@@ -49,7 +52,7 @@ export async function stagePublishedTree({ serverUrl, project, files, fetchImpl 
       if (digest !== file.sha256) {
         throw new Error(`${file.path}: served bytes are not the file the server listed (${digest.slice(0, 12)} against ${file.sha256.slice(0, 12)})`)
       }
-      const target = join(staging, ...file.path.split('/'))
+      const target = join(staging, ...layout(file.path).split('/'))
       await mkdir(dirname(target), { recursive: true })
       await writeFile(target, bytes)
     }
@@ -465,6 +468,43 @@ export async function patchStagedTreeForDestination({ staging, distDir, configDi
     ? raw.replace('<script type="module"', `${tag}\n    <script type="module"`)
     : raw.replace('</head>', `${tag}\n</head>`)
   await writeFile(join(staging, 'app.html'), html)
+
+  // THE CANVAS PAGES GET THEIR BRIDGE WRITTEN IN, because a file server cannot
+  // inject one per request and the server does. Same function, same arguments,
+  // derived from the same page list -- `chapterHeadingFor` exists so this is
+  // sharing rather than a second copy of the numbering rule.
+  //
+  // `basePath` is empty on purpose. The server passes `/docs/<name>/` so that a
+  // `../figs/` reference resolves against the served URL; in a copy the pages
+  // sit at the depth they were written for, so rewriting those references would
+  // break the ones that currently work.
+  //
+  // `ownWorkUrl` is empty because it cannot be anything else: the server
+  // computes it per person, per request. A published page therefore has no
+  // "your work" link, which is a difference in what the page offers rather than
+  // a detail of how it is built.
+  if (config.pages === 'files') {
+    const appRoot = join(staging, 'app')
+    if (existsSync(appRoot)) {
+      const pageInfo = JSON.parse(await readFile(join(staging, 'page-info.json'), 'utf8').catch(() => '[]'))
+      for (const page of pageInfo) {
+        const file = String(page?.file || '')
+        if (!file.startsWith('app/') || !/\.html?$/i.test(file)) continue
+        const path = join(staging, ...file.split('/'))
+        if (!existsSync(path)) continue
+        const heading = chapterHeadingFor(pageInfo, file)
+        const source = await readFile(path, 'utf8')
+        await writeFile(path, injectBridge(
+          source,
+          '',
+          heading.chapterTitle,
+          heading.isFirstPage,
+          { prev: heading.navPrev, next: heading.navNext },
+          '',
+        ))
+      }
+    }
+  }
 
   // A copy whose pages are files needs the list of them as a file too. The
   // server answers `/docs/manifest.json` by walking its projects directory;
