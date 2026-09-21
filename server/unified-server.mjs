@@ -325,6 +325,23 @@ const HOST = process.env.HOST || '0.0.0.0'
 const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 const classroomStore = new ClassroomStore()
 
+/**
+ * Whether there is a class on this box, asked of the store rather than inferred.
+ *
+ * NOT written as an optional call. `store?.hasAnyCourse?.()` reads as caution
+ * and is the opposite: a missing method yields undefined, `!undefined` is true,
+ * and the grant that means "there is nothing here to withhold" is handed out by
+ * a typo. A box that cannot answer this question has not earned an answer that
+ * opens it.
+ */
+function hasAClassOnThisBox() {
+  const store = app?.locals?.classroomStore || classroomStore
+  if (typeof store?.hasAnyCourse !== 'function') {
+    throw new Error('classroom store cannot say whether this box has a class; refusing to assume it has none')
+  }
+  return store.hasAnyCourse()
+}
+
 // Initialize stores
 await traceStartupPhase('init-project-store', () => initProjectStore(PROJECTS_DIR))
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
@@ -6096,7 +6113,18 @@ server.on('upgrade', async (req, socket, head) => {
       : null
     const submissionOwnerId = submission?.studentId ?? null
     const access = classroomRoomAccess({
-      roomId: docName,
+      // THE DECODED NAME, for the same reason the submission lookup above uses
+      // it. A private layer's room is `<book>::student::<course>:<login>`, and
+      // `url.pathname` is not url-decoded -- so a client that percent-encodes
+      // the room arrives here as `…%3A%3Astudent%3A%3A…`, the marker does not
+      // match, the room reads as the book, and the answer is `read` on somebody
+      // else's private layer instead of `deny`.
+      //
+      // Measured on two servers 2026-09-21: literal colons refused 403, the
+      // same room percent-encoded admitted 101, nobody authenticated either
+      // time. The comment above already describes this trap one variable over;
+      // this is the same trap on the line that decides access.
+      roomId: decodedRoom,
       principal,
       submissionOwnerId,
       submissionReturned: submission?.gradingStatus === 'returned',
@@ -6111,7 +6139,7 @@ server.on('upgrade', async (req, socket, head) => {
       // no gate, at which point deriving this from the gate hands every room on
       // it to anyone who can reach it. The gate is being removed; the class is
       // the thing that decides.
-      everybodyGrant: !classroomStore?.hasAnyCourse?.(),
+      everybodyGrant: !hasAClassOnThisBox(),
     })
     if (access === 'deny') {
       const who = principal?.role === 'student' ? `student:${principal.studentId}`
@@ -6175,7 +6203,7 @@ server.on('upgrade', async (req, socket, head) => {
       // no gate, at which point deriving this from the gate hands every room on
       // it to anyone who can reach it. The gate is being removed; the class is
       // the thing that decides.
-      everybodyGrant: !classroomStore?.hasAnyCourse?.(),
+      everybodyGrant: !hasAClassOnThisBox(),
       })
       if (may === 'deny') {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
