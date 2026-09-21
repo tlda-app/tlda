@@ -213,13 +213,42 @@ export function logClassroomRefusal(req, principal, docKey) {
   console.warn(`[classroom] refused "${docKey}" who=${who} carrier=${classroomTokenCarrier(req)} course=${principal?.courseId ?? 'none'}`)
 }
 
+/**
+ * Give the browser the identity it has just proved, so the document's own
+ * subresources can prove it too.
+ *
+ * A page authenticates with a header. The stylesheets and scripts it links do
+ * NOT: the browser fetches those itself and attaches only cookies. So a reader
+ * whose identity travels as a header is admitted to the document and refused
+ * every asset it references -- measured on `dda5b2c0e`'s successor as 403s on
+ * `bootstrap.min.css`, `tippy.css` and `quarto-syntax-highlighting*.css`, which
+ * is a chapter arriving unstyled and half-built rather than an error anyone
+ * can read. A student never meets this, because their identity IS the cookie.
+ *
+ * Bounded deliberately. It runs only after the gate above has admitted the
+ * caller, only when a principal actually resolved, and only when the identity
+ * arrived by some carrier OTHER than the cookie. So it hands back the exact
+ * credential the caller supplied and proved -- never one they did not have,
+ * and never over the top of a cookie already in place.
+ */
+function rememberCarrierAsCookie(req, res, principal) {
+  if (!principal) return
+  const carried = req.headers['x-tlda-student-token'] || req.query?.classroomToken
+  if (!carried) return
+  if (String(req.headers?.cookie || '').includes('tlda_classroom_token=')) return
+  rememberStudentToken(req, res, String(carried))
+}
+
 export function requireClassroomDocumentAccess(req, res, next) {
   const store = req.app?.locals?.classroomStore
   if (!store || !req.params?.name) return next()
   const resolvePrincipal = req.app?.locals?.resolveClassroomPrincipal || classroomPrincipal
   const principal = resolvePrincipal(req, store)
   const access = store.documentAccess(req.params.name, principal)
-  if (!access.restricted || access.allowed) return next()
+  if (!access.restricted || access.allowed) {
+    rememberCarrierAsCookie(req, res, principal)
+    return next()
+  }
   // One refusal, one shape; the message names which of the two it is, because
   // the next action differs — hand something in, or ask the student whose work
   // this is.
