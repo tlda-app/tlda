@@ -109,6 +109,7 @@ import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter, RESOLVED_UPLOAD_DIR } from './routes/fleet.mjs'
+import { createPreviewCopyReceiver, previewCopyReceiverConfig } from './routes/preview-copy.mjs'
 import { copyAttachmentsToUploadDir } from './lib/chat-attachment-store.mjs'
 import { applyEmailPolicyDelivery, createEmailNotificationTransport, createSmtpTransport, startImapReceiver } from './lib/email-notification-transport.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
@@ -5764,6 +5765,16 @@ const fleetRouter = createFleetRouter({
   requireOperationRead: requireOperatorWrite,
 })
 app.use(fleetRouter)
+
+// A host takes copies of builds from the box that made them. Mounted only where
+// a deployment says it receives them, so every other box ships the code and
+// exposes nothing; see server/routes/preview-copy.mjs for why it is a POST and
+// what it refuses.
+const previewCopy = previewCopyReceiverConfig()
+if (previewCopy) {
+  app.use(createPreviewCopyReceiver({ ...previewCopy }))
+  console.log(`[preview-copy] taking copies into ${previewCopy.staticDir}${previewCopy.secret ? '' : ' — NO SECRET SET, every copy will be refused'}`)
+}
 
 // ---------- KaTeX static assets ----------
 // Served at /katex/ for markdown pages that use KaTeX-rendered math

@@ -14,8 +14,9 @@ import {
 // Everything else here stays sync: `renameSync` is a metadata operation on one
 // filesystem and costs nothing, and turning it async would put yields inside
 // the swap, which is the one part that must not be interleaved.
-import { cp, rm } from 'node:fs/promises'
+import { cp, mkdtemp, rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { updateProject, getProjectsDir, listProjects, aggregateBookToc, sourceLifecycleStore, projectDir, deleteProject, readProject } from './project-store.mjs'
@@ -26,7 +27,7 @@ import { createBuildQueue } from './build-queue.mjs'
 import { BuildQueueStore } from './build-queue-store.mjs'
 import { listProposalRefs } from './git-proposals.mjs'
 import { fileURLToPath } from 'node:url'
-import { copyBuildOutputToPreview } from './publish-copy.mjs'
+import { assemblePreviewCopy, copyBuildOutputToPreview, sendPreviewCopy } from './publish-copy.mjs'
 
 /**
  * Put what just built in front of the preview, on the box that built it.
@@ -48,22 +49,38 @@ import { copyBuildOutputToPreview } from './publish-copy.mjs'
  */
 async function refreshPreviewCopy(name) {
   const project = process.env.TLDA_PREVIEW_PROJECT
-  const staticDir = process.env.TLDA_STATIC_DIR
   const configDir = process.env.TLDA_PREVIEW_DESTINATION
-  if (!project || !staticDir || !configDir || project !== name) return
+  const host = process.env.TLDA_PREVIEW_HOST
+  const staticDir = process.env.TLDA_STATIC_DIR
+  if (!project || !configDir || project !== name || !(host || staticDir)) return
+  // From this module rather than from PROJECTS_DIR: `dist` sits beside
+  // `server/`, and PROJECTS_DIR is overridden per instance on a box that runs
+  // more than one server -- deriving from it would point a second instance at
+  // a directory that does not exist.
+  const distDir = fileURLToPath(new URL('../../dist', import.meta.url))
+  const outputDir = join(projectDir(name), 'output')
   try {
     const record = await readProject(name)
-    const result = await copyBuildOutputToPreview({
-      outputDir: join(projectDir(name), 'output'),
-      staticDir,
-      // From this module rather than from PROJECTS_DIR: `dist` sits beside
-      // `server/`, and PROJECTS_DIR is overridden per instance on a box that
-      // runs more than one server -- deriving from it would point a second
-      // instance at a directory that does not exist.
-      distDir: fileURLToPath(new URL('../../dist', import.meta.url)),
-      configDir,
-      document: { name, record: record || { name } },
-    })
+    const document = { name, record: record || { name } }
+    // A HOST THAT IS NOT THIS BOX is tried first, so that a deployment which
+    // names one never silently falls back to serving the copy itself. The
+    // same-box path stays for a deployment that is both.
+    if (host) {
+      const staging = await mkdtemp(join(tmpdir(), `tlda-preview-${name}-`))
+      try {
+        const patched = await assemblePreviewCopy({ outputDir, into: staging, distDir, configDir, document })
+        const sent = await sendPreviewCopy({
+          from: staging,
+          url: `${host.replace(/\/$/, '')}/api/preview-copy`,
+          secret: process.env.TLDA_PREVIEW_COPY_SECRET || '',
+        })
+        console.log(`[preview] ${name} sent to ${host} — ${sent.bytes} bytes, pointed at ${patched.config.store.ws}${patched.config.licenseKey ? '' : ' (unlicensed)'}`)
+      } finally {
+        await rm(staging, { recursive: true, force: true })
+      }
+      return
+    }
+    const result = await copyBuildOutputToPreview({ outputDir, staticDir, distDir, configDir, document })
     console.log(`[preview] ${name} is now at ${result.staticDir}, pointed at ${result.store}${result.licensed ? '' : ' (unlicensed)'}`)
   } catch (error) {
     // Swallowed on purpose, and this is the reason: the build has ALREADY

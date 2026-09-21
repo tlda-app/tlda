@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
@@ -209,21 +211,83 @@ export async function placeDerivedCanvasFiles({ staging, derive, layout = path =
  * SWAPPED, NOT WRITTEN OVER. A copy assembled in place is served half-finished
  * for as long as it takes to assemble, and a build is not a moment.
  */
-export async function copyBuildOutputToPreview({ outputDir, staticDir, distDir, configDir, document }) {
+export async function assemblePreviewCopy({ outputDir, into, distDir, configDir, document }) {
   if (!existsSync(outputDir)) {
     throw new Error(`there is no build output at ${outputDir} to copy, so nothing was put in front of the preview`)
   }
-  const incoming = `${staticDir}.incoming`
+  await rm(into, { recursive: true, force: true })
+  await mkdir(dirname(into), { recursive: true })
+  await cp(outputDir, into, { recursive: true })
+  return patchStagedTreeForDestination({ staging: into, distDir, configDir, document })
+}
+
+/**
+ * Put an assembled copy in front of whatever is serving it.
+ *
+ * SWAPPED, NOT WRITTEN OVER. A copy assembled in place is served
+ * half-finished for as long as it takes to assemble, and a build is not a
+ * moment. The same reason a transfer unpacks beside the served directory.
+ */
+export async function swapPreviewCopyIntoPlace({ incoming, staticDir }) {
   const previous = `${staticDir}.previous`
-  await rm(incoming, { recursive: true, force: true })
-  await mkdir(dirname(incoming), { recursive: true })
-  await cp(outputDir, incoming, { recursive: true })
-
-  const patched = await patchStagedTreeForDestination({ staging: incoming, distDir, configDir, document })
-
   await rm(previous, { recursive: true, force: true })
   if (existsSync(staticDir)) await rename(staticDir, previous)
   await rename(incoming, staticDir)
   await rm(previous, { recursive: true, force: true })
+  return staticDir
+}
+
+/**
+ * Put a copy of what this box just built where this box serves previews.
+ *
+ * The same-box case, kept because it is the one a single-box deployment wants
+ * and because it is what the remote case does either side of the wire.
+ */
+export async function copyBuildOutputToPreview({ outputDir, staticDir, distDir, configDir, document }) {
+  const incoming = `${staticDir}.incoming`
+  const patched = await assemblePreviewCopy({ outputDir, into: incoming, distDir, configDir, document })
+  await swapPreviewCopyIntoPlace({ incoming, staticDir })
   return { staticDir, store: patched.config.store.ws, licensed: Boolean(patched.config.licenseKey) }
+}
+
+/**
+ * Send an assembled copy to the host that serves it.
+ *
+ * It is copying files between two servers. The only reasons it is not `scp`
+ * are that neither box runs an sshd and the server has no Fly credential, so
+ * it goes the way this app already reaches its peers: a POST over Fly's
+ * private network, the same route the build executor uses.
+ *
+ * ONE ARCHIVE, ONE REQUEST, AND ITS DIGEST IN A HEADER. The per-file checks
+ * that a fetched publish needs do not apply here — nothing was fetched, the
+ * bytes came off this box's own disk — so the only thing that can go wrong is
+ * the wire, and one digest answers that.
+ */
+export async function sendPreviewCopy({ from, url, secret, fetchImpl = fetch, spawnImpl = spawn }) {
+  const archive = await new Promise((resolve, reject) => {
+    const tar = spawnImpl('tar', ['czf', '-', '-C', from, '.'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const chunks = []
+    let said = ''
+    tar.stdout.on('data', chunk => chunks.push(chunk))
+    tar.stderr.on('data', chunk => { said += chunk })
+    tar.on('error', reject)
+    tar.on('close', code => code === 0
+      ? resolve(Buffer.concat(chunks))
+      : reject(new Error(`tar exited ${code} packing ${from}${said.trim() ? `: ${said.trim()}` : ''}`)))
+  })
+  const digest = createHash('sha256').update(archive).digest('hex')
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/gzip',
+      'x-tlda-preview-copy': secret,
+      'x-tlda-preview-copy-sha256': digest,
+    },
+    body: archive,
+  })
+  const body = await response.text()
+  if (!response.ok) {
+    throw new Error(`${url} refused the preview copy with ${response.status}: ${body.slice(0, 300) || '(no body)'}`)
+  }
+  return { bytes: archive.length, digest, said: body.slice(0, 300) }
 }

@@ -107,7 +107,11 @@ if [ "$TLDA_DEPLOYMENT" != "live" ] && [ "$TLDA_DEPLOYMENT" != "pic" ]; then
       $AUTH_ARG --hostname="${TS_HOSTNAME:-tlda-fly}" --accept-dns=false --timeout=45s; then
     TS_EXPOSE=serve
     [ -n "${TS_FUNNEL:-}" ] && TS_EXPOSE=funnel
-    tailscale --socket=/var/run/tailscale/tailscaled.sock "$TS_EXPOSE" --bg --https=443 "http://127.0.0.1:${PORT:-5176}" \
+    # WHAT ANSWERS ON THE NAME ITSELF. Normally the server this box exists to
+    # run. On a box that hosts a preview site it is the file server instead:
+    # the site is what the name is for, and the store it points at is a port
+    # beside it. Defaulting to PORT keeps every other deployment unchanged.
+    tailscale --socket=/var/run/tailscale/tailscaled.sock "$TS_EXPOSE" --bg --https=443 "http://127.0.0.1:${TS_PRIMARY_PORT:-${PORT:-5176}}" \
       || echo "[entrypoint] ERROR: tailscale $TS_EXPOSE failed - browsers cannot reach this server"
   else
     echo "[entrypoint] ERROR: tailscale up failed - browsers cannot reach this server"
