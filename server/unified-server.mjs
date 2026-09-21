@@ -337,7 +337,14 @@ const classroomStore = new ClassroomStore()
 function hasAClassOnThisBox() {
   const store = app?.locals?.classroomStore || classroomStore
   if (typeof store?.hasAnyCourse !== 'function') {
-    throw new Error('classroom store cannot say whether this box has a class; refusing to assume it has none')
+    // Answer the withholding way and say so. Throwing here was the first
+    // version and it is worse: this runs inside the async upgrade handler, so
+    // the throw becomes an unhandled rejection with nobody left to destroy the
+    // socket, and the caller hangs instead of being refused. Answering "there
+    // is a class" makes the per-room rules apply, which refuses what should be
+    // refused and keeps the server answering.
+    console.error('[sync] classroom store cannot say whether this box has a class; withholding as though it does')
+    return true
   }
   return store.hasAnyCourse()
 }
