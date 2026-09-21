@@ -24,6 +24,8 @@ import { probe } from '../perf-probe'
 import { composerMicAppearance } from '../classroom/classroomUiPolicy'
 import { isPhoneViewport } from '../phoneViewport'
 import { getReadabilityProfile, readabilityStyleVars } from '../readabilityProfile'
+// @ts-ignore — vanilla JS module
+import { buildFailureRetentionText } from '../fleet/build-failure-retention.mjs'
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRenderSignature } from '../fleet/chat-render.mjs'
@@ -3656,7 +3658,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         // nothing else — the card was present and said nothing, which is what
         // Skip meant by "i can see build cards now but there's bvasically no
         // info in them".
-        const { name: projectName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, katexError, errors = [], warnings = [], buildFiles } = m.metadata
+        const { name: projectName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, katexError, errors = [], warnings = [], buildFiles, lastBuildSuccess } = m.metadata
         const sourceFiles: string[] = Array.isArray(buildFiles) ? buildFiles : []
         const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || katexError || errors.length > 0 || warnings.length > 0 || sourceFiles.length > 0)
         const lintCount = lintFindings.length
@@ -3673,6 +3675,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         const lintHtml = lintFindings.map((f: any) => renderCtx.renderMarkdown(esc(f.text))).join('')
         const failureText = buildFailed || mirrorFailed || katexError
         const failureHtml = failureText ? `<p class="build-result-error">${esc(failureText)}</p>` : ''
+        const lastGoodHtml = buildFailed
+          ? `<p class="build-result-last-good">${esc(buildFailureRetentionText(lastBuildSuccess))}</p>`
+          : ''
         const errorHtml = errors.map((e: any) => renderCtx.renderMarkdown(esc(e.message || String(e)))).join('')
         const warningHtml = warnings.map((w: any) => `<p class="build-result-warning">${esc(w.message || String(w))}</p>`).join('')
         // What the build read, which is the answer to "is this build of the
@@ -3704,7 +3709,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           toggle +
           `</div>` +
           (hasDetails
-            ? `<div class="build-result-body">${failureHtml}${errorHtml}${warningHtml}${summaryHtml}${lintHtml}${sourceHtml}</div>`
+            ? `<div class="build-result-body">${failureHtml}${lastGoodHtml}${errorHtml}${warningHtml}${summaryHtml}${lintHtml}${sourceHtml}</div>`
             : '') +
           `</div>`
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:build`, html })

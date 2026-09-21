@@ -24,7 +24,7 @@ import {
   qmdDocumentRootPaths,
   qmdManifest,
 } from './incremental-qmd-build.mjs'
-import { buildCoursePublication } from './course-publication-build.mjs'
+import { buildCoursePublication, seedCoursePublicationRender } from './course-publication-build.mjs'
 import { deriveCourseAppSpec } from './course-app-build.mjs'
 import { deriveCourseBookSpec } from './course-book-spec.mjs'
 import { getBuildReporter } from './build-runner.mjs'
@@ -103,10 +103,11 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
         indexFile,
         outputDir: outDir,
         appSpec: spec,
+        seedRender: renderedDir => seedCoursePublicationRender(outDir, renderedDir),
         render: renderedDir => buildIncrementalQmd({
           sourceDir: srcDir,
           outputDir: renderedDir,
-          changedFiles: null,
+          changedFiles,
           mainFiles: [...membership.documents, ...membership.decks],
           name,
           log: addLog,

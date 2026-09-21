@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 import { assembleCourseAppSite } from './course-app-build.mjs'
@@ -93,12 +93,22 @@ export async function assembleCoursePublication(courseDir, indexFile, renderedDi
   return { app, staticDir, appDir }
 }
 
-export async function buildCoursePublication({ courseDir, indexFile, outputDir, render, assembleStatic, appSpec = null }) {
+export function seedCoursePublicationRender(publicationDir, renderedDir) {
+  const appDir = join(publicationDir, 'app')
+  const bookDir = join(appDir, 'book')
+  if (!existsSync(bookDir)) return false
+  cpSync(appDir, renderedDir, { recursive: true, force: true })
+  renameSync(join(renderedDir, 'book'), join(renderedDir, '_book'))
+  return true
+}
+
+export async function buildCoursePublication({ courseDir, indexFile, outputDir, render, assembleStatic, appSpec = null, seedRender = null }) {
   if (typeof render !== 'function') throw new Error('buildCoursePublication requires one render function')
   const outputParent = dirname(resolve(outputDir))
   mkdirSync(outputParent, { recursive: true })
   const renderedDir = mkdtempSync(join(outputParent, '.course-render-'))
   try {
+    await seedRender?.(renderedDir)
     await render(renderedDir)
     if (!existsSync(join(renderedDir, 'page-info.json'))) {
       throw new Error('the shared Quarto/TLDA render produced no page-info.json')

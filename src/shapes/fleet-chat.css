@@ -5056,6 +5056,10 @@ body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: ca
   margin: 0 0 4px;
   color: var(--red, #d9342b);
 }
+.fleet-chat-shape .build-result-last-good {
+  margin: 0 0 4px;
+  color: var(--text-dim);
+}
 .fleet-chat-shape .build-result-warning {
   margin: 0 0 4px;
   color: var(--yellow, #dca03c);

@@ -4,7 +4,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { assembleCoursePublication, buildCoursePublication, publicationMetadata } from './course-publication-build.mjs'
+import { assembleCoursePublication, buildCoursePublication, publicationMetadata, seedCoursePublicationRender } from './course-publication-build.mjs'
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'course-publication-'))
@@ -123,6 +123,36 @@ test('identical inputs produce identical publication metadata without cleanup', 
   const first = JSON.stringify(publicationMetadata(output))
   await run()
   assert.equal(JSON.stringify(publicationMetadata(output)), first)
+})
+
+test('a seeded chapter render republishes one changed page without losing the complete course', async () => {
+  const { course, output } = fixture()
+  await buildCoursePublication({
+    courseDir: course,
+    indexFile: 'index.md',
+    outputDir: output,
+    render: async renderedDir => writeRender(renderedDir),
+    assembleStatic,
+  })
+  const untouched = readFileSync(join(output, 'app/book/homework/hw.html'), 'utf8')
+
+  await buildCoursePublication({
+    courseDir: course,
+    indexFile: 'index.md',
+    outputDir: output,
+    seedRender: renderedDir => seedCoursePublicationRender(output, renderedDir),
+    render: async renderedDir => {
+      assert.equal(existsSync(join(renderedDir, '_book/chapters/one.html')), true)
+      assert.equal(existsSync(join(renderedDir, '_book/homework/hw.html')), true)
+      writeFileSync(join(renderedDir, '_book/chapters/one.html'), '<h1>One changed chapter</h1>')
+    },
+    assembleStatic,
+  })
+
+  assert.match(readFileSync(join(output, 'app/book/chapters/one.html'), 'utf8'), /One changed chapter/)
+  assert.match(readFileSync(join(output, 'static/book/chapters/one.html'), 'utf8'), /One changed chapter/)
+  assert.equal(readFileSync(join(output, 'app/book/homework/hw.html'), 'utf8'), untouched)
+  assert.deepEqual(publicationMetadata(output).static, publicationMetadata(output).app)
 })
 
 test('publication output cannot erase course source or the shared render', async () => {

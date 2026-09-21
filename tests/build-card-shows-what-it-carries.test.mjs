@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import { buildFailureRetentionText } from '../src/fleet/build-failure-retention.mjs'
+
 // The card renderer is inline in the chat shape and draws HTML strings, so this
 // reads the source the way the repo's other renderer tests do. What it pins is
 // not the markup but the fields: the server sends seven things on a build card
@@ -40,6 +42,26 @@ test('a build with only warnings has a body and says so on its header', () => {
   assert.match(card, /warnings\.length > 0/, 'warnings must open the body')
   assert.match(card, /build-result-warning-badge/, 'the warning count belongs on the header, which is the whole card until it is clicked')
   assert.match(card, /warnings\.map/, 'the warnings themselves must be drawn')
+})
+
+test('a failed build renders the retention message carried by its payload', () => {
+  assert.match(card, /lastBuildSuccess/)
+  assert.match(card, /buildFailureRetentionText\(lastBuildSuccess\)/)
+})
+
+test('a failed build names the prior successful version only when one exists', () => {
+  assert.equal(
+    buildFailureRetentionText('2026-09-21T10:35:37.845Z', () => 'Sep 21, 2026'),
+    'The last successful built version from Sep 21, 2026 remains served.',
+  )
+  assert.equal(
+    buildFailureRetentionText(null),
+    'No successful built version is available to serve.',
+  )
+  assert.equal(
+    buildFailureRetentionText('not-a-date'),
+    'No successful built version is available to serve.',
+  )
 })
 
 test('every class the card draws has a style', () => {
