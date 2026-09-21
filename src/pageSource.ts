@@ -8,8 +8,9 @@
 // them, and the store it syncs marks to is somewhere else entirely.
 //
 // So the composition lives here rather than in the app, and the app stops
-// knowing where pages come from. Today there is one implementation and it is the
-// one that was already there; a published build is the second.
+// knowing where pages come from. There are two implementations and the
+// environment says which one this is, because nothing the browser can see
+// distinguishes a copy on a file server from a page a tlda server handed it.
 //
 // NOT everything the app fetches from the store belongs here. Build errors,
 // project metadata, health and fleet config are the development environment
