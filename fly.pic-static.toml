@@ -1,0 +1,40 @@
+# fly.pic-static.toml — isolated static-build box, derived from pic-dev.
+# Same image and deployment shape as pic-dev; its own app, volume, and
+# tailnet name keep static course-site builds off every serving box.
+# Deploy with: fly deploy -c fly.pic-static.toml
+app = "tlda-pic-static"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.live"
+
+[env]
+  PORT = "5176"
+  NODE_ENV = "production"
+  TLDA_DEPLOYMENT = "pic-static"
+  TS_HOSTNAME = "tlda-pic-static"
+
+  # This box renders standalone static builds. The entrypoint starts a
+  # supervised `bin/build-executor.mjs` only where this is set, so the
+  # behaviour is opted into here rather than inferred from the
+  # deployment's name.
+  TLDA_BUILD_EXECUTOR_ENABLE = "1"
+
+  # NO TLDA_BUILD_EXECUTOR_HOST here, deliberately. The entrypoint defaults it to
+  # $FLY_PRIVATE_IP, which is resolved on the machine rather than written down:
+  # a literal would be a private address in tracked config, and the name that
+  # reads as obvious -- "tlda-pic-static" -- does not resolve ON the box at all, so
+  # binding to it would fail at listen() and leave the supervisor restarting a
+  # process that can never come up.
+
+  # TLDA_BUILD_EXECUTOR_TOKEN is a SECRET, not an env entry — `fly secrets set`.
+  # The executor refuses to start without it rather than running unauthenticated.
+
+[[vm]]
+  size = "performance-2x"
+  # Class builds OOM at small sizes; keep parity with pic-dev.
+  memory = "8192"
+
+[mounts]
+  source = "static_sync_data"
+  destination = "/app/server/persist"
