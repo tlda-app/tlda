@@ -803,7 +803,12 @@ async function cmdPublish() {
     )
   }
 
-  const inventory = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}/published-tree`, null, { token: getReadToken() })
+  // A preview copy carries the canvas as well as the site, so it asks for both
+  // halves; the class site is the static bytes and nothing else. The two halves
+  // are different content rather than the same content at different paths, so
+  // this is what to publish rather than how to name it.
+  const treeQuery = previewApp ? '?tree=all' : ''
+  const inventory = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}/published-tree${treeQuery}`, null, { token: getReadToken() })
     .catch(async error => {
       await refuse(
         [red(`${sourceUrl} cannot list what it is serving for "${name}": ${error.message}`),
@@ -830,6 +835,8 @@ async function cmdPublish() {
     serverUrl: sourceUrl,
     project: name,
     files: inventory.files,
+    // Both-halves paths already name their half; a single half is the prefix.
+    half: previewApp ? '' : 'static',
     headers: getReadToken() ? { authorization: `Bearer ${getReadToken()}` } : {},
   })
   try {
@@ -843,7 +850,7 @@ async function cmdPublish() {
     // copied still the tree being served. It also covers the case a revision
     // check misses, a forced rebuild of the SAME revision, because the answer
     // comes from the files rather than from a name for them.
-    const recheck = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}/published-tree`, null, { token: getReadToken() })
+    const recheck = await apiAt(sourceUrl, 'GET', `/api/projects/${encodeURIComponent(name)}/published-tree${treeQuery}`, null, { token: getReadToken() })
     const inventoryPrint = (rows) => rows.map(f => `${f.path}:${f.sha256}`).sort().join('\n')
     if (inventoryPrint(recheck.files || []) !== inventoryPrint(inventory.files)) {
       // A race, not a verdict: the tree moved under the read, and the rerun

@@ -1391,13 +1391,35 @@ router.post('/:name/publish-outcome', requireOperatorWrite, async (req, res) => 
  * a second way to get the published bytes is a second answer to "what is
  * published", and one of them will be wrong.
  */
+// WHICH HALF OF A PUBLICATION, asked for rather than assumed.
+//
+// `static` is the default and is the bytes GitHub Pages serves -- the class
+// site publish wants exactly those and nothing else, which is why it stays the
+// answer to a bare request. `app` is the same render assembled for the canvas,
+// which the server normally hands out per request; a copy that has to carry the
+// canvas needs those bytes too, so it can ask. `all` is both, each path already
+// prefixed with the half it came from.
+//
+// The halves are NOT the same files. `static/` has been through the course's
+// own site assembler and `app/` has not, so publishing one in place of the
+// other is not a path rewrite -- it is different content at the same address.
+const PUBLICATION_HALVES = { static: ['static'], app: ['app'], all: ['static', 'app'] }
+
 router.get('/:name/published-tree', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
-  const root = join(getOutputDir(req.params.name), 'static')
-  if (!existsSync(root)) {
+  const requested = String(req.query.tree || 'static')
+  const halves = PUBLICATION_HALVES[requested]
+  if (!halves) {
+    return res.status(400).json({
+      error: `tree must be one of ${Object.keys(PUBLICATION_HALVES).join(', ')}; got ${JSON.stringify(requested)}`,
+    })
+  }
+  const output = getOutputDir(req.params.name)
+  const present = halves.filter(half => existsSync(join(output, half)))
+  if (!present.length) {
     return res.status(409).json({
-      error: `"${req.params.name}" has no static/ tree, so it is not a publication build`,
+      error: `"${req.params.name}" has no ${halves.join('/')} tree, so it is not a publication build`,
       buildStatus: project.buildStatus || 'unknown',
       lastBuild: project.lastBuild || null,
     })
@@ -1412,8 +1434,12 @@ router.get('/:name/published-tree', requireRead, async (req, res) => {
       }
     }
   }
-  walk(root, '')
-  res.json({ files, sourceRevision: project.sourceRevision || null, buildStatus: project.buildStatus || 'unknown' })
+  // One half keeps the paths it always had, so the class site publish sees the
+  // same inventory it has always seen. Asking for more than one prefixes every
+  // path, because two halves in one list with unprefixed paths is two files at
+  // one name.
+  for (const half of present) walk(join(output, half), present.length > 1 ? half : '')
+  res.json({ files, tree: requested, halves: present, sourceRevision: project.sourceRevision || null, buildStatus: project.buildStatus || 'unknown' })
 })
 
 /**

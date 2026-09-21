@@ -32,11 +32,16 @@ const execFileAsync = promisify(execFileCb)
  * hash. A half-written site is worse than an old one — it is an old one with
  * holes in it, in front of a class — and a checkout is not a transaction.
  */
-export async function stagePublishedTree({ serverUrl, project, files, fetchImpl = fetch, headers = {} }) {
+export async function stagePublishedTree({ serverUrl, project, files, fetchImpl = fetch, headers = {}, half = 'static' }) {
   const staging = await mkdtemp(join(tmpdir(), `tlda-publish-${project}-`))
+  // Which half of the publication the inventory's paths are relative to. A
+  // single-half inventory lists `book/index.html` and the half is the prefix; a
+  // both-halves inventory lists `static/book/index.html` and carries its own, so
+  // adding one here would ask for `static/static/…`.
+  const prefix = half ? `${encodeURIComponent(half)}/` : ''
   try {
     for (const file of files) {
-      const url = `${serverUrl.replace(/\/$/, '')}/docs/${encodeURIComponent(project)}/static/${file.path.split('/').map(encodeURIComponent).join('/')}`
+      const url = `${serverUrl.replace(/\/$/, '')}/docs/${encodeURIComponent(project)}/${prefix}${file.path.split('/').map(encodeURIComponent).join('/')}`
       const response = await fetchImpl(url, { headers })
       if (!response.ok) throw new Error(`${file.path}: the server lists this file and serves ${response.status} for it at ${url}`)
       const bytes = Buffer.from(await response.arrayBuffer())
