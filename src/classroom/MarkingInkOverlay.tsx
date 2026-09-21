@@ -43,41 +43,45 @@ export function MarkingInkOverlay({
   pairs,
   editor,
   bookRoomId,
+  bookProject,
 }: {
   pairs: ActiveMarkingPair[]
   editor: Editor
   bookRoomId: string
+  /**
+   * The book's project — where a marking layer is recorded and read back.
+   *
+   * Skip, settling it: "everything is in the book", and on the thing we had
+   * been filing layers under: "there isn't even really a homework project;
+   * it's just a file". `pair.contentRef` names that file's build, so a layer
+   * filed there cannot be reached from the chapter the student reads —
+   * measured as `recording-draft/<id>` answering 200 under that ref and 404
+   * under the chapter.
+   */
+  bookProject: string
 }) {
   // The most recent arrival is the one he is on. `onShow` appends, so this is
   // "the pair he last paged to" without anything having to track intent.
   const marked = pairs[pairs.length - 1]
 
-  // One listing per project, not one per pane. A student arrives with every
-  // answer they have open -- thirteen, measured -- and each pane's layers come
-  // out of the same project's recordings, so asking per pane would be thirteen
-  // identical requests for one answer.
-  const docs = useMemo(
-    () => [...new Set(pairs.map(pair => pair.contentRef))].sort().join('\u0000'),
-    [pairs],
-  )
-  const [layersByDoc, setLayersByDoc] = useState<Record<string, ThreadLayerSummary[]>>({})
+  // The book's layers, listed once for every pane. A student arrives with every
+  // answer they have open -- thirteen, measured -- and those are thirteen panes
+  // over ONE book, so the book is asked once rather than once per answer.
+  const [layers, setLayers] = useState<ThreadLayerSummary[]>([])
   const [revision, setRevision] = useState(0)
   const noteLayerRecorded = useCallback(() => setRevision(n => n + 1), [])
 
   useEffect(() => {
-    if (!docs) return
+    if (!bookProject) return
     let cancelled = false
-    void Promise.all(docs.split('\u0000').map(async doc => {
-      const layers = await listRecordingDraftsIncludingLayers(doc) as ThreadLayerSummary[]
-      return [doc, layers] as const
-    })).then(entries => {
-      if (!cancelled) setLayersByDoc(Object.fromEntries(entries))
+    void listRecordingDraftsIncludingLayers(bookProject).then(list => {
+      if (!cancelled) setLayers(list as ThreadLayerSummary[])
     }).catch(() => {
       // A listing that fails leaves the players absent rather than the panes
       // broken; the marks themselves are a different path and still render.
     })
     return () => { cancelled = true }
-  }, [docs, revision])
+  }, [bookProject, revision])
 
   return (
     <>
@@ -88,7 +92,8 @@ export function MarkingInkOverlay({
           editor={editor}
           bookRoomId={bookRoomId}
           marked={pair === marked}
-          layers={layersByDoc[pair.contentRef] ?? []}
+          layers={layers}
+          bookProject={bookProject}
           onLayerRecorded={noteLayerRecorded}
         />
       ))}
@@ -102,6 +107,7 @@ function MarkedPair({
   bookRoomId,
   marked,
   layers,
+  bookProject,
   onLayerRecorded,
 }: {
   pair: ActiveMarkingPair
@@ -109,8 +115,10 @@ function MarkedPair({
   bookRoomId: string
   /** Whether this is the pair the glass and the Return button are on. */
   marked: boolean
-  /** This project's layers, listed once by the overlay above. */
+  /** The book's layers, listed once by the overlay above. */
   layers: ThreadLayerSummary[]
+  /** Where a marking layer is recorded and read back. See the overlay above. */
+  bookProject: string
   onLayerRecorded: () => void
 }) {
   // The pane measures the answer and the frame places it, so the height goes
@@ -354,13 +362,13 @@ function MarkedPair({
         <>
           <ThreadPlayer
             answer={answerRef}
-            doc={pair.contentRef}
+            doc={bookProject}
             layers={layers}
             onPlayingChange={setPlaying}
           />
           <ReplyPlus
             answer={answerRef}
-            doc={pair.contentRef}
+            doc={bookProject}
             editor={draftEditor}
             playing={playing}
             onLayerRecorded={onLayerRecorded}

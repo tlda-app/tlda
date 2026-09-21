@@ -1170,7 +1170,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     <>
       <div className="bottom-panels">
         {activeMarkingPairs.length > 0 && editorRef.current && (
-          <MarkingInkOverlay pairs={activeMarkingPairs} editor={editorRef.current} bookRoomId={roomId} />
+          <MarkingInkOverlay pairs={activeMarkingPairs} editor={editorRef.current} bookRoomId={roomId} bookProject={projectName} />
         )}
         {classroomMarking && editorRef.current && document.pages[0]?.shapeId && document.pages[1]?.shapeId && (
         <ClassroomConnectorOverlay

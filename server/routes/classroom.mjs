@@ -926,7 +926,23 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
         if (typeof copyRoomStore !== 'function') throw new Error('local-layer store copy is not configured')
         const submissionRoomId = `doc-${submission.contentRef}`
         if (layerId) {
-          const recording = readAnswerRecording(submission.contentRef, layerId)
+          // A marking layer lives in the BOOK, and only there.
+          //
+          // Skip, settling where this material belongs: "everything is in the
+          // book", and on what we had been filing layers under: "there isn't
+          // even really a homework project; it's just a file". `contentRef`
+          // names that file's build, so a layer filed there could not be
+          // reached from the chapter the student reads -- measured as
+          // `recording-draft/<id>` answering 200 under the submission ref and
+          // 404 under the chapter, which is why nothing on the chapter could
+          // play a mark back.
+          //
+          // The old location is NOT read as a fallback. Skip: "no compat with
+          // misdesigned garbage". A layer recorded under the old filing is not
+          // returnable, and that is the intended answer rather than an
+          // oversight -- reading both would keep the wrong model alive in the
+          // one place that decides where marks come from.
+          const recording = readAnswerRecording(store.getAssignment(req.params.assignmentId)?.solutionsDocKey, layerId)
           if (!recording) return res.status(404).json({ error: 'Recording layer not found' })
           const answer = recording.answer ?? null
           if (answer?.submissionRoomId !== submissionRoomId || answer?.problemId !== problemId) {
