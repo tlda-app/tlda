@@ -11,6 +11,15 @@ complete `{ database, store, licenseKey }` record. `database` selects
 fleet/chat/agent state; `store` selects document assets and shape sync. Choose
 an entry with `environments.default`, `--env <name>`, or `TLDA_ENV=<name>`.
 
+An entry may also carry `pages`, which says where the documents themselves
+come from. `store` is the default and means a tlda server serves the pages as
+well as the app. `files` means the pages are files beside the page asking for
+them, which is what a published or previewed copy on a plain file server is;
+that copy is flat, so a document's pages and its `page-info.json` sit at the
+site root rather than under `/docs/<name>/`, and its `manifest.json` is written
+by the publish step. Nothing the browser can see distinguishes the two, which is
+why the environment has to say.
+
 Do not manually compose a deployment from separate URL variables. The internal
 `TLDA_SYNC_SERVER` value used by agent launch harnesses is not a hosting
 interface.
