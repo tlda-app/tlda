@@ -78,7 +78,7 @@ import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, projectDir as getProjectDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
 import { projectRevisionStatus } from './lib/source-lifecycle.mjs'
-import { stripPositionPrefix } from './lib/html-toc-extractor.mjs'
+import { chapterHeadingFor } from './lib/chapter-heading.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner, staleSourceSyncEntries } from './lib/source-sync-conflicts.mjs'
 import { createSourceRoomDaemon, sourceRoomDaemonKey } from './lib/source-room-daemon.mjs'
 import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
@@ -5687,44 +5687,13 @@ app.use('/docs', (req, res, next) => {
             try {
               const pageInfoPath = join(PROJECTS_DIR, name, 'output', 'page-info.json')
               const pageInfo = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))
-              const idx = pageInfo.findIndex(p => p.file === servedFilePath)
-              isFirstPage = idx === 0
-              // Compute prev/next chapter titles for navigation
-              // Prev/next name the neighbouring CHAPTERS, so they carry the
-              // same no-position rule as the chapter heading below.
-              if (idx > 0) navPrev = stripPositionPrefix(pageInfo[idx - 1].title) || pageInfo[idx - 1].title
-              if (idx >= 0 && idx < pageInfo.length - 1) navNext = stripPositionPrefix(pageInfo[idx + 1].title) || pageInfo[idx + 1].title
-              if (idx >= 0 && pageInfo[idx].title) {
-                const entry = pageInfo[idx]
-                if (entry.tocLevel === 'part') {
-                  // Parts keep their title as-is
-                  chapterTitle = entry.title
-                } else {
-                  // Count chapter number within the current part
-                  // Pages before the first part don't get chapter numbers
-                  let chapterNum = 0
-                  let inPart = false
-                  for (let i = 0; i <= idx; i++) {
-                    if (pageInfo[i].tocLevel === 'part') {
-                      chapterNum = 0
-                      inPart = true
-                    } else if (!pageInfo[i].tocLevel && inPart) {
-                      chapterNum++
-                    }
-                  }
-                  // One encoding of "a chapter is not named after its position",
-                  // shared with the TOC extractor. This site had its own copy of
-                  // the regex and applied it only inside a part, so a page
-                  // outside one was served headed `Lab 1: ...` while the TOC
-                  // beside it said something else.
-                  const stripped = stripPositionPrefix(entry.title)
-                  chapterTitle = chapterNum > 0 && stripped
-                    ? `Chapter ${chapterNum}: ${stripped}`
-                    : chapterNum > 0
-                      ? `Chapter ${chapterNum}`
-                      : stripped || entry.title
-                }
-              }
+              // The heading, its neighbours and first-page-ness are one answer,
+              // and a published copy has to write the same one in at publish
+              // time, so the derivation lives in server/lib/chapter-heading.mjs
+              // rather than here. The read stays here because what fails is the
+              // read, and its failure leaves the defaults above exactly as it
+              // always did.
+              ;({ chapterTitle, isFirstPage, navPrev, navNext } = chapterHeadingFor(pageInfo, servedFilePath))
             } catch (e) { console.warn(`[server] TOC/chapter title parsing failed for ${name}: ${e.message}`) }
             if (isPublishedStaticPage(servedFilePath)) {
               return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
