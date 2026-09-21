@@ -334,6 +334,7 @@ const classroomStore = new ClassroomStore()
  * a typo. A box that cannot answer this question has not earned an answer that
  * opens it.
  */
+let warnedAboutClassroomStore = false
 function hasAClassOnThisBox() {
   const store = app?.locals?.classroomStore || classroomStore
   if (typeof store?.hasAnyCourse !== 'function') {
@@ -343,7 +344,12 @@ function hasAClassOnThisBox() {
     // socket, and the caller hangs instead of being refused. Answering "there
     // is a class" makes the per-room rules apply, which refuses what should be
     // refused and keeps the server answering.
-    console.error('[sync] classroom store cannot say whether this box has a class; withholding as though it does')
+    // Once, not per upgrade: this sits on the connection path, and a line per
+    // connection buries the one line that says why.
+    if (!warnedAboutClassroomStore) {
+      warnedAboutClassroomStore = true
+      console.error('[sync] classroom store cannot say whether this box has a class; withholding as though it does')
+    }
     return true
   }
   return store.hasAnyCourse()
