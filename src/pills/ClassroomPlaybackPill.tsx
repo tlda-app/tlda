@@ -70,6 +70,8 @@ function applyPlacement(editor: Editor, placement: DocViewPlacement, routeScoped
     }
     if (!bounds) return
     if (existing) {
+      const currentPageId = editor.getCurrentPageId()
+      if (existing.parentId !== currentPageId) editor.reparentShapes([existing.id], currentPageId)
       if (existing.isLocked) editor.updateShape({ id: existing.id, type: existing.type, isLocked: false } as any)
       // x/y live on the shape, not in props — props carry only the panel's
       // own state (w/h/sources/label/…). Putting x in props fails shape
@@ -88,6 +90,7 @@ function applyPlacement(editor: Editor, placement: DocViewPlacement, routeScoped
     editor.createShapes([{
       id,
       type: 'fleet-docview',
+      parentId: editor.getCurrentPageId(),
       x: placement === 'above' ? bounds.minLeft : bounds.minLeft - 440,
       y: placement === 'above' ? bounds.minTop - 340 : placement === 'here' ? bounds.minTop : bounds.maxBottom + 120,
       isLocked: false,
