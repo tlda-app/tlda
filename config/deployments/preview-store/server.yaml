@@ -11,6 +11,12 @@ tokenGating: true
 
 tokensFromEnvironmentOnly: true
 
+# One search child rather than the default four. This server is a second tlda
+# process on a box that already runs one, and what it holds is the preview's
+# marks -- a handful of rooms, not a corpus. Four children here would be four
+# processes competing with the server the course is actually served from.
+searchWorkers: 1
+
 uploadDir: /app/server/persist/preview-store/uploads
 
 notifications:
