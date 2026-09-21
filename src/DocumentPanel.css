@@ -239,6 +239,18 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   pointer-events: none;
 }
 
+/* Exclusive open mode: in button mode the hover entry path is fully inert
+   while the panel is closed — the button is the only way in. The whole
+   closed panel is gated, not just the trigger strip, because the ghost tabs
+   and search wrap also carry pointer-events and would otherwise still fire
+   :hover. Once open, every rule below applies unchanged, so dismissal,
+   drag-open, and the open-state visuals are untouched. */
+.doc-panel.doc-panel--button-mode:not(.doc-panel-open),
+.doc-panel.doc-panel--button-mode:not(.doc-panel-open)::after,
+.doc-panel.doc-panel--button-mode:not(.doc-panel-open) * {
+  pointer-events: none !important;
+}
+
 .toc-zone-width-thumb {
   position: absolute;
   top: 1px;
@@ -919,9 +931,9 @@ html[data-theme="dark"] .toc-drop-hint {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 11px;
-  height: 11px;
-  margin: -5.5px 0 0 -5.5px;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
   border-radius: 50%;
   background: currentColor;
   z-index: 0;

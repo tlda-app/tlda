@@ -115,6 +115,10 @@ export function DocumentPanel() {
   const [open, setOpen] = useState(false)
   const [dragOpen, setDragOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
+  // Exclusive open mode: button XOR hover. In button mode the hover trigger
+  // strip is inert (see .doc-panel--button-mode in DocumentPanel.css); in
+  // hover mode the button is not rendered (see PhoneOverlay below).
+  const buttonMode = useSyncExternalStore(subscribePref, () => getPref('toc-button-mode'))
 
   // Close on a pointer outside, WHATEVER KIND OF POINTER IT IS.
   //
@@ -224,7 +228,7 @@ export function DocumentPanel() {
     <>
       <div
         ref={panelRef}
-        className={`doc-panel${(open || dragOpen) ? ' doc-panel-open' : ''}${isHtml ? ' doc-panel--html' : ''}`}
+        className={`doc-panel${(open || dragOpen) ? ' doc-panel-open' : ''}${isHtml ? ' doc-panel--html' : ''}${buttonMode ? ' doc-panel--button-mode' : ''}`}
         onPointerDown={(e) => {
           stopEventPropagation(e)
           // Touch tap on collapsed strip → open
@@ -743,10 +747,11 @@ export function PhoneOverlay() {
   }, [showTocButton, isPhone])
 
   // The button toggles the hover-type DocumentPanel via a CustomEvent rather
-  // than owning its state — the panel keeps hover, touch-tap, and drag opens,
-  // and the button becomes one more entry path. Same shape as toc-drop-hover.
-  // The panel reports back via toc-open-change so the glyph stays in sync with
-  // closes the button did not initiate (outside tap, hover handling).
+  // than owning its state — the panel keeps touch-tap and drag opens, and the
+  // button is the entry path in button mode (hover is gated off; see
+  // .doc-panel--button-mode). Same shape as toc-drop-hover. The panel reports
+  // back via toc-open-change so the glyph stays in sync with closes the
+  // button did not initiate (outside tap, hover handling).
   useEffect(() => {
     if (!showTocButton) return
     function toggleToc() {
