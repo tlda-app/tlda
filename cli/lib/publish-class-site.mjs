@@ -469,15 +469,19 @@ export async function patchStagedTreeForDestination({ staging, distDir, configDi
   // points at, so two documents in one copy would be two documents at one
   // address.
   if (config.pages === 'files') {
-    if (!document?.name) {
+    if (!document?.name || !document?.record) {
       throw new Error(
         `${configDir} declares pages: files, so the copy needs a manifest naming the document it carries, and this publish was given none. ` +
         'Nothing was written.',
       )
     }
-    const entry = { name: document.name, pages: document.pages ?? 0 }
-    if (document.format) entry.format = document.format
-    if (document.renderedFormat) entry.renderedFormat = document.renderedFormat
+    // THE ENTRY IS THE WHOLE DOCUMENT RECORD, not a trimmed listing. On a server
+    // the manifest lists documents and a second call fetches the one you opened;
+    // a trimmed entry handed to the loader in its place is missing fields the
+    // loader needs -- `targets` for a LaTeX document is the known one -- and the
+    // failure is a broken layout rather than an error. A file server has no
+    // second call to make, so the file carries what that call would have said.
+    const { basePath: _derivedByTheClient, ...entry } = document.record
     await writeFile(join(staging, 'manifest.json'), `${JSON.stringify({ documents: { [document.name]: entry } }, null, 2)}\n`)
   }
   return { config, shell: 'app.html', manifest: config.pages === 'files' }
