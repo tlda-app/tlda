@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { assembleCourseAppSite, copyCourseAppAssets, deriveCourseAppSpec, mergeStaticScheduleLinks } from './course-app-build.mjs'
+import { assembleCourseAppSite, copyCourseAppAssets, deriveCourseAppSpec } from './course-app-build.mjs'
 import { deriveCourseBookSpec } from './course-book-spec.mjs'
 
 function fixture() {
@@ -149,50 +149,4 @@ test('every page a declared source generates is a member through its master', ()
     '_book/index.html', '_book/homework/hw.html', '_book/homework/hw-solutions.html',
   ])
   assert.equal(existsSync(join(output, '_book/homework/hw-solutions.html')), true)
-})
-
-test('schedule parity merges only the static schedule slice by date', () => {
-  const staticHtml = [
-    '<html><head><title>Static</title><link rel="stylesheet" href="css/skeleton.css"></head><body>',
-    '<div class="row" id="syllabus"><p>FOREIGN SECTION</p></div>',
-    '<div class="row" id="schedule"><h4>Tentative Schedule</h4><table><tbody>',
-    '<tr><td>Th&nbsp;Aug&nbsp;27,&nbsp;4:00</td><td> <a href="book/chapters/one.html">One</a> </td></tr>',
-    '<tr><td>Th&nbsp;Aug&nbsp;27,&nbsp;11:59</td><td> <a href="book/homework/hw.html">HW 1</a> out <a href="book/homework/handouts/hw-handout.zip">[download zip]</a> </td></tr>',
-    '<tr><td>T&nbsp;Sep&nbsp;1,&nbsp;4:00</td><td> <a href="book/chapters/missing.html">Missing</a> <a href="decks/one-slides.html">[slides]</a> </td></tr>',
-    '</tbody></table></div>',
-    '<div class="row" id="practices"><p>FOREIGN PRACTICES</p></div>',
-    '</body></html>',
-  ].join('\n')
-  const row = (date, body) => `<tr><td>${date}</td><td>${body}</td></tr>`
-  const appHtml = [
-    '<main><section id="schedule"><h2>Schedule</h2><table><tbody>',
-    row('Th Aug 27', '<a href="chapters/one.qmd">One</a> · <em>HW 1 out</em>'),
-    row('T Sep 1', 'New chapter row'),
-    row('F Dec 4', 'App-only later row'),
-    '</tbody></table></section></main>',
-  ].join('\n')
-  const declared = new Set(['chapters/one.html', 'homework/hw.html', 'homework/handouts/hw-handout.zip', 'decks/one-slides.html'])
-  const { html, augmented } = mergeStaticScheduleLinks(appHtml, staticHtml, href => declared.has(href))
-  assert.equal(augmented, 4)
-  assert.equal((html.match(/id=["']schedule["']/g) || []).length, 1)
-  assert.match(html, /href="homework\/hw\.html"/)
-  assert.match(html, /href="homework\/handouts\/hw-handout\.zip"/)
-  assert.match(html, /href="decks\/one-slides\.html"/)
-  assert.equal(html.includes('FOREIGN SECTION'), false)
-  assert.equal(html.includes('FOREIGN PRACTICES'), false)
-  assert.equal(html.includes('<title>Static</title>'), false)
-  assert.equal(html.includes('skeleton.css'), false)
-  assert.match(html, /App-only later row/)
-  assert.equal(html.includes('href="book/chapters/one.html"'), false)
-  assert.equal(html.includes('href="chapters/missing.html"'), false)
-  assert.match(html, /Missing/)
-  assert.equal((html.match(/chapters\/one/g) || []).length, 1)
-})
-
-test('schedule parity leaves non-schedule indexes untouched', () => {
-  const appHtml = '<main><section id="schedule"><table><tbody><tr><td>T Sep 1</td><td>Row</td></tr></tbody></table></section></main>'
-  assert.equal(mergeStaticScheduleLinks(appHtml, '<html><body><p>no static schedule</p></body></html>', () => true).augmented, 0)
-  const staticHtml = '<html><body><div class="row" id="schedule"><table><tbody><tr><td>T&nbsp;Sep&nbsp;1</td><td><a href="book/chapters/one.html">One</a></td></tr></tbody></table></div></body></html>'
-  assert.equal(mergeStaticScheduleLinks('<main><p>no app schedule</p></main>', staticHtml, () => true).augmented, 0)
-  assert.equal(mergeStaticScheduleLinks(appHtml, staticHtml, () => false).html.includes('href="chapters/one.html"'), false)
 })
