@@ -27,7 +27,7 @@ import { tldaFetch } from '../shared/http-client.mjs'
 import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { checkoutRemoteUrl, classSiteRefusal, commitAndPushClassSite, configuredPublicationTarget, pushTreeToPreviewBox, remoteIsConfiguredTarget, resolvePreviewMachine, stagePublishedTree, writePublishedTree } from './lib/publish-class-site.mjs'
-import { patchStagedTreeForDestination } from '../server/lib/publish-copy.mjs'
+import { canvasPagesFromTheirStaticTwins, patchStagedTreeForDestination, placeDerivedCanvasFiles } from '../server/lib/publish-copy.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
@@ -832,10 +832,29 @@ async function cmdPublish() {
   }
   console.log(`Publishing ${bold(name)}${project.sourceRevision ? `@${project.sourceRevision.slice(0, 7)}` : ''} — ${inventory.files.length} files from ${bold(from)} (${sourceUrl})...`)
 
+  // WHAT CAN BE FETCHED, WHAT HAS TO BE COPIED, AND WHAT CANNOT BE HAD AT ALL.
+  //
+  // `/docs/<project>/app/<path>.html` is the reader-shell route: it answers
+  // with the application rather than the file, so every page of the canvas half
+  // is unfetchable and a publish that tried would fail its own hash check.
+  // It does not need fetching — the halves are two ways of serving one render,
+  // and the inventory's own hashes say so per file. A page whose twins disagree
+  // is one this cannot honestly produce, and it refuses.
+  const canvas = previewApp
+    ? canvasPagesFromTheirStaticTwins(inventory.files)
+    : { fetchable: inventory.files, derive: [], disagree: [] }
+  if (canvas.disagree.length) {
+    await refuse(
+      [red(`"${name}" has ${canvas.disagree.length} canvas page(s) that cannot be fetched and cannot be copied:`),
+        ...canvas.disagree.slice(0, 5).map(entry => `  ${entry.path} — ${entry.why}`),
+        'A page of the canvas half is served by the reader-shell route, so it cannot be fetched; it is normally the same bytes as the static half, and these are not.'],
+      { error: `"${name}" has ${canvas.disagree.length} canvas page(s) that can be neither fetched nor copied` },
+    )
+  }
   const { staging } = await stagePublishedTree({
     serverUrl: sourceUrl,
     project: name,
-    files: inventory.files,
+    files: canvas.fetchable,
     // Both-halves paths already name their half; a single half is the prefix.
     half: previewApp ? '' : 'static',
     // WHERE EACH HALF LANDS IN THE COPY. The static half is the site, so it is
@@ -870,6 +889,9 @@ async function cmdPublish() {
       )
     }
     if (previewApp) {
+      const previewLayout = path => path.replace(/^static\//, '')
+      const copied = await placeDerivedCanvasFiles({ staging, derive: canvas.derive, layout: previewLayout })
+      if (copied) console.log(`${copied} canvas file(s) copied from their static twins rather than fetched.`)
       // THE PAGE LIST THE CANVAS USES, which is not the one the site uses.
       // A publication writes two: the static half's names its pages `book/…`,
       // for the site; the output root's names them `app/…`, which is what the
