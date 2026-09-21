@@ -35,7 +35,9 @@ export function presentationLocationMatchesPage(routeOrLocation: PresentationRou
     if (sourceFile === routeOrLocation) return true
     return new URL(pageUrl, 'http://tlda.local').pathname.endsWith(`/app/${routeOrLocation}`)
   }
-  if (sourceFile === routeOrLocation.location) return true
+  const legacyLocation = routeOrLocation.location.replace(/^book\//, '')
+  if (sourceFile === routeOrLocation.location || sourceFile?.replace(/\.qmd$/i, '.html') === legacyLocation) return true
   const pathname = new URL(pageUrl, 'http://tlda.local').pathname
   return pathname === presentationPath('app', routeOrLocation.project, routeOrLocation.location, routeOrLocation.prefix)
+    || pathname.endsWith(`/_book/${legacyLocation}`)
 }
