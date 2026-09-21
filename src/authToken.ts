@@ -24,25 +24,46 @@ export function initToken() {
     try { _token = localStorage.getItem('tlda_token') } catch {}
   }
 
-  if (_token) {
-    const originalFetch = window.fetch
-    window.fetch = function (input: RequestInfo | URL, init?: RequestInit) {
-      // Inject auth for same-origin AND the active config's database/store servers.
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
-      const isRelative = url.startsWith('/') || url.startsWith('./') || url.startsWith('../')
-      const isSameOrigin = isRelative || url.startsWith(window.location.origin)
-      const isConfigServer = url.startsWith(STORE_HTTP) || url.startsWith(DATABASE_HTTP)
+  // WHO THE READER IS, on every request rather than on the few that remembered.
+  //
+  // This used to install only when `?token=` was present, and to attach only
+  // that token. So the app announced the operator credential everywhere and the
+  // reader's own classroom identity almost nowhere -- it sat in localStorage
+  // while request after request went out as nobody. A student still worked,
+  // because a cookie rides along unasked; an instructor did not, because theirs
+  // does not. That is why a chapter opened for a student and 403'd for the
+  // instructor of its own course.
+  //
+  // Installed unconditionally now, and the classroom token is read PER REQUEST
+  // rather than captured here: a reader can register, or be handed an identity,
+  // after this runs, and a value captured at init would be null for the rest of
+  // the session.
+  //
+  // This is not a new precedence. `src/classroom/api.ts` already sends the
+  // stored classroom token as this header, so the app has always preferred it
+  // over the cookie on the calls that bothered to send it. What changes is that
+  // the rest of the app now says the same thing those calls were already saying.
+  const originalFetch = window.fetch
+  window.fetch = function (input: RequestInfo | URL, init?: RequestInit) {
+    // Inject auth for same-origin AND the active config's database/store servers.
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
+    const isRelative = url.startsWith('/') || url.startsWith('./') || url.startsWith('../')
+    const isSameOrigin = isRelative || url.startsWith(window.location.origin)
+    const isConfigServer = url.startsWith(STORE_HTTP) || url.startsWith(DATABASE_HTTP)
 
-      if (isSameOrigin || isConfigServer) {
-        const headers = new Headers(init?.headers)
-        if (!headers.has('Authorization')) {
-          headers.set('Authorization', `Bearer ${_token}`)
-        }
-        return originalFetch.call(window, input, { ...init, headers })
+    if (isSameOrigin || isConfigServer) {
+      const headers = new Headers(init?.headers)
+      if (_token && !headers.has('Authorization')) {
+        headers.set('Authorization', `Bearer ${_token}`)
       }
-
-      return originalFetch.call(window, input, init)
+      if (!headers.has('x-tlda-student-token')) {
+        const classroomToken = readClassroomToken()
+        if (classroomToken) headers.set('x-tlda-student-token', classroomToken)
+      }
+      return originalFetch.call(window, input, { ...init, headers })
     }
+
+    return originalFetch.call(window, input, init)
   }
 }
 
