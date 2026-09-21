@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { useMemo, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { CollaboratorCursorOverlayUtil, Tldraw, Vec, react, useValue, type Editor } from 'tldraw'
 import { useSync } from '@tldraw/sync'
 import { STORE_WS, LICENSE_KEY } from '../activeConfig'
@@ -139,7 +139,6 @@ export function StudentAnnotationOverlay({
   bounds,
 }: StudentAnnotationOverlayProps) {
   const overlayRootRef = useRef<HTMLDivElement>(null)
-  const passedTapRef = useRef<{ target: HTMLElement; x: number; y: number; t: number } | null>(null)
   // Whether the camera is owned outside this component. A boolean, not the
   // camera itself, so the effects below do not resubscribe on every pan.
   const cameraIsExternal = explicitCamera !== undefined
@@ -168,46 +167,6 @@ export function StudentAnnotationOverlay({
 
   const syncUri = useMemo(() => () => appendToken(`${STORE_WS}/sync/${roomId}`), [roomId])
   const store = useSync({ uri: syncUri, shapeUtils, assets: INLINE_ASSETS })
-
-  // A marking canvas takes the pointer while a mark-making tool is active, but
-  // controls in the composed surface are still controls rather than ink. This
-  // is the same tap handoff used by an inert HtmlPageShape: look through the
-  // transparent sheet, and carry a deliberate tap to the interactive element
-  // underneath. The sheet itself remains whole, so a pen stroke can begin
-  // anywhere that is not a control.
-  const underlyingControl = (clientX: number, clientY: number): HTMLElement | null => {
-    const root = overlayRootRef.current
-    if (!root) return null
-    const under = document.elementsFromPoint(clientX, clientY).find(element => !root.contains(element))
-    if (!(under instanceof HTMLIFrameElement)) return null
-    const doc = under.contentDocument
-    if (!doc) return null
-    const rect = under.getBoundingClientRect()
-    if (!rect.width || !rect.height) return null
-    const x = (clientX - rect.left) * (under.clientWidth / rect.width)
-    const y = (clientY - rect.top) * (under.clientHeight / rect.height)
-    const target = doc.elementFromPoint(x, y)
-    const control = target?.closest('button, a[href], input, select, textarea, label, [role="button"], [role="link"], [contenteditable="true"]')
-    return control instanceof doc.defaultView!.HTMLElement ? control : null
-  }
-  const passControlPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!event.isPrimary) return
-    const target = underlyingControl(event.clientX, event.clientY)
-    passedTapRef.current = target ? { target, x: event.clientX, y: event.clientY, t: Date.now() } : null
-    if (!target) return
-    event.preventDefault()
-    event.stopPropagation()
-  }
-  const passControlPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const start = passedTapRef.current
-    passedTapRef.current = null
-    if (!start || !event.isPrimary) return
-    event.preventDefault()
-    event.stopPropagation()
-    if (Date.now() - start.t > 400) return
-    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) return
-    start.target.click()
-  }
 
   // Follow the book's camera, so the layers stay registered with each other. The
   // book owns it: panning is a view operation and belongs to the document, not
@@ -337,8 +296,6 @@ export function StudentAnnotationOverlay({
       data-capturing={capturing ? 'true' : 'false'}
       data-tool={currentToolId}
       data-visible={visible ? 'true' : 'false'}
-      onPointerDownCapture={passControlPointerDown}
-      onPointerUpCapture={passControlPointerUp}
       style={bounds ? ({
         position: 'fixed',
         inset: 'auto',
