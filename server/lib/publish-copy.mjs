@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { cp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 
 import { chapterHeadingFor } from './chapter-heading.mjs'
@@ -192,3 +192,38 @@ export async function placeDerivedCanvasFiles({ staging, derive, layout = path =
   return derive.length
 }
 
+
+/**
+ * Put a copy of what this box just built where this box serves previews.
+ *
+ * The whole transport problem disappears when the box that builds is the box
+ * that serves: no inventory, no hashes, no fetch that a reader-shell route can
+ * intercept. The output directory IS the artifact, on the same filesystem.
+ *
+ * WHAT A COPY IS, MINIMALLY: the build's own output at the root, plus the
+ * application and one shell carrying this destination's config. The loader asks
+ * for `document-manifest.json` and `page-info.json` at the base path, and the
+ * build already wrote both at the output root, so nothing has to be assembled
+ * or rewritten -- the paths inside them already say where their pages are.
+ *
+ * SWAPPED, NOT WRITTEN OVER. A copy assembled in place is served half-finished
+ * for as long as it takes to assemble, and a build is not a moment.
+ */
+export async function copyBuildOutputToPreview({ outputDir, staticDir, distDir, configDir, document }) {
+  if (!existsSync(outputDir)) {
+    throw new Error(`there is no build output at ${outputDir} to copy, so nothing was put in front of the preview`)
+  }
+  const incoming = `${staticDir}.incoming`
+  const previous = `${staticDir}.previous`
+  await rm(incoming, { recursive: true, force: true })
+  await mkdir(dirname(incoming), { recursive: true })
+  await cp(outputDir, incoming, { recursive: true })
+
+  const patched = await patchStagedTreeForDestination({ staging: incoming, distDir, configDir, document })
+
+  await rm(previous, { recursive: true, force: true })
+  if (existsSync(staticDir)) await rename(staticDir, previous)
+  await rename(incoming, staticDir)
+  await rm(previous, { recursive: true, force: true })
+  return { staticDir, store: patched.config.store.ws, licensed: Boolean(patched.config.licenseKey) }
+}
