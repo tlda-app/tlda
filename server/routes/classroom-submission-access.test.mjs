@@ -36,12 +36,13 @@ function storeWithOneSubmission(root) {
   store.upsertCourse({ id: COURSE, title: 'QTM 285', preferredName: 'Instructor' })
   store.registerStudent({ courseId: COURSE, preferredName: 'Ada', universityLogin: 'ada', enrollmentToken: 'tok-ada' })
   store.registerStudent({ courseId: COURSE, preferredName: 'Biko', universityLogin: 'biko', enrollmentToken: 'tok-biko' })
+  store.registerInstructor({ courseId: COURSE, displayName: 'Prof', universityLogin: 'prof', token: 'tok-prof' })
   store.upsertAssignment({ id: ASSIGNMENT, courseId: COURSE, title: 'Setup', dueAt: '2026-09-01T00:00:00.000Z' })
   store.submit({ assignmentId: ASSIGNMENT, studentId: OWNER, contentRef: SUBMISSION })
   return store
 }
 
-const instructor = { role: 'instructor' }
+const instructor = { role: 'instructor', instructorId: `${COURSE}:prof`, courseId: COURSE }
 const owner = { role: 'student', studentId: OWNER, courseId: COURSE, layerScope: 'student' }
 const classmate = { role: 'student', studentId: CLASSMATE, courseId: COURSE, layerScope: 'student' }
 
