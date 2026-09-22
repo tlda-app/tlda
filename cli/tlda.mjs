@@ -457,9 +457,9 @@ export async function finishCliOperation(label, operation, {
 
 // --- HTTP helpers ---
 
-async function api(method, path, body = null, { timeoutMs = 30000, token = getToken() } = {}) {
+async function api(method, path, body = null, { timeoutMs = 30000, token = getToken(), headers = {} } = {}) {
   return tldaFetch(path, {
-    method, body, timeoutMs,
+    method, body, timeoutMs, headers,
     server: getServer(),
     environmentName: getActiveEnvName(),
     token,
@@ -3825,10 +3825,15 @@ async function publishClassroomAssignment({
     instructorUniversityLogin: instructorLogin,
   })
   // The first setup mints the instructor row and returns its per-person token
-  // once; a re-run against a bootstrapped course returns course-only. Either
-  // way the token never lands in a log line: it is printed once, on its own
-  // line, so the operator can place it on their own origin.
-  if (course?.token) console.log(`First instructor token for ${courseId}: ${course.token}`)
+  // once; a re-run against a bootstrapped course returns course-only. The
+  // remaining setup calls are instructor-gated, so they carry the minted
+  // token as the classroom identity for this run — the bearer admitted the
+  // bootstrap, it does not resolve to an instructor. The token never lands
+  // in a log line: it is printed once, on its own line, so the operator can
+  // place it on their own origin.
+  const classroomToken = course?.token || null
+  if (classroomToken) console.log(`First instructor token for ${courseId}: ${classroomToken}`)
+  const classroomHeaders = classroomToken ? { 'x-tlda-student-token': classroomToken } : {}
   const assignment = await api('POST', `/api/classroom/courses/${encodeURIComponent(courseId)}/assignments`, {
     id: assignmentId,
     title: assignmentTitle,
@@ -3840,7 +3845,7 @@ async function publishClassroomAssignment({
     bookPageFile: rendered.homeworkPath.replace(/\.qmd$/i, '.html'),
     handoutFilter,
     solutionFilter,
-  })
+  }, { headers: classroomHeaders })
   // The frozen template is read as SOURCE TEXT, not served: strayAnswers diffs
   // the student's uploaded QMD against it line by line, and missingAnswers reads
   // the answer-block ids out of it. So it has to be a QMD, and specifically the
@@ -3863,7 +3868,7 @@ async function publishClassroomAssignment({
   // publish operation creates a new source revision each time and restarts the
   // very build this request is waiting for.
   const templateFile = basename(rendered.homeworkPath)
-  const frozen = await finishCliOperation('classroom template freeze', () => api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey: handoutDocKey, templateFile }))
+  const frozen = await finishCliOperation('classroom template freeze', () => api('PUT', `/api/classroom/assignments/${encodeURIComponent(assignmentId)}/template`, { templateDocKey: handoutDocKey, templateFile }, { headers: classroomHeaders }))
 
   console.log(green('Classroom setup complete.'))
   console.log(`Course: ${course.title || courseTitle} (${course.id || courseId})`)
