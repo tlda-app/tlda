@@ -23,6 +23,7 @@ import { DocViewSpacetimeBody } from '../shapes/DocViewSpacetime'
 import { formatTimecode } from '../recording/timeControls'
 import { type ThreadLayerSummary } from '../recording/annotationThread'
 import { threadLayers } from '../../shared/annotation-thread.mjs'
+import { threadSpeakerLabel } from '../../shared/thread-layer-author.mjs'
 import type { AnswerRef } from '../recording/recorder'
 import type { PlayingLayer } from './replyLayer'
 import './ThreadPlayer.css'
@@ -31,6 +32,13 @@ export interface ThreadPlayerProps {
   answer: AnswerRef
   /** The project the answer's layers are stored under. */
   doc: string
+  /**
+   * Who is looking at the thread: the speaker reads "You" for the row's own
+   * author and "Student"/"Instructor" otherwise. Passed in rather than fetched
+   * here, because the caller (`MarkingInkOverlay`) already knows the pair's
+   * viewer role and the student id it belongs to.
+   */
+  viewer?: { role: 'instructor' } | { role: 'student'; studentId: string }
   /**
    * This answer's layers, fetched by the caller.
    *
@@ -49,8 +57,15 @@ export interface ThreadPlayerProps {
   onPlayingChange: (playing: PlayingLayer | null) => void
 }
 
-export function ThreadPlayer({ answer, doc, layers, onPlayingChange }: ThreadPlayerProps) {
+export function ThreadPlayer({ answer, doc, viewer, layers, onPlayingChange }: ThreadPlayerProps) {
   const [selected, setSelected] = useState<string | null>(null)
+
+  // Who said each layer. The server stamps the author from classroom identity
+  // at record time; a layer recorded before that carries none and reads as an
+  // unlabelled entry rather than a wrong speaker. The contract lives in
+  // `shared/thread-layer-author.mjs` and is consumed here, not duplicated.
+  const speakerOf = (layer: ThreadLayerSummary): string | null =>
+    threadSpeakerLabel({ author: layer.author ?? null, viewer: viewer ?? null })
 
   // This answer's own layers, and oldest first: stored newest first, but a
   // thread reads in the order things were said.
@@ -85,12 +100,15 @@ export function ThreadPlayer({ answer, doc, layers, onPlayingChange }: ThreadPla
           aria-label="Layer to play"
         >
           <option value="">Layers…</option>
-          {ordered.map((layer, index) => (
-            <option key={layer.id} value={layer.id}>
-              {`${index + 1}. ${formatTimecode(layer.duration_ms ?? 0)}`}
-              {layer.parentLayerId ? ' ↳' : ''}
-            </option>
-          ))}
+          {ordered.map((layer, index) => {
+            const speaker = speakerOf(layer)
+            return (
+              <option key={layer.id} value={layer.id}>
+                {`${index + 1}. ${speaker ? `${speaker} · ` : ''}${formatTimecode(layer.duration_ms ?? 0)}`}
+                {layer.parentLayerId ? ' ↳' : ''}
+              </option>
+            )
+          })}
         </select>
 
         {selected && (

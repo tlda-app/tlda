@@ -27,6 +27,8 @@ import {
 export interface ThreadLayerSummary extends RecordingSummary {
   answer?: AnswerRef
   parentLayerId?: string
+  /** Who recorded the layer, stamped server-side from classroom identity. */
+  author?: { role: 'instructor' } | { role: 'student'; studentId: string }
 }
 
 /** What `layerPath` and `composeAlongPath` need of a layer. */

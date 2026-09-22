@@ -22,6 +22,7 @@ import { join, basename, dirname, resolve } from 'path'
 import { promisify } from 'util'
 import { configuredReadToken, requireRead, requireOperatorWrite } from '../lib/auth.mjs'
 import { answerThreadAccess } from '../../shared/classroom-rooms.mjs'
+import { threadAuthorBelongsToAnswer, threadLayerAuthor } from '../../shared/thread-layer-author.mjs'
 import {
   createProject, readProject, updateProject, listProjects,
   readProjectMeta,
@@ -1758,10 +1759,17 @@ function answerThreadWriteAccess(req, answer) {
   })
 }
 
-/** Any admitted caller, unless this is a thread layer and the caller belongs to it. */
+/**
+ * Lectures admit any caller the bearer admitted. A thread layer admits only a
+ * thread participant by identity — never the bearer alone. A bearer that could
+ * file an answer layer would store a row no participant could have written
+ * (`answerThreadWriteAccess` denies it; the store names no owner for it), and
+ * the stamping below would then have to either refuse what the gate admitted
+ * or store an authorless layer that answers nothing about who said it.
+ */
 function allowRwOrAnswerThread(req, answer) {
   const thread = answerThreadWriteAccess(req, answer)
-  if (thread === 'write') return true
+  if (thread !== null) return thread === 'write'
   return !!req.identity
 }
 
@@ -1773,6 +1781,19 @@ function readRecordingMeta(dir, id) {
   } catch {
     return null
   }
+}
+
+function sameAnswerRef(left, right) {
+  if (!left && !right) return true
+  return left?.submissionRoomId === right?.submissionRoomId
+    && left?.problemId === right?.problemId
+}
+
+function sameLayerAuthor(left, right) {
+  if (!left && !right) return true
+  if (left?.role !== right?.role) return false
+  return left?.role === 'instructor'
+    || (left?.role === 'student' && left.studentId === right?.studentId)
 }
 
 const notAParticipant = (res) =>
@@ -1799,12 +1820,46 @@ router.post('/:name/recording', requireRecordingCreate, (req, res) => {
   if (!meta?.id || !Array.isArray(meta.events)) {
     return res.status(400).json({ error: 'Recording needs id and events[]' })
   }
+  // Who said this layer, stamped from the resolved identity — never from the
+  // client's body, where a caller could speak as the other side of the thread.
+  // The client's `author`, if any, is deleted first and unconditionally: a body
+  // with no answer would otherwise keep whatever it claimed. The create gate
+  // above (`requireRecordingCreate`) admitted an answer layer only as a thread
+  // participant; `answerThreadWriteAccess` said so from the identity, and the
+  // stamping re-derives from the same identity, so a stored layer always names
+  // a participant the gate could have admitted. The 409 below is the belt: if
+  // the re-derivation ever disagrees with the gate, the layer is refused
+  // rather than stored authorless. A lecture (no answer) stores nothing:
+  // stamping one would change every existing row's shape for a thread it does
+  // not belong to.
+  delete meta.author
+  if (meta.answer?.submissionRoomId) {
+    const store = req.app?.locals?.classroomStore
+    const submission = store ? (store.submissionDocumentOwner(String(meta.answer.submissionRoomId))
+      || store.submissionDocumentOwner(String(meta.answer.submissionRoomId).replace(/^doc-/, ''))) : null
+    const author = store ? threadLayerAuthor({ principal: classroomPrincipalFor(req, store), answer: meta.answer }) : null
+    if (!threadAuthorBelongsToAnswer({ author, answer: meta.answer, submissionOwnerId: submission?.studentId ?? null })) {
+      return res.status(409).json({ error: 'Recording author does not belong to this answer' })
+    }
+    if (author) meta.author = author
+  }
   const dir = recordingsDir(req.params.name)
   mkdirSync(dir, { recursive: true })
   const metaPath = join(dir, `${meta.id}.json`)
   if (existsSync(metaPath)) {
     try {
       const existing = JSON.parse(readFileSync(metaPath, 'utf8'))
+      // A checkpoint may extend only the layer that this id already names.
+      // Both answer participants can read each other's layer, so accepting the
+      // same id from the other participant would relabel the existing audio.
+      // Legacy thread rows have no author and therefore fail closed here: a
+      // retry cannot establish who made audio that is already stored.
+      if (!sameAnswerRef(existing.answer, meta.answer) || !sameLayerAuthor(existing.author, meta.author)) {
+        return res.status(409).json({
+          error: 'This recording id already belongs to another thread layer',
+          code: 'RECORDING_IDENTITY_MISMATCH',
+        })
+      }
       if (Number(existing.duration_ms) > Number(meta.duration_ms)) {
         return res.status(409).json({
           error: 'A newer recording checkpoint is already stored',
@@ -1866,9 +1921,10 @@ router.get('/:name/recording-drafts', requireRead, (req, res) => {
         if (!isInstructor && (!m.answer || answerThreadWriteAccess(req, m.answer) !== 'write')) return null
         const publication = readRecordingPublication(dir, m.id)
         if (publication?.state === 'published') return null
-        // `answer` and the parent's id, so a thread's shape can be read off the
-        // listing. The warp itself is not here: composing a path needs every
-        // ancestor's events and audio anyway, and those come with the recording.
+        // `answer`, the parent's id, and who said the layer, so a thread's
+        // shape and speakers can be read off the listing. The warp itself is
+        // not here: composing a path needs every ancestor's events and audio
+        // anyway, and those come with the recording.
         return {
           id: m.id,
           title: m.title,
@@ -1877,6 +1933,7 @@ router.get('/:name/recording-drafts', requireRead, (req, res) => {
           publication,
           ...(m.answer ? { answer: m.answer } : {}),
           ...(m.parent?.layerId ? { parentLayerId: m.parent.layerId } : {}),
+          ...(m.author ? { author: m.author } : {}),
         }
       } catch (error) {
         // A recording that will not parse is NOT the same as no recording, and

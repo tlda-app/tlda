@@ -369,6 +369,7 @@ function MarkedPair({
           <ThreadPlayer
             answer={answerRef}
             doc={bookProject}
+            viewer={pair.viewerRole === 'instructor' ? { role: 'instructor' } : { role: 'student', studentId: pair.studentId }}
             layers={layers}
             onPlayingChange={setPlaying}
           />
