@@ -8397,7 +8397,9 @@ async function dispatchFleetWsMessage(ws, msg) {
     // recording the bounded `no_direct_subscription` failure the entry already
     // carries. Measured 2026-09-21: `Cannot read properties of null (reading
     // 'delivery')` on a chat to a reanimated agent whose subscriptions death had
-    // ended.
+    // ended. Proven by `fleet-store-reanimate-messaging`: without the guard the
+    // wire send to a subscription-less recipient rejects with that throw; with
+    // it the receipt records `no_direct_subscription`.
     if (!delivery) return delivery
     if (delivery.delivery !== 'batched' || !delivery.notifyBy) return delivery
     const key = subscriptionBatchKey(delivery)
