@@ -165,6 +165,30 @@ test('projection submission carries its caller server and one-shot token only to
   assert.equal(target.password, 'one-shot')
 })
 
+test('a projection history seed does not replace the owner transport remote', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-projection-seed-'))
+  const checkout = join(root, 'shared')
+  const ownerRemote = join(root, 'book.git')
+  const projectionRemote = join(root, 'deck.git')
+  await git(root, ['init', '--bare', ownerRemote])
+  await git(root, ['init', '--bare', projectionRemote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'book.qmd'), '# Book\n')
+  await git(checkout, ['add', '-A'])
+  await git(checkout, ['commit', '-m', 'base'])
+  await git(checkout, ['remote', 'add', 'tlda', ownerRemote])
+  const revision = (await git(checkout, ['rev-parse', 'HEAD'])).stdout.trim()
+  const manager = managerOver(root, { remoteUrlFor: project => project === 'deck' ? projectionRemote : ownerRemote })
+
+  await manager.pushHistorySeed('deck', checkout, revision, null, undefined, true)
+
+  assert.equal((await git(checkout, ['remote', 'get-url', 'tlda'])).stdout.trim(), ownerRemote)
+  const seed = `refs/tlda/history-seeds/daemon-a/${revision}`
+  assert.equal((await git(projectionRemote, ['rev-parse', seed])).stdout.trim(), revision)
+})
+
 test('projection head-change and welcome polling cannot start a second runtime or watcher', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-projection-runtime-'))
   const checkout = join(root, 'shared')

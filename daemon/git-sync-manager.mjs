@@ -125,7 +125,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     await configureProjectRemote(item.project, item.sourceDir)
   }
 
-  async function pushHistorySeed(project, repositoryDir, revision, serverOverride = null, tokenOverride = undefined) {
+  async function pushHistorySeed(project, repositoryDir, revision, serverOverride = null, tokenOverride = undefined, preserveRemote = false) {
     const ref = historySeedRef({ daemonId, revision })
     // A per-call token is one-shot: the push carries it as a URL argument,
     // never as a stored remote. `configureProjectRemote` writes `.git/config`,
@@ -134,13 +134,20 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     // links in a single setup run, each of which would leave a live copy.
     // With no override this is the ordinary daemon-owned push through the
     // `tlda` remote, unchanged.
-    if (tokenOverride === undefined) {
+    if (tokenOverride === undefined && !preserveRemote) {
       await configureProjectRemote(project, repositoryDir, serverOverride)
       await execFile('git', ['push', 'tlda', `${revision}:${ref}`], { cwd: repositoryDir, encoding: 'utf8', timeout: 180000 })
       return { project, ref, revision }
     }
     const oneShotUrl = projectRemoteUrl(project, serverOverride, tokenOverride)
-    await execFile('git', ['push', oneShotUrl, `${revision}:${ref}`], { cwd: repositoryDir, encoding: 'utf8', timeout: 180000 })
+    const pushArgs = preserveRemote
+      ? ['-c', 'pack.threads=1', 'push', oneShotUrl, `${revision}:${ref}`]
+      : ['push', oneShotUrl, `${revision}:${ref}`]
+    await execFile('git', pushArgs, {
+      cwd: repositoryDir,
+      encoding: 'utf8',
+      timeout: preserveRemote ? 900000 : 180000,
+    })
     return { project, ref, revision }
   }
 

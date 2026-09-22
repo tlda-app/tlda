@@ -858,7 +858,7 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
         project,
         log,
         prepareSeed: async () => ({ repositoryDir: sourceDir, head: settled.revision }),
-        pushSeed: history => sourceSync.pushHistorySeed(project, history.repositoryDir, history.head, server, token || undefined),
+        pushSeed: history => sourceSync.pushHistorySeed(project, history.repositoryDir, history.head, server, token || undefined, true),
         confirmAdoption: ({ head, ref }) => sendMsgWithReply({ type: 'adopt-shadow-history-ref', project, head, ref }),
       })
     } else if (!serverHistoryContained) {
