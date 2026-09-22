@@ -335,6 +335,12 @@ function MarkedPair({
         // picker moved the glass while every glass still claimed the pen.
         isWriteTarget={isWriteTarget}
         roomId={marksRoomId}
+        markingIdentity={pair.viewerRole === 'instructor' ? {
+          assignmentId: pair.assignmentId,
+          studentId: pair.studentId,
+          problemId,
+          submissionRoomId: `doc-${pair.contentRef}`,
+        } : undefined}
         camera={frame.camera}
         bounds={frame.bounds}
         onEditorMount={setDraftEditor}

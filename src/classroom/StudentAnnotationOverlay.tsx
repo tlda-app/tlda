@@ -8,6 +8,7 @@ import { recordingElapsedMs } from '../recording/recorder'
 import { studentOverlayRoomId } from './studentOverlayRoom'
 import { markingLayerCaptures } from './markingCapture'
 import './StudentAnnotationOverlay.css'
+import { isStampedMarkingShapeType, markingTag, type MarkingIdentity } from './gradingWorkspace'
 
 // A student's own annotation layer, over the book.
 //
@@ -124,6 +125,8 @@ interface StudentAnnotationOverlayProps {
   camera?: { x: number; y: number; z: number }
   /** Limit the transparent canvas to one rectangle in its containing editor. */
   bounds?: { left: number; top: number; width: number; height: number }
+  /** Exact answer identity stamped on instructor-created marking shapes. */
+  markingIdentity?: MarkingIdentity
 }
 
 export function StudentAnnotationOverlay({
@@ -137,6 +140,7 @@ export function StudentAnnotationOverlay({
   roomId: explicitRoomId,
   camera: explicitCamera,
   bounds,
+  markingIdentity,
 }: StudentAnnotationOverlayProps) {
   const overlayRootRef = useRef<HTMLDivElement>(null)
   // Whether the camera is owned outside this component. A boolean, not the
@@ -354,10 +358,20 @@ export function StudentAnnotationOverlay({
           // freezes at the pause point so a paused stretch does not spread marks
           // across time the recording does not contain.
           const stopStamping = editor.sideEffects.registerAfterCreateHandler('shape', (shape, source) => {
-            if (source !== 'user' || shape.meta?.t != null) return
-            const t = recordingElapsedMs()
-            if (t == null) return
-            editor.store.update(shape.id, s => ({ ...s, meta: { ...s.meta, t } }))
+            if (source !== 'user') return
+            const tag = markingIdentity && isStampedMarkingShapeType(shape.type)
+              ? markingTag(markingIdentity)
+              : undefined
+            const t = shape.meta?.t == null ? recordingElapsedMs() : null
+            if (!tag && t == null) return
+            editor.store.update(shape.id, s => ({
+              ...s,
+              meta: {
+                ...s.meta,
+                ...(tag ? { classroomMarking: tag as any } : {}),
+                ...(t == null ? {} : { t }),
+              },
+            }))
           })
           return () => { stopStamping(); setOverlayEditor(null); onEditorRelease?.(editor) }
         }}
