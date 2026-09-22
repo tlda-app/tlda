@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { classroomApi, type Assignment, type CourseStatus, type RepairLink } from './api'
 import { cellLabel, countLabel } from './markingLabels'
+import { returnedHomeworkHref } from './returnedHomeworkLink'
 import './ClassroomWorkspace.css'
 
 /**
@@ -125,14 +126,20 @@ export function GradebookWorkspace() {
 
   // An instructor opens a submission to mark it. A student opens their own work,
   // which is a different surface and the only one they may reach.
-  const open = (assignmentId: string, studentId: string) => {
+  const open = (assignmentId: string, studentId: string, state?: string) => {
     const next = new URLSearchParams(window.location.search)
-    next.delete('course')
     if (isStudent) {
+      const assignment = data.assignments.find(candidate => candidate.id === assignmentId)
+      const returnedHref = state === 'returned' && assignment
+        ? returnedHomeworkHref(window.location.href, assignment, courseId)
+        : null
+      if (returnedHref) return returnedHref
+      next.delete('course')
       next.set('workspace', 'classroom-work')
       next.set('assignment', assignmentId)
       return `?${next}`
     }
+    next.delete('course')
     // AN INSTRUCTOR OPENS THE SOLUTION CHAPTER, NOT A MODE.
     //
     // Skip: "It's just supposed to look like the ordinary solution chapter — it
@@ -184,7 +191,7 @@ export function GradebookWorkspace() {
             <td>{cell?.submittedAt ? new Date(cell.submittedAt).toLocaleString() : '—'}</td>
             <td><span className="statusChip">{cellLabel(cell?.state || 'not-submitted')}</span></td>
             <td>{cell?.contentRef
-              ? <a href={open(assignment.id, mine.id)}>Open your work</a>
+              ? <a href={open(assignment.id, mine.id, cell.state)}>Open your work</a>
               : <a href={`?workspace=classroom-work&assignment=${encodeURIComponent(assignment.id)}`}>Hand it in</a>}</td>
           </tr>
         })}</tbody>

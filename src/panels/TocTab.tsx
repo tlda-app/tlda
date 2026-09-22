@@ -29,6 +29,7 @@ import { navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripT
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { viewFormat, hasSourceMapping } from '../../shared/document-formats.mjs'
 import { classroomApi } from '../classroom/api'
+import { returnedHomeworkHref } from '../classroom/returnedHomeworkLink'
 import { cacheProjectsForOffline, type OfflineProgress, type OfflineProject } from '../airplaneMode'
 import type { AirplaneState } from '../BookContext'
 
@@ -118,7 +119,7 @@ type TocMarkRow = { stage: TocStage; error: string | null; why: string }
 type TocMarks = { byPage: ReadonlyMap<number, TocMarkRow>; bySource: ReadonlyMap<string, TocMarkRow> }
 const EMPTY_MARKS: TocMarks = { byPage: new Map<number, TocMarkRow>(), bySource: new Map<string, TocMarkRow>() }
 
-type HomeworkEntry = { assignmentId: string; returned: boolean }
+type HomeworkEntry = { assignmentId: string; returned: boolean; returnedHref: string | null }
 const EMPTY_HOMEWORK: ReadonlyMap<string, HomeworkEntry> = new Map<string, HomeworkEntry>()
 const EMPTY_PAGE_FILES: readonly string[] = []
 
@@ -284,6 +285,7 @@ export function TocTab({ query = '' }: { query?: string }) {
           if (assignment.bookPageFile) pages.set(assignment.bookPageFile, {
             assignmentId: assignment.id,
             returned: assignment.submission?.gradingStatus === 'returned',
+            returnedHref: returnedHomeworkHref(window.location.href, assignment, courseId),
           })
         }
         setHomeworkPages(pages)
@@ -753,7 +755,7 @@ export function TocTab({ query = '' }: { query?: string }) {
         <span className="toc-title" onClick={h.unbuilt ? undefined : h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
         {homework?.returned ? <a
           className="toc-item-type toc-item-type--homework"
-          href={`?workspace=classroom-work&assignment=${encodeURIComponent(homework.assignmentId)}`}
+          href={homework.returnedHref ?? `?workspace=classroom-work&assignment=${encodeURIComponent(homework.assignmentId)}`}
           title="Open your returned homework"
           aria-label="Open your returned homework"
         >{COURSE_ITEM_BADGE.homework}</a> : (homework || itemType) && (
