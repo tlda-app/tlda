@@ -124,3 +124,18 @@ test('the deck pairing derives from live page-info when toc.json predates it', a
   assert.deepEqual(enriched.map(row => row.page), toc.map((row: { page: number }) => row.page))
   assert.deepEqual(enriched.map(row => row.level), toc.map((row: { level: string }) => row.level))
 })
+
+test('both TocTab load branches derive pairing from page-info, not just the single-doc one', async () => {
+  const { readFileSync } = await import('node:fs')
+  // The live defect on served `fcf884ccd`: the ordinary book path renders the
+  // book's toc.json, and the book branch called `setHtmlToc(toc)` directly —
+  // the `loadPageInfo`/`enrichTocWithPageInfo` fallback lived only in the
+  // single-document branch, so the ordinary ToC had zero chips. Both branches
+  // must derive. This fails on the parent (one call site) and passes after.
+  const src = readFileSync(new URL('../src/panels/TocTab.tsx', import.meta.url), 'utf8')
+  const bookBranch = src.slice(src.indexOf('if (!book) return'), src.indexOf('}, [book?.bookName, reloadCount])'))
+  assert.ok(bookBranch.includes('loadHtmlToc(book.bookName)'), 'book branch loads the book toc')
+  assert.ok(bookBranch.includes('enrichTocWithPageInfo'), 'book branch derives pairing from page-info')
+  const callSites = src.match(/enrichTocWithPageInfo\(toc, pages\)/g) ?? []
+  assert.equal(callSites.length, 2, 'book branch and single-doc branch both derive')
+})

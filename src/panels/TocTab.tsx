@@ -387,7 +387,13 @@ export function TocTab({ query = '' }: { query?: string }) {
       try {
         const toc = await loadHtmlToc(book.bookName)
         if (cancelled || !toc) return
-        setHtmlToc(toc)
+        // Same predated-toc derivation as the single-document branch below:
+        // the served `toc.json` can predate `chapterRoot`/`deckOf` while the
+        // same surface's `page-info.json` already carries the pairing. Without
+        // this the ordinary book path renders zero deck chips.
+        const pages = await loadPageInfo(book.bookName)
+        const enriched = pages ? enrichTocWithPageInfo(toc, pages) : toc
+        if (!cancelled) setHtmlToc(enriched)
       } catch (error) {
         console.warn('[toc] book load failed:', error instanceof Error ? error.message : String(error))
       } finally {
