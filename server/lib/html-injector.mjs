@@ -738,19 +738,53 @@ const BRIDGE_SCRIPT = `
   }
 
   // Report anchor Y positions for navigation (headings, figures, tables, sections)
+  // An element inside an inactive tab pane reports offsetTop 0 (the pane is
+  // display:none, which collapses the whole offset chain), so the position
+  // would register as the top of the document instead of the real location.
+  // Measure those elements with their pane chain temporarily activated and
+  // restored in the same synchronous pass, so no paint happens in between.
+  // Note: toggling the Bootstrap active class (not inline display) is what
+  // makes the pane visible — the hiding rule targets panes without the
+  // active class, which outranks any inline display value.
+  function measureWithHiddenPanesShown(el, measure) {
+    var reveal = [];
+    var node = el;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (node.classList && node.classList.contains('tab-pane') &&
+          !node.classList.contains('active')) {
+        reveal.push(node);
+      }
+      node = node.parentElement;
+    }
+    if (reveal.length === 0) return measure();
+    reveal.forEach(function(pane) {
+      pane.classList.add('active');
+    });
+    var value;
+    try {
+      value = measure();
+    } finally {
+      reveal.forEach(function(pane) {
+        pane.classList.remove('active');
+      });
+    }
+    return value;
+  }
   function reportHeadings() {
     var elements = document.querySelectorAll('[id]');
     var positions = {};
     elements.forEach(function(el) {
       var id = el.id;
       if (!id) return;
-      var y = 0;
-      var node = el;
-      while (node) {
-        y += node.offsetTop || 0;
-        node = node.offsetParent;
-      }
-      positions[id] = y;
+      positions[id] = measureWithHiddenPanesShown(el, function() {
+        var y = 0;
+        var node = el;
+        while (node) {
+          y += node.offsetTop || 0;
+          node = node.offsetParent;
+        }
+        return y;
+      });
     });
     if (Object.keys(positions).length > 0 && window.parent !== window) {
       window.parent.postMessage({
