@@ -86,6 +86,7 @@ setBuildReporter({
   writeSentinel:   (docName, propsPatch)   => stageReport('writeSentinel', [docName, propsPatch]),
   emitGlobalEvent: (type, payload)         => stageReport('emitGlobalEvent', [type, payload]),
   updateProject:   (name, patch)           => stageReport('updateProject', [name, patch]),
+  emitBuildComplete: (name, payload)       => stageReport('emitBuildComplete', [name, payload]),
   mirrorShadow:    (name, hash, sourceRevision, acceptSeq) => stageReport('mirrorShadow', [name, hash, sourceRevision, acceptSeq]),
   recordRevisionPhase: (name, sourceRevision, phase, state, result) => stageReport('recordRevisionPhase', [name, sourceRevision, phase, state, result]),
 })

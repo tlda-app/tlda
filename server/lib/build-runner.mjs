@@ -65,7 +65,7 @@ import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-
 import { writeSentinel } from './sentinel.mjs'
 import { commitSnapshot, currentVersion, initShadowFromProjectRepo, initShadowFromGitRef, listVersions, createShadowBundleBase64, readShadowSourceScope, shadowRepoDir } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
-import { emitBuildComplete } from './webhooks.mjs'
+import { emitBuildComplete as emitBuildCompleteWebhook } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
 import { generateWordSynctexSourceTree } from './word-synctex.mjs'
 import { bibliographyRunReason } from './build-bibliography-decision.mjs'
@@ -125,6 +125,7 @@ const _directReporter = {
     }
   },
   emitGlobalEvent: (type, payload) => emitGlobalEvent(type, payload),
+  emitBuildComplete: (name, payload) => emitBuildCompleteWebhook(name, payload),
   updateProject: (name, patch) => updateProject(name, patch),
   recordRevisionPhase: async (name, sourceRevision, phase, state, result) => {
     if (!sourceRevision) return null
@@ -2017,7 +2018,12 @@ export async function recordBuildVersion({
  */
 export function completeBuildSuccess(name, { elapsed, pages }) {
   signalBuildProgress(name, 'done', `${elapsed}s`)
-  emitBuildComplete(name, { status: 'success', elapsed, pages, errors: [] })
+  // Through the reporter, not direct: in a forked build worker this stages the
+  // webhook beside the card and the sentinel, and the server replays it only
+  // after publication. A direct call fires success while the instance is still
+  // private — before the swap can refuse it — so a build that then fails to
+  // publish has already announced success.
+  _reporter.emitBuildComplete(name, { status: 'success', elapsed, pages, errors: [] })
 }
 
 export async function finalizeBuildVersion({
@@ -2544,7 +2550,10 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null, v
       ctx.addLog(`build publish/finalize failed: ${e.message}`)
       await _reporter.updateProject(name, { buildStatus: 'finalize-failed' })
       signalBuildProgress(name, 'failed', `publish failed: ${e.message}`)
-      emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), pages: expectedPages ?? 0, errors: [e.message] })
+      // Direct, not staged: this rethrows into the worker catch where no
+      // publication follows, so a staged webhook would be dropped with it.
+      // A terminal failure announces itself now; only success waits for the swap.
+      emitBuildCompleteWebhook(name, { status: 'failed', elapsed: elapsed(), pages: expectedPages ?? 0, errors: [e.message] })
       throw e
     }
 
@@ -2600,7 +2609,7 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null, v
     const totalElapsed = elapsed()
     ctx.addLog(`Build complete in ${totalElapsed}s`)
     signalBuildProgress(name, 'done', `${totalElapsed}s`)
-    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
+    _reporter.emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
 
     status.building = false
     status.phase = 'done'
@@ -2618,7 +2627,7 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null, v
     try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch (e2) { console.error(`[build] failed to write build.log for ${name}: ${e2.message}`) }
 
     await reportBuildFailure(name, e.message, sourceRevision, acceptSeq)
-    emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), errors: [e.message] })
+    emitBuildCompleteWebhook(name, { status: 'failed', elapsed: elapsed(), errors: [e.message] })
     throw e
   } finally {
     buildChildProcesses.delete(buildId)

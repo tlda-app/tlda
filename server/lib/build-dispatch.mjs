@@ -94,6 +94,7 @@ async function refreshPreviewCopy(name) {
 }
 import { projectRevisionStatus } from './source-lifecycle.mjs'
 import { reportBuildFailure } from './build-runner.mjs'
+import { emitBuildComplete } from './webhooks.mjs'
 
 async function patchShape(docName, shapeId, propsPatch) {
   try {
@@ -123,7 +124,7 @@ async function regenerateBookTocs(name) {
   }
 }
 
-const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, regenerateBookTocs, reportBuildFailure }
+const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, emitBuildComplete, updateProject, regenerateBookTocs, reportBuildFailure }
 
 /**
  * Which RPC arguments name the project and the revision a build is FOR.
