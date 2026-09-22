@@ -264,6 +264,20 @@ export function StudentAnnotationOverlay({
     const forwardWheel = (event: WheelEvent) => {
       event.preventDefault()
       event.stopPropagation()
+      // A plain wheel is document pan even while a drawing tool owns pointer
+      // input. Dispatching it through that tool lets the tool reject the
+      // gesture, which leaves the answer glass as a dead scroll region. Move
+      // the document's own camera directly; modified wheel gestures still go
+      // through tldraw so its zoom semantics stay authoritative.
+      if (!event.ctrlKey && !event.metaKey) {
+        const camera = bookEditor.getCamera()
+        bookEditor.setCamera({
+          ...camera,
+          x: camera.x - event.deltaX / camera.z,
+          y: camera.y - event.deltaY / camera.z,
+        }, { immediate: true })
+        return
+      }
       bookEditor.dispatch({
         type: 'wheel',
         name: 'wheel',

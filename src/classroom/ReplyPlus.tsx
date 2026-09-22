@@ -10,16 +10,19 @@
  * pressed with nothing playing it starts the answer's first layer.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor } from 'tldraw'
 import {
   discardRecording,
+  detachRecordingEditor,
+  getActiveLayerRecording,
   getRecorderState,
   pauseRecording,
   resumeRecording,
   startRecording,
   stopRecording,
   subscribeRecorder,
+  switchRecordingEditor,
 } from '../recording/recorder'
 import type { AnswerRef } from '../recording/recorder'
 import { replyKind, replyTarget, type PlayingLayer } from './replyLayer'
@@ -46,7 +49,18 @@ export interface ReplyPlusProps {
 }
 
 export function ReplyPlus({ answer, doc, playing, editor, onLayerRecorded, onSend }: ReplyPlusProps) {
-  const [token, setToken] = useState<string | null>(null)
+  const identityKey = `${doc}\u0000${answer.submissionRoomId}\u0000${answer.problemId}`
+  const identityRef = useRef(identityKey)
+  identityRef.current = identityKey
+  const matchingActiveToken = useCallback(() => {
+    const active = getActiveLayerRecording()
+    return active && active.doc === doc
+      && active.answer.submissionRoomId === answer.submissionRoomId
+      && active.answer.problemId === answer.problemId
+      ? active.token
+      : null
+  }, [answer.problemId, answer.submissionRoomId, doc])
+  const [token, setToken] = useState<string | null>(() => matchingActiveToken())
   const [busy, setBusy] = useState(false)
   const [paused, setPaused] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -56,9 +70,22 @@ export function ReplyPlus({ answer, doc, playing, editor, onLayerRecorded, onSen
   // capture can stop without this button being the thing that stopped it.
   useEffect(() => subscribeRecorder((state) => {
     if (state.status === 'idle') { setToken(null); setPaused(false) }
-    else setPaused(state.paused)
+    else {
+      setToken(matchingActiveToken())
+      setPaused(state.paused)
+    }
     if (state.error) setError(state.error)
-  }), [])
+  }), [matchingActiveToken])
+
+  useEffect(() => {
+    setToken(matchingActiveToken())
+  }, [matchingActiveToken])
+
+  useEffect(() => {
+    if (!token || !editor) return
+    switchRecordingEditor(token, editor)
+    return () => { detachRecordingEditor(token, editor) }
+  }, [editor, token])
 
   const start = useCallback(async () => {
     setBusy(true)
@@ -71,13 +98,13 @@ export function ReplyPlus({ answer, doc, playing, editor, onLayerRecorded, onSen
       // Null is the platform asking for a gesture it did not get, which the
       // recorder reports on its own; it is not this control's failure to
       // announce a second time.
-      setToken(started)
+      if (identityRef.current === identityKey) setToken(started)
     } catch (err) {
       setError((err as Error).message)
     } finally {
       setBusy(false)
     }
-  }, [answer, doc, editor, playing])
+  }, [answer, doc, editor, identityKey, playing])
 
   /**
    * Send: stop the recording, then hand the stored layer id to the take's

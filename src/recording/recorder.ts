@@ -139,6 +139,25 @@ export function getRecorderState(): RecorderState {
   return state
 }
 
+export interface ActiveLayerRecording {
+  token: string
+  doc: string
+  answer: AnswerRef
+}
+
+/**
+ * The active thread-layer session, if this recorder is currently making one.
+ *
+ * A reply control is rendered through an answer iframe portal. Moving that
+ * answer offscreen can rebuild the portal while the recorder itself correctly
+ * remains alive. The rebuilt control therefore asks the recorder for the
+ * session it already owns instead of treating a remount as a new recording.
+ */
+export function getActiveLayerRecording(): ActiveLayerRecording | null {
+  if (state.status !== 'recording' || !activeToken || !activeDoc || !activeAnswer) return null
+  return { token: activeToken, doc: activeDoc, answer: { ...activeAnswer } }
+}
+
 export function subscribeRecorder(cb: StateListener): () => void {
   listeners.add(cb)
   return () => listeners.delete(cb)
@@ -770,6 +789,13 @@ export function switchRecordingEditor(token: string, editor: Editor | null): boo
   events.push({ t: now(), kind: 'base', snapshot: getSnapshot(editor.store) })
   attachEditor(editor)
   return true
+}
+
+/** Detach only the editor this caller attached; a stale portal cleanup must not
+ * disconnect a newer mount that has already reclaimed the same session. */
+export function detachRecordingEditor(token: string, editor: Editor): boolean {
+  if (activeToken !== token || state.status !== 'recording' || activeEditor !== editor) return false
+  return switchRecordingEditor(token, null)
 }
 
 /** Go off the record: pause audio + event capture, and stop the clock advancing. */
