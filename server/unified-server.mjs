@@ -5697,11 +5697,11 @@ app.use('/docs', (req, res, next) => {
   const servedFilePath = filePath.endsWith('/') ? `${filePath}index.html` : filePath
   let projectPath = null
   try {
-    projectPath = resolveContainedPath(outputRoot, servedFilePath)
+    projectPath = await resolvePublishedAssetPath(outputRoot, servedFilePath)
   } catch {
     return res.status(404).json({ error: 'Not found' })
   }
-  if (await docPathExists(projectPath)) {
+  if (projectPath) {
     res.set('Cache-Control', 'no-cache')
     // For HTML files in html-format projects, inject the tlda bridge script
     if (servedFilePath.endsWith('.html')) {
