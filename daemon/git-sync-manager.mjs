@@ -455,7 +455,17 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
     const runtime = await start(item)
-    const result = await runtime.sync.submitCurrent(options)
+    // A per-call server/token override is one-shot: the proposal push carries
+    // it as a URL argument, never as a stored remote. The boundary is that
+    // `initialize` fixes the sync's remote from the daemon's values, so a
+    // caller-named server and credential must be rebuilt here per call.
+    // Undefined with no server means the caller named none — the ordinary
+    // daemon-owned push, unchanged.
+    const { serverOverride = null, tokenOverride = undefined, ...submitOptions } = options || {}
+    const pushTarget = tokenOverride === undefined && !serverOverride
+      ? null
+      : projectRemoteUrl(project, serverOverride, tokenOverride)
+    const result = await runtime.sync.submitCurrent({ ...submitOptions, pushTarget })
     await runtime.refreshWatchedMembers()
     return result
   }

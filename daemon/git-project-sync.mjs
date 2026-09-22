@@ -602,10 +602,18 @@ export function createGitProjectSync({
    * `commit-tree`, no recursion. The caller learns the named revision is not
    * publishable and decides what to do, which is not this function's call.
    */
-  async function pushRevision(revision, { forceRebuild = false, members = null, combined = false, exact = false } = {}) {
+  async function pushRevision(revision, { forceRebuild = false, members = null, combined = false, exact = false, pushTarget = null } = {}) {
+    // A per-call push target is one-shot: the proposal push carries it as the
+    // remote argument, never as a stored remote. The boundary is that the
+    // sync's `remote` is fixed at `initialize` from the daemon's values, so
+    // a classroom link whose caller named a different server and credential
+    // must hand the proposal push a per-call target or the push goes to the
+    // daemon's URL. Null means the caller named none — the ordinary
+    // daemon-owned push through `remote`, unchanged.
+    const target = pushTarget || remote
     const proposalRef = `refs/tlda/proposals/${daemonPart}/${branchPart}/${revision}`
     try {
-      const result = await git(['push', '--porcelain', remote, `${revision}:${proposalRef}`])
+      const result = await git(['push', '--porcelain', target, `${revision}:${proposalRef}`])
       const submitted = { status: 'SubmittedToBuildQueue', revision, proposalRef, output: `${result.stdout || ''}${result.stderr || ''}` }
       await onSubmitted({ ...submitted, forceRebuild, members })
       return { ok: true, ...submitted }
@@ -654,7 +662,7 @@ export function createGitProjectSync({
         'commit-tree', merge.tree, '-p', accepted, '-p', revision,
         '-m', `combine ${revision.slice(0, 7)} with accepted ${accepted.slice(0, 7)}`,
       ])).stdout.trim()
-      return pushRevision(combinedRevision, { forceRebuild, members, combined: true })
+      return pushRevision(combinedRevision, { forceRebuild, members, combined: true, pushTarget })
     }
   }
 

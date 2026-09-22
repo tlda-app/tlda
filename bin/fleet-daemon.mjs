@@ -936,7 +936,16 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     refilter: !status.alreadyLinked || rootsChanged,
   }).catch(error => ({ ok: false, status: 'error', reason: error.message }))
   if (!workBranch.ok) log.warn?.(`${project}: linked, but this checkout is not on its work branch — ${workBranch.reason || workBranch.status}`)
-  const submission = await sourceSync.submit(project, { forceRebuild })
+  // The caller's server and token ride the same one-shot seam as the seed
+  // push above: the proposal push remote is otherwise fixed at sync
+  // `initialize` from the daemon's values. The submit path builds the
+  // credential as a URL argument, never a stored remote; when the caller
+  // names nothing the daemon's values still govern.
+  const submission = await sourceSync.submit(project, {
+    forceRebuild,
+    ...(server ? { serverOverride: server } : {}),
+    ...(token ? { tokenOverride: token } : {}),
+  })
   applyProjectWorldOwnership('local-source-link')
   return { ...result, workBranch, submission }
 }
