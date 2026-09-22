@@ -1397,7 +1397,45 @@ export async function buildIncrementalQmd({
     if (!renderedProject) {
       throw new Error('tlda Quarto project rendered without producing tlda-manifest.json')
     }
-    const renderedPageInfo = resolveQuartoBookPageSources(outDir, renderedProject.pageInfo)
+    const seededPageInfo = resolveQuartoBookPageSources(outDir, renderedProject.pageInfo)
+    // A component render never rewrites the manifest, so a newly added chapter
+    // lands in `_book/` with no manifest row pointing at it. Splice each such
+    // rendered-but-unmanifested chapter into the seeded page list at the
+    // position `_quarto.yml` declares, before the provenance loop and the ToC
+    // build that both read that list.
+    const renderedBookDir = dirname(renderedProject.path)
+    const renderedPrefix = relative(outDir, renderedBookDir).replace(/\\/g, '/')
+    const declaredBookSources = quartoBookRoots(outDir)
+    const renderedPageInfo = [...seededPageInfo]
+    for (const source of declaredBookSources) {
+      const normalizedSource = String(source).replace(/\\/g, '/').replace(/^\.?\/+/, '')
+      if (renderedPageInfo.some(page => normalizedBookSource(page.source?.file) === normalizedBookSource(normalizedSource))) continue
+      const renderedOutput = qmdRenderedOutputFilesForSource(outDir, normalizedSource)
+        .map(output => String(output).replace(/\\/g, '/').replace(/^\.?\/+/, ''))
+        .find(output => existsSync(join(outDir, output)))
+      if (!renderedOutput) continue
+      const file = renderedPrefix
+        ? `${renderedPrefix}/${renderedOutput.replace(/^_book\//, '')}`
+        : renderedOutput
+      const title = manifestTitleFromHtml(readFileSync(join(outDir, renderedOutput), 'utf8'), renderedOutput)
+      const position = declaredBookSources.indexOf(normalizedSource)
+      let insertAt = renderedPageInfo.length
+      if (position !== -1) {
+        for (let i = 0; i < renderedPageInfo.length; i++) {
+          const otherPosition = declaredBookSources.indexOf(String(renderedPageInfo[i].source?.file || '').replace(/\\/g, '/').replace(/^\.?\/+/, ''))
+          if (otherPosition === -1 || otherPosition > position) { insertAt = i; break }
+        }
+      }
+      renderedPageInfo.splice(insertAt, 0, {
+        file,
+        width: 800,
+        height: 1200,
+        title,
+        format: 'qmd',
+        source: { type: 'project-source', format: 'qmd', file: normalizedSource },
+      })
+      addLog(`[qmd] ${normalizedSource}: rendered without a manifest row — joined the book at position ${insertAt + 1}`)
+    }
     for (const page of renderedPageInfo) {
       const path = join(outDir, page.file)
       const sourceFile = page.source.file
