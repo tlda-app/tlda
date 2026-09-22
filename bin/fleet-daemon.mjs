@@ -825,7 +825,7 @@ async function loadLocallyBoundProjects() {
 // failed link leaves nothing behind. A link that half-succeeds and leaves the
 // paper starting from version one is the old broken behaviour wearing a success
 // message.
-async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null, forceRebuild = false, acceptContainedServerHistory = false, preflightOnly = false, server = null, token = null }) {
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, sourceOwner = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null, forceRebuild = false, acceptContainedServerHistory = false, preflightOnly = false, server = null, token = null }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
 
   const status = sourceSync.bindingStatus(project, sourceDir)
@@ -849,7 +849,19 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
         log.info(`${project}: all ${hashes.length} server versions are contained in ${sourceDir}; preserving server history during relink`)
       }
     }
-    if (!serverHistoryContained) {
+    if (!serverHistoryContained && sourceOwner) {
+      const settled = await sourceSync.settleSourceOwner(sourceOwner)
+      if (!settled?.ok || !settled.revision) {
+        throw new Error(`${project} was not linked: source owner ${sourceOwner} did not settle (${settled?.status || 'unknown'})`)
+      }
+      await seedAndConfirmHistory({
+        project,
+        log,
+        prepareSeed: async () => ({ repositoryDir: sourceDir, head: settled.revision }),
+        pushSeed: history => sourceSync.pushHistorySeed(project, history.repositoryDir, history.head, server, token || undefined),
+        confirmAdoption: ({ head, ref }) => sendMsgWithReply({ type: 'adopt-shadow-history-ref', project, head, ref }),
+      })
+    } else if (!serverHistoryContained) {
       await seedAndConfirmHistory({
         project,
         log,
@@ -905,6 +917,7 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     kind,
     remote,
     mirrorMode,
+    sourceOwner,
     // Only when the caller named one. Absent, the binding carries no server and
     // the manager falls back to the daemon's, which is every ordinary link.
     ...(server ? { server } : {}),
@@ -921,7 +934,7 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
     throw new Error(`${project} was not linked: its source binding could not be registered (${error.message})`)
   }
   serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
-  await sourceSync.sync([projectMetadata])
+  if (!sourceOwner) await sourceSync.sync([projectMetadata])
   // Stand the checkout on its work branch, BEFORE the first submit.
   //
   // Nothing did this, and it is the whole reason linking produced a checkout
@@ -932,9 +945,11 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   // Reported rather than thrown. A checkout that could not be moved is still
   // linked and still has its history on the server; failing the link would be a
   // worse outcome than a link that says which branch to check out.
-  const workBranch = await sourceSync.standOnWorkBranch(project, {
-    refilter: !status.alreadyLinked || rootsChanged,
-  }).catch(error => ({ ok: false, status: 'error', reason: error.message }))
+  const workBranch = sourceOwner
+    ? { ok: true, status: 'owned-by', project: sourceOwner }
+    : await sourceSync.standOnWorkBranch(project, {
+      refilter: !status.alreadyLinked || rootsChanged,
+    }).catch(error => ({ ok: false, status: 'error', reason: error.message }))
   if (!workBranch.ok) log.warn?.(`${project}: linked, but this checkout is not on its work branch — ${workBranch.reason || workBranch.status}`)
   // The caller's server and token ride the same one-shot seam as the seed
   // push above: the proposal push remote is otherwise fixed at sync

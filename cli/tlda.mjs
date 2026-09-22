@@ -223,7 +223,7 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda project link <name> <root> [root ...] [--version <branch>@<commit>] [--github] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Create a project from the current existing Git repository. Positional paths are document roots; each root and its include graph seed project history. --version selects the branch and endpoint (default: the checked-out branch at HEAD). --github creates a private repository with the authenticated gh account and adds it through the ordinary Git remote path.\n  An existing different binding is refused until it is explicitly unlinked.',
+  link:    'tlda project link <name> <root> [root ...] [--source-owner <project>] [--version <branch>@<commit>] [--github] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Create a project from the current existing Git repository. Positional paths are document roots; each root and its include graph seed project history. --source-owner creates a declared-root projection of an existing project bound to this checkout; the owner remains the only branch and watcher. --version selects the branch and endpoint (default: the checked-out branch at HEAD). --github creates a private repository with the authenticated gh account and adds it through the ordinary Git remote path.\n  An existing different binding is refused until it is explicitly unlinked.',
   unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local checkout currently linked to the project. The source must match the existing binding.',
   add:     'tlda project add <file> [file ...] [--project <name>] [--from <branch>]\n\n  Add files to the project this checkout is linked to, as document roots.\n\n  The project keeps the branch and history it already has: this appends to the\n  declared document roots and never unlinks, reseeds, or moves the tlda branch.\n  Running it twice adds nothing the second time.\n\n  A file that is present but untracked is staged with `git add` first, because a\n  declared root that is not in the settled tree stops the project syncing.\n  --from  Take a file that is not in this working tree from another branch\n          (`git checkout <branch> -- <file>`), which is how you pull a file\n          that only exists on main into the project.',
   merge:   'tlda project merge [project] [--into <branch>] [--repo <path>] [--ff-only] [--from <repo>]\ntlda project merge --continue | --abort | --status [--repo <path>]\n\n  Land the version history tlda accumulated for a project on a real branch —\n  your own repository, or a linked remote such as Overleaf.\n\n  The app\'s copy shares no commit identity with your repository, so this is a\n  replay rather than a merge: every change is re-applied as its own commit,\n  keeping its author, date and message. Commits already present are recognised\n  by content, so running it twice lands nothing the second time.\n\n  --ff-only  Play the whole sequence or move nothing. This is the mode the\n             server runs unattended; it never resolves a conflict.\n  (default)  Play patches until one needs a decision, then stop with that\n             conflict in a scratch working tree for you to resolve.\n\n  --into     Branch to land on (default: the checked-out branch).\n  --repo     Repository to land in (default: the current directory).\n  --from     Replay from a repository already on this box instead of fetching.',
@@ -1190,6 +1190,7 @@ async function cmdCreate() {
   const title = getFlag('title') || name
   const version = getFlag('version')
   const acceptContainedServerHistory = hasFlag('accept-contained-server-history')
+  const sourceOwner = getFlag('source-owner') || null
   let seedBranch = null
   let seedRevision = 'HEAD'
   let linkedRemote = null
@@ -1222,6 +1223,7 @@ async function cmdCreate() {
       acceptContainedServerHistory,
       preflightOnly: true,
       server: getFlag('server') || null,
+      sourceOwner,
       ...linkedRemote,
     })
     if (binding.alreadyLinked) console.log(dim(`Project "${name}" is already linked to ${dir}.`))
@@ -1250,6 +1252,7 @@ async function cmdCreate() {
       // The link then fails outright, so a classroom could not be set up on any
       // box that is not the daemon's default.
       server: getFlag('server') || null,
+      sourceOwner,
       ...linkedRemote,
     })
   }

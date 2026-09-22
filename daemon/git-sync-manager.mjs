@@ -27,7 +27,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile: rawExecFile = defaultExecFile, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {}, onSyncRecovered = async () => {}, onRemotePublishFailed = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile: rawExecFile = defaultExecFile, createProjectSync = createGitProjectSync, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {}, onSyncRecovered = async () => {}, onRemotePublishFailed = async () => {} } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
 
   // The project remote carries this daemon's token as URL userinfo, and it is
@@ -147,7 +147,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   async function initialize(item) {
     await ensureRepo(item)
     let runtime
-    const sync = createGitProjectSync({
+    const sync = createProjectSync({
       sourceDir: item.sourceDir,
       quietMs,
       project: item.project,
@@ -269,6 +269,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
           if (fromEdit) await reportSyncRefusal(result)
         }
         if (result?.ok) {
+          if (result.revision) await publishProjections(item.project, result.revision)
           await reportSyncRecovered()
           reportedRefusal = null
           await reportDroppedDocuments(result.dropped || [])
@@ -336,6 +337,9 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   }
 
   function start(item) {
+    if (item.sourceOwner) {
+      return Promise.reject(new Error(`projection ${item.project} has no runtime; source owner ${item.sourceOwner} is the sole watcher`))
+    }
     if (runtimes.has(item.project)) return Promise.resolve(runtimes.get(item.project))
     if (starts.has(item.project)) return starts.get(item.project)
     const starting = Promise.resolve().then(() => initialize(item))
@@ -371,7 +375,20 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     // the source room, and the server-side room manager all come through here.
     const taken = Object.entries(all).find(([name, value]) => name !== project
       && path.resolve(typeof value === 'string' ? value : value.sourceDir) === absolute)
-    if (taken) {
+    const sourceOwner = metadata.sourceOwner || (existing && typeof existing === 'object' ? existing.sourceOwner : null)
+    if (sourceOwner) {
+      const owner = all[sourceOwner]
+      if (!owner) throw new Error(`Source owner ${sourceOwner} is not bound on this daemon`)
+      if (typeof owner === 'object' && owner.sourceOwner) {
+        throw new Error(`Source owner ${sourceOwner} is itself a projection`)
+      }
+      if (path.resolve(typeof owner === 'string' ? owner : owner.sourceDir) !== absolute) {
+        throw new Error(`Source owner ${sourceOwner} is bound to another checkout`)
+      }
+      if (!Array.isArray(metadata.documentRoots) || metadata.documentRoots.length === 0) {
+        throw new Error(`Projection ${project} must declare at least one document root`)
+      }
+    } else if (taken) {
       throw new Error(`${absolute} is already the checkout for project ${taken[0]}. `
         + 'One checkout carries one project: clone the repository again and link '
         + `${project} to the new clone.`)
@@ -393,6 +410,10 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     const all = load()
     const existing = all[project]
     if (!existing) return { unlinked: false }
+    const projections = Object.entries(all).filter(([, value]) => typeof value === 'object' && value.sourceOwner === project)
+    if (projections.length) {
+      throw new Error(`Project ${project} still owns projection${projections.length === 1 ? '' : 's'} ${projections.map(([name]) => name).join(', ')}`)
+    }
     const existingDir = typeof existing === 'string' ? existing : existing.sourceDir
     if (sourceDir && path.resolve(sourceDir) !== path.resolve(existingDir)) throw new Error(`Project ${project} is bound to ${existingDir}`)
     const runtime = runtimes.get(project)
@@ -409,6 +430,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     const byName = new Map(projects.map(project => [project.name, project]))
     const failures = []
     for (const item of records()) {
+      if (item.sourceOwner) continue
       const project = byName.get(item.project)
       if (!project) continue
       try {
@@ -426,6 +448,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   async function headChanged(project, revision = null) {
     const item = record(project)
     if (!item) return { skipped: true, reason: 'not-bound' }
+    if (item.sourceOwner) return { skipped: true, reason: 'projection-owned', sourceOwner: item.sourceOwner }
     const runtime = await start(item)
     const result = await runtime.cluster.serializeMirror(
       () => runtime.sync.headChanged(revision),
@@ -439,6 +462,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   async function pollRemote(project) {
     const item = record(project)
     if (!item) return { skipped: true, reason: 'not-bound' }
+    if (item.sourceOwner) return { skipped: true, reason: 'projection-owned', sourceOwner: item.sourceOwner }
     const runtime = await start(item)
     return runtime.remoteBridge ? runtime.remoteBridge.poll() : { skipped: true, reason: 'not-remote-backed' }
   }
@@ -447,6 +471,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   async function standOnWorkBranch(project, options = {}) {
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
+    if (item.sourceOwner) throw new Error(`projection ${project} has no work branch; source owner ${item.sourceOwner} owns the checkout`)
     const runtime = await start(item)
     return runtime.sync.standOnWorkBranch(options)
   }
@@ -454,6 +479,18 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   async function submit(project, options = {}) {
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
+    if (item.sourceOwner) {
+      const owner = record(item.sourceOwner)
+      if (!owner) throw new Error(`source owner ${item.sourceOwner} is not bound on this daemon`)
+      const ownerRuntime = await start(owner)
+      const { serverOverride = null, tokenOverride = undefined, ...submitOptions } = options || {}
+      const settled = await ownerRuntime.sync.submitCurrent(submitOptions)
+      if (!settled?.ok || !settled.revision) return settled
+      const results = await publishProjections(item.sourceOwner, settled.revision, {
+        only: project, serverOverride, tokenOverride,
+      })
+      return results[project]
+    }
     const runtime = await start(item)
     // A per-call server/token override is one-shot: the proposal push carries
     // it as a URL argument, never as a stored remote. The boundary is that
@@ -467,7 +504,44 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       : projectRemoteUrl(project, serverOverride, tokenOverride)
     const result = await runtime.sync.submitCurrent({ ...submitOptions, pushTarget })
     await runtime.refreshWatchedMembers()
+    if (result?.ok && result.revision) {
+      await publishProjections(project, result.revision, { serverOverride, tokenOverride })
+    }
     return result
+  }
+
+  async function publishProjections(sourceOwner, revision, { only = null, serverOverride = null, tokenOverride = undefined } = {}) {
+    const projections = records().filter(item => item.sourceOwner === sourceOwner && (!only || item.project === only))
+    const results = {}
+    for (const item of projections) {
+      const projection = createProjectSync({
+        sourceDir: item.sourceDir,
+        quietMs,
+        project: item.project,
+        daemonId,
+        bindingId: item.bindingId,
+        remote: projectRemoteUrl(item.project),
+        documentRoots: item.documentRoots || [],
+        log,
+        onSubmitted: event => onProposalSubmitted({ project: item.project, sourceDir: item.sourceDir, ...event }),
+      })
+      const pushTarget = tokenOverride === undefined && !serverOverride
+        ? null
+        : projectRemoteUrl(item.project, serverOverride, tokenOverride)
+      const result = await projection.pushRevision(revision, { exact: true, pushTarget })
+      if (!result?.ok) {
+        throw new Error(`${item.project}: projection refused revision ${revision}: ${result?.status || 'unknown'}`)
+      }
+      results[item.project] = result
+    }
+    return results
+  }
+
+  async function settleSourceOwner(project) {
+    const item = record(project)
+    if (!item || item.sourceOwner) throw new Error(`${project} is not a source-owner binding`)
+    const runtime = await start(item)
+    return runtime.sync.submitCurrent()
   }
 
   /**
@@ -489,6 +563,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     if (!revision) throw new Error('publishRevision requires a revision')
     const item = record(project)
     if (!item) throw new Error(`project ${project} is not bound on this daemon`)
+    if (item.sourceOwner) throw new Error(`projection ${project} only publishes revisions settled by source owner ${item.sourceOwner}`)
     const runtime = await start(item)
     // Fail on a revision this repository does not hold, rather than pushing a
     // ref that resolves to something else. `^{commit}` is the load-bearing
@@ -567,7 +642,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   }
 
   function sourceFileForAbsolutePath(filePath) {
-    const matches = records().flatMap(item => {
+    const matches = records().filter(item => !item.sourceOwner).flatMap(item => {
       const rel = path.relative(path.resolve(item.sourceDir), path.resolve(filePath))
       return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? [{ project: item.project, file: rel.split(path.sep).join('/') }] : []
     })
@@ -604,6 +679,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     remoteOperation,
     submit,
     publishRevision,
+    settleSourceOwner,
     pushHistorySeed,
     queuePaths,
     sourceFileForAbsolutePath,
