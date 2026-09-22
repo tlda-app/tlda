@@ -8392,6 +8392,13 @@ async function dispatchFleetWsMessage(ws, msg) {
   const chatWakeText = async (text, agentId, from) => wakeText({ what: `a message from ${await agentDisplayName(from)}`, preview: previewForWake(text) })
   const subscriptionBatchKey = (delivery) => `${delivery.recipient}\u0000${delivery.subscription_id}\u0000${delivery.notification_policy}`
   const reserveSubscriptionBatch = (delivery) => {
+    // A subscription-less recipient resolves no deliveryDecision (null). Without
+    // this guard the chat insert crashed here dereferencing null instead of
+    // recording the bounded `no_direct_subscription` failure the entry already
+    // carries. Measured 2026-09-21: `Cannot read properties of null (reading
+    // 'delivery')` on a chat to a reanimated agent whose subscriptions death had
+    // ended.
+    if (!delivery) return delivery
     if (delivery.delivery !== 'batched' || !delivery.notifyBy) return delivery
     const key = subscriptionBatchKey(delivery)
     const now = Date.now()

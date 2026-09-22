@@ -4925,6 +4925,20 @@ export class FleetStore {
     }
     this.db.transaction(() => {
       this._markAgentAlive.run(id);
+      // Death ends every subscription including the mandatory `to:me` slot
+      // (trg_agents_death_ends_subscriptions — the row is ended, not deleted, so
+      // ending it again would be refused by
+      // trg_subscriptions_mandatory_unendable's owner-alive check... the owner is
+      // dead here, so the check stays quiet). Without this reseed a reanimated
+      // agent has no direct subscription: chat resolves no match,
+      // deliveryDecision stays null, and the send path crashed dereferencing it.
+      // ensureSubscription is idempotent on (owner, query), so an agent that held
+      // a live slot through some other path keeps it; a deliberately-unsubscribed
+      // living agent never passes through death, so its choice is untouched.
+      this.ensureSubscription({
+        owner: id, query: 'to:me',
+        notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, createdBy: id, mandatory: true,
+      });
     })();
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
