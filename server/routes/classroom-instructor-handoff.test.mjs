@@ -1,16 +1,19 @@
 // The instructor browser handoff: setup mints a single-use code the
-// instructor's own token authorises, and the browser trades that code for its
-// classroom cookie — the per-person token never appears in a URL, a body, or
-// a log.
+// instructor's own token authorises, and each browser trades that code for its
+// OWN session credential — the long-lived per-person token never appears in a
+// URL, a body, or a log, and never stops resolving.
 //
 // Setup prints a marking URL the browser cannot use: it carries the gated
 // sandbox bearer, which never resolves to a classroom principal, so the
 // problems fetch 401s before any membership check runs. The handoff is the
 // repair: the CLI spends the minted token (in memory, same run) on one mint
-// call, prints only the opaque code URL, and the first redemption rotates the
-// instructor's token to a fresh secret that rides back as the HttpOnly cookie
-// alone. These tests mount the real router and prove the wire, including the
-// counterfactual (no credential, no entry) and the absent/invalid controls.
+// call, prints only the opaque code URL, and each redemption inserts a
+// separate browser-session row ATOMICALLY with consuming the code — the fresh
+// session value rides back as the HttpOnly cookie alone. These tests mount the
+// real router and prove the wire, including the counterfactual (no credential,
+// no entry), the absent/invalid controls, multi-browser coexistence, and the
+// failure path (a failed session insert leaves the code redeemable and sets no
+// cookie).
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -19,7 +22,7 @@ import { createServer } from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ClassroomStore } from '../lib/classroom-store.mjs'
+import { ClassroomStore, hashEnrollmentToken } from '../lib/classroom-store.mjs'
 import { createClassroomRouter } from './classroom.mjs'
 
 const COURSE = 'qtm285'
@@ -55,7 +58,7 @@ async function routerCall(store, { method, path, body = null, classroomToken = n
       headers,
       body: body ? JSON.stringify(body) : undefined,
     })
-    return { status: response.status, body: await response.json().catch(() => ({})), cookie: cookieValue(response) }
+    return { status: response.status, body: await response.json().catch(() => ({})), cookie: cookieValue(response), setCookie: cookies(response) }
   } finally {
     await new Promise(resolve => server.close(resolve))
   }
@@ -78,6 +81,15 @@ async function withSetup(fn) {
     })
     return await fn(store, bootstrapped.body.token)
   } finally { store.db.close(); rmSync(root, { recursive: true, force: true }) }
+}
+
+async function mintCode(store, token, assignment = ASSIGNMENT) {
+  const minted = await routerCall(store, {
+    method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff`,
+    body: { assignment }, classroomToken: token,
+  })
+  assert.equal(minted.status, 201)
+  return new URL(minted.body.handoffUrl).searchParams.get('handoff')
 }
 
 test('the mint needs the instructor token: bearer-only gets 401 and nothing is minted', async () => {
@@ -116,6 +128,9 @@ test('mint with the instructor token returns a code URL with no token in it, and
     assert.equal(redeemed.body.token, undefined)
     assert.equal(redeemed.body.enrollmentToken, undefined)
     assert.ok(redeemed.cookie)
+    // The cookie is a FRESH session value, not the CLI-held token.
+    assert.notEqual(redeemed.cookie, token)
+    assert.match(redeemed.setCookie, /HttpOnly/)
 
     // The counterfactual, proved rather than asserted: the problems route is
     // what 401s without a credential and what the handoff opens.
@@ -146,12 +161,7 @@ test('minting for another course, or an assignment outside the course, is refuse
 
 test('a redeemed code is spent, an unknown code is invalid, and an expired code is gone', async () => {
   await withSetup(async (store, token) => {
-    const minted = await routerCall(store, {
-      method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff`,
-      body: {}, classroomToken: token,
-    })
-    assert.equal(minted.status, 201)
-    const code = new URL(minted.body.handoffUrl).searchParams.get('handoff')
+    const code = await mintCode(store, token)
     const first = await routerCall(store, {
       method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff/redeem`,
       body: { transferCode: code },
@@ -173,13 +183,13 @@ test('a redeemed code is spent, an unknown code is invalid, and an expired code 
     })
     assert.equal(missing.status, 400)
 
-    // Expiry is a clock reading, not a code property: the first redemption
-    // rotated the setup-held token out, so the second mint presents the fresh
-    // cookie as the instructor identity. Then push that code's deadline behind
-    // now and it reads expired rather than invalid.
+    // Expiry is a clock reading, not a code property: the CLI-held token is
+    // still valid after redemption, so the second mint presents it unchanged.
+    // Then push that code's deadline behind now and it reads expired rather
+    // than invalid.
     const second = await routerCall(store, {
       method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff`,
-      body: {}, classroomToken: first.cookie,
+      body: {}, classroomToken: token,
     })
     assert.equal(second.status, 201)
     const expiring = new URL(second.body.handoffUrl).searchParams.get('handoff')
@@ -193,20 +203,106 @@ test('a redeemed code is spent, an unknown code is invalid, and an expired code 
   })
 })
 
-test('redeeming rotates the setup-held token out: the old value stops resolving', async () => {
+test('redeeming keeps the CLI token and mints a second browser beside the first', async () => {
   await withSetup(async (store, token) => {
-    const minted = await routerCall(store, {
-      method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff`,
-      body: {}, classroomToken: token,
+    const first = await routerCall(store, {
+      method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff/redeem`,
+      body: { transferCode: await mintCode(store, token) },
     })
-    const code = new URL(minted.body.handoffUrl).searchParams.get('handoff')
-    const redeemed = await routerCall(store, {
+    assert.equal(first.status, 200)
+    // The CLI-held mint paid for the handoff and keeps resolving after it.
+    const cliStill = store.instructorForToken(token)
+    assert.ok(cliStill)
+    assert.equal(cliStill.id, `${COURSE}:prof`)
+    const browser1 = store.instructorForToken(first.cookie)
+    assert.ok(browser1)
+    assert.equal(browser1.id, `${COURSE}:prof`)
+
+    // A second browser redeems its own code with the still-valid CLI token.
+    // Browser 1 and the CLI are undisturbed: all three resolve to the same
+    // instructor, all three values distinct.
+    const second = await routerCall(store, {
+      method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff/redeem`,
+      body: { transferCode: await mintCode(store, token) },
+    })
+    assert.equal(second.status, 200)
+    assert.notEqual(second.cookie, first.cookie)
+    assert.notEqual(second.cookie, token)
+    for (const value of [token, first.cookie, second.cookie]) {
+      const resolved = store.instructorForToken(value)
+      assert.ok(resolved, `credential still resolves: ${String(value).slice(0, 8)}…`)
+      assert.equal(resolved.id, `${COURSE}:prof`)
+    }
+    const admitted = await routerCall(store, {
+      method: 'GET', path: `/api/classroom/assignments/${ASSIGNMENT}/problems`, cookie: first.cookie,
+    })
+    assert.equal(admitted.status, 200)
+  })
+})
+
+test('a failed session insert leaves the handoff redeemable and sets no cookie', async () => {
+  await withSetup(async (store, token) => {
+    const code = await mintCode(store, token)
+    // Failure injection at the session boundary: the insert throws, so the
+    // transaction must roll back whole — no session row, no consume.
+    const failing = Object.create(store)
+    failing.createInstructorBrowserSession = () => { throw new Error('injected session failure') }
+    const failed = await routerCall(failing, {
       method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff/redeem`,
       body: { transferCode: code },
     })
+    assert.equal(failed.status, 500)
+    assert.equal(failed.cookie, null)
+    assert.equal(failed.body.token, undefined)
+    const handoff = store.db.prepare('SELECT redeemed_at AS redeemedAt FROM instructor_browser_handoffs').get()
+    assert.equal(handoff.redeemedAt, null)
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM instructor_browser_sessions').get().n, 0)
+
+    // The same code redeems cleanly afterwards through the real store.
+    const recovered = await routerCall(store, {
+      method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff/redeem`,
+      body: { transferCode: code },
+    })
+    assert.equal(recovered.status, 200)
+    assert.ok(recovered.cookie)
+  })
+})
+
+test('a session-hash collision rolls back the consume: no session, code still live', async () => {
+  await withSetup(async (store, token) => {
+    const code = await mintCode(store, token)
+    // Pre-plant a session row carrying a known value's hash, then redeem with
+    // that same value: the UNIQUE insert throws inside the transaction, and
+    // the handoff consume must roll back with it.
+    const colliding = 'colliding-session-value'
+    store.createInstructorBrowserSession({ instructorId: `${COURSE}:prof`, handoffId: null, sessionToken: colliding })
+    assert.throws(() => store.redeemInstructorBrowserHandoff({ courseId: COURSE, transferCode: code, sessionToken: colliding }), /UNIQUE|unique|constraint/i)
+    const handoff = store.db.prepare('SELECT redeemed_at AS redeemedAt FROM instructor_browser_handoffs WHERE redeemed_at IS NULL').get()
+    assert.ok(handoff, 'handoff row is still unredeemed after the collision')
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM instructor_browser_sessions').get().n, 1)
+    // And the code still redeems with a fresh value.
+    const result = store.redeemInstructorBrowserHandoff({ courseId: COURSE, transferCode: code, sessionToken: 'fresh-after-collision' })
+    assert.equal(result.status, 'redeemed')
+  })
+})
+
+test('the session is stored hash-only: the raw cookie value is nowhere in the database', async () => {
+  await withSetup(async (store, token) => {
+    const redeemed = await routerCall(store, {
+      method: 'POST', path: `/api/classroom/courses/${COURSE}/instructor-handoff/redeem`,
+      body: { transferCode: await mintCode(store, token) },
+    })
     assert.equal(redeemed.status, 200)
-    // The CLI-held mint paid for the handoff and nothing after it.
-    assert.equal(store.instructorForToken(token), null)
-    assert.ok(store.instructorForToken(redeemed.cookie))
+    const row = store.db.prepare('SELECT session_token_hash AS hash FROM instructor_browser_sessions').get()
+    assert.ok(row)
+    assert.equal(row.hash, hashEnrollmentToken(redeemed.cookie))
+    assert.notEqual(row.hash, redeemed.cookie)
+    // The raw value appears in no classroom table at all.
+    for (const table of ['instructors', 'instructor_browser_handoffs', 'instructor_browser_sessions', 'students', 'student_device_credentials']) {
+      const found = store.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()
+      assert.ok(found, `table ${table} readable`)
+    }
+    const dump = JSON.stringify(store.db.prepare('SELECT id,instructor_id,session_token_hash,handoff_id FROM instructor_browser_sessions').all())
+    assert.doesNotMatch(dump, new RegExp(redeemed.cookie.slice(0, 16)))
   })
 })

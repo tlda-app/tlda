@@ -58,9 +58,11 @@ export class ClassroomStore {
       -- an INSTRUCTOR row, which the student table's foreign key cannot, so it
       -- is a separate table rather than a generalized column — the student
       -- transfer's shape, gating, and behaviour are unchanged. Only the code's
-      -- hash is persisted. Redeeming rotates the instructor's token to a fresh
-      -- secret (the previous value, already used by the setup CLI, stops
-      -- resolving); the fresh value rides back only as the HttpOnly cookie.
+      -- hash is persisted. Redeeming mints a separate browser-session
+      -- credential (see instructor_browser_sessions below): the long-lived
+      -- per-person token the setup CLI holds keeps resolving, and the fresh
+      -- session value rides back only as the HttpOnly cookie, so many browsers
+      -- may each hold their own session beside the CLI.
       CREATE TABLE IF NOT EXISTS instructor_browser_handoffs (
         id TEXT PRIMARY KEY,
         instructor_id TEXT NOT NULL REFERENCES instructors(id) ON DELETE CASCADE,
@@ -68,6 +70,20 @@ export class ClassroomStore {
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         redeemed_at TEXT
+      );
+      -- One row per redeemed browser: the session token's hash bound to the
+      -- instructor it was minted for. Hash-only at rest, like every other
+      -- classroom credential — the raw value exists only in the browser's
+      -- HttpOnly cookie, never in a URL, body, or log. Survives beside the
+      -- instructor's long-lived token (which keeps resolving) and beside every
+      -- earlier session, so a second browser login disturbs nobody.
+      CREATE TABLE IF NOT EXISTS instructor_browser_sessions (
+        id TEXT PRIMARY KEY,
+        instructor_id TEXT NOT NULL REFERENCES instructors(id) ON DELETE CASCADE,
+        session_token_hash TEXT UNIQUE NOT NULL,
+        handoff_id TEXT REFERENCES instructor_browser_handoffs(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        revoked_at TEXT
       );
       CREATE TABLE IF NOT EXISTS assignments (
         id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
@@ -268,21 +284,20 @@ export class ClassroomStore {
   listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, university_login AS universityLogin, layer_scope AS layerScope FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
 
   /**
-   * Rotate an instructor's per-person token to a fresh secret.
+   * A redeemed browser's own credential, bound to its instructor.
    *
-   * Same row, same column, new value — the identity is unchanged, only the
-   * secret turns over. Used at handoff redemption: the cookie must carry the
-   * raw token, the store holds only its hash, and the handoff row carries no
-   * token material, so the redeem mints the cookie value here rather than
-   * re-emitting a value the server never sees. The pre-redeem token (held by
-   * the setup CLI, already used for the same-run gated calls) stops
-   * resolving afterwards, which is the point: one browser, one secret.
+   * Separate row, separate secret: the long-lived per-person token is never
+   * touched, so the setup CLI and every earlier browser keep resolving. The
+   * store holds only the session hash; the raw value exists solely in the
+   * HttpOnly cookie the redeem sets. Used only inside the atomic
+   * redeemInstructorBrowserHandoff transaction below — never on its own, so a
+   * recorded session always names the handoff that created it.
    */
-  rotateInstructorToken(instructorId, freshToken) {
+  createInstructorBrowserSession({ id = crypto.randomUUID(), instructorId, handoffId = null, sessionToken, createdAt = new Date().toISOString() }) {
     const instructor = this.getInstructor(instructorId)
     if (!instructor || instructor.active === 0) throw new Error('instructor not found')
-    this.db.prepare(`UPDATE instructors SET token_hash=? WHERE id=?`)
-      .run(hashEnrollmentToken(freshToken), instructorId)
+    this.db.prepare(`INSERT INTO instructor_browser_sessions(id,instructor_id,session_token_hash,handoff_id,created_at)
+      VALUES (?,?,?,?,?)`).run(id, instructorId, hashEnrollmentToken(sessionToken), handoffId, createdAt)
     return this.getInstructor(instructorId)
   }
 
@@ -307,8 +322,16 @@ export class ClassroomStore {
 
   instructorForToken(token) {
     if (!token) return null
-    return this.db.prepare(`SELECT id, course_id AS courseId, COALESCE(preferred_name,display_name) AS displayName, preferred_name AS preferredName, pronouns
-      FROM instructors WHERE token_hash=? AND active=1`).get(hashEnrollmentToken(token)) || null
+    const tokenHash = hashEnrollmentToken(token)
+    const primary = this.db.prepare(`SELECT id, course_id AS courseId, COALESCE(preferred_name,display_name) AS displayName, preferred_name AS preferredName, pronouns
+      FROM instructors WHERE token_hash=? AND active=1`).get(tokenHash)
+    if (primary) return primary
+    // A redeemed browser's session, bound to its instructor: same shape as the
+    // student device-token fallback above. Revoked sessions and inactive
+    // instructors resolve to nobody.
+    return this.db.prepare(`SELECT st.id, st.course_id AS courseId, COALESCE(st.preferred_name,st.display_name) AS displayName, st.preferred_name AS preferredName, st.pronouns
+      FROM instructor_browser_sessions bs JOIN instructors st ON st.id=bs.instructor_id
+      WHERE bs.session_token_hash=? AND bs.revoked_at IS NULL AND st.active=1`).get(tokenHash) || null
   }
 
   listInstructors(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, COALESCE(preferred_name,display_name) AS displayName FROM instructors WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
@@ -343,11 +366,10 @@ export class ClassroomStore {
    * per-person token; the code proves nothing until it is redeemed once. Only
    * the code's hash is persisted — the token is verified at mint time and then
    * dropped, never stored beside the handoff. Short-lived by the caller's
-   * expiry; consumed (marked redeemed) at first use. Redeeming rotates the
-   * instructor's token to a fresh secret (see rotateInstructorToken): the
-   * previous value, which the setup CLI already carried through the same-run
-   * gated calls, stops resolving, and the fresh value rides back only as the
-   * HttpOnly cookie.
+   * expiry; consumed (marked redeemed) at first use. The instructor's
+   * long-lived token is never touched: the setup CLI keeps the value it
+   * minted with through the same-run gated calls and after, and the fresh
+   * session value rides back only as the HttpOnly cookie.
    */
   createInstructorBrowserHandoff({ id = crypto.randomUUID(), instructorId, courseId, transferCode, instructorToken, createdAt = new Date().toISOString(), expiresAt }) {
     const instructor = this.getInstructor(instructorId)
@@ -361,14 +383,19 @@ export class ClassroomStore {
   }
 
   /**
-   * Consume a handoff code, returning the instructor it was minted for.
+   * Consume a handoff code, minting the redeeming browser its own session.
    *
-   * Marks the row redeemed inside the same transaction that reads it, so a
-   * replayed code meets `used` rather than a second identity. Returns no
-   * token value: the caller already holds the minted token (they presented it
-   * at mint time), and the route sets the browser cookie from that same value.
+   * The session insert and the handoff consume happen inside ONE transaction:
+   * the row is marked redeemed only beside the session row that names it, so
+   * a replayed code meets `used` rather than a second identity, and a failed
+   * insert rolls the consume back with it — the code stays redeemable and no
+   * session exists. Validation failures return a status; an insert failure
+   * THROWS, and the caller must surface that without setting any cookie.
+   * Returns no token value: the raw session value lives only in the caller's
+   * hands (they generated it) and then in the browser's HttpOnly cookie.
    */
-  redeemInstructorBrowserHandoff({ courseId, transferCode, now = new Date().toISOString() }) {
+  redeemInstructorBrowserHandoff({ courseId, transferCode, sessionToken, now = new Date().toISOString() }) {
+    if (!sessionToken) throw new Error('session token is required')
     return this.db.transaction(() => {
       const row = this.db.prepare(`SELECT dc.id,dc.instructor_id AS instructorId,dc.expires_at AS expiresAt,dc.redeemed_at AS redeemedAt,
         st.course_id AS courseId,st.active
@@ -377,6 +404,10 @@ export class ClassroomStore {
       if (!row || row.courseId !== courseId || !row.active) return { status: 'invalid' }
       if (row.redeemedAt) return { status: 'used' }
       if (new Date(row.expiresAt).getTime() <= new Date(now).getTime()) return { status: 'expired' }
+      // Plain prepares, not nested transactions: both writes below commit or
+      // roll back together with the consume. createInstructorBrowserSession
+      // throws on a collision, which aborts this transaction whole.
+      this.createInstructorBrowserSession({ instructorId: row.instructorId, handoffId: row.id, sessionToken, createdAt: now })
       const result = this.db.prepare(`UPDATE instructor_browser_handoffs
         SET redeemed_at=? WHERE id=? AND redeemed_at IS NULL`)
         .run(now, row.id)

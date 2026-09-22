@@ -481,13 +481,24 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   router.post('/courses/:courseId/instructor-handoff/redeem', (req, res) => {
     const transferCode = String(req.body?.transferCode || '')
     if (!transferCode) return res.status(400).json({ error: 'transferCode is required' })
-    const result = store.redeemInstructorBrowserHandoff({ courseId: req.params.courseId, transferCode })
+    // The browser's own credential, minted here and never stored raw: the
+    // store keeps only its hash, and the value below leaves solely as the
+    // HttpOnly cookie. The instructor's long-lived token is untouched.
+    const sessionToken = crypto.randomBytes(32).toString('hex')
+    let result
+    try {
+      result = store.redeemInstructorBrowserHandoff({ courseId: req.params.courseId, transferCode, sessionToken })
+    } catch (error) {
+      // The transaction rolled back whole: the handoff stays redeemable and
+      // no session row exists, so answer 500 with NO cookie rather than
+      // admitting a browser the store never recorded.
+      console.error(`[classroom] instructor handoff redeem failed for course "${req.params.courseId}": ${error?.message || error}`)
+      return res.status(500).json({ error: 'Handoff redemption failed; the link remains usable' })
+    }
     if (result.status === 'invalid') return res.status(404).json({ error: 'Handoff link is invalid for this class' })
     if (result.status === 'expired') return res.status(410).json({ error: 'Handoff link has expired' })
     if (result.status === 'used') return res.status(409).json({ error: 'Handoff link has already been used' })
-    const freshToken = crypto.randomBytes(32).toString('hex')
-    store.rotateInstructorToken(result.instructor.id, freshToken)
-    rememberStudentToken(req, res, freshToken)
+    rememberStudentToken(req, res, sessionToken)
     return res.json({ instructor: { id: result.instructor.id, courseId: result.instructor.courseId, displayName: result.instructor.displayName } })
   })
   router.use((req, res, next) => {
@@ -517,10 +528,11 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   // 401 the very caller this exists for. The response carries only the opaque
   // handoff URL: the code in it is single-use and short-lived, and redeeming
   // it sets the HttpOnly classroom cookie without ever returning any token
-  // value. The cookie value is a rotation — same instructor row, fresh secret
-  // — so the CLI-held mint, already spent on the same-run gated calls, stops
-  // resolving at first redemption; that is the shape that keeps any persisted
-  // token material out of the handoff rows entirely.
+  // value. The cookie value is a separate browser-session credential — its
+  // hash bound to the instructor row in instructor_browser_sessions — so the
+  // CLI-held mint keeps resolving through the same-run gated calls and after,
+  // each browser holds its own session, and no persisted token material ever
+  // lands in the handoff rows.
   const INSTRUCTOR_HANDOFF_TTL_MS = 10 * 60 * 1000
   function instructorHandoffUrl(req, courseId, transferCode, { assignment = '' } = {}) {
     const protocol = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim()
