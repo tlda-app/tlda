@@ -12,7 +12,7 @@ import {
   defaultTldrawOptions,
   HighlightShapeUtil,
 } from 'tldraw'
-import type { TLComponents, Editor, TLPageId, TLShapeId } from 'tldraw'
+import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { probe } from './perf-probe'
 import { installLivePerfProbe } from './livePerfProbe'
@@ -104,6 +104,8 @@ import { STORE_HTTP } from './activeConfig'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
+import { navigateToPage } from './panels/helpers'
+import { routedAppPageNumber } from './routedAppPageNumber'
 import { ClassroomDocViewPlayback } from './overlays/ClassroomDocViewPlayback'
 import { ClassroomPlaybackPill } from './pills/ClassroomPlaybackPill'
 
@@ -1594,12 +1596,17 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
                 // URL camera params override session restore
                 if (initialCamera.sourcePath) {
                   const route = presentationRoute(window.location.pathname)
-                  const sourcePage = document.pages.find(page => presentationLocationMatchesPage(
+                  const pageNum = routedAppPageNumber(
                     route || initialCamera.sourcePath!,
-                    page.source?.file,
-                    page.src,
-                  ))
-                  if (sourcePage?.tldrawPageId) editor.setCurrentPage(sourcePage.tldrawPageId as TLPageId)
+                    document.pages,
+                  )
+                  if (pageNum != null) {
+                    // The page switch alone lands on the shared map's saved
+                    // camera — the chapter the last visit left centered — so a
+                    // deck route shows the chapter's iframe. Center the routed
+                    // shape the same way a ToC click does.
+                    navigateToPage(editor, document, pageNum)
+                  }
                 } else if (initialCamera.page) {
                   const pages = editor.getPages()
                   const target = pages.find(p => p.name === initialCamera.page || p.id === initialCamera.page)

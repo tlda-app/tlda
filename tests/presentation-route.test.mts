@@ -67,3 +67,33 @@ test('camera source paths still match outside App routes', () => {
     '/docs/qtm285-book/book/chapters/chapter-sampling.html',
   ), true)
 })
+
+test('a deck location resolves to the deck page number, not its chapter', async () => {
+  const { routedAppPageNumber } = await import('../src/routedAppPageNumber.ts')
+  const route = presentationRoute('/docs/qtm285-book/app/book/decks/chapter-random-variables-and-moments-slides.html')!
+  // Live page-info shape: deck entries carry no source.file, only the file +
+  // query page.src the loader builds. Chapter and deck share tldrawPageId.
+  const pages = [
+    { src: 'https://tlda-fly.cormorant-matrix.ts.net/docs/qtm285-book/app/book/chapters/chapter-random-variables-and-moments.html', source: { file: 'chapters/chapter-random-variables-and-moments.qmd' } },
+    { src: 'https://tlda-fly.cormorant-matrix.ts.net/docs/qtm285-book/app/book/decks/chapter-random-variables-and-moments-slides.html?_tldaDeck=1&view=scroll' },
+  ]
+  assert.equal(routedAppPageNumber(route, pages), 2)
+})
+
+test('the deck chip pairs by chapterRoot, on part rows as well as chapters', async () => {
+  const { deckNavIndex } = await import('../src/routedAppPageNumber.ts')
+  const rows = [
+    // The live defect shape: the Welcome deck hangs off a `part` row, and the
+    // old `h.level === 'chapter'` gate made it structurally chipless.
+    { level: 'part', page: 1, chapterRoot: 'index.qmd' },
+    { level: 'section', page: 5, deckOf: 'index.qmd' },
+    { level: 'chapter', page: 2, chapterRoot: 'chapters/chapter-sampling.qmd' },
+    { level: 'section', page: 6, deckOf: 'chapters/chapter-sampling.qmd' },
+    // Undeclared/unpaired: same title words, no `deckOf` — never a chip.
+    { level: 'chapter', page: 3, chapterRoot: 'chapters/chapter-telephone.qmd' },
+    { level: 'section', page: 7, deckOf: 'decks/adjusted-comparisons-slides.qmd' },
+  ]
+  assert.equal(deckNavIndex(rows, 0), 1)
+  assert.equal(deckNavIndex(rows, 2), 3)
+  assert.equal(deckNavIndex(rows, 4), null)
+})

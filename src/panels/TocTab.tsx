@@ -6,6 +6,7 @@ import { frameFromHudPresence } from '../wm/fleet-interaction-frame'
 import { getHudEditor } from '../wm/editor-host-bridge'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import { loadLookup, clearLookupCache, loadHtmlToc, type LookupEntry, type HtmlTocEntry } from '../synctexLookup'
+import { deckNavIndex } from '../routedAppPageNumber'
 import { homeworkKeyForTocRow } from '../homeworkTocKey'
 import { pdfToCanvas } from '../synctexAnchor'
 import { ProjectContext, PanelContext } from '../PanelContext'
@@ -634,7 +635,8 @@ export function TocTab({ query = '' }: { query?: string }) {
   const useHtml = headings.length === 0 && tocItems !== null
 
   // Unified render for both TeX and HTML TOC entries
-  let items: Array<{ level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string; page?: number; source?: string; unbuilt?: boolean }> = useHtml
+  type TocItem = { level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string; page?: number; source?: string; unbuilt?: boolean; anchor?: string; variant?: 'slides'; chapterRoot?: string; deckOf?: string }
+  let items: TocItem[] = useHtml
     ? tocItems!.map(h => ({
         level: h.level,
         // `aggregateBookToc` titles a chapter after its member's own top
@@ -654,6 +656,10 @@ export function TocTab({ query = '' }: { query?: string }) {
         // exactly when it most needs a mark.
         source: (h as { source?: string }).source,
         unbuilt: (h as { unbuilt?: boolean }).unbuilt,
+        anchor: h.anchor,
+        variant: h.variant,
+        chapterRoot: h.chapterRoot,
+        deckOf: h.deckOf,
       }))
     : headings.map(h => ({
         level: h.level,
@@ -727,7 +733,7 @@ export function TocTab({ query = '' }: { query?: string }) {
     )
   }
 
-  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string; page?: number; source?: string; unbuilt?: boolean }, nextLevel: TocLevel | TocLevel[]) {
+  function renderFoldableItem(i: number, h: TocItem, nextLevel: TocLevel | TocLevel[]) {
     const isCollapsed = !normalizedQuery && (collapsed?.has(i) ?? false)
     const next = items[i + 1]
     const childLevels = Array.isArray(nextLevel) ? nextLevel : [nextLevel]
@@ -741,6 +747,13 @@ export function TocTab({ query = '' }: { query?: string }) {
     // SOLUTIONS page beside it rather than to nothing.
     const homeworkKey = homeworkKeyForTocRow(h, pageFiles)
     const homework = homeworkKey ? homeworkPages.get(homeworkKey) : undefined
+    // The deck beside this row: the section row the build attached after it,
+    // carrying `deckOf` naming this row's root. Production import — the same
+    // predicate the focused counterexample proves.
+    const deckNav = (() => {
+      const idx = deckNavIndex(items, i)
+      return idx == null ? null : items[idx].nav
+    })()
     return (
       <div key={i} className={`toc-item ${h.level}${isCurrent ? ' toc-item-current' : ''}${h.unbuilt ? ' toc-item-unbuilt' : ''}`}>
         {hasChildren ? (
@@ -764,6 +777,15 @@ export function TocTab({ query = '' }: { query?: string }) {
             title={COURSE_ITEM_LABEL[homework ? 'homework' : itemType!]}
             aria-label={COURSE_ITEM_LABEL[homework ? 'homework' : itemType!]}
           >{COURSE_ITEM_BADGE[homework ? 'homework' : itemType!]}</span>
+        )}
+        {deckNav && (
+          <button
+            className="toc-item-type toc-item-type--deck"
+            type="button"
+            onClick={(e) => { e.stopPropagation(); deckNav() }}
+            title="Open the slide deck for this chapter"
+            aria-label="Open the slide deck for this chapter"
+          >{COURSE_ITEM_BADGE.deck}</button>
         )}
         {isHot && <span className="book-tab-hot-dot" title="Active session" />}
       </div>

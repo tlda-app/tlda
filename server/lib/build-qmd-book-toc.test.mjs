@@ -19,12 +19,12 @@ test('the assembled book TOC includes every chapter and deck once', () => {
     { title: 'Extra', map: 'lectures/extra.qmd' },
   ]
   assert.deepEqual(assembleQuartoBookToc(bookToc, chapters, decks), [
-    { title: 'Welcome', level: 'part', page: 1 },
-    { title: 'Welcome — Slides', level: 'section', page: 5 },
-    { title: 'Sampling', level: 'chapter', page: 2 },
-    { title: 'Sampling — Slides', level: 'section', page: 4 },
-    { title: 'References', level: 'chapter', page: 3 },
-    { title: 'Extra — Slides', level: 'chapter', page: 6 },
+    { title: 'Welcome', level: 'part', page: 1, chapterRoot: 'index.qmd' },
+    { title: 'Welcome — Slides', level: 'section', page: 5, deckOf: 'index.qmd' },
+    { title: 'Sampling', level: 'chapter', page: 2, chapterRoot: 'lectures/sampling.qmd' },
+    { title: 'Sampling — Slides', level: 'section', page: 4, deckOf: 'lectures/sampling.qmd' },
+    { title: 'References', level: 'chapter', page: 3, chapterRoot: 'references.qmd' },
+    { title: 'Extra — Slides', level: 'chapter', page: 6, deckOf: 'lectures/extra.qmd' },
   ])
 })
 
@@ -41,8 +41,8 @@ test('a declared deck that did not render keeps its row, with no page', () => {
     [{ deck: 'decks/chapter-sampling-slides.qmd', chapter: 'chapters/chapter-sampling.qmd' }],
   )
   assert.deepEqual(toc, [
-    { title: 'Sampling', level: 'chapter', page: 1 },
-    { title: 'sampling — Slides', level: 'section', page: null, source: 'decks/chapter-sampling-slides.qmd', unbuilt: true },
+    { title: 'Sampling', level: 'chapter', page: 1, chapterRoot: 'chapters/chapter-sampling.qmd' },
+    { title: 'sampling — Slides', level: 'section', page: null, source: 'decks/chapter-sampling-slides.qmd', unbuilt: true, deckOf: 'chapters/chapter-sampling.qmd' },
   ])
 })
 

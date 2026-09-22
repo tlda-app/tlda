@@ -217,6 +217,8 @@ export interface HtmlTocEntry {
   anchor?: string
   targetFile?: string  // book cross-member navigation: member key
   variant?: 'slides'
+  chapterRoot?: string // native qmd book: the declared chapter root this row is
+  deckOf?: string      // native qmd book: the chapter root this deck row belongs to
 }
 
 export interface HtmlSearchEntry {

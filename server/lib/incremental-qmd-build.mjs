@@ -551,7 +551,11 @@ export function assembleQuartoBookToc(bookToc, chapterPages, deckPages, missingD
   for (let i = 0; i < deckPages.length; i++) {
     const deck = deckPages[i]
     const entries = deckByChapter.get(deck.map) || []
-    entries.push({ title: `${deck.title} — Slides`, level: 'section', page: chapterPages.length + i + 1 })
+    // `deckOf` names the chapter root this deck belongs to, so the panel can
+    // put the deck affordance beside its chapter without parsing titles. The
+    // section row itself stays: it is the deck's own row, carrying its own
+    // bullet mark and fold position.
+    entries.push({ title: `${deck.title} — Slides`, level: 'section', page: chapterPages.length + i + 1, deckOf: deck.map })
     deckByChapter.set(deck.map, entries)
   }
   // A declared deck with no render still gets a row, beside its chapter, with
@@ -564,21 +568,24 @@ export function assembleQuartoBookToc(bookToc, chapterPages, deckPages, missingD
   for (const { deck, chapter } of missingDecks) {
     const title = basename(deck).replace(/-slides\.qmd$/i, '').replace(/^chapter-/, '').replace(/-/g, ' ')
     const entries = deckByChapter.get(chapter || deck) || []
-    entries.push({ title: `${title} — Slides`, level: 'section', page: null, source: deck, unbuilt: true })
+    entries.push({ title: `${title} — Slides`, level: 'section', page: null, source: deck, unbuilt: true, deckOf: chapter || deck })
     deckByChapter.set(chapter || deck, entries)
   }
   const toc = []
   const attachedDecks = new Set()
   for (const entry of bookToc) {
-    toc.push(entry)
     const chapter = chapterPages[entry.page - 1]?.source?.file
+    // `chapterRoot` is the declared chapter root this row is, so the panel can
+    // match a deck row's `deckOf` against it exactly. Titles reflow through
+    // renders; roots are the pairing the build already used.
+    toc.push({ ...entry, chapterRoot: chapter })
     const attached = deckByChapter.get(chapter) || []
     toc.push(...attached)
     for (const deck of attached) attachedDecks.add(deck.page)
   }
   for (let i = 0; i < deckPages.length; i++) {
     const page = chapterPages.length + i + 1
-    if (!attachedDecks.has(page)) toc.push({ title: `${deckPages[i].title} — Slides`, level: 'chapter', page })
+    if (!attachedDecks.has(page)) toc.push({ title: `${deckPages[i].title} — Slides`, level: 'chapter', page, deckOf: deckPages[i].map })
   }
   return toc
 }
