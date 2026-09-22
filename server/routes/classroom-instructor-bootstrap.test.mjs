@@ -105,31 +105,24 @@ test('a bearer bootstrap without the instructor identity fields is refused, not 
   })
 })
 
-test('the same setup run carries the minted token through assignment creation', async () => {
+test('an instructor-gated call without the minted classroom identity is refused', async () => {
   await withStore(async store => {
     // Call one: the bearer-only setup caller, admitted at the operator
     // boundary and resolving to no classroom person.
     const bootstrapped = await routerCall(store, () => null, 'POST', '/api/classroom/courses', setupBody)
     assert.equal(bootstrapped.status, 201)
     assert.ok(bootstrapped.body.token)
-    // Call two WITHOUT the minted token is what the old CLI did: bearer
-    // admitted, no principal, and the instructor gate refuses it.
+    // Call two WITHOUT the minted token is what a reverted-to-bearer caller
+    // does: bearer admitted, no principal, and the instructor gate refuses
+    // it. This stays as the router's own 401 contrast — the CLI-path test in
+    // tests/classroom-setup-command.test.mjs proves the repaired same-run
+    // header carry through the actual helper, assignment and template freeze
+    // both.
     const bearerOnly = await routerCall(store, () => null, 'POST', `/api/classroom/courses/${COURSE}/assignments`, {
       id: 'hw-1', title: 'Homework 1', dueAt: '2026-09-01T00:00:00.000Z',
     })
     assert.equal(bearerOnly.status, 401)
-    // Call two WITH the minted token is what the repaired CLI does: the
-    // token resolves to the instructor just minted, the membership gate
-    // admits, and the assignment lands.
-    const asInstructor = req => store.instructorForToken(
-      req.headers?.['x-tlda-student-token'] || req.query?.classroomToken || null,
-    ) ? { role: 'instructor', instructorId: `${COURSE}:prof`, courseId: COURSE } : null
-    const created = await routerCall(store, asInstructor, 'POST', `/api/classroom/courses/${COURSE}/assignments`, {
-      id: 'hw-1', title: 'Homework 1', dueAt: '2026-09-01T00:00:00.000Z',
-    }, { 'x-tlda-student-token': bootstrapped.body.token })
-    assert.equal(created.status, 201)
-    assert.equal(created.body.id, 'hw-1')
-    assert.equal(store.listAssignments(COURSE).length, 1)
+    assert.equal(store.listAssignments(COURSE).length, 0)
   })
 })
 

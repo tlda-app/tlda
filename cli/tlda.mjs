@@ -3825,15 +3825,28 @@ async function publishClassroomAssignment({
     instructorUniversityLogin: instructorLogin,
   })
   // The first setup mints the instructor row and returns its per-person token
-  // once; a re-run against a bootstrapped course returns course-only. The
-  // remaining setup calls are instructor-gated, so they carry the minted
-  // token as the classroom identity for this run — the bearer admitted the
-  // bootstrap, it does not resolve to an instructor. The token never lands
-  // in a log line: it is printed once, on its own line, so the operator can
-  // place it on their own origin.
+  // once; the remaining setup calls are instructor-gated, so they carry the
+  // minted token as the classroom identity for this run — the bearer admitted
+  // the bootstrap, it does not resolve to an instructor. The token stays in
+  // memory for this run only: it is never printed, never stored, never placed
+  // anywhere by this command.
+  //
+  // A re-run against a bootstrapped course returns course-only, with no token
+  // — and there is no supported identity source this command can reach for to
+  // continue one. No supported store, flag, or route supplies an instructor
+  // identity a second run can present, so setup stops here rather than
+  // drifting back to the bearer and 401ing on the instructor-gated calls
+  // below. Re-running setup past the first mint is an explicitly unsupported
+  // boundary, not a quieter failure.
   const classroomToken = course?.token || null
-  if (classroomToken) console.log(`First instructor token for ${courseId}: ${classroomToken}`)
-  const classroomHeaders = classroomToken ? { 'x-tlda-student-token': classroomToken } : {}
+  if (!classroomToken) {
+    throw new Error(
+      `Course ${courseId} is already bootstrapped: the course response carried no instructor token, ` +
+      `and setup has no supported identity source for a second run. ` +
+      `Re-running setup past the first mint is unsupported.`,
+    )
+  }
+  const classroomHeaders = { 'x-tlda-student-token': classroomToken }
   const assignment = await api('POST', `/api/classroom/courses/${encodeURIComponent(courseId)}/assignments`, {
     id: assignmentId,
     title: assignmentTitle,

@@ -28,7 +28,7 @@ function runCli(args, { cwd = process.cwd(), env = {} } = {}) {
   })
 }
 
-function classroomServer() {
+function classroomServer({ withInstructorToken = true } = {}) {
   const requests = []
   const projects = new Map()
   const server = createServer((req, res) => {
@@ -37,7 +37,13 @@ function classroomServer() {
     req.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf8')
       const body = raw ? JSON.parse(raw) : null
-      requests.push({ method: req.method, url: req.url, body, authorization: req.headers.authorization })
+      requests.push({
+        method: req.method,
+        url: req.url,
+        body,
+        authorization: req.headers.authorization,
+        classroomToken: req.headers['x-tlda-student-token'] || null,
+      })
       res.setHeader('content-type', 'application/json')
       if (req.url?.includes('/source-room/files')) {
         res.statusCode = 500
@@ -56,7 +62,12 @@ function classroomServer() {
           res.end(JSON.stringify({ name: project.name, title: project.title, mainFile: project.mainFile, format: project.format }))
         }
       } else if (req.method === 'POST' && req.url === '/api/classroom/courses') {
-        res.end(JSON.stringify({ id: body.id, title: body.title }))
+        // First run mints: the course response carries the per-person token
+        // once. A re-run fixture passes withInstructorToken: false and the
+        // course arrives tokenless, exactly like the real course-only reply.
+        res.end(JSON.stringify(withInstructorToken
+          ? { id: body.id, title: body.title, token: 'minted-instructor-token' }
+          : { id: body.id, title: body.title }))
       } else if (req.method === 'POST' && req.url === '/api/classroom/courses/qtm285/assignments') {
         res.end(JSON.stringify({ id: body.id, title: body.title, dueAt: body.dueAt, sourceDocKey: body.sourceDocKey, bookPageFile: body.bookPageFile, handoutFilter: body.handoutFilter, solutionFilter: body.solutionFilter, solutionsDocKey: body.solutionsDocKey, solutionsVersion: body.solutionsVersion }))
       } else if (req.method === 'PUT' && req.url === '/api/classroom/assignments/hw1/template') {
@@ -132,6 +143,7 @@ test('classroom setup posts course, assignment, and frozen handout through exist
       '--course', 'qtm285',
       '--course-title', 'QTM 285',
       '--instructor-preferred-name', 'Professor Example',
+      '--instructor-login', 'professor-example',
       '--assignment', 'hw1',
       '--assignment-title', 'Homework 1',
       '--due', '2026-09-01T20:00:00Z',
@@ -212,7 +224,21 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     assert.doesNotMatch(handoutHtml, /callout-solution/)
     assert.doesNotMatch(handoutHtml, /Fifty-five/)
     assert.match(handoutHtml, /ans-sum/)
-    assert.deepEqual(fixture.requests[6].body, { id: 'qtm285', title: 'QTM 285', preferredName: 'Professor Example' })
+    assert.deepEqual(fixture.requests[6].body, {
+      id: 'qtm285',
+      title: 'QTM 285',
+      preferredName: 'Professor Example',
+      instructorDisplayName: 'Professor Example',
+      instructorUniversityLogin: 'professor-example',
+    })
+    // The real CLI/setup path: the assignment and the template freeze both
+    // carry the minted per-person token from the course response through the
+    // actual helper — never the bearer. Requests 7 and 8 ARE the proof.
+    assert.equal(fixture.requests[7].classroomToken, 'minted-instructor-token')
+    assert.equal(fixture.requests[8].classroomToken, 'minted-instructor-token')
+    // The token stays in memory for this run: nothing prints it.
+    assert.doesNotMatch(result.stdout, /minted-instructor-token/)
+    assert.doesNotMatch(result.stdout, /First instructor token/)
     assert.deepEqual(fixture.requests[7].body, {
       id: 'hw1',
       title: 'Homework 1',
@@ -240,6 +266,57 @@ test('classroom setup posts course, assignment, and frozen handout through exist
   }
 })
 
+test('classroom setup stops on a course-only re-run instead of bearer-401ing the gated calls', async () => {
+  // A re-run against a bootstrapped course gets course-only: no token, no
+  // supported instructor identity to continue with. Setup must stop at that
+  // boundary rather than drifting back to the bearer and 401ing on the
+  // instructor-gated assignment and template routes.
+  const fixture = await classroomServer({ withInstructorToken: false })
+  const configDir = fs.mkdtempSync(join(os.tmpdir(), 'tlda-classroom-config-'))
+  fs.writeFileSync(join(configDir, 'daemon.yaml'), `environments:
+  default: testing
+  values:
+    testing:
+      database: ${fixture.url}
+      store: ${fixture.url}
+      licenseKey: ""
+`)
+  const daemon = await daemonServer(configDir)
+  try {
+    const result = await runCli([
+      '--env', 'testing',
+      'classroom', 'setup',
+      '--server', fixture.url,
+      '--token', 'rw-token',
+      '--course', 'qtm285',
+      '--course-title', 'QTM 285',
+      '--instructor-preferred-name', 'Professor Example',
+      '--instructor-login', 'professor-example',
+      '--assignment', 'hw1',
+      '--assignment-title', 'Homework 1',
+      '--due', '2026-09-01T20:00:00Z',
+      '--homework-root', COURSE,
+      '--homework', 'homework/hw1.qmd',
+      '--handout-generator', 'bin/make-handout.py',
+      '--solution-filter', 'homework/solution-callout.lua',
+      '--project-prefix', 'hw1',
+      '--solutions-version', 'solutions-rev',
+    ], { env: { TLDA_CONFIG_DIR: configDir, TLDA_ENV: 'testing' } })
+    assert.notEqual(result.code, 0)
+    assert.match(result.stderr, /already bootstrapped/)
+    assert.match(result.stderr, /unsupported/)
+    // The stop lands before any instructor-gated call: the log holds the
+    // course POST and nothing after it.
+    assert.deepEqual(fixture.requests.map(req => `${req.method} ${req.url}`).slice(6), [
+      'POST /api/classroom/courses',
+    ])
+  } finally {
+    await daemon.close()
+    fs.rmSync(configDir, { recursive: true, force: true })
+    await fixture.close()
+  }
+})
+
 test('classroom setup help documents the required instructor procedure', async () => {
   const result = await runCli(['classroom', 'setup', '--help'])
   assert.equal(result.code, 0, result.stderr)
@@ -250,4 +327,5 @@ test('classroom setup help documents the required instructor procedure', async (
   assert.match(result.stdout, /freezes the generated handout/)
   assert.match(result.stdout, /--instructor-preferred-name\s+Required/)
   assert.match(result.stdout, /--instructor-pronouns\s+Optional/)
+  assert.match(result.stdout, /--instructor-login\s+Required/)
 })
