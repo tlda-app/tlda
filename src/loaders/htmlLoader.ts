@@ -4,7 +4,7 @@ import {
   createShapeId,
 } from 'tldraw'
 import type { SvgPage, SvgDocument } from './types'
-import type { DeckSlide } from './deckLayout'
+import { deckLayout, type DeckSlide } from './deckLayout'
 
 export interface HtmlPageEntry {
   file: string
@@ -31,9 +31,13 @@ export interface HtmlPageEntry {
 
 const tabSpacing = 24  // horizontal gap between side-by-side tabs
 
+function isBookDeck(info: HtmlPageEntry): boolean {
+  return info.variant === 'slides' && info.map != null
+}
+
 function pageUrl(info: HtmlPageEntry, basePath: string): string {
   const url = info.url || basePath + info.file
-  if (info.variant === 'slides' && info.slideIndex == null) {
+  if (isBookDeck(info) && info.slideIndex == null) {
     const separator = url.includes('?') ? '&' : '?'
     return `${url}${separator}_tldaDeck=1&view=scroll`
   }
@@ -129,6 +133,7 @@ export function createHtmlDocumentFromPageInfo(
   }
 
   const pages: SvgPage[] = []
+  const deckPages: SvgPage[] = []
   const takenSlugs = new Set<string>()
   // A map-keyed document takes no positional page at all, INCLUDING the default
   // one. Letting the first map reuse `page:page` would leave exactly one chapter
@@ -186,9 +191,18 @@ export function createHtmlDocumentFromPageInfo(
     const info = pageInfos[i]
     const placement = placements.get(i)!
     const pageId = `${name}-page-${i}`
+    const slides = isBookDeck(info) && info.slides?.length ? info.slides : null
+    const layout = slides ? deckLayout(slides, { width: info.width, height: info.height }) : null
+    const firstRect = layout?.rects[0]
+    const firstSlide = slides?.[0]
     pages.push({
-      src: pageUrl(info, basePath),
-      bounds: new Box(placement.left, 0, info.width, info.height),
+      src: pageUrl(firstSlide ? { ...info, ...firstSlide, slideIndex: firstSlide.index } : info, basePath),
+      bounds: new Box(
+        placement.left + (firstRect?.x || 0),
+        firstRect?.y || 0,
+        firstRect?.width || info.width,
+        firstRect?.height || info.height,
+      ),
       assetId: AssetRecordType.createId(pageId),
       shapeId: createShapeId(pageId),
       width: info.width,
@@ -204,7 +218,34 @@ export function createHtmlDocumentFromPageInfo(
         : undefined,
       source: info.source,
     })
+    if (slides && layout) {
+      for (let s = 1; s < slides.length; s++) {
+        const slide = slides[s]
+        const rect = layout.rects[s]
+        const slidePageId = `${pageId}-slide-${slide.index}`
+        deckPages.push({
+          src: pageUrl({ ...info, ...slide, slideIndex: slide.index }, basePath),
+          bounds: new Box(placement.left + rect.x, rect.y, rect.width, rect.height),
+          assetId: AssetRecordType.createId(slidePageId),
+          shapeId: createShapeId(slidePageId),
+          width: rect.width,
+          height: rect.height,
+          tldrawPageId: placement.tlPageId,
+          tldrawPageName: placement.pageName,
+          meta: {
+            spatialWorldDocument: true,
+            spatialWorldTitle: slide.title || info.title || info.file.replace(/\.html$/, ''),
+            materializedFile: info.file,
+          },
+          source: info.source,
+        })
+      }
+    }
   }
+
+  // ToC rows address the original page-info positions. Extra slides therefore
+  // follow those rows rather than being inserted between chapters.
+  pages.push(...deckPages)
 
   console.log(`HTML document ready (${pageInfos.length} pages, ${maps.length} TLDraw pages)`)
   return { name, pages, basePath, format: 'html' }

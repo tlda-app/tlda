@@ -168,7 +168,10 @@ const IS_PHONE = isPhoneViewport()
 // memoized, and the marker is a page fact that does not change without a load.
 const IS_CLASSROOM = isClassroomSurface()
 const IS_APP_DOCUMENT_ROUTE = presentationRoute(window.location.pathname)?.mode === 'app'
-const USES_DOCUMENT_ROUTE_CONTROLS = IS_CLASSROOM || IS_APP_DOCUMENT_ROUTE
+// Classroom-only chrome stays classroom-keyed. A testing/dev `/app` route keeps
+// the workshop chrome (Fleet + version stamp); it never mounts the classroom
+// playback/docview substitutes.
+const USES_DOCUMENT_ROUTE_CONTROLS = IS_CLASSROOM
 
 // Agent attention overlay wrapper (needs useEditor context)
 function AgentAttentionCanvas() {
@@ -574,7 +577,21 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   // --- Hooks ---
   const projectName = document.name
 
-  const isPresentation = document.format === 'slides'
+  const appDocumentRoute = IS_APP_DOCUMENT_ROUTE ? presentationRoute(window.location.pathname) : null
+  const routedAppPage = appDocumentRoute
+    ? document.pages.find(page => presentationLocationMatchesPage(appDocumentRoute, page.source?.file, page.src))
+    : null
+  const routedDeckFile = routedAppPage?.meta?.spatialWorldDocument
+    ? routedAppPage.meta.materializedFile
+    : null
+  const presentationDocument = routedDeckFile
+    ? {
+        ...document,
+        pages: document.pages.filter(page => page.meta?.materializedFile === routedDeckFile),
+        format: 'slides' as const,
+      }
+    : document
+  const isPresentation = document.format === 'slides' || Boolean(routedDeckFile)
   const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
 
   // Role only meaningful in presentation (slides) format
@@ -1210,10 +1227,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     )
   }
 
-  const appDocumentRoute = IS_APP_DOCUMENT_ROUTE ? presentationRoute(window.location.pathname) : null
-  const routedAppPage = appDocumentRoute
-    ? document.pages.find(page => presentationLocationMatchesPage(appDocumentRoute, page.source?.file, page.src))
-    : null
   const defaultAppDocViewPlacement = document.format === 'slides' || routedAppPage?.meta?.spatialWorldDocument
     ? 'above'
     : 'here'
@@ -1789,7 +1802,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
       <DarkModeSync />
       <NoteDropHandler />
       <MarkdownDropHandler />
-      {isPresentation && <SlideNavWrapper document={document} />}
+      {isPresentation && <SlideNavWrapper document={presentationDocument} />}
     </Tldraw>
     </VersionStampContext.Provider>
     </AgentPillContext.Provider>

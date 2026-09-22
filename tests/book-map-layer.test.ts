@@ -49,6 +49,34 @@ test('a chapter and its deck are independent docs on one map', () => {
   assert.equal(document.pages[1].meta?.spatialWorldDocument, true)
 })
 
+test('a book deck lays every slide horizontally without renumbering chapter rows', () => {
+  const document = createHtmlDocumentFromPageInfo('course', '/docs/course/', [
+    chapter('one', 'one.qmd', { variant: 'chapter' }),
+    chapter('two', 'two.qmd', { variant: 'chapter' }),
+    chapter('one-slides', 'one.qmd', {
+      variant: 'slides',
+      width: 1200,
+      height: 700,
+      slides: [
+        { index: 0, indexh: 0, indexv: 0, title: 'One' },
+        { index: 1, indexh: 1, indexv: 0, title: 'Two' },
+        { index: 2, indexh: 1, indexv: 1, title: 'Three' },
+      ],
+    }),
+  ])
+
+  assert.match(document.pages[2].src, /_tldaH=0&_tldaV=0$/)
+  assert.equal(document.pages[2].source?.file, 'one-slides.qmd')
+  assert.equal(document.pages.length, 5)
+  const slides = [document.pages[2], document.pages[3], document.pages[4]]
+  assert.deepEqual(slides.map(page => page.bounds.y), [0, 0, 0])
+  assert.deepEqual(slides.map(page => page.bounds.x), [
+    slides[0].bounds.x,
+    slides[0].bounds.x + 1800,
+    slides[0].bounds.x + 3600,
+  ])
+})
+
 test('group still means side-by-side comparison', () => {
   const document = createHtmlDocumentFromPageInfo('comparison', '/docs/comparison/', [
     chapter('paper', undefined, { group: 'versions' }),
