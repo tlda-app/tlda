@@ -67,11 +67,22 @@ function publisherTransport(counters) {
       await handlers.onExit(reply.ok ? 0 : 1)
       return reply
     },
+    async failBuild(args) {
+      const reply = await new Promise(resolve => handlers.onMessage(
+        { t: 'rpc', id: 'failed-build', m: 'recordBuildResult', a: args },
+        { send: resolve },
+      ))
+      handlers.onMessage({ t: 'done', ok: false, error: 'render failed' })
+      await handlers.onExit(1)
+      return reply
+    },
     counters,
   }
 }
 
 test('the publisher path has durable differential and no-deploy counterfactuals', async () => {
+  // The documented invocation is `npm run build && node --test server/lib/publish-differential-integration.test.mjs`.
+  // A clean worktree must therefore fail explicitly here until that invocation creates dist/index.html.
   assert.ok(existsSync(join(distDir, 'index.html')), 'run the client build before this integration test')
   const projectRoot = mkdtempSync(join(tmpdir(), 'tlda-publisher-integration-project-'))
   const instanceRoot = mkdtempSync(join(tmpdir(), 'tlda-publisher-integration-instances-'))
@@ -114,7 +125,8 @@ test('the publisher path has durable differential and no-deploy counterfactuals'
     const lifecycle = await sourceLifecycleStore(name, { context: { referencedRoots: ['main.md'] } })
     const git = await lifecycle.gitRepository()
     const dispatcher = publisherTransport({ publishAttempts: 0, successfulPublishes: 0 })
-    const queue = createDispatcherWithOptions(dispatcher.transport, { store: new BuildQueueStore(':memory:') })
+    const store = new BuildQueueStore(':memory:')
+    const queue = createDispatcherWithOptions(dispatcher.transport, { store })
     const document = { name, record: await readProject(name) }
 
     async function publish(version, parent, options = {}) {
@@ -177,10 +189,13 @@ test('the publisher path has durable differential and no-deploy counterfactuals'
     assert.deepEqual(await previewManifest(staticDir), beforeCorrupt, 'interrupted transfer does not switch the served tree')
 
     const beforeFailedRenderRequests = previewRequests
-    const failed = await publish(4, third.revision, { missingOutput: true })
-    assert.equal(failed.reply.ok, false)
-    assert.match(failed.reply.error, /no output to publish/)
+    const failedRevision = await git.acceptRevision({ project: name, parent: third.revision, files: [{ path: 'main.md', content: 'version 4' }], message: 'version 4 failed render' })
+    await queue.admitBuild(name, { revision: failedRevision, daemonId: 'integration', branch: 'main' })
+    const failed = await dispatcher.failBuild([name, failedRevision, 4, 'build_failed', { error: 'render failed' }])
+    assert.equal(failed.ok, true, 'the failed build result must be recorded through the production boundary')
+    assert.equal(store.get(name, failedRevision).state, 'failed')
     assert.equal(await git.head(name), third.revision, 'failed render does not advance the published head')
+    assert.equal(dispatcher.counters.publishAttempts, 3, 'failed render does not attempt publication')
     assert.equal(previewRequests, beforeFailedRenderRequests, 'failed render does not invoke preview delivery')
     assert.equal(dispatcher.counters.successfulPublishes, 3, 'failed render does not count as a successful publish')
   } finally {
