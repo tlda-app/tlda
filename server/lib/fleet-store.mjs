@@ -3270,18 +3270,22 @@ export class FleetStore {
           });
           this._rebuildLabelHistoryForAgent(agent.id);
         }
+        // Register and login both write `dead = false` straight through this
+        // path — neither goes through markAlive — so a dead row revived here
+        // keeps its cleared flag and loses the reseed markAlive would have done.
+        // Death ended every subscription; without this the revived row reads
+        // not-dead with zero live rows, and `reanimate` then refuses `not dead`
+        // on an agent that still cannot be reached. Fires only on an actual
+        // dead→live edge, idempotent on (owner, query), so a live re-register
+        // changes nothing. Inside this same transaction, not after it: the
+        // upsert and both reseeds commit or roll back together, so a reseed
+        // failure cannot leave the row alive with zero mandatory rows.
+        if (before?.dead && !agent.dead) {
+          this._reseedMandatoryDeliverySlots(agent.id);
+        }
       })();
       this._bustAgentsCache();
       this._syncAgentRegistry(agent.id);
-      // Register and login both write `dead = false` straight through this
-      // path — neither goes through markAlive — so a dead row revived here
-      // keeps its cleared flag and loses the reseed markAlive would have done.
-      // Death ended every subscription; without this the revived row reads
-      // not-dead with zero live rows, and `reanimate` then refuses `not dead`
-      // on an agent that still cannot be reached. Fires only on an actual
-      // dead→live edge, idempotent on (owner, query), so a live re-register
-      // changes nothing.
-      this._reseedMandatorySlotsOnRevival(agent.id, !!before?.dead);
       if (insertedEvent) this._notifyEvent(insertedEvent);
     } catch (e) {
       if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
@@ -4940,22 +4944,6 @@ export class FleetStore {
       owner: id, query: DEFAULT_SUBSCRIPTION_QUERY,
       notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, createdBy: id, mandatory: true,
     });
-  }
-
-  // A dead-to-live transition that bypasses markAlive revives the row but not
-  // its delivery: register and login both upsert `dead = false` directly, and
-  // neither reseeds what death ended. The trigger
-  // (trg_agents_death_ends_subscriptions) fires only on a 0→1 edge, so
-  // clearing the flag the same way twice cannot re-end, and reseeding here is
-  // idempotent on (owner, query) — an agent that still holds a live slot keeps
-  // it. A deliberately-unsubscribed living agent never passes through death,
-  // so its choice is untouched.
-  _reseedMandatorySlotsOnRevival(id, wasDead) {
-    if (!wasDead) return;
-    const row = this._getAgent.get(id);
-    if (!row || row.dead) return;
-    this.db.transaction(() => this._reseedMandatoryDeliverySlots(id))();
-    this._bustSubscriptionTapCache();
   }
 
   markAlive(id) {

@@ -155,6 +155,56 @@ test('a dead-to-live upsert revival reseeds both mandatory slots', () => {
   }
 })
 
+// The advocate's rejection of the first repair: the upsert and the reseed must
+// commit or roll back together. If the row write commits and the reseed then
+// fails, the agent is alive with zero mandatory rows — the incident state,
+// rebuilt by the repair itself. Fail the second reseed and prove the whole
+// revival rolls back: the row stays dead, no half-applied slot survives.
+test('a failed upsert-path reseed rolls back the revival', () => {
+  const { store, cleanup } = freshStore()
+  try {
+    store.upsertAgent({ id: 'fleet:revived', friendly_name: 'revived' })
+    store.ensureSubscription({
+      owner: 'fleet:revived', query: 'to:me',
+      notificationPolicy: 'immediate', mandatory: true,
+    })
+    store.ensureSubscription({
+      owner: 'fleet:revived', query: 'to:my_labels',
+      notificationPolicy: 'immediate', mandatory: true,
+    })
+    store.markDead('fleet:revived')
+    assert.equal(store.getAgent('fleet:revived').dead, true,
+      'control: the agent is dead before the failed revival')
+    assert.equal(store.getSubscriptionsByOwner('fleet:revived').length, 0,
+      'control: death ends both slots')
+
+    const dead = store.getAgent('fleet:revived')
+    const realAdd = store.addSubscription.bind(store)
+    let calls = 0
+    store.addSubscription = row => {
+      calls += 1
+      if (calls === 2) throw new Error('injected reseed failure')
+      return realAdd(row)
+    }
+    try {
+      assert.throws(
+        () => store.upsertAgent({ ...dead, dead: false, last_seen: new Date().toISOString() }),
+        /injected reseed failure/,
+        'the revival surfaces the reseed failure instead of swallowing it',
+      )
+    } finally {
+      store.addSubscription = realAdd
+    }
+
+    assert.equal(store.getAgent('fleet:revived').dead, true,
+      'the failed revival rolls back: the row stays dead, never alive-with-zero-rows')
+    assert.equal(store.getSubscriptionsByOwner('fleet:revived').length, 0,
+      'no half-applied slot survives the rollback')
+  } finally {
+    cleanup()
+  }
+})
+
 async function unusedPort() {
   const server = createServer()
   await new Promise((resolve, reject) => {
