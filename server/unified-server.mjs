@@ -5710,7 +5710,21 @@ app.use('/docs', (req, res, next) => {
         if (project) {
           // A .qmd is served as whatever quarto rendered it to, which is the
           // difference between the reveal bridge and the html one.
-          const shownAs = viewFormat(project)
+          let shownAs = viewFormat(project)
+          // A course is one HTML document to the viewer, but individual files
+          // inside it can still be Reveal decks. `page-info.json` is the build's
+          // per-file format statement; using only the project-wide `html` value
+          // here gives those deck iframes the ordinary HTML bridge, leaving
+          // Reveal's controls live and omitting tlda's slide protocol.
+          if (shownAs === 'html') {
+            try {
+              const pageInfo = JSON.parse(await fs.promises.readFile(join(outputRoot, 'page-info.json'), 'utf8'))
+              if (pageInfo.find(page => page.file === servedFilePath)?.variant === 'slides') shownAs = 'slides'
+            } catch {
+              // Preserve the existing project-format fallback when the manifest
+              // is absent or unreadable; the later HTML path reports as before.
+            }
+          }
           if (shownAs === 'slides') {
             // Slides format: inject the reveal.js bridge script — unless this is
             // the published static tree, which goes out as the build wrote it.

@@ -210,6 +210,43 @@ test('the static published deck goes out without the slides bridge', async () =>
   )
 })
 
+test('a deck iframe inside an HTML course receives the slides bridge', async () => {
+  const chapterFile = 'app/book/chapters/chapter-bootstrap.html'
+  const deckFile = 'app/book/decks/chapter-bootstrap-slides.html'
+  const pageInfo = [
+    { file: chapterFile, title: 'Bootstrap', variant: 'chapter', source: { file: 'chapters/chapter-bootstrap.qmd' } },
+    { file: deckFile, title: 'Bootstrap slides', variant: 'slides', source: { file: 'decks/chapter-bootstrap-slides.qmd' } },
+  ]
+  const chapter = '<html><head><title>Chapter</title></head><body><main>ordinary chapter</main></body></html>'
+  const deck = '<html><head><title>Slides</title></head><body><div class="reveal"><div class="slides"></div></div></body></html>'
+
+  await withServer(
+    projectsDir => {
+      const output = seedProject(projectsDir, PROJECT, pageInfo)
+      writeFileSync(join(projectsDir, PROJECT, 'project.json'), JSON.stringify({
+        name: PROJECT, title: PROJECT, mainFile: 'index.qmd',
+        format: 'qmd', renderedFormat: 'html', pages: 2, buildStatus: 'success',
+      }))
+      for (const [file, body] of [[chapterFile, chapter], [deckFile, deck]]) {
+        const path = join(output, file)
+        mkdirSync(join(path, '..'), { recursive: true })
+        writeFileSync(path, body)
+      }
+    },
+    async port => {
+      const deckIframe = await get(port, `/docs/${PROJECT}/${deckFile}?_tldaShape=shape%3Adeck&_tldaH=0&_tldaV=0`)
+      assert.equal(deckIframe.status, 200)
+      assert.match(deckIframe.body, /tlda-slide-goto/, 'the deck iframe must receive the Reveal bridge')
+      assert.doesNotMatch(deckIframe.body, /tlda-navigate-rel/, 'the deck iframe must not receive the chapter bridge')
+
+      const chapterIframe = await get(port, `/docs/${PROJECT}/${chapterFile}?_tldaShape=shape%3Achapter`)
+      assert.equal(chapterIframe.status, 200)
+      assert.match(chapterIframe.body, /tlda-navigate-rel/, 'the ordinary chapter keeps the HTML bridge')
+      assert.doesNotMatch(chapterIframe.body, /tlda-slide-goto/, 'the chapter must not receive the Reveal bridge')
+    },
+  )
+})
+
 test('a published course door reaches the static page, not the app shell', async () => {
   // A published course records every page as `app/book/…` in the top-level
   // page-info.json. `/docs/<project>/app/…` serves the TLDA reader shell by
