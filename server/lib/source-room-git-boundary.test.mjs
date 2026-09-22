@@ -66,7 +66,11 @@ test('whole-file source-room submissions wait for the Git proposal', async () =>
   }
   const daemon = createSourceRoomDaemon({
     projectDir: project => join(root, project),
-    readProject: async name => ({ name, mainFile: 'deck.html' }),
+    readProject: async name => ({
+      name,
+      mainFile: 'deck.html',
+      documentRoots: [{ path: 'deck.html', format: 'slides' }],
+    }),
     sourceLifecycleStore: async () => ({ gitRepository: async () => ({ head: async () => null }) }),
     readClientSourceManifest: async () => ['deck.html'],
     gitSyncManagerForProject: () => manager,
@@ -79,6 +83,9 @@ test('whole-file source-room submissions wait for the Git proposal', async () =>
       status: 202,
       body: { ok: true, status: 'submitted', revision: 'abc123' },
     })
+    assert.deepEqual(calls.find(call => call[0] === 'bind')[3].documentRoots, [
+      { path: 'deck.html', format: 'slides' },
+    ])
     assert.deepEqual(calls.find(call => call[0] === 'submit'), ['submit', 'slides'])
   } finally {
     daemon.closeAll()

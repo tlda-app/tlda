@@ -751,7 +751,10 @@ export function createSourceRoomDaemon({
     // Same tree, same rule as createRoom: a normal checkout on the project
     // branch. This path writes whole files rather than editing one through a
     // room, and it published the same partial tree with the same deletions.
-    gitSync.bindSource(project, root, { mainFile: projectRecord.mainFile || null })
+    gitSync.bindSource(project, root, {
+      mainFile: projectRecord.mainFile || null,
+      documentRoots: projectRecord.documentRoots || [],
+    })
     await gitSync.sync([projectRecord])
     const stood = await standRoomOnProjectBranch(project, root)
     if (!stood?.ok) return { status: 409, body: { ok: false, error: `${project} is not syncing: ${stood.reason || stood.status}` } }
