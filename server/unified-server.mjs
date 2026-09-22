@@ -540,6 +540,12 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 // for that daemon config lane. Used for RPC routing and agent updates.
 const daemonConnections = new Map()         // machine_id:env_name -> ws
 setBuildHeadNotifier(async (project, revision, acceptSeq = null) => {
+  // NOT awaited. This notifier runs inside the worker's `publishBuildInstance`
+  // RPC, which the worker abandons after PARENT_RPC_TIMEOUT_MS (240s) and then
+  // reports as a build failure. Delivery also starts before source-room sync:
+  // that independent notification can fail after publication, and must not
+  // keep the successfully built revision off the separate preview frontend.
+  void previewDelivery.deliver(project, revision, acceptSeq)
   await sourceRoomDaemon.headChanged(project, revision)
   const message = JSON.stringify({ type: 'head-changed', project, revision })
   for (const ws of daemonConnections.values()) {
@@ -548,12 +554,6 @@ setBuildHeadNotifier(async (project, revision, acceptSeq = null) => {
       // The disconnected daemon receives the same head on its next hello.
     }
   }
-  // NOT awaited. This notifier runs inside the worker's `publishBuildInstance`
-  // RPC, which the worker abandons after PARENT_RPC_TIMEOUT_MS (240s) and then
-  // reports as a build failure. Awaiting a slow or unreachable destination here
-  // would turn a render that succeeded into a build that failed. Delivery
-  // reports its own problems and never rejects.
-  void previewDelivery.deliver(project, revision, acceptSeq)
 })
 
 /**

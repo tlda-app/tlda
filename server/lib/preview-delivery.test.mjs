@@ -275,6 +275,10 @@ test('the notifier does not await delivery', async () => {
   assert.match(call[0], /^\s*void previewDelivery\.deliver\(/,
     'delivery must be fired, not awaited: awaiting it inside the publish RPC turns a completed render into a failed build')
   assert.doesNotMatch(call[0], /await/)
+  const delivery = src.indexOf('void previewDelivery.deliver(project, revision, acceptSeq)')
+  const sourceRoom = src.indexOf('await sourceRoomDaemon.headChanged(project, revision)')
+  assert.ok(delivery < sourceRoom,
+    'preview delivery must start before source-room notification: that unrelated notification can fail after publication')
 })
 
 // Defect 3: recovery does not re-offer a published head --
