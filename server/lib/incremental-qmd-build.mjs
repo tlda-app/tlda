@@ -23,7 +23,7 @@
  * unchanged, only the inputs are explicit.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, renameSync, rmSync, lstatSync } from 'fs'
+import { copyFileSync, existsSync, readFileSync, readlinkSync, writeFileSync, mkdirSync, cpSync, readdirSync, renameSync, rmSync, symlinkSync, lstatSync } from 'fs'
 import { basename, dirname, join, relative } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -1283,6 +1283,38 @@ function dropAbsentSupportFilters(outDir, addLog) {
   }
 }
 
+// Overlay declared source onto a seeded render tree.
+//
+// A seeded output directory already holds the last complete render; the source
+// copy must lay the declared tree over it, not replace it. `cpSync` with
+// `recursive` cannot do that: when the source entry is a symlink and the
+// destination holds a regular file (the course's `_quarto.yml ->
+// _quarto_book.yml` over the seeded `_quarto.yml`), it throws EEXIST, and
+// `force: true` does not change that on Node 26. And when the source tree
+// contains `.git`, the copy drags its read-only objects into the render tree
+// and a later copy dies with EACCES.
+//
+// Per entry: skip `.git`; a symlink replaces whatever stands at the
+// destination; a directory recurses, preserving seeded-only entries; a file
+// replaces the destination. Seeded-only outputs survive.
+export function copySourceTreeOverSeed(src, out) {
+  for (const entry of readdirSync(src, { withFileTypes: true })) {
+    if (entry.name === '.git') continue
+    const from = join(src, entry.name)
+    const to = join(out, entry.name)
+    if (entry.isSymbolicLink()) {
+      rmSync(to, { force: true })
+      symlinkSync(readlinkSync(from), to)
+    } else if (entry.isDirectory()) {
+      mkdirSync(to, { recursive: true })
+      copySourceTreeOverSeed(from, to)
+    } else {
+      rmSync(to, { force: true })
+      copyFileSync(from, to)
+    }
+  }
+}
+
 export async function buildIncrementalQmd({
   sourceDir: srcDir,
   outputDir: outDir,
@@ -1342,7 +1374,7 @@ export async function buildIncrementalQmd({
   // and not with the size of the edit. That is the property under question, so
   // the log reports what was moved as well as how long it took.
   const copyStart = process.hrtime.bigint()
-  cpSync(srcDir, outDir, { recursive: true })
+  copySourceTreeOverSeed(srcDir, outDir)
   const copyMs = Math.round(Number(process.hrtime.bigint() - copyStart) / 1e6)
   addLog(`[qmd] copied source tree to the output directory in ${copyMs}ms (${describeTreeSize(srcDir)})`)
 
