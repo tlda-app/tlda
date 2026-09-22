@@ -251,6 +251,10 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   pointer-events: none !important;
 }
 
+.doc-panel.doc-panel--button-mode:not(.doc-panel-open) {
+  opacity: 0;
+}
+
 .toc-zone-width-thumb {
   position: absolute;
   top: 1px;

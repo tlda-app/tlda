@@ -47,6 +47,11 @@ test('the three-line button toggles the hover-type panel, not a separate modal',
   assert.doesNotMatch(documentPanelCss, /phone-toc-backdrop/)
 })
 
+test('closed TOC visibility follows its selected entry mode', () => {
+  assert.match(documentPanelCss, /\.doc-panel\.doc-panel--button-mode:not\(\.doc-panel-open\)[^{]*\{[^}]*opacity: 0;/s)
+  assert.match(documentPanelCss, /\.doc-panel-tabs,\s*\.doc-panel-content,\s*\.search-input-wrap\s*\{[^}]*opacity: 0\.08;/s)
+})
+
 test('TOC keeps its established control order and can compact the state controls', () => {
   assert.match(tocTabSource, /toc-bottom-controls.*toc-bottom-controls--compact[\s\S]*<PlaceStackNav \/>[\s\S]*<CameraLinkToggle \/>[\s\S]*<JoinVoiceVideoToggle \/>[\s\S]*onToggleWholeDocumentDiff[\s\S]*<AirplaneIcon \/>/)
   assert.match(documentPanelCss, /\.toc-bottom-controls--compact \.toc-state-control \{[\s\S]*width: 22px;[\s\S]*height: 22px/)
