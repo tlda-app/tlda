@@ -25,6 +25,10 @@ export interface RepairLink { student: { id: string; displayName: string }; repa
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const classroomToken = readClassroomToken()
   const response = await fetch(`/api/classroom${path}`, {
+    // The classroom identity may ride as the HttpOnly cookie — the
+    // instructor's after the handoff redeem — and a bare fetch sends neither
+    // the header nor the cookie. Same-origin keeps both carriers attached.
+    credentials: 'same-origin',
     ...init,
     headers: {
       ...(classroomToken ? { 'x-tlda-student-token': classroomToken } : {}),

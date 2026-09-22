@@ -72,6 +72,11 @@ function classroomServer({ withInstructorToken = true } = {}) {
         res.end(JSON.stringify({ id: body.id, title: body.title, dueAt: body.dueAt, sourceDocKey: body.sourceDocKey, bookPageFile: body.bookPageFile, handoutFilter: body.handoutFilter, solutionFilter: body.solutionFilter, solutionsDocKey: body.solutionsDocKey, solutionsVersion: body.solutionsVersion }))
       } else if (req.method === 'PUT' && req.url === '/api/classroom/assignments/hw1/template') {
         res.end(JSON.stringify({ id: 'hw1', templateDocKey: body.templateDocKey, templateFile: body.templateFile, templateVersion: 'handout-rev' }))
+      } else if (req.method === 'POST' && req.url === '/api/classroom/courses/qtm285/instructor-handoff') {
+        // The browser login: the CLI spends the minted token (same run, in
+        // memory) and the server answers with the opaque code URL only.
+        res.statusCode = 201
+        res.end(JSON.stringify({ handoffUrl: 'https://class.example/?workspace=classroom-problems&assignment=hw1&course=qtm285&handoff=opaque-code', expiresAt: new Date(Date.now() + 600000).toISOString() }))
       } else {
         res.statusCode = 404
         res.end(JSON.stringify({ error: `unexpected ${req.method} ${req.url}` }))
@@ -196,6 +201,7 @@ test('classroom setup posts course, assignment, and frozen handout through exist
       'POST /api/classroom/courses',
       'POST /api/classroom/courses/qtm285/assignments',
       'PUT /api/classroom/assignments/hw1/template',
+      'POST /api/classroom/courses/qtm285/instructor-handoff',
     ])
     assert.deepEqual(fixture.requests[0].body, { name: 'hw1-source', title: 'Homework 1 source', mainFile: 'homework/hw1.qmd', format: 'qmd' })
     assert.deepEqual(fixture.requests[2].body, { name: 'hw1-handout', title: 'Homework 1 handout', mainFile: 'hw1-handout.html', format: 'html' })
@@ -245,6 +251,12 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     // The token stays in memory for this run: nothing prints it.
     assert.doesNotMatch(result.stdout, /minted-instructor-token/)
     assert.doesNotMatch(result.stdout, /First instructor token/)
+    // The handoff is the same run's last spend of the minted token: it carries
+    // the classroom header and names this assignment, and what setup prints is
+    // the opaque code URL — never the token.
+    assert.equal(fixture.requests[9].classroomToken, 'minted-instructor-token')
+    assert.deepEqual(fixture.requests[9].body, { assignment: 'hw1' })
+    assert.match(result.stdout, /Instructor login: .*handoff=opaque-code/m)
     assert.deepEqual(fixture.requests[7].body, {
       id: 'hw1',
       title: 'Homework 1',

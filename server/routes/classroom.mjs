@@ -474,6 +474,22 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     rememberStudentToken(req, res, enrollmentToken)
     return res.json({ student: result.student, enrollmentToken })
   })
+  // Redeeming the instructor's handoff is the browser's first login, so it
+  // sits ahead of the principal gate with the device-transfer redeem: there is
+  // no classroom identity yet to admit, and the gate would 401 the very call
+  // that creates one.
+  router.post('/courses/:courseId/instructor-handoff/redeem', (req, res) => {
+    const transferCode = String(req.body?.transferCode || '')
+    if (!transferCode) return res.status(400).json({ error: 'transferCode is required' })
+    const result = store.redeemInstructorBrowserHandoff({ courseId: req.params.courseId, transferCode })
+    if (result.status === 'invalid') return res.status(404).json({ error: 'Handoff link is invalid for this class' })
+    if (result.status === 'expired') return res.status(410).json({ error: 'Handoff link has expired' })
+    if (result.status === 'used') return res.status(409).json({ error: 'Handoff link has already been used' })
+    const freshToken = crypto.randomBytes(32).toString('hex')
+    store.rotateInstructorToken(result.instructor.id, freshToken)
+    rememberStudentToken(req, res, freshToken)
+    return res.json({ instructor: { id: result.instructor.id, courseId: result.instructor.courseId, displayName: result.instructor.displayName } })
+  })
   router.use((req, res, next) => {
     const principal = resolvePrincipal(req, store)
     if (!principal) return res.status(401).json({ error: 'Unauthorized' })
@@ -493,6 +509,57 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   }
   const instructor = instructorOf(req => req.params.courseId ?? req.body?.courseId)
 
+  // The instructor's own first login, in the shape the setup CLI drives.
+  //
+  // The browser holds no classroom identity yet, so the mint is proved by the
+  // minted instructor token itself — carried as the classroom header, in
+  // memory, for this one call — and not by the principal gate, which would
+  // 401 the very caller this exists for. The response carries only the opaque
+  // handoff URL: the code in it is single-use and short-lived, and redeeming
+  // it sets the HttpOnly classroom cookie without ever returning any token
+  // value. The cookie value is a rotation — same instructor row, fresh secret
+  // — so the CLI-held mint, already spent on the same-run gated calls, stops
+  // resolving at first redemption; that is the shape that keeps any persisted
+  // token material out of the handoff rows entirely.
+  const INSTRUCTOR_HANDOFF_TTL_MS = 10 * 60 * 1000
+  function instructorHandoffUrl(req, courseId, transferCode, { assignment = '' } = {}) {
+    const protocol = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim()
+    const origin = `${protocol}://${req.get('host')}`
+    const url = new URL('/', origin)
+    url.searchParams.delete('classroomToken')
+    url.searchParams.delete('name')
+    url.searchParams.delete('pwtab')
+    url.searchParams.delete('pw')
+    url.searchParams.set('workspace', 'classroom-problems')
+    if (assignment) url.searchParams.set('assignment', assignment)
+    url.searchParams.set('course', courseId)
+    url.searchParams.set('handoff', transferCode)
+    return url.toString()
+  }
+  router.post('/courses/:courseId/instructor-handoff', (req, res) => {
+    const instructorToken = studentToken(req)
+    const instructor = store.instructorForToken ? store.instructorForToken(instructorToken) : null
+    if (!instructor || instructor.courseId !== req.params.courseId) return res.status(401).json({ error: 'Unauthorized' })
+    const assignment = String(req.body?.assignment || '').trim()
+    if (assignment) {
+      const row = store.getAssignment(assignment)
+      if (!row || row.courseId !== req.params.courseId) return res.status(400).json({ error: 'assignment is not in this course' })
+    }
+    const createdAt = new Date().toISOString()
+    const expiresAt = new Date(Date.parse(createdAt) + INSTRUCTOR_HANDOFF_TTL_MS).toISOString()
+    const transferCode = crypto.randomBytes(32).toString('base64url')
+    store.createInstructorBrowserHandoff({
+      instructorId: instructor.id,
+      courseId: req.params.courseId,
+      transferCode,
+      instructorToken,
+      createdAt,
+      expiresAt,
+    })
+    // The handoff code IS the credential in this URL, and it is single-use
+    // with a ten-minute expiry — the raw instructor token never appears here.
+    res.status(201).json({ handoffUrl: instructorHandoffUrl(req, req.params.courseId, transferCode, { assignment }), expiresAt })
+  })
   router.post('/courses/:courseId/device-transfer', (req, res) => {
     const principal = req.classroomPrincipal
     if (principal.role !== 'student') return res.status(403).json({ error: 'Student access required' })

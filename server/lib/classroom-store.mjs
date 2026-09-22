@@ -52,6 +52,23 @@ export class ClassroomStore {
         expires_at TEXT NOT NULL,
         redeemed_at TEXT
       );
+      -- The instructor's one-time browser handoff, mirroring the student
+      -- device transfer above: a short-lived single-use code minted by an
+      -- instructor identity, consumed at first redemption or expiry. It names
+      -- an INSTRUCTOR row, which the student table's foreign key cannot, so it
+      -- is a separate table rather than a generalized column — the student
+      -- transfer's shape, gating, and behaviour are unchanged. Only the code's
+      -- hash is persisted. Redeeming rotates the instructor's token to a fresh
+      -- secret (the previous value, already used by the setup CLI, stops
+      -- resolving); the fresh value rides back only as the HttpOnly cookie.
+      CREATE TABLE IF NOT EXISTS instructor_browser_handoffs (
+        id TEXT PRIMARY KEY,
+        instructor_id TEXT NOT NULL REFERENCES instructors(id) ON DELETE CASCADE,
+        transfer_code_hash TEXT UNIQUE NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        redeemed_at TEXT
+      );
       CREATE TABLE IF NOT EXISTS assignments (
         id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
         title TEXT NOT NULL, due_at TEXT NOT NULL, solutions_doc_key TEXT,
@@ -251,6 +268,25 @@ export class ClassroomStore {
   listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, university_login AS universityLogin, layer_scope AS layerScope FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
 
   /**
+   * Rotate an instructor's per-person token to a fresh secret.
+   *
+   * Same row, same column, new value — the identity is unchanged, only the
+   * secret turns over. Used at handoff redemption: the cookie must carry the
+   * raw token, the store holds only its hash, and the handoff row carries no
+   * token material, so the redeem mints the cookie value here rather than
+   * re-emitting a value the server never sees. The pre-redeem token (held by
+   * the setup CLI, already used for the same-run gated calls) stops
+   * resolving afterwards, which is the point: one browser, one secret.
+   */
+  rotateInstructorToken(instructorId, freshToken) {
+    const instructor = this.getInstructor(instructorId)
+    if (!instructor || instructor.active === 0) throw new Error('instructor not found')
+    this.db.prepare(`UPDATE instructors SET token_hash=? WHERE id=?`)
+      .run(hashEnrollmentToken(freshToken), instructorId)
+    return this.getInstructor(instructorId)
+  }
+
+  /**
    * Register one instructor for a course, minting their per-person token.
    *
    * Mirrors `registerStudent` deliberately: id `<course>:<login>`, token
@@ -298,6 +334,55 @@ export class ClassroomStore {
     this.db.prepare(`INSERT INTO student_device_credentials(id,student_id,transfer_code_hash,created_at,expires_at)
       VALUES (?,?,?,?,?)`).run(id, studentId, hashEnrollmentToken(transferCode), createdAt, expiresAt)
     return { id, studentId, courseId, createdAt, expiresAt }
+  }
+
+  /**
+   * Mint a one-time browser handoff for an instructor of this course.
+   *
+   * The caller proves instructor identity by presenting the instructor's own
+   * per-person token; the code proves nothing until it is redeemed once. Only
+   * the code's hash is persisted — the token is verified at mint time and then
+   * dropped, never stored beside the handoff. Short-lived by the caller's
+   * expiry; consumed (marked redeemed) at first use. Redeeming rotates the
+   * instructor's token to a fresh secret (see rotateInstructorToken): the
+   * previous value, which the setup CLI already carried through the same-run
+   * gated calls, stops resolving, and the fresh value rides back only as the
+   * HttpOnly cookie.
+   */
+  createInstructorBrowserHandoff({ id = crypto.randomUUID(), instructorId, courseId, transferCode, instructorToken, createdAt = new Date().toISOString(), expiresAt }) {
+    const instructor = this.getInstructor(instructorId)
+    if (!instructor || instructor.active === 0 || instructor.courseId !== courseId) throw new Error('instructor not found in course')
+    if (!instructorToken) throw new Error('instructor token is required')
+    const presented = this.instructorForToken(instructorToken)
+    if (!presented || presented.id !== instructorId) throw new Error('instructor token does not match instructor')
+    this.db.prepare(`INSERT INTO instructor_browser_handoffs(id,instructor_id,transfer_code_hash,created_at,expires_at)
+      VALUES (?,?,?,?,?)`).run(id, instructorId, hashEnrollmentToken(transferCode), createdAt, expiresAt)
+    return { id, instructorId, courseId, createdAt, expiresAt }
+  }
+
+  /**
+   * Consume a handoff code, returning the instructor it was minted for.
+   *
+   * Marks the row redeemed inside the same transaction that reads it, so a
+   * replayed code meets `used` rather than a second identity. Returns no
+   * token value: the caller already holds the minted token (they presented it
+   * at mint time), and the route sets the browser cookie from that same value.
+   */
+  redeemInstructorBrowserHandoff({ courseId, transferCode, now = new Date().toISOString() }) {
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT dc.id,dc.instructor_id AS instructorId,dc.expires_at AS expiresAt,dc.redeemed_at AS redeemedAt,
+        st.course_id AS courseId,st.active
+        FROM instructor_browser_handoffs dc JOIN instructors st ON st.id=dc.instructor_id
+        WHERE dc.transfer_code_hash=?`).get(hashEnrollmentToken(transferCode))
+      if (!row || row.courseId !== courseId || !row.active) return { status: 'invalid' }
+      if (row.redeemedAt) return { status: 'used' }
+      if (new Date(row.expiresAt).getTime() <= new Date(now).getTime()) return { status: 'expired' }
+      const result = this.db.prepare(`UPDATE instructor_browser_handoffs
+        SET redeemed_at=? WHERE id=? AND redeemed_at IS NULL`)
+        .run(now, row.id)
+      if (!result.changes) return { status: 'used' }
+      return { status: 'redeemed', instructor: this.getInstructor(row.instructorId) }
+    })()
   }
 
   redeemDeviceTransfer({ courseId, transferCode, enrollmentToken, now = new Date().toISOString() }) {

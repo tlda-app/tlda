@@ -18,6 +18,7 @@ import { convertChatEvent } from './fleet/convert-chat-event.mjs'
 import { GradebookWorkspace } from './classroom/GradebookWorkspace'
 import { ClassroomRegistration } from './classroom/ClassroomRegistration'
 import { ClassroomDeviceTransferRedeem } from './classroom/ClassroomDeviceTransfer'
+import { ClassroomInstructorHandoff } from './classroom/ClassroomInstructorHandoff'
 import { useClassroomManifest } from './classroom/useClassroomManifest'
 import { ProblemMarking } from './classroom/ProblemMarking'
 import { StudentWork } from './classroom/StudentWork'
@@ -1501,7 +1502,7 @@ function App() {
       <ErrorBoundary>
         {standaloneWorkspace() === 'classroom-register' ? <ClassroomRegistration />
           : standaloneWorkspace() === 'classroom-transfer' ? <ClassroomDeviceTransferRedeem />
-          : standaloneWorkspace() === 'classroom-problems' ? <ProblemMarking />
+          : standaloneWorkspace() === 'classroom-problems' ? <ClassroomInstructorHandoff><ProblemMarking /></ClassroomInstructorHandoff>
           : standaloneWorkspace() === 'classroom-work' ? <StudentWork />
           : standaloneWorkspace() === 'classroom-comparison' ? <HomeworkComparisonWorkspace />
           : <GradebookWorkspace />}

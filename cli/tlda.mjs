@@ -3925,6 +3925,16 @@ async function publishClassroomAssignment({
   console.log(`  Gradebook:    ?workspace=classroom-gradebook&course=${encodeURIComponent(courseId)}`)
   console.log(`  Marking:      ?workspace=classroom-problems&assignment=${encodeURIComponent(assignmentId)}`)
   console.log(`  Student work: ?workspace=classroom-work&assignment=${encodeURIComponent(assignmentId)}`)
+  // The instructor's own way into the browser. The marking path above is gated
+  // on a classroom instructor identity, which no browser holds after setup —
+  // the minted token is in this process's memory and nowhere else. So setup
+  // spends it on one last call: mint a single-use ten-minute handoff code for
+  // this assignment and print the opaque URL. The raw token never appears in
+  // the output; opening the URL is what logs the browser in.
+  const handoff = await api('POST', `/api/classroom/courses/${encodeURIComponent(courseId)}/instructor-handoff`, {
+    assignment: assignmentId,
+  }, { headers: classroomHeaders })
+  console.log(`  Instructor login: ${handoff.handoffUrl}`)
 }
 
 async function cmdClassroom() {
