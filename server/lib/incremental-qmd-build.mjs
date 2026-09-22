@@ -30,7 +30,7 @@ import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
 
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
-import { createDocumentManifest } from './document-manifest.mjs'
+import { createDocumentManifest, readDocumentManifest } from './document-manifest.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
 import { withoutAbsentSupportFilters } from './qmd-support-filters.mjs'
@@ -743,7 +743,6 @@ export function quartoBookToc(dir, pageInfo) {
 }
 
 export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
-  if (!readTldaManifest(outDir)) return null
   const documentRoots = new Set([
     ...quartoBookRoots(outDir),
     ...qmdDeckRenderRoots(outDir),
@@ -851,18 +850,52 @@ export function publishIncrementalQmdOutput(outDir, root) {
     throw new Error(`[qmd] ${root}: component render produced a reveal deck instead of a book chapter`)
   }
   const manifest = readTldaManifest(outDir)
-  if (!manifest) throw new Error('[qmd] component render has no prior book manifest')
-  const bookHtml = join(dirname(manifest.path), rendered)
+  const bookHtml = join(manifest ? dirname(manifest.path) : join(outDir, '_book'), rendered)
   mkdirSync(dirname(bookHtml), { recursive: true })
   cpSync(sourceHtml, bookHtml)
 
   const sourceFiles = join(outDir, rendered.replace(/\.html$/i, '_files'))
   if (existsSync(sourceFiles)) {
-    const bookFiles = join(dirname(manifest.path), rendered.replace(/\.html$/i, '_files'))
+    const bookFiles = join(manifest ? dirname(manifest.path) : join(outDir, '_book'), rendered.replace(/\.html$/i, '_files'))
     rmSync(bookFiles, { recursive: true, force: true })
     cpSync(sourceFiles, bookFiles, { recursive: true })
   }
   return true
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function sourceTitle(outDir, root) {
+  try {
+    const source = readFileSync(join(outDir, root), 'utf8')
+    return source.match(/^#\s+(.+)$/m)?.[1]?.replace(/\{[^}]*\}\s*$/, '').trim() || basename(root, '.qmd')
+  } catch {
+    return basename(root, '.qmd')
+  }
+}
+
+function failedChapterPage(outDir, root, error) {
+  const rendered = `_book/${qmdDeclaredOutputFilesForSource(outDir, root)[0]}`
+  const title = sourceTitle(outDir, root)
+  mkdirSync(dirname(join(outDir, rendered)), { recursive: true })
+  writeFileSync(join(outDir, rendered), `<!doctype html><html><head><title>${escapeHtml(title)}</title></head><body><main><h1>${escapeHtml(title)}</h1><section class="tlda-build-failure"><h2>This chapter did not build</h2><pre>${escapeHtml(error)}</pre></section></main></body></html>\n`)
+  return {
+    file: rendered, width: 800, height: 1200, title, format: 'qmd', working: false, error,
+    source: { type: 'project-source', format: 'qmd', file: root },
+  }
+}
+
+function successfulChapterPage(outDir, root) {
+  const rendered = qmdRenderedOutputFilesForSource(outDir, root).find(file => file.startsWith('_book/'))
+  if (!rendered) throw new Error(`[qmd] ${root}: component render produced no book page`)
+  return {
+    file: rendered, width: 800, height: 1200,
+    title: manifestTitleFromHtml(readFileSync(join(outDir, rendered), 'utf8'), rendered),
+    format: 'qmd', working: true,
+    source: { type: 'project-source', format: 'qmd', file: root },
+  }
 }
 
 // Named by its file: Quarto activates `_quarto-slides.yml` with
@@ -1387,6 +1420,8 @@ export async function buildIncrementalQmd({
 
   await restoreRenv(outDir, addLog)
   const nativeTldaProject = isNativeTldaProject(outDir)
+  const priorDocumentManifest = nativeTldaProject ? readDocumentManifest(outDir) : null
+  const componentPages = []
 
   // Before any render decision, and for every build rather than only the
   // incremental ones. Quarto's freeze hash reads the document's own bytes and
@@ -1394,8 +1429,9 @@ export async function buildIncrementalQmd({
   // document thawing its old results -- on a whole-book render exactly as much
   // as on a one-chapter one. Dropping their records is what makes the change
   // reach the page, and it is the only thing that does.
+  let staleByDependency = []
   if (nativeTldaProject) {
-    const staleByDependency = qmdDocumentsStaleByDependency(outDir, changedFiles)
+    staleByDependency = qmdDocumentsStaleByDependency(outDir, changedFiles)
     for (const document of staleByDependency) clearQmdFreeze(outDir, document)
     if (staleByDependency.length > 0) {
       addLog(`[qmd] re-executing ${staleByDependency.length} document(s) whose dependencies changed: ${staleByDependency.join(', ')}`)
@@ -1411,9 +1447,13 @@ export async function buildIncrementalQmd({
     && mainFiles.length === 1
     && bookRoots.includes(mainFile)
     && mainFile !== bookRoots[0]
-  const incrementalRoots = nativeTldaProject && !scopedNativeProject
+  const directIncrementalRoots = nativeTldaProject && !scopedNativeProject
     ? qmdIncrementalRenderRoots(outDir, changedFiles)
     : null
+  const incrementalRoots = directIncrementalRoots
+    || (nativeTldaProject && !scopedNativeProject && changedFiles?.length > 0 && staleByDependency.length > 0
+      ? staleByDependency
+      : null)
   addLog(`[qmd] render scope: changed=${JSON.stringify(changedFiles)} incremental=${JSON.stringify(incrementalRoots)}`)
   const deckPairs = nativeTldaProject ? qmdDeckChapterPairs(outDir, addLog) : []
   const deckRoots = new Set(deckPairs.map(({ deck }) => deck))
@@ -1441,8 +1481,15 @@ export async function buildIncrementalQmd({
       // source is a copy of a file that a project render never writes, and the
       // check guarding it failed every component build on a render that had
       // already published the page.
-      await renderInOutput(quarto, outDir, root, addLog, { project: name })
-      publishIncrementalQmdOutput(outDir, root)
+      try {
+        await renderInOutput(quarto, outDir, root, addLog, { project: name })
+        publishIncrementalQmdOutput(outDir, root)
+        componentPages.push(successfulChapterPage(outDir, root))
+      } catch (error) {
+        const message = error?.message || String(error)
+        addLog(`[qmd] ${root}: failed independently: ${message}`)
+        componentPages.push(failedChapterPage(outDir, root, message))
+      }
     }
   } else if (nativeTldaProject) {
     await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true, project: name })
@@ -1471,15 +1518,25 @@ export async function buildIncrementalQmd({
 
   if (nativeTldaProject && !scopedNativeProject) {
     const renderedProject = readTldaManifest(outDir)
-    if (!renderedProject) {
-      throw new Error('tlda Quarto project rendered without producing tlda-manifest.json')
+    const renderedPageInfo = renderedProject
+      ? joinRenderedButUnmanifestedChapters(
+          outDir,
+          resolveQuartoBookPageSources(outDir, renderedProject.pageInfo),
+          dirname(renderedProject.path),
+          addLog,
+        )
+      : (priorDocumentManifest?.pages || []).filter(page => quartoBookRoots(outDir).includes(normalizedBookSource(page.source?.file)))
+    for (const page of componentPages) {
+      const index = renderedPageInfo.findIndex(existing => normalizedBookSource(existing.source?.file) === normalizedBookSource(page.source?.file))
+      if (index === -1) renderedPageInfo.push(page)
+      else renderedPageInfo[index] = page
     }
-    const renderedPageInfo = joinRenderedButUnmanifestedChapters(
-      outDir,
-      resolveQuartoBookPageSources(outDir, renderedProject.pageInfo),
-      dirname(renderedProject.path),
-      addLog,
-    )
+    for (const root of quartoBookRoots(outDir)) {
+      if (renderedPageInfo.some(page => normalizedBookSource(page.source?.file) === normalizedBookSource(root))) continue
+      renderedPageInfo.push(failedChapterPage(outDir, root, 'This chapter has not built successfully yet.'))
+    }
+    const declaredOrder = quartoBookRoots(outDir)
+    renderedPageInfo.sort((a, b) => declaredOrder.indexOf(normalizedBookSource(a.source?.file)) - declaredOrder.indexOf(normalizedBookSource(b.source?.file)))
     for (const page of renderedPageInfo) {
       const path = join(outDir, page.file)
       const sourceFile = page.source.file
@@ -1496,7 +1553,7 @@ export async function buildIncrementalQmd({
     // now, and the ones the seeded output already carried. Deriving the set
     // from the profile rather than from what this build rendered is what keeps
     // a component build's output tree complete.
-    const bookDir = dirname(renderedProject.path)
+    const bookDir = renderedProject ? dirname(renderedProject.path) : join(outDir, '_book')
     const prefix = relative(outDir, bookDir).replace(/\\/g, '/')
     // Only what THIS pass rendered is moved in. The source tree is copied into
     // the output before rendering, so a `<deck>.html` committed beside its .qmd
@@ -1556,11 +1613,12 @@ export async function buildIncrementalQmd({
     if (!bookToc) throw new Error('[toc] tlda book rendered without book.chapters in _quarto.yml')
     // Before the sweep, which deletes everything beside the book.
     retainFreezeOutsideRender(outDir, addLog)
-    retainNativeTldaRender(outDir, renderedProject.path)
+    retainNativeTldaRender(outDir, join(bookDir, 'tlda-manifest.json'))
     const bookTitleByPage = new Map(bookToc.map(entry => [entry.page, entry.title]))
     const nativePageInfo = [
       ...renderedPageInfo.map((page, i) => ({
         ...page,
+        working: page.working !== false,
         title: bookTitleByPage.get(i + 1) || page.title,
         map: page.source.file,
       })),
@@ -1571,7 +1629,7 @@ export async function buildIncrementalQmd({
     writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
     writeSourceScopeFile(outDir, sourceScopeFiles)
     await onProjectUpdate?.({
-      buildStatus: 'success',
+      buildStatus: nativePageInfo.some(page => page.working === false) ? 'partial' : 'success',
       pages: nativePageInfo.length,
       renderedFormat: 'html',
       lastBuild: new Date().toISOString(),

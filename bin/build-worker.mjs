@@ -125,7 +125,7 @@ async function renderRelevance(msg, lifecycle) {
     const git = await lifecycle.gitRepository()
     const published = lifecycle.listRevisionLifecycles(msg.name)
       .filter(row => (row.acceptSeq ?? 0) < (msg.acceptSeq ?? Number.MAX_SAFE_INTEGER))
-      .filter(row => ['built', 'not_required'].includes(row.build?.state))
+      .filter(row => row.sourceRevision)
       .at(-1)
     const publishedHead = published?.sourceRevision || null
     const { changed, deleted } = await git.diffRevisions(publishedHead, msg.sourceRevision)
@@ -140,11 +140,7 @@ async function renderRelevance(msg, lifecycle) {
     // the verdicts it already returns must not suppress a render.
     return { skip: decision.build === false && decision.reason === 'outside-tree', reason: decision.reason, changedFiles }
   } catch (e) {
-    // Loud on purpose. Erring toward rendering is right, but a filter that
-    // silently errs toward rendering on EVERY build is indistinguishable from a
-    // filter nobody wired in — which is the state this whole change is fixing.
-    console.warn(`[build-worker] ${msg.name}: could not decide render relevance, rendering: ${e.message}`)
-    return { skip: false, reason: `relevance-unavailable: ${e.message}` }
+    throw new Error(`[build-worker] ${msg.name}: could not identify the changed source; refusing a whole-project fallback: ${e.message}`)
   }
 }
 
