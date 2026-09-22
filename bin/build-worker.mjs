@@ -125,7 +125,7 @@ async function renderRelevance(msg, lifecycle) {
     const git = await lifecycle.gitRepository()
     const published = lifecycle.listRevisionLifecycles(msg.name)
       .filter(row => (row.acceptSeq ?? 0) < (msg.acceptSeq ?? Number.MAX_SAFE_INTEGER))
-      .filter(row => row.sourceRevision)
+      .filter(row => row.sourceRevision && row.sourceRevision !== msg.sourceRevision)
       .at(-1)
     const publishedHead = published?.sourceRevision || null
     const { changed, deleted } = await git.diffRevisions(publishedHead, msg.sourceRevision)
