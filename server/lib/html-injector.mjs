@@ -2026,12 +2026,13 @@ function ownWorkScript(ownWorkUrl) {
 }
 
 export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage = false, nav = {}, ownWorkUrl = '') {
-  // Quarto's site_libs references are relative to the rendered HTML file and
-  // already resolve against that file's /docs URL. Keep them relative so a
-  // nested book chapter continues to load its sibling _book/site_libs tree.
-  let patched = basePath
-    ? html.replace(/(?:\.\.\/)+figs\//g, basePath + 'figs/')
-    : html
+  // Quarto's relative asset references (site_libs, ../figs/) already resolve
+  // against the chapter file's own /docs URL, which is where the request for
+  // the chapter goes. Rewriting them against the project root breaks them: a
+  // chapter at app/book/chapters/one.html naming ../figs/a.png resolves to
+  // app/book/figs/a.png, while a root rewrite points at /docs/<name>/figs/a.png
+  // where nothing is served. So the bridge leaves asset paths untouched.
+  let patched = html
 
   // Opening <head> is the earliest seam in a served document, and the handler
   // has to precede anything that can throw or it reports nothing.
