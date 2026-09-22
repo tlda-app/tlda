@@ -535,9 +535,17 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       const pushTarget = tokenOverride === undefined && !serverOverride
         ? null
         : projectRemoteUrl(item.project, serverOverride, tokenOverride)
-      const result = await projection.pushRevision(revision, { exact: true, pushTarget })
+      // A projection has its own filtered history. The owner's settled commit
+      // is source material for the next projection revision, not itself a
+      // revision of the projection: after the first filtered publication it is
+      // not a descendant of the projection head and exact publication correctly
+      // refuses it as WrongHead. Fetch that head and parent the newly filtered
+      // commit on both histories before publishing it.
+      const acceptedParent = await projection.fetchHead(null, pushTarget)
+      const projected = await projection.projectRevision(revision, { acceptedParent })
+      const result = await projection.pushRevision(projected.commit, { exact: true, pushTarget })
       if (!result?.ok) {
-        throw new Error(`${item.project}: projection refused revision ${revision}: ${result?.status || 'unknown'}`)
+        throw new Error(`${item.project}: projection refused revision ${projected.commit}: ${result?.status || 'unknown'}`)
       }
       results[item.project] = result
     }

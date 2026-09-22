@@ -207,7 +207,7 @@ export function createGitProjectSync({
     return (await git(['diff', '--name-only', '--diff-filter=U', '-z'])).stdout.split('\0').filter(Boolean)
   }
 
-  async function filteredProjectCommit(workingCommit) {
+  async function filteredProjectCommit(workingCommit, { acceptedParent = null } = {}) {
     const archiveDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tlda-project-tree-'))
     const archive = path.join(archiveDir, 'tree.tar')
     const extracted = path.join(archiveDir, 'tree')
@@ -405,7 +405,7 @@ export function createGitProjectSync({
       const args = ['commit-tree', tree, '-m', REVISION_COMMIT_SUBJECT]
       const remoteParent = await rev('refs/tlda/remote/observed')
       const parents = []
-      for (const candidate of [parent, workingCommit, remoteParent]) {
+      for (const candidate of [parent, workingCommit, remoteParent, acceptedParent]) {
         if (!candidate || parents.includes(candidate)) continue
         let redundant = false
         for (let index = parents.length - 1; index >= 0; index--) {
@@ -715,9 +715,9 @@ export function createGitProjectSync({
     return { ...(await pushRevision(committed.revision, options)), dropped: committed.dropped }
   }
 
-  async function fetchHead(expected = null) {
+  async function fetchHead(expected = null, fetchTarget = null) {
     try {
-      await git(['fetch', '--no-tags', remote, `+${sharedRef}:${fetchedRef}`])
+      await git(['fetch', '--no-tags', fetchTarget || remote, `+${sharedRef}:${fetchedRef}`])
     } catch (error) {
       const output = `${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`
       if (!output.includes(`couldn't find remote ref ${sharedRef}`)) throw error
@@ -978,5 +978,6 @@ export function createGitProjectSync({
     setDocumentRoots,
     fetchHead,
     pushRevision,
+    projectRevision: (revision, options) => serialized(() => filteredProjectCommit(revision, options)),
   }
 }

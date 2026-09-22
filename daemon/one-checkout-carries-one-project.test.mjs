@@ -146,6 +146,8 @@ test('projection submission carries its caller server and one-shot token only to
       pushes.push({ project: options.project, revision, received })
       return { ok: true, revision }
     },
+    fetchHead: async () => null,
+    projectRevision: async revision => ({ commit: revision }),
     standOnWorkBranch: async () => ({ ok: true }),
     setDocumentRoots() {},
   })
@@ -235,7 +237,7 @@ test('a projection requires its declared owner in the same checkout', async () =
   }), /bound to another checkout/)
 })
 
-test('the owner and projection publish the identical settled revision', async () => {
+test('a projection revision descends from its accepted filtered head', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-projection-revision-'))
   const checkout = join(root, 'shared')
   const remotes = {
@@ -258,14 +260,21 @@ test('the owner and projection publish the identical settled revision', async ()
   manager.bindSource('deck', checkout, { sourceOwner: 'book', documentRoots: ['decks/probability.qmd'] })
   await manager.sync([{ name: 'book', mainFile: 'book.qmd' }, { name: 'deck', mainFile: 'decks/probability.qmd' }])
   await manager.standOnWorkBranch('book')
+
+  const acceptedTree = (await git(checkout, ['rev-parse', 'HEAD^{tree}'])).stdout.trim()
+  const acceptedProjection = (await git(checkout, ['commit-tree', acceptedTree, '-m', 'accepted projection'])).stdout.trim()
+  await git(checkout, ['push', '-q', remotes.deck, `${acceptedProjection}:refs/tlda/source/deck`])
+
   writeFileSync(join(checkout, 'decks', 'probability.qmd'), '# Probability\n\nEdited\n')
   const submitted = await manager.submit('book')
   await manager.closeAll()
 
   const proposal = `refs/tlda/proposals/daemon-a/main/${submitted.revision}`
-  const projectionProposal = `refs/tlda/proposals/daemon-a/main/${submitted.revision}`
+  const projectionProposal = (await git(remotes.deck, ['for-each-ref', '--sort=-creatordate', '--format=%(objectname)', 'refs/tlda/proposals/daemon-a/main/'])).stdout.trim().split('\n')[0]
   assert.equal((await git(remotes.book, ['rev-parse', proposal])).stdout.trim(), submitted.revision)
-  assert.equal((await git(remotes.deck, ['rev-parse', projectionProposal])).stdout.trim(), submitted.revision)
+  assert.notEqual(projectionProposal, submitted.revision, 'the projection publishes its filtered revision, not the owner revision')
+  await git(checkout, ['merge-base', '--is-ancestor', acceptedProjection, projectionProposal])
+  assert.match((await git(checkout, ['ls-tree', '-r', '--name-only', projectionProposal])).stdout, /^decks\/probability\.qmd$/m)
   assert.equal((await git(checkout, ['branch', '--list', 'tlda/deck'])).stdout.trim(), '',
     'the projection creates no work branch')
 })
