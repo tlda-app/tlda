@@ -20,6 +20,7 @@ import { ClassroomRegistration } from './classroom/ClassroomRegistration'
 import { ClassroomDeviceTransferRedeem } from './classroom/ClassroomDeviceTransfer'
 import { ClassroomInstructorHandoff } from './classroom/ClassroomInstructorHandoff'
 import { useClassroomManifest } from './classroom/useClassroomManifest'
+import { classroomApi, type ClassroomIdentity } from './classroom/api'
 import { ProblemMarking } from './classroom/ProblemMarking'
 import { StudentWork } from './classroom/StudentWork'
 import { HomeworkComparisonWorkspace } from './classroom/HomeworkComparisonWorkspace'
@@ -183,6 +184,7 @@ function parseInitialCamera(): { x: number; y: number; z: number; page?: string;
 function DocumentApp() {
   useClassroomManifest()
   const [state, setState] = useState<State | null>(null)
+  const [classroomRole, setClassroomRole] = useState<ClassroomIdentity['role'] | null>(null)
   const [initialCamera] = useState(parseInitialCamera)
   const isDark = useFleetTheme()
   const recordingPermission = useSyncExternalStore(subscribeCanPresent, canPublishRecording)
@@ -192,6 +194,15 @@ function DocumentApp() {
     : state?.phase === 'svg'
       ? state.document.name
       : new URLSearchParams(window.location.search).get('project')
+
+  useEffect(() => {
+    if (!isClassroomSurface()) return
+    let active = true
+    void classroomApi.me()
+      .then(identity => { if (active) setClassroomRole(identity.role) })
+      .catch(() => { if (active) setClassroomRole(null) })
+    return () => { active = false }
+  }, [])
 
   // The recording toggle's INITIAL value, and the only place context decides
   // anything about recording. A classroom instructor comes up on — Skip relies
@@ -207,6 +218,7 @@ function DocumentApp() {
     if (startedOnce.current || !captureDoc) return
     if (!recordsByDefault({
       classroom: isClassroomSurface(),
+      classroomRole,
       // Marking has its own explicit recording session: `+` starts a take and
       // Send returns that take with the marks. Starting the general classroom
       // recorder first occupies the single recorder and makes `+` a no-op.
@@ -216,7 +228,7 @@ function DocumentApp() {
     })) return
     startedOnce.current = true
     setAppRecording(true, captureDoc)
-  }, [captureDoc, recordingPermission, presenterPermissionKnown])
+  }, [captureDoc, classroomRole, recordingPermission, presenterPermissionKnown])
 
   useEffect(() => () => {
     if (isAppRecordingOn()) setAppRecording(false, null)

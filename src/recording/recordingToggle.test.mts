@@ -99,15 +99,19 @@ async function run() {
   } = await import('./recorder')
 
   // 1. The initial value, which is the only thing context decides.
-  equal(recordsByDefault({ classroom: true, permissionKnown: true, canPublish: true }), true,
+  equal(recordsByDefault({ classroom: true, classroomRole: 'instructor', permissionKnown: true, canPublish: true }), true,
     'a classroom instructor is recorded by default')
-  equal(recordsByDefault({ classroom: true, marking: true, permissionKnown: true, canPublish: true }), false,
+  equal(recordsByDefault({ classroom: true, classroomRole: 'instructor', marking: true, permissionKnown: true, canPublish: true }), false,
     'the marking composer owns recording on an instructor marking route')
-  equal(recordsByDefault({ classroom: false, permissionKnown: true, canPublish: true }), false,
+  equal(recordsByDefault({ classroom: false, classroomRole: null, permissionKnown: true, canPublish: true }), false,
     'the same person on their own document is not')
-  equal(recordsByDefault({ classroom: true, permissionKnown: true, canPublish: false }), false,
+  equal(recordsByDefault({ classroom: true, classroomRole: 'student', permissionKnown: true, canPublish: true }), false,
     'a student in the classroom is not')
-  equal(recordsByDefault({ classroom: true, permissionKnown: false, canPublish: true }), false,
+  equal(recordsByDefault({ classroom: true, classroomRole: 'instructor', permissionKnown: true, canPublish: false }), false,
+    'an instructor without project publish authority is not recorded')
+  equal(recordsByDefault({ classroom: true, classroomRole: null, permissionKnown: true, canPublish: true }), false,
+    'nothing starts before classroom identity is known')
+  equal(recordsByDefault({ classroom: true, classroomRole: 'instructor', permissionKnown: false, canPublish: true }), false,
     'and nothing starts before the server has answered which token this is')
 
   // 2. Importing the module, rendering a page, tapping the canvas: none of that

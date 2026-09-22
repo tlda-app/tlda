@@ -553,16 +553,22 @@ let appSessionClose: (() => void) | null = null
  * else, comes up off — including Skip on his own documents, which is where the
  * app used to reach for his microphone on page load for no reason he had given.
  *
- * Instructor is read as classroom-surface plus publish permission rather than
- * through `classroomApi.me()`: a student carries a read token, so the pair
- * already separates them, and it answers synchronously at the moment the
- * decision is made instead of a round trip later.
+ * Both classroom identity and project publish authority are required. The
+ * solution chapter carries project access for playback, so publish authority
+ * alone cannot distinguish the student reading returned work from the
+ * instructor recording a class.
  */
 export function recordsByDefault(
-  { classroom, marking, permissionKnown, canPublish }:
-  { classroom: boolean; marking?: boolean; permissionKnown: boolean; canPublish: boolean },
+  { classroom, classroomRole, marking, permissionKnown, canPublish }:
+  {
+    classroom: boolean
+    classroomRole: 'instructor' | 'student' | null
+    marking?: boolean
+    permissionKnown: boolean
+    canPublish: boolean
+  },
 ): boolean {
-  return classroom && !marking && permissionKnown && canPublish
+  return classroom && classroomRole === 'instructor' && !marking && permissionKnown && canPublish
 }
 
 export function isAppRecordingOn(): boolean {
