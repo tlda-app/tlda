@@ -980,6 +980,18 @@ router.patch('/:name/document-roots', requireOperatorWrite, async (req, res) => 
   }
 })
 
+router.patch('/:name/source-owner', requireOperatorWrite, async (req, res) => {
+  const project = await readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const sourceOwner = String(req.body?.sourceOwner || '').trim()
+  if (!sourceOwner) return res.status(400).json({ error: 'sourceOwner is required' })
+  if (sourceOwner === req.params.name) return res.status(400).json({ error: 'A project cannot own its own source projection' })
+  if (!await readProject(sourceOwner)) return res.status(400).json({ error: `Source owner ${sourceOwner} does not exist` })
+  const updated = await updateProject(req.params.name, { sourceOwner })
+  emitGlobalEvent('project-changed', { name: req.params.name })
+  res.json({ ok: true, project: updated })
+})
+
 // List source files
 router.get('/:name/files', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)

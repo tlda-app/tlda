@@ -1230,6 +1230,9 @@ async function cmdCreate() {
     return binding.alreadyLinked
   }
   const activateLocalSource = async (defaultRoots = [], { forceRebuild = false } = {}) => {
+    if (sourceOwner) {
+      await api('PATCH', `/api/projects/${name}/source-owner`, { sourceOwner })
+    }
     const projectMetadata = await api('GET', `/api/projects/${name}`)
     return callLocalDaemonLifecycle('project-source-link', {
       project: name,
@@ -1560,6 +1563,7 @@ async function cmdPush() {
     project: name,
     sourceDir: dir,
     projectMetadata,
+    sourceOwner: projectMetadata.sourceOwner || null,
   })
 
   // Session tagging: --session <id> or CLAUDE_SESSION_ID env var
