@@ -21,8 +21,10 @@ import { promisify } from 'node:util'
 
 import {
   buildIncrementalQmd,
+  qmdDeckChapterPairs,
   qmdDocumentRootPaths,
   qmdManifest,
+  quartoBookRoots,
 } from './incremental-qmd-build.mjs'
 import { buildCoursePublication, seedCoursePublicationRender } from './course-publication-build.mjs'
 import { deriveCourseAppSpec } from './course-app-build.mjs'
@@ -89,8 +91,23 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
 
   const project = await readProject(name)
   const mainFiles = qmdDocumentRootPaths(project)
-  const sourceScopeFiles = (await readClientSourceManifest(name))
+  const manifestScopeFiles = (await readClientSourceManifest(name))
     .filter((rel) => existsSync(join(srcDir, rel)))
+  // The book's declared membership is the truthful scope when the client
+  // manifest is empty: a project whose rows were never populated (or whose
+  // submit path bypassed the watcher) still declares its chapters in
+  // `_quarto.yml` plus its deck pairs, and those are the files the render
+  // actually read. Manifest membership wins when present; the declared tree
+  // is the fallback, never a fabrication in the finalizer.
+  let sourceScopeFiles = manifestScopeFiles
+  if (sourceScopeFiles.length === 0) {
+    const declared = new Set([
+      ...quartoBookRoots(srcDir),
+      ...qmdDeckChapterPairs(srcDir, () => {}).flatMap(({ deck, chapter }) => chapter ? [deck, chapter] : [deck]),
+      ...mainFiles,
+    ])
+    sourceScopeFiles = [...declared].filter((rel) => existsSync(join(srcDir, rel))).sort()
+  }
 
   const publicationGenerator = coursePublicationGenerator(name)
   if (publicationGenerator) {

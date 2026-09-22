@@ -134,6 +134,20 @@ const _directReporter = {
 let _reporter = _directReporter
 export function setBuildReporter(r) { _reporter = r || _directReporter }
 export function getBuildReporter() { return _reporter }
+// Test seam for the optional tex-diff enrichment inside finalizeBuildVersion:
+// when set, the tex diff resolves to this value ('__throw__' throws) instead
+// of shelling to the shadow repo. Production never sets it, so the real git
+// path is the only one the app exercises.
+let _texDiffForTest = null
+export function setTexDiffForTest(v) { _texDiffForTest = v }
+async function texDiffOutput(name, shadowDir) {
+  if (_texDiffForTest === '__throw__') throw new Error('injected tex-diff failure')
+  if (_texDiffForTest !== null) return _texDiffForTest
+  return (await _execAsync(
+    `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
+    { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
+  ))?.stdout || ''
+}
 
 /**
  * Build-output streaming and child-failure reporting live in the shared
@@ -2045,7 +2059,8 @@ export async function finalizeBuildVersion({
   // which is what made every change summary since throw.
   const hash7 = recorded.hash.slice(0, 7)
 
-  if (recorded.committed) try {
+  if (!recorded.committed) return recorded
+  try {
     // A committed shadow version IS the success record, so the success
     // `build-card` is emitted for every committed version — not only when the
     // tex-scoped change summary or lint produced content. A qmd-only (or any
@@ -2074,15 +2089,27 @@ export async function finalizeBuildVersion({
     // Measured on the deployed box: every build logged `Version <hash>
     // recorded` immediately followed by `Change summary failed`, and no card
     // reached the app.
-    const shadowDir = shadowRepoDir(name)
-    const { stdout: diffOutput } = await _execAsync(
-      `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
-      { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
-    )
     let summary = null
     let lintFindings = []
-    if (diffOutput.trim()) {
-      summary = await summarizeDiff(diffOutput, name)
+    let shadowDir = null
+    let diffOutput = ''
+    try {
+      shadowDir = shadowRepoDir(name)
+      diffOutput = await texDiffOutput(name, shadowDir)
+    } catch (enrichErr) {
+      // Fail soft by design: the tex diff is optional enrichment for the
+      // terminal card, so a lookup failure leaves null/empty defaults while
+      // emission below still runs.
+      console.error(`[build:${name}] Change summary failed:`, enrichErr.message)
+    }
+    if (String(diffOutput || '').trim()) {
+      try {
+        summary = await summarizeDiff(diffOutput, name)
+      } catch (summarizeErr) {
+        // Fail soft by design: summarization is optional enrichment, so a
+        // failure keeps the null summary while emission below still runs.
+        console.error(`[build:${name}] Change summary failed:`, summarizeErr.message)
+      }
       console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
       if (summary) {
         _reporter.broadcastSignal(`doc-${name}`, 'signal:build-summary', {
@@ -2126,6 +2153,14 @@ export async function finalizeBuildVersion({
       console.log(`[build:${name}] No tex diff between shadow commits`)
     }
     const buildFiles = readBuildFilesForEvent(name, projDir)
+    let editedBy = null
+    try {
+      editedBy = await resolveEditedBy(name)
+    } catch (editedByErr) {
+      // Fail soft by design: attribution is optional card metadata, so a
+      // lookup failure leaves null while emission below still runs.
+      console.error(`[build:${name}] resolveEditedBy failed:`, editedByErr.message)
+    }
     _reporter.emitGlobalEvent('build-card', {
       name,
       hash: hash7,
@@ -2133,14 +2168,18 @@ export async function finalizeBuildVersion({
       lintFindings,
       buildFiles,
       lastBuildSuccess,
-      editedBy: await resolveEditedBy(name),
+      editedBy,
     })
     if (lintFindings.length > 0) {
       await signalBuildStatus(name, null, lintFindings.map(f => ({
         message: f.text, file: null, line: null, category: 'lint',
       })))
     }
-  } catch (diffErr) { console.error(`[build:${name}] Change summary failed:`, diffErr.message) }
+  } catch (cardErr) {
+    // Last-resort guard only: enrichment above already fails soft, so reaching
+    // here means the terminal emit itself threw; log with build identity.
+    console.error(`[build:${name}] Success build-card failed:`, cardErr.message)
+  }
 
   return recorded
 }
