@@ -3273,6 +3273,15 @@ export class FleetStore {
       })();
       this._bustAgentsCache();
       this._syncAgentRegistry(agent.id);
+      // Register and login both write `dead = false` straight through this
+      // path — neither goes through markAlive — so a dead row revived here
+      // keeps its cleared flag and loses the reseed markAlive would have done.
+      // Death ended every subscription; without this the revived row reads
+      // not-dead with zero live rows, and `reanimate` then refuses `not dead`
+      // on an agent that still cannot be reached. Fires only on an actual
+      // dead→live edge, idempotent on (owner, query), so a live re-register
+      // changes nothing.
+      this._reseedMandatorySlotsOnRevival(agent.id, !!before?.dead);
       if (insertedEvent) this._notifyEvent(insertedEvent);
     } catch (e) {
       if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
@@ -4911,6 +4920,44 @@ export class FleetStore {
     return true;
   }
 
+  // The two mandatory delivery slots — `to:me` for mail addressed to the
+  // agent itself, `to:my_labels` for mail addressed to a set it sits in — both
+  // ended by death (trg_agents_death_ends_subscriptions), both reseeded here.
+  // markAlive used to reseed only `to:me`: a reanimated agent that had held the
+  // group slot came back with half its delivery and no record of the loss.
+  // Measured 2026-09-21 on skip-math-team-sol: killed, then revived through a
+  // path that cleared `dead` without markAlive at all, leaving zero live
+  // subscriptions while `reanimate` refused `not dead`. The PM hand-restored
+  // `to:skip-math-team-sol` + `to:my_labels` over the missing canonical
+  // `to:me`, which delivered by name but left the DB invariant — every agent
+  // holds the semantic mandatory `to:me` row — unrepaired.
+  _reseedMandatoryDeliverySlots(id) {
+    this.ensureSubscription({
+      owner: id, query: 'to:me',
+      notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, createdBy: id, mandatory: true,
+    });
+    this.ensureSubscription({
+      owner: id, query: DEFAULT_SUBSCRIPTION_QUERY,
+      notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, createdBy: id, mandatory: true,
+    });
+  }
+
+  // A dead-to-live transition that bypasses markAlive revives the row but not
+  // its delivery: register and login both upsert `dead = false` directly, and
+  // neither reseeds what death ended. The trigger
+  // (trg_agents_death_ends_subscriptions) fires only on a 0→1 edge, so
+  // clearing the flag the same way twice cannot re-end, and reseeding here is
+  // idempotent on (owner, query) — an agent that still holds a live slot keeps
+  // it. A deliberately-unsubscribed living agent never passes through death,
+  // so its choice is untouched.
+  _reseedMandatorySlotsOnRevival(id, wasDead) {
+    if (!wasDead) return;
+    const row = this._getAgent.get(id);
+    if (!row || row.dead) return;
+    this.db.transaction(() => this._reseedMandatoryDeliverySlots(id))();
+    this._bustSubscriptionTapCache();
+  }
+
   markAlive(id) {
     const agent = this.getAgent(id);
     if (!agent) throw new Error('agent not found');
@@ -4925,20 +4972,14 @@ export class FleetStore {
     }
     this.db.transaction(() => {
       this._markAgentAlive.run(id);
-      // Death ends every subscription including the mandatory `to:me` slot
-      // (trg_agents_death_ends_subscriptions — the row is ended, not deleted, so
-      // ending it again would be refused by
+      // Death ends every subscription including the mandatory slots
+      // (trg_agents_death_ends_subscriptions — the rows are ended, not deleted,
+      // so ending them again would be refused by
       // trg_subscriptions_mandatory_unendable's owner-alive check... the owner is
       // dead here, so the check stays quiet). Without this reseed a reanimated
       // agent has no direct subscription: chat resolves no match,
       // deliveryDecision stays null, and the send path crashed dereferencing it.
-      // ensureSubscription is idempotent on (owner, query), so an agent that held
-      // a live slot through some other path keeps it; a deliberately-unsubscribed
-      // living agent never passes through death, so its choice is untouched.
-      this.ensureSubscription({
-        owner: id, query: 'to:me',
-        notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, createdBy: id, mandatory: true,
-      });
+      this._reseedMandatoryDeliverySlots(id);
     })();
     this._bustAgentsCache();
     this._syncAgentRegistry(id);

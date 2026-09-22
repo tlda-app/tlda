@@ -1,12 +1,17 @@
-// Death ends every subscription including the mandatory `to:me` slot; a
-// reanimated agent must be addressable again without anyone re-adding rows by
-// hand. Measured 2026-09-21: a reanimated PM had zero live subscriptions, so
-// chat to it resolved no direct match and the send path crashed dereferencing
-// a null deliveryDecision instead of recording `no_direct_subscription`.
+// Death ends every subscription including the mandatory slots; a reanimated
+// agent must be addressable again without anyone re-adding rows by hand.
+// Measured 2026-09-21: a reanimated PM had zero live subscriptions, so chat to
+// it resolved no direct match and the send path crashed dereferencing a null
+// deliveryDecision instead of recording `no_direct_subscription`. Measured the
+// same night on skip-math-team-sol: killed, then revived through a path that
+// cleared `dead` without markAlive at all — zero live subscriptions while
+// `reanimate` refused `not dead`.
 //
-// Two halves, matching the two halves of the fix:
-// 1. `markAlive` reseeds the mandatory direct slot (`to:me`, immediate).
-// 2. A subscription-less recipient never crashes the send path — the delivery
+// Three halves, matching the three halves of the fix:
+// 1. `markAlive` reseeds both mandatory slots (`to:me` + `to:my_labels`).
+// 2. A dead→live revival through upsertAgent (register/login) reseeds the same
+//    two slots — the path that produced the observed not-dead/zero-row state.
+// 3. A subscription-less recipient never crashes the send path — the delivery
 //    layer reports `no_direct_subscription`, which is what the entry already
 //    carries when deliveryDecision is null.
 
@@ -27,7 +32,7 @@ function freshStore() {
   return { store, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
-test('death then markAlive restores the mandatory direct slot and delivers', () => {
+test('death then markAlive restores both mandatory slots and delivers', () => {
   const { store, cleanup } = freshStore()
   try {
     store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender' })
@@ -51,9 +56,9 @@ test('death then markAlive restores the mandatory direct slot and delivers', () 
     store.markAlive('fleet:revived')
 
     const live = store.getSubscriptionsByOwner('fleet:revived')
-    assert.equal(live.length, 1, 'reanimate restores exactly the direct slot, not the group one')
-    assert.equal(live[0].query, 'to:me')
-    assert.equal(live[0].notification_policy, 'immediate')
+    assert.deepEqual(live.map(r => r.query).sort(), ['to:me', 'to:my_labels'],
+      'reanimate restores both mandatory slots, exactly once each')
+    assert.equal(live.find(r => r.query === 'to:me').notification_policy, 'immediate')
 
     assert.ok(
       store.resolveSubscriptionDeliveries('fleet:sender', 'fleet:revived', 'chat')
@@ -65,7 +70,7 @@ test('death then markAlive restores the mandatory direct slot and delivers', () 
   }
 })
 
-test('markAlive preserves death semantics and a living agent keeps its group slot', () => {
+test('markAlive preserves death semantics and revives the full mandatory pair', () => {
   const { store, cleanup } = freshStore()
   try {
     store.upsertAgent({ id: 'fleet:revived', friendly_name: 'revived' })
@@ -83,9 +88,9 @@ test('markAlive preserves death semantics and a living agent keeps its group slo
       'death still ends every subscription including the group slot')
 
     store.markAlive('fleet:revived')
-    const queries = store.getSubscriptionsByOwner('fleet:revived').map(r => r.query)
-    assert.deepEqual(queries, ['to:me'],
-      'reanimate restores only the mandatory direct slot; group policy stays the owner\'s choice')
+    const queries = store.getSubscriptionsByOwner('fleet:revived').map(r => r.query).sort()
+    assert.deepEqual(queries, ['to:me', 'to:my_labels'],
+      'reanimate restores both mandatory slots; a reanimated agent keeps the same pair a mint writes')
 
     // markAlive on a living agent is a no-op, not a reconcile: an agent that
     // deliberately dropped its direct slot keeps that choice.
@@ -95,6 +100,56 @@ test('markAlive preserves death semantics and a living agent keeps its group slo
     assert.equal(store.markAlive('fleet:quiet').id, 'fleet:quiet')
     assert.deepEqual(store.getSubscriptionsByOwner('fleet:quiet').map(r => r.query), [],
       'markAlive on a living agent adds nothing')
+  } finally {
+    cleanup()
+  }
+})
+
+// The observed incident, at store level: kill ends every subscription, then a
+// revival that clears `dead` WITHOUT markAlive (the register/login upsert
+// path) leaves the agent reading not-dead with zero live rows — the exact
+// state skip-math-team-sol was found in, where `reanimate` then refused
+// `not dead`. upsertAgent must reseed the same mandatory pair markAlive does.
+test('a dead-to-live upsert revival reseeds both mandatory slots', () => {
+  const { store, cleanup } = freshStore()
+  try {
+    store.upsertAgent({ id: 'fleet:revived', friendly_name: 'revived' })
+    store.ensureSubscription({
+      owner: 'fleet:revived', query: 'to:me',
+      notificationPolicy: 'immediate', mandatory: true,
+    })
+    store.ensureSubscription({
+      owner: 'fleet:revived', query: 'to:my_labels',
+      notificationPolicy: 'immediate', mandatory: true,
+    })
+    store.markDead('fleet:revived')
+    assert.equal(store.getSubscriptionsByOwner('fleet:revived').length, 0,
+      'control: death ends both slots')
+
+    // Counterfactual: without the upsert-path reseed this is the incident —
+    // dead clears, subscriptions stay ended, `reanimate` refuses `not dead`.
+    const dead = store.getAgent('fleet:revived')
+    assert.equal(dead.dead, true, 'control: the agent is dead before revival')
+    store.upsertAgent({ ...dead, dead: false, last_seen: new Date().toISOString() })
+
+    const revived = store.getAgent('fleet:revived')
+    assert.equal(revived.dead, false, 'the revival clears the dead flag')
+    assert.deepEqual(
+      store.getSubscriptionsByOwner('fleet:revived').map(r => r.query).sort(),
+      ['to:me', 'to:my_labels'],
+      'the revival reseeds both mandatory slots, exactly once each',
+    )
+    assert.ok(
+      store.resolveSubscriptionDeliveries('fleet:sender', 'fleet:revived', 'chat')
+        .some(m => m.direct && m.query === 'to:me'),
+      'addressed chat resolves a direct delivery after an upsert revival',
+    )
+
+    // A live re-register is not a revival: nothing is added, nothing duplicated.
+    const before = store.getSubscriptionsByOwner('fleet:revived').length
+    store.upsertAgent({ ...store.getAgent('fleet:revived'), last_seen: new Date().toISOString() })
+    assert.equal(store.getSubscriptionsByOwner('fleet:revived').length, before,
+      're-registering a living agent adds no rows')
   } finally {
     cleanup()
   }
