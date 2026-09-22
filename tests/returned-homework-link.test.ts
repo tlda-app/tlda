@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { returnedHomeworkHref } from '../src/classroom/returnedHomeworkLink'
+import { markingHomeworkHref, returnedHomeworkHref } from '../src/classroom/returnedHomeworkLink'
 
 test('returned homework opens the assignment book page and preserves app authentication', () => {
   assert.equal(
@@ -17,6 +17,21 @@ test('returned homework opens the assignment book page and preserves app authent
       'qtm285',
     ),
     '/docs/qtm285-course/app/homework/homework-descriptive.html?token=read-token&course=qtm285',
+  )
+})
+
+test('book output prefixes are not repeated in app presentation routes', () => {
+  const assignment = {
+    id: 'homework-1',
+    courseId: 'qtm285',
+    title: 'Homework 1',
+    dueAt: '2026-09-30T00:00:00.000Z',
+    solutionsDocKey: 'qtm285-course',
+    bookPageFile: '_book/homework/homework-calibration-solutions.html',
+  }
+  assert.equal(
+    markingHomeworkHref('https://pic.example/?workspace=classroom-gradebook', assignment, 'qtm285', 'qtm285:student'),
+    '/docs/qtm285-course/app/homework/homework-calibration-solutions.html?course=qtm285&student=qtm285%3Astudent',
   )
 })
 

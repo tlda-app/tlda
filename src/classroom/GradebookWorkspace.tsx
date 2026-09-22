@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { classroomApi, type Assignment, type CourseStatus, type RepairLink } from './api'
 import { cellLabel, countLabel } from './markingLabels'
-import { returnedHomeworkHref } from './returnedHomeworkLink'
+import { markingHomeworkHref, returnedHomeworkHref } from './returnedHomeworkLink'
 import './ClassroomWorkspace.css'
 
 /**
@@ -128,8 +128,8 @@ export function GradebookWorkspace() {
   // which is a different surface and the only one they may reach.
   const open = (assignmentId: string, studentId: string, state?: string) => {
     const next = new URLSearchParams(window.location.search)
+    const assignment = data.assignments.find(candidate => candidate.id === assignmentId)
     if (isStudent) {
-      const assignment = data.assignments.find(candidate => candidate.id === assignmentId)
       const returnedHref = state === 'returned' && assignment
         ? returnedHomeworkHref(window.location.href, assignment, courseId)
         : null
@@ -139,6 +139,10 @@ export function GradebookWorkspace() {
       next.set('assignment', assignmentId)
       return `?${next}`
     }
+    const markingHref = assignment
+      ? markingHomeworkHref(window.location.href, assignment, courseId, studentId)
+      : null
+    if (markingHref) return markingHref
     next.delete('course')
     // AN INSTRUCTOR OPENS THE SOLUTION CHAPTER, NOT A MODE.
     //
@@ -152,7 +156,6 @@ export function GradebookWorkspace() {
     // installs, and with no course that answers 400, the identity comes back
     // null, and the install returns early. So the link that opened marking was
     // also the link that guaranteed there was none.
-    const assignment = data.assignments.find(candidate => candidate.id === assignmentId)
     next.delete('compareDoc')
     next.delete('markingCourse')
     next.delete('markingAssignment')
