@@ -346,6 +346,7 @@ const ALLOWED = {
   'server/lib/unified-server-test-harness.mjs': { count: 1, category: 'tooling', reason: 'Shared integration-test harness opens the real fleet wire so server tests exercise the deployed WebSocket boundary.' },
   'server/lib/fleet-inbox-delivery.test.mjs': { count: 1, category: 'tooling', reason: 'Delivery test: one openFleetWs() helper, called per client to observe fan-out.' },
   'server/lib/fleet-login-route-gate.test.mjs': { count: 2, category: 'tooling', reason: 'Login route gate test: shared /ws/fleet client plus an explicit query-filter distrust socket, both asserted directly.' },
+  'server/lib/fleet-store-reanimate-messaging.test.mjs': { count: 1, category: 'tooling', reason: 'Reanimation regression drives the real /ws/fleet send path to prove revived agents retain mandatory messaging subscriptions.' },
   'server/lib/fleet-store-offloop.test.mjs': { count: 1, category: 'tooling', reason: 'Off-loop store test client.' },
 }
 
