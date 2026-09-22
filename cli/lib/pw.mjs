@@ -1089,6 +1089,8 @@ function selectMyTab() {
   // stableTabs already told us which tab is current. Re-listing immediately
   // made every command pay for a second identical daemon round trip.
   if (mine.current) { renewTabLease(mine.index); return mine.index }
+  pw(['tab-select', String(mine.index)], { stdio: 'ignore' })
+  spawnSync('sleep', ['0.15'])
   for (let i = 0; i < 8; i++) {
     const cur = findMyTab(listTabs())
     if (!cur) return null
