@@ -3692,11 +3692,21 @@ async function linkClassroomGitProject({ name, title, mainFile, format, sourceDi
   commitClassroomProjectSource(sourceDir, `classroom setup: ${name}`)
   await createOrUpdateClassroomProject({ name, title, mainFile, format })
   const projectMetadata = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
+  // `--server` governs this command's git remote as well as its API calls,
+  // exactly like the other project-link callers: without it the seed push
+  // falls back to the daemon's own server. The per-call token rides the same
+  // existing override seam — the gated sandbox daemon holds no RW token of
+  // its own, so a passwordless push URL prompts and dies with `could not
+  // read Password ... Device not configured`. The caller's token reaches the
+  // push through the daemon's existing serverOverride path; nothing is
+  // stored, and the git layer already redacts it from failure messages.
   return callLocalDaemonLifecycle('project-source-link', {
     project: name,
     sourceDir,
     projectMetadata,
     documentRoots,
+    server: getFlag('server') || null,
+    token: getToken(),
   }, { timeoutMs: 300000 })
 }
 

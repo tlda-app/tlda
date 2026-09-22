@@ -203,6 +203,12 @@ test('classroom setup posts course, assignment, and frozen handout through exist
     assert.equal(daemon.calls.length, 3)
     assert.deepEqual(daemon.calls.map(call => call.op), ['project-source-link', 'project-source-link', 'project-source-link'])
     assert.deepEqual(daemon.calls.map(call => call.params.project), ['hw1-source', 'hw1-handout', 'hw1-solutions'])
+    // The gated-box proof: every link carries the caller's server AND the
+    // caller's RW token to the daemon's seed push. Without both, the daemon
+    // builds the push from its own (empty, in the gated sandbox) values and
+    // the push prompts and dies with `could not read Password`.
+    assert.deepEqual(daemon.calls.map(call => call.params.server), [fixture.url, fixture.url, fixture.url])
+    assert.deepEqual(daemon.calls.map(call => call.params.token), ['rw-token', 'rw-token', 'rw-token'])
     assert.deepEqual(daemon.calls.map(call => call.params.documentRoots), [
       ['homework/hw1.qmd'],
       ['hw1-handout.html'],

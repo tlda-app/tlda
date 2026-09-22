@@ -825,7 +825,7 @@ async function loadLocallyBoundProjects() {
 // failed link leaves nothing behind. A link that half-succeeds and leaves the
 // paper starting from version one is the old broken behaviour wearing a success
 // message.
-async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null, forceRebuild = false, acceptContainedServerHistory = false, preflightOnly = false, server = null }) {
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null, kind = null, remote = null, mirrorMode = null, seedBranch = null, seedRevision = 'HEAD', documentRoots = null, forceRebuild = false, acceptContainedServerHistory = false, preflightOnly = false, server = null, token = null }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
 
   const status = sourceSync.bindingStatus(project, sourceDir)
@@ -857,7 +857,12 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
         // `server` is the one the caller named. It has to be handed over here
         // because the binding that would otherwise carry it is written after
         // adoption is confirmed, which is deliberately later than this push.
-        pushSeed: history => sourceSync.pushHistorySeed(project, history.repositoryDir, history.head, server),
+        // The per-call `token` rides the same seam for the same reason: a
+        // gated-box daemon holds no RW token of its own, and without the
+        // caller's credential the seed push prompts and dies. Undefined when
+        // the caller named none, so the daemon's own token still governs the
+        // ordinary case.
+        pushSeed: history => sourceSync.pushHistorySeed(project, history.repositoryDir, history.head, server, token || undefined),
         confirmAdoption: ({ head, ref }) => sendMsgWithReply({ type: 'adopt-shadow-history-ref', project, head, ref }),
       })
     }

@@ -58,7 +58,7 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
   }
   function record(project) { return records().find(item => item.project === project) || null }
 
-  function projectRemoteUrl(project, serverOverride = null) {
+  function projectRemoteUrl(project, serverOverride = null, tokenOverride = undefined) {
     // A project bound with an explicit server pushes THERE. `--server` names the
     // server for that command, and the git remote is part of what that command
     // does -- it was governing the API call while the remote still came from the
@@ -93,15 +93,22 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     // This does not weaken anything. `validateToken` returns 'rw' for any token
     // only when gating is OFF, which is what a tokenless preview is; with gating
     // ON an empty password still fails the check and still 401s.
+    // The per-call token override rides the same seam as the server override:
+    // a gated-box daemon holds no RW token of its own, and without the
+    // caller's credential the seed push builds a passwordless URL, prompts,
+    // and dies with `could not read Password ... Device not configured`.
+    // Undefined means the caller named none, so the daemon's own token
+    // governs — the ordinary case is unchanged.
+    const effectiveToken = tokenOverride === undefined ? token : tokenOverride
     if (remoteUrl instanceof URL) {
       remoteUrl.username = safeRefPart(daemonId)
-      if (token) remoteUrl.password = token
+      if (effectiveToken) remoteUrl.password = effectiveToken
     }
     return remoteUrl.toString()
   }
 
-  async function configureProjectRemote(project, sourceDir, serverOverride = null) {
-    const remoteUrl = projectRemoteUrl(project, serverOverride)
+  async function configureProjectRemote(project, sourceDir, serverOverride = null, tokenOverride = undefined) {
+    const remoteUrl = projectRemoteUrl(project, serverOverride, tokenOverride)
     const { stdout } = await execFile('git', ['remote'], { cwd: sourceDir, encoding: 'utf8' })
     const hasTransportRemote = stdout.split(/\r?\n/).includes('tlda')
     await execFile('git', ['remote', hasTransportRemote ? 'set-url' : 'add', 'tlda', remoteUrl], { cwd: sourceDir })
@@ -118,9 +125,9 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
     await configureProjectRemote(item.project, item.sourceDir)
   }
 
-  async function pushHistorySeed(project, repositoryDir, revision, serverOverride = null) {
+  async function pushHistorySeed(project, repositoryDir, revision, serverOverride = null, tokenOverride = undefined) {
     const ref = historySeedRef({ daemonId, revision })
-    await configureProjectRemote(project, repositoryDir, serverOverride)
+    await configureProjectRemote(project, repositoryDir, serverOverride, tokenOverride)
     await execFile('git', ['push', 'tlda', `${revision}:${ref}`], { cwd: repositoryDir, encoding: 'utf8', timeout: 180000 })
     return { project, ref, revision }
   }
