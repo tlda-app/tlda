@@ -46,3 +46,42 @@ test('source-room edits and published heads use its canonical Git manager', asyn
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('whole-file source-room submissions wait for the Git proposal', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-source-room-submit-'))
+  const calls = []
+  const manager = {
+    bindSource: (...args) => calls.push(['bind', ...args]),
+    sync: async (...args) => calls.push(['sync', ...args]),
+    standOnWorkBranch: async () => ({ ok: true }),
+    remoteOperation: async (_project, operation, params) => {
+      calls.push(['remote', operation, params.path])
+      return { tracked: true }
+    },
+    queuePaths: (...args) => calls.push(['queue', ...args]),
+    submit: async (...args) => {
+      calls.push(['submit', ...args])
+      return { ok: true, revision: 'abc123' }
+    },
+  }
+  const daemon = createSourceRoomDaemon({
+    projectDir: project => join(root, project),
+    readProject: async name => ({ name, mainFile: 'deck.html' }),
+    sourceLifecycleStore: async () => ({ gitRepository: async () => ({ head: async () => null }) }),
+    readClientSourceManifest: async () => ['deck.html'],
+    gitSyncManagerForProject: () => manager,
+  })
+  try {
+    const result = await daemon.submitFiles('slides', {
+      files: [{ path: 'deck.html', content: '<h1>Deck</h1>' }],
+    })
+    assert.deepEqual(result, {
+      status: 202,
+      body: { ok: true, status: 'submitted', revision: 'abc123' },
+    })
+    assert.deepEqual(calls.find(call => call[0] === 'submit'), ['submit', 'slides'])
+  } finally {
+    daemon.closeAll()
+    rmSync(root, { recursive: true, force: true })
+  }
+})

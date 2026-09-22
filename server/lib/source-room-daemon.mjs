@@ -781,7 +781,24 @@ export function createSourceRoomDaemon({
       paths.push(filePath)
     }
     gitSync.queuePaths(project, paths)
-    return { status: 202, body: { ok: true, status: 'queued' } }
+    const submitted = await gitSync.submit(project)
+    if (!submitted?.ok) {
+      return {
+        status: 409,
+        body: {
+          ok: false,
+          error: `${project}: source-room submission was not accepted (${submitted?.status || 'unknown'})`,
+        },
+      }
+    }
+    return {
+      status: 202,
+      body: {
+        ok: true,
+        status: submitted.revision ? 'submitted' : (submitted.status || 'unchanged'),
+        revision: submitted.revision || null,
+      },
+    }
   }
 
   return {
