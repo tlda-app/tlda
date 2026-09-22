@@ -454,7 +454,14 @@ function runPlaywrightCli(args, { budgetName, ...opts } = {}) {
 }
 
 export function playwrightCliInvocation(bin, args) {
-  return { command: '/usr/bin/nice', args: ['-n', '5', bin, ...args] }
+  // Keep the persistent browser/daemon below interactive work, but do not also
+  // deprioritize the short-lived command client. Under ordinary Mini load the
+  // niced client was starved for 40-73s while the same eval run directly
+  // answered in 3-5s. The browser remains niced; this only lets its controller
+  // deliver and receive the bounded RPC promptly.
+  const verb = args.find(arg => !arg.startsWith('-'))
+  if (verb === 'open') return { command: '/usr/bin/nice', args: ['-n', '5', bin, ...args] }
+  return { command: bin, args }
 }
 
 function pw(args, opts = {}) {
@@ -556,6 +563,20 @@ function reapAlienSessionProcesses() {
     spawnSync('sleep', ['0.3'])
   }
   return killed > 0
+}
+
+// A live canonical browser whose parent is the canonical daemon is sufficient
+// evidence for the one decision ensureOpen has to make: do not launch another
+// browser. Asking the daemon `list` before every verb duplicated the first RPC
+// in selectMyTab, adding several silent seconds under load and turning a small
+// cross-tab eval into a 40-60s command. A wedged live daemon is still caught by
+// the following tab-list/verb budget; process liveness is deliberately NOT
+// reported as browser health.
+function canonicalSessionProcessesAreLive() {
+  const procs = listSessionProcesses(SESSION)
+  const browsers = procs.filter(p => p.kind === 'browser')
+  const daemons = new Set(procs.filter(p => p.kind === 'daemon').map(p => p.pid))
+  return browsers.some(browser => browser.hash === CANONICAL_HASH && daemons.has(browser.ppid))
 }
 
 // ---- lock (short, per-verb) ----
@@ -836,6 +857,11 @@ export function openArgs(repoRoot, opts = {}) {
 }
 
 function ensureOpen(repoRoot) {
+  // The wrapper has already reaped non-canonical processes. If the canonical
+  // daemon/browser pair is alive, the safe action is to reuse it and let the
+  // requested tab-list/verb establish responsiveness. This avoids a redundant
+  // daemon RPC without weakening the duplicate-browser guard.
+  if (canonicalSessionProcessesAreLive()) { renewSessionLease(); return false }
   const open = sessionOpen()
   if (open) { renewSessionLease(); return false }
   // Undetermined is NOT "closed". Launching here on a timed-out probe is how one
@@ -1060,6 +1086,9 @@ function selectMyTab() {
     mine = findMyTab(listTabs())
   }
   if (!mine) return null
+  // stableTabs already told us which tab is current. Re-listing immediately
+  // made every command pay for a second identical daemon round trip.
+  if (mine.current) { renewTabLease(mine.index); return mine.index }
   for (let i = 0; i < 8; i++) {
     const cur = findMyTab(listTabs())
     if (!cur) return null

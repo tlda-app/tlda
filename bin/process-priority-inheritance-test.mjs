@@ -49,8 +49,12 @@ writeFileSync(workerPath, `
 try {
   assert.match(nicedAgentCommand('printf ok'), /^exec \/usr\/bin\/nice -n 5 /)
   assert.deepEqual(playwrightCliInvocation('/tmp/playwright-cli', ['status']), {
+    command: '/tmp/playwright-cli',
+    args: ['status'],
+  })
+  assert.deepEqual(playwrightCliInvocation('/tmp/playwright-cli', ['-s=shared', 'open']), {
     command: '/usr/bin/nice',
-    args: ['-n', '5', '/tmp/playwright-cli', 'status'],
+    args: ['-n', '5', '/tmp/playwright-cli', '-s=shared', 'open'],
   })
   execFileSync('git', ['init', '--bare', remotePath], { stdio: 'ignore' })
   execFileSync('git', ['init', repoPath], { stdio: 'ignore' })
