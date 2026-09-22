@@ -257,7 +257,7 @@ const VALUE_FLAGS = new Set([
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'name', 'kind',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'poll', 'config',
-  'label', 'plist', 'only', 'version', 'project', 'repo', 'into', 'from',
+  'label', 'plist', 'only', 'version', 'project', 'repo', 'into', 'from', 'source-owner',
   'course', 'course-title', 'instructor-preferred-name', 'instructor-pronouns', 'instructor-login', 'assignment', 'assignment-title', 'due',
   'source', 'handout', 'solutions', 'solutions-version', 'handout-filter', 'solution-filter',
   'homework-root', 'homework', 'project-prefix', 'quarto-bin',
