@@ -2046,6 +2046,16 @@ export async function finalizeBuildVersion({
   const hash7 = recorded.hash.slice(0, 7)
 
   if (recorded.committed) try {
+    // A committed shadow version IS the success record, so the success
+    // `build-card` is emitted for every committed version — not only when the
+    // tex-scoped change summary or lint produced content. A qmd-only (or any
+    // non-tex) edit commits a real version whose `*.tex` diff is empty, and
+    // under the old gate that successful build reached the viewer as
+    // progress+reload only, with no visible card. The summary and lint stay
+    // tex-scoped and truthful: a non-tex change carries summary null and no
+    // lint findings, and the card's identity (name, hash, buildFiles) is what
+    // names the build.
+    //
     // Ask shadow-repo.mjs where the shadow repo is rather than rebuilding the
     // path here. This one line was why NO BUILD CARD WAS EVER EMITTED, by two
     // different routes, and both were invisible because the whole block —
@@ -2069,8 +2079,10 @@ export async function finalizeBuildVersion({
       `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
       { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
     )
+    let summary = null
+    let lintFindings = []
     if (diffOutput.trim()) {
-      const summary = await summarizeDiff(diffOutput, name)
+      summary = await summarizeDiff(diffOutput, name)
       console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
       if (summary) {
         _reporter.broadcastSignal(`doc-${name}`, 'signal:build-summary', {
@@ -2079,7 +2091,6 @@ export async function finalizeBuildVersion({
           timestamp: Date.now(),
         })
       }
-      const lintFindings = []
       try {
         const lintersDir = join(homedir(), '.config', 'tlda', 'linters')
         if (existsSync(lintersDir)) {
@@ -2111,25 +2122,23 @@ export async function finalizeBuildVersion({
       } catch (lintErr) {
         console.error(`[build:${name}] BYOL lint failed:`, lintErr.message)
       }
-      if (summary || lintFindings.length > 0) {
-        const buildFiles = readBuildFilesForEvent(name, projDir)
-        _reporter.emitGlobalEvent('build-card', {
-          name,
-          hash: hash7,
-          summary: summary || null,
-          lintFindings,
-          buildFiles,
-          lastBuildSuccess,
-          editedBy: await resolveEditedBy(name),
-        })
-        if (lintFindings.length > 0) {
-          await signalBuildStatus(name, null, lintFindings.map(f => ({
-            message: f.text, file: null, line: null, category: 'lint',
-          })))
-        }
-      }
     } else {
       console.log(`[build:${name}] No tex diff between shadow commits`)
+    }
+    const buildFiles = readBuildFilesForEvent(name, projDir)
+    _reporter.emitGlobalEvent('build-card', {
+      name,
+      hash: hash7,
+      summary,
+      lintFindings,
+      buildFiles,
+      lastBuildSuccess,
+      editedBy: await resolveEditedBy(name),
+    })
+    if (lintFindings.length > 0) {
+      await signalBuildStatus(name, null, lintFindings.map(f => ({
+        message: f.text, file: null, line: null, category: 'lint',
+      })))
     }
   } catch (diffErr) { console.error(`[build:${name}] Change summary failed:`, diffErr.message) }
 
