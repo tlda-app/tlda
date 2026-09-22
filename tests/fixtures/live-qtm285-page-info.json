@@ -1,0 +1,488 @@
+[
+ {
+  "file": "app/book/index.html",
+  "title": "Prediction, Inference, and Causality I",
+  "map": "index.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "index.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-social-pressure-experiment.html",
+  "title": "1 The Social Pressure Experiment",
+  "map": "chapters/chapter-social-pressure-experiment.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-social-pressure-experiment.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-setup.html",
+  "title": "2 Homework: Setting Up",
+  "map": "homework/homework-setup.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-setup.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-descriptive.html",
+  "title": "3 Homework: Basic Descriptive Statistics",
+  "map": "homework/homework-descriptive.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-descriptive.qmd"
+  }
+ },
+ {
+  "file": "app/book/part1-one-sample.html",
+  "title": "One-Sample Problems",
+  "map": "part1-one-sample.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "part1-one-sample.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-sampling.html",
+  "title": "4 Sampling",
+  "map": "chapters/chapter-sampling.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-sampling.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-point-and-interval-estimates.html",
+  "title": "5 Point and Interval Estimates",
+  "map": "chapters/chapter-point-and-interval-estimates.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-point-and-interval-estimates.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-calibration.html",
+  "title": "6 Homework: The Idea of Calibration",
+  "map": "homework/homework-calibration.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-calibration.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-calibration-binary.html",
+  "title": "7 Calibrating Interval Estimates with Binary Observations",
+  "map": "chapters/chapter-calibration-binary.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-calibration-binary.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-sampling-with-replacement.html",
+  "title": "8 Sampling with Replacement and the Binomial Distribution",
+  "map": "chapters/chapter-sampling-with-replacement.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-sampling-with-replacement.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-calibration-binary.html",
+  "title": "9 Homework: Calibration with Binary Outcomes",
+  "map": "homework/homework-calibration-binary.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-calibration-binary.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-sampling-without-replacement.html",
+  "title": "10 Sampling without Replacement and the Hypergeometric Distribution",
+  "map": "chapters/chapter-sampling-without-replacement.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-sampling-without-replacement.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-calibration-with-the-binomial.html",
+  "title": "11 Calibration using the Binomial Distribution",
+  "map": "chapters/chapter-calibration-with-the-binomial.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-calibration-with-the-binomial.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-bootstrap.html",
+  "title": "12 Calibrating Interval Estimates using the Bootstrap",
+  "map": "chapters/chapter-bootstrap.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-bootstrap.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-bootstrap.html",
+  "title": "13 Homework: Bootstrap",
+  "map": "homework/homework-bootstrap.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-bootstrap.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-random-variables-and-moments.html",
+  "title": "14 Random Variables and Moments",
+  "map": "chapters/chapter-random-variables-and-moments.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-random-variables-and-moments.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-sample-size-coverage.html",
+  "title": "15 Homework: Sample Size Calculation and Coverage",
+  "map": "homework/homework-sample-size-coverage.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-sample-size-coverage.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-random-variables-and-moments.html",
+  "title": "16 Homework \u2014 Random Variables, Moments, and the Standard Deviation",
+  "map": "homework/homework-random-variables-and-moments.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-random-variables-and-moments.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-standard-deviation.html",
+  "title": "17 The Standard Deviation is Standard",
+  "map": "chapters/chapter-standard-deviation.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-standard-deviation.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-normal-approximation.html",
+  "title": "18 Normal Approximation",
+  "map": "chapters/chapter-normal-approximation.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-normal-approximation.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-markov-chebyshev.html",
+  "title": "19 Homework: RVs, Markov\u2019s Inequality, Chebyshev\u2019s Inequality, Biased Estimators",
+  "map": "homework/homework-markov-chebyshev.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-markov-chebyshev.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-probability-review.html",
+  "title": "20 Probability Review",
+  "map": "chapters/chapter-probability-review.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-probability-review.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-variance-and-sample-size.html",
+  "title": "21 Variance, Standard Deviation, and Sample Size",
+  "map": "chapters/chapter-variance-and-sample-size.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-variance-and-sample-size.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-comparing-estimators.html",
+  "title": "22 Homework: Comparing Estimators",
+  "map": "homework/homework-comparing-estimators.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-comparing-estimators.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-bias-and-coverage.html",
+  "title": "23 Bias and Coverage",
+  "map": "chapters/chapter-bias-and-coverage.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-bias-and-coverage.qmd"
+  }
+ },
+ {
+  "file": "app/book/exams/practice-midterm-1.html",
+  "title": "24 Practice Midterm 1",
+  "map": "exams/practice-midterm-1.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "exams/practice-midterm-1.qmd"
+  }
+ },
+ {
+  "file": "app/book/part-breather.html",
+  "title": "Distributional Approximation",
+  "map": "part-breather.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "part-breather.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-stein-normal.html",
+  "title": "25 Why the CLT Works \u2014 Stein\u2019s Method",
+  "map": "chapters/chapter-stein-normal.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-stein-normal.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-poisson-approximation.html",
+  "title": "26 When Normal Breaks Down \u2014 Poisson Approximation and Quality Control",
+  "map": "chapters/chapter-poisson-approximation.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-poisson-approximation.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-stein-poisson.html",
+  "title": "27 Stein\u2019s Method and Poisson Approximation",
+  "map": "chapters/chapter-stein-poisson.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-stein-poisson.qmd"
+  }
+ },
+ {
+  "file": "app/book/part2-two-sample.html",
+  "title": "Two-Sample Problems",
+  "map": "part2-two-sample.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "part2-two-sample.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-comparing-two-groups.html",
+  "title": "28 Comparing Two Groups",
+  "map": "chapters/chapter-comparing-two-groups.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-comparing-two-groups.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-bias-two-groups.html",
+  "title": "29 Homework: Bias with Two Groups",
+  "map": "homework/homework-bias-two-groups.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-bias-two-groups.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-sample-size-two-sample.html",
+  "title": "30 Homework: Sample Size Calculation for Two-Sample Problems",
+  "map": "homework/homework-sample-size-two-sample.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-sample-size-two-sample.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-potential-outcomes-randomization.html",
+  "title": "31 Potential Outcomes and Randomization",
+  "map": "chapters/chapter-potential-outcomes-randomization.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-potential-outcomes-randomization.qmd"
+  }
+ },
+ {
+  "file": "app/book/homework/homework-causality.html",
+  "title": "32 Homework: Causality",
+  "map": "homework/homework-causality.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "homework/homework-causality.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-sampling-and-randomization.html",
+  "title": "33 Sampling and Randomization",
+  "map": "chapters/chapter-sampling-and-randomization.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-sampling-and-randomization.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-observational-confounding.html",
+  "title": "34 Observational Studies and Confounding",
+  "map": "chapters/chapter-observational-confounding.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-observational-confounding.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-models.html",
+  "title": "35 Models",
+  "map": "chapters/chapter-models.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-models.qmd"
+  }
+ },
+ {
+  "file": "app/book/exams/practice-midterm-2.html",
+  "title": "36 Practice Midterm 2",
+  "map": "exams/practice-midterm-2.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "exams/practice-midterm-2.qmd"
+  }
+ },
+ {
+  "file": "app/book/chapters/chapter-programming-reference.html",
+  "title": "37 Programming Reference",
+  "map": "chapters/chapter-programming-reference.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "chapters/chapter-programming-reference.qmd"
+  }
+ },
+ {
+  "file": "app/book/references.html",
+  "title": "References",
+  "map": "references.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "references.qmd"
+  }
+ },
+ {
+  "file": "app/book/decks/chapter-sampling-slides.html",
+  "title": "Sampling \u2014 Slides",
+  "variant": "slides",
+  "map": "chapters/chapter-sampling.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "decks/chapter-sampling-slides.qmd"
+  }
+ },
+ {
+  "file": "app/book/decks/chapter-point-and-interval-estimates-slides.html",
+  "title": "Point and Interval Estimates \u2014 Slides",
+  "variant": "slides",
+  "map": "chapters/chapter-point-and-interval-estimates.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "decks/chapter-point-and-interval-estimates-slides.qmd"
+  }
+ },
+ {
+  "file": "app/book/decks/chapter-calibration-binary-slides.html",
+  "title": "Calibrating Interval Estimates with Binary Observations \u2014 Slides",
+  "variant": "slides",
+  "map": "chapters/chapter-calibration-binary.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "decks/chapter-calibration-binary-slides.qmd"
+  }
+ },
+ {
+  "file": "app/book/decks/chapter-bootstrap-slides.html",
+  "title": "Calibrating Interval Estimates using the Bootstrap \u2014 Slides",
+  "variant": "slides",
+  "map": "chapters/chapter-bootstrap.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "decks/chapter-bootstrap-slides.qmd"
+  }
+ },
+ {
+  "file": "app/book/decks/chapter-random-variables-and-moments-slides.html",
+  "title": "Random Variables and Moments \u2014 Slides",
+  "variant": "slides",
+  "map": "chapters/chapter-random-variables-and-moments.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "decks/chapter-random-variables-and-moments-slides.qmd"
+  }
+ },
+ {
+  "file": "app/book/decks/chapter-normal-approximation-slides.html",
+  "title": "Normal Approximation and Sample Size Calculation \u2014 Slides",
+  "variant": "slides",
+  "map": "chapters/chapter-normal-approximation.qmd",
+  "source": {
+   "type": "project-source",
+   "format": "qmd",
+   "file": "decks/chapter-normal-approximation-slides.qmd"
+  }
+ }
+]

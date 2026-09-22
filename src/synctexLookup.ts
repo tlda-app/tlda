@@ -231,11 +231,45 @@ export interface HtmlSearchEntry {
 const htmlTocCache = new Map<string, HtmlTocEntry[] | null>()
 const htmlSearchCache = new Map<string, HtmlSearchEntry[] | null>()
 
+/** One row of the served `page-info.json`: the build's own pairing statement. */
+export interface PageInfoEntry {
+  file?: string
+  title?: string
+  variant?: string
+  map?: string
+  source?: { file?: string }
+}
+
+const pageInfoCache = new Map<string, PageInfoEntry[] | null>()
+
+/**
+ * Fetch the project's `page-info.json` once per session. The native qmd book
+ * builder writes the deck pairing there (`map` naming the chapter root,
+ * `variant: 'slides'` on deck pages) even when the served `toc.json` predates
+ * the `chapterRoot`/`deckOf` fields, so the panel can derive the pairing from
+ * the build's own statement rather than parsing titles.
+ */
+export async function loadPageInfo(projectName: string): Promise<PageInfoEntry[] | null> {
+  if (pageInfoCache.has(projectName)) return pageInfoCache.get(projectName)!
+  try {
+    const resp = await fetch(`${documentBase(projectName)}page-info.json`)
+    if (!resp.ok) { pageInfoCache.set(projectName, null); return null }
+    const data = await resp.json()
+    const pages = Array.isArray(data) ? data as PageInfoEntry[] : null
+    pageInfoCache.set(projectName, pages)
+    return pages
+  } catch {
+    pageInfoCache.set(projectName, null)
+    return null
+  }
+}
+
 // Clear all doc-asset caches on LaTeX rebuild so fresh output is loaded
 onReloadSignal(() => {
   lookupCache.clear()
   htmlTocCache.clear()
   htmlSearchCache.clear()
+  pageInfoCache.clear()
 })
 
 export async function loadHtmlToc(projectName: string): Promise<HtmlTocEntry[] | null> {

@@ -97,3 +97,30 @@ test('the deck chip pairs by chapterRoot, on part rows as well as chapters', asy
   assert.equal(deckNavIndex(rows, 2), 3)
   assert.equal(deckNavIndex(rows, 4), null)
 })
+
+test('the deck pairing derives from live page-info when toc.json predates it', async () => {
+  const { deckNavIndex, enrichTocWithPageInfo } = await import('../src/routedAppPageNumber.ts')
+  const { readFileSync } = await import('node:fs')
+  // The exact live defect shape: served `toc.json` carries only
+  // title/level/page, while the same surface's `page-info.json` carries the
+  // pairing (`map`, `variant: 'slides'`). No title parsing, no reorder.
+  const toc = JSON.parse(readFileSync(new URL('./fixtures/live-qtm285-toc.json', import.meta.url), 'utf8'))
+  const pages = JSON.parse(readFileSync(new URL('./fixtures/live-qtm285-page-info.json', import.meta.url), 'utf8'))
+  const bareKeys = new Set(toc.flatMap((row: object) => Object.keys(row)))
+  assert.deepEqual([...bareKeys].sort(), ['level', 'page', 'title'])
+  const bare = (toc as Array<{ level: string; page: number }>).map(({ level, page }) => ({ level, page }))
+  assert.ok(bare.every(row => deckNavIndex(bare, bare.indexOf(row)) === null))
+  const enriched = enrichTocWithPageInfo(bare, pages)
+  assert.equal(
+    enriched.filter((row, i) => deckNavIndex(enriched, i) !== null).length,
+    6,
+  )
+  for (let i = 0; i < enriched.length; i++) {
+    const idx = deckNavIndex(enriched, i)
+    if (idx == null) continue
+    assert.equal(enriched[idx].deckOf, enriched[i].chapterRoot)
+  }
+  // Order and pages are untouched — only pairing fields are added.
+  assert.deepEqual(enriched.map(row => row.page), toc.map((row: { page: number }) => row.page))
+  assert.deepEqual(enriched.map(row => row.level), toc.map((row: { level: string }) => row.level))
+})

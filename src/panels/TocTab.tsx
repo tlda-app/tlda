@@ -5,8 +5,8 @@ import type { TLViewportId } from 'tldraw'
 import { frameFromHudPresence } from '../wm/fleet-interaction-frame'
 import { getHudEditor } from '../wm/editor-host-bridge'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
-import { loadLookup, clearLookupCache, loadHtmlToc, type LookupEntry, type HtmlTocEntry } from '../synctexLookup'
-import { deckNavIndex } from '../routedAppPageNumber'
+import { loadLookup, clearLookupCache, loadHtmlToc, loadPageInfo, type LookupEntry, type HtmlTocEntry } from '../synctexLookup'
+import { deckNavIndex, enrichTocWithPageInfo } from '../routedAppPageNumber'
 import { homeworkKeyForTocRow } from '../homeworkTocKey'
 import { pdfToCanvas } from '../synctexAnchor'
 import { ProjectContext, PanelContext } from '../PanelContext'
@@ -463,8 +463,17 @@ export function TocTab({ query = '' }: { query?: string }) {
         }
         const toc = await loadHtmlToc(doc.projectName)
         if (!cancelled && toc) {
-          setHtmlToc(toc)
-          setCollapsed(computeDefaultFolded(toc))
+          // The served `toc.json` can predate the `chapterRoot`/`deckOf` fields
+          // while the same surface's `page-info.json` already carries the
+          // pairing (`map`, `variant: 'slides'`). Derive the pairing from the
+          // build's own statement so the deck chips do not depend on a
+          // regenerated ToC. Order, titles, and pages are untouched.
+          const pages = await loadPageInfo(doc.projectName)
+          const enriched = pages ? enrichTocWithPageInfo(toc, pages) : toc
+          if (!cancelled) {
+            setHtmlToc(enriched)
+            setCollapsed(computeDefaultFolded(enriched))
+          }
         }
       } catch (error) {
         console.warn('[toc] load failed:', error instanceof Error ? error.message : String(error))

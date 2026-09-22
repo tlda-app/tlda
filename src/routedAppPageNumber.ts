@@ -32,6 +32,40 @@ export interface TocDeckRow {
   deckOf?: string
 }
 
+/** One row of the served `page-info.json`: the build's own pairing statement. */
+export interface TocPageInfo {
+  file?: string
+  title?: string
+  variant?: string
+  map?: string
+  source?: { file?: string }
+}
+
+/**
+ * Fill in the pairing a served `toc.json` predates, from the build's own
+ * `page-info.json` on the same surface. A chapter/part row names its root
+ * through `pages[page - 1].map`; a slides-variant page names its chapter
+ * through its own `map`. Rows keep their order, titles, and pages; only the
+ * pairing fields are added, and only where the page exists. A `toc.json`
+ * that already carries the fields is returned untouched in shape — existing
+ * values win, so a fresh build's statement is never overwritten by derivation.
+ */
+export function enrichTocWithPageInfo<T extends TocDeckRow>(rows: T[], pages: TocPageInfo[] | null | undefined): T[] {
+  if (!pages) return rows
+  return rows.map(row => {
+    if (row.page == null || row.page < 1 || row.page > pages.length) return row
+    const info = pages[row.page - 1]
+    if (!info) return row
+    if ((row.level === 'chapter' || row.level === 'part') && row.chapterRoot == null && info.map) {
+      return { ...row, chapterRoot: info.map }
+    }
+    if (row.level === 'section' && row.deckOf == null && info.variant === 'slides' && info.map) {
+      return { ...row, deckOf: info.map }
+    }
+    return row
+  })
+}
+
 /**
  * The index of the deck row paired with row `i`, or null when it has none.
  * Pairs by `chapterRoot`/`deckOf`, never by display level or title: the

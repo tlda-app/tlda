@@ -1,0 +1,242 @@
+[
+ {
+  "title": "Prediction, Inference, and Causality I",
+  "level": "part",
+  "page": 1
+ },
+ {
+  "title": "1 The Social Pressure Experiment",
+  "level": "chapter",
+  "page": 2
+ },
+ {
+  "title": "2 Homework: Setting Up",
+  "level": "chapter",
+  "page": 3
+ },
+ {
+  "title": "3 Homework: Basic Descriptive Statistics",
+  "level": "chapter",
+  "page": 4
+ },
+ {
+  "title": "One-Sample Problems",
+  "level": "part",
+  "page": 5
+ },
+ {
+  "title": "4 Sampling",
+  "level": "chapter",
+  "page": 6
+ },
+ {
+  "title": "Sampling \u2014 Slides",
+  "level": "section",
+  "page": 43
+ },
+ {
+  "title": "5 Point and Interval Estimates",
+  "level": "chapter",
+  "page": 7
+ },
+ {
+  "title": "Point and Interval Estimates \u2014 Slides",
+  "level": "section",
+  "page": 44
+ },
+ {
+  "title": "6 Homework: The Idea of Calibration",
+  "level": "chapter",
+  "page": 8
+ },
+ {
+  "title": "7 Calibrating Interval Estimates with Binary Observations",
+  "level": "chapter",
+  "page": 9
+ },
+ {
+  "title": "Calibrating Interval Estimates with Binary Observations \u2014 Slides",
+  "level": "section",
+  "page": 45
+ },
+ {
+  "title": "8 Sampling with Replacement and the Binomial Distribution",
+  "level": "chapter",
+  "page": 10
+ },
+ {
+  "title": "9 Homework: Calibration with Binary Outcomes",
+  "level": "chapter",
+  "page": 11
+ },
+ {
+  "title": "10 Sampling without Replacement and the Hypergeometric Distribution",
+  "level": "chapter",
+  "page": 12
+ },
+ {
+  "title": "11 Calibration using the Binomial Distribution",
+  "level": "chapter",
+  "page": 13
+ },
+ {
+  "title": "12 Calibrating Interval Estimates using the Bootstrap",
+  "level": "chapter",
+  "page": 14
+ },
+ {
+  "title": "Calibrating Interval Estimates using the Bootstrap \u2014 Slides",
+  "level": "section",
+  "page": 46
+ },
+ {
+  "title": "13 Homework: Bootstrap",
+  "level": "chapter",
+  "page": 15
+ },
+ {
+  "title": "14 Random Variables and Moments",
+  "level": "chapter",
+  "page": 16
+ },
+ {
+  "title": "Random Variables and Moments \u2014 Slides",
+  "level": "section",
+  "page": 47
+ },
+ {
+  "title": "15 Homework: Sample Size Calculation and Coverage",
+  "level": "chapter",
+  "page": 17
+ },
+ {
+  "title": "16 Homework \u2014 Random Variables, Moments, and the Standard Deviation",
+  "level": "chapter",
+  "page": 18
+ },
+ {
+  "title": "17 The Standard Deviation is Standard",
+  "level": "chapter",
+  "page": 19
+ },
+ {
+  "title": "18 Normal Approximation",
+  "level": "chapter",
+  "page": 20
+ },
+ {
+  "title": "Normal Approximation and Sample Size Calculation \u2014 Slides",
+  "level": "section",
+  "page": 48
+ },
+ {
+  "title": "19 Homework: RVs, Markov\u2019s Inequality, Chebyshev\u2019s Inequality, Biased Estimators",
+  "level": "chapter",
+  "page": 21
+ },
+ {
+  "title": "20 Probability Review",
+  "level": "chapter",
+  "page": 22
+ },
+ {
+  "title": "21 Variance, Standard Deviation, and Sample Size",
+  "level": "chapter",
+  "page": 23
+ },
+ {
+  "title": "22 Homework: Comparing Estimators",
+  "level": "chapter",
+  "page": 24
+ },
+ {
+  "title": "23 Bias and Coverage",
+  "level": "chapter",
+  "page": 25
+ },
+ {
+  "title": "24 Practice Midterm 1",
+  "level": "chapter",
+  "page": 26
+ },
+ {
+  "title": "Distributional Approximation",
+  "level": "part",
+  "page": 27
+ },
+ {
+  "title": "25 Why the CLT Works \u2014 Stein\u2019s Method",
+  "level": "chapter",
+  "page": 28
+ },
+ {
+  "title": "26 When Normal Breaks Down \u2014 Poisson Approximation and Quality Control",
+  "level": "chapter",
+  "page": 29
+ },
+ {
+  "title": "27 Stein\u2019s Method and Poisson Approximation",
+  "level": "chapter",
+  "page": 30
+ },
+ {
+  "title": "Two-Sample Problems",
+  "level": "part",
+  "page": 31
+ },
+ {
+  "title": "28 Comparing Two Groups",
+  "level": "chapter",
+  "page": 32
+ },
+ {
+  "title": "29 Homework: Bias with Two Groups",
+  "level": "chapter",
+  "page": 33
+ },
+ {
+  "title": "30 Homework: Sample Size Calculation for Two-Sample Problems",
+  "level": "chapter",
+  "page": 34
+ },
+ {
+  "title": "31 Potential Outcomes and Randomization",
+  "level": "chapter",
+  "page": 35
+ },
+ {
+  "title": "32 Homework: Causality",
+  "level": "chapter",
+  "page": 36
+ },
+ {
+  "title": "33 Sampling and Randomization",
+  "level": "chapter",
+  "page": 37
+ },
+ {
+  "title": "34 Observational Studies and Confounding",
+  "level": "chapter",
+  "page": 38
+ },
+ {
+  "title": "35 Models",
+  "level": "chapter",
+  "page": 39
+ },
+ {
+  "title": "36 Practice Midterm 2",
+  "level": "chapter",
+  "page": 40
+ },
+ {
+  "title": "37 Programming Reference",
+  "level": "chapter",
+  "page": 41
+ },
+ {
+  "title": "References",
+  "level": "chapter",
+  "page": 42
+ }
+]
