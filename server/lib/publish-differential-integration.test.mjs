@@ -144,8 +144,9 @@ test('the publisher path has durable differential and no-deploy counterfactuals'
     assert.equal(first.reply.ok, true)
     const firstSource = join(mkdtempSync(join(tmpdir(), 'tlda-publisher-integration-stage-')), 'staging')
     await assemblePreviewCopy({ outputDir: join(first.project, 'output'), into: firstSource, distDir, configDir, document })
-    assert.deepEqual(await previewManifest(staticDir), await previewManifest(firstSource), 'accepted revision serves the exact assembled source tree')
-    assert.match(receiverLog.at(-1), /6 transferred/)
+    const firstManifest = await previewManifest(firstSource)
+    assert.deepEqual(await previewManifest(staticDir), firstManifest, 'accepted revision serves the exact assembled source tree')
+    assert.match(receiverLog.at(-1), new RegExp(`${firstManifest.files.length} transferred`))
     assert.equal(readFileSync(join(staticDir, 'obsolete.txt'), 'utf8'), 'remove me')
 
     const second = await publish(2, first.revision)
