@@ -107,28 +107,27 @@ setBuildOutputSink((name, line, skipped) => sendReport('buildOutput', [name, lin
 /**
  * Whether this revision's changes reach anything the render reads.
  *
- * The two revisions diffed are the project's PUBLISHED HEAD and the revision
- * being built: the head is what is on screen now, the revision is what this
- * build would land, so their difference is exactly the source change in
- * question. A project with no head yet takes `diffRevisions`' `--root` path and
- * reports every file as changed, which renders — correct for a first build.
+ * The two revisions diffed are consecutive accepted source revisions. Render
+ * success is deliberately not the baseline: chapter A can fail while the next
+ * edit to chapter B must still identify B alone. Successful chapter manifests
+ * persist independently of that book-level history.
  *
  * Deletions count as changes. Removing a file the render reads has to render.
  *
- * Errs toward rendering in every uncertain case, including its own failure:
- * an extra render costs time, a missed one silently serves a stale document and
- * reports success.
+ * An uncertain diff is a failed build decision, not permission to render the
+ * whole book. Falling back here is what turned an ordinary chapter edit into a
+ * complete QTM285 build.
  */
 async function renderRelevance(msg, lifecycle) {
   try {
     const project = await readProject(msg.name)
     const git = await lifecycle.gitRepository()
-    const published = lifecycle.listRevisionLifecycles(msg.name)
+    const previous = lifecycle.listRevisionLifecycles(msg.name)
       .filter(row => (row.acceptSeq ?? 0) < (msg.acceptSeq ?? Number.MAX_SAFE_INTEGER))
-      .filter(row => ['built', 'not_required'].includes(row.build?.state))
+      .filter(row => row.sourceRevision)
       .at(-1)
-    const publishedHead = published?.sourceRevision || null
-    const { changed, deleted } = await git.diffRevisions(publishedHead, msg.sourceRevision)
+    const previousRevision = previous?.sourceRevision || null
+    const { changed, deleted } = await git.diffRevisions(previousRevision, msg.sourceRevision)
     const changedFiles = [...changed, ...deleted]
     const decision = shouldBuildOnPush(project, msg.name, {
       changedFiles,
@@ -140,11 +139,7 @@ async function renderRelevance(msg, lifecycle) {
     // the verdicts it already returns must not suppress a render.
     return { skip: decision.build === false && decision.reason === 'outside-tree', reason: decision.reason, changedFiles }
   } catch (e) {
-    // Loud on purpose. Erring toward rendering is right, but a filter that
-    // silently errs toward rendering on EVERY build is indistinguishable from a
-    // filter nobody wired in — which is the state this whole change is fixing.
-    console.warn(`[build-worker] ${msg.name}: could not decide render relevance, rendering: ${e.message}`)
-    return { skip: false, reason: `relevance-unavailable: ${e.message}` }
+    throw new Error(`[build-worker] ${msg.name}: could not identify the changed source; refusing a whole-project fallback: ${e.message}`)
   }
 }
 
