@@ -14,10 +14,10 @@
  * build-service adapter (`buildQmdDocument` in build-qmd.mjs), which calls
  * `buildIncrementalQmd` with materialized paths.
  *
- * A direct document edit is independently renderable even when no complete
- * book has ever built. Each successful component render writes its own durable
- * manifest; the published book state is the union of those manifests. A full
- * book render is therefore never a prerequisite for editing a chapter.
+ * An empty destination (or one with no prior manifest) is the FIRST
+ * incremental run, not a separate full-render implementation: it flows through
+ * this same engine down the whole-project branch. There is no app-only
+ * full-render path to retain.
  *
  * Extracted verbatim from build-qmd.mjs: the render behaviour below is
  * unchanged, only the inputs are explicit.
@@ -692,7 +692,7 @@ export function joinRenderedButUnmanifestedChapters(outDir, seededPageInfo, book
  * Quarto rendered. Page titles remain document metadata; part/chapter level and
  * order come from the authored book structure, never from rendered navigation.
  */
-export function quartoBookToc(dir, pageInfo, { allowPartial = false } = {}) {
+export function quartoBookToc(dir, pageInfo) {
   let config
   for (const name of ['_quarto.yml', '_quarto.yaml']) {
     const path = join(dir, name)
@@ -727,10 +727,7 @@ export function quartoBookToc(dir, pageInfo, { allowPartial = false } = {}) {
   let previous = -1
   for (const source of declaredSources) {
     const position = renderedSources.indexOf(source)
-    if (position === -1) {
-      if (allowPartial) continue
-      throw new Error(`[toc] _quarto.yml declares ${source}, but the render did not produce it`)
-    }
+    if (position === -1) throw new Error(`[toc] _quarto.yml declares ${source}, but the render did not produce it`)
     if (position <= previous) throw new Error(`[toc] rendered page order disagrees with _quarto.yml at ${source}`)
     previous = position
   }
@@ -746,6 +743,7 @@ export function quartoBookToc(dir, pageInfo, { allowPartial = false } = {}) {
 }
 
 export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
+  if (!readTldaManifest(outDir)) return null
   const documentRoots = new Set([
     ...quartoBookRoots(outDir),
     ...qmdDeckRenderRoots(outDir),
@@ -853,62 +851,18 @@ export function publishIncrementalQmdOutput(outDir, root) {
     throw new Error(`[qmd] ${root}: component render produced a reveal deck instead of a book chapter`)
   }
   const manifest = readTldaManifest(outDir)
-  const bookDir = manifest ? dirname(manifest.path) : join(outDir, '_book')
-  const bookHtml = join(bookDir, rendered)
+  if (!manifest) throw new Error('[qmd] component render has no prior book manifest')
+  const bookHtml = join(dirname(manifest.path), rendered)
   mkdirSync(dirname(bookHtml), { recursive: true })
   cpSync(sourceHtml, bookHtml)
 
   const sourceFiles = join(outDir, rendered.replace(/\.html$/i, '_files'))
   if (existsSync(sourceFiles)) {
-    const bookFiles = join(bookDir, rendered.replace(/\.html$/i, '_files'))
+    const bookFiles = join(dirname(manifest.path), rendered.replace(/\.html$/i, '_files'))
     rmSync(bookFiles, { recursive: true, force: true })
     cpSync(sourceFiles, bookFiles, { recursive: true })
   }
   return true
-}
-
-const CHAPTER_MANIFEST_DIR = '.tlda-chapter-manifests'
-
-function chapterManifestPath(outDir, root) {
-  const normalized = String(root).replace(/\\/g, '/').replace(/^\.?\/+/, '')
-  return join(outDir, '_book', CHAPTER_MANIFEST_DIR, `${normalized}.json`)
-}
-
-function writeChapterManifest(outDir, root) {
-  const rendered = qmdRenderedOutputFilesForSource(outDir, root)
-    .find(file => file.startsWith('_book/'))
-  if (!rendered) throw new Error(`[qmd] ${root}: component render produced no book page`)
-  const html = readFileSync(join(outDir, rendered), 'utf8')
-  const page = {
-    file: rendered,
-    width: 800,
-    height: 1200,
-    title: manifestTitleFromHtml(html, rendered),
-    format: 'qmd',
-    source: { type: 'project-source', format: 'qmd', file: root },
-  }
-  const path = chapterManifestPath(outDir, root)
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify({ version: 1, kind: 'tlda-chapter', page }, null, 2))
-  return page
-}
-
-function readChapterManifests(outDir) {
-  const root = join(outDir, '_book', CHAPTER_MANIFEST_DIR)
-  const pages = []
-  const walk = dir => {
-    if (!existsSync(dir)) return
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name)
-      if (entry.isDirectory()) walk(path)
-      else if (entry.name.endsWith('.json')) {
-        const record = JSON.parse(readFileSync(path, 'utf8'))
-        if (record?.version === 1 && record?.kind === 'tlda-chapter' && record.page) pages.push(record.page)
-      }
-    }
-  }
-  walk(root)
-  return pages
 }
 
 // Named by its file: Quarto activates `_quarto-slides.yml` with
@@ -1489,7 +1443,6 @@ export async function buildIncrementalQmd({
       // already published the page.
       await renderInOutput(quarto, outDir, root, addLog, { project: name })
       publishIncrementalQmdOutput(outDir, root)
-      writeChapterManifest(outDir, root)
     }
   } else if (nativeTldaProject) {
     await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true, project: name })
@@ -1518,21 +1471,15 @@ export async function buildIncrementalQmd({
 
   if (nativeTldaProject && !scopedNativeProject) {
     const renderedProject = readTldaManifest(outDir)
-    const chapterPages = readChapterManifests(outDir)
-    if (!renderedProject && chapterPages.length === 0) throw new Error('tlda Quarto project rendered without producing a chapter manifest')
-    const seededPages = renderedProject ? resolveQuartoBookPageSources(outDir, renderedProject.pageInfo) : []
-    for (const page of chapterPages) {
-      const index = seededPages.findIndex(existing => normalizedBookSource(existing.source?.file) === normalizedBookSource(page.source?.file))
-      if (index === -1) seededPages.push(page)
-      else seededPages[index] = page
+    if (!renderedProject) {
+      throw new Error('tlda Quarto project rendered without producing tlda-manifest.json')
     }
-    const bookManifestPath = renderedProject?.path || join(outDir, '_book', 'tlda-manifest.json')
-    const renderedPageInfo = renderedProject
-      ? joinRenderedButUnmanifestedChapters(outDir, seededPages, dirname(bookManifestPath), addLog)
-      : seededPages.sort((a, b) => {
-          const roots = quartoBookRoots(outDir)
-          return roots.indexOf(normalizedBookSource(a.source?.file)) - roots.indexOf(normalizedBookSource(b.source?.file))
-        })
+    const renderedPageInfo = joinRenderedButUnmanifestedChapters(
+      outDir,
+      resolveQuartoBookPageSources(outDir, renderedProject.pageInfo),
+      dirname(renderedProject.path),
+      addLog,
+    )
     for (const page of renderedPageInfo) {
       const path = join(outDir, page.file)
       const sourceFile = page.source.file
@@ -1549,7 +1496,7 @@ export async function buildIncrementalQmd({
     // now, and the ones the seeded output already carried. Deriving the set
     // from the profile rather than from what this build rendered is what keeps
     // a component build's output tree complete.
-    const bookDir = dirname(bookManifestPath)
+    const bookDir = dirname(renderedProject.path)
     const prefix = relative(outDir, bookDir).replace(/\\/g, '/')
     // Only what THIS pass rendered is moved in. The source tree is copied into
     // the output before rendering, so a `<deck>.html` committed beside its .qmd
@@ -1605,11 +1552,11 @@ export async function buildIncrementalQmd({
     // `toc.json` numbers entries by position and the panel turns that number
     // straight back into `pages[n - 1]`, so a reorder here sends the ToC to the
     // wrong document without looking broken.
-    const bookToc = quartoBookToc(outDir, renderedPageInfo, { allowPartial: !renderedProject })
+    const bookToc = quartoBookToc(outDir, renderedPageInfo)
     if (!bookToc) throw new Error('[toc] tlda book rendered without book.chapters in _quarto.yml')
     // Before the sweep, which deletes everything beside the book.
     retainFreezeOutsideRender(outDir, addLog)
-    retainNativeTldaRender(outDir, bookManifestPath)
+    retainNativeTldaRender(outDir, renderedProject.path)
     const bookTitleByPage = new Map(bookToc.map(entry => [entry.page, entry.title]))
     const nativePageInfo = [
       ...renderedPageInfo.map((page, i) => ({

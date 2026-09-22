@@ -9,6 +9,8 @@ import { clearQmdFreeze, publishIncrementalQmdOutput, qmdIncrementalRenderRoots 
 test('a direct book-component edit selects only that component', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-incremental-test-'))
   try {
+    mkdirSync(join(root, '_book'), { recursive: true })
+    writeFileSync(join(root, '_book', 'tlda-manifest.json'), '{"version":1,"kind":"tlda","pages":[]}\n')
     writeFileSync(join(root, '_quarto.yml'), `book:\n  chapters:\n    - part: index.qmd\n      chapters:\n        - lectures/chapter-calibration-binary.qmd\n        - lectures/other.qmd\n`)
     writeFileSync(join(root, '_quarto-slides.yml'), `project:\n  render:\n    - lectures/chapter-calibration-binary-slides.qmd\n`)
     mkdirSync(join(root, 'lectures'), { recursive: true })
@@ -41,11 +43,12 @@ test('a component render invalidates only that component freeze', () => {
   }
 })
 
-test('a prose component publishes without a prior complete-book manifest', () => {
+test('a prose component written beside its source replaces the book page', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-publish-test-'))
   try {
     mkdirSync(join(root, 'lectures', 'chapter_files'), { recursive: true })
     mkdirSync(join(root, '_book', 'lectures', 'chapter_files'), { recursive: true })
+    writeFileSync(join(root, '_book', 'tlda-manifest.json'), '{"version":1,"kind":"tlda","pages":[]}\n')
     writeFileSync(join(root, 'lectures', 'chapter.html'), '<html><body>new chapter</body></html>')
     writeFileSync(join(root, 'lectures', 'chapter_files', 'figure.svg'), 'new figure')
     writeFileSync(join(root, '_book', 'lectures', 'chapter.html'), 'old chapter')

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import test from 'node:test'
@@ -32,14 +32,10 @@ const RENDER_CONTROL_SKIP = process.env.TLDA_QUARTO_RENDER_TESTS === '1'
   ? (!hasQuarto ? 'quarto not on PATH' : (!hasAcceptanceSource ? `acceptance source missing at ${ACCEPTANCE_SOURCE}` : false))
   : 'set TLDA_QUARTO_RENDER_TESTS=1 to run — real Quarto renders of the acceptance book; this control must pass before any build-path change ships'
 
-test('a direct chapter edit is incremental before any complete-book manifest exists', () => {
+test('empty destination is the first incremental run: no manifest means whole-project, not a separate path', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-engine-empty-'))
   try {
-    mkdirSync(join(root, 'chapters'), { recursive: true })
-    writeFileSync(join(root, '_quarto.yml'), 'book:\n  chapters:\n    - chapters/a.qmd\n    - chapters/b.qmd\n')
-    writeFileSync(join(root, 'chapters', 'a.qmd'), '# A\n')
-    writeFileSync(join(root, 'chapters', 'b.qmd'), '# B\n')
-    assert.deepEqual(qmdIncrementalRenderRoots(root, ['chapters/a.qmd']), ['chapters/a.qmd'])
+    assert.equal(qmdIncrementalRenderRoots(root, ['chapters/a.qmd']), null)
     assert.equal(qmdIncrementalRenderRoots(root, null), null)
   } finally {
     rmSync(root, { recursive: true, force: true })
