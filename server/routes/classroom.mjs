@@ -410,17 +410,19 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   })
   // Redeeming is proving possession of the transfer code, which is itself a
   // per-student secret minted against their own row. No bearer is consulted.
-  // BOOTSTRAP PATH, AND THE ONLY PLACE A BARE BEARER AUTHORISES ANYTHING
-  // CLASSROOM. The setup CLI mints the first instructor for a course and there
-  // is nothing else to authorise it with — no instructor identity exists yet to
-  // check membership against. So course creation (and only course creation)
-  // still accepts any valid token. Tokens carry no level; the bearer only
-  // admits. Everything after this — every instructor minted, every course
-  // read, every grant — resolves a per-person identity token and checks
-  // membership. Do not extend this exception without a decision recorded
-  // beside it: the next person to read a bearer check here will otherwise
-  // take it for the general mechanism and rebuild what the instructor table
-  // removed.
+  // FIRST-INSTRUCTOR BOOTSTRAP, INSIDE THE ONE BEARER EXCEPTION. The setup
+  // CLI mints the first instructor for a course and there is nothing else to
+  // authorise it with — no instructor identity exists yet to check membership
+  // against. So a bearer caller creating a course with zero instructors mints
+  // exactly one instructor row from the setup-supplied identity fields and
+  // returns its per-person token once. A bearer caller against a course that
+  // already has an instructor mints nothing: re-running setup re-records the
+  // course and returns it without a token, so a lost first token is a named
+  // one-time recovery, never a silent re-mint. An instructor-identity caller
+  // creating a second course gets course-only — their identity already
+  // resolves, so there is nothing to bootstrap. This stays inside course
+  // creation; the instructors route below still requires a resolving
+  // instructor of that course for every later mint.
   //
   // Defined ahead of the principal gate below ON PURPOSE: a bootstrap caller
   // holds only a bearer and no per-person token, so the gate would 401 them
@@ -433,9 +435,27 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     const authorised = principal?.role === 'instructor'
       || !!resolveIdentity(extractToken(req))
     if (!authorised) return res.status(401).json({ error: 'Unauthorized' })
-    const { id, title, preferredName, pronouns } = req.body || {}
+    const { id, title, preferredName, pronouns, instructorDisplayName, instructorUniversityLogin } = req.body || {}
     if (!id || !title || !String(preferredName || '').trim()) return res.status(400).json({ error: 'id, title, and preferredName are required' })
-    res.status(201).json(store.upsertCourse({ id, title, preferredName: String(preferredName).trim(), pronouns }))
+    const course = store.upsertCourse({ id, title, preferredName: String(preferredName).trim(), pronouns })
+    // A resolving instructor needs no bootstrap: their identity already
+    // exists, and minting beside it would attach a second row to a call that
+    // asked for a course.
+    if (principal) return res.status(201).json(course)
+    if (store.listInstructors(id).length > 0) return res.status(201).json(course)
+    const login = String(instructorUniversityLogin || '').trim().toLowerCase()
+    const displayName = String(instructorDisplayName || '').trim()
+    if (!displayName || !login) return res.status(400).json({ error: 'instructorDisplayName and instructorUniversityLogin are required to bootstrap the first instructor' })
+    if (!/^[a-z0-9._-]+$/.test(login)) return res.status(400).json({ error: 'instructorUniversityLogin contains unsupported characters' })
+    const token = crypto.randomBytes(32).toString('hex')
+    try {
+      const instructor = store.registerInstructor({ courseId: id, displayName, preferredName: String(preferredName).trim(), pronouns, universityLogin: login, token })
+      rememberStudentToken(req, res, token)
+      return res.status(201).json({ ...course, instructor, token })
+    } catch (error) {
+      if (String(error?.code || '').startsWith('SQLITE_CONSTRAINT')) return res.status(409).json({ error: 'That university login is already an instructor for this course' })
+      throw error
+    }
   })
   router.post('/courses/:courseId/device-transfer/redeem', (req, res) => {
     const transferCode = String(req.body?.transferCode || '')
