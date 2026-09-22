@@ -207,6 +207,10 @@ function DocumentApp() {
     if (startedOnce.current || !captureDoc) return
     if (!recordsByDefault({
       classroom: isClassroomSurface(),
+      // Marking has its own explicit recording session: `+` starts a take and
+      // Send returns that take with the marks. Starting the general classroom
+      // recorder first occupies the single recorder and makes `+` a no-op.
+      marking: new URLSearchParams(window.location.search).has('markingStudent'),
       permissionKnown: presenterPermissionKnown,
       canPublish: recordingPermission,
     })) return

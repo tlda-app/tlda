@@ -101,6 +101,8 @@ async function run() {
   // 1. The initial value, which is the only thing context decides.
   equal(recordsByDefault({ classroom: true, permissionKnown: true, canPublish: true }), true,
     'a classroom instructor is recorded by default')
+  equal(recordsByDefault({ classroom: true, marking: true, permissionKnown: true, canPublish: true }), false,
+    'the marking composer owns recording on an instructor marking route')
   equal(recordsByDefault({ classroom: false, permissionKnown: true, canPublish: true }), false,
     'the same person on their own document is not')
   equal(recordsByDefault({ classroom: true, permissionKnown: true, canPublish: false }), false,

@@ -559,10 +559,10 @@ let appSessionClose: (() => void) | null = null
  * decision is made instead of a round trip later.
  */
 export function recordsByDefault(
-  { classroom, permissionKnown, canPublish }:
-  { classroom: boolean; permissionKnown: boolean; canPublish: boolean },
+  { classroom, marking, permissionKnown, canPublish }:
+  { classroom: boolean; marking?: boolean; permissionKnown: boolean; canPublish: boolean },
 ): boolean {
-  return classroom && permissionKnown && canPublish
+  return classroom && !marking && permissionKnown && canPublish
 }
 
 export function isAppRecordingOn(): boolean {
