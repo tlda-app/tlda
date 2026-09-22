@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { quartoBookToc, resolveQuartoBookPageSources } from './build-qmd.mjs'
+import { orderQuartoBookPages, quartoBookToc, resolveQuartoBookPageSources } from './build-qmd.mjs'
 
 test('book toc structure comes from _quarto.yml without reading rendered HTML', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-book-config-toc-'))
@@ -47,6 +47,33 @@ test('book toc rejects a render whose declared chapters changed order', () => {
       ]),
       /page order disagrees/,
     )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('book page ordering compares rendered handouts with their declared handout roots', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-book-handout-order-'))
+  try {
+    writeFileSync(join(root, '_quarto.yml'), [
+      'book:',
+      '  chapters:',
+      '    - first.qmd',
+      '    - homework/setup.handout.qmd',
+      '    - second.qmd',
+      '',
+    ].join('\n'))
+    const pages = [
+      { title: 'Second', source: { file: 'second.qmd' } },
+      { title: 'Setup', source: { file: 'homework/setup.qmd' } },
+      { title: 'First', source: { file: 'first.qmd' } },
+    ]
+
+    assert.deepEqual(
+      orderQuartoBookPages(root, pages).map(page => page.source.file),
+      ['first.qmd', 'homework/setup.qmd', 'second.qmd'],
+    )
+    assert.doesNotThrow(() => quartoBookToc(root, pages))
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

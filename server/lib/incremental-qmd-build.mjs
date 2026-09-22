@@ -749,6 +749,14 @@ export function quartoBookToc(dir, pageInfo) {
   })
 }
 
+export function orderQuartoBookPages(dir, pageInfo) {
+  const declaredOrder = quartoBookRoots(dir).map(normalizedBookSource)
+  return pageInfo.sort((a, b) => (
+    declaredOrder.indexOf(normalizedBookSource(a.source?.file))
+    - declaredOrder.indexOf(normalizedBookSource(b.source?.file))
+  ))
+}
+
 export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
   const documentRoots = new Set([
     ...quartoBookRoots(outDir),
@@ -1542,8 +1550,7 @@ export async function buildIncrementalQmd({
       if (renderedPageInfo.some(page => normalizedBookSource(page.source?.file) === normalizedBookSource(root))) continue
       renderedPageInfo.push(failedChapterPage(outDir, root, 'This chapter has not built successfully yet.'))
     }
-    const declaredOrder = quartoBookRoots(outDir)
-    renderedPageInfo.sort((a, b) => declaredOrder.indexOf(normalizedBookSource(a.source?.file)) - declaredOrder.indexOf(normalizedBookSource(b.source?.file)))
+    orderQuartoBookPages(outDir, renderedPageInfo)
     for (const page of renderedPageInfo) {
       const path = join(outDir, page.file)
       const sourceFile = page.source.file

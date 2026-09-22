@@ -194,6 +194,7 @@ export {
   quartoBookRoots,
   resolveQuartoBookPageSources,
   quartoBookToc,
+  orderQuartoBookPages,
   qmdIncrementalRenderRoots,
   clearQmdFreeze,
   qmdDocumentsStaleByDependency,
