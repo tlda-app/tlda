@@ -64,6 +64,7 @@ import { createRotatingAppender } from '../shared/rotating-log.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat, hasSourceMapping } from '../shared/document-formats.mjs'
 import { resolveContainedPath } from './lib/path-containment.mjs'
+import { resolvePublishedAssetPath } from './lib/site-lib-asset.mjs'
 import { solutionsVariantFileFor } from './lib/classroom-solution-variant.mjs'
 import { serverOwnerUpsertRow } from './lib/server-owner-row.mjs'
 import { resolveLocalImage } from '../shared/local-image.mjs'
@@ -5338,11 +5339,11 @@ app.use('/docs', async (req, res, next) => {
             if (gated) return gated === 'sent' ? undefined : next(gated)
             let assetPath
             try {
-              assetPath = resolveContainedPath(join(PROJECTS_DIR, name, 'output'), filePath)
+              assetPath = await resolvePublishedAssetPath(join(PROJECTS_DIR, name, 'output'), filePath)
             } catch {
               return res.status(404).json({ error: 'Not found' })
             }
-            if (await docPathExists(assetPath)) {
+            if (assetPath) {
               res.set('Cache-Control', 'public, max-age=3600')
               return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
             }
@@ -5351,11 +5352,11 @@ app.use('/docs', async (req, res, next) => {
         }
         let assetPath
         try {
-          assetPath = resolveContainedPath(join(PROJECTS_DIR, name, 'output'), filePath)
+          assetPath = await resolvePublishedAssetPath(join(PROJECTS_DIR, name, 'output'), filePath)
         } catch {
           return res.status(404).json({ error: 'Not found' })
         }
-        if (await docPathExists(assetPath)) {
+        if (assetPath) {
           res.set('Cache-Control', 'public, max-age=3600')
           return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
         }
