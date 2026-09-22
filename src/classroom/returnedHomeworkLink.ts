@@ -22,6 +22,6 @@ export function markingHomeworkHref(currentHref: string, assignment: Assignment,
   const href = returnedHomeworkHref(currentHref, assignment, courseId)
   if (!href) return null
   const url = new URL(href, currentHref)
-  url.searchParams.set('student', studentId)
+  url.searchParams.set('markingStudent', studentId)
   return `${url.pathname}${url.search}`
 }

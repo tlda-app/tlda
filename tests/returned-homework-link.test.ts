@@ -31,7 +31,7 @@ test('book output prefixes are not repeated in app presentation routes', () => {
   }
   assert.equal(
     markingHomeworkHref('https://pic.example/?workspace=classroom-gradebook', assignment, 'qtm285', 'qtm285:student'),
-    '/docs/qtm285-course/app/homework/homework-calibration-solutions.html?course=qtm285&student=qtm285%3Astudent',
+    '/docs/qtm285-course/app/homework/homework-calibration-solutions.html?course=qtm285&markingStudent=qtm285%3Astudent',
   )
 })
 
