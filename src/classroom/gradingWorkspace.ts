@@ -29,7 +29,7 @@ export interface MarkingIdentity {
   submissionRoomId: string
 }
 
-export interface MarkingTag extends MarkingIdentity, Record<string, unknown> {
+export interface MarkingTag extends MarkingIdentity {
   version: 1
 }
 

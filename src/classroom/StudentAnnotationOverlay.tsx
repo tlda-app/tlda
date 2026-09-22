@@ -368,7 +368,7 @@ export function StudentAnnotationOverlay({
               ...s,
               meta: {
                 ...s.meta,
-                ...(tag ? { classroomMarking: tag as any } : {}),
+                ...(tag ? { classroomMarking: { ...tag } } : {}),
                 ...(t == null ? {} : { t }),
               },
             }))
