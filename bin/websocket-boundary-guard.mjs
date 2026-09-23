@@ -142,6 +142,16 @@ const ALLOWED = {
       + 'wire joins them. Endpoint: /ws/fleet.',
   },
 
+  'test/serve-activity-operation-idempotency-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Replays a serve-mode muse tool call (same muse-serve: operation identity, restart re-read) over a '
+      + 'bare socket to prove the server-side ingest collapses the replay to one activity row, with a '
+      + 'no-identity counterfactual storing two. Same boundary reasoning as the activity-operation-idempotency '
+      + 'wire test: the socket must bypass the client transport library because the server ingest path is the '
+      + 'subject. Endpoint: /ws/fleet.',
+  },
+
   'bin/a-link-does-not-lower-access-test.mjs': {
     count: 1,
     category: 'tooling',

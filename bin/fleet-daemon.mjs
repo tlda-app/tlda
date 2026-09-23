@@ -587,7 +587,25 @@ jsonlBindingReconciler = createJsonlProcessBindingReconciler({
 // notifications to `<stateDir>/view.jsonl`; this tails that file per
 // serve-mode muse agent through the same mapping + parser + extractor as the
 // durable path. Finished turns only — live progress stays out of scope.
-const museServeIngest = createMuseServeIngest({ bufferActivity, log })
+// The durable tail owns an agent's rows while it watches the durable session
+// file, so the serve feed advances past (without emitting) any view.jsonl
+// bytes for a durable-tailed agent and covers only the rest. Every serve row
+// carries a stable muse-serve: operation identity for the server duplicate
+// guard; the durable/backfill muse-history: keyspace is untouched.
+const museServeIngest = createMuseServeIngest({
+  bufferActivity,
+  log,
+  isDurableTailed: agent => {
+    try {
+      return !!jsonlIngestor?.hasWatcherForAgent?.(agent, 'muse')
+    } catch {
+      // Watcher lookup failure must not suppress the serve feed; fall back
+      // to emitting (a duplicate row dedupes server-side, a dropped row is
+      // lost).
+      return false
+    }
+  },
+})
 
 /**
  * Which agent's edit is in this proposal, answered from what this daemon already

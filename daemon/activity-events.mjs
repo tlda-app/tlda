@@ -51,8 +51,21 @@ export function parseSessionRecord(obj) {
   return ev
 }
 
-export function extractActivityEvents(events) {
+export function extractActivityEvents(events, { operationIdFor } = {}) {
   const result = []
+  // Creation-order index for operation stamps, mirroring
+  // agent-runtime/jsonl-event-extract.mjs: deferred emissions (pretty cards
+  // resolved by a later record, expiry flushes) keep the stamp they were
+  // created with, so the same record yields the same identities no matter
+  // which later record triggers their release. Callers that pass no stamper
+  // see byte-identical output to before.
+  let nextOperationIndex = 0
+  const stampOperationId = evt => {
+    if (!operationIdFor) return evt
+    const operationId = operationIdFor(nextOperationIndex++)
+    if (operationId) evt.operationId = operationId
+    return evt
+  }
   const toolResults = new Map()
   for (const ev of events) {
     if (!ev.blocks) continue
@@ -85,7 +98,7 @@ export function extractActivityEvents(events) {
           input.command || input.cat || input.pattern || input.message ||
           input.query || input.description || input.reason ||
           input.agent || input.doc || input.ref || input.text || ''
-        const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
+        const evt = stampOperationId({ tool: humanName, arg, ts: ev.timestamp, id: block.id })
         if (block.status) evt.status = block.status
         if (block.duration) evt.duration = block.duration
         if (block.correlationId) evt.correlationId = block.correlationId
@@ -100,7 +113,7 @@ export function extractActivityEvents(events) {
         }
         result.push(evt)
       } else if (block.type === 'text' && block.text?.trim().length > 0) {
-        result.push({ tool: '_text', arg: block.text, ts: ev.timestamp })
+        result.push(stampOperationId({ tool: '_text', arg: block.text, ts: ev.timestamp }))
       }
     }
     // Token usage is not extracted. Nothing consumes a `_usage` activity event:
