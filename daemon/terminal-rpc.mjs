@@ -49,6 +49,7 @@ export function createTerminalRpc({
   resolveAgentRoute,
   validateTmuxOwner,
   resolveTerminalAgent,
+  resolveMuseServeSend = null,
   terminalInputAllowed = false,
   execFileImpl = execFileP,
 }) {
@@ -180,6 +181,13 @@ export function createTerminalRpc({
 
   async function rpcSendText(args = {}) {
     assertTerminalTextInputAllowed(terminalInputAllowed, 'send-text')
+    // Muse agents take the MSP path when a serve session is bound: text becomes
+    // a turn over the bridge socket, never terminal keystrokes. Every other
+    // kind keeps the pty/tmux path below untouched.
+    if (resolveMuseServeSend && args?.agent_id) {
+      const routed = await resolveMuseServeSend({ agentId: args.agent_id, text: args.text })
+      if (routed) return routed
+    }
     return writeTextToTerminal(args)
   }
 

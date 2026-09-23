@@ -83,6 +83,15 @@ export function createMuseRecordParser() {
       if (event.kind === 'assistant_message_committed' && event.text) {
         return { type: 'assistant', timestamp: ts, blocks: [{ type: 'text', text: event.text }] }
       }
+      // MSP-mapped terminals carry the provider's result text inline as
+      // `record.result_text` (visibleOutput on the item). The durable path
+      // never sets it — effect records hold no text there — so this branch
+      // only fires for MSP-mapped records. Emitted as a tool_result block so
+      // the extractor's pretty-print gate sees the same shape it sees for
+      // durable tool results.
+      if (event.kind === 'msp_tool_result_inline' && event.tool_call_id && event.text != null) {
+        return { type: 'user', timestamp: ts, blocks: [{ type: 'tool_result', id: event.tool_call_id, text: event.text, is_error: !!event.is_error }] }
+      }
       if (event.kind === 'tool_result_batch_committed') {
         // Result text is what result-built cards (screenshots, diffs) and
         // pretty-print bodies are made of; the muse parser used to drop it,

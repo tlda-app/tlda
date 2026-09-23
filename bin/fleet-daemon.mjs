@@ -109,6 +109,8 @@ import {
 } from '../daemon/jsonl-local-bindings.mjs'
 import { createMachineRpc } from '../daemon/machine-rpc.mjs'
 import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
+import { createMuseServeSend } from '../agent-runtime/muse-serve-send.mjs'
+import { createMuseServeIngest } from '../agent-runtime/muse-serve-ingest.mjs'
 import { createAgentRouteResolver } from '../daemon/agent-route.mjs'
 import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
@@ -580,6 +582,12 @@ jsonlBindingReconciler = createJsonlProcessBindingReconciler({
   daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
   log,
 })
+
+// Muse serve-mode finished-turn feed: the bridge appends raw view
+// notifications to `<stateDir>/view.jsonl`; this tails that file per
+// serve-mode muse agent through the same mapping + parser + extractor as the
+// durable path. Finished turns only — live progress stays out of scope.
+const museServeIngest = createMuseServeIngest({ bufferActivity, log })
 
 /**
  * Which agent's edit is in this proposal, answered from what this daemon already
@@ -1149,10 +1157,31 @@ const promptPlan = createPromptPlan({
   autoAcceptPrompt: (tmuxSession, reason, acceptKey) => terminalRpc.autoAcceptPrompt(tmuxSession, reason, acceptKey),
 })
 
+// Muse serve-mode send routing: serve-bound muse agents take the MSP turn
+// path over the bridge socket; every other agent keeps the pty/tmux path.
+// The adapter returns null for agents it does not own — never a silent
+// fallback — and throws an exact protocol-limitation error when its owner is
+// down. Lookup goes through the ledger row (same derivation the reconciler
+// feeds the ingestor), never an inferred harness.
+const resolveMuseServeSend = createMuseServeSend({
+  resolveAgent: ({ agentId } = {}) => {
+    const row = agentId ? permissionLedger.get(agentId) : null
+    if (!row || row.daemonKey !== `${MACHINE_ID}:${ACTIVE_ENV}`) return null
+    if (!row.tmuxSession) return null
+    return {
+      id: row.id,
+      tmux_session: row.tmuxSession,
+      metadata: { kind: row.sessionKind, model: row.model },
+    }
+  },
+  log,
+})
+
 terminalRpc = createTerminalRpc({
   tmuxArgs: TMUX_ARGS,
   log,
   sendMsg,
+  resolveMuseServeSend,
   detectPrompt: promptPlan.detectPrompt,
   stripAnsi: promptPlan.stripAnsi,
   promptCooldowns: promptPlan.promptCooldowns,
@@ -2278,6 +2307,15 @@ function reconcileRoster(reason) {
 function reconcileJsonlProcessBindings(reason) {
   return jsonlBindingReconciler.reconcile(reason)
     .catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
+    .then(() => {
+      try {
+        museServeIngest.sync(currentJsonlBindingAgents())
+      } catch (e) {
+        // Per-agent failures are already isolated inside sync; a throw here is
+        // the binding projection itself, reported so the next reconcile retries.
+        log.error(`muse serve ingest sync failed: ${e.stack || e.message}`)
+      }
+    })
 }
 
 _onPermissionLedgerProcessBindingChange = () => {

@@ -20,7 +20,28 @@ export const capabilities = Object.freeze({
   nativeCancellation: true,
   fleetReady: true,
   fleetBlocker: null,
+  serveMode: true,
 })
+
+// Serve-mode launch: the pane runs the MSP bridge (`muse-serve-bridge.mjs`),
+// which spawns `muse serve` as its child with piped stdio. The sandbox/auth
+// stance is the same one the TUI launch carries — serve flags come from
+// `harnessOptions`, auth from the launch env via prepareFleetConfig plus the
+// account-auth `unset META_API_KEY` in buildCmd. Paths are resolved at launch
+// time (repo root + per-agent state dir), never baked into the adapter.
+export function buildServeCommand({ tmuxSession, harnessOptions = {}, envAssignments = {}, bridgePath = null, tmpdir = null } = {}) {
+  if (!tmuxSession) throw new Error('Muse serve mode requires a tmux session')
+  const serveArgs = []
+  for (const flag of [...(harnessOptions.required || []), ...(harnessOptions.preferences || [])]) {
+    if (typeof flag === 'string' && flag.trim()) serveArgs.push(flag)
+  }
+  return { serveArgs, envAssignments, bridgePath, stateDir: serveStateDirFor(tmuxSession, { tmpdir }) }
+}
+
+function serveStateDirFor(tmuxSession, { tmpdir = null } = {}) {
+  const root = tmpdir || process.env.TMPDIR || '/tmp'
+  return `${root}/tlda-muse-serve/${encodeURIComponent(String(tmuxSession))}`
+}
 
 function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
