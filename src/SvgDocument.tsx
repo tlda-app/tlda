@@ -924,7 +924,9 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
       shapeId: p.shapeId,
       tldrawPageId: p.tldrawPageId,
       title: typeof p.meta?.spatialWorldTitle === 'string' ? p.meta.spatialWorldTitle : undefined,
-      presentationLocation: typeof p.meta?.materializedFile === 'string' ? p.meta.materializedFile : undefined,
+      presentationLocation: typeof p.meta?.materializedFile === 'string'
+        ? p.meta.materializedFile.replace(/^app\//, '')
+        : undefined,
     })),
     targets: presentationDocument.targets,
   }), [projectName, presentationDocument])
