@@ -7,8 +7,8 @@ import { join } from 'node:path'
 import test from 'node:test'
 import WebSocket from 'ws'
 
-import { buildDaemonActivityRecord } from './daemon-activity-ingest.mjs'
-import { FleetStore } from './fleet-store.mjs'
+import { buildDaemonActivityRecord } from '../server/lib/daemon-activity-ingest.mjs'
+import { FleetStore } from '../server/lib/fleet-store.mjs'
 
 async function unusedPort() {
   const server = createServer()
@@ -126,7 +126,7 @@ os.setPriority = (...args) => {
 
   const port = await unusedPort()
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
-    cwd: join(import.meta.dirname, '..', '..'),
+    cwd: join(import.meta.dirname, '..'),
     env: {
       ...process.env, HOST: '127.0.0.1', PORT: String(port),
       PROJECTS_DIR: join(root, 'projects'), TLDA_FLEET_DB: dbPath,

@@ -132,6 +132,16 @@ const ALLOWED = {
   },
 
 
+  'test/activity-operation-idempotency-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Re-sends an activity operation over a bare socket to prove the server-side ingest dedupes it by '
+      + 'idempotency key and keeps its identity. The socket must bypass the client transport library, because '
+      + 'the library would supply the client end of the boundary being tested -- what is under test is the '
+      + 'server ingest path, and calling both ends in one process would prove the two ends and not that the '
+      + 'wire joins them. Endpoint: /ws/fleet.',
+  },
+
   'bin/a-link-does-not-lower-access-test.mjs': {
     count: 1,
     category: 'tooling',
