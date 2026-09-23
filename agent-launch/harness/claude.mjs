@@ -161,6 +161,19 @@ export function buildCmd({
   parts.push('claude')
   const notificationHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-notification-hook.mjs')
   const subagentStartHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-start-hook.mjs')
+  const statusHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/claude-status-hook.mjs')
+  // Status hooks (PreToolUse / Stop / StopFailure / PermissionDenied) report
+  // into the same agent-status state machine the pane scrape feeds
+  // (server /api/fleet/hook-status): authoritative where they fire, silent
+  // where they don't. UserPromptSubmit/SubagentStart above stay as-is.
+  const statusHookEntry = (event) => ({
+    matcher: event,
+    hooks: [{
+      type: 'command',
+      command: `${process.execPath} ${statusHook}`,
+      timeout: 5,
+    }],
+  })
   parts.push(`--settings ${sq(JSON.stringify({
     hooks: {
       UserPromptSubmit: [{
@@ -177,6 +190,10 @@ export function buildCmd({
           timeout: 5,
         }],
       }],
+      PreToolUse: [statusHookEntry('')],
+      Stop: [statusHookEntry('')],
+      StopFailure: [statusHookEntry('')],
+      PermissionDenied: [statusHookEntry('')],
     },
   }))}`)
   appendLaunchFlags(parts, effectiveHarnessOptions)

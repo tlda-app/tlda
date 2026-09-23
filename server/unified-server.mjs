@@ -4702,6 +4702,41 @@ async function emitSkillDismissCard(agentId, dismissed, reason) {
   }
 }
 
+// ---------- Hook status triggers ----------
+// Claude hooks (PreToolUse / Stop / StopFailure / PermissionDenied, installed
+// in agent-launch/harness/claude.mjs) POST here via bin/claude-status-hook.mjs.
+// This applies the SAME agent-status path the daemon's pane scrape uses (the
+// `agent-status` handler below): hook evidence and pane evidence converge in
+// runtimeStatusStore.updateActivity, latest-wins by atMs, so a hook firing
+// and a pane scan racing it cannot fork the activity — the newer stamp wins.
+// Unknown hook events and non-activity statuses are rejected: hook silence
+// must never fabricate an edge, and the pane scrape keeps covering the gaps
+// (interactive running/idle, user-input-wait, PermissionRequest).
+app.post('/api/fleet/hook-status', async (req, res) => {
+  const agentId = typeof req.body?.agent_id === 'string' ? req.body.agent_id : null
+  const activity = req.body?.activity
+  if (!agentId || !['thinking', 'compacting', 'idle', 'unknown'].includes(activity)) {
+    res.status(400).json({ ok: false, error: 'agent_id and a known activity are required' })
+    return
+  }
+  if (!fleetStore) { res.status(503).json({ ok: false, error: 'Fleet store not available' }); return }
+  const agent = await fleetStore.getAgent?.(agentId)
+  if (!agent || agent.dead) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
+  const tool = typeof req.body?.tool === 'string' && req.body.tool.trim() ? req.body.tool.trim() : null
+  const atMs = Date.now()
+  if (activity !== 'unknown') {
+    markAgentAlive(agentId, atMs, {
+      source: 'claude-hook',
+      reason: `hook ${req.body?.hook_event_name || 'event'} status ${activity}`,
+      atMs,
+    })
+  }
+  runtimeStatusStore.updateActivity(agentId, activity, { tool, atMs })
+  broadcastEvent('agent-status', { agent: agentId, status: 'awake', activity, tool, ts: new Date(atMs).toISOString() })
+  if (activity === 'thinking' || activity === 'compacting') touchActivity(agentId)
+  res.json({ ok: true })
+})
+
 // ---------- Agent suggestion chips ----------
 // Any agent can push its CURRENT set of clickable suggestion chips — actionable
 // "you might want to do X" affordances rendered at the bottom of the chat. This
