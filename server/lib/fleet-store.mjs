@@ -3219,32 +3219,12 @@ export class FleetStore {
           JOIN label_definitions d ON d.label = je.value AND d.singleton = 1
           WHERE agents.dead = 0 AND agents.id != ?
         `).all(agent.id || '')) taken.add(row.label);
-        // `me` and `my_labels` are routing words, not stored tags — refused
-        // on the mutate path, stripped here so register/login cannot smuggle
-        // them in either.
-        const reservedRouting = new Set(['me', 'my_labels']);
-        const filteredRouting = agent.labels.filter(l => !reservedRouting.has(l));
-        if (filteredRouting.length !== agent.labels.length) {
-          const dropped = agent.labels.filter(l => reservedRouting.has(l));
-          console.log(`[fleet-store] stripped reserved routing label(s) from ${agent.id}: ${dropped.join(', ')}`);
-        }
-        const filtered = filteredRouting.filter(l => !taken.has(l));
-        if (filtered.length !== filteredRouting.length) {
-          const dropped = filteredRouting.filter(l => taken.has(l));
+        const filtered = agent.labels.filter(l => !taken.has(l));
+        if (filtered.length !== agent.labels.length) {
+          const dropped = agent.labels.filter(l => taken.has(l));
           console.log(`[fleet-store] stripped label(s) held by another living agent as a name or a singleton label from ${agent.id}: ${dropped.join(', ')}`);
           agent = { ...agent, labels: filtered };
-        } else if (filtered.length !== agent.labels.length) {
-          agent = { ...agent, labels: filtered };
         }
-      }
-      // The one-namespace rule for the name itself, not just the labels:
-      // register/login write friendly_name straight through this path, so a
-      // reserved routing word (`me`, `my_labels`, a pseudo-label) or a live
-      // label would otherwise store with no error and no index to catch it.
-      // Same gate the rename path uses; self-exempt via excludeId.
-      if (agent.friendly_name) {
-        const collisions = this.checkNameAvailable([agent.friendly_name], { excludeId: agent.id, asFriendlyName: true });
-        if (collisions.length) throw new Error(this.labelCollisionMessage(collisions));
       }
       const before = this._getAgent.get(agent.id);
       const hasLabels = Object.prototype.hasOwnProperty.call(agent, 'labels');
@@ -3734,17 +3714,6 @@ export class FleetStore {
 
   mutateAgentLabels(id, operation, value, { actorId = null, timestamp = null, singleton = null } = {}) {
     if (!['add', 'remove', 'replace'].includes(operation)) throw new Error('label operation must be add, remove, or replace');
-    // `me` and `my_labels` are routing words the matcher resolves against the
-    // subscriber, not stored tags: a stored copy makes `to:my_labels`
-    // addressed as a literal match a holder it was never addressed to (probe
-    // 2026-09-23). Refused the way any reserved routing word is.
-    if (operation !== 'remove') {
-      const incoming = Array.isArray(value) ? value : [value];
-      const reserved = incoming.filter(v => v === 'me' || v === 'my_labels');
-      if (reserved.length) {
-        throw new Error(`Label rejected: ${reserved.map(name => `"${name}" is a reserved routing word (${PSEUDO_LABELS.join(', ')}, me, my_labels).`).join(' ')}`);
-      }
-    }
     if (singleton != null && operation === 'remove') throw new Error('singleton is a property of a label being applied; it has no meaning for remove');
     const incoming = operation === 'replace'
       ? this._normalizeCompleteLabels(value)
@@ -4492,7 +4461,7 @@ export class FleetStore {
         collisions.push({ name, kind: 'unaddressable', char: badChar[0] });
         continue;
       }
-      if (PSEUDO_LABELS.includes(name) || name === 'me' || name === 'my_labels') {
+      if (PSEUDO_LABELS.includes(name)) {
         collisions.push({ name, kind: 'pseudo_label' });
         continue;
       }
@@ -5023,14 +4992,6 @@ export class FleetStore {
     if (!agent) throw new Error('agent not found');
     const oldName = agent.friendly_name || null;
     const newName = friendlyName || null;
-    // The one-namespace rule lives here, not only at the call sites: names and
-    // labels share one namespace, so a rename onto a live label or a reserved
-    // routing word is the same collision a label add would be. Every caller
-    // reaches this write, so gating here closes the direct-call path too.
-    if (newName && newName !== oldName) {
-      const collisions = this.checkNameAvailable([newName], { excludeId: id, asFriendlyName: true });
-      if (collisions.length) throw new Error(this.labelCollisionMessage(collisions));
-    }
     this.db.transaction(() => {
       this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
         .run(newName, prettyName === undefined ? null : serializePrettyName(prettyName), id);
