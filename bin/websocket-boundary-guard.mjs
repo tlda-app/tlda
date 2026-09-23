@@ -171,16 +171,6 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'Proves an RFC 6455 upgrade survives the edge proxy\'s TCP pipe, which is what the canvas and fleet chat ride on across a deploy. The transport library speaks the fleet protocol and would prove the library; this needs a bare upgrade against a local echo server to show the pipe does not parse. Endpoint: the proxy itself, no server.',
   },
-  'scripts/backfill-agent-models.mjs': {
-    count: 1,
-    category: 'tooling',
-    reason: 'One-off backfill script. Not a server path and not a product site; it opens /ws/fleet once to write agent models and exits. Endpoint: /ws/fleet.',
-  },
-  'server/lib/agent-model-backfill-wire.test.mjs': {
-    count: 1,
-    category: 'tooling',
-    reason: 'Wire test for the model backfill: drives /ws/fleet directly to prove the frames, not the function. Endpoint: /ws/fleet.',
-  },
   'server/lib/amend-notify-wire.test.mjs': {
     count: 1,
     category: 'tooling',

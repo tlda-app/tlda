@@ -1855,6 +1855,10 @@ async function rpcMint(params = {}) {
     registration_error: facts.registrationError || null,
     permission_grant: grant.permissionGrant,
     permission_clamp: grant.permissionClamp || null,
+    // The alias the agent will actually run as, resolved here because this is
+    // the side that holds the daemon config. The server stamps the mint row
+    // from this; its own resolution can only guess, since it has no config.
+    model: modelSpec.alias || null,
   }
 }
 

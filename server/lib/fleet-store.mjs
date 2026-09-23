@@ -3974,9 +3974,10 @@ export class FleetStore {
   // is a current name, so it stands.
   //
   // In the store rather than behind an endpoint, per his ruling: "the app
-  // shouldnt have endpoints used for migrations use the db people". The
-  // fill-only `agent-model` RPC stays -- an agent reporting what it came up as
-  // is runtime, not migration -- but nothing drives a backfill over a socket.
+  // shouldnt have endpoints used for migrations use the db people". New rows
+  // get their model at mint -- the daemon's mint reply carries the resolved
+  // alias -- so no fill path over a socket remains; the `agent-model` handler
+  // and its one-shot script are deleted in this same change.
   _backfillAgentModels() {
     const NAME = 'agent-model-backfill-v1';
     if (this.db.prepare('SELECT 1 FROM store_migrations WHERE name = ?').get(NAME)) return;

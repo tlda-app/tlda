@@ -2753,11 +2753,12 @@ async function performSpawnRelay(caller, msg) {
   // daemon default moved had no model recorded, so it was still accumulating
   // while a display default made the column look full.
   //
-  // Resolved from the same module and the same daemon config the launcher uses,
-  // so the alias written here is the one the launch resolves to rather than a
-  // second opinion about it. If it cannot be resolved the mint proceeds without
-  // one -- a spawn must not fail because its label could not be computed, and a
-  // blank is still recoverable by the fill RPC when the agent reports in.
+  // A first guess, written so the row is never blank on arrival where the
+  // server holds daemon config. It usually does not -- daemon.yaml lives on
+  // the daemon's machine, not the server's -- so an unnamed model resolves to
+  // nothing here and the row starts blank. The daemon's mint reply carries
+  // the alias it actually resolved, and that truth overwrites this guess
+  // below. A spawn never fails for want of a label either way.
   let mintedModelAlias = null
   try {
     const mintDaemonConfig = cwd ? readDaemonConfigForCwd(cwd) : readDaemonConfig()
@@ -2925,6 +2926,17 @@ async function performSpawnRelay(caller, msg) {
         if (pendingAgentId && result?.ok === false) {
           if (!isIndeterminateSpawnOutcome(result)) {
             await failServerMintShell(pendingAgentId, result.code || result.reason || 'launch-failed')
+          }
+        }
+        // The daemon resolved the model against its own config, which the
+        // server does not have, so the daemon's answer is the truth and wins
+        // over the row's initial guess. Fresh mints only: a wake or respawn
+        // keeps the row it already has. An old daemon sends no model, and the
+        // row keeps whatever the mint wrote -- absence is tolerated, not fatal.
+        if (pendingAgentId && result?.ok !== false && result?.model) {
+          const minted = await fleetStore?.getAgent?.(pendingAgentId)
+          if (minted && minted.metadata?.model !== result.model) {
+            await fleetStore.updateAgentMeta?.(pendingAgentId, { model: String(result.model) })
           }
         }
       } catch (e) {
@@ -9346,30 +9358,6 @@ async function dispatchFleetWsMessage(ws, msg) {
       broadcastEvent('agent-context', { agent: msg.agentId, percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
     }
     reply({ ok: true })
-    return
-  }
-
-  // The model an agent actually runs on is a daemon fact: the daemon resolved
-  // the spec and launched the process. Until the seat write carried the
-  // resolved alias, a mint that named no model reached the roster with no model
-  // at all, which is why the agents panel expansion had no model chip to show.
-  //
-  // Fill-only, deliberately. This exists to complete rows the seat write left
-  // empty; a row that already has a model is the seat's own record and this
-  // must not talk over it.
-  if (type === 'agent-model') {
-    const { agent_id: modelAgentId, model: reportedModel } = msg
-    if (!modelAgentId || !reportedModel) { error('agent_id and model required'); return }
-    if (!fleetStore) { error('Fleet not initialized'); return }
-    const modelAgent = await fleetStore.getAgent?.(modelAgentId)
-    if (!modelAgent) { error(`unknown agent: ${modelAgentId}`); return }
-    if (modelAgent.metadata?.model) {
-      reply({ ok: true, filled: false, model: modelAgent.metadata.model })
-      return
-    }
-    await fleetStore.updateAgentMeta?.(modelAgentId, { model: String(reportedModel) })
-    broadcastState(modelAgentId)
-    reply({ ok: true, filled: true, model: String(reportedModel) })
     return
   }
 
