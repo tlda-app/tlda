@@ -240,6 +240,9 @@ export function buildCmd({
     processEnv.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
   const parts = [...processEnv, 'codex', '--no-alt-screen']
+  // A release notification is interactive and can stop a fresh mint before it
+  // logs in, leaving a live tmux session with no attachable daemon route.
+  parts.push(`-c ${sq('check_for_update_on_startup=false')}`)
   const notificationHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-notification-hook.mjs')
   const subagentStartHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-start-hook.mjs')
   parts.push('--dangerously-bypass-hook-trust')
