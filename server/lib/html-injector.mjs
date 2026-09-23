@@ -324,6 +324,81 @@ const FAULT_BEACON_SCRIPT = `
 </script>
 `
 
+const RENDERED_LINE_MEASUREMENT_BRIDGE = `
+  function tldaMeasureRenderedLines() {
+    var root = document.querySelector('.reveal .slides section.present') ||
+      document.querySelector('main') || document.body;
+    var blocks = [];
+    var candidates = root.querySelectorAll('h1, h2, h3, h4, li, p');
+    for (var blockIndex = 0; blockIndex < candidates.length; blockIndex++) {
+      var block = candidates[blockIndex];
+      if (block.closest('svg') || block.querySelector('svg')) continue;
+      var style = getComputedStyle(block);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      var words = [];
+      var walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      var node;
+      while ((node = walker.nextNode())) {
+        if (node.parentElement && node.parentElement.closest('[aria-hidden="true"]')) continue;
+        var pattern = /\\S+/g;
+        var match;
+        while ((match = pattern.exec(node.textContent || ''))) {
+          var range = document.createRange();
+          range.setStart(node, match.index);
+          range.setEnd(node, match.index + match[0].length);
+          var rects = Array.from(range.getClientRects()).filter(function(rect) {
+            return rect.width > 1 && rect.height > 1;
+          });
+          if (!rects.length) continue;
+          words.push({
+            word: match[0],
+            center: rects[0].top + rects[0].height / 2,
+            height: rects[0].height,
+          });
+        }
+      }
+      var lines = [];
+      words.forEach(function(word) {
+        var line = lines.find(function(candidate) {
+          return Math.abs(candidate.center - word.center) < word.height * 0.5;
+        });
+        if (!line) {
+          line = { center: word.center, words: [] };
+          lines.push(line);
+        }
+        line.words.push(word.word);
+      });
+      if (lines.length) {
+        blocks.push({
+          tag: block.tagName.toLowerCase(),
+          id: block.id || null,
+          text: (block.textContent || '').replace(/\\s+/g, ' ').trim(),
+          lines: lines.map(function(line) { return line.words.join(' '); }),
+        });
+      }
+    }
+    return { url: window.location.href, title: document.title, blocks: blocks };
+  }
+
+  window.addEventListener('message', function(event) {
+    if (event.data?.type !== 'tlda-measure-rendered-lines') return;
+    var requestId = event.data.requestId || null;
+    Promise.resolve(document.fonts?.ready).then(function() {
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() {
+          var target = event.source || window.parent;
+          target.postMessage({
+            type: 'tlda-rendered-lines',
+            shapeId: shapeId,
+            requestId: requestId,
+            measurement: tldaMeasureRenderedLines(),
+          }, '*');
+        });
+      });
+    });
+  });
+`
+
 const BRIDGE_SCRIPT = `
 <script>
 (function() {
@@ -332,6 +407,7 @@ const BRIDGE_SCRIPT = `
   var shapeId = params.get('_tldaShape') || '';
   var tldaWheelOwner = 'page';
   var tldaWheelViewportId = '';
+${RENDERED_LINE_MEASUREMENT_BRIDGE}
 
   // Strip Quarto navigation elements for clean embedding
   function stripNav() {
@@ -1160,6 +1236,7 @@ const SLIDES_BRIDGE_SCRIPT = `
   var tldaWheelOwner = 'page';
   var tldaWheelViewportId = '';
   var slideBackground = null;
+${RENDERED_LINE_MEASUREMENT_BRIDGE}
 
   function isVisibleColor(color) {
     return color && color !== 'transparent' && !/^rgba\\([^)]*,\\s*0\\s*\\)$/.test(color);
