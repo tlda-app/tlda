@@ -308,8 +308,13 @@ test('a chat to a subscription-less recipient records no_direct_subscription ins
     assert.equal(receipt?.reason, 'no matching direct subscription')
   } finally {
     senderWs?.close()
-    child.kill('SIGTERM')
-    await new Promise(resolve => child.once('exit', resolve))
+    // The child may already be gone (a boot failure throws out of
+    // waitForServer first); waiting on 'exit' then hangs forever instead
+    // of failing. Only wait while it is still alive.
+    if (child.exitCode == null) {
+      child.kill('SIGTERM')
+      await new Promise(resolve => child.once('exit', resolve))
+    }
     removeTempDir(dir)
   }
 })

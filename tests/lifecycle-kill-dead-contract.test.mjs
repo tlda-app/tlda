@@ -17,7 +17,7 @@ test('kill marks the agent dead while hibernate leaves it resumable', () => {
   assert.doesNotMatch(hibernate, /RUNTIME_STATUS\.DEAD/)
 })
 
-test('reanimate restores dead after wake failure even when owner route remains', () => {
+test('reanimate leaves the agent hibernating after wake failure; dead is never inferred', () => {
   const reanimateStart = source.indexOf('async function reanimateAgent(')
   assert.notEqual(reanimateStart, -1, 'reanimateAgent should exist')
 
@@ -39,16 +39,18 @@ test('reanimate restores dead after wake failure even when owner route remains',
   assert.notEqual(catchStart, -1, 'wake failure should be handled before waiting for the route')
 
   const catchBody = wakeFailureBlock.slice(catchStart)
-  const restoreDead = catchBody.indexOf('await fleetStore.markDead(before.id)')
-  const throwFailure = catchBody.indexOf('throw e')
-  assert.notEqual(restoreDead, -1, 'failed wake should restore the prior dead state')
-  assert.notEqual(throwFailure, -1, 'failed wake should still report the original failure')
-  assert.ok(restoreDead < throwFailure, 'dead state must be restored before rethrowing')
+  // Skip 2026-08-19, implemented by 770f3f375: never infer death — a wake
+  // that fails leaves a live row with no process, which is what hibernating
+  // already means. A markDead here would be an unrequested write of the one
+  // flag only a request may set.
+  assert.doesNotMatch(catchBody, /markDead\(/, 'failed wake must not re-mark the agent dead')
   assert.match(
     catchBody,
-    /markAgentNotAlive\(before\.id, \{ source: 'reanimate', reason: `wake failed: \$\{e\.message\}` \}\)/
+    /markAgentNotAlive\(before\.id, \{ source: 'reanimate', reason: `wake phase failed: \$\{e\.message\}` \}\)/
   )
   assert.match(catchBody, /broadcastState\(before\.id\)/)
+  assert.match(catchBody, /throw new Error\(/)
+  assert.match(catchBody, /Agent left hibernating/)
   assert.doesNotMatch(catchBody, /getAgentDaemonRoute/)
   assert.doesNotMatch(catchBody, /if \(!currentRoute\)/)
 })
