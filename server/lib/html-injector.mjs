@@ -787,10 +787,13 @@ const BRIDGE_SCRIPT = `
       });
     });
     if (Object.keys(positions).length > 0 && window.parent !== window) {
-      var outline = Array.prototype.slice.call(document.querySelectorAll('h1[id],h2[id],h3[id],h4[id]')).map(function(heading) {
+      var outline = Array.prototype.slice.call(document.querySelectorAll('h1,h2,h3,h4')).map(function(heading) {
+        var owner = heading.id ? heading : heading.closest('[id]');
+        var titleNode = heading.cloneNode(true);
+        titleNode.querySelectorAll('a.anchorjs-link, a[aria-label="Anchor"]').forEach(function(anchor) { anchor.remove(); });
         return {
-          id: heading.id,
-          title: (heading.textContent || '').trim(),
+          id: owner ? owner.id : '',
+          title: (titleNode.textContent || '').trim(),
           level: parseInt(heading.tagName.slice(1), 10),
         };
       }).filter(function(entry) { return entry.id && entry.title; });
