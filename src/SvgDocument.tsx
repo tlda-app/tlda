@@ -584,13 +584,13 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const routedDeckFile = routedAppPage?.meta?.spatialWorldDocument
     ? routedAppPage.meta.materializedFile
     : null
-  const presentationDocument = routedDeckFile
+  const presentationDocument = useMemo(() => routedDeckFile
     ? {
         ...document,
         pages: document.pages.filter(page => page.meta?.materializedFile === routedDeckFile),
         format: 'slides' as const,
       }
-    : document
+    : document, [document, routedDeckFile])
   const isPresentation = document.format === 'slides' || Boolean(routedDeckFile)
   const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
 
@@ -914,18 +914,20 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   // Stable doc info — only changes when a different document loads
   const projectContextValue = useMemo(() => ({
     projectName,
-    title: document.title || document.name,
-    format: document.format,
-    pages: document.pages.map(p => ({
+    title: presentationDocument.title || presentationDocument.name,
+    format: presentationDocument.format,
+    pages: presentationDocument.pages.map(p => ({
       bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
       width: p.width,
       height: p.height,
       textData: p.textData,
       shapeId: p.shapeId,
       tldrawPageId: p.tldrawPageId,
+      title: typeof p.meta?.spatialWorldTitle === 'string' ? p.meta.spatialWorldTitle : undefined,
+      presentationLocation: typeof p.meta?.materializedFile === 'string' ? p.meta.materializedFile : undefined,
     })),
-    targets: document.targets,
-  }), [projectName, document])
+    targets: presentationDocument.targets,
+  }), [projectName, presentationDocument])
 
   // Volatile panel state — toggles, loading flags, history, etc.
   const panelContextValue = useMemo(() => ({

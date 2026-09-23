@@ -10,6 +10,7 @@ import { deckNavIndex, enrichTocWithPageInfo } from '../routedAppPageNumber'
 import { homeworkKeyForTocRow } from '../homeworkTocKey'
 import { pdfToCanvas } from '../synctexAnchor'
 import { ProjectContext, PanelContext } from '../PanelContext'
+import { presentationPath } from '../presentationRoute'
 import { onReloadSignal } from '../useYjsSync'
 import { appendToken, canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
@@ -422,11 +423,11 @@ export function TocTab({ query = '' }: { query?: string }) {
     setCollapsed(null)
     void (async () => {
       try {
-        // Slides format: load TOC from page-info.json
+        // A routed deck inside a book carries only that deck's pages in
+        // ProjectContext. Reading the whole project's page-info here would put
+        // the entire book in the deck-local outline.
         if (doc.format === 'slides') {
-          const response = await fetch(appendToken(`/docs/${doc.projectName}/page-info.json`))
-          const entries = response.ok ? await response.json() as Array<{ title?: string }> : null
-          if (!cancelled && entries) setSlideTitles(entries.map(entry => entry.title || ''))
+          if (!cancelled) setSlideTitles(doc.pages.map(page => page.title || ''))
           return
         }
 
@@ -514,6 +515,13 @@ export function TocTab({ query = '' }: { query?: string }) {
       // Book cross-member navigation: post tlda-navigate, BookViewer handles the switch
       window.postMessage({ type: 'tlda-navigate', targetFile, anchor: anchor || null, variant, shapeId: null }, '*')
       return
+    }
+    if (variant === 'slides') {
+      const location = doc.pages[pageNum - 1]?.presentationLocation
+      if (location) {
+        window.location.assign(presentationPath('app', doc.projectName, location, 'docs'))
+        return
+      }
     }
     recordPlaceDeparture(editor)
     if (anchor) {
@@ -628,7 +636,11 @@ export function TocTab({ query = '' }: { query?: string }) {
           <div
             key={i}
             className="toc-item section"
-            onClick={() => doc && navigateToPage(editor, doc, i + 1)}
+            onClick={() => window.postMessage({
+              type: 'tlda-slide-activate',
+              projectName: doc.projectName,
+              index: i,
+            }, '*')}
           >
             {title || `Slide ${i + 1}`}
           </div>

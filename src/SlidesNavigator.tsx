@@ -190,13 +190,16 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
         editor.store.update(page.shapeId, (s) => ({ ...s, ...updates }))
       }
     }
-    navigateToSlide(editor, document, 0, false)
+    const requested = Number.parseInt(new URLSearchParams(window.location.search).get('slide') || '1', 10) - 1
+    const initial = Number.isFinite(requested) ? Math.max(0, Math.min(requested, totalSlides - 1)) : 0
+    setCurrentSlide(initial)
+    navigateToSlide(editor, document, initial, false)
     window.document.body.classList.add('slides-mode')
     return () => {
       window.document.body.classList.remove('slides-mode')
       window.document.documentElement.style.removeProperty('--tlda-slide-background')
     }
-  }, [editor, document])
+  }, [editor, document, totalSlides])
 
   const goToSlide = useCallback((index: number, animate = true) => {
     const clamped = Math.max(0, Math.min(index, totalSlides - 1))
@@ -209,6 +212,17 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       broadcastSlideIndex(shapeId, clamped)
     }
   }, [editor, document, totalSlides])
+
+  useEffect(() => {
+    const activate = (event: MessageEvent) => {
+      if (event.source !== window || event.data?.type !== 'tlda-slide-activate') return
+      if (event.data.projectName && event.data.projectName !== document.name) return
+      if (!Number.isInteger(event.data.index)) return
+      goToSlide(event.data.index)
+    }
+    window.addEventListener('message', activate)
+    return () => window.removeEventListener('message', activate)
+  }, [document.name, goToSlide])
 
   useEffect(() => {
     return onSlideIndex((signal) => {

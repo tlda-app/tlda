@@ -10,7 +10,7 @@ import {
   Box,
 } from 'tldraw'
 import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useContext, useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken, canPresent, isPresentPermissionKnown, subscribeCanPresent } from '../authToken'
 import { isClassroomDocumentWorkspace } from '../classroom/classroomDocumentWorkspace'
 import { createMeasuredGeometryWriter } from '../measuredGeometryWrite'
@@ -30,6 +30,8 @@ import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelectio
 import { attachRglFigureSync } from '../rglFigureSync'
 import { GestureInterpreter } from '@tldraw/editor'
 import { PAGES_FROM } from '../activeConfig'
+import { ProjectContext } from '../PanelContext'
+import { presentationPath } from '../presentationRoute'
 
 /** How many pages either side of the viewport keep their iframe mounted, on
  *  each axis. Measured in pages rather than viewports so it means the same
@@ -445,13 +447,35 @@ function SpatialLodHtmlPage({ shape }: { shape: any }) {
 }
 
 function MapPagePlaceholder({ shape }: { shape: any }) {
+  const doc = useContext(ProjectContext)
+  const activate = (event: React.PointerEvent) => {
+    if (!shape.meta?.spatialWorldDocument || !doc) return
+    stopEventPropagation(event)
+    const pageIndex = doc.pages.findIndex(page => page.shapeId === shape.id)
+    if (pageIndex < 0) return
+    if (doc.format === 'slides') {
+      window.postMessage({ type: 'tlda-slide-activate', projectName: doc.projectName, index: pageIndex }, '*')
+      return
+    }
+    const page = doc.pages[pageIndex]
+    if (!page.presentationLocation) return
+    const url = new URL(presentationPath('app', doc.projectName, page.presentationLocation, 'docs'), window.location.origin)
+    const deckIndex = doc.pages
+      .slice(0, pageIndex)
+      .filter(candidate => candidate.presentationLocation === page.presentationLocation)
+      .length
+    url.searchParams.set('slide', String(deckIndex + 1))
+    window.location.assign(url.toString())
+  }
   return (
     <div
+      onPointerDown={activate}
       style={{
         width: shape.props.w,
         height: shape.props.h,
         background: 'color-mix(in srgb, var(--tlda-canvas-background, #f8fafb) 35%, white)',
         boxShadow: 'inset 0 0 0 1px color-mix(in srgb, currentColor 14%, transparent)',
+        cursor: shape.meta?.spatialWorldDocument ? 'pointer' : undefined,
       }}
     />
   )

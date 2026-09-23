@@ -8,7 +8,16 @@ export interface ProjectContextValue {
   projectName: string
   title?: string
   format?: 'svg' | 'png' | 'html' | 'slides' | 'markdown' | 'qmd' | 'pdf'
-  pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
+  pages: Array<{
+    bounds: { x: number; y: number; width: number; height: number }
+    width: number
+    height: number
+    textData?: PageTextData | null
+    shapeId?: string
+    tldrawPageId?: string
+    title?: string
+    presentationLocation?: string
+  }>
   targets?: Array<{ name: string; title: string; pages: number }>
 }
 
