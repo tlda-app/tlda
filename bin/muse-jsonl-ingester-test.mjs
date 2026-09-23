@@ -16,7 +16,7 @@ const opts = {
   backfillSearch: false,
 }
 
-test('the JSONL child sends Muse tool records through the shared activity extractor', () => {
+test('the JSONL child ingests one Muse activity row per tool call', () => {
   const committed = {
     recorded_at: 1789273076000000,
     payload_type: 'runtime.session',
@@ -35,14 +35,22 @@ test('the JSONL child sends Muse tool records through the shared activity extrac
     payload_type: 'tool_batch.effect.started',
     payload: { record: { call_id: 'muse-wire-call', tool_name: 'bash' } },
   }
-  const activity = extractRecordOutputs(opts, started).find(output => output.type === 'activity')
+  assert.deepEqual(extractRecordOutputs(opts, started), [])
+
+  const terminal = {
+    recorded_at: 1789273076102828,
+    payload_type: 'tool_batch.effect.terminal',
+    payload: { record: { call_id: 'muse-wire-call', tool_name: 'bash', outcome: { kind: 'completed' } } },
+  }
+  const activity = extractRecordOutputs(opts, terminal).find(output => output.type === 'activity')
   assert.ok(activity)
+  assert.equal(activity.events.length, 1)
   assert.deepEqual(activity.events[0], {
     tool: 'Bash',
     arg: 'git status --short',
     ts: '2026-09-13T04:17:56.102Z',
     id: 'muse-wire-call',
-    status: 'started',
+    status: 'completed',
     correlationId: 'muse-wire-call',
     input: { command: 'git status --short' },
   })

@@ -111,18 +111,21 @@ export function createMuseRecordParser() {
       return null
     }
 
-    if (payloadType !== 'tool_batch.effect.started' && payloadType !== 'tool_batch.effect.terminal') return null
+    // Started records are dropped: the terminal record already carries the
+    // outcome, so emitting both recorded every call twice, and the shared
+    // extractor's result synthesis made it three rows. One call ingests one
+    // row — the terminal — matching the serve path, which maps completions
+    // only. The pending-calls entry still resolves the terminal's name/input.
+    if (payloadType === 'tool_batch.effect.started') return null
+    if (payloadType !== 'tool_batch.effect.terminal') return null
     const effect = payload.record || {}
     const callId = effect.call_id || effect.effect_id || record.id
     const pending = pendingCalls.get(callId) || {}
-    if (payloadType === 'tool_batch.effect.terminal' && !effect.tool_name && !pending.name) return null
-    const name = effect.tool_name || pending.name || 'muse_tool'
+    if (!effect.tool_name && !pending.name) return null
+    const name = effect.tool_name || pending.name
     const input = normalizeInput(name, pending.input || {}, callId)
-    const terminal = payloadType === 'tool_batch.effect.terminal'
-    if (terminal) pendingCalls.delete(callId)
-    const status = terminal
-      ? (effect.outcome?.kind === 'failed' ? 'error' : 'completed')
-      : 'started'
+    pendingCalls.delete(callId)
+    const status = effect.outcome?.kind === 'failed' ? 'error' : 'completed'
     return {
       type: 'assistant',
       timestamp: ts,
