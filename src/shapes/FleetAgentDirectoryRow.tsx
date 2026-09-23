@@ -296,17 +296,18 @@ export function FleetAgentDirectoryRow({
             so finding it meant opening rows one at a time, and he spent hours
             writing with sonnet agents without knowing.
 
-            An unrecorded model reads as `sonnet`, not as a dash. Skip, 2026-08-23:
-            "just write sonnet dude — that's what it fucking means". The row records
-            the model the caller ASKED for, and callers usually ask for none, so a
-            blank means the mint took the daemon default — which was `sonnet` for
-            every agent that now has one. It is not unknown; it is the default,
-            and showing a dash hid the one fact he needed.
-
-            Dimmed and titled as inferred rather than recorded, because it is
-            read off the default rather than out of the row. New mints do record
-            their resolution, so blanks are the pre-2026-08-23 population; if the
-            default changes again this inference has to change with it.
+            An unrecorded model reads as a dash, not as a model name. It used
+            to read as `sonnet` — Skip, 2026-08-23: "just write sonnet dude —
+            that's what it fucking means" — on the premise that a blank means
+            the mint took the daemon default, which was `sonnet` for every
+            agent that then had one. That premise died twice: the default moved
+            off sonnet the same era, and a mint that never launches leaves a
+            blank that means nothing at all. On 2026-09-23 the panel called a
+            never-launched agent sonnet and the name was acted on. The comment
+            that installed the inference said it had to change with the default;
+            this is that change. The store backfill already filled the
+            historical blanks it could guess, so a surviving blank is unknown,
+            and the cell says so.
 
             And it is an inference about AGENTS. A human's model is not blank
             because a mint defaulted it — humans are not minted and do not have
@@ -321,9 +322,9 @@ export function FleetAgentDirectoryRow({
             ? ''
             : row.model
               ? `model: ${row.model}`
-              : 'no model recorded — it was minted without one, so it took the daemon default (sonnet)'}
+              : 'no model recorded — the agent never reported one'}
         >
-          {row.human ? '' : (row.model || 'sonnet')}
+          {row.human ? '' : (row.model || '–')}
         </span>
         <span className="fleet-agents-col-seen">{row.ago}</span>
         <span
