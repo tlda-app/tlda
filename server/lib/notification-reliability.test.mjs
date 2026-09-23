@@ -19,8 +19,13 @@ async function withStore(fn) {
       { id: 'fleet:sender', friendly_name: 'sender', labels: [] },
       { id: 'fleet:alice', friendly_name: 'alice', labels: [] },
     ]) await store.upsertAgent({ ...a, registered_at: now, last_seen: now })
+    // Both mandatory delivery slots, the way every mint and every reseed
+    // writes them: `to:me` for mail addressed to the agent, `to:my_labels`
+    // for mail addressed to a set it sits in. A direct address matches both,
+    // so the control below counts two.
     for (const id of ['fleet:sender', 'fleet:alice']) {
       store.ensureSubscription({ owner: id, query: 'to:me', notificationPolicy: 'immediate', mandatory: true })
+      store.ensureSubscription({ owner: id, query: 'to:my_labels', notificationPolicy: 'immediate', mandatory: true })
     }
     try { await fn(store) } finally { store.close() }
   } finally {
@@ -40,15 +45,20 @@ const directMatches = (store) => store
 // invisible and why it presented as intermittent.
 //
 // Both directions are broken, and they are two different bugs.
+// A direct address under the two-slot contract matches both mandatory rows
+// (`to:me` by identity, `to:my_labels` by namesake label), and the send path
+// collapses them to one delivery decision via promptestSubscriptionDelivery.
+// So "delivery restored" here means two direct matches, not one — the count
+// is the contract, not an accident of the fixture.
 test('a reanimated agent is a delivery target again immediately', async () => {
   await withStore(store => {
-    assert.equal(directMatches(store).length, 1, 'control: a live agent resolves its own subscription')
+    assert.equal(directMatches(store).length, 2, 'control: a live agent resolves both mandatory slots')
 
     store.markDead('fleet:alice')
     assert.equal(directMatches(store).length, 0, 'a dead agent is not a delivery target')
 
     store.markAlive('fleet:alice')
-    assert.equal(directMatches(store).length, 1, 'reanimate must restore delivery without a second write')
+    assert.equal(directMatches(store).length, 2, 'reanimate must restore both slots without a second write')
   })
 })
 
@@ -63,7 +73,7 @@ test('a reanimated agent is a delivery target again immediately', async () => {
 // cache for the wrong reason.
 test('a killed agent stops being a delivery target immediately', async () => {
   await withStore(store => {
-    assert.equal(directMatches(store).length, 1, 'control: alive and resolvable, cache warm')
+    assert.equal(directMatches(store).length, 2, 'control: alive and resolvable, cache warm')
     store.markDead('fleet:alice')
     assert.equal(
       directMatches(store).length, 0,
@@ -125,7 +135,8 @@ test('a mandatory subscription can be turned down to hold', async () => {
 
     const updated = store.setSubscriptionPolicy(row.subscription_id, 'hold')
     assert.equal(updated.notification_policy, 'hold')
-    assert.equal(directMatches(store).length, 1, 'it still matches — held, not deleted')
-    assert.equal(directMatches(store)[0].notification_policy, 'hold', 'and the resolver sees the new policy')
+    const matches = directMatches(store)
+    assert.equal(matches.length, 2, 'both slots still match — held, not deleted')
+    assert.equal(matches.find(m => m.query === 'to:me').notification_policy, 'hold', 'and the resolver sees the new policy')
   })
 })
