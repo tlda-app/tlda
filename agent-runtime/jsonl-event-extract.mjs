@@ -106,8 +106,19 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
     return bounded ? `${pending.tool}: ${bounded}` : (pending.tool || '')
   }
 
-  function extractActivityEvents(events) {
+  function extractActivityEvents(events, { operationIdFor } = {}) {
     const result = []
+    // Creation-order index for operation stamps. Deferred emissions (pretty
+    // cards resolved by a later record, expiry flushes) keep the stamp they
+    // were created with, so the same record yields the same identities no
+    // matter which later record triggers their release.
+    let nextOperationIndex = 0
+    const stampOperationId = evt => {
+      if (!operationIdFor) return evt
+      const operationId = operationIdFor(nextOperationIndex++)
+      if (operationId) evt.operationId = operationId
+      return evt
+    }
     // Collect tool_results keyed by tool_use_id so we can match them
     const toolResults = new Map()
     for (const ev of events) {
@@ -169,13 +180,16 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
             input.command || input.cat || input.pattern || input.message ||
             input.query || input.description || input.reason ||
             input.agent || input.doc || input.ref || input.text || input._raw || ''
-          const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
+          const evt = stampOperationId({ tool: humanName, arg, ts: ev.timestamp, id: block.id })
           evt.status = block.status || 'started'
           if (block.duration) evt.duration = block.duration
           if (block.correlationId) evt.correlationId = block.correlationId
           if (Object.keys(input).length > 0) evt.input = input
           if (block.id && evt.status !== 'completed' && evt.status !== 'error') {
-            pendingTools.set(block.id, { tool: humanName, arg, input, ts: ev.timestamp })
+            pendingTools.set(block.id, {
+              tool: humanName, arg, input, ts: ev.timestamp,
+              ...(evt.operationId ? { operationId: evt.operationId } : {}),
+            })
           }
           // Unknown Codex-native tools use the same result-bearing fallback as
           // established pretty-print cards. The marker is internal adapter
@@ -193,7 +207,7 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
           }
           result.push(evt)
         } else if (block.type === 'text' && block.text?.trim().length > 0) {
-          result.push({ tool: '_text', arg: block.text, ts: ev.timestamp })
+          result.push(stampOperationId({ tool: '_text', arg: block.text, ts: ev.timestamp }))
         }
       }
       // Token usage is not extracted. Nothing consumes a `_usage` activity event:
@@ -231,6 +245,7 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
           id,
           status: 'completed',
           correlationId: id,
+          ...(pending.operationId ? { operationId: pending.operationId } : {}),
         })
       }
     }

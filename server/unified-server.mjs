@@ -10619,6 +10619,7 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     if (!historical) touchActivity(agent_id)
     if (sourceEditActivity && (msg.status === 'completed' || msg.status === 'error')) return
     if (!shouldStoreDaemonActivity(msg)) return
+    if (msg.operation_id && await fleetStore.activityOperationDuplicateExists(msg.operation_id)) return
     try {
       const serverBroadcastQueuedAtMs = Date.now()
       let preambleRef = null

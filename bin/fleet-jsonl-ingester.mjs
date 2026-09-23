@@ -265,14 +265,26 @@ export function searchEntriesFromHarnessRecord(agentId, sessionId, harnessKind, 
   return [{ agent_id: agentId, session_id: sessionId, role: record.type, timestamp: ts, text }]
 }
 
-export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminalChat, backfillSearch }, record) {
+export function museHistoryOperationStamper({ harnessKind, jsonlPath, recordKey }) {
+  if (harnessKind !== 'muse' || !jsonlPath || recordKey == null || recordKey === '') return undefined
+  // The live tail and the history backfill must stamp the same record with the
+  // same identity, or the server cannot tell a backfill copy from its live
+  // twin. Both derive the session from the file path (never the parent's
+  // session id, which an agent row may override) and the record key from the
+  // durable record, in this one function, so the two paths cannot drift.
+  const sessionId = path.basename(path.dirname(jsonlPath))
+  return { operationIdFor: index => `muse-history:${sessionId}:${recordKey}:${index}` }
+}
+
+export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminalChat, backfillSearch, jsonlPath }, record) {
   const outputs = []
   const museMarker = harnessKind === 'muse' ? museLoginMarkerFromRecord(record) : null
   const identity = museMarker ? { marker: museMarker } : extractIdentityFromRecord(record)
   if (identity) outputs.push({ type: 'identity', identity })
   const ev = parseRecordForHarness(harnessKind, record)
   if (ev) {
-    const activity = defaultActivityExtractor.extractActivityEvents([ev])
+    const activity = defaultActivityExtractor.extractActivityEvents([ev],
+      museHistoryOperationStamper({ harnessKind, jsonlPath, recordKey: record?.id || record?.sequence }))
     if (activity.length > 0) outputs.push({ type: 'activity', events: activity })
     if (ev.usage) {
       const used = ev.usage.input
@@ -418,11 +430,13 @@ export function collectMuseHistoricalSessions({ sessionsRoot, sessionIndexPath, 
       }
       const parsed = parse(record)
       if (!parsed) continue
-      const extracted = defaultActivityExtractor.extractActivityEvents([parsed])
-      extracted.forEach((event, index) => events.push({
-        ...event,
-        operationId: `muse-history:${sessionId}:${record.id || record.sequence || recordOrdinal}:${index}`,
-      }))
+      const extracted = defaultActivityExtractor.extractActivityEvents([parsed],
+        museHistoryOperationStamper({
+          harnessKind: 'muse',
+          jsonlPath,
+          recordKey: record.id || record.sequence || recordOrdinal,
+        }))
+      events.push(...extracted)
     }
     if (marker?.fleet_id) {
       census.ingested += 1

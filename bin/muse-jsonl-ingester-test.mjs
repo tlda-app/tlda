@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { collectMuseHistoricalSessions, extractRecordOutputs } from './fleet-jsonl-ingester.mjs'
+import { collectMuseHistoricalSessions, extractRecordOutputs, museHistoryOperationStamper } from './fleet-jsonl-ingester.mjs'
 import { activityEventMessage } from '../agent-runtime/activity-send.mjs'
 import { sessionIdForJsonlPath } from '../daemon/jsonl-ingestor.mjs'
 
@@ -103,6 +103,172 @@ test('a Muse session tail keys identity from its session directory, never the co
 function museRecord(id, payloadType, payload) {
   return JSON.stringify({ id, recorded_at: 1789273076102828, payload_type: payloadType, payload })
 }
+
+const LIVE_SESSION_ID = '01900000-0000-7000-8000-000000000001'
+const liveOpts = {
+  ...opts,
+  jsonlPath: `/Users/example/.local/share/muse/sessions/2026/09/13/${LIVE_SESSION_ID}/session.jsonl`,
+}
+
+function committedRecord(id, callId, name, args) {
+  return {
+    id,
+    recorded_at: 1789273076000000,
+    payload_type: 'runtime.session',
+    payload: {
+      kind: 'run',
+      event: {
+        kind: 'assistant_tool_calls_committed',
+        tool_calls: [{ call_id: callId, name, args }],
+      },
+    },
+  }
+}
+
+function terminalRecord(id, callId, toolName) {
+  return {
+    id,
+    recorded_at: 1789273076102828,
+    payload_type: 'tool_batch.effect.terminal',
+    payload: { record: { call_id: callId, tool_name: toolName, outcome: { kind: 'completed' } } },
+  }
+}
+
+function resultBatchRecord(id, callId, text) {
+  return {
+    id,
+    recorded_at: 1789273076200000,
+    payload_type: 'runtime.session',
+    payload: {
+      kind: 'run',
+      event: { kind: 'tool_result_batch_committed', results: [{ tool_call_id: callId, text }] },
+    },
+  }
+}
+
+function liveActivityFor(records) {
+  let activity = null
+  for (const record of records) {
+    activity = extractRecordOutputs(liveOpts, record).find(output => output.type === 'activity') || activity
+  }
+  return activity
+}
+
+test('a live Muse tail stamps the same operation identity the backfill derives', () => {
+  const activity = liveActivityFor([
+    committedRecord('live-stamp-commit', 'live-stamp-call', 'bash', '{"command":"echo hi"}'),
+    terminalRecord('live-stamp-terminal', 'live-stamp-call', 'bash'),
+  ])
+  assert.ok(activity)
+  assert.equal(activity.events.length, 1)
+  assert.equal(
+    activity.events[0].operationId,
+    `muse-history:${LIVE_SESSION_ID}:live-stamp-terminal:0`,
+  )
+})
+
+test('the live tail and the backfill stamp one record with one identity', () => {
+  const root = mkdtempSync(join(tmpdir(), 'muse-history-parity-'))
+  const marker = 'TLDA_LOGIN_MARKER {"type":"tlda-login-marker","version":1,"fleet_id":"fleet:parity","harness_kind":"muse"}'
+  try {
+    const dir = join(root, '2026', '09', '13', LIVE_SESSION_ID)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'session.jsonl'), [
+      museRecord('parity-commit', 'runtime.session', {
+        kind: 'run',
+        event: {
+          kind: 'assistant_tool_calls_committed',
+          tool_calls: [{ call_id: 'parity-call', name: 'bash', args: '{"command":"echo parity"}' }],
+        },
+      }),
+      museRecord('parity-terminal', 'tool_batch.effect.terminal', {
+        record: { call_id: 'parity-call', tool_name: 'bash', outcome: { kind: 'completed' } },
+      }),
+      museRecord('parity-marker', 'runtime.session', {
+        kind: 'run', event: { kind: 'tool_result_batch_committed', results: [{ text: marker }] },
+      }),
+    ].join('\n') + '\n')
+    const { batches } = collectMuseHistoricalSessions({ sessionsRoot: root, sessionIndexPath: null })
+    assert.equal(batches.length, 1)
+    assert.equal(batches[0].events.length, 1)
+    const backfillId = batches[0].events[0].operationId
+
+    const live = liveActivityFor([
+      committedRecord('parity-commit', 'parity-live-call', 'bash', '{"command":"echo parity"}'),
+      terminalRecord('parity-terminal', 'parity-live-call', 'bash'),
+    ])
+    assert.ok(live)
+    assert.equal(live.events.length, 1)
+    assert.equal(live.events[0].operationId, backfillId)
+    assert.equal(backfillId, `muse-history:${LIVE_SESSION_ID}:parity-terminal:0`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a deferred pretty card keeps the tool-use record identity on both paths', () => {
+  const live = liveActivityFor([
+    committedRecord('pretty-commit', 'pretty-stamp-call', 'mcp__tlda__screenshot', '{}'),
+    terminalRecord('pretty-terminal', 'pretty-stamp-call', 'mcp__tlda__screenshot'),
+    resultBatchRecord('pretty-result', 'pretty-stamp-call', 'screenshot body'),
+  ])
+  assert.ok(live)
+  assert.equal(live.events.length, 1)
+  assert.equal(
+    live.events[0].operationId,
+    `muse-history:${LIVE_SESSION_ID}:pretty-terminal:0`,
+  )
+  assert.match(live.events[0].prettyResult || '', /screenshot body/)
+
+  const root = mkdtempSync(join(tmpdir(), 'muse-history-deferred-'))
+  const marker = 'TLDA_LOGIN_MARKER {"type":"tlda-login-marker","version":1,"fleet_id":"fleet:deferred","harness_kind":"muse"}'
+  try {
+    const dir = join(root, '2026', '09', '13', LIVE_SESSION_ID)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'session.jsonl'), [
+      museRecord('pretty-commit', 'runtime.session', {
+        kind: 'run',
+        event: {
+          kind: 'assistant_tool_calls_committed',
+          tool_calls: [{ call_id: 'pretty-backfill-call', name: 'mcp__tlda__screenshot', args: '{}' }],
+        },
+      }),
+      museRecord('pretty-terminal', 'tool_batch.effect.terminal', {
+        record: { call_id: 'pretty-backfill-call', tool_name: 'mcp__tlda__screenshot', outcome: { kind: 'completed' } },
+      }),
+      museRecord('pretty-result', 'runtime.session', {
+        kind: 'run',
+        event: { kind: 'tool_result_batch_committed', results: [{ tool_call_id: 'pretty-backfill-call', text: 'screenshot body' }] },
+      }),
+      museRecord('deferred-marker', 'runtime.session', {
+        kind: 'run', event: { kind: 'tool_result_batch_committed', results: [{ text: marker }] },
+      }),
+    ].join('\n') + '\n')
+    const { batches } = collectMuseHistoricalSessions({ sessionsRoot: root, sessionIndexPath: null })
+    assert.equal(batches.length, 1)
+    assert.equal(batches[0].events.length, 1)
+    assert.equal(batches[0].events[0].operationId, live.events[0].operationId)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the muse stamper stays silent without a harness, path, or record key', () => {
+  assert.equal(
+    museHistoryOperationStamper({ harnessKind: 'claude', jsonlPath: liveOpts.jsonlPath, recordKey: 'r1' }),
+    undefined,
+  )
+  assert.equal(museHistoryOperationStamper({ harnessKind: 'muse', recordKey: 'r1' }), undefined)
+  assert.equal(
+    museHistoryOperationStamper({ harnessKind: 'muse', jsonlPath: liveOpts.jsonlPath }),
+    undefined,
+  )
+  const stamper = museHistoryOperationStamper({
+    harnessKind: 'muse', jsonlPath: liveOpts.jsonlPath, recordKey: 'r1',
+  })
+  assert.equal(stamper.operationIdFor(0), `muse-history:${LIVE_SESSION_ID}:r1:0`)
+  assert.equal(stamper.operationIdFor(2), `muse-history:${LIVE_SESSION_ID}:r1:2`)
+})
 
 test('Muse history imports only self-identifying parents and reports every skipped class', () => {
   const root = mkdtempSync(join(tmpdir(), 'muse-history-'))

@@ -1816,6 +1816,16 @@ export class FleetStore {
       LIMIT 1
     `);
 
+    // The muse history backfill re-sends every identified session on every
+    // daemon boot, and the live tail sends the same records as they land. Both
+    // stamp the same operation identity; this is the authoritative check that
+    // keeps the second copy out. Served by idx_events_operation_id.
+    this._activityOperationDuplicate = this.db.prepare(`
+      SELECT 1 FROM events
+      WHERE type = 'activity' AND json_extract(metadata, '$.client_operation_id') = ?
+      LIMIT 1
+    `);
+
     this._daemonOutboxProcessedGet = this.db.prepare(`
       SELECT 1 FROM daemon_outbox_processed WHERE id = ? LIMIT 1
     `);
@@ -6355,6 +6365,11 @@ export class FleetStore {
 
   terminalChatDuplicateExists(timestamp, fromId, toId, textPrefix) {
     return !!this._terminalChatDuplicate.get(timestamp, fromId, toId, textPrefix);
+  }
+
+  activityOperationDuplicateExists(operationId) {
+    if (!operationId) return false;
+    return !!this._activityOperationDuplicate.get(operationId);
   }
 
   // ---- Server → daemon outbox ----

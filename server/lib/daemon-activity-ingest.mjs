@@ -81,14 +81,16 @@ export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.no
 }
 
 export function buildDaemonActivityRecord(msg, timing = {}) {
-  const { agent_id } = msg || {}
+  const { agent_id, operation_id } = msg || {}
   const activity = normalizeDaemonActivityEvent(msg, timing)
   return {
     type: 'activity',
     from: agent_id,
     to: agent_id,
     text: activity.text,
-    metadata: activity.metadata,
+    metadata: operation_id
+      ? { ...activity.metadata, client_operation_id: operation_id }
+      : activity.metadata,
     unread: false,
     timestamp: activity.timestamp,
   }
