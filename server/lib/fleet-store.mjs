@@ -506,6 +506,9 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_delegate_operation_id
         ON events(json_extract(metadata, '$.client_operation_id'), id)
         WHERE type = 'delegate';
+      CREATE INDEX IF NOT EXISTS idx_events_activity_operation_id
+        ON events(json_extract(metadata, '$.client_operation_id'), id)
+        WHERE type = 'activity';
       CREATE TABLE IF NOT EXISTS transport_operations (
         operation_id TEXT PRIMARY KEY,
         operation_type TEXT NOT NULL,
@@ -1819,7 +1822,9 @@ export class FleetStore {
     // The muse history backfill re-sends every identified session on every
     // daemon boot, and the live tail sends the same records as they land. Both
     // stamp the same operation identity; this is the authoritative check that
-    // keeps the second copy out. Served by idx_events_operation_id.
+    // keeps the second copy out. Served by idx_events_activity_operation_id
+    // (idx_events_operation_id is partial to report/chat/task_done and cannot
+    // serve activity rows — without this index the check is a full scan).
     this._activityOperationDuplicate = this.db.prepare(`
       SELECT 1 FROM events
       WHERE type = 'activity' AND json_extract(metadata, '$.client_operation_id') = ?
