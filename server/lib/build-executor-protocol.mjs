@@ -26,7 +26,15 @@ import { spawn } from 'node:child_process'
  * that decides when it reads.
  */
 
-export const EXECUTOR_PROTOCOL_VERSION = 1
+export const EXECUTOR_PROTOCOL_VERSION = 2
+
+export function requireMatchingExecutorRevision(expected, actual) {
+  if (!expected) throw new Error('server build revision is unavailable; refusing a remote build')
+  if (!actual) throw new Error(`build executor did not report a revision; server is ${expected}`)
+  if (actual !== expected) {
+    throw new Error(`build executor revision ${actual} does not match server revision ${expected}`)
+  }
+}
 
 // Path-bearing arguments, by RPC method and argument index. The executor names
 // paths on ITS filesystem; every one of them has to be replaced with a path the

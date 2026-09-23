@@ -23,6 +23,7 @@ import { updateProject, getProjectsDir, listProjects, aggregateBookToc, sourceLi
 import { writeSentinel } from './sentinel.mjs'
 import { loadServerConfig } from '../../shared/config.mjs'
 import { ForkTransport, createRemoteTransport } from './build-transport.mjs'
+import { readBuildInfo } from './build-info.mjs'
 import { createBuildQueue } from './build-queue.mjs'
 import { BuildQueueStore } from './build-queue-store.mjs'
 import { listProposalRefs } from './git-proposals.mjs'
@@ -716,6 +717,8 @@ export function buildTransportFor(config, makeRemote = createRemoteTransport) {
   const envTokensOnly = !!config.tokensFromEnvironmentOnly
   const token = process.env.TLDA_BUILD_EXECUTOR_TOKEN || (envTokensOnly ? null : executor.token)
   const gitToken = process.env.TLDA_BUILD_EXECUTOR_GIT_TOKEN || (envTokensOnly ? null : executor.git?.token)
+  const buildInfo = readBuildInfo(join(dirname(fileURLToPath(import.meta.url)), '..', 'build-info.json'))
+  const expectedRevision = buildInfo.ok ? buildInfo.buildInfo.gitSha : null
 
   // Named, never valued. A config token that is being ignored is worth saying —
   // somebody wrote it expecting it to work — but printing it would put the
@@ -734,6 +737,7 @@ export function buildTransportFor(config, makeRemote = createRemoteTransport) {
     stagingRoot: join(getProjectsDir(), '.build-instances'),
     readProject,
     publishedHead: async name => (await (await sourceLifecycleStore(name)).gitRepository()).head(name),
+    expectedRevision,
   })
 }
 

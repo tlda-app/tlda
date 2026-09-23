@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { WebSocket } from 'ws'
-import { EXECUTOR_PATH_ARGUMENTS, EXECUTOR_PROTOCOL_VERSION, untarInto } from './build-executor-protocol.mjs'
+import { EXECUTOR_PATH_ARGUMENTS, EXECUTOR_PROTOCOL_VERSION, requireMatchingExecutorRevision, untarInto } from './build-executor-protocol.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WORKER = join(__dirname, '..', '..', 'bin', 'build-worker.mjs')
@@ -154,6 +154,7 @@ export function createRemoteTransport({
   stagingRoot,
   readProject,
   publishedHead,
+  expectedRevision,
   connect = url => new WebSocket(url, { headers: { authorization: `Bearer ${token}` } }),
   fetchImpl = fetch,
   logError = console.error,
@@ -254,6 +255,11 @@ export function createRemoteTransport({
         const project = await readProject(job.name)
         if (!project) throw new Error(`no project record for ${job.name}`)
         const head = publishedHead ? await publishedHead(job.name) : null
+
+        const health = await fetchImpl(`${httpUrl}/health`)
+        if (!health.ok) throw new Error(`build executor health returned HTTP ${health.status}`)
+        const executor = await health.json()
+        requireMatchingExecutorRevision(expectedRevision, executor.revision)
 
         socket = connect(socketUrl)
         socket.on('error', error => fail(`remote build executor at ${executorUrl} failed for ${job.name}: ${error.message}`))

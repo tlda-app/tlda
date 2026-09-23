@@ -57,15 +57,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, sta
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import { createForkTransport } from '../server/lib/build-transport.mjs'
 import { tarDirectory, EXECUTOR_PATH_ARGUMENTS, EXECUTOR_PROTOCOL_VERSION } from '../server/lib/build-executor-protocol.mjs'
+import { readBuildInfo } from '../server/lib/build-info.mjs'
 import { run } from '../server/lib/build-executor-run.mjs'
 
 const TOKEN = process.env.TLDA_BUILD_EXECUTOR_TOKEN || ''
 const ROOT = process.env.TLDA_BUILD_EXECUTOR_ROOT || join(homedir(), '.cache', 'tlda-build-executor')
 const PORT = Number(process.env.TLDA_BUILD_EXECUTOR_PORT || 7711)
 const HOST = process.env.TLDA_BUILD_EXECUTOR_HOST || ''
+const BUILD_INFO = readBuildInfo(fileURLToPath(new URL('../server/build-info.json', import.meta.url)))
+const REVISION = BUILD_INFO.ok ? BUILD_INFO.buildInfo.gitSha : null
 
 if (!TOKEN) {
   console.error('[build-executor] TLDA_BUILD_EXECUTOR_TOKEN is required; refusing to run an unauthenticated executor')
@@ -248,8 +252,8 @@ function handleJob(socket, frame) {
 const httpServer = createServer(async (req, res) => {
   const authorized = (req.headers.authorization || '') === `Bearer ${TOKEN}`
   if (req.url === '/health') {
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, protocol: EXECUTOR_PROTOCOL_VERSION, root: ROOT }))
+    res.writeHead(REVISION ? 200 : 503, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ ok: Boolean(REVISION), protocol: EXECUTOR_PROTOCOL_VERSION, revision: REVISION, root: ROOT }))
     return
   }
   if (!authorized) {
