@@ -1,7 +1,7 @@
 import { createShapeId, type Editor, type TLCamera, type TLShape, type TLShapeId } from 'tldraw'
 import { wrapFleetLayoutAroundDocument } from './shapes/fleet-layout-wrap'
 import { dispatchFleetHudWrap } from './wm/editor-host-bridge'
-import { arrivalReadingOffset, cameraYForReadingOffset, readingOffsetOf } from './readingPosition'
+import { arrivalCameraX, arrivalReadingOffset, cameraYForReadingOffset, readingOffsetOf } from './readingPosition'
 // @ts-ignore — vanilla JS module
 import { horizontalSpatialDocumentPoint } from './spatial-document-layout.mjs'
 
@@ -181,8 +181,11 @@ export function activateSpatialDocument(
  * which is right for the layout and wrong for the reading position — a long
  * document's offset lands you past the end of a short one. So the y is resolved
  * against the target instead of translated: your stored place in it, or its top
- * when you have not read it. The x and the zoom still translate, because the
- * layout wrap is what keeps your panels where you put them.
+ * when you have not read it. The x translates while the source is on screen,
+ * because the layout wrap is what keeps your panels where you put them; from
+ * empty canvas there is no on-screen position to preserve, so the target
+ * arrives centered instead of inheriting an off-screen one. The zoom always
+ * carries over.
  *
  * This is the documents-panel and map gesture, deliberately not
  * `activateSpatialDocument` itself. Going back is not opening: the place stack
@@ -211,11 +214,27 @@ export function openSpatialDocument(
     ? readingOffsetOf(camera, target.bounds)
     : arrivalReadingOffset(positions.read(target), camera.z)
   const nextY = cameraYForReadingOffset(arrival, target.bounds)
-  editor.setCamera({ x: camera.x - plan.dx, y: nextY, z: camera.z })
+  // The x translates by the document offset so the target arrives where the
+  // source was — but only when the source is actually on screen to arrive
+  // from; from empty canvas the target arrives centered instead of
+  // inheriting an off-screen position (see arrivalCameraX).
+  const viewport = editor.getViewportPageBounds()
+  const nextX = arrivalCameraX({
+    cameraX: camera.x,
+    planDx: plan.dx,
+    sameDocument,
+    sourceX: source.bounds.x,
+    targetX: target.bounds.x,
+    targetW: target.bounds.w,
+    viewportX: viewport.x,
+    viewportW: viewport.w,
+  })
+  editor.setCamera({ x: nextX, y: nextY, z: camera.z })
   // The HUD anchor tracks the camera, not the panels — see the wrap handler in
   // FleetHUD, which shifts it by the same delta the camera moved. That delta is
-  // no longer plan.dy, so it is measured rather than assumed.
-  if (plan.moves.length > 0) dispatchFleetHudWrap({ dx: plan.dx, dy: camera.y - nextY })
+  // no longer plan.dy, so it is measured rather than assumed; the x likewise
+  // when the arrival centers instead of translating.
+  if (plan.moves.length > 0) dispatchFleetHudWrap({ dx: camera.x - nextX, dy: camera.y - nextY })
 }
 
 export function focusSpatialDocument(editor: Editor, node: SpatialDocumentNode) {

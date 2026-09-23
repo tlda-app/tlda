@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import {
+  arrivalCameraX,
   arrivalReadingOffset,
   cameraYForReadingOffset,
   readingOffsetOf,
@@ -94,11 +95,76 @@ test('two projects do not share a position for the same file name', () => {
 
 // The wrap handler in FleetHUD shifts the HUD anchor by the delta the CAMERA
 // moved. openSpatialDocument no longer moves the camera's y by plan.dy, so
-// passing plan.dy would shift the anchor by an amount the camera did not move.
+// passing plan.dy would shift the anchor by an amount the camera did not move;
+// the x likewise when the arrival centers instead of translating.
 test('the HUD wrap is dispatched with the camera delta, not the plan delta', () => {
   const source = readFileSync(new URL('../src/spatialDocumentWorld.ts', import.meta.url), 'utf8')
   const open = source.slice(source.indexOf('export function openSpatialDocument'))
-  assert.match(open, /dispatchFleetHudWrap\(\{ dx: plan\.dx, dy: camera\.y - nextY \}\)/)
+  assert.match(open, /dispatchFleetHudWrap\(\{ dx: camera\.x - nextX, dy: camera\.y - nextY \}\)/)
+})
+
+// The arrival x is a pure rule over numbers, so unlike the y above it is
+// exercised directly rather than through a mirror.
+test('opening from empty canvas centers the target instead of inheriting an off-screen position', () => {
+  // Tail 4 J3, live numbers: viewport over empty canvas left of the chapter
+  // (cam.x 1735, z 0.834, 1200px wide), chapter at x 0, "Slide 21" at 129524.
+  // Translating would land cam.x at 1735 − 129524 = −127789, the slide at
+  // screen x 3061 — off-canvas.
+  const nextX = arrivalCameraX({
+    cameraX: 1735,
+    planDx: 129524,
+    sameDocument: false,
+    sourceX: 0,
+    targetX: 129524,
+    targetW: 1290,
+    viewportX: -1735,
+    viewportW: 1200 / 0.834,
+  })
+  const targetCenter = 129524 + 1290 / 2
+  assert.equal(nextX, 1200 / 0.834 / 2 - targetCenter)
+  assert.ok(Math.abs((targetCenter + nextX) * 0.834 - 600) < 1, 'slide center lands at screen center')
+})
+
+test('opening with the source on screen still translates, so the target arrives where the source was', () => {
+  const nextX = arrivalCameraX({
+    cameraX: 100,
+    planDx: 129524,
+    sameDocument: false,
+    sourceX: 0,
+    targetX: 129524,
+    targetW: 1290,
+    viewportX: -100,
+    viewportW: 1200,
+  })
+  assert.equal(nextX, 100 - 129524)
+})
+
+test('a source left edge exactly at the viewport edge still counts as on screen', () => {
+  const atRightEdge = arrivalCameraX({
+    cameraX: 0,
+    planDx: 500,
+    sameDocument: false,
+    sourceX: 1200,
+    targetX: 500,
+    targetW: 100,
+    viewportX: 0,
+    viewportW: 1200,
+  })
+  assert.equal(atRightEdge, -500)
+})
+
+test('opening the document you are already in is the identity in x too, even from empty canvas', () => {
+  const nextX = arrivalCameraX({
+    cameraX: 1735,
+    planDx: 0,
+    sameDocument: true,
+    sourceX: 0,
+    targetX: 0,
+    targetW: 800,
+    viewportX: -1735,
+    viewportW: 1200 / 0.834,
+  })
+  assert.equal(nextX, 1735)
 })
 
 // Going back is not opening. placeStack restores the camera it recorded and the
