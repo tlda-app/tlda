@@ -34,6 +34,7 @@ import {
   isClientOwnedSourcePath, readClientSourceManifest, validateSourceFilePath,
   beginProjectSourceTransaction,
   updateClientSourceManifest,
+  replaceSourceFilesAsync,
   sourceLifecycleStore,
   checkpointProjectPartWritebackOffloop,
   indexedProjectLifecycleStatuses,
@@ -71,6 +72,7 @@ import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConfl
 import { classroomPrincipal, requireClassroomDocumentAccess } from './classroom.mjs'
 import { formatForDocumentPath, normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 import { CopyLiveRoomError, copyLiveRoomSnapshot } from '../lib/copy-live-room.mjs'
+import { CopySubmissionTreeError, copySubmissionTree } from '../lib/copy-submission-tree.mjs'
 
 const router = Router()
 const execFileAsync = promisify(execFile)
@@ -2203,6 +2205,68 @@ router.post('/:name/copy-live', requireOperatorWrite, async (req, res) => {
     res.json({ ok: true, ...result })
   } catch (error) {
     const status = error instanceof CopyLiveRoomError ? error.status : 500
+    res.status(status).json({ error: error.message })
+  }
+})
+
+// Binary-safe batch read of one project's revision files, for the preview
+// store's one-shot submission-tree import. The per-file text route serves
+// utf8 and would corrupt photos; readRevisionFiles is already binary-safe
+// (one cat-file --batch spawn), it just had no HTTP exposure.
+router.get('/:name/source-batch', requireOperatorWrite, async (req, res) => {
+  const project = await readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  let paths
+  try {
+    paths = JSON.parse(String(req.query.paths || '[]'))
+  } catch {
+    return res.status(400).json({ error: 'paths must be a JSON array of source paths' })
+  }
+  if (!Array.isArray(paths) || paths.some(path => typeof path !== 'string')) {
+    return res.status(400).json({ error: 'paths must be a JSON array of source paths' })
+  }
+  try {
+    const lifecycle = await sourceLifecycleStore(req.params.name, { existingProject: project })
+    const git = await lifecycle.gitRepository()
+    const revision = await git.head(req.params.name)
+    if (!revision) return res.status(409).json({ error: `"${req.params.name}" has no committed revision to read` })
+    const blobs = await lifecycle.readRevisionFiles(revision, paths)
+    const files = {}
+    for (const path of paths) {
+      const blob = blobs.get(path)
+      files[path] = blob == null ? { missing: true } : blob.toString('base64')
+    }
+    res.json({ revision, files })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Copy one live submission-* project tree into this store exactly once, when
+// the preview UI asks. Same shape as copy-live: only the preview process
+// receives TLDA_LIVE_STORE_URL, the probe says unavailable everywhere else,
+// and the POST refuses without touching either side.
+router.get('/:name/copy-submission', requireOperatorWrite, (_req, res) => {
+  res.json({ available: !!process.env.TLDA_LIVE_STORE_URL })
+})
+
+router.post('/:name/copy-submission', requireOperatorWrite, async (req, res) => {
+  try {
+    const result = await copySubmissionTree({
+      project: req.params.name,
+      liveStoreUrl: process.env.TLDA_LIVE_STORE_URL,
+      token: configuredReadToken(),
+      replaceFiles: async (files) => {
+        if (!await readProject(req.params.name)) {
+          const mainFile = files.map(file => file.path).find(path => /\.qmd$/i.test(path)) || 'submission.qmd'
+          createProject({ name: req.params.name, title: req.params.name, mainFile, format: 'qmd' })
+        }
+        await replaceSourceFilesAsync(req.params.name, files)
+      },
+    })
+    res.json({ ok: true, ...result })
+  } catch (error) {
+    const status = error instanceof CopySubmissionTreeError ? error.status : 500
     res.status(status).json({ error: error.message })
   }
 })

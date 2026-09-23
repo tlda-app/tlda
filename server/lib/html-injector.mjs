@@ -339,7 +339,8 @@ const RENDERED_LINE_MEASUREMENT_BRIDGE = `
       var walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
       var node;
       while ((node = walker.nextNode())) {
-        if (node.parentElement && node.parentElement.closest('[aria-hidden="true"]')) continue;
+        var hidden = node.parentElement ? node.parentElement.closest('[aria-hidden="true"]') : null;
+        if (hidden && hidden !== root) continue;
         var pattern = /\\S+/g;
         var match;
         while ((match = pattern.exec(node.textContent || ''))) {

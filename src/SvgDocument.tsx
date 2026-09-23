@@ -400,6 +400,20 @@ function PresentationModeSwitch({ document }: { document: SvgDocument }) {
       setCopying(false)
     }
   }
+  const copySubmission = async () => {
+    setCopying(true)
+    setCopyStatus('Copying live submission…')
+    try {
+      const response = await fetch(`${STORE_HTTP}/api/projects/${encodeURIComponent(document.name)}/copy-submission`, { method: 'POST' })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(result.error || `Copy live submission failed (${response.status})`)
+      setCopyStatus(`Copied ${result.files} live file${result.files === 1 ? '' : 's'}.`)
+    } catch (error) {
+      setCopyStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCopying(false)
+    }
+  }
 
   return (
     <div style={{ position: 'fixed', top: 12, left: 12, zIndex: 10000, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -412,6 +426,11 @@ function PresentationModeSwitch({ document }: { document: SvgDocument }) {
       {copyAvailable && (
         <button type="button" onClick={copyLive} disabled={copying} className="presentation-copy-live">
           Copy live data
+        </button>
+      )}
+      {copyAvailable && document.name.startsWith('submission-') && (
+        <button type="button" onClick={copySubmission} disabled={copying} className="presentation-copy-live">
+          Copy live submission
         </button>
       )}
       {copyStatus && <span role="status">{copyStatus}</span>}

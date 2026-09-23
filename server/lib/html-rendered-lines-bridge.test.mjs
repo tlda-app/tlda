@@ -76,3 +76,48 @@ test('the browser measurement groups words by their rendered rows', () => {
     lines: ['one two', 'three'],
   }])
 })
+test('the browser measurement keeps slide-level aria-hidden text but still skips node-level hidden text', () => {
+  const html = injectBridge('<html><body><main><p>deck line</p></main></body></html>')
+  const source = injectedFunction(html, 'tldaMeasureRenderedLines')
+  const run = (hiddenAncestor) => {
+    const root = { querySelectorAll: () => [block] }
+    const textNode = { textContent: 'deck line', parentElement: { closest: () => hiddenAncestor(root) } }
+    const block = {
+      tagName: 'P',
+      id: '',
+      textContent: textNode.textContent,
+      closest: () => null,
+      querySelector: () => null,
+    }
+    return vm.runInNewContext(`(${source})()`, {
+      window: { location: { href: 'https://example.test/deck' } },
+      NodeFilter: { SHOW_TEXT: 4 },
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+      document: {
+        title: 'Deck scroll view',
+        body: { querySelectorAll: () => [block] },
+        querySelector: selector => selector === 'main' ? root : null,
+        createTreeWalker: () => {
+          let returned = false
+          return { nextNode: () => returned ? null : (returned = true, textNode) }
+        },
+        createRange: () => ({
+          setStart: () => {},
+          setEnd: () => {},
+          getClientRects: () => [{ top: 10, height: 10, width: 20 }],
+        }),
+      },
+      Array,
+      Math,
+    })
+  }
+  // Slide-level aria-hidden IS the measured root (scroll-view non-present
+  // slide): the single line survives.
+  const slideKept = run(root => root)
+  assert.equal(slideKept.blocks.length, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(slideKept.blocks[0].lines)), ['deck line'])
+  // Node-level aria-hidden strictly inside the root (MathJax-style rendering):
+  // the block is discarded.
+  const nodeSkipped = run(() => ({}))
+  assert.equal(nodeSkipped.blocks.length, 0)
+})
