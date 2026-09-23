@@ -121,3 +121,59 @@ test('the browser measurement keeps slide-level aria-hidden text but still skips
   const nodeSkipped = run(() => ({}))
   assert.equal(nodeSkipped.blocks.length, 0)
 })
+
+test('the browser measurement roots at the addressed slide when present is stale', () => {
+  const html = injectSlidesBridge('<html><head></head><body><div class="reveal"><div class="slides"><section></section></div></div></body></html>')
+  const source = injectedFunction(html, 'tldaMeasureRenderedLines')
+  const textFor = (text, hiddenAncestor) => ({ textContent: text, parentElement: { closest: () => hiddenAncestor } })
+  const blockFor = (tag, text) => ({
+    tagName: tag,
+    id: '',
+    textContent: text,
+    closest: () => null,
+    querySelector: () => null,
+  })
+  const run = (reveal) => {
+    const titleBlock = blockFor('H1', 'Random Variables and Moments')
+    const liBlock = blockFor('LI', 'Observations as random variables with a long second line of prose here')
+    const presentSection = { querySelectorAll: () => [titleBlock] }
+    const addressedSection = { tagName: 'SECTION', querySelectorAll: () => [liBlock] }
+    const titleText = textFor(titleBlock.textContent, null)
+    const liText = textFor(liBlock.textContent, addressedSection)
+    return vm.runInNewContext(`(${source})()`, {
+      ...(reveal === undefined ? {} : { Reveal: reveal(addressedSection) }),
+      window: { location: { href: 'https://example.test/deck' } },
+      NodeFilter: { SHOW_TEXT: 4 },
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+      document: {
+        title: 'Deck scroll view',
+        body: { querySelectorAll: () => [] },
+        querySelector: selector => selector === '.reveal .slides section.present' ? presentSection : null,
+        createTreeWalker: (block) => {
+          let returned = false
+          const node = block === liBlock ? liText : titleText
+          return { nextNode: () => returned ? null : (returned = true, node) }
+        },
+        createRange: () => ({
+          setStart: () => {},
+          setEnd: () => {},
+          getClientRects: () => [{ top: 10, height: 10, width: 20 }],
+        }),
+      },
+      Array,
+      Math,
+    })
+  }
+  // Addressed slide wins over stale present: the li is measured, the title is not.
+  const addressed = run(section => ({ getCurrentSlide: () => section }))
+  assert.equal(addressed.blocks.length, 1)
+  assert.equal(JSON.parse(JSON.stringify(addressed.blocks[0])).tag, 'li')
+  // No Reveal (chapter path): present keeps its old meaning.
+  const fallback = run(undefined)
+  assert.equal(fallback.blocks.length, 1)
+  assert.equal(JSON.parse(JSON.stringify(fallback.blocks[0])).tag, 'h1')
+  // Reveal present but failing (pre-init): same fallback, no throw.
+  const failing = run(() => ({ getCurrentSlide: () => { throw new Error('not ready') } }))
+  assert.equal(failing.blocks.length, 1)
+  assert.equal(JSON.parse(JSON.stringify(failing.blocks[0])).tag, 'h1')
+})

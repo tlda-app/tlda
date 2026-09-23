@@ -326,7 +326,20 @@ const FAULT_BEACON_SCRIPT = `
 
 const RENDERED_LINE_MEASUREMENT_BRIDGE = `
   function tldaMeasureRenderedLines() {
-    var root = document.querySelector('.reveal .slides section.present') ||
+    // In a Reveal deck after a scroll-view goto, section.present stays on the
+    // title slide while the address moves; getCurrentSlide() reads the
+    // addressed slide. Measure that first (the hidden!==root guard below keeps
+    // its slide-level aria-hidden text measurable); present, then main/body,
+    // preserve every non-deck path exactly.
+    var addressed = null;
+    try {
+      if (typeof Reveal !== 'undefined' && Reveal.getCurrentSlide) {
+        var slide = Reveal.getCurrentSlide();
+        if (slide && slide.tagName === 'SECTION') addressed = slide;
+      }
+    } catch (e) { /* pre-init Reveal: fall through to present */ }
+    var root = addressed ||
+      document.querySelector('.reveal .slides section.present') ||
       document.querySelector('main') || document.body;
     var blocks = [];
     var candidates = root.querySelectorAll('h1, h2, h3, h4, li, p');
