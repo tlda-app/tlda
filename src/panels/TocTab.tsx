@@ -476,7 +476,12 @@ export function TocTab({ query = '' }: { query?: string }) {
           // build's own statement so the deck chips do not depend on a
           // regenerated ToC. Order, titles, and pages are untouched.
           const pages = await loadPageInfo(doc.projectName)
-          const enriched = pages ? enrichTocWithPageInfo(toc, pages) : toc
+          const projectEnriched = pages ? enrichTocWithPageInfo(toc, pages) : toc
+          const enriched = doc.projectPageNumber
+            ? projectEnriched
+                .filter(entry => entry.page === doc.projectPageNumber)
+                .map(entry => ({ ...entry, page: 1 }))
+            : projectEnriched
           if (!cancelled) {
             setHtmlToc(enriched)
             setCollapsed(computeDefaultFolded(enriched))

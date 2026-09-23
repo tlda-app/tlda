@@ -18,6 +18,8 @@ export interface ProjectContextValue {
     title?: string
     presentationLocation?: string
   }>
+  /** Original 1-based project page when an app route scopes the panel locally. */
+  projectPageNumber?: number
   targets?: Array<{ name: string; title: string; pages: number }>
 }
 

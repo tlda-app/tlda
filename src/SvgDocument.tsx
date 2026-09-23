@@ -365,20 +365,11 @@ interface SvgDocumentEditorProps {
 const MAX_VISIBLE_VERSIONS = 5
 
 function PresentationModeSwitch({ document }: { document: SvgDocument }) {
-  const editor = useEditor()
   const route = presentationRoute(window.location.pathname)
   const isAppRoute = route?.mode === 'app'
-  const [pageId, setPageId] = useState(() => editor?.getCurrentPageId())
   const [copyAvailable, setCopyAvailable] = useState(false)
   const [copying, setCopying] = useState(false)
   const [copyStatus, setCopyStatus] = useState('')
-
-  useEffect(() => {
-    if (!editor) return
-    const read = () => setPageId(editor.getCurrentPageId())
-    read()
-    return editor.store.listen(read, { scope: 'session', source: 'all' })
-  }, [editor])
 
   useEffect(() => {
     if (!isAppRoute) return
@@ -391,14 +382,10 @@ function PresentationModeSwitch({ document }: { document: SvgDocument }) {
   }, [document.name, isAppRoute])
 
   if (!route || route.mode !== 'app') return null
-  const page = document.pages.find(candidate => candidate.tldrawPageId === pageId)
-  const pagePath = page?.src ? new URL(page.src, window.location.origin).pathname : ''
-  const appPrefix = route.prefix === 'docs'
-    ? `/docs/${encodeURIComponent(route.project)}/app/`
-    : '/app/'
-  const location = pagePath.startsWith(appPrefix)
-    ? decodeURIComponent(pagePath.slice(appPrefix.length))
-    : page?.source?.file || route.location
+  // The route names the presented document. A book chapter and its deck share
+  // one TLDraw page, so deriving this from the first shape on that page sends a
+  // deck's Static link to its chapter instead.
+  const location = route.location
   const copyLive = async () => {
     setCopying(true)
     setCopyStatus('Copying live data…')
@@ -584,13 +571,16 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const routedDeckFile = routedAppPage?.meta?.spatialWorldDocument
     ? routedAppPage.meta.materializedFile
     : null
-  const presentationDocument = useMemo(() => routedDeckFile
-    ? {
+  const routedProjectPageNumber = routedAppPage ? document.pages.indexOf(routedAppPage) + 1 : undefined
+  const presentationDocument = useMemo(() => {
+    if (routedDeckFile) return {
         ...document,
         pages: document.pages.filter(page => page.meta?.materializedFile === routedDeckFile),
         format: 'slides' as const,
       }
-    : document, [document, routedDeckFile])
+    if (appDocumentRoute && routedAppPage) return { ...document, pages: [routedAppPage] }
+    return document
+  }, [appDocumentRoute, document, routedAppPage, routedDeckFile])
   const isPresentation = document.format === 'slides' || Boolean(routedDeckFile)
   const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
 
@@ -929,7 +919,8 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         : undefined,
     })),
     targets: presentationDocument.targets,
-  }), [projectName, presentationDocument])
+    projectPageNumber: routedDeckFile ? undefined : routedProjectPageNumber,
+  }), [projectName, presentationDocument, routedDeckFile, routedProjectPageNumber])
 
   // Volatile panel state — toggles, loading flags, history, etc.
   const panelContextValue = useMemo(() => ({
