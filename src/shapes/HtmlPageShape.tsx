@@ -32,6 +32,7 @@ import { GestureInterpreter } from '@tldraw/editor'
 import { PAGES_FROM } from '../activeConfig'
 import { ProjectContext } from '../PanelContext'
 import { presentationPath } from '../presentationRoute'
+import { clearHtmlHeadingOutline, setHtmlHeadingOutline } from '../htmlHeadingOutline'
 
 /** How many pages either side of the viewport keep their iframe mounted, on
  *  each axis. Measured in pages rather than viewports so it means the same
@@ -49,6 +50,7 @@ export function getHtmlHeadingY(shapeId: string, anchor: string): number | undef
 /** Clean up global maps for a deleted shape. Call from store listener on shape removal. */
 export function cleanupHtmlShapeData(shapeId: string) {
   htmlHeadingPositions.delete(shapeId)
+  clearHtmlHeadingOutline(shapeId)
   htmlIframeElements.delete(shapeId)
   // The shape is gone, so no reload of it can ever complete. Release the
   // waiters rather than leave them pending on a document that will not arrive.
@@ -1143,6 +1145,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       }
       if (e.data?.type === 'tlda-headings' && e.data.shapeId === shape.id) {
         htmlHeadingPositions.set(shape.id, e.data.positions)
+        if (Array.isArray(e.data.outline)) setHtmlHeadingOutline(shape.id, e.data.outline)
         return
       }
       if (e.data?.type === 'tlda-scrolly-regions' && e.data.shapeId === shape.id) {

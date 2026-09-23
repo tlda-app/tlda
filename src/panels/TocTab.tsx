@@ -11,6 +11,7 @@ import { homeworkKeyForTocRow } from '../homeworkTocKey'
 import { pdfToCanvas } from '../synctexAnchor'
 import { ProjectContext, PanelContext } from '../PanelContext'
 import { presentationPath } from '../presentationRoute'
+import { getHtmlHeadingOutline, subscribeHtmlHeadingOutline } from '../htmlHeadingOutline'
 import { onReloadSignal } from '../useYjsSync'
 import { appendToken, canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
@@ -133,6 +134,7 @@ export function TocTab({ query = '' }: { query?: string }) {
   const [headings, setHeadings] = useState<TocEntry[]>([])
   const [htmlToc, setHtmlToc] = useState<HtmlTocEntry[] | null>(null)
   const [slideTitles, setSlideTitles] = useState<string[] | null>(null)
+  const [outlineVersion, setOutlineVersion] = useState(0)
   const [collapsed, setCollapsed] = useState<Set<number> | null>(null)
   const [reloadCount, setReloadCount] = useState(0)
   const [tocLoaded, setTocLoaded] = useState(false)
@@ -163,6 +165,10 @@ export function TocTab({ query = '' }: { query?: string }) {
       }
     })
   }, [doc])
+
+  useEffect(() => subscribeHtmlHeadingOutline(shapeId => {
+    if (shapeId === doc?.pages[0]?.shapeId) setOutlineVersion(version => version + 1)
+  }), [doc?.pages])
 
   // Which member is being read. The book's table of contents does not change
   // when it changes; which chapter is open does.
@@ -431,6 +437,22 @@ export function TocTab({ query = '' }: { query?: string }) {
           return
         }
 
+        if (doc.projectPageNumber) {
+          const outline = getHtmlHeadingOutline(doc.pages[0]?.shapeId)
+          if (outline) {
+            const levels = ['chapter', 'chapter', 'section', 'subsection', 'subsubsection'] as const
+            const local = outline.map(entry => ({
+              title: entry.title,
+              level: levels[Math.max(1, Math.min(entry.level, 4))],
+              page: 1,
+              anchor: entry.id,
+            }))
+            setHtmlToc(local)
+            setCollapsed(computeDefaultFolded(local))
+            return
+          }
+        }
+
         const targets = doc.targets
         if (targets && targets.length > 1) {
           let pageOffset = 0
@@ -494,7 +516,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       }
     })()
     return () => { cancelled = true }
-  }, [book, doc?.projectName, doc?.format, doc?.targets, reloadCount])
+  }, [book, doc?.projectName, doc?.format, doc?.targets, doc?.projectPageNumber, doc?.pages, outlineVersion, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!doc) return

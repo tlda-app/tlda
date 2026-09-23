@@ -787,10 +787,18 @@ const BRIDGE_SCRIPT = `
       });
     });
     if (Object.keys(positions).length > 0 && window.parent !== window) {
+      var outline = Array.prototype.slice.call(document.querySelectorAll('h1[id],h2[id],h3[id],h4[id]')).map(function(heading) {
+        return {
+          id: heading.id,
+          title: (heading.textContent || '').trim(),
+          level: parseInt(heading.tagName.slice(1), 10),
+        };
+      }).filter(function(entry) { return entry.id && entry.title; });
       window.parent.postMessage({
         type: 'tlda-headings',
         shapeId: shapeId,
         positions: positions,
+        outline: outline,
       }, '*');
     }
   }
