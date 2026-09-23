@@ -216,17 +216,40 @@ export function collectFilterNameTokens(node, out = [], negated = false) {
   return out
 }
 
+// The roster filter folds case because the name resolver it would otherwise
+// disagree with does: `resolveAgentSpans` documents "Names match EXACTLY,
+// case-insensitively", but this path membership-tested the raw token against
+// the raw row labels, so `Skip` missed a live `skip` row and the zero-match
+// path dredged stale name_history instead of the row sitting right there.
+// Folded here, at the roster boundary — delivery/subscription matching in
+// shared/fleet-labels.mjs keeps its exact semantics.
+function lowerFilterAst(node) {
+  if (!node) return node
+  switch (node.t) {
+    case 'lit': return { ...node, v: String(node.v).toLowerCase() }
+    case 'not': return { ...node, x: lowerFilterAst(node.x) }
+    case 'and': case 'or': return { ...node, l: lowerFilterAst(node.l), r: lowerFilterAst(node.r) }
+    default: return node
+  }
+}
+
 export function filteredFleetRosterPage(roster, {
   filterAst = null,
   labelsForRow = labelsForAgent,
   limit = 50,
   cursor = null,
 } = {}) {
+  const matchAst = lowerFilterAst(filterAst)
+  const matchRow = (agent) => {
+    const labels = labelsForRow(agent)
+    const list = Array.isArray(labels) ? labels : [...(labels || [])]
+    return evalExpr(matchAst, list.map(label => String(label).toLowerCase()))
+  }
   // Compute the sort keys once per row. The live roster is large enough that
   // recomputing runtime category and parsing last_seen inside O(n log n)
   // comparator calls is visible server-loop work on every roster request.
   const orderedEntries = roster
-    .filter(a => evalExpr(filterAst, labelsForRow(a)))
+    .filter(matchRow)
     .map(row => ({
       row,
       rank: fleetRosterRank(row),
