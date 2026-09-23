@@ -12,7 +12,8 @@ import { pdfToCanvas } from '../synctexAnchor'
 import { ProjectContext, PanelContext } from '../PanelContext'
 import { presentationPath } from '../presentationRoute'
 import { getHtmlHeadingOutline, subscribeHtmlHeadingOutline } from '../htmlHeadingOutline'
-import { onReloadSignal } from '../useYjsSync'
+import { onReloadSignal, onBuildProgressSignal } from '../useYjsSync'
+import { rowState, NO_BUILD, type PageCurrency, type TocBuildState, type TocTimingRow } from './tocRowState'
 import { appendToken, canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import {
@@ -111,7 +112,7 @@ type TocStage = 'here-only' | 'preview' | 'published' | null
  * only thing that looked, and a label written on this side would be a second
  * opinion that drifts from it.
  */
-type TocMarkRow = { stage: TocStage; error: string | null; why: string }
+type TocMarkRow = TocTimingRow & { error: string | null }
 /**
  * Keyed by page where there is one, and by source where there is not.
  *
@@ -337,31 +338,49 @@ export function TocTab({ query = '' }: { query?: string }) {
   // Carries the project it was fetched for, like `pageFiles` above and for the
   // same reason: marks read against another project's pages do not fail, they
   // colour the wrong rows.
-  const [fetchedMarks, setFetchedMarks] = useState<{ project: string; marks: TocMarks } | null>(null)
+  const [fetchedMarks, setFetchedMarks] = useState<{ project: string; marks: TocMarks; build: TocBuildState } | null>(null)
+  // A build starting, ending, or failing is the moment these answers change, and
+  // it is the moment he is watching them. The reload signal alone arrives only
+  // after a build, so the rows would go from current to current and never show
+  // the run in between.
+  const [buildTick, setBuildTick] = useState(0)
+  useEffect(() => onBuildProgressSignal(() => setBuildTick(tick => tick + 1)), [])
   useEffect(() => {
     if (!tocProjectName) return
     let cancelled = false
     const project = tocProjectName
     fetch(`/api/projects/${encodeURIComponent(project)}/toc-marks`)
       .then(response => response.ok ? response.json() : null)
-      .then((body: { marks?: Array<{ page: number | null; source: string | null; stage: TocStage; error: string | null; why: string }> } | null) => {
+      .then((body: { marks?: Array<{ page: number | null; source: string | null; stage: TocStage; error: string | null; why: string; currency?: PageCurrency | null; sourceEditedAt?: number | null; renderedAt?: number | null; behindMs?: number | null; flipMs?: number | null }>; build?: TocBuildState } | null) => {
         if (cancelled) return
         const rows = body?.marks ?? []
-        const mark = (row: typeof rows[number]) => ({ stage: row.stage, error: row.error, why: row.why })
+        const mark = (row: typeof rows[number]): TocMarkRow => ({
+          stage: row.stage,
+          error: row.error,
+          why: row.why,
+          currency: row.currency ?? null,
+          sourceEditedAt: row.sourceEditedAt ?? null,
+          renderedAt: row.renderedAt ?? null,
+          behindMs: row.behindMs ?? null,
+          flipMs: row.flipMs ?? null,
+        })
         setFetchedMarks({
           project,
           marks: {
             byPage: new Map(rows.filter(row => row.page != null).map(row => [row.page as number, mark(row)])),
             bySource: new Map(rows.filter(row => row.source).map(row => [row.source as string, mark(row)])),
           },
+          build: body?.build ?? NO_BUILD,
         })
       })
       // An unreachable comparison leaves every bullet unmarked, which is what
       // "we don't know" looks like. It must never look like an answer.
-      .catch(() => { if (!cancelled) setFetchedMarks({ project, marks: EMPTY_MARKS }) })
+      .catch(() => { if (!cancelled) setFetchedMarks({ project, marks: EMPTY_MARKS, build: NO_BUILD }) })
     return () => { cancelled = true }
-  }, [tocProjectName, reloadCount])
-  const marks = fetchedMarks && fetchedMarks.project === tocProjectName ? fetchedMarks.marks : EMPTY_MARKS
+  }, [tocProjectName, reloadCount, buildTick])
+  const currentMarks = fetchedMarks && fetchedMarks.project === tocProjectName ? fetchedMarks : null
+  const marks = currentMarks?.marks ?? EMPTY_MARKS
+  const buildState = currentMarks?.build ?? NO_BUILD
 
   const memberItemType = useMemo(() => {
     const types = new Map<string, CourseItemType>()
@@ -753,23 +772,30 @@ export function TocTab({ query = '' }: { query?: string }) {
   // like.
   function renderCenterButton(h: { title: string; center: () => void; page?: number; source?: string }) {
     const row = h.page != null ? marks.byPage.get(h.page) : h.source ? marks.bySource.get(h.source) : undefined
-    const stage = row?.stage ?? null
+    // The build axis resolves over the publication one: a build that did not
+    // succeed, a page never rendered, a page older than its source, or a build
+    // still running is the thing standing between what he wrote and the page,
+    // so the bullet says that instead of where the page is on the way to class.
+    const state = rowState(row, buildState)
     const failed = row?.error ?? null
+    const text = state?.title ?? row?.why ?? null
     return (
       <>
         <button
-          className={`toc-row-center${stage ? ` toc-row-center--${stage}` : ''}`}
+          className={`toc-row-center${state ? ` toc-row-center--${state.light}` : ''}${state?.caution ? ' toc-row-center--caution' : ''}`}
           type="button"
           onClick={() => { h.center() }}
-          title={row ? `${row.why} — click to centre this heading` : 'Center this heading'}
-          aria-label={row ? `${row.why}. Center this heading` : 'Center this heading'}
+          title={text ? `${text} — click to centre this heading` : 'Center this heading'}
+          aria-label={text ? `${text}. Center this heading` : 'Center this heading'}
           // The reason, drawn by the panel rather than by the browser. A native
           // `title` never appears here: the table of contents lives inside the
           // canvas, and the hover that would raise a tooltip is consumed on the
           // way. Skip had every mark in front of him and could not read one.
-          data-why={row ? row.why : undefined}
+          data-why={text ?? undefined}
         >
-          <span aria-hidden="true">{'\u2299'}</span>
+          {/* Skip, 2026-09-19: "perhaps the bullet shape could be replaced with a
+              caution shape in the bad cases." The bullet everywhere else. */}
+          <span aria-hidden="true">{state?.caution ? '\u26a0' : '\u2299'}</span>
         </button>
         {/* The second axis, and the app's own error glyph rather than a new
             one — Skip: "like we use for errors". It appears beside the target
@@ -785,6 +811,14 @@ export function TocTab({ query = '' }: { query?: string }) {
         )}
       </>
     )
+  }
+
+  /** The span worth reading on a row: how long the turnaround took, or how far behind it is. */
+  function renderRowTiming(h: { page?: number; source?: string }) {
+    const row = h.page != null ? marks.byPage.get(h.page) : h.source ? marks.bySource.get(h.source) : undefined
+    const state = rowState(row, buildState)
+    if (!state?.timing) return null
+    return <span className={`toc-row-timing${state.caution ? ' toc-row-timing--caution' : ''}`}>{state.timing}</span>
   }
 
   function renderFoldableItem(i: number, h: TocItem, nextLevel: TocLevel | TocLevel[]) {
@@ -820,6 +854,7 @@ export function TocTab({ query = '' }: { query?: string }) {
         )}
         {renderCenterButton(h)}
         <span className="toc-title" onClick={h.unbuilt ? undefined : h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
+        {renderRowTiming(h)}
         {homework?.returned ? <a
           className="toc-item-type toc-item-type--homework"
           href={homework.returnedHref ?? `?workspace=classroom-work&assignment=${encodeURIComponent(homework.assignmentId)}`}
@@ -894,6 +929,7 @@ export function TocTab({ query = '' }: { query?: string }) {
             <span className="toc-fold-spacer" />
             {renderCenterButton(h)}
             <span className="toc-title" onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
+            {renderRowTiming(h)}
           </div>
         )
       })}

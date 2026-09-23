@@ -186,6 +186,36 @@ export function marksForRows(rows) {
 }
 
 /**
+ * Whether one page's render is as new as the source it was rendered from, and
+ * how long the turnaround took.
+ *
+ * The same two-surface question as `markForRow`, asked one stage earlier: that
+ * one compares the app against the class site, this one compares the source
+ * against the render. Together they say where a page stopped — in the editor,
+ * in the build, or on the way to the class site.
+ *
+ * The oracle is modification time and there is no other. Neither `_book` nor
+ * `_freeze` records the revision a page was rendered from, so this errs toward
+ * stale — touching a file with no edit in it reads as stale — and it misses an
+ * edit reverted to identical bytes after a render. `current` therefore means
+ * NOT DETECTABLY STALE, and whatever is drawn from it has to say so.
+ *
+ * `flipMs` is the gap between the last write to the source and the render that
+ * followed it. It is the turnaround only when the render followed THAT write;
+ * on a page nobody has edited for a week, a rebuild makes it a week, which is
+ * a true measurement of the wrong thing. It is reported here and judged by the
+ * caller, which is why both timestamps are reported beside it.
+ */
+export function pageBuildCurrency({ sourceEditedAt, renderedAt }) {
+  if (renderedAt == null) return { currency: 'unrendered', behindMs: null, flipMs: null }
+  if (sourceEditedAt == null) return { currency: 'unknown', behindMs: null, flipMs: null }
+  if (sourceEditedAt > renderedAt) {
+    return { currency: 'stale', behindMs: sourceEditedAt - renderedAt, flipMs: null }
+  }
+  return { currency: 'current', behindMs: null, flipMs: renderedAt - sourceEditedAt }
+}
+
+/**
  * Where one built page sits, within the publication both surfaces carry.
  *
  * A publication build writes both trees from one render, so every page is

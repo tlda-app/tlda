@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { compareCourseSurfaces, documentTextFingerprint, markForRow, marksForRows, publicationPathForPage, publishedBaseFromCourse, publishedUrlForPage } from './course-surface-marks.mjs'
+import { compareCourseSurfaces, documentTextFingerprint, markForRow, marksForRows, pageBuildCurrency, publicationPathForPage, publishedBaseFromCourse, publishedUrlForPage } from './course-surface-marks.mjs'
 
 // The real difference between the same chapter on the app's `static/` tree and
 // on GitHub Pages, reduced to one paragraph. Every one of these is chrome the
@@ -262,4 +262,43 @@ test('a course naming no publication has no published base, rather than a guesse
   assert.equal(publishedBaseFromCourse({}), null)
   assert.equal(publishedBaseFromCourse({ publication: {} }), null)
   assert.equal(publishedUrlForPage('app/book/index.html', null), null)
+})
+
+// The build side of the same question. A wrong verdict here is the failure this
+// exists to catch and the one nobody sees: a page older than its source served
+// as though it were current is what put withheld answers in front of a class.
+
+test('a render older than the source it came from is stale, by the gap between them', () => {
+  const edited = Date.parse('2026-09-19T11:47:00Z')
+  const rendered = Date.parse('2026-09-19T07:01:00Z')
+  assert.deepEqual(pageBuildCurrency({ sourceEditedAt: edited, renderedAt: rendered }), {
+    currency: 'stale',
+    behindMs: edited - rendered,
+    flipMs: null,
+  })
+})
+
+test('a render that followed the edit carries the turnaround and no staleness', () => {
+  const edited = Date.parse('2026-09-19T11:47:00Z')
+  const rendered = edited + 61_000
+  assert.deepEqual(pageBuildCurrency({ sourceEditedAt: edited, renderedAt: rendered }), {
+    currency: 'current',
+    behindMs: null,
+    flipMs: 61_000,
+  })
+})
+
+test('a page nothing has rendered is unrendered, not current', () => {
+  assert.equal(pageBuildCurrency({ sourceEditedAt: Date.now(), renderedAt: null }).currency, 'unrendered')
+})
+
+// The distinction the marks above turn on, kept here too: not knowing is its own
+// answer and must never arrive as good news. A rendered page whose source cannot
+// be found is not evidence that the render is current.
+test('a render with no source to compare is unknown rather than current', () => {
+  assert.deepEqual(pageBuildCurrency({ sourceEditedAt: null, renderedAt: Date.now() }), {
+    currency: 'unknown',
+    behindMs: null,
+    flipMs: null,
+  })
 })

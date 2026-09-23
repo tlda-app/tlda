@@ -961,6 +961,36 @@ html[data-theme="dark"] .toc-row-center--here-only { color: #f87171; }
 html[data-theme="dark"] .toc-row-center--preview { color: #fbbf24; }
 html[data-theme="dark"] .toc-row-center--published { color: #4ade80; }
 
+/* The bad cases carry a caution glyph in place of the bullet, which is taller
+   than a ⊙ at the same size and would otherwise sit larger than the rows around
+   it. Skip, 2026-09-19: "perhaps the bullet shape could be replaced with a
+   caution shape in the bad cases." */
+.toc-row-center--caution {
+  font-size: 10px;
+}
+
+/* How long the turnaround took, or how far behind the render is. Only on rows
+   with a span worth reading: a duration beside every heading is a column of
+   numbers to filter, which is the opposite of a glance. */
+.toc-row-timing {
+  flex: 0 0 auto;
+  /* Pushed to the end of the row so the spans line up as a column that can be
+     read down, rather than sitting at a different place on every line. */
+  margin-left: auto;
+  padding-left: 6px;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  opacity: var(--ui-tone-dormant);
+}
+
+.toc-row-timing--caution {
+  color: #b45309;
+  opacity: 1;
+}
+
+html[data-theme="dark"] .toc-row-timing--caution { color: #fbbf24; }
+
 /* THE TRIANGLE CARRIES WHETHER SOMETHING FAILED, and it is the glyph the app
    already uses for errors. It sits BESIDE the target rather than replacing it:
    a page the class site serves that this build cannot produce is published and

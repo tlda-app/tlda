@@ -46,7 +46,7 @@ import { deleteProjectAndBuildSubmissions, serializedPublication } from '../lib/
 import { importProjectPromotionStream, validatePromotionName, writeProjectPromotionStream } from '../lib/project-promotion.mjs'
 import { promotionExportHeaders, requirePromotionExport, validatePromotionSourceOrigin } from '../lib/promotion-source.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
-import { compareCourseSurfaces, publishedBaseFromCourse } from '../lib/course-surface-marks.mjs'
+import { compareCourseSurfaces, pageBuildCurrency, publishedBaseFromCourse } from '../lib/course-surface-marks.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
@@ -1472,6 +1472,15 @@ router.get('/:name/published-tree', requireRead, async (req, res) => {
  * a row that is missing: see `markForRow`. A slow class site must not repaint
  * his table of contents.
  */
+/** When a file was last written, or null if it is not there to ask. */
+function mtimeMs(path) {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return null
+  }
+}
+
 router.get('/:name/toc-marks', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
@@ -1517,26 +1526,33 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
   // ignore the column. Every other refusal names something only he can settle
   // (which surface to publish from, which build is good, where the site lives),
   // so it triangles like a failure, with "refused" in place of "failed".
-  const publishFailure = await sourceLifecycleStore(req.params.name, { existingProject: project })
-    .then(store => {
-      const current = store.listRevisionLifecycles(req.params.name)
-        .find(row => row.sourceRevision === project.sourceRevision)
-      const outcome = current?.publish
-      if (outcome?.state === 'publish_failed') {
-        return outcome.result?.error || 'the last publish of this revision failed'
-      }
-      if (outcome?.state === 'publish_refused' && outcome.result?.transient !== true) {
-        const reason = outcome.result?.error || 'the last publish of this revision was refused'
-        return reason.startsWith('publish refused:') ? reason : `publish refused: ${reason}`
-      }
-      return null
-    })
-    .catch(() => null)
-  const marks = await compareCourseSurfaces([...pages, ...unbuilt.map(row => ({
+  const lifecycles = await sourceLifecycleStore(req.params.name, { existingProject: project })
+    .then(store => store.listRevisionLifecycles(req.params.name))
+    .catch(() => [])
+  const publishFailure = (() => {
+    const current = lifecycles.find(row => row.sourceRevision === project.sourceRevision)
+    const outcome = current?.publish
+    if (outcome?.state === 'publish_failed') {
+      return outcome.result?.error || 'the last publish of this revision failed'
+    }
+    if (outcome?.state === 'publish_refused' && outcome.result?.transient !== true) {
+      const reason = outcome.result?.error || 'the last publish of this revision was refused'
+      return reason.startsWith('publish refused:') ? reason : `publish refused: ${reason}`
+    }
+    return null
+  })()
+  // The same status `build/status` reports, from the same place. The
+  // `buildStatus` stored on the project is not it: a Quarto render was three
+  // minutes into a run that route called `building` while the stored field
+  // still said `success`, so a row reading that field would have called a
+  // build in flight finished.
+  const durableStatus = projectRevisionStatus(lifecycles)
+  const comparedRows = [...pages, ...unbuilt.map(row => ({
     file: `app/book/${row.source.replace(/\.qmd$/i, '.html')}`,
     source: { file: row.source },
     unbuilt: true,
-  }))], {
+  }))]
+  const marks = await compareCourseSurfaces(comparedRows, {
     failureFor: page => failureForSource(page.source?.file) || publishFailure,
     // THE PREVIEW, over HTTP, not this server's own disk.
     //
@@ -1617,8 +1633,40 @@ router.get('/:name/toc-marks', requireRead, async (req, res) => {
     previewConfigured: Boolean(project.previewUrl),
     publishedConfigured: Boolean(publishedBase),
   })
+  // When each page was last written, on both sides of the build. `page.file`
+  // is where the render landed under the output directory and `page.source.file`
+  // is the authored root it came from, which is the only record of which source
+  // produced which page. In `comparedRows` order, which is the marks' order.
+  //
+  // Per-page detail is fine HERE and must not be copied into anything the class
+  // site serves: naming a stale page in a published artifact announces the
+  // filename of material deliberately withheld from the site, which is why
+  // `build-site.py` publishes a count and no paths.
+  const outDir = getOutputDir(req.params.name)
+  const currency = comparedRows.map(page => {
+    const renderedAt = mtimeMs(join(outDir, ...String(page.file || '').split('/')))
+    const sourceFile = page.source?.file ? join(getSourceDir(req.params.name), ...String(page.source.file).split('/')) : null
+    const sourceEditedAt = sourceFile ? mtimeMs(sourceFile) : null
+    // Both clock times travel with the verdict. A reader asking why a page is
+    // marked has to be told what was compared, and a derived span alone —
+    // "3h behind" — is the one thing that cannot be checked against anything.
+    return { sourceEditedAt, renderedAt, ...pageBuildCurrency({ sourceEditedAt, renderedAt }) }
+  })
   res.json({
-    marks: marks.map(({ page, source, stage, error, errorAt, why, destinations }) => ({ page, source, stage, error, errorAt, why, destinations })),
+    marks: marks.map(({ page, source, stage, error, errorAt, why, destinations }, index) => ({ page, source, stage, error, errorAt, why, destinations, ...currency[index] })),
+    // Whether the last build of this project succeeded, is running, or did not
+    // succeed. It is the project's, not the page's — nothing records a build
+    // state per page — so a row shows it as a fact about the build behind it.
+    //
+    // Both times, because they answer different questions and neither answers
+    // the other's. `lastBuild` is rewritten when a build STARTS, so on a failed
+    // build it is when that build began. The log is written where the build
+    // ends, successfully or not, so its modification time is when it stopped.
+    build: {
+      status: durableStatus.status,
+      lastBuild: project.lastBuild || null,
+      logModified: await buildLogModifiedAsync(req.params.name),
+    },
     publishedBase,
     previewUrl: project.previewUrl || null,
     comparedAt: new Date().toISOString(),
