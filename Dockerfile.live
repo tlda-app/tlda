@@ -238,14 +238,9 @@ COPY server/package-lock.json* ./
 RUN npm install --production
 
 # The on-demand authoring export runs the canonical deck linearizer against an
-# already-built HTML artifact. Use Debian's Chromium rather than Playwright's
-# second browser bundle: this image already carries the fonts and shared
-# libraries Chromium needs, and duplicating them exceeds Fly's 8 GB rootfs.
-# Keep the implementation in its extension repo; the runtime fetches one pinned
-# revision instead of carrying a second copy.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium \
-    && rm -rf /var/lib/apt/lists/* \
+# already-built HTML artifact. Keep the implementation in its extension repo;
+# the runtime fetches one pinned revision instead of carrying a second copy.
+RUN npx playwright install --with-deps chromium \
     && git init /opt/quarto-tlda-revealjs \
     && cd /opt/quarto-tlda-revealjs \
     && git remote add origin https://github.com/tlda-labs/quarto-tlda-revealjs.git \
@@ -254,7 +249,6 @@ RUN apt-get update \
     && rm -rf .git
 ENV TLDA_AUTHORING_EXPORT_LINEARIZER=/opt/quarto-tlda-revealjs/_extensions/tlda/linearize.mjs
 ENV TLDA_AUTHORING_EXPORT_CWD=/app
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 # --- server code ---
 # LOAD-BEARING: the COPY paths below are mirrored in SHIPPED_PATHS in
