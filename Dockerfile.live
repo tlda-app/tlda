@@ -237,19 +237,6 @@ COPY server/package.json ./package.json
 COPY server/package-lock.json* ./
 RUN npm install --production
 
-# The on-demand authoring export runs the canonical deck linearizer against an
-# already-built HTML artifact. Keep the implementation in its extension repo;
-# the runtime fetches one pinned revision instead of carrying a second copy.
-RUN npx playwright install --with-deps chromium \
-    && git init /opt/quarto-tlda-revealjs \
-    && cd /opt/quarto-tlda-revealjs \
-    && git remote add origin https://github.com/tlda-labs/quarto-tlda-revealjs.git \
-    && git fetch --depth 1 origin 6ce7f9de6f7bab389dd9163577c186037a1d529c \
-    && git checkout --detach FETCH_HEAD \
-    && rm -rf .git
-ENV TLDA_AUTHORING_EXPORT_LINEARIZER=/opt/quarto-tlda-revealjs/_extensions/tlda/linearize.mjs
-ENV TLDA_AUTHORING_EXPORT_CWD=/app
-
 # --- server code ---
 # LOAD-BEARING: the COPY paths below are mirrored in SHIPPED_PATHS in
 # scripts/check-server-imports.mjs, which checks that nothing on the boot path
