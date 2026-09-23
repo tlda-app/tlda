@@ -44,6 +44,7 @@ import {
 import { deleteProjectAndBuildSubmissions, serializedPublication } from '../lib/build-dispatch.mjs'
 import { importProjectPromotionStream, validatePromotionName, writeProjectPromotionStream } from '../lib/project-promotion.mjs'
 import { promotionExportHeaders, requirePromotionExport, validatePromotionSourceOrigin } from '../lib/promotion-source.mjs'
+import { authoringExport } from '../lib/authoring-export.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { compareCourseSurfaces, publishedBaseFromCourse } from '../lib/course-surface-marks.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
@@ -1682,6 +1683,46 @@ router.get('/:name/build/errors', requireRead, async (req, res) => {
     logMissing,
     pipelineWarnings,
   })
+})
+
+/**
+ * Linearized authoring export of an already-built chapter or deck.
+ *
+ * Skip's design, 2026-09-22: on-request generation with caching, not
+ * build-time generation. The endpoint resolves a specific built source
+ * revision; the cache key is project + revision + document + exporter
+ * format/version; a hit returns the stored artifact and a miss runs the
+ * established linearizer against that revision's already-built HTML, stores
+ * the artifact with its inline failure evidence, then returns it. Course
+ * source is never rerendered as part of the request, and the handler never
+ * launches a browser itself — frame capture spawns the canonical
+ * `linearize.mjs` as a child process (see server/lib/authoring-export.mjs).
+ *
+ * Query: `document` (required: a source root like `decks/foo-slides.qmd`
+ * or a built file like `book/decks/foo-slides.html`), `revision`
+ * (optional: must be the built revision when given).
+ */
+router.get('/:name/authoring-export', requireRead, async (req, res) => {
+  const document = String(req.query.document || '')
+  if (!document) {
+    return res.status(400).json({
+      error: 'document is required (a source root or built file)',
+      project: req.params.name,
+    })
+  }
+  try {
+    const exportDoc = await authoringExport(req.params.name, {
+      document,
+      revision: req.query.revision ? String(req.query.revision) : null,
+      linearizerPath: process.env.TLDA_AUTHORING_EXPORT_LINEARIZER || null,
+    })
+    res.json(exportDoc)
+  } catch (error) {
+    res.status(error?.status || 500).json({
+      error: error?.message || String(error),
+      ...(error?.detail ? { detail: error.detail } : {}),
+    })
+  }
 })
 
 // ---------- Shape CRUD (backed by @tldraw/sync TLSocketRoom) ----------
