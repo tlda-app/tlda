@@ -65,6 +65,7 @@ import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat, hasSourceMapping } from '../shared/document-formats.mjs'
 import { resolveContainedPath } from './lib/path-containment.mjs'
 import { resolvePublishedAssetPath } from './lib/site-lib-asset.mjs'
+import { servePublishRawApp } from './lib/publish-raw-app.mjs'
 import { solutionsVariantFileFor } from './lib/classroom-solution-variant.mjs'
 import { serverOwnerUpsertRow } from './lib/server-owner-row.mjs'
 import { resolveLocalImage } from '../shared/local-image.mjs'
@@ -5292,6 +5293,10 @@ app.get('/docs/:project/app{/*coursePath}', requireRead, async (req, res, next) 
   const name = docsProjectName(req.params.project)
   const gated = await runDocsAccessCheck(req, res, name)
   if (gated) return gated === 'sent' ? undefined : next(gated)
+
+  // Publish carries the canvas bytes themselves, so it asks for them raw;
+  // the shell below would stage the application in place of the page.
+  if (await servePublishRawApp(req, res, { outputRoot: join(PROJECTS_DIR, name, 'output') })) return
 
   const indexPath = join(__dirname, '..', 'dist', 'index.html')
   if (!existsSync(indexPath)) return res.status(404).send('Viewer not built. Run: npm run build')

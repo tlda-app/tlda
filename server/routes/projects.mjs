@@ -1455,7 +1455,11 @@ router.get('/:name/published-tree', requireRead, async (req, res) => {
   // path, because two halves in one list with unprefixed paths is two files at
   // one name.
   for (const half of present) walk(join(output, half), present.length > 1 ? half : '')
-  res.json({ files, tree: requested, halves: present, sourceRevision: project.sourceRevision || null, buildStatus: project.buildStatus || 'unknown' })
+  // The preview publish fetches the canvas pages themselves rather than
+  // copying their static twins, which needs the app route's publish-raw
+  // bypass; a surface without it answers the reader shell, so the publish
+  // refuses instead of staging the application as the page.
+  res.json({ files, tree: requested, halves: present, sourceRevision: project.sourceRevision || null, buildStatus: project.buildStatus || 'unknown', publishRawApp: true })
 })
 
 /**
